@@ -17,6 +17,9 @@ typedef struct VulkanComponents
     VkDevice device;
     VkQueue graphicsQueue;
     VkQueue computeQueue;
+    VkQueue transferQueue;
+    VkQueue presentQueue;
+
 } VulkanComponents;
 
 struct QueueFamilyIndices 
@@ -27,6 +30,8 @@ struct QueueFamilyIndices
     uint32_t computeFamily;
     bool transferPresent;
     uint32_t transferFamily;
+    bool presentPresent;
+    uint32_t presentFamily;
 };
 
 typedef struct DeviceCapabilities // Add queue families, device extensions etc as they're implemented into compute tasks and render functions
@@ -41,8 +46,8 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 // Function Prototypes
 VkResult createInstance(VkInstance *instance);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
-void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
-VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice *device, VkQueue *graphicsQueue, VkQueue *computeQueue, struct QueueFamilyIndices* indices);
+void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
+VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 
 //Init and cleanup functions
 
@@ -88,9 +93,9 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
     DeviceCapabilities capabilities;
     components->physicalDevice = VK_NULL_HANDLE;
     struct QueueFamilyIndices indices;
-    pickPhysicalDevice(components->instance, &(components->physicalDevice), &capabilities, &indices);
+    pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices);
     // Create logical device
-    if (createLogicalDevice(components->physicalDevice, &(components->device), &(components->graphicsQueue), &(components->computeQueue), &indices) != VK_SUCCESS)
+    if (createLogicalDevice(components->physicalDevice, &(components->device), &(components->graphicsQueue), &(components->computeQueue), &(components->transferQueue), &(components->presentQueue), &indices) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create logical device!\n");
         free(components);
@@ -180,36 +185,64 @@ VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* su
     return VK_SUCCESS;
 }
 
-struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) { // Extend with more queue family checks as they become relevant
-    struct QueueFamilyIndices indices;
+struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR *surface) { // Extend with more queue family checks as they become relevant
+    struct QueueFamilyIndices indices = {};
+    indices.graphicsPresent = false;
+    indices.computePresent = false;
+    indices.transferPresent = false;
+    indices.presentPresent = false;
+
+    indices.graphicsFamily = 0;
+    indices.computeFamily = 0;
+    indices.transferFamily = 0;
+    indices.presentFamily = 0;
     
 	uint32_t queueFamilyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, NULL);
 	VkQueueFamilyProperties queueFamilies[queueFamilyCount];
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
+		// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
+		// This may be changed in the future, specifically to allow compute tasks to work on the next frame without impacting rendering.
+		// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
+		//!TODO Implement these as required further into development
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here
-		if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+		if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && indices.graphicsPresent != true)
 		{
 			indices.graphicsFamily = i;
 			indices.graphicsPresent = true;
+			//printf("Graphics: %d\n", i);
 		}
-		if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT)
+		if ((queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT)&& indices.computePresent != true)
 		{
 			indices.computeFamily = i;
 			indices.computePresent = true;
+			//printf("Compute: %d\n", i);
 		}
-		if (queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT)
+		if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT)&& indices.transferPresent != true)
 		{
 			indices.transferFamily = i;
 			indices.transferPresent = true;
+			//printf("Transfer: %d\n", i);
 		}
-		/*indices.graphicsFamily += queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT;
-		indices.computeFamily += queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT;
-		indices.transferFamily += queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT;*/
+
+		if (surface != NULL)
+		{
+			VkBool32 presentSupport = false;
+			vkGetPhysicalDeviceSurfaceSupportKHR(device, i, *surface, &presentSupport);	
+			if (presentSupport) 
+			{
+				if (indices.presentPresent != true) // Makes sure the primary present family gets selected, usually the same family as for graphics
+				{
+					indices.presentFamily = i;	
+				}
+				indices.presentPresent = true;
+				//printf("Present: %d\n", indices.presentFamily);
+			}
+		}
 	}
-	
+		
     return indices;
 }
 
@@ -220,23 +253,23 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysic
 	capabilities.float64 = deviceFeatures.shaderFloat64;
 	capabilities.int64 = deviceFeatures.shaderInt64;
 	//Queue family checks
-	struct QueueFamilyIndices indices = findQueueFamilies(device);
+	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
 	capabilities.graphics = indices.graphicsPresent;
 	capabilities.compute = indices.computePresent;
 	capabilities.transfer = indices.transferPresent;
 	return capabilities;
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceProperties deviceProperties, VkPhysicalDeviceFeatures deviceFeatures)
+bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceProperties deviceProperties, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface)
 {
-	struct QueueFamilyIndices indices = findQueueFamilies(device);
+	struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
 	// Add any features as they become necessary
 	bool physicalRequirements = deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && deviceFeatures.geometryShader && deviceFeatures.shaderFloat64 && deviceFeatures.shaderInt64;
 	bool queueRequirements = indices.graphicsPresent;
 	return physicalRequirements && queueRequirements;
 }
 
-void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices) // Queries all available devices, and selects one according to our needs.
+void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices) // Queries all available devices, and selects one according to our needs.
 {
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
@@ -262,14 +295,16 @@ void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, D
         if (deviceProperties.limits.bufferImageGranularity > maxMemorySize) 
         {
             maxMemorySize = deviceProperties.limits.bufferImageGranularity;
-	        if (isDeviceSuitable(devices[i], deviceProperties, deviceFeatures) == true) 
+	        if (isDeviceSuitable(devices[i], deviceProperties, deviceFeatures, surface) == true) 
 	        {
 	        	*physicalDevice = devices[i];
 	        	*capabilities = populateCapabilities(devices[i], deviceFeatures);
-	        	*indices = findQueueFamilies(devices[i]);
+	        	*indices = findQueueFamilies(devices[i], surface);
 	        }
         }
     }
+
+    printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (indices->graphicsFamily), (indices->computeFamily), (indices->transferFamily), (indices->presentFamily));
 
     if (*physicalDevice == VK_NULL_HANDLE) 
     {
@@ -279,40 +314,67 @@ void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, D
     free(devices);
 }
 
-VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, struct QueueFamilyIndices* indices) // Creates a logical device that can actually do stuff.
+VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices) // Creates a logical device that can actually do stuff.
 {
-    // Queue creation information
-    VkDeviceQueueCreateInfo queueCreateInfo = {};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-
-    
-    queueCreateInfo.queueFamilyIndex = indices->graphicsFamily; 
-    queueCreateInfo.queueCount = 1;
-    float queuePriority = 1.0f;
-    queueCreateInfo.pQueuePriorities = &queuePriority;
-
     // Device features (optional)
     VkPhysicalDeviceFeatures availableFeatures;
     vkGetPhysicalDeviceFeatures(physicalDevice, &availableFeatures);
     VkPhysicalDeviceFeatures deviceFeatures = {.shaderInt64 = availableFeatures.shaderInt64, .shaderFloat64 = availableFeatures.shaderFloat64}; // Add more features as required
-    // Logical device creation information
-    VkDeviceCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pQueueCreateInfos = &queueCreateInfo;
-    createInfo.queueCreateInfoCount = 1;
-    createInfo.pEnabledFeatures = &deviceFeatures;
+
+	// We'll have 4 unique queues at the very most
+	VkDeviceQueueCreateInfo queueCreateInfos[4];
+	uint32_t uniqueQueueFamilies[4] = {indices->graphicsFamily, indices->presentFamily, indices->computeFamily, indices->transferFamily};
+	uint32_t queueCount = 0;
+	
+	for (uint32_t i = 0; i < 4; i++)
+	{
+	    bool uniqueFamily = true;
+	    // Check whether we already have a queue set up for the specific family index
+	    for (uint32_t x = 0; x < i; x++)
+	    {
+	        if (uniqueQueueFamilies[i] == uniqueQueueFamilies[x])
+	        {
+	            uniqueFamily = false;
+	            break;
+	        }
+	    }
+	    if (uniqueFamily == true)
+	    {
+	        VkDeviceQueueCreateInfo queueCreateInfo = {};
+	        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	        queueCreateInfo.queueFamilyIndex = uniqueQueueFamilies[i];
+	        queueCreateInfo.queueCount = 1;
+	        float queuePriority = 1.0f;
+	        queueCreateInfo.pQueuePriorities = &queuePriority;
+	        queueCreateInfos[queueCount] = queueCreateInfo;
+	        queueCount++;
+	    }
+	}
+	
+	// creating the device
+	VkDeviceCreateInfo createInfo = {};
 
     if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create logical device!\n");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
-
-    // Retrieve the created graphics queue
-    vkGetDeviceQueue(*device, queueCreateInfo.queueFamilyIndex, 0, graphicsQueue);
-
-    // Retrieve the created compute queue
-    vkGetDeviceQueue(*device, queueCreateInfo.queueFamilyIndex, 0, computeQueue);
+	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+	createInfo.queueCreateInfoCount = queueCount;
+	createInfo.pQueueCreateInfos = queueCreateInfos;
+	createInfo.pEnabledFeatures = &deviceFeatures;
+	
+	// get queue handles
+	vkGetDeviceQueue(*device, indices->graphicsFamily, 0, graphicsQueue);
+	vkGetDeviceQueue(*device, indices->presentFamily, 0, presentQueue);
+	if (indices->computePresent)
+	{
+		vkGetDeviceQueue(*device, indices->computeFamily, 0, computeQueue);
+	}
+	if (indices->computePresent)
+	{
+		vkGetDeviceQueue(*device, indices->transferFamily, 0, transferQueue);
+	}
 
     return VK_SUCCESS;
 }
@@ -326,12 +388,21 @@ int main()
 	if (window == NULL)
 	{
 	    // Handle error
+	    printf("Window initialization failed.\n");
+	    glfwDestroyWindow(window);
+	    glfwTerminate();
+	    return 0;
 	}
 	
 	VulkanComponents *components = initVulkan(window);
 	if (components == NULL)
 	{
 	    // Handle error
+	    printf("Vulkan initialization failed.\n");
+	    cleanupVulkan(components);
+	    glfwDestroyWindow(window);
+	    glfwTerminate();
+	    return 0;
 	}
 
     // Main loop
