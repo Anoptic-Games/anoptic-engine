@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
+#include <string.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -9,7 +10,7 @@
 
 // Structs
 
-typedef struct VulkanComponents
+typedef struct VulkanComponents // All details of our Vulkan instance
 {
     VkInstance instance;
     VkSurfaceKHR surface;
@@ -22,7 +23,7 @@ typedef struct VulkanComponents
 
 } VulkanComponents;
 
-struct QueueFamilyIndices 
+struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
 {
 	bool graphicsPresent;
     uint32_t graphicsFamily;
@@ -43,11 +44,37 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 		bool int64;
 } DeviceCapabilities;
 
+struct SwapChainSupportDetails 
+{
+    VkSurfaceCapabilitiesKHR capabilities;
+    uint32_t formatCount;
+    VkSurfaceFormatKHR *formats;
+    uint32_t presentModesCount;
+    VkPresentModeKHR *presentModes;
+};
+
+
+struct Garbage //All the various stuff that needs to be thrown out
+{
+	struct VulkanComponents *components;
+	struct SwapChainSupportDetails *swapChainDetails;
+	GLFWwindow *window;
+};
+
+
+// Variables
+
+const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+struct Garbage garbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
+
+
 // Function Prototypes
 VkResult createInstance(VkInstance *instance);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
-void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
+bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
+struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
+struct SwapChainSupportDetails* initSwapChain(VkPhysicalDevice device, VkSurfaceKHR *surface);
 
 //Init and cleanup functions
 
@@ -93,7 +120,11 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
     DeviceCapabilities capabilities;
     components->physicalDevice = VK_NULL_HANDLE;
     struct QueueFamilyIndices indices;
-    pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices);
+    if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices))
+    {
+    	fprintf(stderr, "Aborting init process!\n");
+    	return NULL;
+    }
     // Create logical device
     if (createLogicalDevice(components->physicalDevice, &(components->device), &(components->graphicsQueue), &(components->computeQueue), &(components->transferQueue), &(components->presentQueue), &indices) != VK_SUCCESS)
     {
@@ -101,6 +132,8 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
         free(components);
         return NULL;
     }
+
+    initSwapChain(components->physicalDevice, &(components->surface)); // Initialize a swap chain
     
     return components;
 }
@@ -260,16 +293,50 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysic
 	return capabilities;
 }
 
+bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+    const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, /* Other required extensions... */ };
+    size_t requiredExtensionsCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
+    
+    uint32_t extensionCount;
+    vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, NULL);
+
+    VkExtensionProperties* availableExtensions = (VkExtensionProperties*) malloc(extensionCount * sizeof(VkExtensionProperties));
+    vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, availableExtensions);
+
+    for (size_t i = 0; i < requiredExtensionsCount; ++i) 
+    {
+        bool found = false;
+        for (uint32_t j = 0; j < extensionCount; ++j) 
+        {
+            if (strcmp(requiredExtensions[i], availableExtensions[j].extensionName) == 0) 
+            {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) 
+        {
+            free(availableExtensions);
+            return false; // Required extension not found
+        }
+    }
+
+    free(availableExtensions);
+    return true; // All required extensions found
+}
+
 bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceProperties deviceProperties, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface)
 {
 	struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
 	// Add any features as they become necessary
+	bool extensionsSupported = checkDeviceExtensionSupport(device);
 	bool physicalRequirements = deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && deviceFeatures.geometryShader && deviceFeatures.shaderFloat64 && deviceFeatures.shaderInt64;
 	bool queueRequirements = indices.graphicsPresent;
-	return physicalRequirements && queueRequirements;
+	return physicalRequirements && queueRequirements && extensionsSupported;
 }
 
-void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices) // Queries all available devices, and selects one according to our needs.
+bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices) // Queries all available devices, and selects one according to our needs.
 {
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
@@ -277,7 +344,7 @@ void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
     if (deviceCount == 0) 
     {
         fprintf(stderr, "Failed to find GPUs with Vulkan support!\n");
-        return;
+        return false;
     }
 
     VkPhysicalDevice* devices = (VkPhysicalDevice*)malloc(sizeof(VkPhysicalDevice) * deviceCount);
@@ -309,9 +376,12 @@ void pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
     if (*physicalDevice == VK_NULL_HANDLE) 
     {
         fprintf(stderr, "Failed to find a suitable GPU!\n");
+        return false;
     }
+    printf("%p\n", physicalDevice);
 
     free(devices);
+    return true;
 }
 
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices) // Creates a logical device that can actually do stuff.
@@ -363,7 +433,9 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	createInfo.queueCreateInfoCount = queueCount;
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
-	
+	createInfo.enabledExtensionCount = 1; // Replace if more extensions are added
+	createInfo.ppEnabledExtensionNames = requiredExtensions;
+		
 	// get queue handles
 	vkGetDeviceQueue(*device, indices->graphicsFamily, 0, graphicsQueue);
 	vkGetDeviceQueue(*device, indices->presentFamily, 0, presentQueue);
@@ -379,6 +451,84 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
     return VK_SUCCESS;
 }
 
+struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface) // Retrieves a record of all available swap chains
+{
+    struct SwapChainSupportDetails details;
+
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, *surface, &details.capabilities);
+
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, NULL);
+
+    details.formats = (VkSurfaceFormatKHR*) malloc(details.formatCount * sizeof(VkSurfaceFormatKHR));
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, details.formats);
+
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, NULL);
+
+    details.presentModes = (VkPresentModeKHR*) malloc(details.presentModesCount * sizeof(VkPresentModeKHR));
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, details.presentModes);
+        
+    return details;
+}
+
+struct SwapChainSupportDetails* initSwapChain(VkPhysicalDevice device, VkSurfaceKHR *surface) // Selects and initializes a swap chain
+{
+	struct SwapChainSupportDetails* details = (struct SwapChainSupportDetails*)malloc(sizeof(struct SwapChainSupportDetails));
+    *details = querySwapChainSupport(device, surface);
+    garbage.swapChainDetails = details;
+
+
+    // TODO: Select a swap chain based on the available formats and present modes
+
+    // TODO: Initialize the swap chain
+    return details;
+}
+
+void cleanupSwapChain(struct SwapChainSupportDetails* details)  // !TODO This is not causing a segfault and I have no idea why.
+{
+    if (details->formats) {
+        free(details->formats);
+        details->formats = NULL;
+    }
+
+    if (details->presentModes) {
+        free(details->presentModes);
+        details->presentModes = NULL;
+    }
+    if(details)
+    {
+    	free(details);
+    }
+}
+
+void testDetails(struct SwapChainSupportDetails* details) {
+    if(details->formatCount > 0) {
+        details->formats[details->formatCount - 1].format = VK_FORMAT_B8G8R8A8_SRGB;  // If formats is not properly allocated, this will segfault.
+    }
+    if(details->presentModesCount > 0) {
+        details->presentModes[details->presentModesCount - 1] = VK_PRESENT_MODE_FIFO_KHR;  // If presentModes is not properly allocated, this will segfault.
+    }
+    
+}
+
+// Assorted utility functions
+
+void throwGarbageOut() // A celebration
+{
+	if (garbage.window)
+	{
+		glfwDestroyWindow(garbage.window);
+		glfwTerminate();
+	}
+	if (garbage.components)
+	{
+		cleanupVulkan(garbage.components);
+	}
+	if (garbage.swapChainDetails)
+	{
+		cleanupSwapChain(garbage.swapChainDetails);
+	}
+	return;
+}
 
 // Main function
 
@@ -389,21 +539,22 @@ int main()
 	{
 	    // Handle error
 	    printf("Window initialization failed.\n");
-	    glfwDestroyWindow(window);
-	    glfwTerminate();
+	    throwGarbageOut();
 	    return 0;
 	}
+
+	garbage.window = window;
 	
 	VulkanComponents *components = initVulkan(window);
 	if (components == NULL)
 	{
 	    // Handle error
 	    printf("Vulkan initialization failed.\n");
-	    cleanupVulkan(components);
-	    glfwDestroyWindow(window);
-	    glfwTerminate();
+	    throwGarbageOut();
 	    return 0;
 	}
+
+	garbage.components = components;
 
     // Main loop
 	while (!glfwWindowShouldClose(window))
@@ -417,9 +568,8 @@ int main()
     }
 
     // Clean up
-    cleanupVulkan(components);
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    //testDetails(garbage.swapChainDetails);
+    throwGarbageOut();
 
     return 0;
 }
