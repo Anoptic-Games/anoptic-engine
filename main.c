@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
+#include<unistd.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -20,7 +21,7 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     VkQueue computeQueue;
     VkQueue transferQueue;
     VkQueue presentQueue;
-
+    VkSwapchainKHR* swapChain;
 } VulkanComponents;
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
@@ -74,7 +75,7 @@ VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *su
 bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
-struct SwapChainSupportDetails* initSwapChain(VkPhysicalDevice device, VkSurfaceKHR *surface);
+VkSwapchainKHR* initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
 
 //Init and cleanup functions
 
@@ -89,6 +90,7 @@ GLFWwindow* initWindow() // Initializes a pointer to a GLFW window, returns a wi
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *window = glfwCreateWindow(800, 600, "Vulkan", NULL, NULL);
+    
     return window;
 }
 
@@ -133,7 +135,7 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
         return NULL;
     }
 
-    initSwapChain(components->physicalDevice, &(components->surface)); // Initialize a swap chain
+    components->swapChain = initSwapChain(components->physicalDevice, components->device, &(components->surface), window); // Initialize a swap chain
     
     return components;
 }
@@ -326,12 +328,13 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     return true; // All required extensions found
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceProperties deviceProperties, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface)
+bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface)
 {
 	struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
 	// Add any features as they become necessary
 	bool extensionsSupported = checkDeviceExtensionSupport(device);
-	bool physicalRequirements = deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && deviceFeatures.geometryShader && deviceFeatures.shaderFloat64 && deviceFeatures.shaderInt64;
+	//Since the GPU we're selecting is already the most performant one by default, there's no point selecting Discrete only
+	bool physicalRequirements = deviceFeatures.geometryShader && deviceFeatures.shaderFloat64 && deviceFeatures.shaderInt64;
 	bool queueRequirements = indices.graphicsPresent;
 	return physicalRequirements && queueRequirements && extensionsSupported;
 }
@@ -362,7 +365,7 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
         if (deviceProperties.limits.bufferImageGranularity > maxMemorySize) 
         {
             maxMemorySize = deviceProperties.limits.bufferImageGranularity;
-	        if (isDeviceSuitable(devices[i], deviceProperties, deviceFeatures, surface) == true) 
+	        if (isDeviceSuitable(devices[i], deviceFeatures, surface) == true) 
 	        {
 	        	*physicalDevice = devices[i];
 	        	*capabilities = populateCapabilities(devices[i], deviceFeatures);
@@ -424,17 +427,19 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	// creating the device
 	VkDeviceCreateInfo createInfo = {};
 
-    if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
-    {
-        fprintf(stderr, "Failed to create logical device!\n");
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
 	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	createInfo.queueCreateInfoCount = queueCount;
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
 	createInfo.enabledExtensionCount = 1; // Replace if more extensions are added
+	printf("Required extensions: %s\n", requiredExtensions[0]);
 	createInfo.ppEnabledExtensionNames = requiredExtensions;
+
+    if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
+    {
+        fprintf(stderr, "Failed to create logical device!\n");
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
 		
 	// get queue handles
 	vkGetDeviceQueue(*device, indices->graphicsFamily, 0, graphicsQueue);
@@ -451,7 +456,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
     return VK_SUCCESS;
 }
 
-struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface) // Retrieves a record of all available swap chains
+struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface) // Retrieves a record of all available swap chains and their capabilities
 {
     struct SwapChainSupportDetails details;
 
@@ -470,17 +475,136 @@ struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, Vk
     return details;
 }
 
-struct SwapChainSupportDetails* initSwapChain(VkPhysicalDevice device, VkSurfaceKHR *surface) // Selects and initializes a swap chain
+VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) 
+{
+	    if (capabilities.currentExtent.width != UINT32_MAX)
+	    {
+	    	return capabilities.currentExtent;
+	    }
+	    else
+	    {
+	    	int width, height;
+	    	glfwGetFramebufferSize(window, &width, &height);
+	        VkExtent2D actualExtent = {
+            	(uint32_t)(width),
+            	(uint32_t)(height)
+        	};
+        	// Clamp our render dimensions between the min and max values
+        	actualExtent.width = (actualExtent.width < capabilities.minImageExtent.width) ? capabilities.minImageExtent.width : actualExtent.width;
+        	actualExtent.width = (actualExtent.width > capabilities.maxImageExtent.width) ? capabilities.maxImageExtent.width : actualExtent.width;
+        	actualExtent.height = (actualExtent.height < capabilities.minImageExtent.height) ? capabilities.minImageExtent.height : actualExtent.height;
+        	actualExtent.height = (actualExtent.height > capabilities.maxImageExtent.height) ? capabilities.maxImageExtent.height : actualExtent.height;
+        	return actualExtent;
+	    }
+}
+
+VkSwapchainKHR* initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window) // Selects and initializes a swap chain
 {
 	struct SwapChainSupportDetails* details = (struct SwapChainSupportDetails*)malloc(sizeof(struct SwapChainSupportDetails));
     *details = querySwapChainSupport(device, surface);
     garbage.swapChainDetails = details;
 
 
-    // TODO: Select a swap chain based on the available formats and present modes
+    // TODO: Select the best format and present mode
+
+    //Pick a format
+	VkSurfaceFormatKHR chosenFormat = { .format = 0, .colorSpace = 0};
+    for (uint32_t i = 0; i < details->formatCount; i++)
+    {
+    	if ((details->formats+i)->format == VK_FORMAT_B8G8R8A8_SRGB && (details->formats+i)->colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+		{
+			chosenFormat = *(details->formats+i);
+		}
+    }
+    if (chosenFormat.format == 0 && chosenFormat.colorSpace == 0)
+    {
+    	printf("Failed to select an appropriate image format!\n");
+    	return NULL;
+    }
+
+    //Pick a present mode
+    VkPresentModeKHR chosenPresentMode;
+    uint32_t presentModePresent = 0; // Order of priority for our desired present mode
+    for (uint32_t i = 0; i < details->presentModesCount; i++)
+    {
+    	if (*(details->presentModes+i) == VK_PRESENT_MODE_MAILBOX_KHR)
+		{
+			chosenPresentMode = *(details->presentModes+i);
+			presentModePresent = 4; // highest priority
+		}
+    	if (*(details->presentModes+i) == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+		{
+			if (presentModePresent <3)
+			{
+				chosenPresentMode = *(details->presentModes+i);
+				presentModePresent = 3;
+			}
+		}
+    	if (*(details->presentModes+i) == VK_PRESENT_MODE_FIFO_KHR)
+		{
+			if (presentModePresent <2)
+			{
+				chosenPresentMode = *(details->presentModes+i);
+				presentModePresent = 2;
+			}
+		}
+    	if (*(details->presentModes+i) == VK_PRESENT_MODE_IMMEDIATE_KHR)
+		{
+			if (presentModePresent <1)
+			{
+				chosenPresentMode = *(details->presentModes+i);
+				presentModePresent = 1;
+			}
+		}
+    }
+    if (presentModePresent == 0)
+    {
+    	printf("Failed to select an appropriate present mode!\n");
+    	return NULL;
+    }
 
     // TODO: Initialize the swap chain
-    return details;
+    VkExtent2D chosenExtent = chooseSwapExtent(details->capabilities, window);
+    uint32_t imageCount = details->capabilities.minImageCount;
+    imageCount = (imageCount > 2) ? imageCount : 2; // Two images is more than plenty
+    imageCount = (imageCount < details->capabilities.maxImageCount) ? imageCount : details->capabilities.maxImageCount; // this should NEVER happen
+
+    // Now we finally create the swap chain
+    VkSwapchainCreateInfoKHR createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    createInfo.surface = *surface;
+    createInfo.minImageCount = imageCount;
+    createInfo.imageFormat = chosenFormat.format;
+    createInfo.imageColorSpace = chosenFormat.colorSpace;
+    createInfo.imageExtent = chosenExtent;
+    createInfo.imageArrayLayers = 1; // We do NOT support VR
+    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
+    uint32_t queueFamilyIndices[] = {indices.graphicsFamily, indices.presentFamily};
+    if (indices.graphicsFamily != indices.presentFamily) {
+        createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        createInfo.queueFamilyIndexCount = 2;
+        createInfo.pQueueFamilyIndices = queueFamilyIndices;
+    } else {
+        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        createInfo.queueFamilyIndexCount = 0; // Optional
+        createInfo.pQueueFamilyIndices = NULL; // Optional
+    }
+    createInfo.preTransform = details->capabilities.currentTransform;
+    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    createInfo.presentMode = chosenPresentMode;
+    createInfo.clipped = VK_TRUE;
+    createInfo.oldSwapchain = VK_NULL_HANDLE;
+
+    
+    VkSwapchainKHR* swapChain;
+    swapChain = (VkSwapchainKHR*) malloc(sizeof(VkSwapchainKHR));
+    if (vkCreateSwapchainKHR(logicalDevice, &createInfo, NULL, swapChain) != VK_SUCCESS) {
+        printf("Failed to create swap chain!\n");
+		free(swapChain);
+        return NULL;
+    }
+    return swapChain;
 }
 
 void cleanupSwapChain(struct SwapChainSupportDetails* details)  // !TODO This is not causing a segfault and I have no idea why.
@@ -560,6 +684,7 @@ int main()
 	while (!glfwWindowShouldClose(window))
 	{
         glfwPollEvents();
+        sleep(0.01);
 
         // Record and submit commands for graphics and compute operations
         // ...
@@ -568,7 +693,6 @@ int main()
     }
 
     // Clean up
-    //testDetails(garbage.swapChainDetails);
     throwGarbageOut();
 
     return 0;
