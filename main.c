@@ -11,6 +11,21 @@
 
 // Structs
 
+typedef struct ImageViewGroup
+{
+	uint32_t viewCount;
+	VkImageView* views;
+} ImageViewGroup;
+
+typedef struct SwapChainGroup
+{
+	VkSwapchainKHR swapChain;
+	VkFormat imageFormat;
+	VkExtent2D imageExtent;
+	uint32_t imageCount;
+	VkImage* images;
+} SwapChainGroup;
+
 typedef struct VulkanComponents // All details of our Vulkan instance
 {
     VkInstance instance;
@@ -21,7 +36,8 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     VkQueue computeQueue;
     VkQueue transferQueue;
     VkQueue presentQueue;
-    VkSwapchainKHR* swapChain;
+    SwapChainGroup swapChainGroup;
+    ImageViewGroup viewGroup;
 } VulkanComponents;
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
@@ -75,7 +91,8 @@ VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *su
 bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
-VkSwapchainKHR* initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
+SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
+ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 
 //Init and cleanup functions
 
@@ -124,41 +141,31 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
     struct QueueFamilyIndices indices;
     if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices))
     {
-    	fprintf(stderr, "Aborting init process!\n");
+    	fprintf(stderr, "Quitting init: physical device failure!\n");
     	return NULL;
     }
     // Create logical device
     if (createLogicalDevice(components->physicalDevice, &(components->device), &(components->graphicsQueue), &(components->computeQueue), &(components->transferQueue), &(components->presentQueue), &indices) != VK_SUCCESS)
     {
-        fprintf(stderr, "Failed to create logical device!\n");
+        fprintf(stderr, "Quitting init: logical device failure!\n");
         free(components);
         return NULL;
     }
 
-    components->swapChain = initSwapChain(components->physicalDevice, components->device, &(components->surface), window); // Initialize a swap chain
+    components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window); // Initialize a swap chain
+    if (components->swapChainGroup.swapChain == NULL)
+    {
+    	printf("Quitting init: swap chain failure.\n");
+    	return NULL;
+    }
+    components->viewGroup = createImageViews(components->device, components->swapChainGroup);
+    if (components->viewGroup.views == NULL)
+    {
+    	printf("Quitting init: image view failure.\n");
+    	return NULL;
+    }
     
     return components;
-}
-
-void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
-{
-    if (components == NULL) {
-        return;
-    }
-
-    if (components->device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(components->device);
-        vkDestroyDevice(components->device, NULL);
-    }
-
-    if (components->instance != VK_NULL_HANDLE) {
-        if (components->surface != VK_NULL_HANDLE) {
-            vkDestroySurfaceKHR(components->instance, components->surface, NULL);
-        }
-        vkDestroyInstance(components->instance, NULL);
-    }
-
-    free(components);
 }
 
 // Vulkan component initialization functions
@@ -498,7 +505,7 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 	    }
 }
 
-VkSwapchainKHR* initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window) // Selects and initializes a swap chain
+SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window) // Selects and initializes a swap chain
 {
 	struct SwapChainSupportDetails* details = (struct SwapChainSupportDetails*)malloc(sizeof(struct SwapChainSupportDetails));
     *details = querySwapChainSupport(device, surface);
@@ -519,7 +526,8 @@ VkSwapchainKHR* initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, V
     if (chosenFormat.format == 0 && chosenFormat.colorSpace == 0)
     {
     	printf("Failed to select an appropriate image format!\n");
-    	return NULL;
+        SwapChainGroup failure = {NULL};
+        return failure;
     }
 
     //Pick a present mode
@@ -560,8 +568,10 @@ VkSwapchainKHR* initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, V
     if (presentModePresent == 0)
     {
     	printf("Failed to select an appropriate present mode!\n");
-    	return NULL;
+        SwapChainGroup failure = {NULL};
+        return failure;
     }
+    printf("Present mode:%d\n", chosenPresentMode);
 
     // TODO: Initialize the swap chain
     VkExtent2D chosenExtent = chooseSwapExtent(details->capabilities, window);
@@ -597,14 +607,20 @@ VkSwapchainKHR* initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, V
     createInfo.oldSwapchain = VK_NULL_HANDLE;
 
     
-    VkSwapchainKHR* swapChain;
-    swapChain = (VkSwapchainKHR*) malloc(sizeof(VkSwapchainKHR));
-    if (vkCreateSwapchainKHR(logicalDevice, &createInfo, NULL, swapChain) != VK_SUCCESS) {
+    VkSwapchainKHR swapChain;
+    if (vkCreateSwapchainKHR(logicalDevice, &createInfo, NULL, &swapChain) != VK_SUCCESS) {
         printf("Failed to create swap chain!\n");
-		free(swapChain);
-        return NULL;
+        SwapChainGroup failure = {NULL};
+        return failure;
     }
-    return swapChain;
+
+    vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, NULL);
+    VkImage *swapChainImages = (VkImage *) malloc(sizeof(VkImage) * imageCount);
+    vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, swapChainImages);
+
+	SwapChainGroup swapChainGroup = {swapChain, chosenFormat.format, chosenExtent, imageCount, swapChainImages};
+    
+    return swapChainGroup;
 }
 
 void cleanupSwapChain(struct SwapChainSupportDetails* details)  // !TODO This is not causing a segfault and I have no idea why.
@@ -624,14 +640,74 @@ void cleanupSwapChain(struct SwapChainSupportDetails* details)  // !TODO This is
     }
 }
 
-void testDetails(struct SwapChainSupportDetails* details) {
-    if(details->formatCount > 0) {
-        details->formats[details->formatCount - 1].format = VK_FORMAT_B8G8R8A8_SRGB;  // If formats is not properly allocated, this will segfault.
+ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
+{
+	ImageViewGroup viewGroup = {0, NULL};
+	viewGroup.viewCount = imageGroup.imageCount;
+	viewGroup.views = (VkImageView *) malloc(sizeof(VkImageView) * viewGroup.viewCount);
+	for (uint32_t i = 0; i < imageGroup.imageCount; i++)
+	{
+		VkImageViewCreateInfo createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		createInfo.image = imageGroup.images[i];
+		createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		createInfo.format = imageGroup.imageFormat;
+		createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+		createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+		createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+		createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+		createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		createInfo.subresourceRange.baseMipLevel = 0;
+		createInfo.subresourceRange.levelCount = 1;
+		createInfo.subresourceRange.baseArrayLayer = 0;
+		createInfo.subresourceRange.layerCount = 1;
+		if (vkCreateImageView(device, &createInfo, NULL, &viewGroup.views[i]) != VK_SUCCESS) {
+		    printf("Failed to create image views!\n");
+		    viewGroup.views = NULL; // We'll use this to check for errors
+		    return viewGroup;
+		}
+		
+	}
+	return viewGroup;
+}
+
+void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
+{
+    if (components == NULL) {
+        return;
     }
-    if(details->presentModesCount > 0) {
-        details->presentModes[details->presentModesCount - 1] = VK_PRESENT_MODE_FIFO_KHR;  // If presentModes is not properly allocated, this will segfault.
+
+    SwapChainGroup failure = {NULL};
+    if (components->swapChainGroup.swapChain != failure.swapChain)
+    {
+    	vkDestroySwapchainKHR(components->device, components->swapChainGroup.swapChain, NULL);
+    	free(components->swapChainGroup.images);
     }
-    
+
+    if (components->device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(components->device);
+        vkDestroyDevice(components->device, NULL);
+    }
+
+    if (components->instance != VK_NULL_HANDLE) {
+        if (components->surface != VK_NULL_HANDLE) {
+            vkDestroySurfaceKHR(components->instance, components->surface, NULL);
+        }
+        vkDestroyInstance(components->instance, NULL);
+    }
+    // Add cleanup steps for swap chain group
+    if (components->physicalDevice != NULL)
+    {
+    	free(components->physicalDevice);
+    }
+        // Add cleanup steps for swap chain group
+    if (components->viewGroup.views != NULL)
+    {
+    	free(components->viewGroup.views);
+    }
+
+
+    free(components);
 }
 
 // Assorted utility functions
