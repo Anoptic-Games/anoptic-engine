@@ -51,6 +51,9 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     FrameBufferGroup framebufferGroup;
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
+    VkFence inFlightFence;
 } VulkanComponents;
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
