@@ -53,6 +53,7 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
         fprintf(stderr, "Failed to allocate memory for Vulkan components!\n");
         return NULL;
     }
+    memset(components, 0, sizeof(VulkanComponents)); // Just in case there's garbage making our unitialized parts non-NULL
 
     // Initialize Vulkan
     if (createInstance(&(components->instance)) != VK_SUCCESS)
@@ -110,6 +111,47 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
     	return NULL;
     }
     vulkanGarbage.components = components;
+
+	if (createRenderPass(components->device, components->swapChainGroup.imageFormat, components->renderPass) != true)
+	{
+		printf("Quitting init: render pass failure\n");
+		unInitVulkan();
+		return NULL;
+	}
+	vulkanGarbage.components = components;
+
+	components->graphicsPipeline = createGraphicsPipeline(components->device, components->swapChainGroup.imageExtent, components->pipelineLayout, components->renderPass);
+	if (components->graphicsPipeline == NULL)
+	{
+		printf("Quitting init: pipeline failure!\n");
+		unInitVulkan();
+		return NULL;
+	}
+	vulkanGarbage.components = components;
+
+	if (createFramebuffers(components->device, &(components->framebufferGroup), components->viewGroup, components-> swapChainGroup, components->renderPass) != true)
+	{
+		printf("Quitting init: framebuffer failure!\n");
+		unInitVulkan();
+		return NULL;	
+	}
+	vulkanGarbage.components = components;
+
+	if (createCommandPool(components->device, components->physicalDevice, components->surface, &(components->commandPool)) != true)
+	{
+		printf("Quitting init: command pool failure!\n");
+		unInitVulkan();
+		return NULL;
+	}
+	vulkanGarbage.components = components;
+
+	if (createCommandBuffer(components) != true)
+	{
+		printf("Quitting init: command buffer failure!\n");
+		unInitVulkan();
+		return NULL;
+	}
+	vulkanGarbage.components = components;
     
     return components;
 }

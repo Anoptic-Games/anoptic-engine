@@ -34,6 +34,8 @@ int main()
 	}
 
 	vulkanGarbage.window = window;
+
+	// Initialize Vulkan
 	
 	VulkanComponents *components = initVulkan(window);
 	if (components == NULL)
@@ -45,6 +47,8 @@ int main()
 	}
 
 	vulkanGarbage.components = components;
+
+	// Create a graphics pipeline
 
     // Main loop
 	while (!glfwWindowShouldClose(window))

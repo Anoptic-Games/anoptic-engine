@@ -9,7 +9,8 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-#include "./structs.h"
+//#include "./structs.h"
+#include "./pipeline.c"
 
 // Variables
 
@@ -526,10 +527,102 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 	return viewGroup;
 }
 
+bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, ImageViewGroup viewGroup, SwapChainGroup swapGroup, VkRenderPass renderPass)
+{
+    frameBufferGroup->bufferCount = viewGroup.viewCount;
+    frameBufferGroup->buffers = (VkFramebuffer*) malloc(sizeof(VkFramebuffer) * frameBufferGroup->bufferCount);
+
+    for (uint32_t i = 0; i < viewGroup.viewCount; i++) 
+    {
+        VkImageView attachments[] = 
+        {
+            viewGroup.views[i]
+        };
+    
+        VkFramebufferCreateInfo framebufferInfo = {};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = renderPass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = swapGroup.imageExtent.width;
+        framebufferInfo.height = swapGroup.imageExtent.height;
+        framebufferInfo.layers = 1;
+    
+        if (vkCreateFramebuffer(device, &framebufferInfo, NULL, (frameBufferGroup->buffers+i)) != VK_SUCCESS) 
+        {
+            printf("Failed to create framebuffer!\n");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool)
+{
+	struct QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, &surface);
+	VkCommandPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+	poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily;
+	
+	if (vkCreateCommandPool(device, &poolInfo, NULL, commandPool) != VK_SUCCESS) 
+	{
+	    printf("Failed to create command pool!\n");
+	    return false;
+	}
+	return true;
+}
+
+bool createCommandBuffer(VulkanComponents* components)
+{
+	VkCommandBufferAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.commandPool = components->commandPool;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandBufferCount = 1;
+
+	if (vkAllocateCommandBuffers(components->device, &allocInfo, &(components->commandBuffer)) != VK_SUCCESS) 
+	{
+	    printf("Failed to allocate command buffers!\n");
+	    return false;
+	}
+	return true;
+}
+
+
 void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
 {
     if (components == NULL) {
         return;
+    }
+
+	if (components->commandPool != NULL)
+	{
+		vkDestroyCommandPool(components->device, components->commandPool, NULL);
+	}
+
+    if (components->framebufferGroup.bufferCount != 0)
+    {
+    	for (uint32_t i = 0; i < components->framebufferGroup.bufferCount; i++)
+    	{
+    		vkDestroyFramebuffer(components->device, components->framebufferGroup.buffers[i], NULL);
+    	}
+    	free(components->framebufferGroup.buffers);
+    }
+
+    if (components->renderPass != NULL)
+    {
+    	vkDestroyRenderPass(components->device, components->renderPass, NULL);
+    }
+
+    if (components->pipelineLayout != NULL)
+    {
+    	vkDestroyPipelineLayout(components->device, components->pipelineLayout, NULL);
+    }
+
+    if (components->graphicsPipeline != NULL)
+    {
+    	vkDestroyPipeline(components->device, components->graphicsPipeline, NULL);
     }
     
     if (components->viewGroup.views != NULL)
