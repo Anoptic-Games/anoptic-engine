@@ -11,6 +11,13 @@
 
 // Structs
 
+typedef struct FrameBufferGroup
+{
+	uint32_t bufferCount;
+	VkFramebuffer* buffers;
+} FrameBufferGroup;
+
+
 typedef struct ImageViewGroup
 {
 	uint32_t viewCount;
@@ -38,6 +45,12 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     VkQueue presentQueue;
     SwapChainGroup swapChainGroup;
     ImageViewGroup viewGroup;
+    VkRenderPass renderPass;
+    VkPipelineLayout pipelineLayout;
+    VkPipeline graphicsPipeline;
+    FrameBufferGroup framebufferGroup;
+    VkCommandPool commandPool;
+    VkCommandBuffer commandBuffer;
 } VulkanComponents;
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
