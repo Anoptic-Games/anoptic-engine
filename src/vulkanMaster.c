@@ -44,12 +44,107 @@ void unInitVulkan() // A celebration
 	return;
 }
 
+// Graphics operations
+
+void recordCommandBuffer(VulkanComponents* components, uint32_t imageIndex) 
+{
+	VkCommandBufferBeginInfo beginInfo = {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = 0; // Optional
+	beginInfo.pInheritanceInfo = NULL;// Optional
+	
+	if (vkBeginCommandBuffer(components->commandBuffer, &beginInfo) != VK_SUCCESS) 
+	{
+	    printf("Failed to begin recording command buffer!\n");
+	}
+
+	VkRenderPassBeginInfo renderPassInfo = {};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+	renderPassInfo.renderPass = components->renderPass;
+	renderPassInfo.framebuffer = components->framebufferGroup.buffers[imageIndex];
+	renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
+	renderPassInfo.renderArea.extent = components->swapChainGroup.imageExtent;
+
+	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+	renderPassInfo.clearValueCount = 1;
+	renderPassInfo.pClearValues = &clearColor;
+
+	vkCmdBeginRenderPass(components->commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+	vkCmdBindPipeline(components->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, components->graphicsPipeline);
+
+	VkViewport viewport = {};
+	viewport.x = 0.0f;
+	viewport.y = 0.0f;
+	viewport.width = (float)(components->swapChainGroup.imageExtent.width);
+	viewport.height = (float)(components->swapChainGroup.imageExtent.height);
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+	vkCmdSetViewport(components->commandBuffer, 0, 1, &viewport);
+	
+	VkRect2D scissor = {};
+	scissor.offset = (VkOffset2D){0, 0};
+	scissor.extent = components->swapChainGroup.imageExtent;
+	vkCmdSetScissor(components->commandBuffer, 0, 1, &scissor);
+
+	vkCmdDraw(components->commandBuffer, 3, 1, 0, 0);
+
+	if (vkEndCommandBuffer(components->commandBuffer) != VK_SUCCESS) {
+	    printf("Failed to record command buffer!\n");
+	}
+}
+
+void drawFrame(VulkanComponents* components) 
+{
+	vkWaitForFences(components->device, 1, &(components->inFlightFence), VK_TRUE, UINT64_MAX);
+	vkResetFences(components->device, 1, &(components->inFlightFence));
+
+	uint32_t imageIndex;
+	vkAcquireNextImageKHR(components->device, components->swapChainGroup.swapChain, UINT64_MAX, components->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+	vkResetCommandBuffer(components->commandBuffer, 0);
+	recordCommandBuffer(components, imageIndex);
+	
+	VkSubmitInfo submitInfo = {};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	
+	VkSemaphore waitSemaphores[] = {components->imageAvailableSemaphore};
+	VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+	submitInfo.waitSemaphoreCount = 1;
+	submitInfo.pWaitSemaphores = waitSemaphores;
+	submitInfo.pWaitDstStageMask = waitStages;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &(components->commandBuffer);
+	VkSemaphore signalSemaphores[] = {components->renderFinishedSemaphore};
+	submitInfo.signalSemaphoreCount = 1;
+	submitInfo.pSignalSemaphores = signalSemaphores;
+	if (vkQueueSubmit(components->graphicsQueue, 1, &submitInfo, components->inFlightFence) != VK_SUCCESS) 
+	{
+	    printf("Failed to submit draw command buffer!\n");
+	    return;
+	}
+
+	VkPresentInfoKHR presentInfo = {};
+	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = signalSemaphores;
+	VkSwapchainKHR swapChains[] = {components->swapChainGroup.swapChain};
+	presentInfo.swapchainCount = 1;
+	presentInfo.pSwapchains = swapChains;
+	presentInfo.pImageIndices = &imageIndex;
+	presentInfo.pResults = NULL; // Optional
+	vkQueuePresentKHR(components->presentQueue, &presentInfo);
+
+	return;
+}
+
 //Init and cleanup functions
 
 VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 {
     VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
-    if(components == NULL) {
+    if(components == NULL) 
+    {
         fprintf(stderr, "Failed to allocate memory for Vulkan components!\n");
         return NULL;
     }
@@ -152,6 +247,14 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
 		return NULL;
 	}
 	vulkanGarbage.components = components;
+
+	if (createSyncObjects(components) != true)
+	{
+		printf("Quitting init: sync failure!\n");
+		unInitVulkan();
+		return NULL;
+	}
+
     
     return components;
 }

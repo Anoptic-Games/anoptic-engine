@@ -589,11 +589,42 @@ bool createCommandBuffer(VulkanComponents* components)
 	return true;
 }
 
+bool createSyncObjects(VulkanComponents* components) 
+{
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    if (vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->imageAvailableSemaphore)) != VK_SUCCESS ||
+        vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->renderFinishedSemaphore)) != VK_SUCCESS ||
+        vkCreateFence(components->device, &fenceInfo, NULL, &(components->inFlightFence)) != VK_SUCCESS) {
+        printf("Failed to create semaphores!\n");
+        return false;
+    }
+    return true;
+}
+
 
 void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
 {
     if (components == NULL) {
         return;
+    }
+
+    if (components->imageAvailableSemaphore)
+    {
+    	vkDestroySemaphore(components->device, components->imageAvailableSemaphore, NULL);
+    }
+    if (components->renderFinishedSemaphore)
+    {
+    	vkDestroySemaphore(components->device, components->renderFinishedSemaphore, NULL);
+    }
+    if (components->inFlightFence)
+    {
+    	vkDestroyFence(components->device, components->inFlightFence, NULL);
     }
 
 	if (components->commandPool != NULL)
