@@ -18,7 +18,7 @@ struct VulkanGarbage vulkanGarbage = { NULL, NULL}; // THROW OUT WHEN YOU'RE DON
 
 // Function Prototypes
 
-VkResult createInstance(VkInstance *instance);
+VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMessenger);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
 bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
@@ -153,7 +153,7 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
 	components->enableValidationLayers = true;
 
     // Initialize Vulkan
-    if (createInstance(&(components->instance)) != VK_SUCCESS)
+    if (createInstance(&(components->instance), &(components->debugMessenger)) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create Vulkan instance!\n");
         free(components);
