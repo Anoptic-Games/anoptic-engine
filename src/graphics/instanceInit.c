@@ -20,7 +20,7 @@ const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
 // Function prototypes
 
-VkResult createInstance(VkInstance *instance);
+VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMessenger);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
 bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
@@ -30,6 +30,7 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
 const char** getRequiredExtensions(uint32_t* extensionsCount);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
+void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger);
 
 // Vulkan component initialization functions
 
@@ -48,7 +49,7 @@ GLFWwindow* initWindow() // Initializes a pointer to a GLFW window, returns a wi
     return window;
 }
 
-VkResult createInstance(VkInstance* instance) // Creates a Vulkan instance, selecting and specifying required extensions. It also defines information about our app.
+VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMessenger) // Creates a Vulkan instance, selecting and specifying required extensions. It also defines information about our app.
 {
 	const char* validationLayers[] = 
 	{ //!TODO get this thing out of here as soon as we have a config parser
@@ -104,6 +105,11 @@ VkResult createInstance(VkInstance* instance) // Creates a Vulkan instance, sele
         fprintf(stderr, "Failed to create Vulkan instance!\n");
         free(extensions);
         return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    if (VALIDATION)
+    {
+    	setupDebugMessenger(instance, debugMessenger);
     }
 
 	// Query extensions
