@@ -11,7 +11,6 @@
 
 #include "./graphics/instanceInit.c"
 
-
 // Variables
 
 
@@ -142,6 +141,7 @@ void drawFrame(VulkanComponents* components)
 
 VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 {
+	
     VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
     if(components == NULL) 
     {
@@ -149,6 +149,8 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
         return NULL;
     }
     memset(components, 0, sizeof(VulkanComponents)); // Just in case there's garbage making our unitialized parts non-NULL
+
+	components->enableValidationLayers = true;
 
     // Initialize Vulkan
     if (createInstance(&(components->instance)) != VK_SUCCESS)

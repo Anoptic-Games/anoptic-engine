@@ -12,6 +12,8 @@
 //#include "./structs.h"
 #include "./pipeline.c"
 
+#define VALIDATION 1
+
 // Variables
 
 const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
@@ -25,6 +27,9 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
 SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
+bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
+const char** getRequiredExtensions(uint32_t* extensionsCount);
+void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
 
 // Vulkan component initialization functions
 
@@ -45,6 +50,13 @@ GLFWwindow* initWindow() // Initializes a pointer to a GLFW window, returns a wi
 
 VkResult createInstance(VkInstance* instance) // Creates a Vulkan instance, selecting and specifying required extensions. It also defines information about our app.
 {
+	const char* validationLayers[] = 
+	{ //!TODO get this thing out of here as soon as we have a config parser
+	    "VK_LAYER_KHRONOS_validation"
+	};
+	size_t validationCount = sizeof(validationLayers) / sizeof(validationLayers[0]);
+	
+
     VkApplicationInfo appInfo = {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "Hello Vulkan";
@@ -62,31 +74,133 @@ VkResult createInstance(VkInstance* instance) // Creates a Vulkan instance, sele
     createInfo.enabledLayerCount = 0;
 
     // Enable necessary extensions
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions;
-    glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+    uint32_t extensionCount = 0;
+    const char** extensions;
+    extensions = getRequiredExtensions(&extensionCount);
     
-    createInfo.enabledExtensionCount = glfwExtensionCount;
-    createInfo.ppEnabledExtensionNames = glfwExtensions;
+    createInfo.enabledExtensionCount = extensionCount;
+    createInfo.ppEnabledExtensionNames = extensions;
+
+	VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = {};
+
+	createInfo.enabledLayerCount = 0;
+	createInfo.pNext = NULL;
+	
+    if (VALIDATION && !checkValidationLayerSupport(validationLayers, validationCount))
+    {
+    	printf("Validation layers requested, but not available!\n");
+    }
+    else if (VALIDATION)
+    {
+    	createInfo.enabledLayerCount = (uint32_t) validationCount;
+    	createInfo.ppEnabledLayerNames = validationLayers;
+    	populateDebugMessengerCreateInfo(&debugCreateInfo);
+    	createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debugCreateInfo;
+    	printf("Enabled validation layers!\n");
+    }
 
     if (vkCreateInstance(&createInfo, NULL, instance) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create Vulkan instance!\n");
+        free(extensions);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
 	// Query extensions
+	// Completely forgot what the following block is for, probably nothing important
+	/*
     uint32_t extensionCount = 0;
     vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, NULL);
     VkExtensionProperties extensions[extensionCount];
-    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, extensions);
+    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, extensions);*/
 
     /*for (uint32_t i = 0; i < extensionCount; i++)
     {
     	printf("%s\n", extensions[i].extensionName);
     }*/
 
+    free(extensions);
+
     return VK_SUCCESS;
+}
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+    void* pUserData) 
+{
+
+    printf("validation layer: %s\n", pCallbackData->pMessage);
+
+    return VK_FALSE;
+}
+
+VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) 
+{
+    PFN_vkCreateDebugUtilsMessengerEXT func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != NULL) 
+    {
+        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+
+void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo) 
+{
+    createInfo->sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    createInfo->messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo->messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo->pfnUserCallback = debugCallback;
+}
+
+void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) 
+{
+    if (!VALIDATION) return;
+	VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
+	populateDebugMessengerCreateInfo(&createInfo);
+	if (CreateDebugUtilsMessengerEXT(*instance, &createInfo, NULL, debugMessenger) != VK_SUCCESS)
+	{
+		printf("Failed to set up debug messenger!\n");
+	}
+}
+
+void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator) 
+{
+    PFN_vkDestroyDebugUtilsMessengerEXT func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (func != NULL) 
+    {
+        func(instance, debugMessenger, pAllocator);
+    }
+}
+
+
+
+const char** getRequiredExtensions(uint32_t* extensionsCount)
+{
+    uint32_t glfwExtensionCount = 0;
+    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+    uint32_t totalExtensionCount = glfwExtensionCount;
+
+    if (VALIDATION) {
+        totalExtensionCount += 1;
+    }
+
+    const char** extensions = malloc(sizeof(char*) * totalExtensionCount);
+
+    for (uint32_t i = 0; i < glfwExtensionCount; i++) {
+        extensions[i] = strdup(glfwExtensions[i]);
+    }
+
+    if (VALIDATION) {
+        extensions[glfwExtensionCount] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+
+    *extensionsCount = totalExtensionCount;
+
+    return extensions;
 }
 
 VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* surface) // Creates a window surface using GLFW, for our Vulkan instance to draw to.
@@ -607,11 +721,53 @@ bool createSyncObjects(VulkanComponents* components)
     return true;
 }
 
+bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount)
+{
+    uint32_t layerCount;
+    vkEnumerateInstanceLayerProperties(&layerCount, NULL);
+
+    VkLayerProperties availableLayers[layerCount];
+    vkEnumerateInstanceLayerProperties(&layerCount, availableLayers);
+    uint32_t availableLayerCount = sizeof(availableLayers) / sizeof(availableLayers[0]);
+
+    for (uint32_t z = 0; z < availableLayerCount; z++) 
+    {
+     printf("Layer %d: %s\n", z, availableLayers[z].layerName);
+    }
+
+    for(size_t i = 0; i < validationCount; i++) 
+    {
+        bool layerFound = false;
+
+    	
+        for (uint32_t x = 0; x < availableLayerCount; x++) 
+        {
+            if (strcmp(validationLayers[i], availableLayers[x].layerName) == 0) 
+            {
+                layerFound = true;
+                break;
+            }
+        }
+    
+        if (!layerFound) 
+        {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
 
 void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
 {
     if (components == NULL) {
         return;
+    }
+
+    if(VALIDATION)
+    {
+    	DestroyDebugUtilsMessengerEXT(components->instance, components->debugMessenger, NULL);
     }
 
     if (components->imageAvailableSemaphore)
