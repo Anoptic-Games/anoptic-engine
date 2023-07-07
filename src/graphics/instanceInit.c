@@ -137,6 +137,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     void* pUserData) 
 {
 
+	if (messageType & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT)
+	{
+		return VK_FALSE;
+	}
     printf("validation layer: %s\n", pCallbackData->pMessage);
 
     return VK_FALSE;
@@ -194,7 +198,7 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
         totalExtensionCount += 1;
     }
 
-    const char** extensions = malloc(sizeof(char*) * totalExtensionCount);
+    const char** extensions = calloc(1, sizeof(char*) * totalExtensionCount);
 
     for (uint32_t i = 0; i < glfwExtensionCount; i++) {
         extensions[i] = strdup(glfwExtensions[i]);
@@ -221,6 +225,7 @@ VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* su
 }
 
 struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR *surface) { // Extend with more queue family checks as they become relevant
+    //!TODO add error-case returns and associated checking to all invoking functions
     struct QueueFamilyIndices indices = {};
     indices.graphicsPresent = false;
     indices.computePresent = false;
@@ -302,7 +307,7 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     uint32_t extensionCount;
     vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, NULL);
 
-    VkExtensionProperties* availableExtensions = (VkExtensionProperties*) malloc(extensionCount * sizeof(VkExtensionProperties));
+    VkExtensionProperties* availableExtensions = (VkExtensionProperties*) calloc(1, extensionCount * sizeof(VkExtensionProperties));
     vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, availableExtensions);
 
     for (size_t i = 0; i < requiredExtensionsCount; ++i) 
@@ -350,7 +355,7 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
         return false;
     }
 
-    VkPhysicalDevice* devices = (VkPhysicalDevice*)malloc(sizeof(VkPhysicalDevice) * deviceCount);
+    VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices);
 
     VkPhysicalDeviceProperties deviceProperties;
@@ -464,12 +469,12 @@ struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, Vk
 
     vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, NULL);
 
-    details.formats = (VkSurfaceFormatKHR*) malloc(details.formatCount * sizeof(VkSurfaceFormatKHR));
+    details.formats = (VkSurfaceFormatKHR*) calloc(1, details.formatCount * sizeof(VkSurfaceFormatKHR));
     vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, details.formats);
 
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, NULL);
 
-    details.presentModes = (VkPresentModeKHR*) malloc(details.presentModesCount * sizeof(VkPresentModeKHR));
+    details.presentModes = (VkPresentModeKHR*) calloc(1, details.presentModesCount * sizeof(VkPresentModeKHR));
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, details.presentModes);
         
     return details;
@@ -607,7 +612,7 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
     }
 
     vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, NULL);
-    VkImage *swapChainImages = (VkImage *) malloc(sizeof(VkImage) * imageCount);
+    VkImage *swapChainImages = (VkImage *) calloc(imageCount, sizeof(VkImage));
     vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, swapChainImages);
 
 	SwapChainGroup swapChainGroup = {swapChain, chosenFormat.format, chosenExtent, imageCount, swapChainImages};
@@ -620,7 +625,7 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 {
 	ImageViewGroup viewGroup = {0, NULL};
 	viewGroup.viewCount = imageGroup.imageCount;
-	viewGroup.views = (VkImageView *) malloc(sizeof(VkImageView) * viewGroup.viewCount);
+	viewGroup.views = (VkImageView *) calloc(1, sizeof(VkImageView) * viewGroup.viewCount);
 	for (uint32_t i = 0; i < imageGroup.imageCount; i++)
 	{
 		VkImageViewCreateInfo createInfo = {};
@@ -650,7 +655,7 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, ImageViewGroup viewGroup, SwapChainGroup swapGroup, VkRenderPass renderPass)
 {
     frameBufferGroup->bufferCount = viewGroup.viewCount;
-    frameBufferGroup->buffers = (VkFramebuffer*) malloc(sizeof(VkFramebuffer) * frameBufferGroup->bufferCount);
+    frameBufferGroup->buffers = (VkFramebuffer*) calloc(1, sizeof(VkFramebuffer) * frameBufferGroup->bufferCount);
 
     for (uint32_t i = 0; i < viewGroup.viewCount; i++) 
     {

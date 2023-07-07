@@ -209,7 +209,7 @@ VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns 
     }
     vulkanGarbage.components = components;
 
-	if (createRenderPass(components->device, components->swapChainGroup.imageFormat, components->renderPass) != true)
+	if (createRenderPass(components->device, components->swapChainGroup.imageFormat, &(components->renderPass)) != true)
 	{
 		printf("Quitting init: render pass failure\n");
 		unInitVulkan();

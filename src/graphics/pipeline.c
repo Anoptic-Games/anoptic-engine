@@ -99,7 +99,7 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 	return shaderModule;
 }
 
-bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPass renderPass) 
+bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass) 
 {
 	VkAttachmentDescription colorAttachment = {};
     colorAttachment.format = swapChainImageFormat;
@@ -135,10 +135,11 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 	renderPassInfo.dependencyCount = 1;
 	renderPassInfo.pDependencies = &dependency;
 	
-	if (vkCreateRenderPass(device, &renderPassInfo, NULL, &renderPass) != VK_SUCCESS) {
+	if (vkCreateRenderPass(device, &renderPassInfo, NULL, renderPass) != VK_SUCCESS) {
 	    printf("Failed to create render pass!\n");
 	    return false;
 	}
+	printf("Render pass: %p\n", renderPass);
 	return true;
 }
 
