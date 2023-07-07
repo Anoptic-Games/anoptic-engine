@@ -850,11 +850,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
         }
         vkDestroyInstance(components->instance, NULL);
     }
-    // Add cleanup steps for swap chain group
-    if (components->physicalDevice != NULL)
-    {
-    	free(components->physicalDevice);
-    }
 
     free(components);
 }
