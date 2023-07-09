@@ -37,7 +37,7 @@ static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 
 // Vulkan component initialization functions
 
-GLFWwindow* initWindow() // Initializes a pointer to a GLFW window, returns a window pointer or NULL on failure
+GLFWwindow* initWindow(VulkanComponents* components) // Initializes a pointer to a GLFW window, returns a window pointer or NULL on failure
 {
     // Initialize GLFW
     if (!glfwInit())
@@ -48,8 +48,8 @@ GLFWwindow* initWindow() // Initializes a pointer to a GLFW window, returns a wi
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *window = glfwCreateWindow(800, 600, "Vulkan", NULL, NULL);
-    //glfwSetWindowUserPointer(window, components);
-    //glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    glfwSetWindowUserPointer(window, components);
+    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
     return window;
 }
 
@@ -648,6 +648,15 @@ void cleanupSwapChain(VkDevice device, SwapChainGroup* swapGroup, FrameBufferGro
 
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 {
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    while (width == 0 || height == 0)
+    {
+        printf("Sleeping!\n");
+        glfwGetFramebufferSize(window, &width, &height);
+        glfwWaitEvents();
+    }
+
 	vkDeviceWaitIdle(components->device);
 
     cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
@@ -672,6 +681,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	cleanupVulkan(components);
     	exit(1);
     }
+    components->framebufferResized = false;
 }
 
 

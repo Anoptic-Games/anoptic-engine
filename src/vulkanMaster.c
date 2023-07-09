@@ -102,8 +102,12 @@ void drawFrame(VulkanComponents* components, GLFWwindow* window)
 	VkResult result = vkAcquireNextImageKHR(components->device, components->swapChainGroup.swapChain, UINT64_MAX, components->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components->framebufferResized) 
 	{
+		printf("Recreating swap chain!\n");
 	    recreateSwapChain(components, window);
 	    return;
+	} else if (result != VK_SUCCESS) 
+	{
+	    printf("Failed to acquire swap chain image!\n");
 	}
 
 	vkResetCommandBuffer(components->commandBuffer, 0);
@@ -146,16 +150,14 @@ void drawFrame(VulkanComponents* components, GLFWwindow* window)
 
 //Init and cleanup functions
 
-VulkanComponents* initVulkan(GLFWwindow* window) // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
+VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 {
-	
-    VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
+	memset(components, 0, sizeof(VulkanComponents)); // Just in case there's garbage making our unitialized parts non-NULL
     if(components == NULL) 
     {
         fprintf(stderr, "Failed to allocate memory for Vulkan components!\n");
         return NULL;
     }
-    memset(components, 0, sizeof(VulkanComponents)); // Just in case there's garbage making our unitialized parts non-NULL
 
 	components->enableValidationLayers = true;
 
