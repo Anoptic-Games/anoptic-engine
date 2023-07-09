@@ -55,6 +55,7 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
     VkFence inFlightFence;
+    bool framebufferResized; // Signals window resizing
     VkDebugUtilsMessengerEXT debugMessenger;
 } VulkanComponents;
 
