@@ -24,7 +24,8 @@
 
 int main()
 {
-	GLFWwindow *window = initWindow();
+	VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
+	GLFWwindow *window = initWindow(components);
 	if (window == NULL)
 	{
 	    // Handle error
@@ -37,7 +38,7 @@ int main()
 
 	// Initialize Vulkan
 	
-	VulkanComponents *components = initVulkan(window);
+	components = initVulkan(window, components);
 	if (components == NULL)
 	{
 	    // Handle error
