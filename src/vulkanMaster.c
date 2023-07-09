@@ -31,14 +31,15 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 
 void unInitVulkan() // A celebration
 {
+
+	if (vulkanGarbage.components)
+	{
+		cleanupVulkan(vulkanGarbage.components);
+	}
 	if (vulkanGarbage.window)
 	{
 		glfwDestroyWindow(vulkanGarbage.window);
 		glfwTerminate();
-	}
-	if (vulkanGarbage.components)
-	{
-		cleanupVulkan(vulkanGarbage.components);
 	}
 	return;
 }
@@ -93,13 +94,18 @@ void recordCommandBuffer(VulkanComponents* components, uint32_t imageIndex)
 	}
 }
 
-void drawFrame(VulkanComponents* components) 
+void drawFrame(VulkanComponents* components, GLFWwindow* window) 
 {
 	vkWaitForFences(components->device, 1, &(components->inFlightFence), VK_TRUE, UINT64_MAX);
-	vkResetFences(components->device, 1, &(components->inFlightFence));
-
+	
 	uint32_t imageIndex;
-	vkAcquireNextImageKHR(components->device, components->swapChainGroup.swapChain, UINT64_MAX, components->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+	VkResult result = vkAcquireNextImageKHR(components->device, components->swapChainGroup.swapChain, UINT64_MAX, components->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components->framebufferResized) 
+	{
+	    recreateSwapChain(components, window);
+	    return;
+	}
+
 	vkResetCommandBuffer(components->commandBuffer, 0);
 	recordCommandBuffer(components, imageIndex);
 	
@@ -132,6 +138,7 @@ void drawFrame(VulkanComponents* components)
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = NULL; // Optional
+	vkResetFences(components->device, 1, &(components->inFlightFence));
 	vkQueuePresentKHR(components->presentQueue, &presentInfo);
 
 	return;

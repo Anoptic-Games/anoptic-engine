@@ -31,6 +31,9 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
 const char** getRequiredExtensions(uint32_t* extensionsCount);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
 void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger);
+bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, ImageViewGroup viewGroup, SwapChainGroup swapGroup, VkRenderPass renderPass);
+void cleanupVulkan(VulkanComponents* components);
+static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
 // Vulkan component initialization functions
 
@@ -45,8 +48,15 @@ GLFWwindow* initWindow() // Initializes a pointer to a GLFW window, returns a wi
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *window = glfwCreateWindow(800, 600, "Vulkan", NULL, NULL);
-    
+    //glfwSetWindowUserPointer(window, components);
+    //glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
     return window;
+}
+
+static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
+{
+	VulkanComponents* components = glfwGetWindowUserPointer(window);
+	components->framebufferResized = true;
 }
 
 VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMessenger) // Creates a Vulkan instance, selecting and specifying required extensions. It also defines information about our app.
@@ -198,7 +208,7 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
         totalExtensionCount += 1;
     }
 
-    const char** extensions = calloc(1, sizeof(char*) * totalExtensionCount);
+    const char** extensions = calloc(totalExtensionCount, sizeof(char*));
 
     for (uint32_t i = 0; i < glfwExtensionCount; i++) {
         extensions[i] = strdup(glfwExtensions[i]);
@@ -568,7 +578,7 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
         SwapChainGroup failure = {NULL};
         return failure;
     }
-    printf("Present mode:%d\n", chosenPresentMode);
+    //printf("Present mode:%d\n", chosenPresentMode);
 
     // TODO: Initialize the swap chain
     VkExtent2D chosenExtent = chooseSwapExtent(details.capabilities, window);
@@ -605,8 +615,9 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
 
     
     VkSwapchainKHR swapChain;
-    if (vkCreateSwapchainKHR(logicalDevice, &createInfo, NULL, &swapChain) != VK_SUCCESS) {
-        printf("Failed to create swap chain!\n");
+    VkResult result = vkCreateSwapchainKHR(logicalDevice, &createInfo, NULL, &swapChain);
+    if ( result != VK_SUCCESS) {
+        printf("Failed to create swap chain - error code %d!\n", result);
         SwapChainGroup failure = {NULL};
         return failure;
     }
@@ -618,6 +629,49 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
 	SwapChainGroup swapChainGroup = {swapChain, chosenFormat.format, chosenExtent, imageCount, swapChainImages};
     
     return swapChainGroup;
+}
+
+void cleanupSwapChain(VkDevice device, SwapChainGroup* swapGroup, FrameBufferGroup* frameGroup, ImageViewGroup* viewGroup)
+{
+    for (size_t i = 0; i < frameGroup->bufferCount; i++) 
+    {
+        vkDestroyFramebuffer(device, frameGroup->buffers[i], NULL);
+    }
+
+    for (size_t i = 0; i < viewGroup->viewCount; i++) 
+    {
+        vkDestroyImageView(device, viewGroup->views[i], NULL);
+    }
+
+    vkDestroySwapchainKHR(device, swapGroup->swapChain, NULL);
+}
+
+void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
+{
+	vkDeviceWaitIdle(components->device);
+
+    cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
+	SwapChainGroup failure = {NULL};
+	components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window);
+    if(components->swapChainGroup.swapChain == failure.swapChain)
+	{
+		printf("Swap chain re-creation error, exiting!\n");
+		cleanupVulkan(components);
+		exit(1);
+	}
+    components->viewGroup = createImageViews(components->device, components->swapChainGroup);
+    if (components->viewGroup.views == NULL)
+    {
+    	printf("View group re-creation error, exiting!\n");
+    	cleanupVulkan(components);
+    	exit(1);
+    }
+    if (createFramebuffers(components->device, &(components->framebufferGroup), components->viewGroup, components->swapChainGroup, components->renderPass) != true)
+    {
+    	printf("Framebuffer re-creation error, exiting!\n");
+    	cleanupVulkan(components);
+    	exit(1);
+    }
 }
 
 
@@ -776,6 +830,8 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
         return;
     }
 
+    cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
+
     if(VALIDATION)
     {
     	DestroyDebugUtilsMessengerEXT(components->instance, components->debugMessenger, NULL);
@@ -799,15 +855,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 		vkDestroyCommandPool(components->device, components->commandPool, NULL);
 	}
 
-    if (components->framebufferGroup.bufferCount != 0)
-    {
-    	for (uint32_t i = 0; i < components->framebufferGroup.bufferCount; i++)
-    	{
-    		vkDestroyFramebuffer(components->device, components->framebufferGroup.buffers[i], NULL);
-    	}
-    	free(components->framebufferGroup.buffers);
-    }
-
     if (components->renderPass != NULL)
     {
     	vkDestroyRenderPass(components->device, components->renderPass, NULL);
@@ -823,22 +870,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     	vkDestroyPipeline(components->device, components->graphicsPipeline, NULL);
     }
     
-    if (components->viewGroup.views != NULL)
-    {
-    	for (uint32_t i = 0; i < components->viewGroup.viewCount; i++)
-    	{
-    		vkDestroyImageView(components->device, components->viewGroup.views[i], NULL);
-    	}
-    	free(components->viewGroup.views);
-    }
-    
-    SwapChainGroup failure = {NULL};
-    if (components->swapChainGroup.swapChain != failure.swapChain) // !TODO This is not causing a segfault and I have no idea why.
-    {
-    	vkDestroySwapchainKHR(components->device, components->swapChainGroup.swapChain, NULL);
-    	free(components->swapChainGroup.images);
-    }
-
     if (components->device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(components->device);
         vkDestroyDevice(components->device, NULL);

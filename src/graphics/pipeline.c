@@ -311,5 +311,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	    return NULL;
 	}
 
+	free(vertShaderCode.data);
+	free(fragShaderCode.data);
+
 	return graphicsPipeline;
 }
