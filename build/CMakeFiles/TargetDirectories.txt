@@ -1,3 +1,0 @@
-/home/cris/Documents/dev/panopticon-engine/build/CMakeFiles/panopticon.dir
-/home/cris/Documents/dev/panopticon-engine/build/CMakeFiles/edit_cache.dir
-/home/cris/Documents/dev/panopticon-engine/build/CMakeFiles/rebuild_cache.dir
