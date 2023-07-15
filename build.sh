@@ -25,7 +25,11 @@ case $1 in
     ;;
 esac
 
-# Execute cmake 
-# --build: build the project in ./build/${build_type}, configure before building, set build type, using '.' as the source code root directory.
-cmake --build ./build/${build_type} --configure -- -DCMAKE_BUILD_TYPE=${build_type} -S .
-#             ^Target directory     ^create subdirectory     ^build type parameter     ^Source directory 
+# Create build directory if not exist
+mkdir -p ./build/${build_type}
+
+# Configure the build
+cmake -DCMAKE_BUILD_TYPE=${build_type} -S . -B ./build/${build_type}
+
+# Build the project
+cmake --build ./build/${build_type}
