@@ -175,13 +175,13 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout pipelineLayout, VkRenderPass renderPass)
 {
 	struct Buffer vertShaderCode;
-	if (loadFile("../src/graphics/shaders/vert.spv", &vertShaderCode) != true)
+	if (loadFile("../../src/graphics/shaders/vert.spv", &vertShaderCode) != true)
 	{
 		printf("Error loading shaders!\n");
 		return NULL;
 	}
 	struct Buffer fragShaderCode;
-	if (loadFile("../src/graphics/shaders/frag.spv", &fragShaderCode) != true)
+	if (loadFile("../../src/graphics/shaders/frag.spv", &fragShaderCode) != true)
 	{
 		printf("Error loading shaders!\n");
 		return NULL;

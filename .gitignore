@@ -54,9 +54,15 @@ Mkfile.old
 dkms.conf
 
 # Build directory contents
-build/debug
-build/release
-build/test
+build/debug/
+build/release/
+build/test/
 build/debug/*
 build/release/*
 build/test/*
+build/Debug/*
+build/Release/*
+build/Test/*
+build/Debug/
+build/Release/
+build/Test/
