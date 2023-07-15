@@ -52,4 +52,8 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
-build/*
+
+# Build directory contents
+build/debug
+build/release
+build/test
