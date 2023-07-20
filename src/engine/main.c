@@ -21,9 +21,10 @@
 //
 //========================================================================
 
-#include "engine/main.h" // test
+#include "engine/main.h" // This works
 
-#include "graphics/vulkanMaster.c" // cursted
+// Rendering module still WIP
+#include "graphics/vulkanMaster.c" // TODO: This needs to be replaced by a .h. 
 
 
 // Structs
