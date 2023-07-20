@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.0)
 project(anopticengine)
 
-# Enable C11 standard
-set(CMAKE_C_STANDARD 17)
+# Enable C23 standard
+set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Find the GLFW and Vulkan packages
