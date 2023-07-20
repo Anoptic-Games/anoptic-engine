@@ -1,16 +1,16 @@
 //========================================================================
-// Panopticon 0.01
+// Anoptic Engine 0.01
 //------------------------------------------------------------------------
 // Copyright (c) 2023 Matei Anghel
 // Copyright (c) 2023 Cristian Necsoiu
 //
-// This file is part of 'The Anopticon Game Engine'.
+// This file is part of 'The Anoptic Engine'.
 // 
-// 'The Anopticon Game Engine' is free software: you can redistribute it
+// 'The Anoptic Engine' is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public License
 // as published by the Free Software Foundation, version 3 of the License.
 //
-// 'The Anopticon Game Engine' is distributed WITHOUT ANY WARRANTY, without
+// 'The Anoptic Engine' is distributed WITHOUT ANY WARRANTY, without
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
 // See the GNU General Public License for more details.
 //
@@ -22,13 +22,11 @@
 //========================================================================
 
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
-#include<unistd.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -80,7 +78,6 @@ int main()
 	while (!glfwWindowShouldClose(window))
 	{
         glfwPollEvents();
-        sleep(0.01);
 
         // Record and submit commands for graphics and compute operations
         // ...
