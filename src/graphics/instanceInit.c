@@ -34,7 +34,7 @@
 #include <GLFW/glfw3native.h>
 
 //#include "./structs.h"
-#include "./pipeline.c"
+#include "graphics/pipeline.c"
 
 #define VALIDATION 1
 

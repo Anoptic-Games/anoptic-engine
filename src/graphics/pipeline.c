@@ -33,7 +33,7 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-#include "./structs.h"
+#include "graphics/structs.h"
 
 // Platform-specific aligned malloc wrappers
 // This is required because SPIR-V bytecode is 4 bytes, so we must align explicitly
@@ -175,13 +175,18 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout pipelineLayout, VkRenderPass renderPass)
 {
 	struct Buffer vertShaderCode;
-	if (loadFile("../../src/graphics/shaders/vert.spv", &vertShaderCode) != true)
+	char vertShaderPath[256]; // Adjust size as needed.
+	snprintf(vertShaderPath, sizeof(vertShaderPath), "%s/resources/shaders/vert.spv", PROJECT_ROOT);
+	if (loadFile(vertShaderPath, &vertShaderCode) != true)
 	{
 		printf("Error loading shaders!\n");
 		return NULL;
 	}
+
 	struct Buffer fragShaderCode;
-	if (loadFile("../../src/graphics/shaders/frag.spv", &fragShaderCode) != true)
+	char fragShaderPath[256]; // Adjust size as needed.
+	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/frag.spv", PROJECT_ROOT);
+	if (loadFile(fragShaderPath, &fragShaderCode) != true)
 	{
 		printf("Error loading shaders!\n");
 		return NULL;
