@@ -21,18 +21,10 @@
 //
 //========================================================================
 
+#include "engine/main.h" // test
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <vulkan/vulkan.h>
-#include <stdbool.h>
-#include <string.h>
+#include "graphics/vulkanMaster.c" // cursted
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
-
-#include "../graphics/vulkanMaster.c"
 
 // Structs
 

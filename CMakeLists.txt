@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.0)
 project(anopticengine)
 
+# Include all headers
+include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+
+# Define the project root path
+add_definitions(-DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
 # Enable C23 standard
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
