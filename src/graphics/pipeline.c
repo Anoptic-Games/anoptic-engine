@@ -1,16 +1,16 @@
 //========================================================================
-// Panopticon 0.01
+// Anoptic Engine 0.01
 //------------------------------------------------------------------------
 // Copyright (c) 2023 Matei Anghel
 // Copyright (c) 2023 Cristian Necsoiu
 //
-// This file is part of 'The Anopticon Game Engine'.
+// This file is part of 'The Anoptic Engine'.
 // 
-// 'The Anopticon Game Engine' is free software: you can redistribute it
+// 'The Anoptic Engine' is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public License
 // as published by the Free Software Foundation, version 3 of the License.
 //
-// 'The Anopticon Game Engine' is distributed WITHOUT ANY WARRANTY, without
+// 'The Anoptic Engine' is distributed WITHOUT ANY WARRANTY, without
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
 // See the GNU General Public License for more details.
 //
