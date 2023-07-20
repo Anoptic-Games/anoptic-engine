@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(panopticon)
+project(anopticengine)
 
 # Enable C23 standard
 set(CMAKE_C_STANDARD 23)
@@ -10,19 +10,19 @@ find_package(glfw3 REQUIRED)
 find_package(Vulkan REQUIRED)
 
 # Add an executable target
-add_executable(panopticon ./src/engine/main.c)
+add_executable(anopticengine ./src/engine/main.c)
 
 # Link the GLFW and Vulkan libraries to the target
-target_link_libraries(panopticon glfw)
-target_link_libraries(panopticon Vulkan::Vulkan)
+target_link_libraries(anopticengine glfw)
+target_link_libraries(anopticengine Vulkan::Vulkan)
 
 # Add compilation flags and preprocessor definitions for Debug and Release builds
-target_compile_definitions(panopticon PRIVATE 
+target_compile_definitions(anopticengine PRIVATE 
     "$<$<CONFIG:Debug>:DEBUG_BUILD>"
     "$<$<CONFIG:Release>:RELEASE_BUILD>"
 )
 
-target_compile_options(panopticon PRIVATE 
+target_compile_options(anopticengine PRIVATE 
     "$<$<CONFIG:Debug>:-O0;-g>"
     "$<$<CONFIG:Release>:-O3>"
 )
