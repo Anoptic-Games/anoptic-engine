@@ -21,18 +21,11 @@
 //
 //========================================================================
 
+#include "engine/main.h" // This works
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <vulkan/vulkan.h>
-#include <stdbool.h>
-#include <string.h>
+// Rendering module still WIP
+#include "graphics/vulkanMaster.c" // TODO: This needs to be replaced by a .h. 
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
-
-#include "../graphics/vulkanMaster.c"
 
 // Structs
 
