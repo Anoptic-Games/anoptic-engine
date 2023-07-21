@@ -10,7 +10,7 @@ This project makes use of the following third-party libraries:
 - **License**: [Zlib License](https://github.com/glfw/glfw/blob/master/LICENSE.md)
 
 
-### Vulkan SDK - v1.3.250.1
+### Vulkan SDK - v1.3.2X
 - **Description**: A comprehensive suite of development tools, runtime libraries, and more for building Vulkan applications for a wide variety of platforms.
 - **SDK**: [Vulkan SDK Link](https://www.lunarg.com/vulkan-sdk/)
 - **Khronos Docs**: [Vulkan Docs GitHub Repository](https://github.com/KhronosGroup/Vulkan-Docs)
