@@ -26,7 +26,7 @@ if "%1"=="1" (
 if not exist build\%BUILD_TYPE% mkdir build\%BUILD_TYPE%
 
 :: Configure the build with MinGW Makefiles generator
-set PATH="C:\Program Files\mingw-w64\bin;"%PATH%
+:: set PATH="C:\Program Files\mingw-w64\bin;"%PATH%
 cmake -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
 
 :: Build the project
