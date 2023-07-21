@@ -19,20 +19,17 @@ if "%1"=="1" (
     echo     3 = Tests
     exit /b 1
 )
-:: Create build directory if not exist
-if not exist build\%build_type% mkdir build\%build_type%
 
-:: Set paths to MinGW compilers
-set "GCC_PATH=C:\Program Files\mingw-w64\bin\gcc.exe"
-set "GPP_PATH=C:\Program Files\mingw-w64\bin\g++.exe"
+:: Try to locate GCC and G++ in the system's PATH
+for %%i in (gcc.exe) do set "GCC_PATH=%%~$PATH:i"
+for %%i in (g++.exe) do set "GPP_PATH=%%~$PATH:i"
 
-:: Configure the build using MinGW compilers
+:: If not found, fall back to hardcoded paths
+if not defined GCC_PATH set "GCC_PATH=C:\Program Files\mingw-w64\bin\gcc.exe"
+if not defined GPP_PATH set "GPP_PATH=C:\Program Files\mingw-w64\bin\g++.exe"
+
+:: Configure the build using located or hardcoded compilers
 cmake -DCMAKE_C_COMPILER="%GCC_PATH%" -DCMAKE_CXX_COMPILER="%GPP_PATH%" -DCMAKE_BUILD_TYPE=%build_type% -S . -B ./build/%build_type%
 
 :: Build the project
 cmake --build ./build/%build_type%
-
-:: Return to the original directory
-popd
-
-endlocal
