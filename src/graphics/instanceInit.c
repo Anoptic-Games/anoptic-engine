@@ -36,7 +36,6 @@
 //#include "./structs.h"
 #include "graphics/pipeline.c"
 
-#define VALIDATION 1
 
 // Variables
 
@@ -121,11 +120,12 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
 	createInfo.enabledLayerCount = 0;
 	createInfo.pNext = NULL;
 	
-    if (VALIDATION && !checkValidationLayerSupport(validationLayers, validationCount))
+	#ifdef DEBUG_BUILD
+    if (!checkValidationLayerSupport(validationLayers, validationCount))
     {
     	printf("Validation layers requested, but not available!\n");
     }
-    else if (VALIDATION)
+    else
     {
     	createInfo.enabledLayerCount = (uint32_t) validationCount;
     	createInfo.ppEnabledLayerNames = validationLayers;
@@ -133,6 +133,7 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
     	createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debugCreateInfo;
     	printf("Enabled validation layers!\n");
     }
+	#endif
 
     if (vkCreateInstance(&createInfo, NULL, instance) != VK_SUCCESS)
     {
@@ -141,10 +142,9 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    if (VALIDATION)
-    {
+    #ifdef DEBUG_BUILD
     	setupDebugMessenger(instance, debugMessenger);
-    }
+    #endif
 
 	// Query extensions
 	// Completely forgot what the following block is for, probably nothing important
@@ -201,7 +201,9 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create
 
 void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) 
 {
-    if (!VALIDATION) return;
+	#ifndef DEBUG_BUILD
+    return;
+	#endif
 	VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
 	populateDebugMessengerCreateInfo(&createInfo);
 	if (CreateDebugUtilsMessengerEXT(*instance, &createInfo, NULL, debugMessenger) != VK_SUCCESS)
@@ -228,9 +230,9 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
 
     uint32_t totalExtensionCount = glfwExtensionCount;
 
-    if (VALIDATION) {
-        totalExtensionCount += 1;
-    }
+    #ifdef DEBUG_BUILD
+    totalExtensionCount += 1;
+    #endif
 
     const char** extensions = calloc(totalExtensionCount, sizeof(char*));
 
@@ -238,9 +240,9 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
         extensions[i] = strdup(glfwExtensions[i]);
     }
 
-    if (VALIDATION) {
-        extensions[glfwExtensionCount] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    }
+    #ifdef DEBUG_BUILD
+    extensions[glfwExtensionCount] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    #endif
 
     *extensionsCount = totalExtensionCount;
 
@@ -867,10 +869,9 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
     cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
 
-    if(VALIDATION)
-    {
-    	DestroyDebugUtilsMessengerEXT(components->instance, components->debugMessenger, NULL);
-    }
+    #ifdef DEBUG_BUILD
+    DestroyDebugUtilsMessengerEXT(components->instance, components->debugMessenger, NULL);
+	#endif
 
     if (components->imageAvailableSemaphore)
     {

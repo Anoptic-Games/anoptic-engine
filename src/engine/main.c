@@ -40,6 +40,9 @@
 
 int main()
 {
+	#ifdef DEBUG_BUILD
+	printf("Running in debug mode!\n");
+	#endif	
 	VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
 	GLFWwindow *window = initWindow(components);
 	if (window == NULL)
