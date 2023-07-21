@@ -1,16 +1,18 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
-:: Move to the script's directory
+:: Navigate to the script's directory
 cd /d %~dp0
 
-:: Set the build type based on the provided argument
+:: Parse the command line argument
+set BUILD_TYPE=Debug
+
 if "%1"=="1" (
-    set "build_type=Release"
+    set BUILD_TYPE=Release
 ) else if "%1"=="2" (
-    set "build_type=Debug"
+    set BUILD_TYPE=Debug
 ) else if "%1"=="3" (
-    set "build_type=Tests"
+    set BUILD_TYPE=Tests
 ) else (
     echo Usage: %0 ^<build_type^>
     echo   where ^<build_type^> is one of:
@@ -19,20 +21,16 @@ if "%1"=="1" (
     echo     3 = Tests
     exit /b 1
 )
+
 :: Create build directory if not exist
-if not exist build\%build_type% mkdir build\%build_type%
+if not exist build\%BUILD_TYPE% mkdir build\%BUILD_TYPE%
 
-:: Set paths to MinGW compilers
-set "GCC_PATH=C:\Program Files\mingw-w64\bin\gcc.exe"
-set "GPP_PATH=C:\Program Files\mingw-w64\bin\g++.exe"
-
-:: Configure the build using MinGW compilers
-cmake -DCMAKE_C_COMPILER="%GCC_PATH%" -DCMAKE_CXX_COMPILER="%GPP_PATH%" -DCMAKE_BUILD_TYPE=%build_type% -S . -B ./build/%build_type%
+:: Configure the build with MinGW Makefiles generator
+set PATH="C:\Program Files\mingw-w64\bin;"%PATH%
+cmake -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
 
 :: Build the project
-cmake --build ./build/%build_type%
-
-:: Return to the original directory
-popd
+cmake --build ./build/%BUILD_TYPE%
 
 endlocal
+exit /b 0
