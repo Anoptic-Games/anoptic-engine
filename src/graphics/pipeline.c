@@ -35,7 +35,7 @@
 
 #include "graphics/structs.h"
 
-// Platform-specific aligned malloc wrappers
+// Platform-specific aligned malloc wrappers LMAO LMAO LMAO
 // This is required because SPIR-V bytecode is 4 bytes, so we must align explicitly
 #ifdef __linux__
     #include <malloc.h> // for memalign
