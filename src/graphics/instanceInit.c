@@ -550,9 +550,10 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
     for (uint32_t i = 0; i < details.formatCount; i++)
     {
     	if ((details.formats+i)->format == VK_FORMAT_B8G8R8A8_SRGB && (details.formats+i)->colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-		{
-			chosenFormat = *(details.formats+i);
-		}
+        {
+            chosenFormat = *(details.formats+i);
+            break;
+        }
     }
     if (chosenFormat.format == 0 && chosenFormat.colorSpace == 0)
     {
