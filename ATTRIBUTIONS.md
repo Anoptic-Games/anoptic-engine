@@ -16,4 +16,3 @@ This project makes use of the following third-party libraries:
 - **Khronos Docs**: [Vulkan Docs GitHub Repository](https://github.com/KhronosGroup/Vulkan-Docs)
 - **Licenses**: [Khronos Spec Copyright](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/LICENSES)
 
-... (other dependencies) ...

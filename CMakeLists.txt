@@ -11,8 +11,10 @@ add_definitions(-DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Find the GLFW and Vulkan packages
-find_package(glfw3 REQUIRED)
+# Add GLFW submodule directory
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
+
+# Find the Vulkan SDK system-wide package
 find_package(Vulkan REQUIRED)
 
 # Add an executable target
