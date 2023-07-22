@@ -285,10 +285,10 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	VkQueueFamilyProperties queueFamilies[queueFamilyCount];
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
-		// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
-		// This may be changed in the future, specifically to allow compute tasks to work on the next frame without impacting rendering.
-		// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
-		//!TODO Implement these as required further into development
+	// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
+	// This may be changed in the future, specifically to allow compute tasks to work on the next frame without impacting rendering.
+	// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
+	//!TODO Implement these as required further into development
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here
 		if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && indices.graphicsPresent != true)
@@ -606,6 +606,7 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
 			}
 		}
     }
+
     if (presentModePresent == 0)
     {
     	printf("Failed to select an appropriate present mode!\n");
@@ -628,7 +629,7 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
     createInfo.imageFormat = chosenFormat.format;
     createInfo.imageColorSpace = chosenFormat.colorSpace;
     createInfo.imageExtent = chosenExtent;
-    createInfo.imageArrayLayers = 1; // We do NOT support VR
+    createInfo.imageArrayLayers = 1; // We DO support VR Half Life Alyx 2
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
     uint32_t queueFamilyIndices[] = {indices.graphicsFamily, indices.presentFamily};

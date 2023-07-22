@@ -345,6 +345,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	    return NULL;
 	}
 
+	// TODO: Figure out why this crashes on Windows?
 	free(vertShaderCode.data);
 	free(fragShaderCode.data);
 
