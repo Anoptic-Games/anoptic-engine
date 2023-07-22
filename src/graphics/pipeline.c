@@ -33,7 +33,10 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
+#ifndef STRUCTS_H
+#define STRUCTS_H
 #include "graphics/structs.h"
+#endif
 
 // Platform-specific aligned malloc wrappers LMAO LMAO LMAO
 // This is required because SPIR-V bytecode is 4 bytes, so we must align explicitly
