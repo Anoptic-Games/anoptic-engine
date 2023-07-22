@@ -31,7 +31,23 @@
 
 #define GLFW_INCLUDE_VULKAN
 
-#include "graphics/instanceInit.c"
+#ifndef INSTANCE_H
+#define INSTANCE_H
+#include "graphics/instanceInit.h"
+#endif
+
+#ifndef STRUCTS_H
+#define STRUCTS_H
+#include "graphics/structs.h"
+#endif
+
+#ifndef PIPELINE_H
+#define PIPELINE_H
+#include "graphics/pipeline.h"
+#endif
+
+
+
 
 // Variables
 

@@ -33,8 +33,15 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-//#include "./structs.h"
-#include "graphics/pipeline.c"
+#ifndef STRUCTS_H
+#define STRUCTS_H
+#include "graphics/structs.h"
+#endif
+
+#ifndef PIPELINE_H
+#define PIPELINE_H
+#include "graphics/pipeline.h"
+#endif
 
 
 // Variables

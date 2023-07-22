@@ -24,13 +24,29 @@
 #include "engine/main.h" // This works
 
 // Rendering module still WIP
-#include "graphics/vulkanMaster.c" // TODO: This needs to be replaced by a .h. 
+
+#ifndef VMASTER_H
+#define VMASTER_H
+#include "graphics/vulkanMaster.h"
+#endif
+
+#ifndef INSTANCE_H
+#define INSTANCE_H
+#include "graphics/instanceInit.h"
+#endif
+
+#ifndef STRUCTS_H
+#define STRUCTS_H
+#include "graphics/structs.h"
+#endif
 
 
 // Structs
 
 
 // Variables
+
+extern struct VulkanGarbage vulkanGarbage;
 
 
 // Function Prototypes
