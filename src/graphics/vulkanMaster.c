@@ -127,6 +127,8 @@ void recordCommandBuffer(VulkanComponents* components, uint32_t imageIndex)
 
 	vkCmdDraw(components->commandBuffer, 3, 1, 0, 0);
 
+	vkCmdEndRenderPass(components->commandBuffer);
+
 	if (vkEndCommandBuffer(components->commandBuffer) != VK_SUCCESS) {
 	    printf("Failed to record command buffer!\n");
 	}
@@ -164,6 +166,7 @@ void drawFrame(VulkanComponents* components, GLFWwindow* window)
 	VkSemaphore signalSemaphores[] = {components->renderFinishedSemaphore};
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
+	vkResetFences(components->device, 1, &(components->inFlightFence));
 	if (vkQueueSubmit(components->graphicsQueue, 1, &submitInfo, components->inFlightFence) != VK_SUCCESS) 
 	{
 	    printf("Failed to submit draw command buffer!\n");
@@ -180,7 +183,6 @@ void drawFrame(VulkanComponents* components, GLFWwindow* window)
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = NULL; // Optional
-	vkResetFences(components->device, 1, &(components->inFlightFence));
 	vkQueuePresentKHR(components->presentQueue, &presentInfo);
 
 	return;
