@@ -27,6 +27,8 @@
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
+
 
 
 #define GLFW_INCLUDE_VULKAN
@@ -136,12 +138,20 @@ void recordCommandBuffer(VulkanComponents* components, uint32_t imageIndex)
 
 void drawFrame(VulkanComponents* components, GLFWwindow* window) 
 {
-	vkWaitForFences(components->device, 1, &(components->inFlightFence[components->frameIndex]), VK_TRUE, UINT64_MAX);
+	if (!components->skipCheck)
+	{
+		vkWaitForFences(components->device, 1, &(components->inFlightFence[components->frameIndex]), VK_TRUE, UINT64_MAX);
+	} else
+	{
+		components->skipCheck -= 1; // Simple way to skip semaphore waits for a given number of frames
+	}
+
 
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(components->device, components->swapChainGroup.swapChain, UINT64_MAX, components->imageAvailableSemaphore[components->frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components->framebufferResized) 
 	{
+		
 		printf("Recreating swap chain!\n");
 	    recreateSwapChain(components, window);
 	    return;

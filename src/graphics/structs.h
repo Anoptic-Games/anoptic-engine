@@ -81,6 +81,7 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     VkFence inFlightFence[3];
     uint32_t frameIndex;
     bool framebufferResized; // Signals window resizing
+    uint32_t skipCheck; //Prevents semaphore waits after swapchain changes for the set number of frames
     VkDebugUtilsMessengerEXT debugMessenger;
 } VulkanComponents;
 
