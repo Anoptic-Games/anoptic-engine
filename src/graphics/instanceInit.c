@@ -27,6 +27,8 @@
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
+
 
 
 #define GLFW_INCLUDE_VULKAN
@@ -692,7 +694,14 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
         glfwWaitEvents();
     }
 
-	vkDeviceWaitIdle(components->device);
+    if (!components->skipCheck)
+    {
+        for (uint32_t i = 0; i < 3; i++) 
+        {
+            vkWaitForFences(components->device, 1, &(components->inFlightFence[i]), VK_TRUE, UINT64_MAX);
+        }
+    }
+
 
     cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
 	SwapChainGroup failure = {NULL};
@@ -716,7 +725,16 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	cleanupVulkan(components);
     	exit(1);
     }
+
+    vkResetCommandPool(components->device, components->commandPool, 0);
+    for (int i = 0; i < 3; i++) // Clear fences prior to resuming render
+    {
+        vkResetFences(components->device, 1, &(components->inFlightFence[i]));
+    }
+    components->skipCheck = 3; // Skip semaphore waits 
+
     components->framebufferResized = false;
+
 }
 
 
