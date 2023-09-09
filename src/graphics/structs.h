@@ -75,13 +75,15 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     VkPipeline graphicsPipeline;
     FrameBufferGroup framebufferGroup;
     VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer;
-    VkSemaphore imageAvailableSemaphore;
-    VkSemaphore renderFinishedSemaphore;
-    VkFence inFlightFence;
+    VkCommandBuffer commandBuffer[3];
+    VkSemaphore imageAvailableSemaphore[3];
+    VkSemaphore renderFinishedSemaphore[3];
+    VkFence inFlightFence[3];
+    uint32_t frameIndex;
     bool framebufferResized; // Signals window resizing
     VkDebugUtilsMessengerEXT debugMessenger;
 } VulkanComponents;
+
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
 {
