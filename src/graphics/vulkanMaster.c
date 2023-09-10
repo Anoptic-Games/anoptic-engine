@@ -283,7 +283,7 @@ VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) /
 	}
 	vulkanGarbage.components = components;
 
-	components->graphicsPipeline = createGraphicsPipeline(components->device, components->swapChainGroup.imageExtent, components->pipelineLayout, components->renderPass);
+	components->graphicsPipeline = createGraphicsPipeline(components->device, components->swapChainGroup.imageExtent, &(components->pipelineLayout), components->renderPass);
 	if (components->graphicsPipeline == NULL)
 	{
 		printf("Quitting init: pipeline failure!\n");
