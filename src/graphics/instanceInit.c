@@ -901,6 +901,11 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
         return;
     }
 
+    for (uint32_t i = 0; i < 3; i++)  // We wanna make sure all rendering is finished before we destroy anything
+    {  
+        vkWaitForFences(components->device, 1, &(components->inFlightFence[i]), VK_TRUE, UINT64_MAX);
+    }
+
     cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
 
     #ifdef DEBUG_BUILD
