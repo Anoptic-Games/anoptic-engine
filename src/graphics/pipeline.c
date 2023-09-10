@@ -177,7 +177,7 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 
 // The juicy part
 
-VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout pipelineLayout, VkRenderPass renderPass)
+VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout *pipelineLayout, VkRenderPass renderPass)
 {
 	struct Buffer vertShaderCode;
 	char vertShaderPath[256]; // Adjust size as needed.
@@ -314,7 +314,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
 	pipelineLayoutInfo.pPushConstantRanges = NULL; // Optional
 
-	if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &pipelineLayout) != VK_SUCCESS) 
+	if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, pipelineLayout) != VK_SUCCESS) 
 	{
 	    printf("Failed to create pipeline layout!\n");
 	    return NULL;
@@ -332,7 +332,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	pipelineInfo.pDepthStencilState = NULL; // Optional
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.layout = pipelineLayout;
+	pipelineInfo.layout = *pipelineLayout;
 	pipelineInfo.renderPass = renderPass;
 	pipelineInfo.subpass = 0;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
@@ -354,6 +354,11 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 		free(vertShaderCode.data);
 		free(fragShaderCode.data);
 	#endif
+
+	//!TODO generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
+	vkDestroyShaderModule(device, vertShaderModule, nullptr);
+	vkDestroyShaderModule(device, fragShaderModule, nullptr);
+
 
 	return graphicsPipeline;
 }
