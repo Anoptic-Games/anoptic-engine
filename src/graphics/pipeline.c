@@ -346,9 +346,14 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	}
 
 	// TODO: Figure out why this crashes on Windows?
-	// TODO: Remember to free these so we dont have a memory leak
-	//free(vertShaderCode.data);
-	//free(fragShaderCode.data);
+	// !DONE: It crashes on Windows because we're using _aligned_malloc() from the Win. API, which has its own free() function
+	#ifdef _WIN32
+		_aligned_free(vertShaderCode.data);
+		_aligned_free(fragShaderCode.data);
+	#else
+		free(vertShaderCode.data);
+		free(fragShaderCode.data);
+	#endif
 
 	return graphicsPipeline;
 }
