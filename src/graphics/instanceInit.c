@@ -27,16 +27,24 @@
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
+
 
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-//#include "./structs.h"
-#include "graphics/pipeline.c"
+#ifndef STRUCTS_H
+#define STRUCTS_H
+#include "graphics/structs.h"
+#endif
 
-#define VALIDATION 1
+#ifndef PIPELINE_H
+#define PIPELINE_H
+#include "graphics/pipeline.h"
+#endif
+
 
 // Variables
 
@@ -121,11 +129,12 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
 	createInfo.enabledLayerCount = 0;
 	createInfo.pNext = NULL;
 	
-    if (VALIDATION && !checkValidationLayerSupport(validationLayers, validationCount))
+	#ifdef DEBUG_BUILD
+    if (!checkValidationLayerSupport(validationLayers, validationCount))
     {
     	printf("Validation layers requested, but not available!\n");
     }
-    else if (VALIDATION)
+    else
     {
     	createInfo.enabledLayerCount = (uint32_t) validationCount;
     	createInfo.ppEnabledLayerNames = validationLayers;
@@ -133,6 +142,7 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
     	createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debugCreateInfo;
     	printf("Enabled validation layers!\n");
     }
+	#endif
 
     if (vkCreateInstance(&createInfo, NULL, instance) != VK_SUCCESS)
     {
@@ -141,10 +151,9 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    if (VALIDATION)
-    {
+    #ifdef DEBUG_BUILD
     	setupDebugMessenger(instance, debugMessenger);
-    }
+    #endif
 
 	// Query extensions
 	// Completely forgot what the following block is for, probably nothing important
@@ -201,7 +210,9 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create
 
 void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) 
 {
-    if (!VALIDATION) return;
+	#ifndef DEBUG_BUILD
+    return;
+	#endif
 	VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
 	populateDebugMessengerCreateInfo(&createInfo);
 	if (CreateDebugUtilsMessengerEXT(*instance, &createInfo, NULL, debugMessenger) != VK_SUCCESS)
@@ -228,9 +239,9 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
 
     uint32_t totalExtensionCount = glfwExtensionCount;
 
-    if (VALIDATION) {
-        totalExtensionCount += 1;
-    }
+    #ifdef DEBUG_BUILD
+    totalExtensionCount += 1;
+    #endif
 
     const char** extensions = calloc(totalExtensionCount, sizeof(char*));
 
@@ -238,9 +249,9 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
         extensions[i] = strdup(glfwExtensions[i]);
     }
 
-    if (VALIDATION) {
-        extensions[glfwExtensionCount] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    }
+    #ifdef DEBUG_BUILD
+    extensions[glfwExtensionCount] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    #endif
 
     *extensionsCount = totalExtensionCount;
 
@@ -276,10 +287,10 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	VkQueueFamilyProperties queueFamilies[queueFamilyCount];
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
-		// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
-		// This may be changed in the future, specifically to allow compute tasks to work on the next frame without impacting rendering.
-		// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
-		//!TODO Implement these as required further into development
+	// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
+	// This may be changed in the future, specifically to allow compute tasks to work on the next frame without impacting rendering.
+	// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
+	//!TODO Implement these as required further into development
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here
 		if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && indices.graphicsPresent != true)
@@ -597,6 +608,7 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
 			}
 		}
     }
+
     if (presentModePresent == 0)
     {
     	printf("Failed to select an appropriate present mode!\n");
@@ -619,7 +631,7 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
     createInfo.imageFormat = chosenFormat.format;
     createInfo.imageColorSpace = chosenFormat.colorSpace;
     createInfo.imageExtent = chosenExtent;
-    createInfo.imageArrayLayers = 1; // We do NOT support VR
+    createInfo.imageArrayLayers = 1; // We DO support VR Half Life Alyx 2
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
     uint32_t queueFamilyIndices[] = {indices.graphicsFamily, indices.presentFamily};
@@ -682,7 +694,14 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
         glfwWaitEvents();
     }
 
-	vkDeviceWaitIdle(components->device);
+    if (!components->skipCheck)
+    {
+        for (uint32_t i = 0; i < 3; i++) 
+        {
+            vkWaitForFences(components->device, 1, &(components->inFlightFence[i]), VK_TRUE, UINT64_MAX);
+        }
+    }
+
 
     cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
 	SwapChainGroup failure = {NULL};
@@ -706,7 +725,16 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	cleanupVulkan(components);
     	exit(1);
     }
+
+    vkResetCommandPool(components->device, components->commandPool, 0);
+    for (int i = 0; i < 3; i++) // Clear fences prior to resuming render
+    {
+        vkResetFences(components->device, 1, &(components->inFlightFence[i]));
+    }
+    components->skipCheck = 3; // Skip semaphore waits 
+
     components->framebufferResized = false;
+
 }
 
 
@@ -795,29 +823,37 @@ bool createCommandBuffer(VulkanComponents* components)
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
-	if (vkAllocateCommandBuffers(components->device, &allocInfo, &(components->commandBuffer)) != VK_SUCCESS) 
-	{
-	    printf("Failed to allocate command buffers!\n");
-	    return false;
-	}
+    for (uint32_t i =0; i<3; i++)
+    {
+        if (vkAllocateCommandBuffers(components->device, &allocInfo, &(components->commandBuffer[i])) != VK_SUCCESS) 
+	    {
+	        printf("Failed to allocate command buffers!\n");
+	        return false;
+	    }
+    }
+
 	return true;
 }
 
 bool createSyncObjects(VulkanComponents* components) 
 {
-    VkSemaphoreCreateInfo semaphoreInfo = {};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (uint32_t i = 0; i<3; i++)
+    {
+        VkSemaphoreCreateInfo semaphoreInfo = {};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;  
 
-    VkFenceCreateInfo fenceInfo = {};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        VkFenceCreateInfo fenceInfo = {};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    if (vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->imageAvailableSemaphore)) != VK_SUCCESS ||
-        vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->renderFinishedSemaphore)) != VK_SUCCESS ||
-        vkCreateFence(components->device, &fenceInfo, NULL, &(components->inFlightFence)) != VK_SUCCESS) {
-        printf("Failed to create semaphores!\n");
-        return false;
+        if (vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->imageAvailableSemaphore[i])) != VK_SUCCESS ||
+            vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->renderFinishedSemaphore[i])) != VK_SUCCESS ||
+            vkCreateFence(components->device, &fenceInfo, NULL, &(components->inFlightFence[i])) != VK_SUCCESS) {
+            printf("Failed to create semaphores!\n");
+            return false;
+        }
     }
+
     return true;
 }
 
@@ -865,30 +901,38 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
         return;
     }
 
+    for (uint32_t i = 0; i < 3; i++)  // We wanna make sure all rendering is finished before we destroy anything
+    {  
+        vkWaitForFences(components->device, 1, &(components->inFlightFence[i]), VK_TRUE, UINT64_MAX);
+    }
+
     cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
 
-    if(VALIDATION)
+    #ifdef DEBUG_BUILD
+    DestroyDebugUtilsMessengerEXT(components->instance, components->debugMessenger, NULL);
+	#endif
+    for (uint32_t i = 0; i<3; i++)
     {
-    	DestroyDebugUtilsMessengerEXT(components->instance, components->debugMessenger, NULL);
+        if (components->imageAvailableSemaphore[i])
+        {
+            vkDestroySemaphore(components->device, components->imageAvailableSemaphore[i], NULL);
+        }
+        if (components->renderFinishedSemaphore[i])
+        {
+            vkDestroySemaphore(components->device, components->renderFinishedSemaphore[i], NULL);
+        }
+        if (components->inFlightFence[i])
+        {
+            vkDestroyFence(components->device, components->inFlightFence[i], NULL);
+        }
+
     }
 
-    if (components->imageAvailableSemaphore)
+    
+    if (components->commandPool != NULL)
     {
-    	vkDestroySemaphore(components->device, components->imageAvailableSemaphore, NULL);
-    }
-    if (components->renderFinishedSemaphore)
-    {
-    	vkDestroySemaphore(components->device, components->renderFinishedSemaphore, NULL);
-    }
-    if (components->inFlightFence)
-    {
-    	vkDestroyFence(components->device, components->inFlightFence, NULL);
-    }
-
-	if (components->commandPool != NULL)
-	{
-		vkDestroyCommandPool(components->device, components->commandPool, NULL);
-	}
+        vkDestroyCommandPool(components->device, components->commandPool, NULL);
+    }    
 
     if (components->renderPass != NULL)
     {

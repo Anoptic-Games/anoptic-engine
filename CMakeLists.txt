@@ -18,7 +18,12 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
 find_package(Vulkan REQUIRED)
 
 # Add an executable target
-add_executable(anopticengine ./src/engine/main.c)
+add_executable(anopticengine
+    ./src/engine/main.c
+    ./src/graphics/vulkanMaster.c
+	./src/graphics/instanceInit.c
+	./src/graphics/pipeline.c
+)
 
 # Link the GLFW and Vulkan libraries to the target
 target_link_libraries(anopticengine glfw)

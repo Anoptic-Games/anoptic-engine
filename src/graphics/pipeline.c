@@ -33,7 +33,10 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
+#ifndef STRUCTS_H
+#define STRUCTS_H
 #include "graphics/structs.h"
+#endif
 
 // Platform-specific aligned malloc wrappers LMAO LMAO LMAO
 // This is required because SPIR-V bytecode is 4 bytes, so we must align explicitly
@@ -156,6 +159,8 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 	dependency.dstSubpass = 0;
 	dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
 	renderPassInfo.dependencyCount = 1;
 	renderPassInfo.pDependencies = &dependency;
 	
@@ -172,7 +177,7 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 
 // The juicy part
 
-VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout pipelineLayout, VkRenderPass renderPass)
+VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout *pipelineLayout, VkRenderPass renderPass)
 {
 	struct Buffer vertShaderCode;
 	char vertShaderPath[256]; // Adjust size as needed.
@@ -309,7 +314,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
 	pipelineLayoutInfo.pPushConstantRanges = NULL; // Optional
 
-	if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &pipelineLayout) != VK_SUCCESS) 
+	if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, pipelineLayout) != VK_SUCCESS) 
 	{
 	    printf("Failed to create pipeline layout!\n");
 	    return NULL;
@@ -327,7 +332,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	pipelineInfo.pDepthStencilState = NULL; // Optional
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.layout = pipelineLayout;
+	pipelineInfo.layout = *pipelineLayout;
 	pipelineInfo.renderPass = renderPass;
 	pipelineInfo.subpass = 0;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
@@ -340,8 +345,20 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	    return NULL;
 	}
 
-	free(vertShaderCode.data);
-	free(fragShaderCode.data);
+	// TODO: Figure out why this crashes on Windows?
+	// !DONE: It crashes on Windows because we're using _aligned_malloc() from the Win. API, which has its own free() function
+	#ifdef _WIN32
+		_aligned_free(vertShaderCode.data);
+		_aligned_free(fragShaderCode.data);
+	#else
+		free(vertShaderCode.data);
+		free(fragShaderCode.data);
+	#endif
+
+	//!TODO generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
+	vkDestroyShaderModule(device, vertShaderModule, nullptr);
+	vkDestroyShaderModule(device, fragShaderModule, nullptr);
+
 
 	return graphicsPipeline;
 }
