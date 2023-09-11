@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 project(anopticengine)
 
-# Include all headers
+# Include all header directories
 include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 
 # Define the project root path
@@ -18,12 +18,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
 find_package(Vulkan REQUIRED)
 
 # Add an executable target
-add_executable(anopticengine
-    ./src/engine/main.c
-    ./src/graphics/vulkanMaster.c
-	./src/graphics/instanceInit.c
-	./src/graphics/pipeline.c
-)
+add_executable(anopticengine ./src/engine/main.c)
 
 # Link the GLFW and Vulkan libraries to the target
 target_link_libraries(anopticengine glfw)
