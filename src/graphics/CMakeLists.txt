@@ -1,6 +1,6 @@
 # Add module-specific source files to the executable
-add_executable(anopticengine
-    ./src/graphics/vulkanMaster.c
-	./src/graphics/instanceInit.c
-	./src/graphics/pipeline.c
+target_sources(anopticengine PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/vulkanMaster.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instanceInit.c
+	${CMAKE_CURRENT_SOURCE_DIR}/pipeline.c
 )
