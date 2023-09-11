@@ -9,6 +9,7 @@ if (WIN32)
 
     add_executable(anopticengine
     ./windows/win_memory.c
+    ./windows/win_threads.c
     ./windows/win_time.c
     )
 endif()
@@ -16,6 +17,7 @@ endif()
 if (UNIX)
     add_executable(anopticengine
     ./linux/linux_memory.c
+    ./windows/linux_threads.c
     ./linux/linux_time.c
     )
 endif()
