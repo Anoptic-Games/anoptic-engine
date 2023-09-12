@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.5)
 project(anopticengine)
 
+# Debugging the Build System
+message(STATUS "System name: ${CMAKE_SYSTEM_NAME}")
+message(STATUS "System version: ${CMAKE_SYSTEM_VERSION}")
+message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
+
+# Anoptic Engine Only Supports 64-bit Compilation
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(STATUS "64-bit compiler detected.")
+else()
+  message(FATAL_ERROR "64-bit compiler REQUIRED.")
+endif()
+
 # Include all header directories
 include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 
