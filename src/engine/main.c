@@ -27,17 +27,17 @@
 
 #ifndef VMASTER_H
 #define VMASTER_H
-#include "graphics/vulkanMaster.h"
+#include "vulkan_backend/vulkanMaster.h"
 #endif
 
 #ifndef INSTANCE_H
 #define INSTANCE_H
-#include "graphics/instanceInit.h"
+#include "vulkan_backend/instanceInit.h"
 #endif
 
 #ifndef STRUCTS_H
 #define STRUCTS_H
-#include "graphics/structs.h"
+#include "vulkan_backend/structs.h"
 #endif
 
 

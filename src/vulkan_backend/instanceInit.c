@@ -37,12 +37,12 @@
 
 #ifndef STRUCTS_H
 #define STRUCTS_H
-#include "graphics/structs.h"
+#include "vulkan_backend/structs.h"
 #endif
 
 #ifndef PIPELINE_H
 #define PIPELINE_H
-#include "graphics/pipeline.h"
+#include "vulkan_backend/pipeline.h"
 #endif
 
 
