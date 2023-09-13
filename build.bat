@@ -44,7 +44,7 @@ if not exist build\%BUILD_TYPE% mkdir build\%BUILD_TYPE%
 :: set PATH="C:\Program Files\mingw-w64\bin;"%PATH%
 
 cmake -G "MinGW Makefiles" %TOOLCHAIN_ARG% -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
-::cmake -G "MinGW Makefiles" -DCMAKE_TOOLCHAIN_FILE=./buildsystem/platforms/gcc-windows-x64.cmake -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
+:: cmake -G "MinGW Makefiles" -DCMAKE_TOOLCHAIN_FILE=./buildsystem/platforms/gcc-windows-x64.cmake -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
 
 :: Build the project
 cmake --build ./build/%BUILD_TYPE%
