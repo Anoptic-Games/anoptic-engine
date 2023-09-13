@@ -21,6 +21,8 @@
 //
 //========================================================================
 
+#ifndef STRUCTS_H
+#define STRUCTS_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,3 +124,6 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 	struct VulkanComponents *components;
 	GLFWwindow *window;
 };
+
+
+#endif

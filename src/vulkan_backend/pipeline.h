@@ -20,16 +20,16 @@
 // If not, see <https://www.gnu.org/licenses/>.
 //
 //========================================================================
+#ifndef PIPELINE_H
+#define PIPELINE_H
+
 
 #include <vulkan/vulkan.h>
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
 #include "vulkan_backend/structs.h"
-#endif
 
 // Pipeline-specific structs
-struct Buffer 
+struct Buffer
 {
     uint32_t size;
     char* data;
@@ -41,3 +41,7 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 
 // Creates a graphics pipeline
 VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout *pipelineLayout, VkRenderPass renderPass);
+
+
+
+#endif

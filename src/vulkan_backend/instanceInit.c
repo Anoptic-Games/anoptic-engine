@@ -35,15 +35,9 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
 #include "vulkan_backend/structs.h"
-#endif
 
-#ifndef PIPELINE_H
-#define PIPELINE_H
 #include "vulkan_backend/pipeline.h"
-#endif
 
 
 // Variables
