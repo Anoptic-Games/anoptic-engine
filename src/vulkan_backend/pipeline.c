@@ -21,12 +21,15 @@
 //
 //========================================================================
 
+#include "pipeline.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
+
+#include "anoptic_memalign.h"
 
 
 #define GLFW_INCLUDE_VULKAN
@@ -35,43 +38,14 @@
 
 #ifndef STRUCTS_H
 #define STRUCTS_H
-#include "graphics/structs.h"
+#include "vulkan_backend/structs.h"
 #endif
 
-// Platform-specific aligned malloc wrappers LMAO LMAO LMAO
-// This is required because SPIR-V bytecode is 4 bytes, so we must align explicitly
-#ifdef __linux__
-    #include <malloc.h> // for memalign
-#elif defined(_WIN32)
-    #include <malloc.h> // for _aligned_malloc
-#else
-    #error "Unsupported platform"
-#endif
-
-void* aligned_malloc(size_t size) 
-{
-    void* ptr = NULL;
-#ifdef __linux__
-    ptr = memalign(_Alignof(uint32_t), size);
-#elif defined(_WIN32)
-    ptr = _aligned_malloc(size, alignof(uint32_t));
-#endif
-    return ptr;
-}
-
-// Pipeline-specific structs
-
-struct Buffer 
-{
-    uint32_t size;
-    char* data;
-};
-
-//!TODO add a struct to hold all discovered shaders and their buffers
+// TODO: add a struct to hold all discovered shaders and their buffers
 
 // Utility functions
 
-//!TODO add a generalized function to loop over 
+// TODO: add a generalized function to loop over 
 
 bool loadFile(const char* filename, struct Buffer* buffer) 
 {
@@ -86,7 +60,7 @@ bool loadFile(const char* filename, struct Buffer* buffer)
     uint32_t size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    buffer->data = aligned_malloc(size + 1);
+    buffer->data = anoptic_aligned_malloc(size + 1, alignof(uint32_t));
     if (buffer->data == NULL) 
     {
         fprintf(stderr, "Failed to allocate memory for file: %s\n", filename);
@@ -173,7 +147,7 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 }
 
 
-//!TODO write two garbo removers for the shader buffers and modules
+// TODO: write two garbo removers for the shader buffers and modules
 
 // The juicy part
 
@@ -346,7 +320,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	}
 
 	// TODO: Figure out why this crashes on Windows?
-	// !DONE: It crashes on Windows because we're using _aligned_malloc() from the Win. API, which has its own free() function
+	// DONE: It crashes on Windows because we're using _aligned_malloc() from the Win. API, which has its own free() function
 	#ifdef _WIN32
 		_aligned_free(vertShaderCode.data);
 		_aligned_free(fragShaderCode.data);
@@ -355,7 +329,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 		free(fragShaderCode.data);
 	#endif
 
-	//!TODO generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
+	// TODO: generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
 	vkDestroyShaderModule(device, vertShaderModule, nullptr);
 	vkDestroyShaderModule(device, fragShaderModule, nullptr);
 

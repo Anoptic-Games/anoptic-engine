@@ -25,7 +25,7 @@
 
 #ifndef STRUCTS_H
 #define STRUCTS_H
-#include "graphics/structs.h"
+#include "vulkan_backend/structs.h"
 #endif
 
 // Function interfaces

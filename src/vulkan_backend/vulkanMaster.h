@@ -25,14 +25,17 @@
 
 #ifndef STRUCTS_H
 #define STRUCTS_H
-#include "graphics/structs.h"
+#include "vulkan_backend/structs.h"
 #endif
 
 // Function interfaces
 
+// Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
+VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components); 
 
-// Creates a render pass
-bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass);
+// A celebration
+void unInitVulkan();
 
-// Creates a graphics pipeline
-VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout *pipelineLayout, VkRenderPass renderPass);
+// Draws a single frame
+
+void drawFrame(VulkanComponents* components, GLFWwindow* window);
