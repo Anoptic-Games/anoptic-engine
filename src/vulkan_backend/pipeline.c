@@ -330,8 +330,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	#endif
 
 	// TODO: generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
-	vkDestroyShaderModule(device, vertShaderModule, nullptr);
-	vkDestroyShaderModule(device, fragShaderModule, nullptr);
+	vkDestroyShaderModule(device, vertShaderModule, NULL);
+	vkDestroyShaderModule(device, fragShaderModule, NULL);
 
 
 	return graphicsPipeline;
