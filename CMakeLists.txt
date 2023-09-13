@@ -1,7 +1,19 @@
 cmake_minimum_required(VERSION 3.5)
 project(anopticengine)
 
-# Include all headers
+# Debugging the Build System
+message(STATUS "System name: ${CMAKE_SYSTEM_NAME}")
+message(STATUS "System version: ${CMAKE_SYSTEM_VERSION}")
+message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
+
+# Anoptic Engine Only Supports 64-bit Compilation
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(STATUS "64-bit compiler detected.")
+else()
+  message(FATAL_ERROR "64-bit compiler REQUIRED.")
+endif()
+
+# Include all header directories
 include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 
 # Define the project root path
@@ -18,12 +30,11 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
 find_package(Vulkan REQUIRED)
 
 # Add an executable target
-add_executable(anopticengine
-    ./src/engine/main.c
-    ./src/graphics/vulkanMaster.c
-	./src/graphics/instanceInit.c
-	./src/graphics/pipeline.c
-)
+add_executable(anopticengine ./src/engine/main.c)
+
+# Module Subdirectories
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/platform)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/graphics)
 
 # Link the GLFW and Vulkan libraries to the target
 target_link_libraries(anopticengine glfw)
