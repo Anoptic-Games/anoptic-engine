@@ -58,5 +58,4 @@ build/*
 !build/build.md
 CMakeFiles
 CMakeFiles/
-CMakeFiles/*
 CMakeCache.txt
