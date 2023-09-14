@@ -30,20 +30,14 @@
 #include <time.h>
 
 
-
+// TODO: Figure out why this is here AND in main
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
-#include "graphics/structs.h"
-#endif
+#include "vulkan_backend/structs.h"
 
-#ifndef PIPELINE_H
-#define PIPELINE_H
-#include "graphics/pipeline.h"
-#endif
+#include "vulkan_backend/pipeline.h"
 
 
 // Variables

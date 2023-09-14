@@ -21,21 +21,28 @@
 //
 //========================================================================
 
+#ifndef PIPELINE_H
+#define PIPELINE_H
+
+
 #include <vulkan/vulkan.h>
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
-#include "graphics/structs.h"
+#include "vulkan_backend/structs.h"
+
+// Pipeline-specific structs
+struct Buffer
+{
+    uint32_t size;
+    char* data;
+};
+
+
+// Creates a render pass
+bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass);
+
+// Creates a graphics pipeline
+VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout *pipelineLayout, VkRenderPass renderPass);
+
+
+
 #endif
-
-// Function interfaces
-
-// Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
-VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components); 
-
-// A celebration
-void unInitVulkan();
-
-// Draws a single frame
-
-void drawFrame(VulkanComponents* components, GLFWwindow* window);

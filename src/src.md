@@ -14,7 +14,7 @@ The directory structure for `src/` might look something like this:
 
 ```
 src/
-├── graphics/       # Graphics rendering code
+├── vulkan_backend/       # Graphics rendering code
 ├── core/           # Core data management like ECS and memory management
 ├── audio/          # Audio processing code
 ├── physics/        # Physics simulation code
@@ -26,7 +26,7 @@ src/
 ## Purpose of Each Subdirectory
 TODO: Crystalize
 
-- `graphics/`: This directory contains the code for rendering graphics, processing shaders, handling textures, and any other tasks related to graphics.
+- `vulkan_backend/`: This directory contains the code for rendering graphics, processing shaders, handling textures, and any other tasks related to graphics.
 
 - `core/`: This directory contains the core functionality of the engine, including entity-component-system (ECS) management, memory management, and other central systems of the engine.
 
