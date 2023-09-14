@@ -23,22 +23,24 @@
 
 #include "engine/main.h" // This works
 
+// Includes
+#include <stdio.h>
+#include <stdlib.h>
+#include <vulkan/vulkan.h>
+#include <stdbool.h>
+#include <string.h>
+
+// TODO: This shouldnt be in main lol
+#ifndef GLFW_INCLUDE_VULKAN
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+#endif
+
 // Rendering module still WIP
-
-#ifndef VMASTER_H
-#define VMASTER_H
 #include "vulkan_backend/vulkanMaster.h"
-#endif
-
-#ifndef INSTANCE_H
-#define INSTANCE_H
 #include "vulkan_backend/instanceInit.h"
-#endif
-
-#ifndef STRUCTS_H
-#define STRUCTS_H
 #include "vulkan_backend/structs.h"
-#endif
 
 
 // Structs

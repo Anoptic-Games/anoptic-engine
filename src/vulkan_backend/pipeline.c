@@ -32,14 +32,11 @@
 #include "anoptic_memalign.h"
 
 
-#define GLFW_INCLUDE_VULKAN
+// TODO: Figure out why this is here AND in main
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
 #include "vulkan_backend/structs.h"
-#endif
 
 // TODO: add a struct to hold all discovered shaders and their buffers
 

@@ -20,6 +20,7 @@
 // If not, see <https://www.gnu.org/licenses/>.
 //
 //========================================================================
+
 #ifndef PIPELINE_H
 #define PIPELINE_H
 
