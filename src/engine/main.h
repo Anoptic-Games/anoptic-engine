@@ -20,13 +20,3 @@
 // If not, see <https://www.gnu.org/licenses/>.
 //
 //========================================================================
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <vulkan/vulkan.h>
-#include <stdbool.h>
-#include <string.h>
-
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>

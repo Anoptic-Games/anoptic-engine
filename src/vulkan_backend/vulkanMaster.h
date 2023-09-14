@@ -21,12 +21,13 @@
 //
 //========================================================================
 
+#ifndef VULKANMASTER_H
+#define VULKANMASTER_H
+
+
 #include <vulkan/vulkan.h>
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
 #include "vulkan_backend/structs.h"
-#endif
 
 // Function interfaces
 
@@ -39,3 +40,5 @@ void unInitVulkan();
 // Draws a single frame
 
 void drawFrame(VulkanComponents* components, GLFWwindow* window);
+
+#endif

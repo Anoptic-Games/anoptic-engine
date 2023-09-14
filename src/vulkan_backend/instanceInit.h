@@ -21,12 +21,12 @@
 //
 //========================================================================
 
+#ifndef INSTANCEINIT_H
+#define INSTANCEINIT_H
+
 #include <vulkan/vulkan.h>
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
 #include "vulkan_backend/structs.h"
-#endif
 
 // Function interfaces
 
@@ -68,3 +68,5 @@ bool createCommandBuffer(VulkanComponents* components);
 
 // Creates fences, semaphores, etc.
 bool createSyncObjects(VulkanComponents* components) ;
+
+#endif

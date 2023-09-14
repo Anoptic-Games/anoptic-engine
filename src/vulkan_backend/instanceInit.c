@@ -30,7 +30,7 @@
 #include <time.h>
 
 
-
+// TODO: Figure out why this is here AND in main
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
