@@ -33,20 +33,11 @@
 
 #define GLFW_INCLUDE_VULKAN
 
-#ifndef INSTANCE_H
-#define INSTANCE_H
-#include "graphics/instanceInit.h"
-#endif
+#include "vulkan_backend/instanceInit.h"
 
-#ifndef STRUCTS_H
-#define STRUCTS_H
-#include "graphics/structs.h"
-#endif
+#include "vulkan_backend/structs.h"
 
-#ifndef PIPELINE_H
-#define PIPELINE_H
-#include "graphics/pipeline.h"
-#endif
+#include "vulkan_backend/pipeline.h"
 
 
 

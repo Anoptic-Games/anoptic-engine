@@ -21,6 +21,8 @@
 //
 //========================================================================
 
+#ifndef STRUCTS_H
+#define STRUCTS_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,11 +102,11 @@ struct QueueFamilyIndices // Stores whether different queue families exist, and 
 
 typedef struct DeviceCapabilities // Add queue families, device extensions etc as they're implemented into compute tasks and render functions
 {
-		bool graphics;
-		bool compute;
-		bool transfer;
-		bool float64;
-		bool int64;
+	bool graphics;
+	bool compute;
+	bool transfer;
+	bool float64;
+	bool int64;
 } DeviceCapabilities;
 
 struct SwapChainSupportDetails 
@@ -122,3 +124,6 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 	struct VulkanComponents *components;
 	GLFWwindow *window;
 };
+
+
+#endif

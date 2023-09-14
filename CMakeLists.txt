@@ -34,7 +34,7 @@ add_executable(anopticengine ./src/engine/main.c)
 
 # Module Subdirectories
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/platform)
-add_subdirectory(${CMAKE_SOURCE_DIR}/src/graphics)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
 
 # Link the GLFW and Vulkan libraries to the target
 target_link_libraries(anopticengine glfw)
