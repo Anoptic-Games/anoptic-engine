@@ -43,5 +43,5 @@ void anoptic_aligned_free(void* ptr);
 
 
 
-#endif // ANOPTIC_MEMORY_H
+#endif // ANOPTIC_MEMALIGN_H
 // end of include guard, end of file
