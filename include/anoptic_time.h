@@ -27,13 +27,13 @@ uint64_t ano_timestamp_ntp();   // Network Transfer Protocol-adjusted timestamp.
 // Start and operate on a timespan within the a specified thread.
 void ano_timespan_start(uint32_t threadIndex);  // Starts a time span from 0 seconds on the specified thread.
 
-uint64_t ano_timespan_get(uint32_t threadIndex); //
+uint64_t ano_timespan_get(uint32_t threadIndex); // Get the elapsed span of time.
 
-void ano_timespan_pause(uint32_t threadIndex);  //
+void ano_timespan_pause(uint32_t threadIndex);  // Pauses/freezes the counter so that get() the moment in time when this was called.
 
-void ano_timestamp_resume(uint32_t threadIndex); //
+void ano_timestamp_resume(uint32_t threadIndex); // Resumes the counter.
 
-void ano_timespan_stop(uint32_t threadIndex);   //
+void ano_timespan_stop(uint32_t threadIndex);   // Stops the timespan counter.
 
 #endif // ANOPTIC_TIME_H
 // end of include guard, end of file
