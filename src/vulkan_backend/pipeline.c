@@ -19,6 +19,9 @@
 
 #include "vulkan_backend/structs.h"
 
+
+#include "anoptic_time.h"
+
 // TODO: add a struct to hold all discovered shaders and their buffers
 
 // Utility functions
@@ -27,6 +30,8 @@
 
 bool loadFile(const char* filename, struct Buffer* buffer) 
 {
+	ano_timespan_start(); // 0.00s
+
     FILE* file = fopen(filename, "rb");
     if (file == NULL) 
     {
@@ -38,13 +43,17 @@ bool loadFile(const char* filename, struct Buffer* buffer)
     uint32_t size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    buffer->data = anoptic_aligned_malloc(size + 1, alignof(uint32_t));
+	uint64_t midSpan = ano_timespan_get();
+
+    buffer->data = ano_aligned_malloc(size + 1, alignof(uint32_t));
     if (buffer->data == NULL) 
     {
         fprintf(stderr, "Failed to allocate memory for file: %s\n", filename);
         fclose(file);
         return false;
     }
+
+	uint64_t somespan = ano_timespan_get();
 
     if (fread(buffer->data, 1, size, file) != size) 
     {
@@ -58,6 +67,8 @@ bool loadFile(const char* filename, struct Buffer* buffer)
     buffer->size = size;
     
     fclose(file);
+
+	uint64_t endSpan = ano_timespan_get() - midSpan;
     return true;
 }
 
