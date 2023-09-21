@@ -27,7 +27,7 @@
  * 
  * @note The function will return NULL if @p size or @p alignment is 0.
  */
-void* anoptic_aligned_malloc(size_t size, size_t alignment);
+void* ano_aligned_malloc(size_t size, size_t alignment);
 
 /**
  * @brief Frees an aligned block of memory.
@@ -37,9 +37,9 @@ void* anoptic_aligned_malloc(size_t size, size_t alignment);
  * @param ptr Pointer to the memory block that needs to be freed.
  * 
  * @note It's undefined behavior to free a memory block that wasn't previously
- *       allocated with anoptic_aligned_malloc or equivalent.
+ *       allocated with ano_aligned_malloc or equivalent.
  */
-void anoptic_aligned_free(void* ptr);
+void ano_aligned_free(void* ptr);
 
 
 
