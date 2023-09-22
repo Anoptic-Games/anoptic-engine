@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
  *
  * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
 
 #ifndef ANOPTIC_TIME_H
 #define ANOPTIC_TIME_H
@@ -24,27 +25,20 @@ uint64_t ano_timestamp_unix();  // Unix timestamp.
 uint64_t ano_timestamp_ntp();   // Network Time Protocol-adjusted timestamp. NOT guaranteed monotonic.
 
 
-// Start and operate on a timespan within the a specified thread.
+// Start and operate on a timespan within the calling thread.
 
-void ano_timespan_start(uint32_t spanIndex);  // Starts a time span from 0 seconds on the specified thread.
+void ano_timespan_start(uint32_t spanIndex);  // Starts a time span from 0 seconds on the calling thread.
 
-uint64_t ano_timespan_get(uint32_t spanIndex); // Get the elapsed span of time.
+uint64_t ano_timespan_get(uint32_t spanIndex); // Get the elapsed span of time within the calling thread.
 
-void ano_timespan_pause(uint32_t spanIndex);  // Pauses/freezes the counter so that get() the moment in time when this was called.
-
-void ano_timestamp_resume(uint32_t spanIndex); // Resumes the counter.
-
-void ano_timespan_stop(uint32_t spanIndex);   // Stops the timespan counter and frees its data.
+void ano_timespan_stop();   // Stops the thread's timespan counters and frees its data.
 
 
 // Waiting facilities
 void ano_busywait(uint64_t ns); // Spinlock the current thread for approximately ns nanoseconds.
 
-void ano_wait(uint64_t us);     // Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix, MultiMedia Timer on Windows)
-
-void ano_sleep(uint64_t us);    // Give up execution of the thread and let the OS scheduler do other things before giving it back after at least ms milliseconds.
+void ano_sleep(uint64_t us);     // Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix, MultiMedia Timer on Windows)
 // UNIX: if more than one second long, just call usleep repeatedly lol
-
 
 #endif // ANOPTIC_TIME_H
 // end of include guard, end of file
