@@ -42,7 +42,10 @@
 *.idb
 *.pdb
 *.save
+
+# IDE-specific directories
 .vscode/
+.idea/
 
 # Kernel Module Compile Results
 *.mod*
