@@ -6,12 +6,26 @@
 
 #include "anoptic_memalign.h"
 #include <stdlib.h>
-#include <malloc.h> // for memalign
+#include <stdio.h>
 
 
 // Linux-specific implementation of aligned_malloc as defined in the anoptic_memory API.
 void* anoptic_aligned_malloc(size_t size, size_t alignment) {
-    void* ptr = memalign(alignment, size);
+    void* ptr = NULL;
+	
+	if (alignment < sizeof(void *)) // Minimum alignment size is void* 
+	{
+   		alignment = sizeof(void *);
+	}
+
+	size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
+
+	int result = posix_memalign(&ptr, alignment, size);
+    if (result != 0) {
+		printf("Size of void*: %zu\n", sizeof(void *));
+		printf("Posix memalign error: %d\n", result);
+        return NULL;  // posix_memalign will set errno appropriately
+    }
     return ptr;
 }
 
