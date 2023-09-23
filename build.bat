@@ -31,7 +31,6 @@ if not "%2"=="" (
         exit /b 1
     )
 
-
     set TOOLCHAIN_ARG="-DCMAKE_TOOLCHAIN_FILE="%2""
 )
 echo TOOLCHAIN_ARG is set to: %TOOLCHAIN_ARG%
@@ -41,10 +40,7 @@ echo TOOLCHAIN_ARG is set to: %TOOLCHAIN_ARG%
 if not exist build\%BUILD_TYPE% mkdir build\%BUILD_TYPE%
 
 :: Configure the build with MinGW Makefiles generator
-:: set PATH="C:\Program Files\mingw-w64\bin;"%PATH%
-
-cmake -G "MinGW Makefiles" %TOOLCHAIN_ARG% -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
-:: cmake -G "MinGW Makefiles" -DCMAKE_TOOLCHAIN_FILE=./buildsystem/platforms/clang-windows-x64.cmake -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
+cmake -G "MinGW Makefiles" -DCMAKE_TOOLCHAIN_FILE="D:\AnopticGames\Panopticon\panopticon-engine\cmake\platforms\clang-windows-x64-mingw.cmake" -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
 
 :: Build the project
 cmake --build ./build/%BUILD_TYPE%
