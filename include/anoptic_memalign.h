@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
  *
  * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
 
 /**
  * @file anoptic_memalign.h
@@ -27,7 +28,7 @@
  * 
  * @note The function will return NULL if @p size or @p alignment is 0.
  */
-void* anoptic_aligned_malloc(size_t size, size_t alignment);
+void* ano_aligned_malloc(size_t size, size_t alignment);
 
 /**
  * @brief Frees an aligned block of memory.
@@ -37,11 +38,11 @@ void* anoptic_aligned_malloc(size_t size, size_t alignment);
  * @param ptr Pointer to the memory block that needs to be freed.
  * 
  * @note It's undefined behavior to free a memory block that wasn't previously
- *       allocated with anoptic_aligned_malloc or equivalent.
+ *       allocated with ano_aligned_malloc or equivalent.
  */
-void anoptic_aligned_free(void* ptr);
+void ano_aligned_free(void* ptr);
 
 
 
-#endif // ANOPTIC_MEMORY_H
+#endif // ANOPTIC_MEMALIGN_H
 // end of include guard, end of file
