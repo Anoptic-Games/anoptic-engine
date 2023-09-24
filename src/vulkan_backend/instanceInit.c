@@ -222,7 +222,7 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
     const char** extensions = calloc(totalExtensionCount, sizeof(char*));
 
     for (uint32_t i = 0; i < glfwExtensionCount; i++) {
-        extensions[i] = strdup(glfwExtensions[i]);
+        extensions[i] = _strdup(glfwExtensions[i]);
     }
 
     #ifdef DEBUG_BUILD
