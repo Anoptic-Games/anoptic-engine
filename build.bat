@@ -14,7 +14,7 @@ if "%1"=="1" (
 ) else if "%1"=="3" (
     set BUILD_TYPE=Tests
 ) else (
-    echo Usage: %0 ^<build_type^> [^<toolchain_file_path^>]
+    echo Usage: %0 ^<build_type^>
     echo   where ^<build_type^> is one of:
     echo     1 = Release
     echo     2 = Debug
@@ -22,25 +22,29 @@ if "%1"=="1" (
     exit /b 1
 )
 
-:: Parse the second command line argument for optional toolchain path
-set TOOLCHAIN_ARG=
-if not "%2"=="" (
-    echo Toolchain path specified: "%2"
-    if not exist "%2" (
-        echo Error: Toolchain file "%2" does not exist.
-        exit /b 1
-    )
-
-    set TOOLCHAIN_ARG="-DCMAKE_TOOLCHAIN_FILE="%2""
+:: Set the toolchain path based on the build type
+if "%BUILD_TYPE%"=="Release" (
+    set TOOLCHAIN_PATH=cmake\platforms\release_clang-windows-x64-mingw.cmake
+) else if "%BUILD_TYPE%"=="Debug" (
+    set TOOLCHAIN_PATH=cmake\platforms\debug_clang-windows-x64-mingw.cmake
+) else if "%BUILD_TYPE%"=="Tests" (
+    set TOOLCHAIN_PATH=cmake\platforms\tests_clang-windows-x64-mingw.cmake
+) else (
+    echo "BORKED"
 )
-echo TOOLCHAIN_ARG is set to: %TOOLCHAIN_ARG%
 
+:: Convert relative path to absolute path
+pushd "%~dp0"
+set TOOLCHAIN_PATH=%CD%\%TOOLCHAIN_PATH%
+popd
+
+echo TOOLCHAIN_PATH is set to: %TOOLCHAIN_PATH%
 
 :: Create build directory if not exist
 if not exist build\%BUILD_TYPE% mkdir build\%BUILD_TYPE%
 
 :: Configure the build with MinGW Makefiles generator
-cmake -G "MinGW Makefiles" -DCMAKE_TOOLCHAIN_FILE="D:\AnopticGames\Panopticon\panopticon-engine\cmake\platforms\clang-windows-x64-mingw.cmake" -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
+cmake -G "MinGW Makefiles" -DCMAKE_TOOLCHAIN_FILE="%TOOLCHAIN_PATH%" -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -S . -B ./build/%BUILD_TYPE%
 
 :: Build the project
 cmake --build ./build/%BUILD_TYPE%

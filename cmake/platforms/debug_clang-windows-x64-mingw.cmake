@@ -12,8 +12,8 @@ set(CMAKE_SYSTEM_PROCESSOR x86_64)
 set(TOOLCHAIN_PREFIX x86_64-w64-mingw32)
 
 # Add any other flags you need
-set(CMAKE_C_FLAGS "--target=${TOOLCHAIN_PREFIX}")
-set(CMAKE_CXX_FLAGS "--target=${TOOLCHAIN_PREFIX}")
+set(CMAKE_C_FLAGS "--target=${TOOLCHAIN_PREFIX} -g -Wall")
+set(CMAKE_CXX_FLAGS "--target=${TOOLCHAIN_PREFIX} -g -Wall")
 
 # Search for libraries and headers in the target directories only
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
