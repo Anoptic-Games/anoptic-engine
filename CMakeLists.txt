@@ -2,9 +2,13 @@ cmake_minimum_required(VERSION 3.5)
 project(anopticengine)
 
 # Debugging the Build System
+message(STATUS "Toolchain file specified: ${CMAKE_TOOLCHAIN_FILE}")
 message(STATUS "System name: ${CMAKE_SYSTEM_NAME}")
 message(STATUS "System version: ${CMAKE_SYSTEM_VERSION}")
 message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
+message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
+message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER}")
+
 
 # Anoptic Engine Only Supports 64-bit Compilation
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)

@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
  *
  * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
 
 
 #include <stdio.h>
@@ -221,7 +222,7 @@ const char** getRequiredExtensions(uint32_t* extensionsCount)
     const char** extensions = calloc(totalExtensionCount, sizeof(char*));
 
     for (uint32_t i = 0; i < glfwExtensionCount; i++) {
-        extensions[i] = strdup(glfwExtensions[i]);
+        extensions[i] = _strdup(glfwExtensions[i]);
     }
 
     #ifdef DEBUG_BUILD
