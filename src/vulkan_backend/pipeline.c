@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
  *
  * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
 
 #include "pipeline.h"
 
@@ -38,7 +39,8 @@ bool loadFile(const char* filename, struct Buffer* buffer)
     uint32_t size = ftell(file);
     fseek(file, 0, SEEK_SET);
 
-    buffer->data = anoptic_aligned_malloc(size, alignof(uint32_t));
+
+    buffer->data = ano_aligned_malloc(size, alignof(uint32_t));
     if (buffer->data == NULL) 
     {
         fprintf(stderr, "Failed to allocate memory for file: %s\n", filename);

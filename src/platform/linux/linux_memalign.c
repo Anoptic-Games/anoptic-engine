@@ -1,6 +1,7 @@
 /* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
  *
  * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
 
 #ifdef __linux__
 
@@ -9,8 +10,8 @@
 #include <stdio.h>
 
 
-// Linux-specific implementation of aligned_malloc as defined in the anoptic_memory API.
-void* anoptic_aligned_malloc(size_t size, size_t alignment) {
+// Linux-specific implementation of aligned_malloc as defined in the ano_memory API.
+void* ano_aligned_malloc(size_t size, size_t alignment) {
     void* ptr = NULL;
 	
 	if (alignment < sizeof(void *)) // Minimum alignment size is void* 
@@ -29,8 +30,8 @@ void* anoptic_aligned_malloc(size_t size, size_t alignment) {
     return ptr;
 }
 
-// Linux-specific implementation of aligned_free as defined in the anoptic_memory API.
-void anoptic_aligned_free(void* ptr) {
+// Linux-specific implementation of aligned_free as defined in the ano_memory API.
+void ano_aligned_free(void* ptr) {
     free(ptr);  // free works for memory allocated by posix_memalign
 }
 
