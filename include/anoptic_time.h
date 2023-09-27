@@ -10,36 +10,39 @@
 
 //TODO: Doxygen + Finalize
 
-// High resolution relative timestamps from this local machine.
-uint64_t ano_timestamp_raw();   // return a high-resolution monotonic raw timestamp in nanoseconds
 
-uint64_t ano_timestamp_us();    // return ano_timestamp_raw, but scaled to microseconds.
- 
-uint32_t ano_timestamp_ms();    // return ano_timestamp_raw, but truncated to ms.
+/*--- Local High-Resolution Timestamps ---*/
 
+// return a high-resolution monotonic raw timestamp in nanoseconds.
+uint64_t ano_timestamp_raw();
 
-// Generic timestamps supporting the current date, plus networking adjustments.
-uint64_t ano_timestamp_utc();   // UTC timestamp.
+// return raw timestamp, but scaled to microseconds.
+uint64_t ano_timestamp_us();
 
-uint64_t ano_timestamp_unix();  // Unix timestamp.
-
-uint64_t ano_timestamp_ntp();   // Network Time Protocol-adjusted timestamp. NOT guaranteed monotonic.
+// return raw timestamp, but scaled to milliseconds.
+uint32_t ano_timestamp_ms();
 
 
-// Start and operate on a timespan within the calling thread.
+/*--- Generic datestamps ---*/
+/* not guaranteed monotonic */
 
-void ano_timespan_start(uint32_t spanIndex);  // Starts a time span from 0 seconds on the calling thread.
+// UTC timestamp.
+uint64_t ano_timestamp_utc();
 
-uint64_t ano_timespan_get(uint32_t spanIndex); // Get the elapsed span of time within the calling thread.
+// Unix timestamp.
+uint64_t ano_timestamp_unix();
 
-void ano_timespan_stop();   // Stops the thread's timespan counters and frees its data.
+// Network Time Protocol-adjusted timestamp.
+uint64_t ano_timestamp_ntp();
 
 
-// Waiting facilities
-void ano_busywait(uint64_t ns); // Spinlock the current thread for approximately ns nanoseconds.
+/*--- Wait/Sleep Facilities ---*/
 
-void ano_sleep(uint64_t us);     // Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix, MultiMedia Timer on Windows)
-// UNIX: if more than one second long, just call usleep repeatedly lol
+// Spinlock the current thread for approximately ns nanoseconds.
+void ano_busywait(uint64_t ns);
+
+// Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix, MultiMedia Timer on Windows)
+// UNIX NOTE: if more than one second long, will need to call usleep repeatedly
+void ano_sleep(uint64_t us);
 
 #endif // ANOPTIC_TIME_H
-// end of include guard, end of file

@@ -24,6 +24,8 @@
 #include "vulkan_backend/instanceInit.h"
 #include "vulkan_backend/structs.h"
 
+// Testing
+#include "anoptic_time.h"
 
 // Structs
 
@@ -42,6 +44,16 @@ int main()
 {
 	#ifdef DEBUG_BUILD
 	printf("Running in debug mode!\n");
+    ano_timestamp_raw();
+    ano_timestamp_us();
+    ano_timestamp_ms();
+
+    ano_timestamp_utc();
+    ano_timestamp_unix();
+    ano_timestamp_ntp();
+
+    ano_busywait(1000000);
+    ano_sleep(1000000);
 	#endif	
 	VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
 	GLFWwindow *window = initWindow(components);
