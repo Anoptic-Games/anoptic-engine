@@ -11,11 +11,11 @@
 #include <string.h>
 #include <time.h>
 
-
-// TODO: Figure out why this is here AND in main
+#ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#endif
 
 #include "vulkan_backend/structs.h"
 
@@ -160,7 +160,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 	{
 		return VK_FALSE;
 	}
-    printf("validation layer: %s\n", pCallbackData->pMessage);
+    printf("Validation layer: %s\n", pCallbackData->pMessage);
 
     return VK_FALSE;
 }
@@ -365,7 +365,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFe
 	return physicalRequirements && queueRequirements && extensionsSupported;
 }
 
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices) // Queries all available devices, and selects one according to our needs.
+bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices)
 {
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
@@ -381,33 +381,60 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
 
     VkPhysicalDeviceProperties deviceProperties;
     VkPhysicalDeviceFeatures deviceFeatures;
-    VkDeviceSize maxMemorySize = 0;
+    VkPhysicalDeviceMemoryProperties memProperties;
 
-    for (uint32_t i = 0; i < deviceCount; i++) // Iterates through available devices and selects the one with the most VRAM.
+    VkDeviceSize maxDedicatedMemory = 0;
+    VkDeviceSize maxIntegratedMemory = 0;
+
+    VkPhysicalDevice bestDedicatedDevice = VK_NULL_HANDLE;
+    VkPhysicalDevice bestIntegratedDevice = VK_NULL_HANDLE;
+
+    for (uint32_t i = 0; i < deviceCount; i++)
     {
         vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
         vkGetPhysicalDeviceFeatures(devices[i], &deviceFeatures);
+        vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
 
-        if (deviceProperties.limits.bufferImageGranularity > maxMemorySize) 
+        if (isDeviceSuitable(devices[i], deviceFeatures, surface))
         {
-            maxMemorySize = deviceProperties.limits.bufferImageGranularity;
-	        if (isDeviceSuitable(devices[i], deviceFeatures, surface) == true) 
-	        {
-	        	*physicalDevice = devices[i];
-	        	*capabilities = populateCapabilities(devices[i], deviceFeatures);
-	        	*indices = findQueueFamilies(devices[i], surface);
-	        }
+            //!TODO Extend the logic to select the heap that's DEVICE_LOCAL
+            VkDeviceSize currentMemorySize = memProperties.memoryHeaps[0].size;
+
+            if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && currentMemorySize > maxDedicatedMemory)
+            {
+                bestDedicatedDevice = devices[i];
+                maxDedicatedMemory = currentMemorySize;
+            }
+            else if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && currentMemorySize > maxIntegratedMemory)
+            {
+                bestIntegratedDevice = devices[i];
+                maxIntegratedMemory = currentMemorySize;
+            }
         }
     }
 
-    printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (indices->graphicsFamily), (indices->computeFamily), (indices->transferFamily), (indices->presentFamily));
-
-    if (*physicalDevice == VK_NULL_HANDLE) 
+    if (bestDedicatedDevice != VK_NULL_HANDLE)
+    {
+        *physicalDevice = bestDedicatedDevice;
+        vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
+        *capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
+        *indices = findQueueFamilies(*physicalDevice, surface);
+    }
+    else if (bestIntegratedDevice != VK_NULL_HANDLE)
+    {
+        *physicalDevice = bestIntegratedDevice;
+        vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
+        *capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
+        *indices = findQueueFamilies(*physicalDevice, surface);
+    }
+    else
     {
         fprintf(stderr, "Failed to find a suitable GPU!\n");
+        free(devices);
         return false;
     }
-    printf("%p\n", physicalDevice);
+
+    printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (indices->graphicsFamily), (indices->computeFamily), (indices->transferFamily), (indices->presentFamily));
 
     free(devices);
     return true;
