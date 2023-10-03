@@ -17,6 +17,8 @@
 #include <GLFW/glfw3native.h>
 #endif
 
+#include "instanceInit.h"
+
 #include "vulkan_backend/structs.h"
 
 #include "vulkan_backend/pipeline.h"
@@ -30,7 +32,6 @@ const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
 VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMessenger);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
 SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
@@ -365,8 +366,9 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFe
 	return physicalRequirements && queueRequirements && extensionsSupported;
 }
 
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices)
+bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char*** availableDevices, char* preferredDevice)
 {
+	bool foundPreferredDevice = false;
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
 
@@ -375,6 +377,9 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
         fprintf(stderr, "Failed to find GPUs with Vulkan support!\n");
         return false;
     }
+
+	//Allocate memory for the names of every detected device
+    *availableDevices = (char**)malloc(sizeof(char*) * deviceCount);
 
     VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices);
@@ -389,14 +394,27 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
     VkPhysicalDevice bestDedicatedDevice = VK_NULL_HANDLE;
     VkPhysicalDevice bestIntegratedDevice = VK_NULL_HANDLE;
 
+	printf("DeviceCount: %d\n", deviceCount);
+	
     for (uint32_t i = 0; i < deviceCount; i++)
     {
         vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
         vkGetPhysicalDeviceFeatures(devices[i], &deviceFeatures);
         vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
+        printf("%d\n", i);
 
         if (isDeviceSuitable(devices[i], deviceFeatures, surface))
         {
+
+			//Select the first preffered device if available and break out of the selection loop
+			if (strcmp(deviceProperties.deviceName, preferredDevice) == 0)
+        	{
+            	*physicalDevice = devices[i];
+            	foundPreferredDevice = true;
+            	break;
+        	}
+
+        
             //!TODO Extend the logic to select the heap that's DEVICE_LOCAL
             VkDeviceSize currentMemorySize = memProperties.memoryHeaps[0].size;
 
@@ -410,28 +428,43 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
                 bestIntegratedDevice = devices[i];
                 maxIntegratedMemory = currentMemorySize;
             }
+            (*availableDevices)[i] = (char*)malloc(strlen(deviceProperties.deviceName) +1);
+            strcpy((*availableDevices)[i], deviceProperties.deviceName);
+            #ifdef DEBUG_BUILD
+			printf("%s\n", (*availableDevices)[i]);
+			#endif
         }
     }
 
-    if (bestDedicatedDevice != VK_NULL_HANDLE)
+    if (foundPreferredDevice)
     {
-        *physicalDevice = bestDedicatedDevice;
-        vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
-        *capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
-        *indices = findQueueFamilies(*physicalDevice, surface);
-    }
-    else if (bestIntegratedDevice != VK_NULL_HANDLE)
-    {
-        *physicalDevice = bestIntegratedDevice;
         vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
         *capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
         *indices = findQueueFamilies(*physicalDevice, surface);
     }
     else
     {
-        fprintf(stderr, "Failed to find a suitable GPU!\n");
-        free(devices);
-        return false;
+
+    	if (bestDedicatedDevice != VK_NULL_HANDLE)
+    	{
+        	*physicalDevice = bestDedicatedDevice;
+        	vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
+        	*capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
+        	*indices = findQueueFamilies(*physicalDevice, surface);
+    	}
+    	else if (bestIntegratedDevice != VK_NULL_HANDLE)
+    	{
+        	*physicalDevice = bestIntegratedDevice;
+        	vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
+        	*capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
+        	*indices = findQueueFamilies(*physicalDevice, surface);
+    	}
+    	else
+    	{
+        	fprintf(stderr, "Failed to find a suitable GPU!\n");
+        	free(devices);
+        	return false;
+    	}
     }
 
     printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (indices->graphicsFamily), (indices->computeFamily), (indices->transferFamily), (indices->presentFamily));

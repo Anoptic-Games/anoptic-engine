@@ -29,16 +29,6 @@
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
-// Function Prototypes
-
-VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMessenger);
-VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
-VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
-struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
-SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
-ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
-
 
 // Assorted utility functions
 
@@ -213,7 +203,8 @@ VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) /
     DeviceCapabilities capabilities;
     components->physicalDevice = VK_NULL_HANDLE;
     struct QueueFamilyIndices indices;
-    if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices))
+	//!TODO replace empty char array with preffered device from VulkanSettings   
+	 if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices, &(components->availableDevices), ""))
     {
     	fprintf(stderr, "Quitting init: physical device failure!\n");
     	unInitVulkan();
