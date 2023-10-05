@@ -34,7 +34,6 @@ VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMes
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
-SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
 const char** getRequiredExtensions(uint32_t* extensionsCount);
@@ -366,23 +365,23 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFe
 	return physicalRequirements && queueRequirements && extensionsSupported;
 }
 
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char*** availableDevices, char* preferredDevice)
+bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char*** availableDevices, uint32_t* deviceCount, char* preferredDevice)
 {
 	bool foundPreferredDevice = false;
-    uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
+    *deviceCount = 0;
+    vkEnumeratePhysicalDevices(instance, deviceCount, NULL);
 
-    if (deviceCount == 0) 
+    if (*deviceCount == 0) 
     {
         fprintf(stderr, "Failed to find GPUs with Vulkan support!\n");
         return false;
     }
 
 	//Allocate memory for the names of every detected device
-    *availableDevices = (char**)malloc(sizeof(char*) * deviceCount);
+    *availableDevices = (char**)malloc(sizeof(char*) * (*deviceCount));
 
-    VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * deviceCount);
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices);
+    VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * (*deviceCount));
+    vkEnumeratePhysicalDevices(instance, deviceCount, devices);
 
     VkPhysicalDeviceProperties deviceProperties;
     VkPhysicalDeviceFeatures deviceFeatures;
@@ -394,9 +393,9 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
     VkPhysicalDevice bestDedicatedDevice = VK_NULL_HANDLE;
     VkPhysicalDevice bestIntegratedDevice = VK_NULL_HANDLE;
 
-	printf("DeviceCount: %d\n", deviceCount);
+	printf("DeviceCount: %d\n", *deviceCount);
 	
-    for (uint32_t i = 0; i < deviceCount; i++)
+    for (uint32_t i = 0; i < *deviceCount; i++)
     {
         vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
         vkGetPhysicalDeviceFeatures(devices[i], &deviceFeatures);
@@ -584,7 +583,7 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 	    }
 }
 
-SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window) // Selects and initializes a swap chain
+SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window, uint32_t preferredMode) // Selects and initializes a swap chain
 {
 	struct SwapChainSupportDetails details;
     details = querySwapChainSupport(device, surface);
@@ -609,48 +608,56 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
         return failure;
     }
 
-    //Pick a present mode
-    VkPresentModeKHR chosenPresentMode;
-    uint32_t presentModePresent = 0; // Order of priority for our desired present mode
-    for (uint32_t i = 0; i < details.presentModesCount; i++)
-    {
-    	if (*(details.presentModes+i) == VK_PRESENT_MODE_MAILBOX_KHR)
-		{
-			chosenPresentMode = *(details.presentModes+i);
-			presentModePresent = 4; // highest priority
-		}
-    	if (*(details.presentModes+i) == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
-		{
-			if (presentModePresent <3)
-			{
-				chosenPresentMode = *(details.presentModes+i);
-				presentModePresent = 3;
-			}
-		}
-    	if (*(details.presentModes+i) == VK_PRESENT_MODE_FIFO_KHR)
-		{
-			if (presentModePresent <2)
-			{
-				chosenPresentMode = *(details.presentModes+i);
-				presentModePresent = 2;
-			}
-		}
-    	if (*(details.presentModes+i) == VK_PRESENT_MODE_IMMEDIATE_KHR)
-		{
-			if (presentModePresent <1)
-			{
-				chosenPresentMode = *(details.presentModes+i);
-				presentModePresent = 1;
-			}
-		}
-    }
-
-    if (presentModePresent == 0)
-    {
-    	printf("Failed to select an appropriate present mode!\n");
-        SwapChainGroup failure = {NULL};
-        return failure;
-    }
+	VkPresentModeKHR chosenPresentMode;
+	bool preferredModeFound = false;
+	uint32_t presentModePriority = 0; 
+	
+	for (uint32_t i = 0; i < details.presentModesCount; i++) 
+	{
+	    VkPresentModeKHR currentMode = details.presentModes[i];
+	
+	    // If the preferred mode is found, use it and break out of loop
+	    if (currentMode == preferredMode) 
+	    {
+	        chosenPresentMode = preferredMode;
+	        preferredModeFound = true;
+	        break;
+	    }
+	
+	    // Priority based system
+	    uint32_t currentPriority = 0;
+	    switch (currentMode) 
+	    {
+	        case VK_PRESENT_MODE_MAILBOX_KHR:
+	            currentPriority = 4;
+	            break;
+	        case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+	            currentPriority = 3;
+	            break;
+	        case VK_PRESENT_MODE_FIFO_KHR:
+	            currentPriority = 2;
+	            break;
+	        case VK_PRESENT_MODE_IMMEDIATE_KHR:
+	            currentPriority = 1;
+	            break;
+	        default:
+	            break;
+	    }
+	
+	    if (currentPriority > presentModePriority) 
+	    {
+	        presentModePriority = currentPriority;
+	        chosenPresentMode = currentMode;
+	    }
+	}
+	
+	if (!preferredModeFound && presentModePriority == 0) 
+	{
+	    printf("Failed to select an appropriate present mode!\n");
+	    SwapChainGroup failure = {NULL};
+	    return failure;
+	}
+	
     //printf("Present mode:%d\n", chosenPresentMode);
 
     // TODO: Initialize the swap chain
@@ -741,7 +748,8 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 
     cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
 	SwapChainGroup failure = {NULL};
-	components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window);
+	//!TODO Change the last element to the desired present mode
+	components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window, 1);
     if(components->swapChainGroup.swapChain == failure.swapChain)
 	{
 		printf("Swap chain re-creation error, exiting!\n");
@@ -985,13 +993,27 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     	vkDestroyPipeline(components->device, components->graphicsPipeline, NULL);
     }
     
-    if (components->device != VK_NULL_HANDLE) {
+    if (components->device != VK_NULL_HANDLE) 
+    {
         vkDeviceWaitIdle(components->device);
         vkDestroyDevice(components->device, NULL);
     }
 
-    if (components->instance != VK_NULL_HANDLE) {
-        if (components->surface != VK_NULL_HANDLE) {
+	if (components->availableDevices != NULL)
+	{
+	    for (uint32_t i = 0; i < components->deviceCount; i++)
+	    {
+	        free(components->availableDevices[i]);
+	        components->availableDevices[i] = NULL;
+	    }
+	    free(components->availableDevices);
+	    components->availableDevices = NULL;
+	}
+
+    if (components->instance != VK_NULL_HANDLE) 
+    {
+        if (components->surface != VK_NULL_HANDLE) 
+        {
             vkDestroySurfaceKHR(components->instance, components->surface, NULL);
         }
         vkDestroyInstance(components->instance, NULL);

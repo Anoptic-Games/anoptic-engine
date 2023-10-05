@@ -39,6 +39,7 @@ void unInitVulkan() // A celebration
 	{
 		cleanupVulkan(vulkanGarbage.components);
 	}
+	
 	if (vulkanGarbage.window)
 	{
 		glfwDestroyWindow(vulkanGarbage.window);
@@ -204,7 +205,7 @@ VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) /
     components->physicalDevice = VK_NULL_HANDLE;
     struct QueueFamilyIndices indices;
 	//!TODO replace empty char array with preffered device from VulkanSettings   
-	 if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices, &(components->availableDevices), ""))
+	 if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices, &(components->availableDevices), &(components->deviceCount), ""))
     {
     	fprintf(stderr, "Quitting init: physical device failure!\n");
     	unInitVulkan();
@@ -220,8 +221,8 @@ VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) /
         return NULL;
     }
     vulkanGarbage.components = components;
-
-    components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window); // Initialize a swap chain
+	//!TODO Change the last element to the desired present mode
+    components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window, 1); // Initialize a swap chain
     if (components->swapChainGroup.swapChain == NULL)
     {
     	printf("Quitting init: swap chain failure.\n");
