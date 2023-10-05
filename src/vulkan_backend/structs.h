@@ -71,11 +71,34 @@ typedef struct VulkanComponents // All details of our Vulkan instance
 	char** availableDevices;
 } VulkanComponents;
 
+
+typedef struct WindowParameters {
+    int width;
+    int height;
+    int monitorIndex;        // Desired monitor index for fullscreen, -1 for windowed
+    bool borderless;         // True for borderless, false otherwise
+    // ... other parameters
+} WindowParameters;
+
 typedef struct VulkanSettings
 {
-	char* prefferedDevice; // Physical GPU to use for rendering
+	char* preferredDevice; // Physical GPU to use for rendering
 	uint32_t preferredMode;	// Frame present mode
 } VulkanSettings;
+
+typedef struct MonitorInfo 
+{
+    const GLFWvidmode* modes;    // Video modes supported by the monitor
+    int modeCount;               // Number of video modes supported
+} MonitorInfo;
+
+typedef struct Monitors 
+{
+    MonitorInfo* monitorInfos;   // Array of MonitorInfo for each monitor
+    int monitorCount;           // Total number of monitors
+} Monitors;
+
+extern VulkanSettings vulkanSettings;
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
 {
@@ -112,6 +135,7 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 {
 	struct VulkanComponents *components;
 	GLFWwindow *window;
+	Monitors *monitors;
 };
 
 

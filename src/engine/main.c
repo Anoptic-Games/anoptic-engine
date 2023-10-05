@@ -22,6 +22,11 @@
 
 // Structs
 
+VulkanSettings vulkanSettings =
+{ //!TODO change this dynamically via vulkanSettings.h interface
+	.preferredDevice = "",
+	.preferredMode = 1
+};
 
 // Variables
 
@@ -39,7 +44,27 @@ int main()
 	printf("Running in debug mode!\n");
 	#endif	
 	VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
-	GLFWwindow *window = initWindow(components);
+
+	WindowParameters parameters =
+	{
+		.width = 800,
+    	.height = 600,
+    	.monitorIndex = -1,        // Desired monitor index for fullscreen, -1 for windowed
+    	.borderless = 0
+	};
+	
+	Monitors monitors =
+	{
+		.monitorInfos = NULL,	// Array of MonitorInfo for each monitor
+		.monitorCount = 0		// Total number of monitors
+	};
+
+	vulkanGarbage.monitors = &monitors;
+	cleanupMonitors(&monitors);
+	printf("Here");
+	enumerateMonitors(&monitors);
+	
+	GLFWwindow *window = initWindow(components, parameters, &monitors);
 	if (window == NULL)
 	{
 	    // Handle error
