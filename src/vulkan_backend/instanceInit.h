@@ -19,7 +19,10 @@ VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMes
 void cleanupVulkan(VulkanComponents* components);
 
 // Initializes a pointer to a GLFW window, returns a window pointer or NULL on failure
-GLFWwindow* initWindow(VulkanComponents* components);
+GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters, Monitors* monitors);
+
+// Enumerates all monitors and their parameters
+void enumerateMonitors(Monitors* monitors);
 
 // Creates a target surface
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
@@ -49,6 +52,9 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 bool createCommandBuffer(VulkanComponents* components);
 
 // Creates fences, semaphores, etc.
-bool createSyncObjects(VulkanComponents* components) ;
+bool createSyncObjects(VulkanComponents* components);
+
+// Frees up memory allocated for monitor info
+void cleanupMonitors(Monitors* monitors);
 
 #endif

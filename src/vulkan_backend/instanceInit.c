@@ -45,9 +45,18 @@ static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 
 // Vulkan component initialization functions
 
-GLFWwindow* initWindow(VulkanComponents* components) // Initializes a pointer to a GLFW window, returns a window pointer or NULL on failure
+void enumerateMonitors(Monitors* monitors) 
 {
-    // Initialize GLFW
+    GLFWmonitor** glfwMonitors = glfwGetMonitors(&(monitors->monitorCount));
+    monitors->monitorInfos = malloc(monitors->monitorCount * sizeof(MonitorInfo));
+    for (int i = 0; i < monitors->monitorCount; i++) 
+    {
+        monitors->monitorInfos[i].modes = glfwGetVideoModes(glfwMonitors[i], &(monitors->monitorInfos[i].modeCount));
+    }
+}
+
+GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters, Monitors* monitors)
+{
     if (!glfwInit())
     {
         fprintf(stderr, "Failed to initialize GLFW!\n");
@@ -55,9 +64,37 @@ GLFWwindow* initWindow(VulkanComponents* components) // Initializes a pointer to
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *window = glfwCreateWindow(800, 600, "Vulkan", NULL, NULL);
+    
+    // Choose the monitor
+    GLFWmonitor* chosenMonitor = NULL;
+    if (parameters.monitorIndex >= 0 && parameters.monitorIndex < monitors->monitorCount)
+    {
+        GLFWmonitor** glfwMonitors = glfwGetMonitors(NULL);
+        chosenMonitor = glfwMonitors[parameters.monitorIndex];
+    }
+    else if (parameters.monitorIndex >= 0)
+    { // Default to primary if index is out of range
+        chosenMonitor = glfwGetPrimaryMonitor();
+    }
+
+    // If borderless fullscreen is requested
+    if (parameters.borderless && chosenMonitor)
+    {
+        const GLFWvidmode* mode = glfwGetVideoMode(chosenMonitor);
+        parameters.width = mode->width;
+        parameters.height = mode->height;
+    }
+
+    if (parameters.monitorIndex == -1)
+    {
+        chosenMonitor = NULL;
+    }
+    
+    GLFWwindow *window = glfwCreateWindow(parameters.width, parameters.height, "Vulkan", chosenMonitor, NULL);
+    
     glfwSetWindowUserPointer(window, components);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+
     return window;
 }
 
@@ -937,6 +974,15 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
     
     return true;
 }
+
+void cleanupMonitors(Monitors* monitors) {
+    if (monitors->monitorInfos) {
+        free(monitors->monitorInfos);
+        monitors->monitorInfos = NULL;
+        monitors->monitorCount = 0;
+    }
+}
+
 
 
 void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
