@@ -67,12 +67,14 @@ typedef struct VulkanComponents // All details of our Vulkan instance
     bool framebufferResized; // Signals window resizing
     uint32_t skipCheck; //Prevents semaphore waits after swapchain changes for the set number of frames
     VkDebugUtilsMessengerEXT debugMessenger;
+	uint32_t deviceCount;
 	char** availableDevices;
 } VulkanComponents;
 
 typedef struct VulkanSettings
 {
-	char* prefferedDevice;
+	char* prefferedDevice; // Physical GPU to use for rendering
+	uint32_t preferredMode;	// Frame present mode
 } VulkanSettings;
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
