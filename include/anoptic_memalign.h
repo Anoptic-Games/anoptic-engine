@@ -3,45 +3,24 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/**
- * @file anoptic_memalign.h
- * @brief Platform-agnostic memory management API for the Anoptic Engine.
- */
+/// \file
+/// \brief Memory management API for aligned allocations.
 
-// include guard
 #ifndef ANOPTIC_MEMALIGN_H
 #define ANOPTIC_MEMALIGN_H
 
 #include <stddef.h> // for size_t
 
-/**
- * @brief Allocates a block of @p size bytes of memory aligned to a @p alignment boundary.
- * 
- * This function provides a platform-agnostic interface for aligned memory allocation.
- *
- * @param size     The size of the memory block to allocate, in bytes.
- * @param alignment The alignment of the memory block that is to be allocated.
- *                  This must be an integer power of 2.
- *
- * @return A pointer to the first byte of the allocated memory block, or NULL if the
- *         allocation fails.
- * 
- * @note The function will return NULL if @p size or @p alignment is 0.
- */
+/// Allocates aligned memory block.
+/// \param size Bytes to allocate.
+/// \param alignment Required alignment, must be power of 2.
+/// \return Allocated memory or NULL.
+/// \note NULL if size or alignment is 0.
 void* ano_aligned_malloc(size_t size, size_t alignment);
 
-/**
- * @brief Frees an aligned block of memory.
- * 
- * This function provides a platform-agnostic interface for freeing aligned memory blocks.
- * 
- * @param ptr Pointer to the memory block that needs to be freed.
- * 
- * @note It's undefined behavior to free a memory block that wasn't previously
- *       allocated with ano_aligned_malloc or equivalent.
- */
+/// Frees aligned memory block.
+/// \param ptr Memory to free.
+/// \note Undefined if ptr not from ano_aligned_malloc.
 void ano_aligned_free(void* ptr);
-
-
 
 #endif // ANOPTIC_MEMALIGN_H

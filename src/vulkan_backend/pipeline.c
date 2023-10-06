@@ -57,8 +57,14 @@ bool loadFile(const char* filename, struct Buffer* buffer)
 
     buffer->data[size] = 0;
     buffer->size = size;
-    
+
+
     fclose(file);
+
+    // Free used memory that is no longer needed
+    // TODO: Scold Cris
+    ano_aligned_free(buffer->data);
+
     return true;
 }
 
