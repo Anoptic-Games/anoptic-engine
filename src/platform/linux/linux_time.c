@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include <errno.h>
 
 // High resolution relative timestamps from this local machine.
 uint64_t ano_timestamp_raw() {
