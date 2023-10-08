@@ -13,15 +13,17 @@
 #endif
 
 // cache the performance frequency (acquired only once)
-// TODO: make this parameter thread-safe
 static uint64_t cached_performance_frequency = 0;
 
 void initialize_performance_frequency() {
     LARGE_INTEGER tmp;
+    if (QueryPerformanceFrequency(&tmp) == 0) {
+        // Handle error
+        printf("Failed to query performance frequency.");
+    }
     cached_performance_frequency = tmp.QuadPart;
 }
 
-// High resolution relative timestamps from this local machine.
 uint64_t ano_timestamp_raw() {
     uint64_t counter;
     LARGE_INTEGER tmp;
@@ -31,12 +33,16 @@ uint64_t ano_timestamp_raw() {
      * We can't do it cause We want to keep the api consistent across all platforms.
      *
      * Thankfully, this conditional is always false after the first call,
-     * so it should play well with branch prediction.
+     * so it plays very well with branch prediction.
      */
     if(cached_performance_frequency == 0) {
         initialize_performance_frequency();
     }
 
+    if(QueryPerformanceCounter(&tmp) == 0) {
+        printf("Error getting Windows performance Counter.");
+        return 0;
+    }
     counter = tmp.QuadPart;
 
     // return the timestamp in nanoseconds
@@ -85,7 +91,7 @@ int64_t ano_timestamp_ntp(){
 // Spinlock the current thread for approximately ns nanoseconds.
 void ano_busywait(uint64_t ns) {
     if (ns > MAX_BUSYWAIT_NS) {
-        printf("Requested busywait time exceeds maximum limit. Returning.\n");
+        printf("Requested busywait time exceeds maximum limit. Exiting.\n");
         return;
     }
 
@@ -94,7 +100,7 @@ void ano_busywait(uint64_t ns) {
 
     do {
         end_time = ano_timestamp_raw();
-    } while (end_time - start_time < ns);
+    } while (end_time - start_time < ns && start_time != 0 && end_time != 0);
 }
 
 // Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix, MultiMedia Timer on Windows)
