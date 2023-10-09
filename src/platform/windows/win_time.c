@@ -22,19 +22,20 @@ void initialize_performance_frequency() {
         printf("Failed to query performance frequency.");
     }
     cached_performance_frequency = tmp.QuadPart;
+    printf("\nPerformance Frequency: %llu\n\n", cached_performance_frequency);
 }
 
 uint64_t ano_timestamp_raw() {
     uint64_t counter;
     LARGE_INTEGER tmp;
 
-    /* Although it might be faster to have a separate initializer for this cached value,
-     * something like ano_time_init() would be useless on Linux and only used on Windows.
-     * We can't do it cause We want to keep the api consistent across all platforms.
-     *
-     * Thankfully, this conditional is always false after the first call,
-     * so it plays very well with branch prediction.
+    /* It might be faster to have a separate initializer for this cached value,
+     * something like ano_time_init().
      */
+
+    // TODO: Replace with KeQueryPerformanceCounter
+    // + Monotonic
+    // + Might be higher-resolution
     if(cached_performance_frequency == 0) {
         initialize_performance_frequency();
     }
@@ -45,8 +46,17 @@ uint64_t ano_timestamp_raw() {
     }
     counter = tmp.QuadPart;
 
-    // return the timestamp in nanoseconds
-    return (uint64_t)(((double)counter / (double)cached_performance_frequency) * 1e9);
+
+    uint64_t largePart = counter / cached_performance_frequency;    // Seconds
+    uint64_t smallPart = counter % cached_performance_frequency;    // Sub-seconds
+    smallPart = smallPart * 1000000000LL / cached_performance_frequency;
+
+    uint64_t timeStamp = smallPart + (largePart * 1000000000LL);
+
+    return timeStamp;
+
+    // previous technique was prone to overflows
+    //return (uint64_t)(((double)counter / (double)cached_performance_frequency) * 1e9);
 }
 
 // return ano_timestamp_raw, but scaled to microseconds.

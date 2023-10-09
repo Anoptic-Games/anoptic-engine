@@ -98,6 +98,14 @@ int main()
            "Time Elapsed: \t%llu\n\n",
            endTime - startTime);
 
+    printf("Starting nano sleep 1d: 1s\n");
+    startTime = ano_timestamp_raw();
+    ano_busywait((uint64_t)(1 * 1e9));
+    endTime = ano_timestamp_raw();
+    printf("Finished Sleep 1d\n"
+           "Time Elapsed: \t%llu\n\n",
+           endTime - startTime);
+
     printf("Starting OS sleep 2a: 10 microseconds\n");
     startTime = ano_timestamp_raw();
     ano_sleep(10);
