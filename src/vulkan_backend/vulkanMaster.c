@@ -21,6 +21,7 @@
 
 #include "vulkan_backend/pipeline.h"
 
+#include "vulkan_backend/vulkanConfig.h"
 
 
 
@@ -211,7 +212,8 @@ VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) /
     components->physicalDevice = VK_NULL_HANDLE;
     struct QueueFamilyIndices indices;
 	//!TODO replace empty char array with preffered device from VulkanSettings   
-	 if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices, &(components->availableDevices), &(components->deviceCount), vulkanSettings.preferredDevice))
+	char* preferredDevice = getChosenDevice();
+	if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices, &(components->availableDevices), &(components->deviceCount), preferredDevice))
     {
     	fprintf(stderr, "Quitting init: physical device failure!\n");
     	unInitVulkan();
@@ -227,7 +229,8 @@ VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) /
         return NULL;
     }
     vulkanGarbage.components = components;
-    components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window, vulkanSettings.preferredMode); // Initialize a swap chain
+	VkPresentModeKHR preferredMode = getChosenPresentMode();
+    components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window, preferredMode); // Initialize a swap chain
     if (components->swapChainGroup.swapChain == NULL)
     {
     	printf("Quitting init: swap chain failure.\n");
