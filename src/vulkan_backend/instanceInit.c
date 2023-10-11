@@ -414,10 +414,35 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
         return false;
     }
 
+	/*
+	 *      ▼▼▼
+	 *      ▼▼▼
+	 * ▼▼▼▼▼▼▼▼▼▼▼
+	 *  ▼▼▼▼▼▼▼▼▼
+	 *   ▼▼▼▼▼▼▼
+	 *    ▼▼▼▼▼
+	 *     ▼▼▼
+	 *      ▼
+	 */
+
+
 	//Allocate memory for the names of every detected device
     *availableDevices = (char**)malloc(sizeof(char*) * (*deviceCount));
 
     VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * (*deviceCount));
+
+	/*
+	 * 
+	 *      ▲
+	 *     ▲▲▲
+	 *    ▲▲▲▲▲
+	 *   ▲▲▲▲▲▲▲
+	 *  ▲▲▲▲▲▲▲▲▲
+	 * ▲▲▲▲▲▲▲▲▲▲▲
+	 *      ▲▲▲
+	 *      ▲▲▲
+	 */
+
     vkEnumeratePhysicalDevices(instance, deviceCount, devices);
 
     VkPhysicalDeviceProperties deviceProperties;

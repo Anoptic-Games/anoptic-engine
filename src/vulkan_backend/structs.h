@@ -71,11 +71,17 @@ typedef struct VulkanComponents // All details of our Vulkan instance
 	char** availableDevices;
 } VulkanComponents;
 
+typedef struct Dimensions2D
+{
+	uint32_t width;
+	uint32_t height;
+} Dimensions2D;
 
-typedef struct WindowParameters {
-    int width;
-    int height;
-    int monitorIndex;        // Desired monitor index for fullscreen, -1 for windowed
+typedef struct WindowParameters
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t monitorIndex;        // Desired monitor index for fullscreen, -1 for windowed
     bool borderless;         // True for borderless, false otherwise
     // ... other parameters
 } WindowParameters;
@@ -97,8 +103,6 @@ typedef struct Monitors
     MonitorInfo* monitorInfos;   // Array of MonitorInfo for each monitor
     int monitorCount;           // Total number of monitors
 } Monitors;
-
-extern VulkanSettings vulkanSettings;
 
 struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
 {
