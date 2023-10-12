@@ -13,7 +13,7 @@
 // Function interfaces
 
 // Initializes a Vulkan instance
-VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMessenger);
+VkResult createInstance(VulkanComponents* vkComponents);
 
 // Casts a Vulkan instance into the fires of perdition
 void cleanupVulkan(VulkanComponents* components);
@@ -28,7 +28,7 @@ void enumerateMonitors(Monitors* monitors);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
 
 // Selects the optimal graphics device
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char*** availableDevices, uint32_t* deviceCount, char* preferredDevice);
+bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice);
 
 // Initializes a logical device based on a chosen physical device
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);

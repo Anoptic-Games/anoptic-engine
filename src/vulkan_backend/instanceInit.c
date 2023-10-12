@@ -30,9 +30,7 @@ const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
 // Function prototypes
 
-VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMessenger);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
-VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
@@ -101,17 +99,16 @@ GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 {
 	VulkanComponents* components = glfwGetWindowUserPointer(window);
-	components->framebufferResized = true;
+	components->syncComp.framebufferResized = true;
 }
 
-VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMessenger) // Creates a Vulkan instance, selecting and specifying required extensions. It also defines information about our app.
+VkResult createInstance(VulkanComponents* vkComponents)
 {
-	const char* validationLayers[] = 
-	{ //!TODO get this thing out of here as soon as we have a config parser
-	    "VK_LAYER_KHRONOS_validation"
-	};
-	size_t validationCount = sizeof(validationLayers) / sizeof(validationLayers[0]);
-	
+    const char* validationLayers[] = 
+    { //!TODO get this thing out of here as soon as we have a config parser
+        "VK_LAYER_KHRONOS_validation"
+    };
+    size_t validationCount = sizeof(validationLayers) / sizeof(validationLayers[0]);
 
     VkApplicationInfo appInfo = {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -137,27 +134,27 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
     createInfo.enabledExtensionCount = extensionCount;
     createInfo.ppEnabledExtensionNames = extensions;
 
-	VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = {};
+    VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo = {};
 
-	createInfo.enabledLayerCount = 0;
-	createInfo.pNext = NULL;
-	
-	#ifdef DEBUG_BUILD
+    createInfo.enabledLayerCount = 0;
+    createInfo.pNext = NULL;
+    
+    #ifdef DEBUG_BUILD
     if (!checkValidationLayerSupport(validationLayers, validationCount))
     {
-    	printf("Validation layers requested, but not available!\n");
+        printf("Validation layers requested, but not available!\n");
     }
     else
     {
-    	createInfo.enabledLayerCount = (uint32_t) validationCount;
-    	createInfo.ppEnabledLayerNames = validationLayers;
-    	populateDebugMessengerCreateInfo(&debugCreateInfo);
-    	createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debugCreateInfo;
-    	printf("Enabled validation layers!\n");
+        createInfo.enabledLayerCount = (uint32_t) validationCount;
+        createInfo.ppEnabledLayerNames = validationLayers;
+        populateDebugMessengerCreateInfo(&debugCreateInfo);
+        createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debugCreateInfo;
+        printf("Enabled validation layers!\n");
     }
-	#endif
+    #endif
 
-    if (vkCreateInstance(&createInfo, NULL, instance) != VK_SUCCESS)
+    if (vkCreateInstance(&createInfo, NULL, &(vkComponents->instanceDebug.instance)) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create Vulkan instance!\n");
         free(extensions);
@@ -165,21 +162,8 @@ VkResult createInstance(VkInstance* instance, VkDebugUtilsMessengerEXT *debugMes
     }
 
     #ifdef DEBUG_BUILD
-    	setupDebugMessenger(instance, debugMessenger);
+        setupDebugMessenger(&(vkComponents->instanceDebug.instance), &(vkComponents->instanceDebug.debugMessenger));
     #endif
-
-	// Query extensions
-	// Completely forgot what the following block is for, probably nothing important
-	/*
-    uint32_t extensionCount = 0;
-    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, NULL);
-    VkExtensionProperties extensions[extensionCount];
-    vkEnumerateInstanceExtensionProperties(NULL, &extensionCount, extensions);*/
-
-    /*for (uint32_t i = 0; i < extensionCount; i++)
-    {
-    	printf("%s\n", extensions[i].extensionName);
-    }*/
 
     free(extensions);
 
@@ -290,10 +274,10 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
     indices.transferPresent = false;
     indices.presentPresent = false;
 
-    indices.graphicsFamily = 0;
-    indices.computeFamily = 0;
-    indices.transferFamily = 0;
-    indices.presentFamily = 0;
+	indices.graphicsFamily = UINT32_MAX;
+	indices.computeFamily = UINT32_MAX;
+	indices.transferFamily = UINT32_MAX;
+	indices.presentFamily = UINT32_MAX;
     
 	uint32_t queueFamilyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, NULL);
@@ -339,8 +323,13 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 				//printf("Present: %d\n", indices.presentFamily);
 			}
 		}
+		else
+		{
+			//printf("Surface invalid in queue selection!\n");
+		}
+		//printf("Queue family %d flags: %d\n", i, queueFamilies[i].queueFlags);
 	}
-		
+	//printf("Final output:\n  Graphics Family: %d\n  Compute family: %d\n  Transfer Family: %d\n  Present Family: %d\n\n", indices.graphicsFamily, indices.computeFamily, indices.transferFamily, indices.presentFamily);
     return indices;
 }
 
@@ -402,49 +391,26 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFe
 	return physicalRequirements && queueRequirements && extensionsSupported;
 }
 
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char*** availableDevices, uint32_t* deviceCount, char* preferredDevice)
+bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice)
 {
-	bool foundPreferredDevice = false;
-    *deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, deviceCount, NULL);
+    bool foundPreferredDevice = false;
+    components->physicalDeviceComp.deviceCount = 0;
 
-    if (*deviceCount == 0) 
+    vkEnumeratePhysicalDevices(components->instanceDebug.instance, &(components->physicalDeviceComp.deviceCount), NULL);
+
+    if (components->physicalDeviceComp.deviceCount == 0) 
     {
         fprintf(stderr, "Failed to find GPUs with Vulkan support!\n");
         return false;
     }
 
-	/*
-	 *      ▼▼▼
-	 *      ▼▼▼
-	 * ▼▼▼▼▼▼▼▼▼▼▼
-	 *  ▼▼▼▼▼▼▼▼▼
-	 *   ▼▼▼▼▼▼▼
-	 *    ▼▼▼▼▼
-	 *     ▼▼▼
-	 *      ▼
-	 */
+    // Allocate memory for the names of every detected device
+    components->physicalDeviceComp.availableDevices = (char**)malloc(sizeof(char*) * components->physicalDeviceComp.deviceCount);
 
+    VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * components->physicalDeviceComp.deviceCount);
 
-	//Allocate memory for the names of every detected device
-    *availableDevices = (char**)malloc(sizeof(char*) * (*deviceCount));
-
-    VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * (*deviceCount));
-
-	/*
-	 * 
-	 *      ▲
-	 *     ▲▲▲
-	 *    ▲▲▲▲▲
-	 *   ▲▲▲▲▲▲▲
-	 *  ▲▲▲▲▲▲▲▲▲
-	 * ▲▲▲▲▲▲▲▲▲▲▲
-	 *      ▲▲▲
-	 *      ▲▲▲
-	 */
-
-    vkEnumeratePhysicalDevices(instance, deviceCount, devices);
-
+    vkEnumeratePhysicalDevices(components->instanceDebug.instance, &components->physicalDeviceComp.deviceCount, devices);
+    
     VkPhysicalDeviceProperties deviceProperties;
     VkPhysicalDeviceFeatures deviceFeatures;
     VkPhysicalDeviceMemoryProperties memProperties;
@@ -455,22 +421,22 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
     VkPhysicalDevice bestDedicatedDevice = VK_NULL_HANDLE;
     VkPhysicalDevice bestIntegratedDevice = VK_NULL_HANDLE;
 
-	printf("DeviceCount: %d\n", *deviceCount);
+	printf("DeviceCount: %d\n", components->physicalDeviceComp.deviceCount);
 	
-    for (uint32_t i = 0; i < *deviceCount; i++)
+    for (uint32_t i = 0; i < components->physicalDeviceComp.deviceCount; i++)
     {
         vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
         vkGetPhysicalDeviceFeatures(devices[i], &deviceFeatures);
         vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
         printf("%d\n", i);
 
-        if (isDeviceSuitable(devices[i], deviceFeatures, surface))
+        if (isDeviceSuitable(devices[i], deviceFeatures, &(components->surface)))
         {
 
 			//Select the first preffered device if available and break out of the selection loop
 			if (strcmp(deviceProperties.deviceName, preferredDevice) == 0)
         	{
-            	*physicalDevice = devices[i];
+            	components->physicalDeviceComp.physicalDevice = devices[i];
             	foundPreferredDevice = true;
             	break;
         	}
@@ -489,36 +455,36 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
                 bestIntegratedDevice = devices[i];
                 maxIntegratedMemory = currentMemorySize;
             }
-            (*availableDevices)[i] = (char*)malloc(strlen(deviceProperties.deviceName) +1);
-            strcpy((*availableDevices)[i], deviceProperties.deviceName);
+            (components->physicalDeviceComp.availableDevices)[i] = (char*)malloc(strlen(deviceProperties.deviceName) +1);
+            strcpy((components->physicalDeviceComp.availableDevices)[i], deviceProperties.deviceName);
             #ifdef DEBUG_BUILD
-			printf("%s\n", (*availableDevices)[i]);
+			printf("%s\n", components->physicalDeviceComp.availableDevices[i]);
 			#endif
         }
     }
 
     if (foundPreferredDevice)
     {
-        vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
-        *capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
-        *indices = findQueueFamilies(*physicalDevice, surface);
+        vkGetPhysicalDeviceFeatures(components->physicalDeviceComp.physicalDevice, &deviceFeatures);
+        components->physicalDeviceComp.deviceCapabilities = populateCapabilities(components->physicalDeviceComp.physicalDevice, deviceFeatures);
+        components->physicalDeviceComp.queueFamilyIndices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &(components->surface));
     }
     else
     {
 
     	if (bestDedicatedDevice != VK_NULL_HANDLE)
     	{
-        	*physicalDevice = bestDedicatedDevice;
-        	vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
-        	*capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
-        	*indices = findQueueFamilies(*physicalDevice, surface);
+        	components->physicalDeviceComp.physicalDevice = bestDedicatedDevice;
+        	vkGetPhysicalDeviceFeatures(components->physicalDeviceComp.physicalDevice, &deviceFeatures);
+        	components->physicalDeviceComp.deviceCapabilities = populateCapabilities(components->physicalDeviceComp.physicalDevice, deviceFeatures);
+        	components->physicalDeviceComp.queueFamilyIndices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &(components->surface));
     	}
     	else if (bestIntegratedDevice != VK_NULL_HANDLE)
     	{
-        	*physicalDevice = bestIntegratedDevice;
-        	vkGetPhysicalDeviceFeatures(*physicalDevice, &deviceFeatures);
-        	*capabilities = populateCapabilities(*physicalDevice, deviceFeatures);
-        	*indices = findQueueFamilies(*physicalDevice, surface);
+        	components->physicalDeviceComp.physicalDevice = bestIntegratedDevice;
+        	vkGetPhysicalDeviceFeatures(components->physicalDeviceComp.physicalDevice, &deviceFeatures);
+        	components->physicalDeviceComp.deviceCapabilities = populateCapabilities(components->physicalDeviceComp.physicalDevice, deviceFeatures);
+        	components->physicalDeviceComp.queueFamilyIndices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &(components->surface));
     	}
     	else
     	{
@@ -528,7 +494,7 @@ bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice* physicalDevice, V
     	}
     }
 
-    printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (indices->graphicsFamily), (indices->computeFamily), (indices->transferFamily), (indices->presentFamily));
+    //printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (components->physicalDeviceComp.queueFamilyIndices.graphicsFamily), (components->physicalDeviceComp.queueFamilyIndices.computeFamily), (components->physicalDeviceComp.queueFamilyIndices.transferFamily), (components->physicalDeviceComp.queueFamilyIndices.presentFamily));
 
     free(devices);
     return true;
@@ -590,14 +556,35 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 		
 	// get queue handles
 	vkGetDeviceQueue(*device, indices->graphicsFamily, 0, graphicsQueue);
+	if (*graphicsQueue == NULL)
+	{
+		printf("Failed to acquire graphics queue!\n");
+		return VK_ERROR_INITIALIZATION_FAILED;	
+	}
 	vkGetDeviceQueue(*device, indices->presentFamily, 0, presentQueue);
+	printf("PresentQueue: %p\n", presentQueue);
+	if (*presentQueue == NULL)
+	{
+		printf("Failed to acquire present queue!\n");
+		return VK_ERROR_INITIALIZATION_FAILED;	
+	}
 	if (indices->computePresent)
 	{
 		vkGetDeviceQueue(*device, indices->computeFamily, 0, computeQueue);
+		if (*computeQueue == NULL)
+		{
+			printf("Failed to acquire compute queue!\n");
+			return VK_ERROR_INITIALIZATION_FAILED;	
+		}
 	}
 	if (indices->computePresent)
 	{
 		vkGetDeviceQueue(*device, indices->transferFamily, 0, transferQueue);
+		if (*transferQueue == NULL)
+		{
+			printf("Failed to acquire transfer queue!\n");
+			return VK_ERROR_INITIALIZATION_FAILED;	
+		}
 	}
 
     return VK_SUCCESS;
@@ -799,47 +786,47 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
         glfwWaitEvents();
     }
 
-    if (!components->skipCheck)
+    if (!components->syncComp.skipCheck)
     {
         for (uint32_t i = 0; i < 3; i++) 
         {
-            vkWaitForFences(components->device, 1, &(components->inFlightFence[i]), VK_TRUE, UINT64_MAX);
+            vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
         }
     }
 
 
-    cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
+    cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 	SwapChainGroup failure = {NULL};
 	//!TODO Change the last element to the desired present mode
-	components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window, 1);
-    if(components->swapChainGroup.swapChain == failure.swapChain)
+	components->swapChainComp.swapChainGroup = initSwapChain(components->physicalDeviceComp.physicalDevice, components->deviceQueueComp.device, &(components->surface), window, 1);
+    if(components->swapChainComp.swapChainGroup.swapChain == failure.swapChain)
 	{
 		printf("Swap chain re-creation error, exiting!\n");
 		cleanupVulkan(components);
 		exit(1);
 	}
-    components->viewGroup = createImageViews(components->device, components->swapChainGroup);
-    if (components->viewGroup.views == NULL)
+    components->swapChainComp.viewGroup = createImageViews(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup);
+    if (components->swapChainComp.viewGroup.views == NULL)
     {
     	printf("View group re-creation error, exiting!\n");
     	cleanupVulkan(components);
     	exit(1);
     }
-    if (createFramebuffers(components->device, &(components->framebufferGroup), components->viewGroup, components->swapChainGroup, components->renderPass) != true)
+    if (createFramebuffers(components->deviceQueueComp.device, &(components->swapChainComp.framebufferGroup), components->swapChainComp.viewGroup, components->swapChainComp.swapChainGroup, components->renderComp.renderPass) != true)
     {
     	printf("Framebuffer re-creation error, exiting!\n");
     	cleanupVulkan(components);
     	exit(1);
     }
 
-    vkResetCommandPool(components->device, components->commandPool, 0);
+    vkResetCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, 0);
     for (int i = 0; i < 3; i++) // Clear fences prior to resuming render
     {
-        vkResetFences(components->device, 1, &(components->inFlightFence[i]));
+        vkResetFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]));
     }
-    components->skipCheck = 3; // Skip semaphore waits 
+    components->syncComp.skipCheck = 3; // Skip semaphore waits 
 
-    components->framebufferResized = false;
+    components->syncComp.framebufferResized = false;
 
 }
 
@@ -925,13 +912,13 @@ bool createCommandBuffer(VulkanComponents* components)
 {
 	VkCommandBufferAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = components->commandPool;
+	allocInfo.commandPool = components->cmdComp.commandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
     for (uint32_t i =0; i<3; i++)
     {
-        if (vkAllocateCommandBuffers(components->device, &allocInfo, &(components->commandBuffer[i])) != VK_SUCCESS) 
+        if (vkAllocateCommandBuffers(components->deviceQueueComp.device, &allocInfo, &(components->cmdComp.commandBuffer[i])) != VK_SUCCESS) 
 	    {
 	        printf("Failed to allocate command buffers!\n");
 	        return false;
@@ -952,9 +939,9 @@ bool createSyncObjects(VulkanComponents* components)
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-        if (vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->imageAvailableSemaphore[i])) != VK_SUCCESS ||
-            vkCreateSemaphore(components->device, &semaphoreInfo, NULL, &(components->renderFinishedSemaphore[i])) != VK_SUCCESS ||
-            vkCreateFence(components->device, &fenceInfo, NULL, &(components->inFlightFence[i])) != VK_SUCCESS) {
+        if (vkCreateSemaphore(components->deviceQueueComp.device, &semaphoreInfo, NULL, &(components->syncComp.imageAvailableSemaphore[i])) != VK_SUCCESS ||
+            vkCreateSemaphore(components->deviceQueueComp.device, &semaphoreInfo, NULL, &(components->syncComp.renderFinishedSemaphore[i])) != VK_SUCCESS ||
+            vkCreateFence(components->deviceQueueComp.device, &fenceInfo, NULL, &(components->syncComp.inFlightFence[i])) != VK_SUCCESS) {
             printf("Failed to create semaphores!\n");
             return false;
         }
@@ -1018,76 +1005,76 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
     for (uint32_t i = 0; i < 3; i++)  // We wanna make sure all rendering is finished before we destroy anything
     {  
-        vkWaitForFences(components->device, 1, &(components->inFlightFence[i]), VK_TRUE, UINT64_MAX);
+        vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
     }
 
-    cleanupSwapChain(components->device, &(components->swapChainGroup), &(components->framebufferGroup), &(components->viewGroup));
+    cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 
     #ifdef DEBUG_BUILD
-    DestroyDebugUtilsMessengerEXT(components->instance, components->debugMessenger, NULL);
+    DestroyDebugUtilsMessengerEXT(components->instanceDebug.instance, components->instanceDebug.debugMessenger, NULL);
 	#endif
     for (uint32_t i = 0; i<3; i++)
     {
-        if (components->imageAvailableSemaphore[i])
+        if (components->syncComp.imageAvailableSemaphore[i])
         {
-            vkDestroySemaphore(components->device, components->imageAvailableSemaphore[i], NULL);
+            vkDestroySemaphore(components->deviceQueueComp.device, components->syncComp.imageAvailableSemaphore[i], NULL);
         }
-        if (components->renderFinishedSemaphore[i])
+        if (components->syncComp.renderFinishedSemaphore[i])
         {
-            vkDestroySemaphore(components->device, components->renderFinishedSemaphore[i], NULL);
+            vkDestroySemaphore(components->deviceQueueComp.device, components->syncComp.renderFinishedSemaphore[i], NULL);
         }
-        if (components->inFlightFence[i])
+        if (components->syncComp.inFlightFence[i])
         {
-            vkDestroyFence(components->device, components->inFlightFence[i], NULL);
+            vkDestroyFence(components->deviceQueueComp.device, components->syncComp.inFlightFence[i], NULL);
         }
 
     }
 
     
-    if (components->commandPool != NULL)
+    if (components->cmdComp.commandPool != NULL)
     {
-        vkDestroyCommandPool(components->device, components->commandPool, NULL);
+        vkDestroyCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, NULL);
     }    
 
-    if (components->renderPass != NULL)
+    if (components->renderComp.renderPass != NULL)
     {
-    	vkDestroyRenderPass(components->device, components->renderPass, NULL);
+    	vkDestroyRenderPass(components->deviceQueueComp.device, components->renderComp.renderPass, NULL);
     }
 
-    if (components->pipelineLayout != NULL)
+    if (components->renderComp.pipelineLayout != NULL)
     {
-    	vkDestroyPipelineLayout(components->device, components->pipelineLayout, NULL);
+    	vkDestroyPipelineLayout(components->deviceQueueComp.device, components->renderComp.pipelineLayout, NULL);
     }
 
-    if (components->graphicsPipeline != NULL)
+    if (components->renderComp.graphicsPipeline != NULL)
     {
-    	vkDestroyPipeline(components->device, components->graphicsPipeline, NULL);
+    	vkDestroyPipeline(components->deviceQueueComp.device, components->renderComp.graphicsPipeline, NULL);
     }
     
-    if (components->device != VK_NULL_HANDLE) 
+    if (components->deviceQueueComp.device != VK_NULL_HANDLE) 
     {
-        vkDeviceWaitIdle(components->device);
-        vkDestroyDevice(components->device, NULL);
+        vkDeviceWaitIdle(components->deviceQueueComp.device);
+        vkDestroyDevice(components->deviceQueueComp.device, NULL);
     }
 
-	if (components->availableDevices != NULL)
+	if (components->physicalDeviceComp.availableDevices != NULL)
 	{
-	    for (uint32_t i = 0; i < components->deviceCount; i++)
+	    for (uint32_t i = 0; i < components->physicalDeviceComp.deviceCount; i++)
 	    {
-	        free(components->availableDevices[i]);
-	        components->availableDevices[i] = NULL;
+	        free(components->physicalDeviceComp.availableDevices[i]);
+	        components->physicalDeviceComp.availableDevices[i] = NULL;
 	    }
-	    free(components->availableDevices);
-	    components->availableDevices = NULL;
+	    free(components->physicalDeviceComp.availableDevices);
+	    components->physicalDeviceComp.availableDevices = NULL;
 	}
 
-    if (components->instance != VK_NULL_HANDLE) 
+    if (components->instanceDebug.instance != VK_NULL_HANDLE) 
     {
         if (components->surface != VK_NULL_HANDLE) 
         {
-            vkDestroySurfaceKHR(components->instance, components->surface, NULL);
+            vkDestroySurfaceKHR(components->instanceDebug.instance, components->surface, NULL);
         }
-        vkDestroyInstance(components->instance, NULL);
+        vkDestroyInstance(components->instanceDebug.instance, NULL);
     }
 
     free(components);

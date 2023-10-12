@@ -13,6 +13,8 @@ static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = 
 
 static WindowParameters windowParameters = {.width = 800, .height = 600, .monitorIndex = -1, .borderless = false};
 
+/* If an API function isn't here, it's probably implemented in vulkanMaster.c */
+
 // Write functions
 
 bool requestDevice(char* deviceName)
