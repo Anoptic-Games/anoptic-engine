@@ -31,6 +31,9 @@ bool setMonitor(uint32_t index);
 // Sets whether the window will be created or updated to use borderless mode
 bool setBorderless(bool borderless);
 
+// Enables or disables Vulkan debugging functionality !TODO currently must be set before initVulkan is called
+bool setVulkanDebug(bool debug);
+
 //====	Read functions
 
 // Retrieves the current preferred GPU
