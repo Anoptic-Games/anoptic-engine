@@ -33,6 +33,12 @@ struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'
 
 static GLFWwindow* window;
 
+static Monitors monitors =
+{
+	.monitorInfos = NULL,	// Array of MonitorInfo for each monitor
+	.monitorCount = 0		// Total number of monitors
+};
+
 
 // Assorted utility functions
 
@@ -194,12 +200,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     	.height = 600,
     	.monitorIndex = -1,        // Desired monitor index for fullscreen, -1 for windowed
     	.borderless = 0
-	};
-	
-	Monitors monitors =
-	{
-		.monitorInfos = NULL,	// Array of MonitorInfo for each monitor
-		.monitorCount = 0		// Total number of monitors
 	};
 
 	vulkanGarbage.monitors = &monitors;

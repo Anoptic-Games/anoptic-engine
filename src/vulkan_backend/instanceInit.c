@@ -1077,5 +1077,4 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
         vkDestroyInstance(components->instanceDebug.instance, NULL);
     }
 
-    free(components);
 }
