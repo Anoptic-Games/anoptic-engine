@@ -116,6 +116,7 @@ typedef struct SynchronizationComponents
     VkSemaphore imageAvailableSemaphore[3];
     VkSemaphore renderFinishedSemaphore[3];
     VkFence inFlightFence[3];
+	bool frameSubmitted[3]; // Used to keep track of which frames have been used, mitigates resize crash
     uint32_t frameIndex;
     bool framebufferResized;
     uint32_t skipCheck;

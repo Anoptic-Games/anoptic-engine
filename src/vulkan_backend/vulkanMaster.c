@@ -155,8 +155,14 @@ void drawFrame()
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
-		vkWaitForFences(components.deviceQueueComp.device, 3, components.syncComp.inFlightFence, VK_TRUE, UINT64_MAX);
-		printf("Recreating swap chain!\n");
+		vkDeviceWaitIdle(components.deviceQueueComp.device);
+		for (int i = 0; i < 3; ++i) {
+			if (components.syncComp.frameSubmitted[i]) {
+				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+				components.syncComp.frameSubmitted[i] = false; // reset the status
+			}
+		}
+		//printf("Recreating swap chain!\n");
 		clearSemaphores();
 	    recreateSwapChain(&components, window);
 	    return;
@@ -199,6 +205,7 @@ void drawFrame()
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = NULL; // Optional
 	vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
+	components.syncComp.frameSubmitted[components.syncComp.frameIndex] = true;
 
 	components.syncComp.frameIndex += 1; // Iterate and reset the frame-in-flight index
 	if (components.syncComp.frameIndex == 3)
