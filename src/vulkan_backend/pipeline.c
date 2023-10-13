@@ -8,17 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
-#include <stdbool.h>
-#include <string.h>
 
 #include "anoptic_memalign.h"
-
-
-// TODO: Figure out why this is here AND in main
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
-
-#include "vulkan_backend/structs.h"
 
 // TODO: add a struct to hold all discovered shaders and their buffers
 
@@ -136,7 +127,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	struct Buffer vertShaderCode;
 	char vertShaderPath[256]; // Adjust size as needed.
 	snprintf(vertShaderPath, sizeof(vertShaderPath), "%s/resources/shaders/vert.spv", PROJECT_ROOT);
-	if (loadFile(vertShaderPath, &vertShaderCode) != true)
+	if (!loadFile(vertShaderPath, &vertShaderCode))
 	{
 		printf("Error loading shaders!\n");
 		return NULL;
@@ -145,7 +136,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	struct Buffer fragShaderCode;
 	char fragShaderPath[256]; // Adjust size as needed.
 	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/frag.spv", PROJECT_ROOT);
-	if (loadFile(fragShaderPath, &fragShaderCode) != true)
+	if (!loadFile(fragShaderPath, &fragShaderCode))
 	{
 		printf("Error loading shaders!\n");
 		return NULL;
