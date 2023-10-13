@@ -796,7 +796,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	cleanupVulkan(components);
     	exit(1);
     }
-    if (createFramebuffers(components->deviceQueueComp.device,
+    if (!createFramebuffers(components->deviceQueueComp.device,
         &(components->swapChainComp.framebufferGroup),
         components->swapChainComp.viewGroup,
         components->swapChainComp.swapChainGroup,
