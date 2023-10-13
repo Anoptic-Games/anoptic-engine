@@ -5,11 +5,7 @@
 
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <vulkan/vulkan.h>
-#include <stdbool.h>
-#include <string.h>
-#include <time.h>
 
 
 
@@ -21,23 +17,23 @@
 
 #include "vulkan_backend/pipeline.h"
 
+#include "vulkan_backend/vulkanConfig.h"
 
 
 
 // Variables
 
+static VulkanComponents components;
 
-struct VulkanGarbage vulkanGarbage = { NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
+struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
-// Function Prototypes
+static GLFWwindow* window;
 
-VkResult createInstance(VkInstance *instance, VkDebugUtilsMessengerEXT *debugMessenger);
-VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
-bool pickPhysicalDevice(VkInstance instance, VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices);
-VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
-struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
-SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window);
-ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
+static Monitors monitors =
+{
+	.monitorInfos = NULL,	// Array of MonitorInfo for each monitor
+	.monitorCount = 0		// Total number of monitors
+};
 
 
 // Assorted utility functions
@@ -49,108 +45,145 @@ void unInitVulkan() // A celebration
 	{
 		cleanupVulkan(vulkanGarbage.components);
 	}
+	
 	if (vulkanGarbage.window)
 	{
 		glfwDestroyWindow(vulkanGarbage.window);
 		glfwTerminate();
 	}
-	return;
+
+	if (vulkanGarbage.monitors)
+	{
+		cleanupMonitors(vulkanGarbage.monitors);
+	}
+}
+
+bool anoShouldClose()
+{
+	return glfwWindowShouldClose(window);
 }
 
 // Graphics operations
 
-void recordCommandBuffer(VulkanComponents* components, uint32_t imageIndex) 
+void recordCommandBuffer(uint32_t imageIndex) 
 {
 	VkCommandBufferBeginInfo beginInfo = {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	beginInfo.flags = 0; // Optional
 	beginInfo.pInheritanceInfo = NULL;// Optional
 	
-	if (vkBeginCommandBuffer(components->commandBuffer[components->frameIndex], &beginInfo) != VK_SUCCESS) 
+	if (vkBeginCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &beginInfo) != VK_SUCCESS) 
 	{
 	    printf("Failed to begin recording command buffer!\n");
 	}
 
 	VkRenderPassBeginInfo renderPassInfo = {};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-	renderPassInfo.renderPass = components->renderPass;
-	renderPassInfo.framebuffer = components->framebufferGroup.buffers[imageIndex];
+	renderPassInfo.renderPass = components.renderComp.renderPass;
+	renderPassInfo.framebuffer = components.swapChainComp.framebufferGroup.buffers[imageIndex];
 	renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
-	renderPassInfo.renderArea.extent = components->swapChainGroup.imageExtent;
+	renderPassInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
 
 	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
 	renderPassInfo.clearValueCount = 1;
 	renderPassInfo.pClearValues = &clearColor;
 
-	vkCmdBeginRenderPass(components->commandBuffer[components->frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBeginRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-	vkCmdBindPipeline(components->commandBuffer[components->frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components->graphicsPipeline);
+	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
-	viewport.width = (float)(components->swapChainGroup.imageExtent.width);
-	viewport.height = (float)(components->swapChainGroup.imageExtent.height);
+	viewport.width = (float)(components.swapChainComp.swapChainGroup.imageExtent.width);
+	viewport.height = (float)(components.swapChainComp.swapChainGroup.imageExtent.height);
 	viewport.minDepth = 0.0f;
 	viewport.maxDepth = 1.0f;
-	vkCmdSetViewport(components->commandBuffer[components->frameIndex], 0, 1, &viewport);
+	vkCmdSetViewport(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &viewport);
 	
 	VkRect2D scissor = {};
 	scissor.offset = (VkOffset2D){0, 0};
-	scissor.extent = components->swapChainGroup.imageExtent;
-	vkCmdSetScissor(components->commandBuffer[components->frameIndex], 0, 1, &scissor);
+	scissor.extent = components.swapChainComp.swapChainGroup.imageExtent;
+	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
 
-	vkCmdDraw(components->commandBuffer[components->frameIndex], 3, 1, 0, 0);
+	vkCmdDraw(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 3, 1, 0, 0);
 
-	vkCmdEndRenderPass(components->commandBuffer[components->frameIndex]);
+	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
-	if (vkEndCommandBuffer(components->commandBuffer[components->frameIndex]) != VK_SUCCESS) {
+	if (vkEndCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex]) != VK_SUCCESS) {
 	    printf("Failed to record command buffer!\n");
 	}
 }
 
-void drawFrame(VulkanComponents* components, GLFWwindow* window) 
+void clearSemaphores()
 {
-	if (!components->skipCheck)
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    for (int i = 0; i < 3; i++)
 	{
-		vkWaitForFences(components->device, 1, &(components->inFlightFence[components->frameIndex]), VK_TRUE, UINT64_MAX);
+        vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.imageAvailableSemaphore[i], NULL);
+        vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.renderFinishedSemaphore[i], NULL);
+
+        if (vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.imageAvailableSemaphore[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.renderFinishedSemaphore[i]) != VK_SUCCESS)
+		{
+            printf("Failed to recreate semaphores!\n");
+        }
+    }
+}
+
+
+
+void drawFrame() 
+{
+	if (!components.syncComp.skipCheck)
+	{
+		vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
 	} else
 	{
-		components->skipCheck -= 1; // Simple way to skip semaphore waits for a given number of frames
+		components.syncComp.skipCheck -= 1; // Simple way to skip semaphore waits for a given number of frames
 	}
 
 
 	uint32_t imageIndex;
-	VkResult result = vkAcquireNextImageKHR(components->device, components->swapChainGroup.swapChain, UINT64_MAX, components->imageAvailableSemaphore[components->frameIndex], VK_NULL_HANDLE, &imageIndex);
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components->framebufferResized) 
+	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
-		
-		printf("Recreating swap chain!\n");
-	    recreateSwapChain(components, window);
+		vkDeviceWaitIdle(components.deviceQueueComp.device);
+		for (int i = 0; i < 3; ++i) {
+			if (components.syncComp.frameSubmitted[i]) {
+				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+				components.syncComp.frameSubmitted[i] = false; // reset the status
+			}
+		}
+		//printf("Recreating swap chain!\n");
+		clearSemaphores();
+	    recreateSwapChain(&components, window);
 	    return;
 	} else if (result != VK_SUCCESS) 
 	{
 	    printf("Failed to acquire swap chain image!\n");
 	}
 
-	vkResetCommandBuffer(components->commandBuffer[components->frameIndex], 0);
-	recordCommandBuffer(components, imageIndex);
+	vkResetCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0);
+	recordCommandBuffer(imageIndex);
 	
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	
-	VkSemaphore waitSemaphores[] = {components->imageAvailableSemaphore[components->frameIndex]};
+	VkSemaphore waitSemaphores[] = {components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex]};
 	VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
 	submitInfo.waitSemaphoreCount = 1;
 	submitInfo.pWaitSemaphores = waitSemaphores;
 	submitInfo.pWaitDstStageMask = waitStages;
 	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &(components->commandBuffer[components->frameIndex]);
-	VkSemaphore signalSemaphores[] = {components->renderFinishedSemaphore[components->frameIndex]};
+	submitInfo.pCommandBuffers = &(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
+	VkSemaphore signalSemaphores[] = {components.syncComp.renderFinishedSemaphore[components.syncComp.frameIndex]};
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
-	vkResetFences(components->device, 1, &(components->inFlightFence[components->frameIndex])); // this goes here because multi-threading
-	if (vkQueueSubmit(components->graphicsQueue, 1, &submitInfo, components->inFlightFence[components->frameIndex]) != VK_SUCCESS) 
+	vkResetFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex])); // this goes here because multi-threading
+	if (vkQueueSubmit(components.deviceQueueComp.graphicsQueue, 1, &submitInfo, components.syncComp.inFlightFence[components.syncComp.frameIndex]) != VK_SUCCESS) 
 	{
 	    printf("Failed to submit draw command buffer!\n");
 	    return;
@@ -161,141 +194,160 @@ void drawFrame(VulkanComponents* components, GLFWwindow* window)
 	
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pWaitSemaphores = signalSemaphores;
-	VkSwapchainKHR swapChains[] = {components->swapChainGroup.swapChain};
+	VkSwapchainKHR swapChains[] = {components.swapChainComp.swapChainGroup.swapChain};
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = NULL; // Optional
-	vkQueuePresentKHR(components->presentQueue, &presentInfo);
+	vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
+	components.syncComp.frameSubmitted[components.syncComp.frameIndex] = true;
 
-	components->frameIndex += 1; // Iterate and reset the frame-in-flight index
-	if (components->frameIndex == 3)
+	components.syncComp.frameIndex += 1; // Iterate and reset the frame-in-flight index
+	if (components.syncComp.frameIndex == 3)
 	{
-		components->frameIndex = 0;
+		components.syncComp.frameIndex = 0;
 	}
-
-	return;
 }
 
 //Init and cleanup functions
 
-VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components) // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
+bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 {
-	memset(components, 0, sizeof(VulkanComponents)); // Just in case there's garbage making our unitialized parts non-NULL
-    if(components == NULL) 
-    {
-        fprintf(stderr, "Failed to allocate memory for Vulkan components!\n");
-        return NULL;
-    }
 
-	components->enableValidationLayers = true;
-	components->frameIndex = 0; // Tracks which frame is being processed
+	// Window initialization
+	WindowParameters parameters =
+	{
+		.width = 800,
+    	.height = 600,
+    	.monitorIndex = -1,        // Desired monitor index for fullscreen, -1 for windowed
+    	.borderless = 0
+	};
+
+	vulkanGarbage.monitors = &monitors;
+	cleanupMonitors(&monitors);
+	printf("Here");
+	enumerateMonitors(&monitors);
+	window = initWindow(&components, parameters, &monitors);
+
+	if (window == NULL)
+	{
+	    // Handle error
+	    printf("Window initialization failed.\n");
+	    unInitVulkan();
+	    return 0;
+	}
+
+	components.instanceDebug.enableValidationLayers = true;
+	components.syncComp.frameIndex = 0; // Tracks which frame is being processed
 
     // Initialize Vulkan
-    if (createInstance(&(components->instance), &(components->debugMessenger)) != VK_SUCCESS)
+    if (createInstance(&components) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create Vulkan instance!\n");
-        free(components);
-        return NULL;
+        unInitVulkan();
+        return false;
     }
-    vulkanGarbage.components = components;
+    vulkanGarbage.components = &components;
 
     // Create a window surface
-    if (createSurface(components->instance, window, &(components->surface)) != VK_SUCCESS)
+    if (createSurface(components.instanceDebug.instance, window, &(components.surface)) != VK_SUCCESS)
     {
         fprintf(stderr, "Failed to create window surface!\n");
         unInitVulkan();
-        return NULL;
+        return false;
     }
-    vulkanGarbage.components = components;
 
     // Pick physical device
     DeviceCapabilities capabilities;
-    components->physicalDevice = VK_NULL_HANDLE;
+    components.physicalDeviceComp.physicalDevice = VK_NULL_HANDLE;
     struct QueueFamilyIndices indices;
-    if (!pickPhysicalDevice(components->instance, &(components->physicalDevice), &(components->surface), &capabilities, &indices))
+	//!TODO replace empty char array with preffered device from VulkanSettings   
+	char* preferredDevice = getChosenDevice();
+	if (!pickPhysicalDevice(&(components), &capabilities, &(components.physicalDeviceComp.queueFamilyIndices), preferredDevice))
     {
     	fprintf(stderr, "Quitting init: physical device failure!\n");
     	unInitVulkan();
-    	return NULL;
+    	return false;
     }
-    vulkanGarbage.components = components;
     
     // Create logical device
-    if (createLogicalDevice(components->physicalDevice, &(components->device), &(components->graphicsQueue), &(components->computeQueue), &(components->transferQueue), &(components->presentQueue), &indices) != VK_SUCCESS)
+    if (createLogicalDevice(components.physicalDeviceComp.physicalDevice, &(components.deviceQueueComp.device), &(components.deviceQueueComp.graphicsQueue), &(components.deviceQueueComp.computeQueue), &(components.deviceQueueComp.transferQueue), &(components.deviceQueueComp.presentQueue), &(components.physicalDeviceComp.queueFamilyIndices)) != VK_SUCCESS)
     {
         fprintf(stderr, "Quitting init: logical device failure!\n");
         unInitVulkan();
-        return NULL;
+        return false;
     }
-    vulkanGarbage.components = components;
 
-    components->swapChainGroup = initSwapChain(components->physicalDevice, components->device, &(components->surface), window); // Initialize a swap chain
-    if (components->swapChainGroup.swapChain == NULL)
+    components.swapChainComp.swapChainGroup = initSwapChain(components.physicalDeviceComp.physicalDevice, components.deviceQueueComp.device, &(components.surface), window, getChosenPresentMode()); // Initialize a swap chain
+    if (components.swapChainComp.swapChainGroup.swapChain == NULL)
     {
     	printf("Quitting init: swap chain failure.\n");
     	unInitVulkan();
-    	return NULL;
+    	return false;
     }
-    vulkanGarbage.components = components;
     
-    components->viewGroup = createImageViews(components->device, components->swapChainGroup);
-    if (components->viewGroup.views == NULL)
+    components.swapChainComp.viewGroup = createImageViews(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup);
+    if (components.swapChainComp.viewGroup.views == NULL)
     {
     	printf("Quitting init: image view failure.\n");
     	unInitVulkan();
-    	return NULL;
+    	return false;
     }
-    vulkanGarbage.components = components;
 
-	if (createRenderPass(components->device, components->swapChainGroup.imageFormat, &(components->renderPass)) != true)
+	if (!createRenderPass(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
+                          &(components.renderComp.renderPass)))
 	{
 		printf("Quitting init: render pass failure\n");
 		unInitVulkan();
-		return NULL;
+		return false;
 	}
-	vulkanGarbage.components = components;
 
-	components->graphicsPipeline = createGraphicsPipeline(components->device, components->swapChainGroup.imageExtent, &(components->pipelineLayout), components->renderPass);
-	if (components->graphicsPipeline == NULL)
+	components.renderComp.graphicsPipeline = createGraphicsPipeline(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageExtent, &(components.renderComp.pipelineLayout), components.renderComp.renderPass);
+	if (components.renderComp.graphicsPipeline == NULL)
 	{
 		printf("Quitting init: pipeline failure!\n");
 		unInitVulkan();
-		return NULL;
+		return false;
 	}
-	vulkanGarbage.components = components;
+	printf("Framebuffers\n");
 
-	if (createFramebuffers(components->device, &(components->framebufferGroup), components->viewGroup, components-> swapChainGroup, components->renderPass) != true)
+	if (!createFramebuffers(components.deviceQueueComp.device, &(components.swapChainComp.framebufferGroup),
+                            components.swapChainComp.viewGroup, components.swapChainComp.swapChainGroup,
+                            components.renderComp.renderPass))
 	{
 		printf("Quitting init: framebuffer failure!\n");
 		unInitVulkan();
-		return NULL;	
+		return false;	
 	}
-	vulkanGarbage.components = components;
 
-	if (createCommandPool(components->device, components->physicalDevice, components->surface, &(components->commandPool)) != true)
+	printf("Command pool\n");
+
+	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
+                           components.surface, &(components.cmdComp.commandPool)))
 	{
 		printf("Quitting init: command pool failure!\n");
 		unInitVulkan();
-		return NULL;
+		return false;
 	}
-	vulkanGarbage.components = components;
 
-	if (createCommandBuffer(components) != true)
+	printf("Command buffer\n");
+
+	if (!createCommandBuffer(&components))
 	{
 		printf("Quitting init: command buffer failure!\n");
 		unInitVulkan();
-		return NULL;
+		return false;
 	}
-	vulkanGarbage.components = components;
+	
+	printf("Sync objects\n");
 
-	if (createSyncObjects(components) != true)
+	if (!createSyncObjects(&components))
 	{
 		printf("Quitting init: sync failure!\n");
 		unInitVulkan();
-		return NULL;
+		return false;
 	}
 
     
-    return components;
+    return true;
 }

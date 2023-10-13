@@ -27,11 +27,15 @@
 
 // Structs
 
+VulkanSettings vulkanSettings =
+{ //!TODO change this dynamically via vulkanSettings.h interface
+	.preferredDevice = "",
+	.preferredMode = 1
+};
 
 // Variables
 
-extern struct VulkanGarbage vulkanGarbage;
-
+extern 
 
 // Function Prototypes
 
@@ -43,22 +47,9 @@ int main()
 	#ifdef DEBUG_BUILD
 	printf("Running in debug mode!\n");
 	#endif	
-	VulkanComponents* components = (VulkanComponents*) malloc(sizeof(VulkanComponents));
-	GLFWwindow *window = initWindow(components);
-	if (window == NULL)
-	{
-	    // Handle error
-	    printf("Window initialization failed.\n");
-	    unInitVulkan();
-	    return 0;
-	}
-
-	vulkanGarbage.window = window;
 
 	// Initialize Vulkan
-	
-	components = initVulkan(window, components);
-	if (components == NULL)
+	if (initVulkan() == false)
 	{
 	    // Handle error
 	    printf("Vulkan initialization failed.\n");
@@ -66,13 +57,12 @@ int main()
 	    return 0;
 	}
 
-	vulkanGarbage.components = components;
-
 	// Create a graphics pipeline
 
+	uint32_t i = 0;
     // Main loop
-	while (!glfwWindowShouldClose(window))
-	{
+	while (!anoShouldClose())
+	{	
         glfwPollEvents();
 
         // Record and submit commands for graphics and compute operations
@@ -80,7 +70,8 @@ int main()
         // Present the image to the window
         // ...
         //printf("Test: %d\n", components->viewGroup.viewCount);
-        drawFrame(components, window);
+        drawFrame();
+		i++;
     }
 
     // Clean up
