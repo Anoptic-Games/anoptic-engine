@@ -90,7 +90,7 @@ bool updateWindow(GLFWwindow *window)
     glfwGetWindowSize(window, &currentWidth, &currentHeight);
     if (currentWidth != windowParameters.width || currentHeight != windowParameters.height)
     {
-        glfwSetWindowSize(window, windowParameters.width, windowParameters.height);
+        glfwSetWindowSize(window, (int)windowParameters.width, (int)windowParameters.height);
     }
 
     // 2. Handle monitor change (if monitorIndex != -1)
@@ -112,8 +112,9 @@ bool updateWindow(GLFWwindow *window)
     if (windowParameters.borderless)
     {
         // Assuming you want to use the native resolution for borderless fullscreen
-        int monitorCount;
-        GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+        // TODO: Figure out where these supposed to be used
+        // int monitorCount;
+        // GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
         GLFWmonitor* primary = glfwGetPrimaryMonitor();
         const GLFWvidmode* mode = glfwGetVideoMode(primary);
 
