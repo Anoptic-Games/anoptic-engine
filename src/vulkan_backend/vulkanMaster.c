@@ -120,6 +120,26 @@ void recordCommandBuffer(uint32_t imageIndex)
 	}
 }
 
+void clearSemaphores()
+{
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    for (int i = 0; i < 3; i++)
+	{
+        vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.imageAvailableSemaphore[i], NULL);
+        vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.renderFinishedSemaphore[i], NULL);
+
+        if (vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.imageAvailableSemaphore[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.renderFinishedSemaphore[i]) != VK_SUCCESS)
+		{
+            printf("Failed to recreate semaphores!\n");
+        }
+    }
+}
+
+
+
 void drawFrame() 
 {
 	if (!components.syncComp.skipCheck)
@@ -135,8 +155,9 @@ void drawFrame()
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
-		
+		vkWaitForFences(components.deviceQueueComp.device, 3, components.syncComp.inFlightFence, VK_TRUE, UINT64_MAX);
 		printf("Recreating swap chain!\n");
+		clearSemaphores();
 	    recreateSwapChain(&components, window);
 	    return;
 	} else if (result != VK_SUCCESS) 
