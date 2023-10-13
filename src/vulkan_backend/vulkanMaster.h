@@ -14,13 +14,17 @@
 // Function interfaces
 
 // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
-VulkanComponents* initVulkan(GLFWwindow* window, VulkanComponents* components); 
+VulkanComponents* initVulkan(); 
 
 // A celebration
 void unInitVulkan();
 
 // Draws a single frame
 
-void drawFrame(VulkanComponents* components, GLFWwindow* window);
+void drawFrame();
+
+// Returns whether the program has been requested to exit
+
+bool anoShouldClose();
 
 #endif
