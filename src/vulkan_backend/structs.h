@@ -174,12 +174,6 @@ typedef struct Monitors
 } Monitors;
 
 
-
-
-
-
-
-
 struct VulkanGarbage //All the various stuff that needs to be thrown out
 {
 	struct VulkanComponents *components;
