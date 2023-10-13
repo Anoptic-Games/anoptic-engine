@@ -7,39 +7,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
-#include <stdbool.h>
 #include <string.h>
-#include <time.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
 #endif
 
 #include "instanceInit.h"
 
 #include "vulkan_backend/structs.h"
 
-#include "vulkan_backend/pipeline.h"
 
 
 // Variables
 
-const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-
-// Function prototypes
-
-VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
-struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
-ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
-bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
-const char** getRequiredExtensions(uint32_t* extensionsCount);
-void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
-void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger);
-bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, ImageViewGroup viewGroup, SwapChainGroup swapGroup, VkRenderPass renderPass);
-void cleanupVulkan(VulkanComponents* components);
-static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
+static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
 // Vulkan component initialization functions
 
@@ -88,7 +71,7 @@ GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters
         chosenMonitor = NULL;
     }
     
-    GLFWwindow *window = glfwCreateWindow(parameters.width, parameters.height, "Vulkan", chosenMonitor, NULL);
+    GLFWwindow *window = glfwCreateWindow((int)parameters.width, (int)parameters.height, "Vulkan", chosenMonitor, NULL);
     
     glfwSetWindowUserPointer(window, components);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
@@ -290,19 +273,19 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	//!TODO Implement these as required further into development
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here
-		if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && indices.graphicsPresent != true)
+		if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && indices.graphicsPresent == false)
 		{
 			indices.graphicsFamily = i;
 			indices.graphicsPresent = true;
 			//printf("Graphics: %d\n", i);
 		}
-		if ((queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT)&& indices.computePresent != true)
+		if ((queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && indices.computePresent == false)
 		{
 			indices.computeFamily = i;
 			indices.computePresent = true;
 			//printf("Compute: %d\n", i);
 		}
-		if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT)&& indices.transferPresent != true)
+		if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && indices.transferPresent == false)
 		{
 			indices.transferFamily = i;
 			indices.transferPresent = true;
@@ -315,7 +298,7 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 			vkGetPhysicalDeviceSurfaceSupportKHR(device, i, *surface, &presentSupport);	
 			if (presentSupport) 
 			{
-				if (indices.presentPresent != true) // Makes sure the primary present family gets selected, usually the same family as for graphics
+				if (indices.presentPresent == false) // Makes sure the primary present family gets selected, usually the same family as for graphics
 				{
 					indices.presentFamily = i;	
 				}
@@ -329,7 +312,9 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 		}
 		//printf("Queue family %d flags: %d\n", i, queueFamilies[i].queueFlags);
 	}
-	//printf("Final output:\n  Graphics Family: %d\n  Compute family: %d\n  Transfer Family: %d\n  Present Family: %d\n\n", indices.graphicsFamily, indices.computeFamily, indices.transferFamily, indices.presentFamily);
+	//printf("Final output:\n  Graphics Family: %d\n  Compute family: %d
+    // \n  Transfer Family: %d\n  Present Family: %d\n\n",
+    // indices.graphicsFamily, indices.computeFamily, indices.transferFamily, indices.presentFamily);
     return indices;
 }
 
@@ -348,7 +333,6 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysic
 }
 
 bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
-    const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, /* Other required extensions... */ };
     size_t requiredExtensionsCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
     
     uint32_t extensionCount;
@@ -524,7 +508,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	            break;
 	        }
 	    }
-	    if (uniqueFamily == true)
+	    if (uniqueFamily)
 	    {
 	        VkDeviceQueueCreateInfo queueCreateInfo = {};
 	        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -798,7 +782,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 	SwapChainGroup failure = {NULL};
 	//!TODO Change the last element to the desired present mode
-	components->swapChainComp.swapChainGroup = initSwapChain(components->physicalDeviceComp.physicalDevice, components->deviceQueueComp.device, &(components->surface), window, 1);
+	components->swapChainComp.swapChainGroup = initSwapChain(components->physicalDeviceComp.physicalDevice,components->deviceQueueComp.device, &(components->surface), window, 1);
     if(components->swapChainComp.swapChainGroup.swapChain == failure.swapChain)
 	{
 		printf("Swap chain re-creation error, exiting!\n");
@@ -812,7 +796,11 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	cleanupVulkan(components);
     	exit(1);
     }
-    if (createFramebuffers(components->deviceQueueComp.device, &(components->swapChainComp.framebufferGroup), components->swapChainComp.viewGroup, components->swapChainComp.swapChainGroup, components->renderComp.renderPass) != true)
+    if (!createFramebuffers(components->deviceQueueComp.device,
+        &(components->swapChainComp.framebufferGroup),
+        components->swapChainComp.viewGroup,
+        components->swapChainComp.swapChainGroup,
+        components->renderComp.renderPass))
     {
     	printf("Framebuffer re-creation error, exiting!\n");
     	cleanupVulkan(components);
@@ -824,7 +812,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     {
         vkResetFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]));
     }
-    components->syncComp.skipCheck = 3; // Skip semaphore waits 
+    components->syncComp.skipCheck = 3; // Skip semaphore waits
 
     components->syncComp.framebufferResized = false;
 

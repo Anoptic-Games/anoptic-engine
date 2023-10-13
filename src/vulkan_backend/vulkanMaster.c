@@ -5,11 +5,7 @@
 
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <vulkan/vulkan.h>
-#include <stdbool.h>
-#include <string.h>
-#include <time.h>
 
 
 
@@ -60,7 +56,6 @@ void unInitVulkan() // A celebration
 	{
 		cleanupMonitors(vulkanGarbage.monitors);
 	}
-	return;
 }
 
 bool anoShouldClose()
@@ -212,8 +207,6 @@ void drawFrame()
 	{
 		components.syncComp.frameIndex = 0;
 	}
-
-	return;
 }
 
 //Init and cleanup functions
@@ -301,7 +294,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     	return false;
     }
 
-	if (createRenderPass(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat, &(components.renderComp.renderPass)) != true)
+	if (!createRenderPass(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
+                          &(components.renderComp.renderPass)))
 	{
 		printf("Quitting init: render pass failure\n");
 		unInitVulkan();
@@ -317,7 +311,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 	printf("Framebuffers\n");
 
-	if (createFramebuffers(components.deviceQueueComp.device, &(components.swapChainComp.framebufferGroup), components.swapChainComp.viewGroup, components.swapChainComp.swapChainGroup, components.renderComp.renderPass) != true)
+	if (!createFramebuffers(components.deviceQueueComp.device, &(components.swapChainComp.framebufferGroup),
+                            components.swapChainComp.viewGroup, components.swapChainComp.swapChainGroup,
+                            components.renderComp.renderPass))
 	{
 		printf("Quitting init: framebuffer failure!\n");
 		unInitVulkan();
@@ -326,7 +322,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	printf("Command pool\n");
 
-	if (createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice, components.surface, &(components.cmdComp.commandPool)) != true)
+	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
+                           components.surface, &(components.cmdComp.commandPool)))
 	{
 		printf("Quitting init: command pool failure!\n");
 		unInitVulkan();
@@ -335,7 +332,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	printf("Command buffer\n");
 
-	if (createCommandBuffer(&components) != true)
+	if (!createCommandBuffer(&components))
 	{
 		printf("Quitting init: command buffer failure!\n");
 		unInitVulkan();
@@ -344,7 +341,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	
 	printf("Sync objects\n");
 
-	if (createSyncObjects(&components) != true)
+	if (!createSyncObjects(&components))
 	{
 		printf("Quitting init: sync failure!\n");
 		unInitVulkan();
