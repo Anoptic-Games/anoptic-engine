@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #if defined(_WIN32)
-#include <Windows.h>
+#include <windows.h>
 
 
 
