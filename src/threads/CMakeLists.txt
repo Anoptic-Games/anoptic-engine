@@ -1,12 +1,13 @@
+# Always compile the common source file
+target_sources(anopticengine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/threads.c)
+
 # Conditionally compile platform-specific source files
 if (WIN32)
     target_sources(anopticengine PRIVATE
-            ./threads_win64.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/threads_win64.c
     )
-endif()
-
-if (UNIX)
+elseif (UNIX)
     target_sources(anopticengine PRIVATE
-            ./threads_linux.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/threads_linux.c
     )
 endif()
