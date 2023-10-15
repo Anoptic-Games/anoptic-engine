@@ -1,12 +1,10 @@
 # Conditionally compile platform-specific source files
 if (WIN32)
     target_sources(anopticengine PRIVATE
-            ./memalign_win64.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/memalign_win64.c
     )
-endif()
-
-if (UNIX)
+elseif (UNIX)
     target_sources(anopticengine PRIVATE
-            ./memalign_linux.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/memalign_linux.c
     )
 endif()
