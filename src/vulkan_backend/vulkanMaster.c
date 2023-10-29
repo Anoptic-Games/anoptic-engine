@@ -92,6 +92,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
 
+	VkBuffer vertexBuffers[] = {components.renderComp.buffers.vertexBuffer};
+	VkDeviceSize offsets[] = {0};
+	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffers, offsets);
+
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -320,7 +324,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;	
 	}
 
-	printf("Command pool\n");
 
 	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
                            components.surface, &(components.cmdComp.commandPool)))
@@ -330,7 +333,34 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	printf("Command buffer\n");
+	const Vertex vertices[] =
+	{
+		{.position = {.v = {0.0f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}},
+		{.position = {.v = {0.5f, 0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}},
+		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}}
+	};
+	
+	if (!createVertexBuffer(&components, vertices, 3))
+	{
+		printf("Quitting init: vertex buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!allocateBuffer(&components))
+	{
+		printf("Quitting init: vertex buffer allocation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	// Fill the vertex buffer
+	if (!fillBuffer(&components, vertices, 3))
+	{
+		printf("Quitting init: vertex buffer population failure!\n");
+		unInitVulkan();
+		return false;
+	}
 
 	if (!createCommandBuffer(&components))
 	{
@@ -339,7 +369,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 	
-	printf("Sync objects\n");
 
 	if (!createSyncObjects(&components))
 	{
@@ -348,6 +377,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-    
+	printf("Instance creation complete!\n");
+
     return true;
 }
