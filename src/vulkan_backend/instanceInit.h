@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #include "vulkan_backend/structs.h"
+#include "vulkan_backend/vertex.h"
 
 // Function interfaces
 
@@ -47,6 +48,18 @@ bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, Ima
 
 // Creates a command pool
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
+
+// Creates a vertex buffer
+bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount);
+
+// Finds available memory types appropriate for a given buffer
+uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);
+
+// Allocates memory for a buffer
+bool allocateBuffer(VulkanComponents* components);
+
+// Fills a vertex buffer
+bool fillBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount);
 
 // Creates a command buffer
 bool createCommandBuffer(VulkanComponents* components);

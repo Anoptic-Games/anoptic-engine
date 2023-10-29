@@ -896,6 +896,68 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 	return true;
 }
 
+bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount)
+{
+	VkBufferCreateInfo bufferInfo = {};
+	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bufferInfo.size = sizeof(vertices[0]) * vertexCount;
+	bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &(components->renderComp.buffers.vertexBuffer)) != VK_SUCCESS)
+	{
+		printf("Failed to create vertex buffer!");
+		return false;
+	}
+	return true;
+}
+
+uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties)
+{
+	VkPhysicalDeviceMemoryProperties memProperties;
+	vkGetPhysicalDeviceMemoryProperties(components->physicalDeviceComp.physicalDevice, &memProperties);
+
+	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+	{
+		if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+		{
+			return i;
+		}
+	}
+	
+	printf("Failed to find suitable memory type!");
+	return UINT32_MAX;
+}
+
+bool allocateBuffer(VulkanComponents* components)
+{
+	VkMemoryRequirements memRequirements;
+	vkGetBufferMemoryRequirements(components->deviceQueueComp.device, components->renderComp.buffers.vertexBuffer, &memRequirements);
+
+	VkMemoryAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocInfo.allocationSize = memRequirements.size;
+	allocInfo.memoryTypeIndex = findMemoryType(components, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	if (vkAllocateMemory(components->deviceQueueComp.device, &allocInfo, NULL, &(components->renderComp.buffers.vertexBufferMemory)) != VK_SUCCESS) {
+		printf("Failed to allocate vertex buffer memory!");
+		return false;
+	}
+
+	vkBindBufferMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexBuffer, components->renderComp.buffers.vertexBufferMemory, 0);
+	return true;
+}
+
+bool fillBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount)
+{
+	void* data;
+	vkMapMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexBufferMemory, 0, sizeof(vertices[0]) * vertexCount, 0, &data);
+	memcpy(data, vertices, sizeof(vertices[0]) * vertexCount);
+	vkUnmapMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexBufferMemory);
+	size_t dataSize = sizeof(vertices[0]) * vertexCount;
+	printf("Size of data to copy: %zu bytes\n", dataSize);
+	return true;
+}
+
 bool createCommandBuffer(VulkanComponents* components)
 {
 	VkCommandBufferAllocateInfo allocInfo = {};
@@ -998,6 +1060,16 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
     cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 
+	if(components->renderComp.buffers.vertexBuffer)
+	{
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertexBuffer, NULL);
+	}
+
+	if(components->renderComp.buffers.vertexBufferMemory)
+	{
+		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexBufferMemory, NULL);
+	}
+
     #ifdef DEBUG_BUILD
     DestroyDebugUtilsMessengerEXT(components->instanceDebug.instance, components->instanceDebug.debugMessenger, NULL);
 	#endif
@@ -1038,6 +1110,11 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     {
     	vkDestroyPipeline(components->deviceQueueComp.device, components->renderComp.graphicsPipeline, NULL);
     }
+
+	if (components->renderComp.buffers.vertexBuffer != NULL)
+	{
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertexBuffer, NULL);
+	}
     
     if (components->deviceQueueComp.device != VK_NULL_HANDLE) 
     {

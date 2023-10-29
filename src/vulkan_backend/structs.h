@@ -104,11 +104,22 @@ typedef struct SwapChainComponents
     SwapChainSupportDetails swapChainSupportDetails;
 } SwapChainComponents;
 
+typedef struct BufferComponents 
+{
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexBufferMemory;
+    // potentially: VkBuffer indexBuffer;
+    // VkDeviceMemory indexBufferMemory;
+    // ... and other buffers as needed
+} BufferComponents;
+
+
 typedef struct RenderComponents
 {
     VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
     VkPipeline graphicsPipeline;
+	BufferComponents buffers;
 } RenderComponents;
 
 typedef struct SynchronizationComponents
