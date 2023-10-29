@@ -17,12 +17,6 @@ else()
   message(FATAL_ERROR "64-bit compiler REQUIRED.")
 endif()
 
-# Include all header directories
-include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
-
-# Define the project root path
-add_definitions(-DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
-
 # Enable C23 standard
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -33,11 +27,24 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
 # Find the Vulkan SDK system-wide package
 find_package(Vulkan REQUIRED)
 
+# Add headers into add_executable() so IDEs parse them
+file(GLOB HEADER_SOURCES
+        "./include/*.h"
+)
+
 # Add an executable target
-add_executable(anopticengine ./src/engine/main.c)
+add_executable(anopticengine ./src/engine/main.c ${HEADER_SOURCES})
+
+# Define the project root path
+target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
+# Include all header directories
+target_include_directories(anopticengine PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 
 # Module Subdirectories
-add_subdirectory(${CMAKE_SOURCE_DIR}/src/platform)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
 
 # Link the GLFW and Vulkan libraries to the target

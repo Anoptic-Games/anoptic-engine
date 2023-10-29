@@ -42,4 +42,3 @@ void ano_sleep(uint64_t us);     // Use OS time facilities for high-res sleep th
 // UNIX: if more than one second long, just call usleep repeatedly lol
 
 #endif // ANOPTIC_TIME_H
-// end of include guard, end of file
