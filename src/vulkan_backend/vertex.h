@@ -10,6 +10,13 @@
 
 #include <vulkan/vulkan.h>
 #include <stdlib.h>
+#include <math.h>
+#include <string.h>
+
+
+// Variable types
+
+typedef float mat4[4][4];
 
 
 // Structs
@@ -31,6 +38,13 @@ typedef struct Vertex
 } Vertex;
 
 
+typedef struct UniformComponents
+{
+	mat4 model;
+	mat4 view;
+	mat4 proj;
+} UniformComponents;
+
 
 
 // Functions
@@ -40,6 +54,15 @@ VkVertexInputBindingDescription getBindingDescription(void);
 
 // Determines how to extract vertex attributes from vertex data chunks !NOTE this function expects an array of two attribute descriptions
 void getAttributeDescriptions(VkVertexInputAttributeDescription*);
+
+// Performs matrix rotation
+void rotateMatrix(float mat[4][4], char axis, float angle);
+
+// Creates a view matrix from the provided values
+void lookAt(float mat[4][4], float eye[3], float center[3], float up[3]);
+
+// Creates a perspective matrix from the provided values
+void perspective(float matrix[4][4], float fovDegrees, float aspect, float near, float far);
 
 
 #endif

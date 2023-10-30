@@ -118,12 +118,37 @@ bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPa
 	return true;
 }
 
+bool createDescriptorSetLayout(VulkanComponents* components)
+{
+	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+    uboLayoutBinding.binding = 0;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorCount = 1;
+	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	uboLayoutBinding.pImmutableSamplers = NULL; // Optional
+
+	VkPipelineLayout pipelineLayout;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = 1;
+	layoutInfo.pBindings = &uboLayoutBinding;
+
+	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &(components->renderComp.descriptorSetLayout)) != VK_SUCCESS)
+	{
+		printf("Failed to create descriptor set layout!\n");
+		return false;
+	}
+
+	return true;
+}
+
 
 // TODO: write two garbo removers for the shader buffers and modules
 
 // The juicy part
 
-VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout *pipelineLayout, VkRenderPass renderPass)
+VkPipeline createGraphicsPipeline(VulkanComponents* components)
 {
 	struct Buffer vertShaderCode;
 	char vertShaderPath[256]; // Adjust size as needed.
@@ -144,8 +169,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	}
 	printf("Loaded files!\n");
 
-	VkShaderModule vertShaderModule = createShaderModule(device, &vertShaderCode);
-    VkShaderModule fragShaderModule = createShaderModule(device, &fragShaderCode);
+	VkShaderModule vertShaderModule = createShaderModule(components->deviceQueueComp.device, &vertShaderCode);
+    VkShaderModule fragShaderModule = createShaderModule(components->deviceQueueComp.device, &fragShaderCode);
     if (vertShaderModule == NULL || fragShaderModule == NULL)
     {
     	printf("We failed, bros..\n");
@@ -199,14 +224,14 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
     VkViewport viewport = {};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
-    viewport.width = (float) swapChainExtent.width;
-    viewport.height = (float) swapChainExtent.height;
+    viewport.width = (float) components->swapChainComp.swapChainGroup.imageExtent.width;
+    viewport.height = (float) components->swapChainComp.swapChainGroup.imageExtent.height;
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
 
     VkRect2D scissor = {};
     scissor.offset = (VkOffset2D){0, 0};
-    scissor.extent = swapChainExtent;
+    scissor.extent = components->swapChainComp.swapChainGroup.imageExtent;
 
     VkPipelineViewportStateCreateInfo viewportState = {};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -221,8 +246,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
     rasterizer.depthBiasConstantFactor = 0.0f; // Optional
     rasterizer.depthBiasClamp = 0.0f; // Optional
@@ -258,14 +283,20 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	colorBlending.blendConstants[2] = 0.0f; // Optional
 	colorBlending.blendConstants[3] = 0.0f; // Optional
 
+	if (!createDescriptorSetLayout(components))
+	{
+		printf("Failed to create descriptor set layout!\n");
+		return NULL;
+	}
+
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 0; // Optional
-	pipelineLayoutInfo.pSetLayouts = NULL; // Optional
+	pipelineLayoutInfo.setLayoutCount = 1; // Optional
+	pipelineLayoutInfo.pSetLayouts = &(components->renderComp.descriptorSetLayout); // Optional
 	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
 	pipelineLayoutInfo.pPushConstantRanges = NULL; // Optional
 
-	if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, pipelineLayout) != VK_SUCCESS) 
+	if (vkCreatePipelineLayout(components->deviceQueueComp.device, &pipelineLayoutInfo, NULL, &(components->renderComp.pipelineLayout)) != VK_SUCCESS) 
 	{
 	    printf("Failed to create pipeline layout!\n");
 	    return NULL;
@@ -283,14 +314,14 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	pipelineInfo.pDepthStencilState = NULL; // Optional
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.layout = *pipelineLayout;
-	pipelineInfo.renderPass = renderPass;
+	pipelineInfo.layout = components->renderComp.pipelineLayout;
+	pipelineInfo.renderPass = components->renderComp.renderPass;
 	pipelineInfo.subpass = 0;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
 	pipelineInfo.basePipelineIndex = -1; // Optional
 
 	VkPipeline graphicsPipeline;
-	if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &graphicsPipeline) != VK_SUCCESS) 
+	if (vkCreateGraphicsPipelines(components->deviceQueueComp.device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &graphicsPipeline) != VK_SUCCESS) 
 	{
 	    printf("Failed to create graphics pipeline!\n");
 	    return NULL;
@@ -308,8 +339,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, V
 	#endif
 
 	// TODO: generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
-	vkDestroyShaderModule(device, vertShaderModule, NULL);
-	vkDestroyShaderModule(device, fragShaderModule, NULL);
+	vkDestroyShaderModule(components->deviceQueueComp.device, vertShaderModule, NULL);
+	vkDestroyShaderModule(components->deviceQueueComp.device, fragShaderModule, NULL);
 
 
 	return graphicsPipeline;
