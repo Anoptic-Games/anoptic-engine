@@ -944,23 +944,32 @@ bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t
 {
 	VkDeviceSize bufferSize = sizeof(vertices[0]) * vertexCount;
 
-	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &components->renderComp.buffers.stagingBuffer, &components->renderComp.buffers.stagingBufferMemory)) 
-	{
-		printf("Failed to create staging buffer!");
-		return false;
-	}
-	
-	properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, properties, &components->renderComp.buffers.vertexBuffer, &components->renderComp.buffers.vertexBufferMemory)) 
+	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, properties, &components->renderComp.buffers.vertex, &components->renderComp.buffers.vertexMemory)) 
 	{
 		printf("Failed to create vertex buffer!");
 		return false;
 	}
 	
 	return true;
+}
+
+bool createIndexBuffer(VulkanComponents* components, uint16_t* vertexIndices, uint32_t indexCount)
+{
+	VkDeviceSize bufferSize = sizeof(uint16_t) * indexCount;
+	
+
+	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, properties, &components->renderComp.buffers.index, &components->renderComp.buffers.indexMemory)) 
+	{
+		printf("Failed to create index buffer!");
+		return false;
+	}
+	
+	return true;
+
 }
 
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties)
@@ -981,17 +990,39 @@ uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMem
 }
 
 
-
-bool fillStagingBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount)
+bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize)
 {
-	void* data;
-	vkMapMemory(components->deviceQueueComp.device, components->renderComp.buffers.stagingBufferMemory, 0, sizeof(vertices[0]) * vertexCount, 0, &data);
-	memcpy(data, vertices, sizeof(vertices[0]) * vertexCount);
-	vkUnmapMemory(components->deviceQueueComp.device, components->renderComp.buffers.stagingBufferMemory);
-	size_t dataSize = sizeof(vertices[0]) * vertexCount;
-	printf("Size of data to copy: %zu bytes\n", dataSize);
-	return true;
+    // Create staging buffer
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+    if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingBufferMemory)) 
+    {
+        printf("Failed to create staging buffer!");
+        return false;
+    }
+
+    // Map the staging buffer's memory, copy the data, and then unmap
+    void* mappedMemory;
+    vkMapMemory(components->deviceQueueComp.device, stagingBufferMemory, 0, bufferSize, 0, &mappedMemory);
+    memcpy(mappedMemory, data, bufferSize);
+    vkUnmapMemory(components->deviceQueueComp.device, stagingBufferMemory);
+
+    // Copy data from staging buffer to destination buffer
+    if (!copyBuffer(components, stagingBuffer, dstBuffer, bufferSize))
+    {
+        printf("Failed to copy buffers!");
+        return false;
+    }
+
+    // Cleanup staging buffer
+    vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
+    vkFreeMemory(components->deviceQueueComp.device, stagingBufferMemory, NULL);
+
+    return true;
 }
+
 
 bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
 {
@@ -1138,14 +1169,24 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
     cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 
-	if(components->renderComp.buffers.vertexBuffer)
+	if(components->renderComp.buffers.vertex)
 	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertexBuffer, NULL);
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertex, NULL);
 	}
 
-	if(components->renderComp.buffers.vertexBufferMemory)
+	if(components->renderComp.buffers.vertexMemory)
 	{
-		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexBufferMemory, NULL);
+		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexMemory, NULL);
+	}
+
+	if(components->renderComp.buffers.index)
+	{
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertex, NULL);
+	}
+
+	if(components->renderComp.buffers.indexMemory)
+	{
+		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexMemory, NULL);
 	}
 
     #ifdef DEBUG_BUILD
@@ -1189,9 +1230,9 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     	vkDestroyPipeline(components->deviceQueueComp.device, components->renderComp.graphicsPipeline, NULL);
     }
 
-	if (components->renderComp.buffers.vertexBuffer != NULL)
+	if (components->renderComp.buffers.vertex != NULL)
 	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertexBuffer, NULL);
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertex, NULL);
 	}
     
     if (components->deviceQueueComp.device != VK_NULL_HANDLE) 

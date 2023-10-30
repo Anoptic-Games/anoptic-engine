@@ -55,14 +55,17 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 // Creates a vertex buffer
 bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount);
 
+// Creates an index buffer
+bool createIndexBuffer(VulkanComponents* components, uint16_t* vertexIndices, uint32_t indexCount);
+
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
 // Allocates memory for a buffer
 bool allocateBuffer(VulkanComponents* components, VkBuffer buffer, VkMemoryPropertyFlags properties, VkDeviceMemory* bufferMemory);
 
-// Fills a vertex buffer
-bool fillStagingBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount);
+// Transfers data from the host to a destination buffer
+bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize);
 
 // Copies data from one GPU buffer to another
 bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
