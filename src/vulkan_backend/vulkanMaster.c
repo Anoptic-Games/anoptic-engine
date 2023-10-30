@@ -112,6 +112,9 @@ void recordCommandBuffer(uint32_t imageIndex)
 	scissor.extent = components.swapChainComp.swapChainGroup.imageExtent;
 	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
 
+	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
+		components.renderComp.pipelineLayout, 0, 1, &(components.renderComp.descriptorSets[components.syncComp.frameIndex]), 0, NULL);
+
 	vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], (uint32_t)(sizeof(uint16_t) * 6), 1, 0, 0, 0);
 
 	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
@@ -126,7 +129,7 @@ void clearSemaphores()
     VkSemaphoreCreateInfo semaphoreInfo = {};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
         vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.imageAvailableSemaphore[i], NULL);
         vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.renderFinishedSemaphore[i], NULL);
@@ -139,7 +142,31 @@ void clearSemaphores()
     }
 }
 
+void printUniformTransferState() {
+    // Swap Chain Components
+    printf("\n=== Swap Chain Components ===\n");
+    printf("Image count: %d\n", components.swapChainComp.swapChainGroup.imageCount);
+    printf("Image extent: width = %d, height = %d\n", components.swapChainComp.swapChainGroup.imageExtent.width, components.swapChainComp.swapChainGroup.imageExtent.height);
+    
+    // Buffer Components
+    printf("\n=== Buffer Components ===\n");
+    printf("Vertex buffer: %p\n", (void*)components.renderComp.buffers.vertex);
+    printf("Index buffer: %p\n", (void*)components.renderComp.buffers.index);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
+        printf("Uniform memory %d: %p\n", i, (void*)components.renderComp.buffers.uniformMemory[i]);
+        printf("Uniform buffer mapping %d: %p\n", i, components.renderComp.buffers.uniformMapped[i]);
+    }
 
+    // Synchronization Components
+    printf("\n=== Synchronization Components ===\n");
+    printf("Current frame index: %d\n", components.syncComp.frameIndex);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        printf("Frame %d submitted: %d\n", i, components.syncComp.frameSubmitted[i]);
+    }
+    
+    printf("\n======================================\n");
+}
 
 void drawFrame() 
 {
@@ -151,13 +178,12 @@ void drawFrame()
 		components.syncComp.skipCheck -= 1; // Simple way to skip semaphore waits for a given number of frames
 	}
 
-
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
 		vkDeviceWaitIdle(components.deviceQueueComp.device);
-		for (int i = 0; i < 3; ++i) {
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 			if (components.syncComp.frameSubmitted[i]) {
 				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
 				components.syncComp.frameSubmitted[i] = false; // reset the status
@@ -172,8 +198,12 @@ void drawFrame()
 	    printf("Failed to acquire swap chain image!\n");
 	}
 
+	updateUniformBuffer(&components);
+
 	vkResetCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0);
 	recordCommandBuffer(imageIndex);
+
+	//updateUniformBuffer(&components);
 	
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -208,8 +238,10 @@ void drawFrame()
 	vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
 	components.syncComp.frameSubmitted[components.syncComp.frameIndex] = true;
 
+	printUniformTransferState();
+
 	components.syncComp.frameIndex += 1; // Iterate and reset the frame-in-flight index
-	if (components.syncComp.frameIndex == 3)
+	if (components.syncComp.frameIndex == MAX_FRAMES_IN_FLIGHT)
 	{
 		components.syncComp.frameIndex = 0;
 	}
@@ -308,7 +340,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	components.renderComp.graphicsPipeline = createGraphicsPipeline(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageExtent, &(components.renderComp.pipelineLayout), components.renderComp.renderPass);
+	components.renderComp.graphicsPipeline = createGraphicsPipeline(&components);
 	if (components.renderComp.graphicsPipeline == NULL)
 	{
 		printf("Quitting init: pipeline failure!\n");
@@ -340,7 +372,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		{.position = {.v = {-0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}},
 		{.position = {.v = {0.5f, -0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}},
 		{.position = {.v = {0.5f, 0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}},
-		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.5f, 0.5f, 0.5f}}}
+		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}}
 	};
 
 	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0};
@@ -373,6 +405,31 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
+
+	if (!createUniformBuffers(&components))
+	{
+		printf("Quitting init: uniform buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	// HERE
+	if (!createDescriptorPool(&components))
+	{
+		printf("Quitting init: descriptor pool creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!createDescriptorSets(&components))
+	{
+		printf("Quitting init: descriptor sets creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	updateDescriptorSets(&components);
+
 
 	if (!createCommandBuffer(&components))
 	{

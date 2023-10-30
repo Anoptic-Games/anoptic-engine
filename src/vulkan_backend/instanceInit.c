@@ -665,7 +665,7 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
 	            currentPriority = 4;
 	            break;
 	        case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
-	            currentPriority = 3;
+	            currentPriority = MAX_FRAMES_IN_FLIGHT;
 	            break;
 	        case VK_PRESENT_MODE_FIFO_KHR:
 	            currentPriority = 2;
@@ -772,7 +772,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 
     if (!components->syncComp.skipCheck)
     {
-        for (uint32_t i = 0; i < 3; i++) 
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
         {
             vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
         }
@@ -808,11 +808,11 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     }
 
     vkResetCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, 0);
-    for (int i = 0; i < 3; i++) // Clear fences prior to resuming render
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
     {
         vkResetFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]));
     }
-    components->syncComp.skipCheck = 3; // Skip semaphore waits
+    components->syncComp.skipCheck = MAX_FRAMES_IN_FLIGHT; // Skip semaphore waits
 
     components->syncComp.framebufferResized = false;
 
@@ -972,6 +972,150 @@ bool createIndexBuffer(VulkanComponents* components, uint16_t* vertexIndices, ui
 
 }
 
+bool createUniformBuffers(VulkanComponents* components)
+{
+	VkDeviceSize bufferSize = sizeof(UniformComponents);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+
+		if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			 &(components->renderComp.buffers.uniform[i]), &(components->renderComp.buffers.uniformMemory[i]))) 
+		{
+			printf("Failed to create uniform buffer!");
+			return false;
+		}
+
+        vkMapMemory(components->deviceQueueComp.device, components->renderComp.buffers.uniformMemory[i], 0, bufferSize, 0, &(components->renderComp.buffers.uniformMapped[i]));
+    }
+
+	return true;
+}
+
+void printMatrix(float mat[4][4])
+{
+    printf("Matrix:\n");
+    for (int i = 0; i < 4; i++)
+    {
+        for (int j = 0; j < 4; j++)
+        {
+            printf("%f ", mat[i][j]);
+        }
+        printf("\n");
+    }
+}
+
+bool updateUniformBuffer(VulkanComponents* components)
+{
+	// This is where we *actually* start needing time
+	static float angle = 0.0f;
+	const float pi = 3.14159265359f;
+
+	for(int i = 0; i < 4; i++)
+    	for(int j = 0; j < 4; j++)
+        	components->renderComp.uniform.model[i][j] = (i == j) ? 1.0f : 0.0f;
+
+	rotateMatrix(components->renderComp.uniform.model, 'Y', angle);
+
+	float eye[] = {2.0f, 2.0f, 2.0f};  // Positioned along the Z-axis
+	float center[] = {0.0f, 0.0f, 0.0f};
+	float up[] = {0.0f, 0.0f, 1.0f};  // Y is up
+	lookAt(components->renderComp.uniform.view, eye, center, up);
+
+	float fov = 45.0f; // Field of View in degrees
+	float aspect = (float)components->swapChainComp.swapChainGroup.imageExtent.width / components->swapChainComp.swapChainGroup.imageExtent.height;
+	float near = 0.1f;
+	float far = 100.0f;
+	perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
+
+	// Print matrices
+	printf("Model Matrix:\n");
+	printMatrix(components->renderComp.uniform.model);
+
+	printf("\nView Matrix:\n");
+	printMatrix(components->renderComp.uniform.view);
+
+	printf("\nProjection Matrix:\n");
+	printMatrix(components->renderComp.uniform.proj);
+	printf("\n");
+
+	memcpy(components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex], &(components->renderComp.uniform), sizeof(components->renderComp.uniform));
+
+	//components->renderComp.uniform.proj[1][1] *= -1; 
+
+	angle += 0.01f;
+	if(angle > 2.0f * pi)
+	{
+		angle = 0.0f;	
+	}
+
+	return true;  // I assume you want this function to return a bool, so added a return statement.
+}
+
+bool createDescriptorPool(VulkanComponents* components)
+{
+	VkDescriptorPoolSize poolSize = {};
+	poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSize.descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+
+	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.descriptorPool)) != VK_SUCCESS)
+	{
+    	printf("Failed to create descriptor pool!\n");
+		return false;
+	}
+
+	return true;
+}
+
+bool createDescriptorSets(VulkanComponents* components)
+{
+	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+	    layouts[i] = components->renderComp.descriptorSetLayout;
+	}
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = components->renderComp.descriptorPool;
+	allocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+	allocInfo.pSetLayouts = layouts;
+
+	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, components->renderComp.descriptorSets) != VK_SUCCESS)
+	{
+    	printf("Failed to allocate descriptor sets!\n");
+		return false;
+	}
+
+	return true;
+}
+
+void updateDescriptorSets(VulkanComponents* components) {
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkDescriptorBufferInfo bufferInfo = {};
+        bufferInfo.buffer = components->renderComp.buffers.uniform[i];
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(UniformComponents);
+
+        VkWriteDescriptorSet descriptorWrite = {};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = components->renderComp.descriptorSets[i];
+        descriptorWrite.dstBinding = 0;   // Corresponds to binding in shader.
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(components->deviceQueueComp.device, 1, &descriptorWrite, 0, nullptr);
+    }
+}
+
+
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties)
 {
 	VkPhysicalDeviceMemoryProperties memProperties;
@@ -1075,7 +1219,7 @@ bool createCommandBuffer(VulkanComponents* components)
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
-    for (uint32_t i =0; i<3; i++)
+    for (uint32_t i =0; i<MAX_FRAMES_IN_FLIGHT; i++)
     {
         if (vkAllocateCommandBuffers(components->deviceQueueComp.device, &allocInfo, &(components->cmdComp.commandBuffer[i])) != VK_SUCCESS) 
 	    {
@@ -1089,7 +1233,7 @@ bool createCommandBuffer(VulkanComponents* components)
 
 bool createSyncObjects(VulkanComponents* components) 
 {
-    for (uint32_t i = 0; i<3; i++)
+    for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
     {
         VkSemaphoreCreateInfo semaphoreInfo = {};
         semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;  
@@ -1162,7 +1306,7 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
         return;
     }
 
-    for (uint32_t i = 0; i < 3; i++)  // We wanna make sure all rendering is finished before we destroy anything
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)  // We wanna make sure all rendering is finished before we destroy anything
     {  
         vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
     }
@@ -1189,10 +1333,28 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexMemory, NULL);
 	}
 
+	if(components->renderComp.descriptorPool)
+	{
+		vkDestroyDescriptorPool(components->deviceQueueComp.device, components->renderComp.descriptorPool, NULL);
+		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.descriptorSetLayout, NULL);
+	}
+
+	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
+    {
+		if(components->renderComp.buffers.uniform[i])
+		{
+			vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.uniform[i], NULL);
+		}
+		if(components->renderComp.buffers.uniformMemory[i])
+		{
+			vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.uniformMemory[i], NULL);
+		}
+	}
+
     #ifdef DEBUG_BUILD
     DestroyDebugUtilsMessengerEXT(components->instanceDebug.instance, components->instanceDebug.debugMessenger, NULL);
 	#endif
-    for (uint32_t i = 0; i<3; i++)
+    for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
     {
         if (components->syncComp.imageAvailableSemaphore[i])
         {
@@ -1223,6 +1385,11 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     if (components->renderComp.pipelineLayout != NULL)
     {
     	vkDestroyPipelineLayout(components->deviceQueueComp.device, components->renderComp.pipelineLayout, NULL);
+    }
+
+	if (components->renderComp.descriptorSetLayout != NULL)
+    {
+    	vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.descriptorSetLayout, NULL);
     }
 
     if (components->renderComp.graphicsPipeline != NULL)

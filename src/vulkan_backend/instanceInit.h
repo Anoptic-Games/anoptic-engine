@@ -58,6 +58,21 @@ bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t
 // Creates an index buffer
 bool createIndexBuffer(VulkanComponents* components, uint16_t* vertexIndices, uint32_t indexCount);
 
+// Creates uniform buffers for each frame
+bool createUniformBuffers(VulkanComponents* components);
+
+// Upsades the uniform buffer
+bool updateUniformBuffer(VulkanComponents* components);
+
+// Creates a descriptor pool
+bool createDescriptorPool(VulkanComponents* components);
+
+// Creates a descriptor set
+bool createDescriptorSets(VulkanComponents* components);
+
+// Updates descriptor sets to point to their corresponding uniform buffers
+void updateDescriptorSets(VulkanComponents* components);
+
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 

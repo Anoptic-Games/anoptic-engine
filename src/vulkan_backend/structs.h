@@ -17,6 +17,10 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
+#include "vertex.h"
+
+#define MAX_FRAMES_IN_FLIGHT 3
+
 // Structs
 
 typedef struct FrameBufferGroup
@@ -110,6 +114,9 @@ typedef struct BufferComponents
     VkDeviceMemory vertexMemory;
     VkBuffer index;
     VkDeviceMemory indexMemory;
+	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
+	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
+	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
     // potentially: VkBuffer indexBuffer;
     // VkDeviceMemory indexBufferMemory;
     // ... and other buffers as needed
@@ -120,16 +127,20 @@ typedef struct RenderComponents
 {
     VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
+	VkDescriptorSetLayout descriptorSetLayout;
+	VkDescriptorSetLayout descriptorSets[MAX_FRAMES_IN_FLIGHT];
+	VkDescriptorPool descriptorPool;
+	UniformComponents uniform;
     VkPipeline graphicsPipeline;
 	BufferComponents buffers;
 } RenderComponents;
 
 typedef struct SynchronizationComponents
 {
-    VkSemaphore imageAvailableSemaphore[3];
-    VkSemaphore renderFinishedSemaphore[3];
-    VkFence inFlightFence[3];
-	bool frameSubmitted[3]; // Used to keep track of which frames have been used, mitigates resize crash
+    VkSemaphore imageAvailableSemaphore[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore renderFinishedSemaphore[MAX_FRAMES_IN_FLIGHT];
+    VkFence inFlightFence[MAX_FRAMES_IN_FLIGHT];
+	bool frameSubmitted[MAX_FRAMES_IN_FLIGHT]; // Used to keep track of which frames have been used, mitigates resize crash
     uint32_t frameIndex;
     bool framebufferResized;
     uint32_t skipCheck;
@@ -138,7 +149,7 @@ typedef struct SynchronizationComponents
 typedef struct CommandComponents
 {
     VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer[3];
+    VkCommandBuffer commandBuffer[MAX_FRAMES_IN_FLIGHT];
 } CommandComponents;
 
 typedef struct VulkanComponents
