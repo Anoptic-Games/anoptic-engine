@@ -81,7 +81,10 @@ GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters
 
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 {
+	static uint32_t count = 0;
 	VulkanComponents* components = glfwGetWindowUserPointer(window);
+	printf("Resize: %d\n", count);
+	count++;
 	components->syncComp.framebufferResized = true;
 }
 

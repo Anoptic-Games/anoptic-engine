@@ -183,8 +183,10 @@ void drawFrame()
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
 		vkDeviceWaitIdle(components.deviceQueueComp.device);
-		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-			if (components.syncComp.frameSubmitted[i]) {
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			if (components.syncComp.frameSubmitted[i])
+			{
 				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
 				components.syncComp.frameSubmitted[i] = false; // reset the status
 			}
@@ -235,7 +237,30 @@ void drawFrame()
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = NULL; // Optional
-	vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
+
+	VkResult presentResult = vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
+
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
+	{
+		// Handle swap chain recreation
+		vkDeviceWaitIdle(components.deviceQueueComp.device);
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			if (components.syncComp.frameSubmitted[i])
+			{
+				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+				components.syncComp.frameSubmitted[i] = false; // reset the status
+			}
+		}
+		clearSemaphores();
+		recreateSwapChain(&components, window);
+		return;
+	} else if (presentResult != VK_SUCCESS)
+	{
+		printf("Failed to present swap chain image!\n");
+		return;
+	}
+
 	components.syncComp.frameSubmitted[components.syncComp.frameIndex] = true;
 
 	//printUniformTransferState();
@@ -274,6 +299,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    unInitVulkan();
 	    return 0;
 	}
+
+	//requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
 
 	components.instanceDebug.enableValidationLayers = true;
 	components.syncComp.frameIndex = 0; // Tracks which frame is being processed
