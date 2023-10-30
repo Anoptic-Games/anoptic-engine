@@ -108,6 +108,8 @@ typedef struct BufferComponents
 {
     VkBuffer vertexBuffer;
     VkDeviceMemory vertexBufferMemory;
+	VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
     // potentially: VkBuffer indexBuffer;
     // VkDeviceMemory indexBufferMemory;
     // ... and other buffers as needed

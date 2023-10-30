@@ -347,17 +347,24 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	if (!allocateBuffer(&components))
+	/*if (!allocateBuffer(&components))
 	{
 		printf("Quitting init: vertex buffer allocation failure!\n");
 		unInitVulkan();
 		return false;
-	}
+	}*/
 
 	// Fill the vertex buffer
-	if (!fillBuffer(&components, vertices, 3))
+	if (!fillStagingBuffer(&components, vertices, 3))
 	{
-		printf("Quitting init: vertex buffer population failure!\n");
+		printf("Quitting init: staging buffer population failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if(!copyBuffer(&components, components.renderComp.buffers.stagingBuffer, components.renderComp.buffers.vertexBuffer, sizeof(vertices[0]) * 3))
+	{
+		printf("Quitting init: failed to copy vertex data!");
 		unInitVulkan();
 		return false;
 	}
