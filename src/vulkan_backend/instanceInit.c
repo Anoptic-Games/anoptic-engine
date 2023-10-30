@@ -1028,17 +1028,6 @@ bool updateUniformBuffer(VulkanComponents* components)
 	float far = 100.0f;
 	perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
 
-	// Print matrices
-	printf("Model Matrix:\n");
-	printMatrix(components->renderComp.uniform.model);
-
-	printf("\nView Matrix:\n");
-	printMatrix(components->renderComp.uniform.view);
-
-	printf("\nProjection Matrix:\n");
-	printMatrix(components->renderComp.uniform.proj);
-	printf("\n");
-
 	memcpy(components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex], &(components->renderComp.uniform), sizeof(components->renderComp.uniform));
 
 	//components->renderComp.uniform.proj[1][1] *= -1; 
