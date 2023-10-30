@@ -49,6 +49,9 @@ bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, Ima
 // Creates a command pool
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
 
+// Generic function for data buffer creation, updates buffer and bufferMemory with the created addresses
+bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, VkDeviceMemory* bufferMemory);
+
 // Creates a vertex buffer
 bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount);
 
@@ -56,10 +59,13 @@ bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
 // Allocates memory for a buffer
-bool allocateBuffer(VulkanComponents* components);
+bool allocateBuffer(VulkanComponents* components, VkBuffer buffer, VkMemoryPropertyFlags properties, VkDeviceMemory* bufferMemory);
 
 // Fills a vertex buffer
-bool fillBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount);
+bool fillStagingBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount);
+
+// Copies data from one GPU buffer to another
+bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
 // Creates a command buffer
 bool createCommandBuffer(VulkanComponents* components);
