@@ -92,9 +92,11 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
 
-	VkBuffer vertexBuffers[] = {components.renderComp.buffers.vertexBuffer};
+	VkBuffer vertexBuffers[] = {components.renderComp.buffers.vertex};
 	VkDeviceSize offsets[] = {0};
 	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffers, offsets);
+
+	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.index, 0, VK_INDEX_TYPE_UINT16);
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -110,7 +112,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	scissor.extent = components.swapChainComp.swapChainGroup.imageExtent;
 	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
 
-	vkCmdDraw(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 3, 1, 0, 0);
+	vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], (uint32_t)(sizeof(uint16_t) * 6), 1, 0, 0, 0);
 
 	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
@@ -335,36 +337,39 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	const Vertex vertices[] =
 	{
-		{.position = {.v = {0.0f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}},
-		{.position = {.v = {0.5f, 0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}},
-		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}}
+		{.position = {.v = {-0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}},
+		{.position = {.v = {0.5f, -0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}},
+		{.position = {.v = {0.5f, 0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}},
+		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.5f, 0.5f, 0.5f}}}
 	};
+
+	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0};
 	
-	if (!createVertexBuffer(&components, vertices, 3))
+	if (!createVertexBuffer(&components, vertices, 4))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	/*if (!allocateBuffer(&components))
-	{
-		printf("Quitting init: vertex buffer allocation failure!\n");
-		unInitVulkan();
-		return false;
-	}*/
-
 	// Fill the vertex buffer
-	if (!fillStagingBuffer(&components, vertices, 3))
+	if (!stagingTransfer(&components, vertices, components.renderComp.buffers.vertex, sizeof(vertices)))
 	{
 		printf("Quitting init: staging buffer population failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if(!copyBuffer(&components, components.renderComp.buffers.stagingBuffer, components.renderComp.buffers.vertexBuffer, sizeof(vertices[0]) * 3))
+	if (!createIndexBuffer(&components, vertexIndices, 6))
 	{
-		printf("Quitting init: failed to copy vertex data!");
+		printf("Quitting init: vertex buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!stagingTransfer(&components, vertexIndices, components.renderComp.buffers.index, sizeof(vertexIndices)))
+	{
+		printf("Quitting init: staging buffer population failure!\n");
 		unInitVulkan();
 		return false;
 	}

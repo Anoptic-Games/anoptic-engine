@@ -106,10 +106,10 @@ typedef struct SwapChainComponents
 
 typedef struct BufferComponents 
 {
-    VkBuffer vertexBuffer;
-    VkDeviceMemory vertexBufferMemory;
-	VkBuffer stagingBuffer;
-    VkDeviceMemory stagingBufferMemory;
+    VkBuffer vertex;
+    VkDeviceMemory vertexMemory;
+    VkBuffer index;
+    VkDeviceMemory indexMemory;
     // potentially: VkBuffer indexBuffer;
     // VkDeviceMemory indexBufferMemory;
     // ... and other buffers as needed
