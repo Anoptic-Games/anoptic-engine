@@ -238,7 +238,7 @@ void drawFrame()
 	vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
 	components.syncComp.frameSubmitted[components.syncComp.frameIndex] = true;
 
-	printUniformTransferState();
+	//printUniformTransferState();
 
 	components.syncComp.frameIndex += 1; // Iterate and reset the frame-in-flight index
 	if (components.syncComp.frameIndex == MAX_FRAMES_IN_FLIGHT)
