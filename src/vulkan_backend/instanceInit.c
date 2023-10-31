@@ -36,7 +36,7 @@ void enumerateMonitors(Monitors* monitors)
     }
 }
 
-GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters, Monitors* monitors)
+GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors)
 {
     if (!glfwInit())
     {
@@ -48,30 +48,32 @@ GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters
     
     // Choose the monitor
     GLFWmonitor* chosenMonitor = NULL;
-    if (parameters.monitorIndex >= 0 && parameters.monitorIndex < monitors->monitorCount)
+    uint32_t monitorIndex = getChosenMonitor();
+    if (monitorIndex >= 0 && monitorIndex < monitors->monitorCount)
     {
         GLFWmonitor** glfwMonitors = glfwGetMonitors(NULL);
-        chosenMonitor = glfwMonitors[parameters.monitorIndex];
+        chosenMonitor = glfwMonitors[monitorIndex];
     }
-    else if (parameters.monitorIndex >= 0)
+    else if (monitorIndex >= 0)
     { // Default to primary if index is out of range
         chosenMonitor = glfwGetPrimaryMonitor();
     }
 
     // If borderless fullscreen is requested
-    if (parameters.borderless && chosenMonitor)
+    Dimensions2D resolution = getChosenResolution();
+    if (getChosenBorderless() && chosenMonitor)
     {
         const GLFWvidmode* mode = glfwGetVideoMode(chosenMonitor);
-        parameters.width = mode->width;
-        parameters.height = mode->height;
+        resolution.width = mode->width;
+        resolution.height = mode->height;
     }
 
-    if (parameters.monitorIndex == -1)
+    if (monitorIndex == -1)
     {
         chosenMonitor = NULL;
     }
     
-    GLFWwindow *window = glfwCreateWindow((int)parameters.width, (int)parameters.height, "Vulkan", chosenMonitor, NULL);
+    GLFWwindow *window = glfwCreateWindow((int)resolution.width, (int)resolution.height, "Vulkan", chosenMonitor, NULL);
     
     glfwSetWindowUserPointer(window, components);
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
@@ -605,7 +607,22 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 	    else
 	    {
 	    	int width, height;
-	    	glfwGetFramebufferSize(window, &width, &height);
+			if (getChosenBorderless())
+			{
+				// For borderless mode, use the primary monitor's resolution
+				GLFWmonitor* primary = glfwGetPrimaryMonitor();
+				const GLFWvidmode* mode = glfwGetVideoMode(primary);
+				width = mode->width;
+				height = mode->height;
+			} else
+			{
+				// Otherwise, use the larger of the window size or primary monitor's resolution
+				GLFWmonitor* primary = glfwGetPrimaryMonitor();
+				const GLFWvidmode* mode = glfwGetVideoMode(primary);
+				glfwGetWindowSize(window, &width, &height);
+				width = (width > mode->width) ? width : mode->width;
+				height = (height > mode->height) ? height : mode->height;
+			}
 	        VkExtent2D actualExtent = {
             	(uint32_t)(width),
             	(uint32_t)(height)
@@ -619,11 +636,17 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 	    }
 }
 
-SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window, uint32_t preferredMode) // Selects and initializes a swap chain
+SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain) // Selects and initializes a swap chain
 {
 	struct SwapChainSupportDetails details;
-    details = querySwapChainSupport(device, surface);
-
+	if (components->swapChainComp.swapChainSupportDetails.formatCount) // If the details are already populated, fetch the local version
+	{
+		details = components->swapChainComp.swapChainSupportDetails;
+	} else
+	{
+		details = querySwapChainSupport(components->physicalDeviceComp.physicalDevice, &components->surface);
+	}
+    
 
     // TODO: Select the best format and present mode
 
@@ -705,14 +728,21 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
     // Now we finally create the swap chain
     VkSwapchainCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    createInfo.surface = *surface;
+    createInfo.surface = components->surface;
     createInfo.minImageCount = imageCount;
     createInfo.imageFormat = chosenFormat.format;
     createInfo.imageColorSpace = chosenFormat.colorSpace;
     createInfo.imageExtent = chosenExtent;
     createInfo.imageArrayLayers = 1; // We DO support VR Half Life Alyx 2
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
+    struct QueueFamilyIndices indices;
+	if (components->physicalDeviceComp.queueFamilyIndices.graphicsPresent) // Use local copy if available
+	{
+		indices = components->physicalDeviceComp.queueFamilyIndices;
+	} else
+	{
+		indices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &components->surface);
+	}
     uint32_t queueFamilyIndices[] = {indices.graphicsFamily, indices.presentFamily};
     if (indices.graphicsFamily != indices.presentFamily) {
         createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -727,20 +757,21 @@ SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, Vk
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     createInfo.presentMode = chosenPresentMode;
     createInfo.clipped = VK_TRUE;
-    createInfo.oldSwapchain = VK_NULL_HANDLE;
+    createInfo.oldSwapchain = oldSwapChain;
+
 
     
     VkSwapchainKHR swapChain;
-    VkResult result = vkCreateSwapchainKHR(logicalDevice, &createInfo, NULL, &swapChain);
+    VkResult result = vkCreateSwapchainKHR(components->deviceQueueComp.device, &createInfo, NULL, &swapChain);
     if ( result != VK_SUCCESS) {
         printf("Failed to create swap chain - error code %d!\n", result);
         SwapChainGroup failure = {NULL};
         return failure;
     }
 
-    vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, NULL);
+    vkGetSwapchainImagesKHR(components->deviceQueueComp.device, swapChain, &imageCount, NULL);
     VkImage *swapChainImages = (VkImage *) calloc(imageCount, sizeof(VkImage));
-    vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, swapChainImages);
+    vkGetSwapchainImagesKHR(components->deviceQueueComp.device, swapChain, &imageCount, swapChainImages);
 
 	SwapChainGroup swapChainGroup = {swapChain, chosenFormat.format, chosenExtent, imageCount, swapChainImages};
     
@@ -782,10 +813,18 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     }
 
 
-    cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
+	// Save outdated swapchain
+	VkSwapchainKHR oldSwapChain = components->swapChainComp.swapChainGroup.swapChain;
+	components->swapChainComp.swapChainGroup.swapChain = VK_NULL_HANDLE;
+
+
 	SwapChainGroup failure = {NULL};
 	//!TODO Change the last element to the desired present mode
-	components->swapChainComp.swapChainGroup = initSwapChain(components->physicalDeviceComp.physicalDevice,components->deviceQueueComp.device, &(components->surface), window, 1);
+	components->swapChainComp.swapChainGroup = initSwapChain(components, window, getChosenPresentMode(), oldSwapChain);
+
+	// Destroy old swapchain
+	vkDestroySwapchainKHR(components->deviceQueueComp.device, oldSwapChain, NULL);
+
     if(components->swapChainComp.swapChainGroup.swapChain == failure.swapChain)
 	{
 		printf("Swap chain re-creation error, exiting!\n");

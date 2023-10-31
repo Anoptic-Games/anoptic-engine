@@ -108,8 +108,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 	vkCmdSetViewport(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &viewport);
 	
 	VkRect2D scissor = {};
+	int windowWidth, windowHeight;
+	glfwGetWindowSize(window, &windowWidth, &windowHeight);
 	scissor.offset = (VkOffset2D){0, 0};
-	scissor.extent = components.swapChainComp.swapChainGroup.imageExtent;
+	scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
 	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
 
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -278,19 +280,17 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 {
 
 	// Window initialization
-	WindowParameters parameters =
-	{
-		.width = 800,
-    	.height = 600,
-    	.monitorIndex = -1,        // Desired monitor index for fullscreen, -1 for windowed
-    	.borderless = 0
-	};
+	Dimensions2D initDimensions = {800, 600};
+	setResolution(initDimensions);
+	setMonitor(-1);
+	setBorderless(0);
 
 	vulkanGarbage.monitors = &monitors;
 	cleanupMonitors(&monitors);
 	printf("Here");
 	enumerateMonitors(&monitors);
-	window = initWindow(&components, parameters, &monitors);
+
+	window = initWindow(&components, &monitors);
 
 	if (window == NULL)
 	{
@@ -300,7 +300,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    return 0;
 	}
 
-	//requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
+	requestPresentMode(VK_PRESENT_MODE_MAILBOX_KHR);
 
 	components.instanceDebug.enableValidationLayers = true;
 	components.syncComp.frameIndex = 0; // Tracks which frame is being processed
@@ -343,7 +343,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
         return false;
     }
 
-    components.swapChainComp.swapChainGroup = initSwapChain(components.physicalDeviceComp.physicalDevice, components.deviceQueueComp.device, &(components.surface), window, getChosenPresentMode()); // Initialize a swap chain
+    components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
     if (components.swapChainComp.swapChainGroup.swapChain == NULL)
     {
     	printf("Quitting init: swap chain failure.\n");

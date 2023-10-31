@@ -10,6 +10,7 @@
 
 #include "vulkan_backend/structs.h"
 #include "vulkan_backend/vertex.h"
+#include "vulkan_backend/vulkanConfig.h"
 
 // Function interfaces
 
@@ -20,7 +21,7 @@ VkResult createInstance(VulkanComponents* vkComponents);
 void cleanupVulkan(VulkanComponents* components);
 
 // Initializes a pointer to a GLFW window, returns a window pointer or NULL on failure
-GLFWwindow* initWindow(VulkanComponents* components, WindowParameters parameters, Monitors* monitors);
+GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors);
 
 // Enumerates all monitors and their parameters
 void enumerateMonitors(Monitors* monitors);
@@ -35,7 +36,7 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 
 // Initializes a swap chain
-SwapChainGroup initSwapChain(VkPhysicalDevice device, VkDevice logicalDevice, VkSurfaceKHR *surface, GLFWwindow* window, uint32_t preferredMode);
+SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain);
 
 // Does the same, again
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window);
