@@ -7,19 +7,9 @@
 #include <stdio.h>
 #include <vulkan/vulkan.h>
 
-
+#include "vulkan_backend/vulkanMaster.h"
 
 #define GLFW_INCLUDE_VULKAN
-
-#include "vulkan_backend/instanceInit.h"
-
-#include "vulkan_backend/structs.h"
-
-#include "vulkan_backend/pipeline.h"
-
-#include "vulkan_backend/vulkanConfig.h"
-
-
 
 // Variables
 

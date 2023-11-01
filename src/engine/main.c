@@ -20,10 +20,6 @@
 #endif
 
 // Rendering module still WIP
-#include "vulkan_backend/vulkanMaster.h"
-#include "vulkan_backend/instanceInit.h"
-#include "vulkan_backend/structs.h"
-
 
 // Structs
 
