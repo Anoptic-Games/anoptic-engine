@@ -10,6 +10,8 @@
 #include <vulkan/vulkan.h>
 
 #include "vulkan_backend/structs.h"
+#include "anoptic_memalign.h"
+#include "vulkan_backend/vertex/vertex.h"
 
 // Pipeline-specific structs
 struct Buffer

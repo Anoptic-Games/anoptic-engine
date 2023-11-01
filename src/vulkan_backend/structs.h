@@ -17,7 +17,7 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
-#include "vertex.h"
+#include "vulkan_backend/vertex/vertex.h"
 
 #define MAX_FRAMES_IN_FLIGHT 3
 

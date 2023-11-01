@@ -7,10 +7,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include "vertex.h"
+
 #include <vulkan/vulkan.h>
 
-#include "anoptic_memalign.h"
+
 
 // TODO: add a struct to hold all discovered shaders and their buffers
 

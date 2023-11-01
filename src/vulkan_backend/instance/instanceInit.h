@@ -9,7 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #include "vulkan_backend/structs.h"
-#include "vulkan_backend/vertex.h"
+#include "vulkan_backend/vertex/vertex.h"
 #include "vulkan_backend/vulkanConfig.h"
 
 // Function interfaces
