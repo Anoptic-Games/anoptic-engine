@@ -18,9 +18,9 @@
 
 typedef struct Texture8
 {
-	uint32_t texWidth;
-	uint32_t texHeight;
-	uint32_t texChannels;
+	int32_t texWidth;
+	int32_t texHeight;
+	int32_t texChannels;
 	stbi_uc* pixels;
 } Texture8;
 
@@ -32,6 +32,11 @@ Texture8 readTexture8bit(char* fileName);
 // Takes binary texture data and loads it into a Vulkan image object
 bool createTextureImage(VulkanComponents* components, EntityBuffer* entity, char* fileName, bool flag16);
 
+// Creates an image view for an entity with an existing texture
+bool createTextureImageView(VulkanComponents* components, EntityBuffer* entity);
+
+// Creates a sampler definition for use in shaders
+bool createTextureSampler(VulkanComponents* components);
 
 
 #endif

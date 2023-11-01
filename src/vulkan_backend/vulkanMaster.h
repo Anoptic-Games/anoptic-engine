@@ -19,6 +19,8 @@
 
 #include "vulkan_backend/vulkanConfig.h"
 
+#include "vulkan_backend/texture/texture.h"
+
 // Function interfaces
 
 // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure

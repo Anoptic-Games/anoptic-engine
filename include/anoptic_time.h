@@ -21,9 +21,9 @@ uint32_t ano_timestamp_ms();    // return ano_timestamp_raw, but truncated to ms
 // Generic timestamps supporting the current date, plus networking adjustments.
 uint64_t ano_timestamp_utc();   // UTC timestamp.
 
-uint64_t ano_timestamp_unix();  // Unix timestamp.
+int64_t ano_timestamp_unix();  // Unix timestamp.
 
-uint64_t ano_timestamp_ntp();   // Network Time Protocol-adjusted timestamp. NOT guaranteed monotonic.
+int64_t ano_timestamp_ntp();   // Network Time Protocol-adjusted timestamp. NOT guaranteed monotonic.
 
 
 // Start and operate on a timespan within the calling thread.

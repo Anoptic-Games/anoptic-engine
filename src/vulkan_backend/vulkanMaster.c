@@ -384,6 +384,29 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
+	{
+		printf("Quitting init: texture read failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if(!createTextureImageView(&components, &components.renderComp.buffers.entities[0]))
+	{
+		printf("Quitting init: texture image view failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if(!createTextureSampler(&components))
+	{
+		printf("Quitting init: texture sampler failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	components.renderComp.buffers.entityCount = 1;
+
 	const Vertex vertices[] =
 	{
 		{.position = {.v = {-0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}},
@@ -394,7 +417,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0};
 	
-	if (!createVertexBuffer(&components, vertices, 4, &components.renderComp.buffers.entities))
+	if (!createVertexBuffer(&components, vertices, 4, &components.renderComp.buffers.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();

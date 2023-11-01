@@ -41,6 +41,9 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
 // Does the same, again
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window);
 
+// Generic helper function for creating 2D image views
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format);
+
 // You know what this does
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 
@@ -82,6 +85,12 @@ bool allocateBuffer(VulkanComponents* components, VkBuffer buffer, VkMemoryPrope
 
 // Transfers data from the host to a destination buffer
 bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize);
+
+// Helper function to decrease verbosity of transient command calls
+VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components);
+
+// Helper function to decrease verbosity of transient command calls, to be used after beginSingleTimeCommands()
+void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer commandBuffer);
 
 // Copies data from one GPU buffer to another
 bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
