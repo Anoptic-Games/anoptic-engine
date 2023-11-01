@@ -409,10 +409,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	const Vertex vertices[] =
 	{
-		{.position = {.v = {-0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}},
-		{.position = {.v = {0.5f, -0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}},
-		{.position = {.v = {0.5f, 0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}},
-		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}}
+		{.position = {.v = {-0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}, .texCoord = {1.0f, 0.0f}},
+		{.position = {.v = {0.5f, -0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}, .texCoord = {0.0f, 0.0f}},
+		{.position = {.v = {0.5f, 0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}, .texCoord = {0.0f, 1.0f}},
+		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}, .texCoord = {1.0f, 1.0f}}
 	};
 
 	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0};

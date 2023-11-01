@@ -215,7 +215,7 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 
 	// Information on how to process vertex data
 	VkVertexInputBindingDescription bindingDescription = getBindingDescription();
-	VkVertexInputAttributeDescription attributeDescriptions[2];
+	VkVertexInputAttributeDescription attributeDescriptions[3];
 	getAttributeDescriptions(&attributeDescriptions[0]);
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
