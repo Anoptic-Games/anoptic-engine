@@ -183,9 +183,18 @@ bool createTextureImage(VulkanComponents* components, EntityBuffer* entity, char
 
 	if(!transitionImageLayout(components, entity->textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
 	{
-		printf("Layout creation failure: %s\n", fileName);
+		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}
+
+	copyBufferToImage(components, stagingBuffer, entity->textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
+
+	if(!transitionImageLayout(components, entity->textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+	{
+		printf("Layout transition failure: %s\n", fileName);
+		return false;
+	}
+
 
 	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
 	vkFreeMemory(components->deviceQueueComp.device, stagingBufferMemory, NULL);
@@ -234,5 +243,4 @@ bool createTextureSampler(VulkanComponents* components)
         return false;
     }
     return true;
-
 }
