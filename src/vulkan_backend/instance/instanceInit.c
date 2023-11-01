@@ -1140,7 +1140,7 @@ void updateDescriptorSets(VulkanComponents* components)
         bufferInfo.range = sizeof(UniformComponents);
 
         size_t entityCount = components->renderComp.buffers.entityCount;
-        VkDescriptorImageInfo* imageInfos = (VkDescriptorImageInfo*)malloc(entityCount * sizeof(VkDescriptorImageInfo));
+        VkDescriptorImageInfo* imageInfos = (VkDescriptorImageInfo*)calloc(entityCount, sizeof(VkDescriptorImageInfo));
 
         for (size_t j = 0; j < entityCount; j++)
 		{
@@ -1149,7 +1149,7 @@ void updateDescriptorSets(VulkanComponents* components)
             imageInfos[j].sampler = components->renderComp.textureSampler;
         }
 
-        VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)malloc((1 + entityCount) * sizeof(VkWriteDescriptorSet));
+        VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)calloc((1 + entityCount), sizeof(VkWriteDescriptorSet));
 
         descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptorWrites[0].dstSet = components->renderComp.descriptorSets[i];
