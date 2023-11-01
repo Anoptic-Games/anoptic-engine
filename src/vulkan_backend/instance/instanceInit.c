@@ -16,8 +16,6 @@
 
 #include "instanceInit.h"
 
-#include "vulkan_backend/structs.h"
-
 
 
 // Variables
@@ -982,13 +980,13 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 	return true;
 }
 
-bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount)
+bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount, EntityBuffer* entity)
 {
 	VkDeviceSize bufferSize = sizeof(vertices[0]) * vertexCount;
 
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, properties, &components->renderComp.buffers.vertex, &components->renderComp.buffers.vertexMemory)) 
+	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, properties, &entity->vertex, &entity->vertexMemory)) 
 	{
 		printf("Failed to create vertex buffer!");
 		return false;
@@ -997,14 +995,14 @@ bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t
 	return true;
 }
 
-bool createIndexBuffer(VulkanComponents* components, uint16_t* vertexIndices, uint32_t indexCount)
+bool createIndexBuffer(VulkanComponents* components, uint16_t* vertexIndices, uint32_t indexCount, EntityBuffer* entity)
 {
 	VkDeviceSize bufferSize = sizeof(uint16_t) * indexCount;
 	
 
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, properties, &components->renderComp.buffers.index, &components->renderComp.buffers.indexMemory)) 
+	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, properties, &entity->index, &entity->indexMemory)) 
 	{
 		printf("Failed to create index buffer!");
 		return false;
@@ -1344,24 +1342,24 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
     cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 
-	if(components->renderComp.buffers.vertex)
+	if(components->renderComp.buffers.entities[0].vertex)
 	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertex, NULL);
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertex, NULL);
 	}
 
-	if(components->renderComp.buffers.vertexMemory)
+	if(components->renderComp.buffers.entities[0].vertexMemory)
 	{
-		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexMemory, NULL);
+		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
 	}
 
-	if(components->renderComp.buffers.index)
+	if(components->renderComp.buffers.entities[0].index)
 	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertex, NULL);
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertex, NULL);
 	}
 
-	if(components->renderComp.buffers.indexMemory)
+	if(components->renderComp.buffers.entities[0].indexMemory)
 	{
-		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.vertexMemory, NULL);
+		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
 	}
 
 	if(components->renderComp.descriptorPool)
@@ -1427,11 +1425,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     {
     	vkDestroyPipeline(components->deviceQueueComp.device, components->renderComp.graphicsPipeline, NULL);
     }
-
-	if (components->renderComp.buffers.vertex != NULL)
-	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.vertex, NULL);
-	}
     
     if (components->deviceQueueComp.device != VK_NULL_HANDLE) 
     {
