@@ -375,7 +375,8 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFe
 	//Since the GPU we're selecting is already the most performant one by default, there's no point selecting Discrete only
 	bool physicalRequirements = deviceFeatures.geometryShader && deviceFeatures.shaderFloat64 && deviceFeatures.shaderInt64;
 	bool queueRequirements = indices.graphicsPresent;
-	return physicalRequirements && queueRequirements && extensionsSupported;
+
+	return physicalRequirements && queueRequirements && extensionsSupported && deviceFeatures.samplerAnisotropy;
 }
 
 bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice)
@@ -492,7 +493,8 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
     // Device features (optional)
     VkPhysicalDeviceFeatures availableFeatures;
     vkGetPhysicalDeviceFeatures(physicalDevice, &availableFeatures);
-    VkPhysicalDeviceFeatures deviceFeatures = {.shaderInt64 = availableFeatures.shaderInt64, .shaderFloat64 = availableFeatures.shaderFloat64}; // Add more features as required
+    VkPhysicalDeviceFeatures deviceFeatures = {.shaderInt64 = availableFeatures.shaderInt64, .shaderFloat64 = availableFeatures.shaderFloat64,
+												.samplerAnisotropy = availableFeatures.samplerAnisotropy}; // Add more features as required
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -858,6 +860,27 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 
 }
 
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format)
+{
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    VkImageView imageView;
+    if (vkCreateImageView(device, &viewInfo, NULL, &imageView) != VK_SUCCESS) {
+        printf("Failed to create image view!\n");
+    }
+
+    return imageView;
+}
+
 
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 {
@@ -866,26 +889,7 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 	viewGroup.views = (VkImageView *) calloc(1, sizeof(VkImageView) * viewGroup.viewCount);
 	for (uint32_t i = 0; i < imageGroup.imageCount; i++)
 	{
-		VkImageViewCreateInfo createInfo = {};
-		createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		createInfo.image = imageGroup.images[i];
-		createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		createInfo.format = imageGroup.imageFormat;
-		createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-		createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-		createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-		createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-		createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		createInfo.subresourceRange.baseMipLevel = 0;
-		createInfo.subresourceRange.levelCount = 1;
-		createInfo.subresourceRange.baseArrayLayer = 0;
-		createInfo.subresourceRange.layerCount = 1;
-		if (vkCreateImageView(device, &createInfo, NULL, &viewGroup.views[i]) != VK_SUCCESS) {
-		    printf("Failed to create image views!\n");
-		    viewGroup.views = NULL; // We'll use this to check for errors
-		    return viewGroup;
-		}
-		
+		viewGroup.views[i] = createImageView(device, imageGroup.images[i], imageGroup.imageFormat);		
 	}
 	return viewGroup;
 }
@@ -1083,14 +1087,16 @@ bool updateUniformBuffer(VulkanComponents* components)
 
 bool createDescriptorPool(VulkanComponents* components)
 {
-	VkDescriptorPoolSize poolSize = {};
-	poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSize.descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+	VkDescriptorPoolSize poolSizes[2] = {};
+	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSizes[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSizes[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = 1;
-	poolInfo.pPoolSizes = &poolSize;
+	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes) / sizeof(VkDescriptorPoolSize));
+	poolInfo.pPoolSizes = poolSizes;
 	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
 	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.descriptorPool)) != VK_SUCCESS)
@@ -1124,23 +1130,50 @@ bool createDescriptorSets(VulkanComponents* components)
 	return true;
 }
 
-void updateDescriptorSets(VulkanComponents* components) {
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+void updateDescriptorSets(VulkanComponents* components)
+{
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
         VkDescriptorBufferInfo bufferInfo = {};
         bufferInfo.buffer = components->renderComp.buffers.uniform[i];
         bufferInfo.offset = 0;
         bufferInfo.range = sizeof(UniformComponents);
 
-        VkWriteDescriptorSet descriptorWrite = {};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = components->renderComp.descriptorSets[i];
-        descriptorWrite.dstBinding = 0;   // Corresponds to binding in shader.
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
+        size_t entityCount = components->renderComp.buffers.entityCount;
+        VkDescriptorImageInfo* imageInfos = (VkDescriptorImageInfo*)malloc(entityCount * sizeof(VkDescriptorImageInfo));
 
-        vkUpdateDescriptorSets(components->deviceQueueComp.device, 1, &descriptorWrite, 0, nullptr);
+        for (size_t j = 0; j < entityCount; j++)
+		{
+            imageInfos[j].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfos[j].imageView = components->renderComp.buffers.entities[j].textureImageView;
+            imageInfos[j].sampler = components->renderComp.textureSampler;
+        }
+
+        VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)malloc((1 + entityCount) * sizeof(VkWriteDescriptorSet));
+
+        descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrites[0].dstSet = components->renderComp.descriptorSets[i];
+        descriptorWrites[0].dstBinding = 0;
+        descriptorWrites[0].dstArrayElement = 0;
+        descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrites[0].descriptorCount = 1;
+        descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+        for (size_t j = 0; j < entityCount; j++)
+		{
+            descriptorWrites[j + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[j + 1].dstSet = components->renderComp.descriptorSets[i];
+            descriptorWrites[j + 1].dstBinding = j + 1;
+            descriptorWrites[j + 1].dstArrayElement = 0;
+            descriptorWrites[j + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrites[j + 1].descriptorCount = 1;
+            descriptorWrites[j + 1].pImageInfo = &imageInfos[j];
+        }
+
+        vkUpdateDescriptorSets(components->deviceQueueComp.device, 1 + entityCount, descriptorWrites, 0, NULL);
+
+        free(imageInfos);
+        free(descriptorWrites);
     }
 }
 
@@ -1196,8 +1229,7 @@ bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer ds
     return true;
 }
 
-
-bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components)
 {
     VkCommandBufferAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1206,18 +1238,36 @@ bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBu
     allocInfo.commandBufferCount = 1;
 
     VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(components->deviceQueueComp.device, &allocInfo, &commandBuffer);
 
-	if (vkAllocateCommandBuffers(components->deviceQueueComp.device, &allocInfo, &commandBuffer) != VK_SUCCESS)
-	{
-		printf("Failed to allocate transient command buffer!\n");
-		return false;
-	}
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-	VkCommandBufferBeginInfo beginInfo = {};
-	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
 
-	vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    return commandBuffer;
+}
+
+void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer commandBuffer)
+{
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(components->deviceQueueComp.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(components->deviceQueueComp.graphicsQueue);
+
+    vkFreeCommandBuffers(components->deviceQueueComp.device, components->cmdComp.commandPool, 1, &commandBuffer);
+}
+
+
+bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+{
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
 	
 	VkBufferCopy copyRegion = {};
 	copyRegion.srcOffset = 0; // Optional
@@ -1225,17 +1275,7 @@ bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBu
 	copyRegion.size = size;
 	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 
-	vkEndCommandBuffer(commandBuffer);
-
-	VkSubmitInfo submitInfo = {};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffer;
-
-	vkQueueSubmit(components->deviceQueueComp.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-	vkQueueWaitIdle(components->deviceQueueComp.graphicsQueue);
-
-	vkFreeCommandBuffers(components->deviceQueueComp.device, components->cmdComp.commandPool, 1, &commandBuffer);
+	endSingleTimeCommands(components, commandBuffer);
 
 	return true;
 }
@@ -1331,6 +1371,8 @@ void cleanupMonitors(Monitors* monitors) {
 
 void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
 {
+	// !TODO ADD INTERMEDIARY FUNCTION TO DESTROY ENTITY STRUCT ASSETS, CALL HERE
+	// !TODO Also texture samplers, image views, etc etc I basically gave up at this point since everything's gonna have to be generalized regardless
     if (components == NULL) {
         return;
     }

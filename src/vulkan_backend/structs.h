@@ -116,11 +116,13 @@ typedef struct EntityBuffer
     VkDeviceMemory indexMemory;
 	VkImage textureImage;
 	VkDeviceMemory textureImageMemory;
+	VkImageView textureImageView;
 } EntityBuffer;
 
 typedef struct BufferComponents 
 {
 	EntityBuffer entities[1];
+	uint32_t entityCount;
 	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
 	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
@@ -135,10 +137,11 @@ typedef struct RenderComponents
     VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
 	VkDescriptorSetLayout descriptorSetLayout;
-	VkDescriptorSetLayout descriptorSets[MAX_FRAMES_IN_FLIGHT];
+	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
 	VkDescriptorPool descriptorPool;
 	UniformComponents uniform;
     VkPipeline graphicsPipeline;
+	VkSampler textureSampler;
 	BufferComponents buffers;
 } RenderComponents;
 
