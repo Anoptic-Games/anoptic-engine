@@ -82,11 +82,11 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
 
-	VkBuffer vertexBuffers[] = {components.renderComp.buffers.vertex};
+	VkBuffer vertexBuffers[] = {components.renderComp.buffers.entities[0].vertex};
 	VkDeviceSize offsets[] = {0};
 	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffers, offsets);
 
-	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.index, 0, VK_INDEX_TYPE_UINT16);
+	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[0].index, 0, VK_INDEX_TYPE_UINT16);
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -142,8 +142,8 @@ void printUniformTransferState() {
     
     // Buffer Components
     printf("\n=== Buffer Components ===\n");
-    printf("Vertex buffer: %p\n", (void*)components.renderComp.buffers.vertex);
-    printf("Index buffer: %p\n", (void*)components.renderComp.buffers.index);
+    printf("Vertex buffer: %p\n", (void*)components.renderComp.buffers.entities[0].vertex);
+    printf("Index buffer: %p\n", (void*)components.renderComp.buffers.entities[0].index);
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
         printf("Uniform memory %d: %p\n", i, (void*)components.renderComp.buffers.uniformMemory[i]);
@@ -394,7 +394,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0};
 	
-	if (!createVertexBuffer(&components, vertices, 4))
+	if (!createVertexBuffer(&components, vertices, 4, &components.renderComp.buffers.entities))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();
@@ -402,21 +402,21 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 	// Fill the vertex buffer
-	if (!stagingTransfer(&components, vertices, components.renderComp.buffers.vertex, sizeof(vertices)))
+	if (!stagingTransfer(&components, vertices, components.renderComp.buffers.entities[0].vertex, sizeof(vertices)))
 	{
 		printf("Quitting init: staging buffer population failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!createIndexBuffer(&components, vertexIndices, 6))
+	if (!createIndexBuffer(&components, vertexIndices, 6, &components.renderComp.buffers.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!stagingTransfer(&components, vertexIndices, components.renderComp.buffers.index, sizeof(vertexIndices)))
+	if (!stagingTransfer(&components, vertexIndices, components.renderComp.buffers.entities[0].index, sizeof(vertexIndices)))
 	{
 		printf("Quitting init: staging buffer population failure!\n");
 		unInitVulkan();

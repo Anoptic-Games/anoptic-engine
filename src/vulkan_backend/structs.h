@@ -108,12 +108,19 @@ typedef struct SwapChainComponents
     SwapChainSupportDetails swapChainSupportDetails;
 } SwapChainComponents;
 
-typedef struct BufferComponents 
+typedef struct EntityBuffer
 {
     VkBuffer vertex;
     VkDeviceMemory vertexMemory;
     VkBuffer index;
     VkDeviceMemory indexMemory;
+	VkImage textureImage;
+	VkDeviceMemory textureImageMemory;
+} EntityBuffer;
+
+typedef struct BufferComponents 
+{
+	EntityBuffer entities[1];
 	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
 	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
