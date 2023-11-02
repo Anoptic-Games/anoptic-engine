@@ -19,7 +19,7 @@ void getAttributeDescriptions(VkVertexInputAttributeDescription* attributeDescri
 {
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
-    attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributeDescriptions[0].offset = offsetof(Vertex, position);
 
     attributeDescriptions[1].binding = 0;
@@ -112,6 +112,11 @@ void cross(const float a[3], const float b[3], float result[3])
     result[2] = a[0] * b[1] - a[1] * b[0];
 }
 
+float dot(const float a[3], const float b[3])
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
 void lookAt(float mat[4][4], float eye[3], float center[3], float up[3])
 {
     float f[3] = {center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]};
@@ -138,9 +143,9 @@ void lookAt(float mat[4][4], float eye[3], float center[3], float up[3])
     mat[1][2] = -f[1];
     mat[2][2] = -f[2];
 
-    mat[3][0] = -eye[0] * s[0] - eye[1] * s[1] - eye[2] * s[2];
-    mat[3][1] = -eye[0] * u[0] - eye[1] * u[1] - eye[2] * u[2];
-    mat[3][2] = eye[0] * f[0] + eye[1] * f[1] + eye[2] * f[2];
+    mat[3][0] = -dot(s, eye);
+    mat[3][1] = -dot(u, eye);
+    mat[3][2] = dot(f, eye);
     mat[3][3] = 1.0f;
 }
 
@@ -163,7 +168,7 @@ void perspective(float matrix[4][4], float fovDegrees, float aspect, float near,
 
     matrix[2][3] = -1.0f;
 	matrix[3][2] = (2 * far * near) / (near - far);
-
+	matrix[3][3] = 1.0f;  // Set the homogenous coordinate to 1
 
 }
 

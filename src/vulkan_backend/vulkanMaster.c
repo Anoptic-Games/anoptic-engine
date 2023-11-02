@@ -409,15 +409,20 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	const Vertex vertices[] =
 	{
-		{.position = {.v = {-0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}, .texCoord = {1.0f, 0.0f}},
-		{.position = {.v = {0.5f, -0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}, .texCoord = {0.0f, 0.0f}},
-		{.position = {.v = {0.5f, 0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}, .texCoord = {0.0f, 1.0f}},
-		{.position = {.v = {-0.5f, 0.5f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}, .texCoord = {1.0f, 1.0f}}
+		{.position = {.v = {-0.5f, -0.5f, 0.0f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}, .texCoord = {1.0f, 0.0f}},
+		{.position = {.v = {0.5f, -0.5f, 0.0f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}, .texCoord = {0.0f, 0.0f}},
+		{.position = {.v = {0.5f, 0.5f, 0.0f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}, .texCoord = {0.0f, 1.0f}},
+		{.position = {.v = {-0.5f, 0.5f, 0.0f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}, .texCoord = {1.0f, 1.0f}},
+
+		{.position = {.v = {-0.5f, -0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}, .texCoord = {1.0f, 0.0f}},
+		{.position = {.v = {0.5f, -0.5f, -0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}, .texCoord = {0.0f, 0.0f}},
+		{.position = {.v = {0.5f, 0.5f, -0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}, .texCoord = {0.0f, 1.0f}},
+		{.position = {.v = {-0.5f, 0.5f, -0.5f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}, .texCoord = {1.0f, 1.0f}}
 	};
 
-	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0};
+	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
 	
-	if (!createVertexBuffer(&components, vertices, 4, &components.renderComp.buffers.entities[0]))
+	if (!createVertexBuffer(&components, vertices, 8, &components.renderComp.buffers.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();
@@ -432,7 +437,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	if (!createIndexBuffer(&components, vertexIndices, 6, &components.renderComp.buffers.entities[0]))
+	if (!createIndexBuffer(&components, vertexIndices, 12, &components.renderComp.buffers.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();

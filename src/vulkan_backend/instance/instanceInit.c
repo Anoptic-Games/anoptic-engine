@@ -1061,9 +1061,9 @@ bool updateUniformBuffer(VulkanComponents* components)
 
 	rotateMatrix(components->renderComp.uniform.model, 'Y', angle);
 
-	float eye[] = {2.0f, 2.0f, 2.0f};  // Positioned along the Z-axis
+	float eye[] = {0.0f, 0.0f, 1.0f};  // Positioned along the Z-axis
 	float center[] = {0.0f, 0.0f, 0.0f};
-	float up[] = {0.0f, 0.0f, 1.0f};  // Y is up
+	float up[] = {0.0f, 1.0f, 0.0f};  // Y is up
 	lookAt(components->renderComp.uniform.view, eye, center, up);
 
 	float fov = 45.0f; // Field of View in degrees
