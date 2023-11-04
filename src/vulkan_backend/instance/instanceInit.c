@@ -838,6 +838,15 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	cleanupVulkan(components);
     	exit(1);
     }
+
+	createDepthResources(components);
+	if (components->renderComp.buffers.depthView == NULL)
+    {
+		printf("Depth resources re-creation error, exiting!\n");
+    	cleanupVulkan(components);
+    	exit(1);
+	}
+
     if (!createFramebuffers(components))
     {
     	printf("Framebuffer re-creation error, exiting!\n");
@@ -845,7 +854,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	exit(1);
     }
 
-	createDepthResources(components);
+	
 
     vkResetCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, 0);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
@@ -1050,7 +1059,6 @@ void printMatrix(float mat[4][4])
 
 bool updateUniformBuffer(VulkanComponents* components)
 {
-	// This is where we *actually* start needing time
 	static float angle = 0.0f;
 	const float pi = 3.14159265359f;
 
@@ -1081,7 +1089,7 @@ bool updateUniformBuffer(VulkanComponents* components)
 		angle = 0.0f;	
 	}
 
-	return true;  // I assume you want this function to return a bool, so added a return statement.
+	return true;
 }
 
 VkFormat findSupportedFormat(VulkanComponents* components, const VkFormat* candidates, uint32_t candidateCount, VkImageTiling tiling, VkFormatFeatureFlags features)
