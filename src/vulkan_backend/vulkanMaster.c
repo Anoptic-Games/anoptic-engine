@@ -355,6 +355,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     	return false;
     }
 
+	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
+                           components.surface, &(components.cmdComp.commandPool)))
+	{
+		printf("Quitting init: command pool failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
 	if(!createDepthResources(&components))
 	{
 		printf("Quitting init: depth resource creation failure!\n");
@@ -382,15 +390,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: framebuffer failure!\n");
 		unInitVulkan();
 		return false;	
-	}
-
-
-	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
-                           components.surface, &(components.cmdComp.commandPool)))
-	{
-		printf("Quitting init: command pool failure!\n");
-		unInitVulkan();
-		return false;
 	}
 
 	if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
