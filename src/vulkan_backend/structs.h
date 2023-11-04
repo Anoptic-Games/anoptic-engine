@@ -126,9 +126,10 @@ typedef struct BufferComponents
 	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
 	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
-    // potentially: VkBuffer indexBuffer;
-    // VkDeviceMemory indexBufferMemory;
-    // ... and other buffers as needed
+	VkFormat depthFormat;
+	VkImage depth;
+	VkDeviceMemory depthMemory;
+	VkImageView depthView;
 } BufferComponents;
 
 

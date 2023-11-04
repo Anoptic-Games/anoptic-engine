@@ -838,16 +838,14 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     	cleanupVulkan(components);
     	exit(1);
     }
-    if (!createFramebuffers(components->deviceQueueComp.device,
-        &(components->swapChainComp.framebufferGroup),
-        components->swapChainComp.viewGroup,
-        components->swapChainComp.swapChainGroup,
-        components->renderComp.renderPass))
+    if (!createFramebuffers(components))
     {
     	printf("Framebuffer re-creation error, exiting!\n");
     	cleanupVulkan(components);
     	exit(1);
     }
+
+	createDepthResources(components);
 
     vkResetCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, 0);
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
@@ -860,14 +858,14 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 
 }
 
-VkImageView createImageView(VkDevice device, VkImage image, VkFormat format)
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags)
 {
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.aspectMask = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.baseArrayLayer = 0;
@@ -889,33 +887,33 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 	viewGroup.views = (VkImageView *) calloc(1, sizeof(VkImageView) * viewGroup.viewCount);
 	for (uint32_t i = 0; i < imageGroup.imageCount; i++)
 	{
-		viewGroup.views[i] = createImageView(device, imageGroup.images[i], imageGroup.imageFormat);		
+		viewGroup.views[i] = createImageView(device, imageGroup.images[i], imageGroup.imageFormat, VK_IMAGE_ASPECT_COLOR_BIT);		
 	}
 	return viewGroup;
 }
 
-bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, ImageViewGroup viewGroup, SwapChainGroup swapGroup, VkRenderPass renderPass)
+bool createFramebuffers(VulkanComponents* components)
 {
-    frameBufferGroup->bufferCount = viewGroup.viewCount;
-    frameBufferGroup->buffers = (VkFramebuffer*) calloc(1, sizeof(VkFramebuffer) * frameBufferGroup->bufferCount);
+    components->swapChainComp.framebufferGroup.bufferCount = components->swapChainComp.viewGroup.viewCount;
+    components->swapChainComp.framebufferGroup.buffers = (VkFramebuffer*) calloc(1, sizeof(VkFramebuffer) * components->swapChainComp.framebufferGroup.bufferCount);
 
-    for (uint32_t i = 0; i < viewGroup.viewCount; i++) 
+    for (uint32_t i = 0; i < components->swapChainComp.viewGroup.viewCount; i++) 
     {
         VkImageView attachments[] = 
         {
-            viewGroup.views[i]
+            components->swapChainComp.viewGroup.views[i]
         };
     
         VkFramebufferCreateInfo framebufferInfo = {};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = renderPass;
+        framebufferInfo.renderPass = components->renderComp.renderPass;
         framebufferInfo.attachmentCount = 1;
         framebufferInfo.pAttachments = attachments;
-        framebufferInfo.width = swapGroup.imageExtent.width;
-        framebufferInfo.height = swapGroup.imageExtent.height;
+        framebufferInfo.width = components->swapChainComp.swapChainGroup.imageExtent.width;
+        framebufferInfo.height = components->swapChainComp.swapChainGroup.imageExtent.height;
         framebufferInfo.layers = 1;
     
-        if (vkCreateFramebuffer(device, &framebufferInfo, NULL, (frameBufferGroup->buffers+i)) != VK_SUCCESS) 
+        if (vkCreateFramebuffer(components->deviceQueueComp.device, &framebufferInfo, NULL, (components->swapChainComp.framebufferGroup.buffers+i)) != VK_SUCCESS) 
         {
             printf("Failed to create framebuffer!\n");
             return false;
@@ -1083,6 +1081,61 @@ bool updateUniformBuffer(VulkanComponents* components)
 	}
 
 	return true;  // I assume you want this function to return a bool, so added a return statement.
+}
+
+VkFormat findSupportedFormat(VulkanComponents* components, const VkFormat* candidates, uint32_t candidateCount, VkImageTiling tiling, VkFormatFeatureFlags features)
+{
+	for (int i = 0; i < candidateCount; i++)
+	{
+		VkFormat format = candidates[i];
+		VkFormatProperties props;
+		vkGetPhysicalDeviceFormatProperties(components->physicalDeviceComp.physicalDevice, format, &props);
+
+		if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features)
+		{
+			return format;
+		} else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features)
+		{
+			return format;
+		}
+	}
+	printf("Failed to find a suitable format!\n");
+	return VK_FORMAT_UNDEFINED;
+}
+
+
+// !TODO move this to a bottom-level library
+VkFormat findDepthFormat(VulkanComponents* components)
+{
+	VkFormat candidates[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
+	return(findSupportedFormat(components, &candidates[0], sizeof(candidates)/sizeof(VkFormat),
+								VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
+}
+
+bool hasStencilComponent(VkFormat format)
+{
+	return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
+}
+
+
+bool createDepthResources(VulkanComponents* components)
+{
+	VkFormat depthFormat = findDepthFormat(components);
+	
+	if(!createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height, depthFormat, VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->renderComp.buffers.depth, &components->renderComp.buffers.depthMemory, false))
+	{
+		printf("Failed to create depth resources!\n");
+		return false;
+	}
+	components->renderComp.buffers.depthFormat = depthFormat;
+	components->renderComp.buffers.depthView = createImageView(components->deviceQueueComp.device, components->renderComp.buffers.depth, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+	if(!transitionImageLayout(components, components->renderComp.buffers.depth, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL))
+	{
+		printf("Failed to transition depth buffer layout!\n");
+		return false;
+	}
+	return true;
 }
 
 bool createDescriptorPool(VulkanComponents* components)

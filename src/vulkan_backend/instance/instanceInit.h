@@ -11,6 +11,8 @@
 #include "vulkan_backend/structs.h"
 #include "vulkan_backend/vertex/vertex.h"
 #include "vulkan_backend/vulkanConfig.h"
+#include "vulkan_backend/texture/texture.h"
+
 
 // Function interfaces
 
@@ -42,13 +44,13 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window);
 
 // Generic helper function for creating 2D image views
-VkImageView createImageView(VkDevice device, VkImage image, VkFormat format);
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
 // You know what this does
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 
 // Creates framebuffers
-bool createFramebuffers(VkDevice device, FrameBufferGroup* frameBufferGroup, ImageViewGroup viewGroup, SwapChainGroup swapGroup, VkRenderPass renderPass);
+bool createFramebuffers(VulkanComponents* components);
 
 // Creates a command pool
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
@@ -67,6 +69,9 @@ bool createUniformBuffers(VulkanComponents* components);
 
 // Upsades the uniform buffer
 bool updateUniformBuffer(VulkanComponents* components);
+
+// Creates a depth image and view for the current swapchain
+bool createDepthResources(VulkanComponents* components);
 
 // Creates a descriptor pool
 bool createDescriptorPool(VulkanComponents* components);
@@ -88,6 +93,9 @@ bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer ds
 
 // Helper function to decrease verbosity of transient command calls
 VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components);
+
+// Returns true if the given format has a stencil component
+bool hasStencilComponent(VkFormat format);
 
 // Helper function to decrease verbosity of transient command calls, to be used after beginSingleTimeCommands()
 void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer commandBuffer);
