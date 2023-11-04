@@ -778,7 +778,7 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
     return swapChainGroup;
 }
 
-void cleanupSwapChain(VkDevice device, SwapChainGroup* swapGroup, FrameBufferGroup* frameGroup, ImageViewGroup* viewGroup)
+void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, FrameBufferGroup* frameGroup, ImageViewGroup* viewGroup)
 {
     for (size_t i = 0; i < frameGroup->bufferCount; i++) 
     {
@@ -788,6 +788,21 @@ void cleanupSwapChain(VkDevice device, SwapChainGroup* swapGroup, FrameBufferGro
     for (size_t i = 0; i < viewGroup->viewCount; i++) 
     {
         vkDestroyImageView(device, viewGroup->views[i], NULL);
+    }
+
+	    for (size_t i = 0; i < viewGroup->viewCount; i++) 
+    {
+        vkDestroyImageView(device, components->renderComp.buffers.depthView[i], NULL);
+    }
+
+	    for (size_t i = 0; i < viewGroup->viewCount; i++) 
+    {
+        vkDestroyImage(device, components->renderComp.buffers.depth[i], NULL);
+    }
+
+	    for (size_t i = 0; i < viewGroup->viewCount; i++) 
+    {
+        vkFreeMemory(device, components->renderComp.buffers.depthMemory[i], NULL);
     }
 
     vkDestroySwapchainKHR(device, swapGroup->swapChain, NULL);
@@ -1460,7 +1475,7 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
         vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
     }
 
-    cleanupSwapChain(components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
+    cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 
 	if(components->renderComp.buffers.entities[0].vertex)
 	{
