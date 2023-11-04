@@ -1122,6 +1122,11 @@ bool hasStencilComponent(VkFormat format)
 bool createDepthResources(VulkanComponents* components)
 {
     VkFormat depthFormat = findDepthFormat(components);
+	if (depthFormat == VK_FORMAT_UNDEFINED)
+	{
+		printf("No compatible depth formats detected!\n");
+		return false;
+	}
     components->renderComp.buffers.depthFormat = depthFormat;
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
