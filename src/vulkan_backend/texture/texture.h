@@ -39,4 +39,12 @@ bool createTextureImageView(VulkanComponents* components, EntityBuffer* entity);
 bool createTextureSampler(VulkanComponents* components);
 
 
+// Helper functions
+
+// Generic function for parametrized image creation
+bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage,
+				VkMemoryPropertyFlags properties, VkImage* image, VkDeviceMemory* imageMemory, bool flag16);
+// Transitions an image layout for use in rendering
+bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+
 #endif

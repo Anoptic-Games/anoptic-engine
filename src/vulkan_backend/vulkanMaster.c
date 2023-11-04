@@ -74,9 +74,15 @@ void recordCommandBuffer(uint32_t imageIndex)
 	renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
 	renderPassInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
 
-	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-	renderPassInfo.clearValueCount = 1;
-	renderPassInfo.pClearValues = &clearColor;
+	VkClearValue clearValues[2] = {};
+	clearValues[0].color.float32[0] = 0.0f;
+	clearValues[0].color.float32[1] = 0.0f;
+	clearValues[0].color.float32[2] = 0.0f;
+	clearValues[0].color.float32[3] = 1.0f;
+	clearValues[1].depthStencil.depth = 1.0f;
+	clearValues[1].depthStencil.stencil = 0;
+	renderPassInfo.clearValueCount = sizeof(clearValues) / sizeof(VkClearValue);
+	renderPassInfo.pClearValues = clearValues;
 
 	vkCmdBeginRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -349,7 +355,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     	return false;
     }
 
-	if (!createRenderPass(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
+	if (!createRenderPass(&components, components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
                           &(components.renderComp.renderPass)))
 	{
 		printf("Quitting init: render pass failure\n");
@@ -366,9 +372,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 	printf("Framebuffers\n");
 
-	if (!createFramebuffers(components.deviceQueueComp.device, &(components.swapChainComp.framebufferGroup),
-                            components.swapChainComp.viewGroup, components.swapChainComp.swapChainGroup,
-                            components.renderComp.renderPass))
+	if (!createFramebuffers(&components))
 	{
 		printf("Quitting init: framebuffer failure!\n");
 		unInitVulkan();
@@ -382,6 +386,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: command pool failure!\n");
 		unInitVulkan();
 		return false;
+	}
+
+	if(!createDepthResources(&components))
+	{
+		printf("Quitting init: depth resource creation failure!\n");
 	}
 
 	if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
