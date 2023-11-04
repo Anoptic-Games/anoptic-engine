@@ -900,14 +900,15 @@ bool createFramebuffers(VulkanComponents* components)
     for (uint32_t i = 0; i < components->swapChainComp.viewGroup.viewCount; i++) 
     {
         VkImageView attachments[] = 
-        {
-            components->swapChainComp.viewGroup.views[i]
-        };
+		{
+			components->swapChainComp.viewGroup.views[i],
+			components->renderComp.buffers.depthView[i]  // Assuming this is where you store the depth image view
+		};
     
         VkFramebufferCreateInfo framebufferInfo = {};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = components->renderComp.renderPass;
-        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.attachmentCount = sizeof(attachments)/sizeof(VkImageView);
         framebufferInfo.pAttachments = attachments;
         framebufferInfo.width = components->swapChainComp.swapChainGroup.imageExtent.width;
         framebufferInfo.height = components->swapChainComp.swapChainGroup.imageExtent.height;
@@ -1120,22 +1121,33 @@ bool hasStencilComponent(VkFormat format)
 
 bool createDepthResources(VulkanComponents* components)
 {
-	VkFormat depthFormat = findDepthFormat(components);
-	
-	if(!createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height, depthFormat, VK_IMAGE_TILING_OPTIMAL,
-				VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->renderComp.buffers.depth, &components->renderComp.buffers.depthMemory, false))
-	{
-		printf("Failed to create depth resources!\n");
-		return false;
-	}
-	components->renderComp.buffers.depthFormat = depthFormat;
-	components->renderComp.buffers.depthView = createImageView(components->deviceQueueComp.device, components->renderComp.buffers.depth, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
-	if(!transitionImageLayout(components, components->renderComp.buffers.depth, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL))
-	{
-		printf("Failed to transition depth buffer layout!\n");
-		return false;
-	}
-	return true;
+    VkFormat depthFormat = findDepthFormat(components);
+    components->renderComp.buffers.depthFormat = depthFormat;
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+    {
+        if (!createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, 
+                         components->swapChainComp.swapChainGroup.imageExtent.height, depthFormat, 
+                         VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->renderComp.buffers.depth[i], 
+                         &components->renderComp.buffers.depthMemory[i], false))
+        {
+            printf("Failed to create depth resource for frame %d!\n", i);
+            return false;
+        }
+
+        components->renderComp.buffers.depthView[i] = createImageView(components->deviceQueueComp.device, 
+                                                                      components->renderComp.buffers.depth[i], 
+                                                                      depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+        if(!transitionImageLayout(components, components->renderComp.buffers.depth[i], depthFormat, 
+                                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL))
+        {
+            printf("Failed to transition depth buffer layout for frame %d!\n", i);
+            return false;
+        }
+    }
+    return true;
 }
 
 bool createDescriptorPool(VulkanComponents* components)

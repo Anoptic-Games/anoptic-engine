@@ -127,9 +127,9 @@ typedef struct BufferComponents
 	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
 	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
 	VkFormat depthFormat;
-	VkImage depth;
-	VkDeviceMemory depthMemory;
-	VkImageView depthView;
+	VkImage depth[MAX_FRAMES_IN_FLIGHT];
+	VkDeviceMemory depthMemory[MAX_FRAMES_IN_FLIGHT];
+	VkImageView depthView[MAX_FRAMES_IN_FLIGHT];
 } BufferComponents;
 
 
