@@ -355,6 +355,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     	return false;
     }
 
+	if(!createDepthResources(&components))
+	{
+		printf("Quitting init: depth resource creation failure!\n");
+	}
+
 	if (!createRenderPass(&components, components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
                           &(components.renderComp.renderPass)))
 	{
@@ -386,11 +391,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: command pool failure!\n");
 		unInitVulkan();
 		return false;
-	}
-
-	if(!createDepthResources(&components))
-	{
-		printf("Quitting init: depth resource creation failure!\n");
 	}
 
 	if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
