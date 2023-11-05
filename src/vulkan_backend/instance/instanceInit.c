@@ -1074,6 +1074,9 @@ void printMatrix(float mat[4][4])
 
 bool updateUniformBuffer(VulkanComponents* components)
 {
+	static uint64_t time = 0;
+	static uint64_t oldTime = 0;
+	time = ano_timestamp_us();
 	static float angle = 0.0f;
 	const float pi = 3.14159265359f;
 
@@ -1098,11 +1101,12 @@ bool updateUniformBuffer(VulkanComponents* components)
 
 	//components->renderComp.uniform.proj[1][1] *= -1; 
 
-	angle += 0.01f;
+	angle += ((float)(time-oldTime)) * 0.000001f;
 	if(angle > 2.0f * pi)
 	{
 		angle = 0.0f;	
 	}
+	oldTime = time;
 
 	return true;
 }
