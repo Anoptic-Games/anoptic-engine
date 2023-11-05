@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
+#include "anoptic_time.h"
 
 // TODO: This shouldnt be in main lol
 #ifndef GLFW_INCLUDE_VULKAN
@@ -31,9 +32,53 @@ VulkanSettings vulkanSettings =
 
 // Variables
 
-extern 
-
 // Function Prototypes
+
+int compare(const void *a, const void *b)
+{
+    return (*(uint64_t *)a - *(uint64_t *)b);
+}
+
+double findAverage(uint64_t arr[], uint32_t n) {
+    if (n == 0) {
+        return 0; // Avoid division by zero
+    }
+
+    uint64_t sum = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        sum += arr[i];
+    }
+
+    return (double)sum / n;
+}
+
+void measureFrameTime()
+{
+	static uint64_t frameTimes[200] = {};
+	static uint32_t timeIndex = 0;
+
+	uint64_t currentTime = ano_timestamp_us();
+	if (timeIndex > 0) {
+		frameTimes[timeIndex - 1] = currentTime - frameTimes[timeIndex - 1];
+	}
+
+	if (timeIndex == 199) {
+		frameTimes[timeIndex] = currentTime - frameTimes[timeIndex];
+
+		// Print the frame times
+		for (int i = 0; i < 200; i++) {
+			printf("Frame %d: %ld\n", i, frameTimes[i]);
+		}
+		
+		printf("Average frametime: %f\n", findAverage(frameTimes, 199)/1000);
+		
+		timeIndex = 0;
+	} else {
+		frameTimes[timeIndex] = currentTime;
+		timeIndex++;
+	}
+}
+
 
 
 // Main function
@@ -67,6 +112,7 @@ int main()
         // ...
         //printf("Test: %d\n", components->viewGroup.viewCount);
         drawFrame();
+		measureFrameTime();
 		i++;
     }
 
