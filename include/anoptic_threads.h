@@ -18,6 +18,8 @@ typedef struct ano_mutex_t ano_mutex_t;
 /// \brief Function signature for thread entry point.
 typedef void *(*ano_thread_func)(void *arg);
 
+/* Thread Management */
+
 /// \brief Creates a new thread.
 /// \param func The function to be executed by the thread.
 /// \param arg The arguments to be passed to the thread function.
@@ -34,6 +36,13 @@ int ano_thread_join(ano_thread_t *thread);
 /// \param thread The thread handle.
 /// \return 0 on success, non-zero on failure.
 int ano_thread_exit(ano_thread_t *thread);
+
+int ano_thread_detach(); // TODO: fill
+
+int ano_thread_self(); //TODO: fill
+
+
+/* Mutexes */
 
 
 /// \brief Initializes a mutex.
@@ -55,5 +64,72 @@ int ano_mutex_unlock(ano_mutex_t *mutex);
 /// \param mutex The mutex handle.
 /// \return 0 on success, non-zero on failure.
 int ano_mutex_destroy(ano_mutex_t *mutex);
+
+
+/* Condition Variables */
+
+int ano_thread_cond_init();
+
+int ano_thread_cond_wait();
+
+int  ano_thread_cond_signal();
+
+int ano_thread_cond_broadcast();
+
+int ano_thread_cond_destroy();
+
+
+/* Read-Write Locks */
+
+int ano_thread_rwlock_init();
+
+int ano_thread_rwlock_rdlock();
+
+int ano_thread_rwlock_wrlock();
+
+int ano_thread_rwlock_unlock();
+
+int ano_thread_rwlock_destroy();
+
+
+/* Thread Attributes */
+
+int ano_thread_attr_init();
+
+int ano_thread_attr_setdetachstate();
+
+int ano_thread_attr_setstacksize();
+
+int ano_thread_attr_destroy();
+
+
+/* Thread-Data */
+
+int ano_thread_key_create();
+
+int ano_thread_key_delete();
+
+int ano_thread_setspecific();
+
+int ano_thread_getspecific();
+
+
+/* Synchronization Barriers */
+
+int ano_thread_barrier_init();
+
+int ano_thread_barrier_wait();
+
+int ano_thread_barrier_destroy();
+
+
+/* Thread Cancellation */
+
+int ano_thread_cancel();
+
+int ano_thread_setcancelstate();
+
+int ano_thread_setcanceltype();
+
 
 #endif // ANOPTIC_THREADS_H
