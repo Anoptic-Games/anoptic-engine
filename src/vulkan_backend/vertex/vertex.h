@@ -31,6 +31,11 @@ typedef struct Vector3
 	float v[3];
 } Vector3;
 
+typedef struct Vector4
+{
+	float v[4];
+} Vector4;
+
 typedef struct Vertex
 {
 	Vector3 position;
