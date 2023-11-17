@@ -23,6 +23,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Add GLFW submodule directory
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/jsmn)
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/stb)
 
 # Find the Vulkan SDK system-wide package
 find_package(Vulkan REQUIRED)
@@ -39,13 +41,19 @@ add_executable(anopticengine ./src/engine/main.c ${HEADER_SOURCES})
 target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
 # Include all header directories
-target_include_directories(anopticengine PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(anopticengine PRIVATE
+${CMAKE_SOURCE_DIR}/include 
+${CMAKE_SOURCE_DIR}/src
+${CMAKE_SOURCE_DIR}/external/stb
+${CMAKE_SOURCE_DIR}/external/jsmn
+)
 
 # Module Subdirectories
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
 # Link the GLFW and Vulkan libraries to the target
 target_link_libraries(anopticengine glfw)

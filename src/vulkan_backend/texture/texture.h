@@ -10,7 +10,7 @@
 #include <vulkan/vulkan.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include "stb_image.h"
+#include <stb_image.h>
 
 #include "vulkan_backend/instance/instanceInit.h"
 

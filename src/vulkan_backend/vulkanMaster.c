@@ -296,7 +296,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    return 0;
 	}
 
-	requestPresentMode(VK_PRESENT_MODE_MAILBOX_KHR);
+	requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
 
 	components.instanceDebug.enableValidationLayers = true;
 	components.syncComp.frameIndex = 0; // Tracks which frame is being processed

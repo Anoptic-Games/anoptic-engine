@@ -8,6 +8,8 @@ Typical layout:
 ```
 external/
 ├── glfw/           # GLFW for windowing and input
+├── jsmn/           # Minimal JSON parsing library
+├── stb/            # Single-header libraries for various uses
 └── others/         # Other third-party libraries or tools
 ```
 
