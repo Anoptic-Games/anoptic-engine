@@ -44,7 +44,7 @@ add_executable(anopticengine ./src/engine/main.c ${HEADER_SOURCES} ${EXTERNAL_SO
 target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
 # Include all header directories
-target_include_directories(anopticengine PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src  ${CMAKE_SOURCE_DIR}/external)
+target_include_directories(anopticengine PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)  #${CMAKE_SOURCE_DIR}/external)
 
 # Module Subdirectories
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
