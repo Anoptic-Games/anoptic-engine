@@ -11,10 +11,10 @@
 #include <pthread.h>
 
 /// \brief Represents a thread handle.
-typedef struct ano_thread_t ano_thread_t;
+typedef pthread_t ano_thread_t;
 
 /// \brief Represents a mutex handle.
-typedef struct ano_mutex_t ano_mutex_t;
+typedef pthread_mutex_t ano_mutex_t;
 
 /// \brief Function signature for thread entry point.
 typedef void *(*ano_thread_func)(void *arg);
@@ -27,7 +27,6 @@ typedef void *(*ano_thread_func)(void *arg);
 /// \param thread A pointer to the thread handle.
 /// \return 0 on success, non-zero on failure.
 int ano_thread_create(ano_thread_func func, void *arg, ano_thread_t **thread);
-
 
 /// \brief Joins a thread, waiting for it to finish execution.
 /// \param thread The thread handle.
@@ -45,7 +44,6 @@ pthread_t ano_thread_self(void);
 
 
 /* Mutexes */
-
 
 /// \brief Initializes a mutex.
 /// \param mutex A pointer to the mutex handle.
