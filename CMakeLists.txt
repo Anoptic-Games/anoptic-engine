@@ -33,9 +33,10 @@ file(GLOB HEADER_SOURCES
 )
 
 # Doing the same for single-header external dependencies
-#file(GLOB EXTERNAL_SOURCES
-#        "./external/*.h"
-#)
+file(GLOB EXTERNAL_SOURCES
+        "./external/jsmn/*.h"
+        "./external/stb/*.h"
+)
 
 # Add an executable target
 add_executable(anopticengine ./src/engine/main.c ${HEADER_SOURCES} ${EXTERNAL_SOURCES})
@@ -47,7 +48,8 @@ target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_
 target_include_directories(anopticengine PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/external/stb
+        ${CMAKE_SOURCE_DIR}/external/jsmn
 )
 
 # Module Subdirectories
