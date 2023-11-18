@@ -23,8 +23,6 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Add GLFW submodule directory
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
-add_subdirectory(${CMAKE_SOURCE_DIR}/external/jsmn)
-add_subdirectory(${CMAKE_SOURCE_DIR}/external/stb)
 
 # Find the Vulkan SDK system-wide package
 find_package(Vulkan REQUIRED)
@@ -34,18 +32,24 @@ file(GLOB HEADER_SOURCES
         "./include/*.h"
 )
 
+# Doing the same for single-header external dependencies
+file(GLOB EXTERNAL_SOURCES
+        "./external/jsmn/*.h"
+        "./external/stb/*.h"
+)
+
 # Add an executable target
-add_executable(anopticengine ./src/engine/main.c ${HEADER_SOURCES})
+add_executable(anopticengine ./src/engine/main.c ${HEADER_SOURCES} ${EXTERNAL_SOURCES})
 
 # Define the project root path
 target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
 # Include all header directories
 target_include_directories(anopticengine PRIVATE
-${CMAKE_SOURCE_DIR}/include 
-${CMAKE_SOURCE_DIR}/src
-${CMAKE_SOURCE_DIR}/external/stb
-${CMAKE_SOURCE_DIR}/external/jsmn
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/external/stb
+        ${CMAKE_SOURCE_DIR}/external/jsmn
 )
 
 # Module Subdirectories
@@ -60,12 +64,12 @@ target_link_libraries(anopticengine glfw)
 target_link_libraries(anopticengine Vulkan::Vulkan)
 
 # Add compilation flags and preprocessor definitions for Debug and Release builds
-target_compile_definitions(anopticengine PRIVATE 
-    "$<$<CONFIG:Debug>:DEBUG_BUILD>"
-    "$<$<CONFIG:Release>:RELEASE_BUILD>"
+target_compile_definitions(anopticengine PRIVATE
+        "$<$<CONFIG:Debug>:DEBUG_BUILD>"
+        "$<$<CONFIG:Release>:RELEASE_BUILD>"
 )
 
-target_compile_options(anopticengine PRIVATE 
-    "$<$<CONFIG:Debug>:-O0;-g>"
-    "$<$<CONFIG:Release>:-O3>"
+target_compile_options(anopticengine PRIVATE
+        "$<$<CONFIG:Debug>:-O0;-g>"
+        "$<$<CONFIG:Release>:-O3>"
 )
