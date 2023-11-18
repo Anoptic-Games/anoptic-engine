@@ -7,64 +7,72 @@
 
 bool countGltfElements(const char *json, GltfElements *elements)
 {
-	jsmn_parser parser;
-	jsmntok_t* tokens;
-	int tokenCount;
+    jsmn_parser parser;
+    jsmntok_t *tokens;
+    int tokenCount;
 
-	jsmn_init(&parser);
+    jsmn_init(&parser);
 
-	tokenCount = jsmn_parse(&parser, json, strlen(json), NULL, 0);
+    // First pass to count the number of tokens
+    tokenCount = jsmn_parse(&parser, json, strlen(json), NULL, 0);
 
-	if (tokenCount < 0)
-	{
-		return false;  // Parsing failed.
-	}
+    if (tokenCount < 0)
+    {
+        return false;  // Parsing failed.
+    }
 
-	tokens = malloc(sizeof(jsmntok_t) * tokenCount);
+    tokens = malloc(sizeof(jsmntok_t) * tokenCount);
 
-	tokenCount = jsmn_parse(&parser, json, strlen(json), tokens, tokenCount);
+    // Second pass to actually parse the JSON
+    jsmn_parse(&parser, json, strlen(json), tokens, tokenCount);
 
-	for (int i = 0; i < tokenCount; i++)
-	{
-		if (tokens[i].type == JSMN_STRING)
-		{
-			if (strncmp(json + tokens[i].start, "scenes", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->sceneCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "nodes", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->nodeCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "materials", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->materialCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "meshes", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->meshCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "textures", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->textureCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "images", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->imageCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "accessors", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->accessorCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "bufferViews", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->bufferViewCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "samplers", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->samplerCount = tokens[i+1].size;
-			} else if (strncmp(json + tokens[i].start, "buffers", tokens[i].end - tokens[i].start) == 0)
-			{
-				elements->bufferCount = tokens[i+1].size;
-			}
-		}
-	}
+    for (int i = 0; i < tokenCount - 1; i++)  // -1 to prevent going out of bounds
+    {
+        if (tokens[i].type == JSMN_STRING)
+        {
+            // Check if the next token is an array
+            if (tokens[i + 1].type == JSMN_ARRAY)
+            {
+                if (strncmp(json + tokens[i].start, "scenes", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->sceneCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "nodes", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->nodeCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "materials", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->materialCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "meshes", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->meshCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "textures", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->textureCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "images", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->imageCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "accessors", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->accessorCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "bufferViews", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->bufferViewCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "samplers", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->samplerCount = tokens[i + 1].size;
+                } else if (strncmp(json + tokens[i].start, "buffers", tokens[i].end - tokens[i].start) == 0)
+                {
+                    elements->bufferCount = tokens[i + 1].size;
+                }
 
-	free(tokens);
+                // Repeat for any other elements
+            }
+        }
+    }
 
-	return true;
+    free(tokens);
+
+    return true;
 }
 
 void initializeGltfElements(GltfElements *elements) {
