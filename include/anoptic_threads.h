@@ -15,6 +15,7 @@ typedef pthread_t anothread_t;
 
 // Represents a mutex handle.
 typedef pthread_mutex_t anothread_mutex_t;
+typedef pthread_mutexattr_t anothread_mutexattr_t;
 
 // Represents a thread attribute
 typedef pthread_attr_t anothread_attr_t;
@@ -57,7 +58,7 @@ anothread_t ano_thread_self(void);
 
 /* Mutexes */
 
-int ano_mutex_init(anothread_mutex_t **mutex);
+int ano_mutex_init(anothread_mutex_t *mutex, const anothread_mutexattr_t *attr);
 
 int ano_mutex_lock(anothread_mutex_t *mutex);
 
@@ -67,7 +68,7 @@ int ano_mutex_destroy(anothread_mutex_t *mutex);
 
 
 /* Condition Variables */
-int ano_thread_cond_init(anothread_cond_t *conditionVariable, const anothread_condattr_t *attribute);
+int ano_thread_cond_init(anothread_cond_t *conditionVariable, const anothread_condattr_t *attr);
 
 int ano_thread_cond_wait(anothread_cond_t *conditionVariable, anothread_mutex_t *external_mutex);
 
@@ -105,24 +106,26 @@ int ano_thread_rwlock_destroy(anothread_rwlock_t *rwlock);
 
 /* Thread Attributes */
 
-int ano_thread_attr_init(anothread_condattr_t *attribute);
+int ano_thread_attr_init(anothread_attr_t *attr);
 
-int ano_thread_attr_setdetachstate(anothread_attr_t *attribute, int flag);
+int ano_thread_attr_setdetachstate(anothread_attr_t *attr, int flag);
 
-int ano_thread_attr_setstacksize(anothread_attr_t *attribute, size_t *size);
+int  ano_thread_attr_getstacksize(const anothread_attr_t *attr, size_t *size);
+
+int ano_thread_attr_setstacksize(anothread_attr_t *attr, size_t size);
 
 int ano_thread_attr_destroy(anothread_attr_t *attr);
 
 
 /* Thread-Data */
 
-int ano_thread_key_create(anothread_key_t *key, void (*destructor)(void *));
+int ano_thread_key_create(anothread_key_t *key, void (*dest)(void *));
 
 int ano_thread_key_delete(anothread_key_t key);
 
 int ano_thread_setspecific(anothread_key_t key, const void *value);
 
-int ano_thread_getspecific(anothread_key_t key);
+void* ano_thread_getspecific(anothread_key_t key);
 
 
 /* Synchronization Barriers */
