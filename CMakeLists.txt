@@ -47,8 +47,7 @@ target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_
 target_include_directories(anopticengine PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/external/stb
-        ${CMAKE_SOURCE_DIR}/external/jsmn
+        ${CMAKE_SOURCE_DIR}
 )
 
 # Module Subdirectories
