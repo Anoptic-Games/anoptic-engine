@@ -19,10 +19,9 @@ int ano_thread_join(anothread_t thread, void **res) {
     return pthread_join(thread, res);
 }
 
-int ano_thread_exit(void *res) {
+void ano_thread_exit(void *res) {
 
     pthread_exit(res);
-    return 0;
 }
 
 int ano_thread_detach(anothread_t thread) {
@@ -207,22 +206,4 @@ int ano_thread_barrier_wait(anothread_barrier_t *barrier) {
 int ano_thread_barrier_destroy(anothread_barrier_t *barrier) {
 
     return pthread_barrier_destroy(barrier);
-}
-
-
-/* Thread Cancellation */
-
-int ano_thread_cancel(anothread_t thread) {
-
-    return pthread_cancel(thread);
-}
-
-int ano_thread_setcancelstate(int state, int *oldstate) {
-
-    return pthread_setcancelstate(state, oldstate);
-}
-
-int ano_thread_setcanceltype(int type, int *oldtype) {
-
-    return pthread_setcanceltype(type, oldtype);
 }
