@@ -33,9 +33,9 @@ file(GLOB HEADER_SOURCES
 )
 
 # Doing the same for single-header external dependencies
-file(GLOB EXTERNAL_SOURCES
-        "./external/*.h"
-)
+#file(GLOB EXTERNAL_SOURCES
+#        "./external/*.h"
+#)
 
 # Add an executable target
 add_executable(anopticengine ./src/engine/main.c ${HEADER_SOURCES} ${EXTERNAL_SOURCES})
