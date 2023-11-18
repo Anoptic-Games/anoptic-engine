@@ -23,7 +23,6 @@ typedef pthread_attr_t anothread_attr_t;
 // Represents condition variables and attributes
 typedef pthread_cond_t anothread_cond_t;
 typedef pthread_condattr_t anothread_condattr_t;
-typedef pthread_attr_t anothread_attr_t;
 
 // Represents spinlock types
 typedef pthread_spinlock_t anothread_spinlock_t;
@@ -49,7 +48,7 @@ int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(
 
 int ano_thread_join(anothread_t thread, void **res);
 
-int ano_thread_exit(void *res);
+void ano_thread_exit(void *res);
 
 int ano_thread_detach(anothread_t thread);
 
@@ -135,15 +134,6 @@ int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrie
 int ano_thread_barrier_wait(anothread_barrier_t *barrier);
 
 int ano_thread_barrier_destroy(anothread_barrier_t *barrier);
-
-
-/* Thread Cancellation */
-
-int ano_thread_cancel(anothread_t thread);
-
-int ano_thread_setcancelstate(int state, int *oldstate);
-
-int ano_thread_setcanceltype(int type, int *oldtype);
 
 
 #endif // ANOPTIC_THREADS_H
