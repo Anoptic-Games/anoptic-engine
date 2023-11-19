@@ -89,15 +89,11 @@ void ano_sleep(uint64_t us) {
     printf("nanoseconds requested:\t\t%llu\n", request.tv_nsec);
 
     // Sleep for the relative time
-    while (clock_nanosleep(CLOCK_MONOTONIC_RAW, 0, &request, &remaining) == -1) {
+    while (clock_nanosleep(CLOCK_MONOTONIC, 0, &request, &remaining) == -1) {
         if (errno != EINTR) {
             perror("clock_nanosleep");
             break;
         }
-
-        // Might be something wrong with this loop.
-
-        // In case we get interrupted, continue sleeping for the remaining time
         request = remaining;
     }
 }
