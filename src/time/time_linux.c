@@ -14,7 +14,7 @@
 // High resolution relative timestamps from this local machine.
 uint64_t ano_timestamp_raw() {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == -1) {
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
         return 0; // Indicate an error occurred
     }
@@ -24,7 +24,7 @@ uint64_t ano_timestamp_raw() {
 // return ano_timestamp_raw, but scaled to microseconds.
 uint64_t ano_timestamp_us() {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == -1) {
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
         return 0; // Indicate an error occurred
     }
@@ -34,7 +34,7 @@ uint64_t ano_timestamp_us() {
 // return ano_timestamp_raw, but truncated to ms.
 uint32_t ano_timestamp_ms() {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == -1) {
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
         return 0; // Indicate an error occurred
     }
@@ -89,12 +89,13 @@ void ano_sleep(uint64_t us) {
     printf("nanoseconds requested:\t\t%llu\n", request.tv_nsec);
 
     // Sleep for the relative time
-    while (clock_nanosleep(CLOCK_MONOTONIC, 0, &request, &remaining) == -1) {
-        if (errno != EINTR) {
-            perror("clock_nanosleep");
-            break;
-        }
+    int sleepStatus;
+    while ((sleepStatus = clock_nanosleep(CLOCK_MONOTONIC, 0, &request, &remaining)) != 0) {
         request = remaining;
+        if (sleepStatus == EINTR)
+            printf("Interrupted by signal handler\n");
+        else
+            break;
     }
 }
 
