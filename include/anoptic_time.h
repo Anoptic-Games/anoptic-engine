@@ -9,10 +9,6 @@
 
 #include <stdint.h>
 
-/// \defgroup TimeAPI Anoptic Time Management API
-/// @{
-
-
 /// \brief Do not allow busywait to exceed this max time.
 /// Default: 1000000000ULL (1 second)
 #define MAX_BUSYWAIT_NS 1000000000ULL
@@ -31,11 +27,6 @@ uint32_t ano_timestamp_ms();
 /// \note Timestamps are not guaranteed to be monotonic.
 int64_t ano_timestamp_unix();
 
-/// \brief Get Network Time Protocol-adjusted timestamp.
-/// \note Timestamps are not guaranteed to be monotonic.
-// TODO: Figure out network integration.
-int64_t ano_timestamp_ntp();
-
 
 /// \brief Spinlock the current thread for ns nanoseconds.
 /// \param ns The number of nanoseconds to busy-wait.
@@ -47,7 +38,6 @@ void ano_busywait(uint64_t ns);
 /// \param us The number of microseconds to sleep.
 /// \note This method gives up thread execution to the OS scheduler.
 void ano_sleep(uint64_t us);
-/// @}
 
 
 #endif // ANOPTIC_TIME_H
