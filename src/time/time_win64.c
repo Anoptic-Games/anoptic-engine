@@ -41,7 +41,7 @@ uint64_t ano_timestamp_raw() {
 
     if(QueryPerformanceCounter(&tmp) == 0) {
         printf("Error getting Windows performance Counter.");
-        return 0;
+        return UINT64_MAX; // Indicate an error occurred.
     }
     counter = tmp.QuadPart;
 
@@ -60,6 +60,9 @@ uint64_t ano_timestamp_raw() {
 uint64_t ano_timestamp_us() {
 
     uint64_t timestamp_ns = ano_timestamp_raw();
+    if (timestamp_ns == UINT64_MAX)
+        return UINT64_MAX; // Indicate an error occurred.
+
     return timestamp_ns / 1000;  // Convert nanoseconds to microseconds
 }
 
@@ -67,6 +70,9 @@ uint64_t ano_timestamp_us() {
 uint32_t ano_timestamp_ms() {
 
     uint64_t timestamp_ns = ano_timestamp_raw();
+    if (timestamp_ns == UINT64_MAX)
+        return UINT32_MAX; // Indicate an error occurred.
+
     return (uint32_t)(timestamp_ns / 1000000LL);  // Convert nanoseconds to milliseconds
 }
 
@@ -91,11 +97,11 @@ int64_t ano_timestamp_unix() {
 /* Waiting Facilities */
 
 // Spinlock the current thread for approximately ns nanoseconds.
-void ano_busywait(uint64_t ns) {
+int ano_busywait(uint64_t ns) {
 
     if (ns > MAX_BUSYWAIT_NS) {
         printf("Requested busywait time exceeds maximum limit. Exiting.\n");
-        return;
+        return -1; // error
     }
 
     uint64_t start_time = ano_timestamp_raw();
@@ -104,13 +110,17 @@ void ano_busywait(uint64_t ns) {
     do {
         end_time = ano_timestamp_raw();
     } while (end_time - start_time < ns && start_time != 0 && end_time != 0);
+
+    return 0; // success
 }
 
 // Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix, MultiMedia Timer on Windows)
-void ano_sleep(uint64_t us) {
+int ano_sleep(uint64_t us) {
 
     // Convert microseconds to milliseconds and call windows.h Sleep function
     Sleep((DWORD)(us / 1000));
+
+    return 0; // success
 }
 
 #endif

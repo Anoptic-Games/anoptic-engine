@@ -16,7 +16,7 @@ uint64_t ano_timestamp_raw() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
-        return 0; // Indicate an error occurred
+        return UINT64_MAX; // Indicate an error occurred.
     }
     return (uint64_t)(ts.tv_sec * 1000000000LL) + ts.tv_nsec;
 }
@@ -26,7 +26,7 @@ uint64_t ano_timestamp_us() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
-        return 0; // Indicate an error occurred
+        return UINT64_MAX;
     }
     return (uint64_t)(ts.tv_sec * 1000000LL) + (ts.tv_nsec / 1000);
 }
@@ -36,7 +36,7 @@ uint32_t ano_timestamp_ms() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
-        return 0; // Indicate an error occurred
+        return UINT64_MAX; // Indicate an error occurred
     }
     return (uint32_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000LL);
 }
@@ -62,10 +62,10 @@ int64_t ano_timestamp_unix() {
 /* Waiting Facilities */
 
 // Spinlock the current thread for approximately ns nanoseconds.
-void ano_busywait(uint64_t ns) {
+int ano_busywait(uint64_t ns) {
     if (ns > MAX_BUSYWAIT_NS) {
         printf("Requested busywait time exceeds maximum limit. Returning.\n");
-        return;
+        return -1; // failure
     }
 
     uint64_t start_time = ano_timestamp_raw();
@@ -74,10 +74,12 @@ void ano_busywait(uint64_t ns) {
     do {
         end_time = ano_timestamp_raw();
     } while (end_time - start_time < ns);
+
+    return 0; // success
 }
 
 // Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix)
-void ano_sleep(uint64_t us) {
+int ano_sleep(uint64_t us) {
     struct timespec request = {0};
     struct timespec remaining = {0};
 
@@ -85,8 +87,9 @@ void ano_sleep(uint64_t us) {
     request.tv_sec = us / 1000000LL;
     request.tv_nsec = (us % (uint64_t)1000000LL) * 1000;
 
-    printf("seconds requested:\t\t%llu\n", request.tv_sec);
-    printf("nanoseconds requested:\t\t%llu\n", request.tv_nsec);
+    // TODO:
+    //printf("seconds requested:\t\t%llu\n", request.tv_sec);
+    //printf("nanoseconds requested:\t\t%llu\n", request.tv_nsec);
 
     // Sleep for the relative time
     int sleepStatus;
@@ -95,10 +98,13 @@ void ano_sleep(uint64_t us) {
             request = remaining;
             printf("Interrupted by signal handler\n");
         } else {
+            perror("clock_nanosleep");
             printf("clock_nanosleep error with status: %d\n", sleepStatus);
-            break;
+            return errno;
         }
     }
+
+    return 0; // success
 }
 
 #endif
