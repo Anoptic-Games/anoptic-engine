@@ -22,6 +22,36 @@ uint32_t keyHash(const char *str)
 	return hash;
 }
 
+char* extractJsonString(const char *json, jsmntok_t *token)
+{
+	int length = token->end - token->start;
+	char *str = malloc(length + 1);
+	memcpy(str, json + token->start, length);
+	str[length] = '\0';
+	return str;
+}
+
+// !TODO update every parsing function to use this for determining the actual number of tokens to be parsed
+// !TODO step 2 will be to extend the logic in each of them to correctly step over nested objects of arbitrary size
+int calculateTotalTokenSize(const char *json, jsmntok_t *tokens, int tokenIndex)
+{
+	jsmntok_t token = tokens[tokenIndex];
+	int totalSize = 1; // Count the current token itself
+
+	if (token.type == JSMN_OBJECT || token.type == JSMN_ARRAY)
+	{
+		// Iterate through each child token
+		int numChildren = token.size;
+		for (int i = 0; i < numChildren; i++)
+		{
+			int childTokenIndex = tokenIndex + totalSize; // Calculate the index of the next child token
+			totalSize += calculateTotalTokenSize(json, tokens, childTokenIndex); // Recursively add the size of this child
+		}
+	}
+
+	return totalSize;
+}
+
 // Parsing functions
 
 bool countGltfElements(const char *json, GltfElements *elements)
@@ -37,18 +67,27 @@ bool countGltfElements(const char *json, GltfElements *elements)
 
 	if (tokenCount < 0)
 	{
+		printf("No tokens found!\n");
 		return false;  // Parsing failed.
 	}
 
 	tokens = malloc(sizeof(jsmntok_t) * tokenCount);
+	if (tokens == NULL)
+	{
+		printf("Failed to allocate token array!\n");
+		return false;
+	}
+	jsmn_init(&parser);
 
 	// Second pass to actually parse the JSON
 	jsmn_parse(&parser, json, strlen(json), tokens, tokenCount);
-
+	printf("TokenCount: %d!\n", tokenCount);
 	for (int i = 0; i < tokenCount - 1; i++)  // -1 to prevent going out of bounds
 	{
+		//printf("Token type: %d", tokens[i].type);
 		if (tokens[i].type == JSMN_STRING)
 		{
+			//printf("Should be parsing a string!\n");
 			// Create a temporary string for the key
 			int keyLength = tokens[i].end - tokens[i].start;
 			char key[keyLength + 1];
@@ -93,8 +132,6 @@ bool countGltfElements(const char *json, GltfElements *elements)
 				// Add cases for other keys as needed
 				default:
 					// Handle unknown or unhandled keys
-					printf("Encountered unknown element in glTF file!\n");
-					return false;
 					break;
 			}
 		}
@@ -179,15 +216,17 @@ void initializeGltfElements(GltfElements *elements)
 void helperParseScenes(const char *json, jsmntok_t *tokens, GltfScene *scenes)
 {
 	// Assuming scenes is an array of GltfScene structs with enough space
+	printf("Parsing scenes!\n");
 
-	// Iterate over each scene in the scenes array
-	int sceneIndex = 0; // Index for the scenes array
-	for (int i = 0; i < tokens->size; i++)
+	// The first token after the scenes array token is the first scene object
+	int currentTokenIndex = 1; // Start from the first token after the scenes array token
+
+	for (int sceneIndex = 0; sceneIndex < tokens[0].size; sceneIndex++)
 	{
-		jsmntok_t *token = &tokens[i];
+		jsmntok_t *sceneToken = &tokens[currentTokenIndex];
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+		// Check if the current token is a scene object
+		if (sceneToken->type != JSMN_OBJECT)
 		{
 			// Handle error: not an object
 			continue;
@@ -195,12 +234,13 @@ void helperParseScenes(const char *json, jsmntok_t *tokens, GltfScene *scenes)
 
 		// Initialize the nodeCount for the current scene
 		scenes[sceneIndex].nodeCount = 0;
+		
+		printf("Scene token size: %d\n", sceneToken->size);
 
-		// Iterate over the key-value pairs within the object
-		for (int j = 0; j < token->size; j++)
+		// Iterate over key-value pairs in the scene
+		for (int pairIndex = 0; pairIndex < sceneToken->size; pairIndex++)
 		{
-			// Calculate the key and value token indices
-			int key_token_index = i * 2 + 1;
+			int key_token_index = currentTokenIndex + 1 + pairIndex * 2;
 			jsmntok_t key_token = tokens[key_token_index];
 			int value_token_index = key_token_index + 1;
 			jsmntok_t value_token = tokens[value_token_index];
@@ -217,10 +257,11 @@ void helperParseScenes(const char *json, jsmntok_t *tokens, GltfScene *scenes)
 			switch(hash)
 			{
 				case GLTF_NAME:
-					// Handle the "name" key
-					// ... (name handling code remains the same) ...
+					printf("Read NAME\n");
+					scenes[sceneIndex].name = extractJsonString(json, &value_token);
 					break;
 				case GLTF_NODES:
+					printf("Read NODES\n");
 					// Handle the "nodes" key, which is expected to be an array
 					if (value_token.type == JSMN_ARRAY)
 					{
@@ -250,20 +291,23 @@ void helperParseScenes(const char *json, jsmntok_t *tokens, GltfScene *scenes)
 			}
 		}
 
-		sceneIndex++;
+		// Move to the next scene object token
+		currentTokenIndex += 1 + sceneToken->size * 2; // Each key-value pair is 2 tokens, and there's an additional token for the scene object itself
 	}
 }
 
 void helperParseNodes(const char *json, jsmntok_t *tokens, GltfNode *nodes)
 {
-	// Iterate over each node in the nodes array
-	int nodeIndex = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	// Assuming the first token in tokens is the array of nodes
+	int currentTokenIndex = 1; // Start from the first token after the nodes array token
+	int name_length = 0;;
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+	for (int nodeIndex = 0; nodeIndex < tokens[0].size; nodeIndex++)
+	{
+		jsmntok_t *nodeToken = &tokens[currentTokenIndex];
+
+		// Check if the current token is a node object
+		if (nodeToken->type != JSMN_OBJECT)
 		{
 			continue; // Skip non-object tokens
 		}
@@ -273,10 +317,10 @@ void helperParseNodes(const char *json, jsmntok_t *tokens, GltfNode *nodes)
 		nodes[nodeIndex].name = NULL;
 		nodes[nodeIndex].rotation = (Vector4){0, 0, 0, 0};
 
-		// Iterate over the key-value pairs within the object
-		for (int j = 0; j < token->size; j++)
+		// Iterate over key-value pairs in the node
+		for (int pairIndex = 0; pairIndex < nodeToken->size; pairIndex++)
 		{
-			int key_token_index = i * 2 + 1;
+			int key_token_index = currentTokenIndex + 1 + pairIndex * 2;
 			jsmntok_t key_token = tokens[key_token_index];
 			int value_token_index = key_token_index + 1;
 			jsmntok_t value_token = tokens[value_token_index];
@@ -287,8 +331,7 @@ void helperParseNodes(const char *json, jsmntok_t *tokens, GltfNode *nodes)
 			memcpy(key, json + key_token.start, key_length);
 			key[key_length] = '\0';
 			uint32_t hash = keyHash(key);
-			int name_length;
-			int element_index;
+
 			switch(hash)
 			{
 				case GLTF_MESH:
@@ -310,7 +353,7 @@ void helperParseNodes(const char *json, jsmntok_t *tokens, GltfNode *nodes)
 					{
 						for (int k = 0; k < value_token.size; k++)
 						{
-							element_index = value_token_index + 1 + k;
+							int element_index = value_token_index + 1 + k;
 							nodes[nodeIndex].rotation.v[k] = atof(json + tokens[element_index].start);
 						}
 					}
@@ -322,82 +365,92 @@ void helperParseNodes(const char *json, jsmntok_t *tokens, GltfNode *nodes)
 			}
 		}
 
-		nodeIndex++;
+		// Move to the next node object token
+		currentTokenIndex += 1 + nodeToken->size * 2; // Each key-value pair is 2 tokens, and there's an additional token for the node object itself
 	}
 }
 
 void parsePbrMetallicRoughness(const char *json, jsmntok_t *tokens, PbrMetallicRoughness *pbr)
 {
-	for (int i = 0; i < tokens->size; i++)
+	int i = 1; // Start from the first token after the PBR object token
+	int pbrEnd = i + tokens[0].size * 2; // Initially set end index for the PBR object
+
+	while (i < pbrEnd)
 	{
-		jsmntok_t *token = &tokens[i];
+		jsmntok_t key_token = tokens[i];
+		jsmntok_t value_token = tokens[i + 1];
 
-		if (token->type != JSMN_OBJECT)
+		int key_length = key_token.end - key_token.start;
+		char key[key_length + 1];
+		memcpy(key, json + key_token.start, key_length);
+		key[key_length] = '\0';
+		uint32_t hash = keyHash(key);
+
+		switch(hash)
 		{
-			continue;
-		}
-
-		for (int j = 0; j < token->size; j++)
-		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
-
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
-			uint32_t hash = keyHash(key);
-
-			switch(hash)
-			{
-				case GLTF_BASECOLORTEXTURE:
-					pbr->baseColorTexture = (uint32_t)strtol(json + value_token.start, NULL, 10);
-					break;
+			case GLTF_BASECOLORTEXTURE:
+				if (value_token.type == JSMN_OBJECT)
+				{
+					int baseTextureEnd = i + 2 + value_token.size * 2; // End index for the baseColorTexture object
+					for (int j = i + 2; j < baseTextureEnd; j += 2)
+					{
+						jsmntok_t nestedKeyToken = tokens[j];
+						jsmntok_t nestedValueToken = tokens[j + 1];
+						// ... process nested object ...
+					}
+					i = baseTextureEnd; // Move to the end of the baseColorTexture object
+					pbrEnd += value_token.size * 2; // Update pbrEnd to account for nested object size
+				} else
+				{
+					i += 2; // Simple key-value pair
+				}
+				break;
 
 				case GLTF_METALLICFACTOR:
+					//printf("METALIC FACTOR!!!!\n");
 					pbr->metallicFactor = atof(json + value_token.start);
+					i += 2; // Move to the next key-value pair
+					//printf("Current index: %d\n", i);
 					break;
 
 				case GLTF_ROUGHNESSFACTOR:
+					//printf("ROUGHNESS FACTOR!!!!\n");
 					pbr->roughnessFactor = atof(json + value_token.start);
+					i += 2; // Move to the next key-value pair
 					break;
 
 				default:
+					i += 2; // Skip unknown properties
 					break;
-			}
 		}
 	}
 }
 
 void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *materials)
 {
-	int materialIndex = 0;
+	int currentTokenIndex = 1; // Start from the first token after the materials array token
 	int name_length = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+	for (int materialIndex = 0; materialIndex < tokens[0].size; materialIndex++)
+	{
+		jsmntok_t *materialToken = &tokens[currentTokenIndex];
+
+		if (materialToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
-		// Initialize the GltfMaterial
 		materials[materialIndex].doubleSided = false;
 		materials[materialIndex].name = NULL;
 		materials[materialIndex].pbr = (PbrMetallicRoughness){0, 0.0f, 0.0f};
 
-		for (int j = 0; j < token->size; j++)
+		for (int pairIndex = 0; pairIndex < materialToken->size; pairIndex++)
 		{
-			int key_token_index = i * 2 + 1;
+			int key_token_index = currentTokenIndex + 1 + pairIndex * 2;
 			jsmntok_t key_token = tokens[key_token_index];
 			int value_token_index = key_token_index + 1;
 			jsmntok_t value_token = tokens[value_token_index];
 
-			// Extract and hash the key string
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
 			memcpy(key, json + key_token.start, key_length);
@@ -407,12 +460,10 @@ void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *mat
 			switch(hash)
 			{
 				case GLTF_DOUBLESIDED:
-					// Parse the "doubleSided" key
 					materials[materialIndex].doubleSided = (strncmp(json + value_token.start, "true", 4) == 0);
 					break;
 
 				case GLTF_NAME:
-					// Parse the "name" key
 					name_length = value_token.end - value_token.start;
 					materials[materialIndex].name = malloc(name_length + 1);
 					memcpy(materials[materialIndex].name, json + value_token.start, name_length);
@@ -420,25 +471,20 @@ void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *mat
 					break;
 
 				case GLTF_PBRMETALICROUGHNESS:
-					// Parse the "pbrMetallicRoughness" object
 					if (value_token.type == JSMN_OBJECT)
 					{
-						jsmntok_t *pbrTokens = &tokens[value_token_index + 1];
+						jsmntok_t *pbrTokens = &tokens[value_token_index];
 						parsePbrMetallicRoughness(json, pbrTokens, &materials[materialIndex].pbr);
 					}
 					break;
 
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
 		}
 
-		materialIndex++;
+		currentTokenIndex += 1 + materialToken->size * 2; // Move to the next material object token
 	}
-
-	// Additional parsing logic for nested PbrMetallicRoughness properties
-	// ...
 }
 
 void parsePrimitive(const char *json, jsmntok_t *tokens, GltfPrimitive *primitive)
@@ -596,15 +642,6 @@ void helperParseTextures(const char *json, jsmntok_t *tokens, GltfTexture *textu
 
 		textureIndex++;
 	}
-}
-
-char* extractJsonString(const char *json, jsmntok_t *token)
-{
-	int length = token->end - token->start;
-	char *str = malloc(length + 1);
-	memcpy(str, json + token->start, length);
-	str[length] = '\0';
-	return str;
 }
 
 void helperParseImages(const char *json, jsmntok_t *tokens, GltfImage *images)
@@ -899,7 +936,8 @@ bool parseGltfElements(const char *json, GltfElements *elements)
 
 	// Pass 1: Count the number of tokens
 	tokenCount = jsmn_parse(&parser, json, strlen(json), NULL, 0);
-
+	printf("Second pass tokenCount: %d\n", tokenCount);
+	jsmn_init(&parser);
 	// Check for successful token count
 	if (tokenCount <= 0)
 	{
@@ -1021,10 +1059,286 @@ bool parseGltfElements(const char *json, GltfElements *elements)
 	return true;
 }
 
-// The helper function definitions would go here
-// Example:
-// Helper function to parse a single scene element
+// Debug printout functions
 
+void printGltfScenes(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total scenes: %u\n", elements->sceneCount);
+	for (uint32_t i = 0; i < elements->sceneCount; i++)
+	{
+		GltfScene scene = elements->scenes[i];
+		printf("Scene %u:\n", i);
+		printf("  Name: %s\n", scene.name);
+		printf("  Node Count: %u\n", scene.nodeCount);
+
+		printf("  Nodes: [");
+		for (uint32_t j = 0; j < scene.nodeCount; j++)
+		{
+			printf("%u", scene.nodes[j]);
+			if (j < scene.nodeCount - 1)
+			{
+				printf(", ");
+			}
+		}
+		printf("]\n");
+	}
+	printf("================\n");
+}
+
+void printGltfNodes(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total nodes: %u\n", elements->nodeCount);
+	for (uint32_t i = 0; i < elements->nodeCount; i++)
+	{
+		GltfNode node = elements->nodes[i];
+		printf("Node %u:\n", i);
+		printf("  Name: %s\n", node.name);
+		printf("  Mesh: %u\n", node.mesh);
+		printf("  Rotation: (%f, %f, %f, %f)\n", node.rotation.v[0], node.rotation.v[1], node.rotation.v[2], node.rotation.v[3]);
+	}
+	printf("================\n");
+}
+
+void printGltfMaterials(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total materials: %u\n", elements->materialCount);
+	for (uint32_t i = 0; i < elements->materialCount; i++)
+	{
+		GltfMaterial material = elements->materials[i];
+		printf("Material %u:\n", i);
+		printf("  Name: %s\n", material.name);
+		printf("  Double Sided: %s\n", material.doubleSided ? "True" : "False");
+		printf("  PBR Properties:\n");
+		printf("	Base Color Texture: %u\n", material.pbr.baseColorTexture);
+		printf("	Metallic Factor: %f\n", material.pbr.metallicFactor);
+		printf("	Roughness Factor: %f\n", material.pbr.roughnessFactor);
+	}
+	printf("================\n");
+}
+
+void printGltfPrimitive(const GltfPrimitive* primitive)
+{
+	if (primitive == NULL)
+	{
+		printf("GltfPrimitive is NULL.\n");
+		return;
+	}
+
+	printf("  Primitive:\n");
+	printf("	Position: %u\n", primitive->position);
+	printf("	Normal: %u\n", primitive->normal);
+	printf("	Texcoord: %u\n", primitive->texcoord);
+	printf("	Indices: %u\n", primitive->indices);
+	printf("	Material: %u\n", primitive->material);
+}
+
+void printGltfMeshes(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total meshes: %u\n", elements->meshCount);
+	for (uint32_t i = 0; i < elements->meshCount; i++)
+	{
+		GltfMesh mesh = elements->meshes[i];
+		printf("Mesh %u:\n", i);
+		printf("  Name: %s\n", mesh.name);
+		printGltfPrimitive(&mesh.primitives);
+	}
+	printf("================\n");
+}
+
+void printGltfImages(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total images: %u\n", elements->imageCount);
+	for (uint32_t i = 0; i < elements->imageCount; i++)
+	{
+		GltfImage image = elements->images[i];
+		printf("Image %u:\n", i);
+		printf("  Name: %s\n", image.name);
+		printf("  MIME Type: %s\n", image.mimeType);
+		printf("  URI: %s\n", image.uri);
+	}
+	printf("================\n");
+}
+
+void printGltfTextures(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total textures: %u\n", elements->textureCount);
+	for (uint32_t i = 0; i < elements->textureCount; i++)
+	{
+		GltfTexture texture = elements->textures[i];
+		printf("Texture %u:\n", i);
+		printf("  Sampler: %u\n", texture.sampler);
+		printf("  Source Image Index: %u\n", texture.source);
+	}
+	printf("================\n");
+}
+
+int getComponentCount(const char* type)
+{
+	if (strcmp(type, "SCALAR") == 0) return 1;
+	if (strcmp(type, "VEC2") == 0) return 2;
+	if (strcmp(type, "VEC3") == 0) return 3;
+	if (strcmp(type, "VEC4") == 0) return 4;
+	if (strcmp(type, "MAT2") == 0) return 4; // 2x2 matrix
+	if (strcmp(type, "MAT3") == 0) return 9; // 3x3 matrix
+	if (strcmp(type, "MAT4") == 0) return 16; // 4x4 matrix
+	return 0; // Unknown type
+}
+
+void printGltfAccessors(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total accessors: %u\n", elements->accessorCount);
+	for (uint32_t i = 0; i < elements->accessorCount; i++)
+	{
+		GltfAccessor accessor = elements->accessors[i];
+		int componentCount = getComponentCount(accessor.type);
+
+		printf("Accessor %u:\n", i);
+		printf("  Buffer View: %u\n", accessor.bufferView);
+		printf("  Component Type: %u\n", accessor.componentType);
+		printf("  Count: %u\n", accessor.count);
+		printf("  Type: %s\n", accessor.type);
+
+		printf("  Max: [");
+		for (int j = 0; j < componentCount && j < 4; j++)
+		{
+			printf("%f ", accessor.max[j]);
+		}
+		printf("]\n");
+
+		printf("  Min: [");
+		for (int j = 0; j < componentCount && j < 4; j++)
+		{
+			printf("%f ", accessor.min[j]);
+		}
+		printf("]\n");
+	}
+	printf("================\n");
+}
+
+void printGltfBufferViews(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total buffer views: %u\n", elements->bufferViewCount);
+	for (uint32_t i = 0; i < elements->bufferViewCount; i++)
+	{
+		GltfBufferView bufferView = elements->bufferViews[i];
+		printf("Buffer View %u:\n", i);
+		printf("  Index: %u\n", bufferView.index);
+		printf("  Byte Length: %llu\n", bufferView.byteLength);
+		printf("  Byte Offset: %llu\n", bufferView.byteOffset);
+	}
+	printf("================\n");
+}
+
+void printGltfSamplers(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total samplers: %u\n", elements->samplerCount);
+	for (uint32_t i = 0; i < elements->samplerCount; i++)
+	{
+		GltfSampler sampler = elements->samplers[i];
+		printf("Sampler %u:\n", i);
+		printf("  Magnification Filter: %u\n", sampler.magFilter);
+		printf("  Minification Filter: %u\n", sampler.minFilter);
+	}
+	printf("================\n");
+}
+
+void printGltfBuffers(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printf("Total buffers: %u\n", elements->bufferCount);
+	for (uint32_t i = 0; i < elements->bufferCount; i++)
+	{
+		GltfBuffer buffer = elements->buffers[i];
+		printf("Buffer %u:\n", i);
+		printf("  Index: %u\n", buffer.index);
+		printf("  Byte Length: %llu\n", buffer.byteLength);
+		printf("  Address: %p\n", buffer.address);
+		printf("  URI: %s\n", buffer.uri ? buffer.uri : "NULL");
+	}
+	printf("================\n");
+}
+
+void printGltfElementsContents(const GltfElements* elements)
+{
+	if (elements == NULL)
+	{
+		printf("GltfElements is NULL.\n");
+		return;
+	}
+
+	printGltfScenes(elements);
+	printGltfNodes(elements);
+	printGltfMaterials(elements);
+	printGltfMeshes(elements);
+	printGltfImages(elements);
+	printGltfTextures(elements);
+	printGltfAccessors(elements);
+	printGltfBufferViews(elements);
+	printGltfSamplers(elements);
+	printGltfBuffers(elements);
+}
+
+
+//Tie everything together
 
 bool createRenderableEntity()
 {
@@ -1096,7 +1410,13 @@ bool parseGltf(const char* fileName)
 
 		initializeGltfElements(&elements);
 		parseGltfElements(fileBuffer, &elements);
+	} else
+	{
+		printf("Failed to read glTF file: %s", fileName);
+		return false;
 	}
+	//printf("Scenes count: %d\n", elements.sceneCount);
+	printGltfElementsContents(&elements);
 
 	// Record element counts
 	// Allocate element buffers
