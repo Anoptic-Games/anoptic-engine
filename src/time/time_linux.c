@@ -94,7 +94,7 @@ void ano_sleep(uint64_t us) {
         if (sleepStatus == EINTR) {
             request = remaining;
             printf("Interrupted by signal handler\n");
-         } else {
+        } else {
             printf("clock_nanosleep error with status: %d\n", sleepStatus);
             break;
         }
