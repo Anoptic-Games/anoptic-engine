@@ -11,6 +11,8 @@
 #include <time.h>
 #include <errno.h>
 
+/* Precision Timestamps */
+
 // High resolution relative timestamps from this local machine.
 uint64_t ano_timestamp_raw() {
     struct timespec ts;
@@ -26,7 +28,7 @@ uint64_t ano_timestamp_us() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
-        return UINT64_MAX;
+        return UINT64_MAX; // Indicate an error occurred
     }
     return (uint64_t)(ts.tv_sec * 1000000LL) + (ts.tv_nsec / 1000);
 }
@@ -36,13 +38,13 @@ uint32_t ano_timestamp_ms() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
-        return UINT64_MAX; // Indicate an error occurred
+        return UINT32_MAX; // Indicate an error occurred.
     }
     return (uint32_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000LL);
 }
 
 
-// Generic timestamps supporting the current date, plus networking adjustments.
+/* Generic Date-Time Stamps */
 
 // Unix UTC timestamp.
 int64_t ano_timestamp_unix() {

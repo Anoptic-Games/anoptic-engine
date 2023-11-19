@@ -7,26 +7,30 @@
 #include "anoptic_time.h"
 #include <Windows.h>
 #include <time.h>
+#include <stdatomic.h>
 
 #if defined(DEBUG_BUILD)
 #include <stdio.h>
 #endif
 
 
-/* Mutexes */
+/* Precision Timestamps */
 
 // cache the performance frequency (acquired only once)
-static uint64_t cached_performance_frequency = 0;
+static _Atomic uint64_t cached_performance_frequency = 0;
 
-void initialize_performance_frequency() {
+int initialize_performance_frequency() {
 
     LARGE_INTEGER tmp;
     if (QueryPerformanceFrequency(&tmp) == 0) {
         // Handle error
         printf("Failed to query performance frequency.");
+        return -1;
     }
     cached_performance_frequency = tmp.QuadPart;
     printf("\nPerformance Frequency: %llu\n\n", cached_performance_frequency);
+
+    return 0;
 }
 
 uint64_t ano_timestamp_raw() {
@@ -36,7 +40,10 @@ uint64_t ano_timestamp_raw() {
 
     // Cache the performance frequency the first time we run the program
     if(cached_performance_frequency == 0) {
-        initialize_performance_frequency();
+        if (initialize_performance_frequency() != 0) {
+            printf("Exiting due to error with fetching performance frequency.");
+            return UINT64_MAX; // Indicate an error occurred
+        }
     }
 
     if(QueryPerformanceCounter(&tmp) == 0) {
