@@ -32,12 +32,12 @@ int64_t ano_timestamp_unix();
 /// \param ns The number of nanoseconds to busy-wait.
 /// \note This has a max time limit defined by MAX_BUSYWAIT_NS.
 /// \remarks Use when you need extremely fine wait intervals.
-void ano_busywait(uint64_t ns);
+int ano_busywait(uint64_t ns);
 
 /// \brief Sleep for us microseconds using OS time facilities.
 /// \param us The number of microseconds to sleep.
 /// \note This method gives up thread execution to the OS scheduler.
-void ano_sleep(uint64_t us);
+int ano_sleep(uint64_t us);
 
 
 #endif // ANOPTIC_TIME_H
