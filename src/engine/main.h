@@ -9,5 +9,6 @@
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/instance/instanceInit.h"
 #include "vulkan_backend/structs.h"
+#include "render/gltf/ano_GltfParser.h"
 
 #endif
