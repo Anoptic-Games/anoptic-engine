@@ -91,11 +91,13 @@ void ano_sleep(uint64_t us) {
     // Sleep for the relative time
     int sleepStatus;
     while ((sleepStatus = clock_nanosleep(CLOCK_MONOTONIC, 0, &request, &remaining)) != 0) {
-        request = remaining;
-        if (sleepStatus == EINTR)
+        if (sleepStatus == EINTR) {
+            request = remaining;
             printf("Interrupted by signal handler\n");
-        else
+         } else {
+            printf("clock_nanosleep error with status: %d\n", sleepStatus);
             break;
+        }
     }
 }
 
