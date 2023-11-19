@@ -35,7 +35,7 @@ VulkanSettings vulkanSettings =
 
 // Variables
 
-extern 
+// extern
 
 // Function Prototypes
 
@@ -46,7 +46,7 @@ int main()
 {
 	#ifdef DEBUG_BUILD
 	printf("Running in debug mode!\n");
-	#endif	
+	#endif
 
 	// Initialize Vulkan
 	if (initVulkan() == false)
