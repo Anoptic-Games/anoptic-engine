@@ -8,6 +8,7 @@
 #define ANOPTIC_TIME_H
 
 #include <stdint.h>
+#include <time.h>
 
 /// \brief Do not allow busywait to exceed this max time.
 /// Default: 1000000000ULL (1 second)

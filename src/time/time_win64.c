@@ -28,7 +28,10 @@ int initialize_performance_frequency() {
         return -1;
     }
     cached_performance_frequency = tmp.QuadPart;
+
+    #ifdef DEBUG_BUILD
     printf("\nPerformance Frequency: %llu\n\n", cached_performance_frequency);
+    #endif
 
     return 0;
 }
