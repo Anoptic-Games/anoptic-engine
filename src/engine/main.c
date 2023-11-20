@@ -12,7 +12,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-// TODO: This shouldnt be in main lol
+// TODO: Figure out if this actually needs to be in main.c
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -35,7 +35,7 @@ VulkanSettings vulkanSettings =
 
 // Variables
 
-extern 
+// extern
 
 // Function Prototypes
 
@@ -46,7 +46,7 @@ int main()
 {
 	#ifdef DEBUG_BUILD
 	printf("Running in debug mode!\n");
-	#endif	
+	#endif
 
 	// Initialize Vulkan
 	if (initVulkan() == false)
