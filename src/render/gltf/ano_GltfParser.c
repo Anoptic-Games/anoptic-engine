@@ -33,25 +33,24 @@ char* extractJsonString(const char *json, jsmntok_t *token)
 
 // !TODO update every parsing function to use this for determining the actual number of tokens to be parsed
 // !TODO step 2 will be to extend the logic in each of them to correctly step over nested objects of arbitrary size
-int calculateTotalTokenSize(const char *json, jsmntok_t *tokens, int tokenIndex)
+int calculateTotalTokenSize(jsmntok_t *tokens, int tokenIndex)
 {
 	jsmntok_t token = tokens[tokenIndex];
-	int totalSize = 1; // Count the current token itself
+	int totalSize = 0;
 
-	if (token.type == JSMN_OBJECT || token.type == JSMN_ARRAY)
+	for (int i = tokenIndex + 1; ; ++i)
 	{
-		// Iterate through each child token
-		int numChildren = token.size;
-		for (int i = 0; i < numChildren; i++)
+		if (tokens[i].end <= token.end)
 		{
-			int childTokenIndex = tokenIndex + totalSize; // Calculate the index of the next child token
-			totalSize += calculateTotalTokenSize(json, tokens, childTokenIndex); // Recursively add the size of this child
+			totalSize++;
+		} else
+		{
+			break; // Found a token outside the current token's range
 		}
 	}
 
-	return totalSize;
+	return totalSize + 1; // Include the current token itself
 }
-
 // Parsing functions
 
 bool countGltfElements(const char *json, GltfElements *elements)
@@ -489,44 +488,65 @@ void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *mat
 
 void parsePrimitive(const char *json, jsmntok_t *tokens, GltfPrimitive *primitive)
 {
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	int end = tokens[0].size * 2 + 1; // Calculate the end index for the Primitive object
+	//printf("THE END IS: %d\n", end);
+	for (int i = 1; i < end; i += 2) { // Process each key-value pair within the Primitive object
+		jsmntok_t key_token = tokens[i];
+		jsmntok_t value_token = tokens[i + 1];
 
-		if (token->type != JSMN_OBJECT)
+		int key_length = key_token.end - key_token.start;
+		char key[key_length + 1];
+		memcpy(key, json + key_token.start, key_length);
+		key[key_length] = '\0';
+		uint32_t hash = keyHash(key);
+
+		if (strncmp(key, "attributes", key_length) == 0 && value_token.type == JSMN_OBJECT)
 		{
-			continue;
-		}
-
-		for (int j = 0; j < token->size; j++)
-		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
-
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
-			uint32_t hash = keyHash(key);
-
-			uint32_t value = (uint32_t)strtol(json + value_token.start, NULL, 10);
-			switch(hash)
+			// Process the nested attributes object
+			int attributesEnd = i + 2 + value_token.size * 2; // End index for the attributes object
+			for (int j = i + 2; j < attributesEnd; j += 2)
 			{
-				case GLTF_POSITION:
-					primitive->position = value;
-					break;
-				case GLTF_NORMAL:
-					primitive->normal = value;
-					break;
-				case GLTF_TEXCOORD_0:
-					primitive->texcoord = value;
-					break;
+				jsmntok_t nestedKeyToken = tokens[j];
+				jsmntok_t nestedValueToken = tokens[j + 1];
+
+				int nestedKeyLength = nestedKeyToken.end - nestedKeyToken.start;
+				char nestedKey[nestedKeyLength + 1];
+				memcpy(nestedKey, json + nestedKeyToken.start, nestedKeyLength);
+				nestedKey[nestedKeyLength] = '\0';
+				uint32_t nestedHash = keyHash(nestedKey);
+
+				uint32_t value = (uint32_t)strtol(json + nestedValueToken.start, NULL, 10);
+
+				switch (nestedHash)
+				{
+					case GLTF_POSITION:
+						primitive->position = value;
+						break;
+					case GLTF_NORMAL:
+						primitive->normal = value;
+						break;
+					case GLTF_TEXCOORD_0:
+						primitive->texcoord = value;
+						break;
+					default:
+						break;
+				}
+			}
+			end = end + 6;
+			i = attributesEnd - 2; // Correctly position i to the token after the attributes object
+		} else
+		{
+			// Process non-attributes keys
+			uint32_t value = (uint32_t)strtol(json + value_token.start, NULL, 10);
+			//printf("Index value on non-attributes read: %d\n", i);
+			switch (hash)
+			{
 				case GLTF_INDICES:
+					//printf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
 					primitive->indices = value;
 					break;
 				case GLTF_MATERIAL:
+					//printf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n");
 					primitive->material = value;
 					break;
 				default:
@@ -538,27 +558,27 @@ void parsePrimitive(const char *json, jsmntok_t *tokens, GltfPrimitive *primitiv
 
 void helperParseMeshes(const char *json, jsmntok_t *tokens, GltfMesh *meshes)
 {
-	int meshIndex = 0;
+	int currentTokenIndex = 1; // Start from the first token after the meshes array token
+	int primitivesEnd = 0;
 	int name_length = 0;
-	for (int i = 0; i < tokens->size; i++)
+	for (int meshIndex = 0; meshIndex < tokens[0].size; meshIndex++)
 	{
-		jsmntok_t *token = &tokens[i];
+		jsmntok_t *meshToken = &tokens[currentTokenIndex];
 
-		if (token->type != JSMN_OBJECT)
+		if (meshToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
-		// Initialize the GltfMesh
 		meshes[meshIndex].name = NULL;
 		memset(&meshes[meshIndex].primitives, 0, sizeof(GltfPrimitive));
 
-		for (int j = 0; j < token->size; j++)
+		int meshTokenEnd = currentTokenIndex + 1 + meshToken->size * 2;
+
+		for (int i = currentTokenIndex + 1; i < meshTokenEnd; i += 2)
 		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+			jsmntok_t key_token = tokens[i];
+			jsmntok_t value_token = tokens[i + 1];
 
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
@@ -578,9 +598,13 @@ void helperParseMeshes(const char *json, jsmntok_t *tokens, GltfMesh *meshes)
 				case GLTF_PRIMITIVES:
 					if (value_token.type == JSMN_ARRAY)
 					{
-						// Assuming each mesh has only one primitive for now
-						jsmntok_t *primitiveToken = &tokens[value_token_index + 1];
-						parsePrimitive(json, primitiveToken, &meshes[meshIndex].primitives);
+						primitivesEnd = i + 1 + value_token.size * 2; // Calculate end index for the primitives array
+						for (int j = i + 2; j < primitivesEnd; j += 2)
+						{
+							jsmntok_t *primitiveToken = &tokens[j];
+							parsePrimitive(json, primitiveToken, &meshes[meshIndex].primitives);
+						}
+						i = primitivesEnd; // Skip past the primitives array
 					}
 					break;
 
@@ -589,42 +613,40 @@ void helperParseMeshes(const char *json, jsmntok_t *tokens, GltfMesh *meshes)
 			}
 		}
 
-		meshIndex++;
+		currentTokenIndex = meshTokenEnd; // Move to the next mesh object token
 	}
 }
 
 void helperParseTextures(const char *json, jsmntok_t *tokens, GltfTexture *textures)
 {
-	int textureIndex = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	int currentTokenIndex = 1; // Start from the first token after the textures array token
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+	for (int textureIndex = 0; textureIndex < tokens[0].size; textureIndex++)
+	{
+		jsmntok_t *textureToken = &tokens[currentTokenIndex];
+
+		if (textureToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
-		// Initialize the GltfTexture
 		textures[textureIndex].sampler = 0;
 		textures[textureIndex].source = 0;
 
-		for (int j = 0; j < token->size; j++)
-		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int textureTokenEnd = currentTokenIndex + 1 + textureToken->size * 2;
 
-			// Extract and hash the key string
+		for (int i = currentTokenIndex + 1; i < textureTokenEnd; i += 2)
+		{
+			jsmntok_t key_token = tokens[i];
+			jsmntok_t value_token = tokens[i + 1];
+
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
 			memcpy(key, json + key_token.start, key_length);
 			key[key_length] = '\0';
 			uint32_t hash = keyHash(key);
 
-			switch(hash)
+			switch (hash)
 			{
 				case GLTF_SAMPLER:
 					textures[textureIndex].sampler = (uint32_t)strtol(json + value_token.start, NULL, 10);
@@ -635,48 +657,45 @@ void helperParseTextures(const char *json, jsmntok_t *tokens, GltfTexture *textu
 					break;
 
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
 		}
 
-		textureIndex++;
+		currentTokenIndex = textureTokenEnd; // Move to the next texture object token
 	}
 }
 
 void helperParseImages(const char *json, jsmntok_t *tokens, GltfImage *images)
 {
-	int imageIndex = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	int currentTokenIndex = 1; // Start from the first token after the images array token
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+	for (int imageIndex = 0; imageIndex < tokens[0].size; imageIndex++)
+	{
+		jsmntok_t *imageToken = &tokens[currentTokenIndex];
+
+		if (imageToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
-		// Initialize the GltfImage
 		images[imageIndex].mimeType = NULL;
 		images[imageIndex].name = NULL;
 		images[imageIndex].uri = NULL;
 
-		for (int j = 0; j < token->size; j++)
-		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int imageTokenEnd = currentTokenIndex + 1 + imageToken->size * 2;
 
-			// Extract and hash the key string
+		for (int i = currentTokenIndex + 1; i < imageTokenEnd; i += 2)
+		{
+			jsmntok_t key_token = tokens[i];
+			jsmntok_t value_token = tokens[i + 1];
+
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
 			memcpy(key, json + key_token.start, key_length);
 			key[key_length] = '\0';
 			uint32_t hash = keyHash(key);
 
-			switch(hash)
+			switch (hash)
 			{
 				case GLTF_MIMETYPE:
 					images[imageIndex].mimeType = extractJsonString(json, &value_token);
@@ -691,51 +710,53 @@ void helperParseImages(const char *json, jsmntok_t *tokens, GltfImage *images)
 					break;
 
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
 		}
 
-		imageIndex++;
+		currentTokenIndex = imageTokenEnd; // Move to the next image object token
 	}
 }
-
 void parseAccessorMaxMin(const char *json, jsmntok_t *tokens, float *array, int size)
 {
+	//printf("Array size: %d\n", size);
 	for (int i = 0; i < size; i++)
 	{
 		array[i] = atof(json + tokens[i].start);
+		//printf("Extracted value: array[%d] = %f", i, array[i]);
 	}
 }
 
 void helperParseAccessors(const char *json, jsmntok_t *tokens, GltfAccessor *accessors)
 {
-	int accessorIndex = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	int currentTokenIndex = 1; // Start from the first token after the accessors array token
 
-		if (token->type != JSMN_OBJECT)
+	for (int accessorIndex = 0; accessorIndex < tokens[0].size; accessorIndex++)
+	{
+		jsmntok_t *accessorToken = &tokens[currentTokenIndex];
+
+		if (accessorToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
 		GltfAccessor tempAccessor = {0};
+		int actualSize = calculateTotalTokenSize(&tokens[currentTokenIndex], 0);
 
-		for (int j = 0; j < token->size; j++)
+		int accessorTokenEnd = currentTokenIndex + actualSize;
+		printf("Tokens to be parsed: %d\n", accessorTokenEnd);
+		for (int i = currentTokenIndex + 1; i < accessorTokenEnd; i += 2)
 		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+			jsmntok_t key_token = tokens[i];
+			jsmntok_t value_token = tokens[i + 1];
 
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
 			memcpy(key, json + key_token.start, key_length);
 			key[key_length] = '\0';
 			uint32_t hash = keyHash(key);
-
-			switch(hash)
+			printf("Current index: %d\n", i);
+			switch (hash)
 			{
 				case GLTF_BUFFERVIEW:
 					tempAccessor.bufferView = (uint32_t)strtol(json + value_token.start, NULL, 10);
@@ -750,11 +771,19 @@ void helperParseAccessors(const char *json, jsmntok_t *tokens, GltfAccessor *acc
 					break;
 
 				case GLTF_MAX:
-					parseAccessorMaxMin(json, &tokens[value_token_index + 1], tempAccessor.max, value_token.size);
+					if (value_token.type == JSMN_ARRAY)
+					{
+						parseAccessorMaxMin(json, &tokens[i + 2], tempAccessor.max, value_token.size);
+						i += value_token.size; // Correctly position i after the max array
+					}
 					break;
 
 				case GLTF_MIN:
-					parseAccessorMaxMin(json, &tokens[value_token_index + 1], tempAccessor.min, value_token.size);
+					if (value_token.type == JSMN_ARRAY)
+					{
+						parseAccessorMaxMin(json, &tokens[i + 2], tempAccessor.min, value_token.size);
+						i += value_token.size; // Correctly position i after the min array
+					}
 					break;
 
 				case GLTF_TYPE:
@@ -767,41 +796,40 @@ void helperParseAccessors(const char *json, jsmntok_t *tokens, GltfAccessor *acc
 			}
 		}
 
-		accessors[accessorIndex++] = tempAccessor;
+		accessors[accessorIndex] = tempAccessor;
+		currentTokenIndex = accessorTokenEnd; // Move to the next accessor object token
 	}
 }
 
 void helperParseBufferViews(const char *json, jsmntok_t *tokens, GltfBufferView *bufferViews)
 {
-	int bufferViewIndex = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	int currentTokenIndex = 1; // Start from the first token after the bufferViews array token
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+	for (int bufferViewIndex = 0; bufferViewIndex < tokens[0].size; bufferViewIndex++)
+	{
+		jsmntok_t *bufferViewToken = &tokens[currentTokenIndex];
+
+		if (bufferViewToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
-		// Initialize the GltfBufferView
 		GltfBufferView tempBufferView = {0};
 
-		for (int j = 0; j < token->size; j++)
-		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int bufferViewTokenEnd = currentTokenIndex + 1 + bufferViewToken->size * 2;
 
-			// Extract and hash the key string
+		for (int i = currentTokenIndex + 1; i < bufferViewTokenEnd; i += 2)
+		{
+			jsmntok_t key_token = tokens[i];
+			jsmntok_t value_token = tokens[i + 1];
+
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
 			memcpy(key, json + key_token.start, key_length);
 			key[key_length] = '\0';
 			uint32_t hash = keyHash(key);
 
-			switch(hash)
+			switch (hash)
 			{
 				case GLTF_BUFFER:
 					tempBufferView.index = (uint32_t)strtol(json + value_token.start, NULL, 10);
@@ -816,46 +844,44 @@ void helperParseBufferViews(const char *json, jsmntok_t *tokens, GltfBufferView 
 					break;
 
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
 		}
 
-		bufferViews[bufferViewIndex++] = tempBufferView;
+		bufferViews[bufferViewIndex] = tempBufferView;
+		currentTokenIndex = bufferViewTokenEnd; // Move to the next bufferView object token
 	}
 }
 
 void helperParseSamplers(const char *json, jsmntok_t *tokens, GltfSampler *samplers)
 {
-	int samplerIndex = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	int currentTokenIndex = 1; // Start from the first token after the samplers array token
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+	for (int samplerIndex = 0; samplerIndex < tokens[0].size; samplerIndex++)
+	{
+		jsmntok_t *samplerToken = &tokens[currentTokenIndex];
+
+		if (samplerToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
-		// Initialize the GltfSampler
 		GltfSampler tempSampler = {0, 0};
 
-		for (int j = 0; j < token->size; j++)
-		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int samplerTokenEnd = currentTokenIndex + 1 + samplerToken->size * 2;
 
-			// Extract and hash the key string
+		for (int i = currentTokenIndex + 1; i < samplerTokenEnd; i += 2)
+		{
+			jsmntok_t key_token = tokens[i];
+			jsmntok_t value_token = tokens[i + 1];
+
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
 			memcpy(key, json + key_token.start, key_length);
 			key[key_length] = '\0';
 			uint32_t hash = keyHash(key);
 
-			switch(hash)
+			switch (hash)
 			{
 				case GLTF_MAGFILTER:
 					tempSampler.magFilter = (uint32_t)strtol(json + value_token.start, NULL, 10);
@@ -866,46 +892,44 @@ void helperParseSamplers(const char *json, jsmntok_t *tokens, GltfSampler *sampl
 					break;
 
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
 		}
 
-		samplers[samplerIndex++] = tempSampler;
+		samplers[samplerIndex] = tempSampler;
+		currentTokenIndex = samplerTokenEnd; // Move to the next sampler object token
 	}
 }
 
 void helperParseBuffers(const char *json, jsmntok_t *tokens, GltfBuffer *buffers)
 {
-	int bufferIndex = 0;
-	for (int i = 0; i < tokens->size; i++)
-	{
-		jsmntok_t *token = &tokens[i];
+	int currentTokenIndex = 1; // Start from the first token after the buffers array token
 
-		// Check if the token is of type JSMN_OBJECT
-		if (token->type != JSMN_OBJECT)
+	for (int bufferIndex = 0; bufferIndex < tokens[0].size; bufferIndex++)
+	{
+		jsmntok_t *bufferToken = &tokens[currentTokenIndex];
+
+		if (bufferToken->type != JSMN_OBJECT)
 		{
 			continue;
 		}
 
-		// Initialize the GltfBuffer
 		GltfBuffer tempBuffer = {0, 0, NULL, NULL};
 
-		for (int j = 0; j < token->size; j++)
-		{
-			int key_token_index = i * 2 + 1;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int bufferTokenEnd = currentTokenIndex + 1 + bufferToken->size * 2;
 
-			// Extract and hash the key string
+		for (int i = currentTokenIndex + 1; i < bufferTokenEnd; i += 2)
+		{
+			jsmntok_t key_token = tokens[i];
+			jsmntok_t value_token = tokens[i + 1];
+
 			int key_length = key_token.end - key_token.start;
 			char key[key_length + 1];
 			memcpy(key, json + key_token.start, key_length);
 			key[key_length] = '\0';
 			uint32_t hash = keyHash(key);
 
-			switch(hash)
+			switch (hash)
 			{
 				case GLTF_BYTELENGTH:
 					tempBuffer.byteLength = (uint64_t)strtoll(json + value_token.start, NULL, 10);
@@ -916,12 +940,12 @@ void helperParseBuffers(const char *json, jsmntok_t *tokens, GltfBuffer *buffers
 					break;
 
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
 		}
 
-		buffers[bufferIndex++] = tempBuffer;
+		buffers[bufferIndex] = tempBuffer;
+		currentTokenIndex = bufferTokenEnd; // Move to the next buffer object token
 	}
 }
 
