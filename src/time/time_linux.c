@@ -89,10 +89,6 @@ int ano_sleep(uint64_t us) {
     request.tv_sec = us / 1000000LL;
     request.tv_nsec = (us % (uint64_t)1000000LL) * 1000;
 
-    // TODO:
-    //printf("seconds requested:\t\t%llu\n", request.tv_sec);
-    //printf("nanoseconds requested:\t\t%llu\n", request.tv_nsec);
-
     // Sleep for the relative time
     int sleepStatus;
     while ((sleepStatus = clock_nanosleep(CLOCK_MONOTONIC, 0, &request, &remaining)) != 0) {
