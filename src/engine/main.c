@@ -12,7 +12,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-// TODO: This shouldnt be in main lol
+// TODO: Figure out if this actually needs to be in main.c
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
