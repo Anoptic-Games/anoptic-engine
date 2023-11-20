@@ -8,10 +8,7 @@
 #include <Windows.h>
 #include <time.h>
 #include <stdatomic.h>
-
-#if defined(DEBUG_BUILD)
 #include <stdio.h>
-#endif
 
 
 /* Precision Timestamps */
