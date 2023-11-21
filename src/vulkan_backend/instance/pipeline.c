@@ -146,8 +146,6 @@ bool createDescriptorSetLayout(VulkanComponents* components)
 	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	uboLayoutBinding.pImmutableSamplers = NULL; // Optional
 
-	VkPipelineLayout pipelineLayout;
-
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
 	samplerLayoutBinding.binding = 1;
 	samplerLayoutBinding.descriptorCount = 1;

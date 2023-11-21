@@ -393,8 +393,8 @@ void parsePbrMetallicRoughness(const char *json, jsmntok_t *tokens, PbrMetallicR
 					int baseTextureEnd = i + 2 + value_token.size * 2; // End index for the baseColorTexture object
 					for (int j = i + 2; j < baseTextureEnd; j += 2)
 					{
-						jsmntok_t nestedKeyToken = tokens[j];
-						jsmntok_t nestedValueToken = tokens[j + 1];
+						//jsmntok_t nestedKeyToken = tokens[j];
+						//jsmntok_t nestedValueToken = tokens[j + 1];
 						// ... process nested object ...
 					}
 					i = baseTextureEnd; // Move to the end of the baseColorTexture object
@@ -1598,8 +1598,8 @@ void printGltfBufferViews(const GltfElements* elements)
 		GltfBufferView bufferView = elements->bufferViews[i];
 		printf("Buffer View %u:\n", i);
 		printf("  Index: %u\n", bufferView.index);
-		printf("  Byte Length: %llu\n", bufferView.byteLength);
-		printf("  Byte Offset: %llu\n", bufferView.byteOffset);
+		printf("  Byte Length: %lu\n", bufferView.byteLength);
+		printf("  Byte Offset: %lu\n", bufferView.byteOffset);
 	}
 	printf("================\n");
 }
@@ -1637,7 +1637,7 @@ void printGltfBuffers(const GltfElements* elements)
 		GltfBuffer buffer = elements->buffers[i];
 		printf("Buffer %u:\n", i);
 		printf("  Index: %u\n", buffer.index);
-		printf("  Byte Length: %llu\n", buffer.byteLength);
+		printf("  Byte Length: %lu\n", buffer.byteLength);
 		printf("  Address: %p\n", buffer.address);
 		printf("  URI: %s\n", buffer.uri ? buffer.uri : "NULL");
 	}

@@ -34,6 +34,15 @@ void enumerateMonitors(Monitors* monitors)
     }
 }
 
+static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
+{
+	static uint32_t count = 0;
+	VulkanComponents* components = glfwGetWindowUserPointer(window);
+	printf("Resize: %d\n", count);
+	count++;
+	components->syncComp.framebufferResized = true;
+}
+
 GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors)
 {
     if (!glfwInit())
@@ -77,15 +86,6 @@ GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors)
     glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
     return window;
-}
-
-static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
-{
-	static uint32_t count = 0;
-	VulkanComponents* components = glfwGetWindowUserPointer(window);
-	printf("Resize: %d\n", count);
-	count++;
-	components->syncComp.framebufferResized = true;
 }
 
 VkResult createInstance(VulkanComponents* vkComponents)
@@ -855,7 +855,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     }
 
 	createDepthResources(components);
-	if (components->renderComp.buffers.depthView == NULL)
+	if (components->renderComp.buffers.depthView[0] == NULL)
     {
 		printf("Depth resources re-creation error, exiting!\n");
     	cleanupVulkan(components);

@@ -325,7 +325,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     // Pick physical device
     DeviceCapabilities capabilities;
     components.physicalDeviceComp.physicalDevice = VK_NULL_HANDLE;
-    struct QueueFamilyIndices indices;
+
 	//!TODO replace empty char array with preffered device from VulkanSettings   
 	char* preferredDevice = getChosenDevice();
 	if (!pickPhysicalDevice(&(components), &capabilities, &(components.physicalDeviceComp.queueFamilyIndices), preferredDevice))
