@@ -17,6 +17,10 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
+#include "vulkan_backend/vertex/vertex.h"
+
+#define MAX_FRAMES_IN_FLIGHT 3
+
 // Structs
 
 typedef struct FrameBufferGroup
@@ -104,19 +108,51 @@ typedef struct SwapChainComponents
     SwapChainSupportDetails swapChainSupportDetails;
 } SwapChainComponents;
 
+typedef struct EntityBuffer
+{
+    VkBuffer vertex;
+    VkDeviceMemory vertexMemory;
+	uint32_t indexCount;
+    VkBuffer index;
+    VkDeviceMemory indexMemory;
+	VkImage textureImage;
+	VkDeviceMemory textureImageMemory;
+	VkImageView textureImageView;
+} EntityBuffer;
+
+typedef struct BufferComponents 
+{
+	EntityBuffer* entities;
+	uint32_t entityCount;
+	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
+	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
+	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
+	VkFormat depthFormat;
+	VkImage depth[MAX_FRAMES_IN_FLIGHT];
+	VkDeviceMemory depthMemory[MAX_FRAMES_IN_FLIGHT];
+	VkImageView depthView[MAX_FRAMES_IN_FLIGHT];
+} BufferComponents;
+
+
 typedef struct RenderComponents
 {
     VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
+	VkDescriptorSetLayout descriptorSetLayout;
+	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
+	VkDescriptorPool descriptorPool;
+	UniformComponents uniform;
     VkPipeline graphicsPipeline;
+	VkSampler textureSampler;
+	BufferComponents buffers;
 } RenderComponents;
 
 typedef struct SynchronizationComponents
 {
-    VkSemaphore imageAvailableSemaphore[3];
-    VkSemaphore renderFinishedSemaphore[3];
-    VkFence inFlightFence[3];
-	bool frameSubmitted[3]; // Used to keep track of which frames have been used, mitigates resize crash
+    VkSemaphore imageAvailableSemaphore[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore renderFinishedSemaphore[MAX_FRAMES_IN_FLIGHT];
+    VkFence inFlightFence[MAX_FRAMES_IN_FLIGHT];
+	bool frameSubmitted[MAX_FRAMES_IN_FLIGHT]; // Used to keep track of which frames have been used, mitigates resize crash
     uint32_t frameIndex;
     bool framebufferResized;
     uint32_t skipCheck;
@@ -125,7 +161,7 @@ typedef struct SynchronizationComponents
 typedef struct CommandComponents
 {
     VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer[3];
+    VkCommandBuffer commandBuffer[MAX_FRAMES_IN_FLIGHT];
 } CommandComponents;
 
 typedef struct VulkanComponents

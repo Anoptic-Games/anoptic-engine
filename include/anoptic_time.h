@@ -23,11 +23,9 @@ uint64_t ano_timestamp_us();
 /// \brief Obtain a high-resolution monotonic raw timestamp, scaled to milliseconds.
 uint32_t ano_timestamp_ms();
 
-
 /// \brief Get Unix UTC timestamp.
 /// \note Timestamps are not guaranteed to be monotonic.
 int64_t ano_timestamp_unix();
-
 
 /// \brief Spinlock the current thread for ns nanoseconds.
 /// \param ns The number of nanoseconds to busy-wait.
