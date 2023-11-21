@@ -59,10 +59,10 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, VkDeviceMemory* bufferMemory);
 
 // Creates a vertex buffer
-bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, EntityBuffer* entity);
+bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, VkBuffer* vertex, VkDeviceMemory* vertexMemory);
 
 // Creates an index buffer
-bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, EntityBuffer* entity);
+bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuffer* index, VkDeviceMemory* indexMemory);
 
 // Creates uniform buffers for each frame
 bool createUniformBuffers(VulkanComponents* components);

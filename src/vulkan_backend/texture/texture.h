@@ -30,10 +30,10 @@ typedef struct Texture8
 Texture8 readTexture8bit(char* fileName);
 
 // Takes binary texture data and loads it into a Vulkan image object
-bool createTextureImage(VulkanComponents* components, EntityBuffer* entity, char* fileName, bool flag16);
+bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, char* fileName, bool flag16);
 
 // Creates an image view for an entity with an existing texture
-bool createTextureImageView(VulkanComponents* components, EntityBuffer* entity);
+bool createTextureImageView(VulkanComponents* components, VkImage textureImage, VkImageView* textureImageView);
 
 // Creates a sampler definition for use in shaders
 bool createTextureSampler(VulkanComponents* components);

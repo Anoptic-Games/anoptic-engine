@@ -171,7 +171,7 @@ bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, 
 	return true;
 }
 
-bool createTextureImage(VulkanComponents* components, EntityBuffer* entity, char* fileName, bool flag16)
+bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, char* fileName, bool flag16)
 {
 	//!TODO Add logic for 16-bit images
 	Texture8 texture = readTexture8bit(fileName);
@@ -195,21 +195,21 @@ bool createTextureImage(VulkanComponents* components, EntityBuffer* entity, char
 	stbi_image_free(texture.pixels);
 
 	if (!createImage(components, texture.texWidth, texture.texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &entity->textureImage, &entity->textureImageMemory, false))
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
 	{
 		printf("Image creation failure: %s\n", fileName);
 		return false;
 	}
 
-	if(!transitionImageLayout(components, entity->textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}
 
-	copyBufferToImage(components, stagingBuffer, entity->textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
+	copyBufferToImage(components, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
-	if(!transitionImageLayout(components, entity->textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
@@ -223,9 +223,9 @@ bool createTextureImage(VulkanComponents* components, EntityBuffer* entity, char
 	return true;
 }
 
-bool createTextureImageView(VulkanComponents* components, EntityBuffer* entity)
+bool createTextureImageView(VulkanComponents* components, VkImage textureImage, VkImageView* textureImageView)
 {
-	entity->textureImageView = createImageView(components->deviceQueueComp.device, entity->textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+	*textureImageView = createImageView(components->deviceQueueComp.device, textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
 	return true;
 }
