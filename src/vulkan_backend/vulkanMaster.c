@@ -7,19 +7,9 @@
 #include <stdio.h>
 #include <vulkan/vulkan.h>
 
-
+#include "vulkan_backend/vulkanMaster.h"
 
 #define GLFW_INCLUDE_VULKAN
-
-#include "vulkan_backend/instanceInit.h"
-
-#include "vulkan_backend/structs.h"
-
-#include "vulkan_backend/pipeline.h"
-
-#include "vulkan_backend/vulkanConfig.h"
-
-
 
 // Variables
 
@@ -84,13 +74,25 @@ void recordCommandBuffer(uint32_t imageIndex)
 	renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
 	renderPassInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
 
-	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-	renderPassInfo.clearValueCount = 1;
-	renderPassInfo.pClearValues = &clearColor;
+	VkClearValue clearValues[2] = {};
+	clearValues[0].color.float32[0] = 0.0f;
+	clearValues[0].color.float32[1] = 0.0f;
+	clearValues[0].color.float32[2] = 0.0f;
+	clearValues[0].color.float32[3] = 1.0f;
+	clearValues[1].depthStencil.depth = 1.0f;
+	clearValues[1].depthStencil.stencil = 0;
+	renderPassInfo.clearValueCount = sizeof(clearValues) / sizeof(VkClearValue);
+	renderPassInfo.pClearValues = clearValues;
 
 	vkCmdBeginRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
+
+	VkBuffer vertexBuffers[] = {components.renderComp.buffers.entities[0].vertex};
+	VkDeviceSize offsets[] = {0};
+	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffers, offsets);
+
+	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[0].index, 0, VK_INDEX_TYPE_UINT16);
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -102,11 +104,20 @@ void recordCommandBuffer(uint32_t imageIndex)
 	vkCmdSetViewport(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &viewport);
 	
 	VkRect2D scissor = {};
+	int windowWidth, windowHeight;
+	glfwGetWindowSize(window, &windowWidth, &windowHeight);
 	scissor.offset = (VkOffset2D){0, 0};
-	scissor.extent = components.swapChainComp.swapChainGroup.imageExtent;
+	scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
 	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
 
-	vkCmdDraw(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 3, 1, 0, 0);
+	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
+		components.renderComp.pipelineLayout, 0, 1, &(components.renderComp.descriptorSets[components.syncComp.frameIndex]), 0, NULL);
+
+	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount; i++) // Iterate through all render packages and issue indexed draw commands
+	{
+		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].indexCount, 1, 0, 0, 0);
+	}
+	
 
 	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
@@ -120,7 +131,7 @@ void clearSemaphores()
     VkSemaphoreCreateInfo semaphoreInfo = {};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
         vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.imageAvailableSemaphore[i], NULL);
         vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.renderFinishedSemaphore[i], NULL);
@@ -133,7 +144,31 @@ void clearSemaphores()
     }
 }
 
+void printUniformTransferState() {
+    // Swap Chain Components
+    printf("\n=== Swap Chain Components ===\n");
+    printf("Image count: %d\n", components.swapChainComp.swapChainGroup.imageCount);
+    printf("Image extent: width = %d, height = %d\n", components.swapChainComp.swapChainGroup.imageExtent.width, components.swapChainComp.swapChainGroup.imageExtent.height);
+    
+    // Buffer Components
+    printf("\n=== Buffer Components ===\n");
+    printf("Vertex buffer: %p\n", (void*)components.renderComp.buffers.entities[0].vertex);
+    printf("Index buffer: %p\n", (void*)components.renderComp.buffers.entities[0].index);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
+        printf("Uniform memory %d: %p\n", i, (void*)components.renderComp.buffers.uniformMemory[i]);
+        printf("Uniform buffer mapping %d: %p\n", i, components.renderComp.buffers.uniformMapped[i]);
+    }
 
+    // Synchronization Components
+    printf("\n=== Synchronization Components ===\n");
+    printf("Current frame index: %d\n", components.syncComp.frameIndex);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        printf("Frame %d submitted: %d\n", i, components.syncComp.frameSubmitted[i]);
+    }
+    
+    printf("\n======================================\n");
+}
 
 void drawFrame() 
 {
@@ -145,14 +180,15 @@ void drawFrame()
 		components.syncComp.skipCheck -= 1; // Simple way to skip semaphore waits for a given number of frames
 	}
 
-
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
 		vkDeviceWaitIdle(components.deviceQueueComp.device);
-		for (int i = 0; i < 3; ++i) {
-			if (components.syncComp.frameSubmitted[i]) {
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			if (components.syncComp.frameSubmitted[i])
+			{
 				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
 				components.syncComp.frameSubmitted[i] = false; // reset the status
 			}
@@ -166,8 +202,12 @@ void drawFrame()
 	    printf("Failed to acquire swap chain image!\n");
 	}
 
+	updateUniformBuffer(&components);
+
 	vkResetCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0);
 	recordCommandBuffer(imageIndex);
+
+	//updateUniformBuffer(&components);
 	
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -199,11 +239,36 @@ void drawFrame()
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = NULL; // Optional
-	vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
+
+	VkResult presentResult = vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
+
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
+	{
+		// Handle swap chain recreation
+		vkDeviceWaitIdle(components.deviceQueueComp.device);
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			if (components.syncComp.frameSubmitted[i])
+			{
+				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+				components.syncComp.frameSubmitted[i] = false; // reset the status
+			}
+		}
+		clearSemaphores();
+		recreateSwapChain(&components, window);
+		return;
+	} else if (presentResult != VK_SUCCESS)
+	{
+		printf("Failed to present swap chain image!\n");
+		return;
+	}
+
 	components.syncComp.frameSubmitted[components.syncComp.frameIndex] = true;
 
+	//printUniformTransferState();
+
 	components.syncComp.frameIndex += 1; // Iterate and reset the frame-in-flight index
-	if (components.syncComp.frameIndex == 3)
+	if (components.syncComp.frameIndex == MAX_FRAMES_IN_FLIGHT)
 	{
 		components.syncComp.frameIndex = 0;
 	}
@@ -215,19 +280,17 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 {
 
 	// Window initialization
-	WindowParameters parameters =
-	{
-		.width = 800,
-    	.height = 600,
-    	.monitorIndex = -1,        // Desired monitor index for fullscreen, -1 for windowed
-    	.borderless = 0
-	};
+	Dimensions2D initDimensions = {800, 600};
+	setResolution(initDimensions);
+	setMonitor(-1);
+	setBorderless(0);
 
 	vulkanGarbage.monitors = &monitors;
 	cleanupMonitors(&monitors);
 	printf("Here");
 	enumerateMonitors(&monitors);
-	window = initWindow(&components, parameters, &monitors);
+
+	window = initWindow(&components, &monitors);
 
 	if (window == NULL)
 	{
@@ -236,6 +299,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    unInitVulkan();
 	    return 0;
 	}
+
+	requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
 
 	components.instanceDebug.enableValidationLayers = true;
 	components.syncComp.frameIndex = 0; // Tracks which frame is being processed
@@ -278,7 +343,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
         return false;
     }
 
-    components.swapChainComp.swapChainGroup = initSwapChain(components.physicalDeviceComp.physicalDevice, components.deviceQueueComp.device, &(components.surface), window, getChosenPresentMode()); // Initialize a swap chain
+    components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
     if (components.swapChainComp.swapChainGroup.swapChain == NULL)
     {
     	printf("Quitting init: swap chain failure.\n");
@@ -294,34 +359,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     	return false;
     }
 
-	if (!createRenderPass(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
-                          &(components.renderComp.renderPass)))
-	{
-		printf("Quitting init: render pass failure\n");
-		unInitVulkan();
-		return false;
-	}
-
-	components.renderComp.graphicsPipeline = createGraphicsPipeline(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageExtent, &(components.renderComp.pipelineLayout), components.renderComp.renderPass);
-	if (components.renderComp.graphicsPipeline == NULL)
-	{
-		printf("Quitting init: pipeline failure!\n");
-		unInitVulkan();
-		return false;
-	}
-	printf("Framebuffers\n");
-
-	if (!createFramebuffers(components.deviceQueueComp.device, &(components.swapChainComp.framebufferGroup),
-                            components.swapChainComp.viewGroup, components.swapChainComp.swapChainGroup,
-                            components.renderComp.renderPass))
-	{
-		printf("Quitting init: framebuffer failure!\n");
-		unInitVulkan();
-		return false;	
-	}
-
-	printf("Command pool\n");
-
 	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
                            components.surface, &(components.cmdComp.commandPool)))
 	{
@@ -330,7 +367,118 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	printf("Command buffer\n");
+	if(!createDepthResources(&components))
+	{
+		printf("Quitting init: depth resource creation failure!\n");
+	}
+
+	if (!createRenderPass(&components, components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
+                          &(components.renderComp.renderPass)))
+	{
+		printf("Quitting init: render pass failure\n");
+		unInitVulkan();
+		return false;
+	}
+
+	components.renderComp.graphicsPipeline = createGraphicsPipeline(&components);
+	if (components.renderComp.graphicsPipeline == NULL)
+	{
+		printf("Quitting init: pipeline failure!\n");
+		unInitVulkan();
+		return false;
+	}
+	printf("Framebuffers\n");
+
+	if (!createFramebuffers(&components))
+	{
+		printf("Quitting init: framebuffer failure!\n");
+		unInitVulkan();
+		return false;	
+	}
+
+	/*if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
+	{
+		printf("Quitting init: texture read failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if(!createTextureImageView(&components, &components.renderComp.buffers.entities[0]))
+	{
+		printf("Quitting init: texture image view failure!\n");
+		unInitVulkan();
+		return false;
+	}*/
+
+	if(!createTextureSampler(&components))
+	{
+		printf("Quitting init: texture sampler failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	components.renderComp.buffers.entityCount = 1;
+
+	if(!parseGltf(&components, "viking_room.gltf"))
+	{
+		printf("Failed to parse glTF file!\n");
+		unInitVulkan();
+		return false;
+	}
+	
+	/*if (!createVertexBuffer(&components, vertices, 8, &components.renderComp.buffers.entities[0]))
+	{
+		printf("Quitting init: vertex buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	// Fill the vertex buffer
+	if (!stagingTransfer(&components, vertices, components.renderComp.buffers.entities[0].vertex, sizeof(vertices)))
+	{
+		printf("Quitting init: staging buffer population failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!createIndexBuffer(&components, vertexIndices, 12, &components.renderComp.buffers.entities[0]))
+	{
+		printf("Quitting init: vertex buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!stagingTransfer(&components, vertexIndices, components.renderComp.buffers.entities[0].index, sizeof(vertexIndices)))
+	{
+		printf("Quitting init: staging buffer population failure!\n");
+		unInitVulkan();
+		return false;
+	}*/
+
+	if (!createUniformBuffers(&components))
+	{
+		printf("Quitting init: uniform buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	// HERE
+	if (!createDescriptorPool(&components))
+	{
+		printf("Quitting init: descriptor pool creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!createDescriptorSets(&components))
+	{
+		printf("Quitting init: descriptor sets creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	updateDescriptorSets(&components);
+
 
 	if (!createCommandBuffer(&components))
 	{
@@ -339,7 +487,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 	
-	printf("Sync objects\n");
 
 	if (!createSyncObjects(&components))
 	{
@@ -348,6 +495,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-    
+	printf("Instance creation complete!\n");
+
     return true;
 }

@@ -10,6 +10,8 @@
 #include <vulkan/vulkan.h>
 
 #include "vulkan_backend/structs.h"
+#include "anoptic_memalign.h"
+#include "vulkan_backend/vertex/vertex.h"
 
 // Pipeline-specific structs
 struct Buffer
@@ -20,10 +22,10 @@ struct Buffer
 
 
 // Creates a render pass
-bool createRenderPass(VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass);
+bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass);
 
 // Creates a graphics pipeline
-VkPipeline createGraphicsPipeline(VkDevice device, VkExtent2D swapChainExtent, VkPipelineLayout *pipelineLayout, VkRenderPass renderPass);
+VkPipeline createGraphicsPipeline(VulkanComponents* components);
 
 
 
