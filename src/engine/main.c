@@ -102,7 +102,6 @@ int main()
 
 	//parseGltf("viking_room.gltf");
 
-	uint32_t i = 0;
     // Main loop
 	while (!anoShouldClose())
 	{	
@@ -115,7 +114,6 @@ int main()
         //printf("Test: %d\n", components->viewGroup.viewCount);
         drawFrame();
 		//measureFrameTime();
-		i++;
     }
 
     // Clean up

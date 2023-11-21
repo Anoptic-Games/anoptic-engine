@@ -119,6 +119,5 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
 const char** getRequiredExtensions(uint32_t* extensionsCount);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
 void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger);
-static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 
 #endif
