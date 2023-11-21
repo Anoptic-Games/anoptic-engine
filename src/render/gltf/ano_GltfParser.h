@@ -11,7 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "vulkan_backend/structs.h"
 #include "vulkan_backend/vertex/vertex.h"
+#include "vulkan_backend/instance/instanceInit.h"
 
 // Types
 
@@ -170,6 +172,9 @@ typedef struct GltfTexture
 {
 	uint32_t sampler;
 	uint32_t source;
+	VkImage textureImage;
+	VkDeviceMemory textureImageMemory;
+	VkImageView textureImageView;
 } GltfTexture;
 
 typedef struct GltfPrimitive
@@ -185,6 +190,10 @@ typedef struct GltfPrimitive
 typedef struct GltfMesh
 {
 	char* name;
+	VkBuffer vertex;
+    VkDeviceMemory vertexMemory;
+    VkBuffer index;
+    VkDeviceMemory indexMemory;
 	GltfPrimitive primitives;
 } GltfMesh;
 
@@ -245,6 +254,6 @@ typedef struct GltfElements
 bool count_gltf_elements(const char *json, GltfElements *counts);
 
 // Parses a glTF file, adding asset buffers to memory and creating renderable entity packages
-bool parseGltf(const char* fileName);
+bool parseGltf(VulkanComponents* components, const char* fileName);
 
 #endif
