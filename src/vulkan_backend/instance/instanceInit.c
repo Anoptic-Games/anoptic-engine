@@ -1007,13 +1007,13 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 	return true;
 }
 
-bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, EntityBuffer* entity)
+bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, VkBuffer* vertex, VkDeviceMemory* vertexMemory)
 {
 	VkDeviceSize bufferSize = sizeof(Vertex) * vertexCount;
 
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, properties, &entity->vertex, &entity->vertexMemory)) 
+	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, properties, vertex, vertexMemory)) 
 	{
 		printf("Failed to create vertex buffer!");
 		return false;
@@ -1022,14 +1022,14 @@ bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, Enti
 	return true;
 }
 
-bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, EntityBuffer* entity)
+bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuffer* index, VkDeviceMemory* indexMemory)
 {
 	VkDeviceSize bufferSize = sizeof(uint16_t) * indexCount;
 	
 
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, properties, &entity->index, &entity->indexMemory)) 
+	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, properties, index, indexMemory)) 
 	{
 		printf("Failed to create index buffer!");
 		return false;

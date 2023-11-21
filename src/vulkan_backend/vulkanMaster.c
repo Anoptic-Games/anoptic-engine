@@ -113,7 +113,11 @@ void recordCommandBuffer(uint32_t imageIndex)
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 		components.renderComp.pipelineLayout, 0, 1, &(components.renderComp.descriptorSets[components.syncComp.frameIndex]), 0, NULL);
 
-	vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[0].indexCount, 1, 0, 0, 0);
+	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount; i++) // Iterate through all render packages and issue indexed draw commands
+	{
+		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].indexCount, 1, 0, 0, 0);
+	}
+	
 
 	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 

@@ -1211,7 +1211,7 @@ bool createCombinedVertexBuffer(VulkanComponents* components, GltfElements* elem
 	}
 	printf("Finished?\n");
 	// Create the vertex buffer
-	if(!createVertexBuffer(components, vertexCount, &components->renderComp.buffers.entities[nodeID]))
+	if(!createVertexBuffer(components, vertexCount, &components->renderComp.buffers.entities[nodeID].vertex, &components->renderComp.buffers.entities[nodeID].vertexMemory))
 	{
 		printf("Failed to create vertex buffer for node #%d!\n", nodeID);
 		return false;
@@ -1292,7 +1292,7 @@ bool createIndexBufferForMesh(VulkanComponents* components, GltfElements* elemen
 	components->renderComp.buffers.entities[nodeID].indexCount = indexAccessor->count;
 
 	// Create the index buffer
-	if(!createIndexBuffer(components, indexAccessor->count, &components->renderComp.buffers.entities[nodeID]))
+	if(!createIndexBuffer(components, indexAccessor->count, &components->renderComp.buffers.entities[nodeID].index, &components->renderComp.buffers.entities[nodeID].indexMemory))
 	{
 		printf("Failed to create index buffer for node #%d!\n", nodeID);
 		return false;
@@ -1345,13 +1345,13 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 	bool flag16 = false; // Set this flag as per your requirement
 
 	// Create texture image
-	if (!createTextureImage(components, &components->renderComp.buffers.entities[nodeID], image->uri, flag16))
+	if (!createTextureImage(components, &components->renderComp.buffers.entities[nodeID].textureImage, &components->renderComp.buffers.entities[nodeID].textureImageMemory, image->uri, flag16))
 	{
 		success = false;
 	}
 
 	// Create texture image view
-	if (!createTextureImageView(components, &components->renderComp.buffers.entities[nodeID]))
+	if (!createTextureImageView(components, components->renderComp.buffers.entities[nodeID].textureImage, &components->renderComp.buffers.entities[nodeID].textureImageView))
 	{
 		success = false;
 
