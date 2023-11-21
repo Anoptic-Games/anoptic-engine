@@ -993,7 +993,7 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 
 	if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, buffer) != VK_SUCCESS)
 	{
-		printf("Failed to create vertex buffer!");
+		printf("Failed to create data buffer!");
 		return false;
 	}
 
@@ -1007,9 +1007,9 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 	return true;
 }
 
-bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t vertexCount, EntityBuffer* entity)
+bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, EntityBuffer* entity)
 {
-	VkDeviceSize bufferSize = sizeof(vertices[0]) * vertexCount;
+	VkDeviceSize bufferSize = sizeof(Vertex) * vertexCount;
 
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
@@ -1022,7 +1022,7 @@ bool createVertexBuffer(VulkanComponents* components, Vertex* vertices, uint32_t
 	return true;
 }
 
-bool createIndexBuffer(VulkanComponents* components, uint16_t* vertexIndices, uint32_t indexCount, EntityBuffer* entity)
+bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, EntityBuffer* entity)
 {
 	VkDeviceSize bufferSize = sizeof(uint16_t) * indexCount;
 	
@@ -1074,41 +1074,40 @@ void printMatrix(float mat[4][4])
 
 bool updateUniformBuffer(VulkanComponents* components)
 {
-	static uint64_t time = 0;
-	static uint64_t oldTime = 0;
-	time = ano_timestamp_us();
-	static float angle = 0.0f;
-	const float pi = 3.14159265359f;
+    static uint64_t time = 0;
+    static uint64_t oldTime = 0;
+    time = ano_timestamp_us();
+    static float angle = 0.0f;
+    const float pi = 3.14159265359f;
 
-	for(int i = 0; i < 4; i++)
-    	for(int j = 0; j < 4; j++)
-        	components->renderComp.uniform.model[i][j] = (i == j) ? 1.0f : 0.0f;
+    for(int i = 0; i < 4; i++)
+        for(int j = 0; j < 4; j++)
+            components->renderComp.uniform.model[i][j] = (i == j) ? 1.0f : 0.0f;
 
-	rotateMatrix(components->renderComp.uniform.model, 'Y', angle);
+    rotateMatrix(components->renderComp.uniform.model, 'Y', angle);
 
-	float eye[] = {0.0f, 0.0f, 1.0f};  // Positioned along the Z-axis
-	float center[] = {0.0f, 0.0f, 0.0f};
-	float up[] = {0.0f, 1.0f, 0.0f};  // Y is up
-	lookAt(components->renderComp.uniform.view, eye, center, up);
+	float eye[] = {0.0f, 0.9f, 1.5f};  // Move camera up and back
+	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
+	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped
 
-	float fov = 45.0f; // Field of View in degrees
-	float aspect = (float)components->swapChainComp.swapChainGroup.imageExtent.width / components->swapChainComp.swapChainGroup.imageExtent.height;
-	float near = 0.1f;
-	float far = 100.0f;
-	perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
+    lookAt(components->renderComp.uniform.view, eye, center, up);
 
-	memcpy(components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex], &(components->renderComp.uniform), sizeof(components->renderComp.uniform));
+    float fov = 45.0f; // Field of View in degrees
+    float aspect = (float)components->swapChainComp.swapChainGroup.imageExtent.width / components->swapChainComp.swapChainGroup.imageExtent.height;
+    float near = 0.1f;
+    float far = 100.0f;
+    perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
 
-	//components->renderComp.uniform.proj[1][1] *= -1; 
+    memcpy(components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex], &(components->renderComp.uniform), sizeof(components->renderComp.uniform));
 
-	angle += ((float)(time-oldTime)) * 0.000001f;
-	if(angle > 2.0f * pi)
-	{
-		angle = 0.0f;	
-	}
-	oldTime = time;
+    angle += ((float)(time-oldTime)) * 0.000001f;
+    if(angle > 2.0f * pi)
+    {
+        angle = 0.0f;    
+    }
+    oldTime = time;
 
-	return true;
+    return true;
 }
 
 VkFormat findSupportedFormat(VulkanComponents* components, const VkFormat* candidates, uint32_t candidateCount, VkImageTiling tiling, VkFormatFeatureFlags features)

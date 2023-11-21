@@ -113,7 +113,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 		components.renderComp.pipelineLayout, 0, 1, &(components.renderComp.descriptorSets[components.syncComp.frameIndex]), 0, NULL);
 
-	vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], (uint32_t)(sizeof(uint16_t) * 6), 1, 0, 0, 0);
+	vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[0].indexCount, 1, 0, 0, 0);
 
 	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
@@ -392,7 +392,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;	
 	}
 
-	if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
+	/*if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
 	{
 		printf("Quitting init: texture read failure!\n");
 		unInitVulkan();
@@ -404,7 +404,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: texture image view failure!\n");
 		unInitVulkan();
 		return false;
-	}
+	}*/
 
 	if(!createTextureSampler(&components))
 	{
@@ -415,22 +415,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	components.renderComp.buffers.entityCount = 1;
 
-	const Vertex vertices[] =
+	if(!parseGltf(&components, "viking_room.gltf"))
 	{
-		{.position = {.v = {-0.5f, -0.5f, 0.0f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}, .texCoord = {1.0f, 0.0f}},
-		{.position = {.v = {0.5f, -0.5f, 0.0f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}, .texCoord = {0.0f, 0.0f}},
-		{.position = {.v = {0.5f, 0.5f, 0.0f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}, .texCoord = {0.0f, 1.0f}},
-		{.position = {.v = {-0.5f, 0.5f, 0.0f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}, .texCoord = {1.0f, 1.0f}},
-
-		{.position = {.v = {-0.5f, -0.5f, -0.5f}}, .color = {.v = {1.0f, 0.0f, 0.0f}}, .texCoord = {1.0f, 0.0f}},
-		{.position = {.v = {0.5f, -0.5f, -0.5f}}, .color = {.v = {0.0f, 1.0f, 0.0f}}, .texCoord = {0.0f, 0.0f}},
-		{.position = {.v = {0.5f, 0.5f, -0.5f}}, .color = {.v = {0.0f, 0.0f, 1.0f}}, .texCoord = {0.0f, 1.0f}},
-		{.position = {.v = {-0.5f, 0.5f, -0.5f}}, .color = {.v = {0.5f, 0.0f, 0.5f}}, .texCoord = {1.0f, 1.0f}}
-	};
-
-	const uint16_t vertexIndices[] = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
+		printf("Failed to parse glTF file!\n");
+		unInitVulkan();
+		return false;
+	}
 	
-	if (!createVertexBuffer(&components, vertices, 8, &components.renderComp.buffers.entities[0]))
+	/*if (!createVertexBuffer(&components, vertices, 8, &components.renderComp.buffers.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();
@@ -457,7 +449,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: staging buffer population failure!\n");
 		unInitVulkan();
 		return false;
-	}
+	}*/
 
 	if (!createUniformBuffers(&components))
 	{

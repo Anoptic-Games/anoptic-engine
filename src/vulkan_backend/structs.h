@@ -112,6 +112,7 @@ typedef struct EntityBuffer
 {
     VkBuffer vertex;
     VkDeviceMemory vertexMemory;
+	uint32_t indexCount;
     VkBuffer index;
     VkDeviceMemory indexMemory;
 	VkImage textureImage;
@@ -121,7 +122,7 @@ typedef struct EntityBuffer
 
 typedef struct BufferComponents 
 {
-	EntityBuffer entities[1];
+	EntityBuffer* entities;
 	uint32_t entityCount;
 	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];

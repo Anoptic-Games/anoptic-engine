@@ -100,7 +100,7 @@ int main()
 
 	// Create a graphics pipeline
 
-	parseGltf("viking_room.gltf");
+	//parseGltf("viking_room.gltf");
 
 	uint32_t i = 0;
     // Main loop

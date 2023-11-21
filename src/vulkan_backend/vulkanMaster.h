@@ -21,6 +21,8 @@
 
 #include "vulkan_backend/texture/texture.h"
 
+#include "render/gltf/ano_GltfParser.h"
+
 
 // Function interfaces
 

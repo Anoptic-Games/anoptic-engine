@@ -1083,6 +1083,309 @@ bool parseGltfElements(const char *json, GltfElements *elements)
 	return true;
 }
 
+// Element processing functions
+
+void* readFile(const char* filename, uint64_t* length)
+{
+	FILE* file = fopen(filename, "rb");
+	if (!file)
+	{
+		perror("Error opening file");
+		return NULL;
+	}
+
+	fseek(file, 0, SEEK_END);
+	*length = ftell(file);
+	fseek(file, 0, SEEK_SET);
+
+	void* data = malloc(*length);
+	if (!data)
+	{
+		perror("Error allocating memory");
+		fclose(file);
+		return NULL;
+	}
+
+	fread(data, 1, *length, file);
+	fclose(file);
+	return data;
+}
+
+void processGltfBuffers(GltfElements* elements)
+{
+	for (uint32_t i = 0; i < elements->bufferCount; ++i)
+	{
+		GltfBuffer* buffer = &elements->buffers[i];
+		if (buffer->uri != NULL)
+		{
+			uint64_t length = 0;
+			void* data = readFile(buffer->uri, &length);
+
+			if (data != NULL && length == buffer->byteLength)
+			{
+				buffer->address = data;
+			} else
+			{
+				// Handle error: file read error or size mismatch
+				// Free data if necessary
+			}
+		}
+		// Handle case where buffer->uri is NULL if needed
+	}
+}
+
+// Function to get the data pointer from a buffer view
+void* getBufferData(GltfElements* elements, uint32_t bufferViewIndex)
+{
+	GltfBufferView* bufferView = &elements->bufferViews[bufferViewIndex];
+	GltfBuffer* buffer = &elements->buffers[bufferView->index];
+	return (void*)((char*)buffer->address + bufferView->byteOffset);
+}
+
+// Function to get position data
+Vector3* getPositionData(GltfElements* elements, GltfAccessor* accessor, uint32_t index)
+{
+	void* bufferData = getBufferData(elements, accessor->bufferView);
+
+	// !TODO add checks to ensure positions are VEC3, handle other cases
+	if (accessor->componentType == GLTF_COMPONENT_TYPE_FLOAT)
+	{
+		float* floatData = (float*)bufferData;
+		// Assuming each position is a Vector3
+		return (Vector3*)&floatData[index * 3]; // 3 floats per position
+	}
+
+	// Handle other component types as needed
+	return NULL;
+}
+
+// Function to get texture coordinate data
+Vector2* getTexcoordData(GltfElements* elements, GltfAccessor* accessor, uint32_t index)
+{
+	void* bufferData = getBufferData(elements, accessor->bufferView);
+
+	// !TODO add checks to ensure positions are VEC3, handle other cases
+	if (accessor->componentType == GLTF_COMPONENT_TYPE_FLOAT)
+	{
+		float* floatData = (float*)bufferData;
+		// Assuming each texcoord is a Vector2
+		return (Vector2*)&floatData[index * 2]; // 2 floats per texcoord
+	}
+
+	// Handle other component types as needed
+	return NULL;
+}
+
+// Function to create a vertex buffer with combined position and texcoord
+bool createCombinedVertexBuffer(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh, uint32_t nodeID)
+{
+	Vector3 defaultColor = {0.5f, 0.5f, 0.5f};
+	// Access the accessor for position and texcoord
+	GltfAccessor* positionAccessor = &elements->accessors[mesh->primitives.position];
+	GltfAccessor* texcoordAccessor = &elements->accessors[mesh->primitives.texcoord];
+
+	// Calculate the number of vertices
+	uint32_t vertexCount = positionAccessor->count; // assuming position and texcoord have the same count
+
+	// Allocate memory for the combined vertex data
+	Vertex* vertices = malloc(sizeof(Vertex) * vertexCount);
+	if (!vertices)
+	{
+		printf("Failed to allocate memory for vertices, node #%d\n!", nodeID);
+		return false; // Allocation failed
+	}
+
+	printf("Vertex count: %d\n", vertexCount);
+	// Combine position and texcoord data into vertices
+	for (uint32_t i = 0; i < vertexCount; i++)
+	{
+		//printf("%d ", i);
+		// Assuming you have a way to get the position and texcoord data
+		Vector3* positionData = getPositionData(elements, positionAccessor, i);
+		Vector2* texcoordData = getTexcoordData(elements, texcoordAccessor, i);
+
+		vertices[i].position = *positionData;
+		vertices[i].texCoord = *texcoordData;
+		// Set default color as needed
+		vertices[i].color = defaultColor;
+	}
+	printf("Finished?\n");
+	// Create the vertex buffer
+	if(!createVertexBuffer(components, vertexCount, &components->renderComp.buffers.entities[nodeID]))
+	{
+		printf("Failed to create vertex buffer for node #%d!\n", nodeID);
+		return false;
+	}
+	printf("Created vertex buffer\n");
+	if(!stagingTransfer(components, vertices, components->renderComp.buffers.entities[nodeID].vertex, sizeof(Vertex) * vertexCount))
+	{
+		printf("Failed to transfer vertex data for node #%d!\n", nodeID);
+		return false;
+	}
+	printf("Copied vertex buffer\n");	
+
+	free(vertices);
+	return true;
+}
+
+uint16_t* getIndexData(GltfElements* elements, GltfAccessor* accessor, uint32_t index)
+{
+	void* bufferData = getBufferData(elements, accessor->bufferView);
+
+	// Handle different component types
+	switch (accessor->componentType)
+	{
+		case GLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+		{
+			uint8_t* byteData = (uint8_t*)bufferData;
+			// Convert to uint16_t if needed
+			return (uint16_t*)&byteData[index];
+		}
+		case GLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+		{
+			uint16_t* shortData = (uint16_t*)bufferData;
+			return &shortData[index];
+		}
+		case GLTF_COMPONENT_TYPE_UNSIGNED_INT:
+		{
+			// Assuming you want to convert unsigned int to uint16_t
+			uint32_t* intData = (uint32_t*)bufferData;
+			// Make sure to handle potential data loss if converting from uint32_t to uint16_t
+			static uint16_t convertedIndex;
+			convertedIndex = (uint16_t)intData[index];
+			return &convertedIndex;
+		}
+		// Add cases for other component types if needed
+	}
+
+	return NULL;
+}
+
+bool createIndexBufferForMesh(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh, uint32_t nodeID)
+{
+	// Access the accessor for indices
+	GltfAccessor* indexAccessor = &elements->accessors[mesh->primitives.indices];
+
+	// Allocate memory for the index data
+	uint16_t* indices = malloc(sizeof(uint16_t) * indexAccessor->count);
+	if (!indices)
+	{
+		return false; // Allocation failed
+	}
+
+	printf("Indices count: %d\n", indexAccessor->count);
+	// Populate the index data from the accessor
+	for (uint32_t i = 0; i < indexAccessor->count; i++)
+	{
+		//printf("%d ", i);
+		uint16_t* indexData = getIndexData(elements, indexAccessor, i);
+		if (indexData == NULL)
+		{
+			free(indices);
+			return false;
+		}
+		indices[i] = *indexData;
+	}
+	
+	printf("Copied index data into memory!\n");
+
+	components->renderComp.buffers.entities[nodeID].indexCount = indexAccessor->count;
+
+	// Create the index buffer
+	if(!createIndexBuffer(components, indexAccessor->count, &components->renderComp.buffers.entities[nodeID]))
+	{
+		printf("Failed to create index buffer for node #%d!\n", nodeID);
+		return false;
+	}
+
+	printf("Created index buffer for node #%d!\n", nodeID);
+
+	if(!stagingTransfer(components, indices, components->renderComp.buffers.entities[nodeID].index, sizeof(uint16_t) * indexAccessor->count))
+	{
+		printf("Failed to transfer index data for node #%d!\n", nodeID);
+		return false;
+	}
+
+	printf("Copied index data for node #%d!\n", nodeID);
+
+	free(indices);
+	return true;
+}
+
+bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh, uint32_t nodeID)
+{
+	bool success = true;
+
+	uint32_t materialIndex = mesh->primitives.material;
+		
+	if (materialIndex >= elements->materialCount)
+	{
+		//continue; // Invalid material index
+	}
+
+	GltfMaterial* material = &elements->materials[materialIndex];
+	uint32_t textureIndex = material->pbr.baseColorTexture;
+		
+	if (textureIndex >= elements->textureCount)
+	{
+		//continue; // Invalid texture index
+	}
+
+	GltfTexture* texture = &elements->textures[textureIndex];
+	uint32_t imageIndex = texture->source;
+		
+	if (imageIndex >= elements->imageCount)
+	{
+		//continue; // Invalid image index
+	}
+
+	GltfImage* image = &elements->images[imageIndex];
+
+	// Assuming flag16 is determined based on some criteria
+	bool flag16 = false; // Set this flag as per your requirement
+
+	// Create texture image
+	if (!createTextureImage(components, &components->renderComp.buffers.entities[nodeID], image->uri, flag16))
+	{
+		success = false;
+	}
+
+	// Create texture image view
+	if (!createTextureImageView(components, &components->renderComp.buffers.entities[nodeID]))
+	{
+		success = false;
+
+	}
+
+	return success;
+}
+
+void processGltfNodes (VulkanComponents* components, GltfElements* elements)
+{
+	// Allocate EntityBuffer for all nodes
+	components->renderComp.buffers.entityCount = elements->nodeCount;
+	components->renderComp.buffers.entities = (EntityBuffer*)malloc(sizeof(EntityBuffer) * (elements->nodeCount));
+
+	// Iterate through all nodes
+	for (uint32_t i = 0; i < elements->nodeCount; i++)
+	{
+		// Set vertex buffer
+		printf("Creating node#%d vertex buffer!\n", i);
+		createCombinedVertexBuffer(components, elements, &elements->meshes[elements->nodes[i].mesh], i);
+
+		// Set index buffer
+		printf("Creating node#%d index buffer!\n", i);
+		createIndexBufferForMesh(components, elements, &elements->meshes[elements->nodes[i].mesh], i);
+
+		// Set texture buffer
+		printf("Creating node#%d texture!\n", i);
+		uploadTextureDataToGPU(components, elements, &elements->meshes[elements->nodes[i].mesh], i);
+	} 
+	
+	// !TODO add render support for PBR parameters
+	// !TODO figure out what to do with normals and rotation
+}
+
 // Debug printout functions
 
 void printGltfScenes(const GltfElements* elements)
@@ -1370,7 +1673,7 @@ bool createRenderableEntity()
 	return true;
 }
 
-char* readFile(const char* filename, size_t* size)
+char* readGltfFile(const char* filename, size_t* size)
 {
 	FILE* file;
 	char* buffer;
@@ -1417,13 +1720,13 @@ char* readFile(const char* filename, size_t* size)
 }
 
 
-bool parseGltf(const char* fileName)
+bool parseGltf(VulkanComponents* components, const char* fileName)
 {
 	GltfElements elements;
 	
 	// Open file
 	size_t fileSize;
-	char* fileBuffer = readFile(fileName, &fileSize);
+	char* fileBuffer = readGltfFile(fileName, &fileSize);
 	if (fileBuffer != NULL)
 	{
 		if(!countGltfElements(fileBuffer, &elements))
@@ -1442,7 +1745,8 @@ bool parseGltf(const char* fileName)
 	//printf("Scenes count: %d\n", elements.sceneCount);
 	printGltfElementsContents(&elements);
 
-	// Record element counts
+	processGltfBuffers(&elements);
+	processGltfNodes(components, &elements);
 	// Allocate element buffers
 	// Populate element buffers with parameters
 
