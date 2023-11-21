@@ -63,6 +63,10 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 target_link_libraries(anopticengine glfw)
 target_link_libraries(anopticengine Vulkan::Vulkan)
 
+# CTest integration
+enable_testing()
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests)
+
 # Add compilation flags and preprocessor definitions for Debug and Release builds
 target_compile_definitions(anopticengine PRIVATE
         "$<$<CONFIG:Debug>:DEBUG_BUILD>"
