@@ -59,9 +59,9 @@ int testTimeStamps() {
         return -1;
     }
 
-    printf("nanoseconds: %llu\n", nanoStamp);
-    printf("microseconds: %llu\n", microStamp);
-    printf("milliseconds: %llu\n", (uint64_t)milliStamp);
+    printf("nanoseconds: %lu\n", nanoStamp);
+    printf("microseconds: %lu\n", microStamp);
+    printf("milliseconds: %lu\n", (uint64_t)milliStamp);
 
     uint64_t first4nano = firstNDigits(nanoStamp, 4);
     uint64_t first4micro = firstNDigits(microStamp, 4);
@@ -76,7 +76,7 @@ int testTimeStamps() {
 }
 
 int testBusyWait(uint64_t duration) {
-    printf("\nTesting ano_busywait for %llu ns\n", duration);
+    printf("\nTesting ano_busywait for %lu ns\n", duration);
 
     int status = 0;
 
@@ -85,14 +85,14 @@ int testBusyWait(uint64_t duration) {
     uint64_t end = ano_timestamp_raw();
 
     uint64_t elapsed = end - start;
-    printf("Expected wait:\t%llu ns\n", duration);
-    printf("Actual wait:\t%llu ns\n", elapsed);
+    printf("Expected wait:\t%lu ns\n", duration);
+    printf("Actual wait:\t%lu ns\n", elapsed);
 
     return status;
 }
 
 int testOSSleep(uint64_t duration) {
-    printf("\nTesting ano_sleep for %llu ns\n", duration);
+    printf("\nTesting ano_sleep for %lu ns\n", duration);
 
     int status = 0;
 
@@ -101,8 +101,8 @@ int testOSSleep(uint64_t duration) {
     uint64_t end = ano_timestamp_raw();
 
     uint64_t elapsed = end - start;
-    printf("Expected wait:\t%llu ns\n", duration);
-    printf("Actual wait:\t%llu ns\n", elapsed);
+    printf("Expected wait:\t%lu ns\n", duration);
+    printf("Actual wait:\t%lu ns\n", elapsed);
 
     return status;
 }
@@ -128,13 +128,13 @@ int main() {
     /* Sleep Tests */
     uint64_t durations[] = {100, 500, 1000, 1600, 5000, 10000, 160000,
                             16000000, 100000000, 1000000000}; // in nanoseconds
-    uint64_t start, end, elapsed;
+    //uint64_t start, end, elapsed;
 
     // Test with ano_busywait()
     for (int i = 0; i < sizeof(durations) / sizeof(durations[0]); i++) {
         status = testBusyWait(durations[i]);
         if (status != 0) {
-            printf("anoptic_time.h: ano_busywait() failed with duration=%llu\n", durations[i]);
+            printf("anoptic_time.h: ano_busywait() failed with duration=%lu\n", durations[i]);
             return -1;
         }
     }
@@ -143,7 +143,7 @@ int main() {
     for (int i = 0; i < sizeof(durations) / sizeof(durations[0]); i++) {
         status = testOSSleep(durations[i]);
         if (status != 0) {
-            printf("anoptic_time.h: ano_sleep() failed with duration=%llu\n", durations[i]);
+            printf("anoptic_time.h: ano_sleep() failed with duration=%lu\n", durations[i]);
             return -1;
         }
     }

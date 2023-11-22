@@ -26,6 +26,7 @@ uint64_t ano_timestamp_raw() {
 // return ano_timestamp_raw, but scaled to microseconds.
 uint64_t ano_timestamp_us() {
     struct timespec ts;
+
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
         return UINT64_MAX; // Indicate an error occurred
@@ -36,6 +37,7 @@ uint64_t ano_timestamp_us() {
 // return ano_timestamp_raw, but truncated to ms.
 uint32_t ano_timestamp_ms() {
     struct timespec ts;
+
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
         return UINT32_MAX; // Indicate an error occurred.
@@ -60,6 +62,12 @@ int64_t ano_timestamp_unix() {
     return (int64_t)current_time;
 }
 
+// Network Time Protocol-adjusted timestamp. NOT guaranteed monotonic.
+int64_t ano_timestamp_ntp(){
+    printf("ano_timestamp_ntp\tTest!\n");
+    // TODO: Fill with network socket stuff etc
+    return 0;
+}
 
 /* Waiting Facilities */
 
