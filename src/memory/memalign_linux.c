@@ -21,7 +21,7 @@ void* ano_aligned_malloc(size_t size, size_t alignment) {
 
 	size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
 
-	int result = posix_memalign(&ptr, alignment, size);
+	int result = posix_memalign(&ptr, alignment, aligned_size);
     if (result != 0) {
 		printf("Size of void*: %zu\n", sizeof(void *));
 		printf("Posix memalign error: %d\n", result);
