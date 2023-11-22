@@ -1177,7 +1177,7 @@ Vector2* getTexcoordData(GltfElements* elements, GltfAccessor* accessor, uint32_
 }
 
 // Function to create a vertex buffer with combined position and texcoord
-bool createCombinedVertexBuffer(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh, uint32_t nodeID)
+bool createCombinedVertexBuffer(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh)
 {
 	Vector3 defaultColor = {0.5f, 0.5f, 0.5f};
 	// Access the accessor for position and texcoord
@@ -1191,7 +1191,7 @@ bool createCombinedVertexBuffer(VulkanComponents* components, GltfElements* elem
 	Vertex* vertices = malloc(sizeof(Vertex) * vertexCount);
 	if (!vertices)
 	{
-		printf("Failed to allocate memory for vertices, node #%d\n!", nodeID);
+		printf("Failed to allocate memory for vertices!");
 		return false; // Allocation failed
 	}
 
@@ -1211,15 +1211,15 @@ bool createCombinedVertexBuffer(VulkanComponents* components, GltfElements* elem
 	}
 	printf("Finished?\n");
 	// Create the vertex buffer
-	if(!createVertexBuffer(components, vertexCount, &components->renderComp.buffers.entities[nodeID].vertex, &components->renderComp.buffers.entities[nodeID].vertexMemory))
+	if(!createVertexBuffer(components, vertexCount, &mesh->vertex, &mesh->vertexMemory))
 	{
-		printf("Failed to create vertex buffer for node #%d!\n", nodeID);
+		printf("Failed to create vertex buffer!\n");
 		return false;
 	}
 	printf("Created vertex buffer\n");
-	if(!stagingTransfer(components, vertices, components->renderComp.buffers.entities[nodeID].vertex, sizeof(Vertex) * vertexCount))
+	if(!stagingTransfer(components, vertices, mesh->vertex, sizeof(Vertex) * vertexCount))
 	{
-		printf("Failed to transfer vertex data for node #%d!\n", nodeID);
+		printf("Failed to transfer vertex data!\n");
 		return false;
 	}
 	printf("Copied vertex buffer\n");	
@@ -1261,7 +1261,7 @@ uint16_t* getIndexData(GltfElements* elements, GltfAccessor* accessor, uint32_t 
 	return NULL;
 }
 
-bool createIndexBufferForMesh(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh, uint32_t nodeID)
+bool createIndexBufferForMesh(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh)
 {
 	// Access the accessor for indices
 	GltfAccessor* indexAccessor = &elements->accessors[mesh->primitives.indices];
@@ -1289,30 +1289,30 @@ bool createIndexBufferForMesh(VulkanComponents* components, GltfElements* elemen
 	
 	printf("Copied index data into memory!\n");
 
-	components->renderComp.buffers.entities[nodeID].indexCount = indexAccessor->count;
+	mesh->indexCount = indexAccessor->count;
 
 	// Create the index buffer
-	if(!createIndexBuffer(components, indexAccessor->count, &components->renderComp.buffers.entities[nodeID].index, &components->renderComp.buffers.entities[nodeID].indexMemory))
+	if(!createIndexBuffer(components, indexAccessor->count, &mesh->index, &mesh->indexMemory))
 	{
-		printf("Failed to create index buffer for node #%d!\n", nodeID);
+		printf("Failed to create index buffer!\n");
 		return false;
 	}
 
-	printf("Created index buffer for node #%d!\n", nodeID);
+	printf("Created index buffer!\n");
 
-	if(!stagingTransfer(components, indices, components->renderComp.buffers.entities[nodeID].index, sizeof(uint16_t) * indexAccessor->count))
+	if(!stagingTransfer(components, indices, mesh->index, sizeof(uint16_t) * indexAccessor->count))
 	{
-		printf("Failed to transfer index data for node #%d!\n", nodeID);
+		printf("Failed to transfer index data!\n");
 		return false;
 	}
 
-	printf("Copied index data for node #%d!\n", nodeID);
+	printf("Copied index data!\n");
 
 	free(indices);
 	return true;
 }
 
-bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh, uint32_t nodeID)
+bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh)
 {
 	bool success = true;
 
@@ -1345,19 +1345,40 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 	bool flag16 = false; // Set this flag as per your requirement
 
 	// Create texture image
-	if (!createTextureImage(components, &components->renderComp.buffers.entities[nodeID].textureImage, &components->renderComp.buffers.entities[nodeID].textureImageMemory, image->uri, flag16))
+	GltfMaterial* meshMaterial = &elements->materials[mesh->primitives.material];
+	GltfTexture* meshTexture = &elements->textures[meshMaterial->pbr.baseColorTexture];
+	if (!createTextureImage(components, &meshTexture->textureImage, &meshTexture->textureImageMemory, image->uri, flag16))
 	{
 		success = false;
 	}
 
 	// Create texture image view
-	if (!createTextureImageView(components, components->renderComp.buffers.entities[nodeID].textureImage, &components->renderComp.buffers.entities[nodeID].textureImageView))
+	if (!createTextureImageView(components, meshTexture->textureImage, &meshTexture->textureImageView))
 	{
 		success = false;
 
 	}
 
 	return success;
+}
+
+void processGltfMeshes (VulkanComponents* components, GltfElements* elements)
+{
+	// Iterate through all meshes
+	for (uint32_t i = 0; i < elements->meshCount; i++)
+	{
+		// Create vertex buffer
+		printf("Creating mesh#%d vertex buffer!\n", i);
+		createCombinedVertexBuffer(components, elements, &elements->meshes[i]);
+
+		// Create index buffer
+		printf("Creating mesh#%d index buffer!\n", i);
+		createIndexBufferForMesh(components, elements, &elements->meshes[i]);
+
+		// Create texture buffer
+		printf("Creating mesh#%d texture!\n", i);
+		uploadTextureDataToGPU(components, elements, &elements->meshes[i]);
+	} 
 }
 
 void processGltfNodes (VulkanComponents* components, GltfElements* elements)
@@ -1369,17 +1390,28 @@ void processGltfNodes (VulkanComponents* components, GltfElements* elements)
 	// Iterate through all nodes
 	for (uint32_t i = 0; i < elements->nodeCount; i++)
 	{
+		GltfMesh* nodeMesh = &elements->meshes[elements->nodes[i].mesh];
+
 		// Set vertex buffer
-		printf("Creating node#%d vertex buffer!\n", i);
-		createCombinedVertexBuffer(components, elements, &elements->meshes[elements->nodes[i].mesh], i);
+		printf("Setting node#%d vertex buffer!\n", i);
+		components->renderComp.buffers.entities[i].vertex = elements->meshes[elements->nodes[i].mesh].vertex;
+		components->renderComp.buffers.entities[i].vertexMemory = elements->meshes[elements->nodes[i].mesh].vertexMemory;
 
 		// Set index buffer
-		printf("Creating node#%d index buffer!\n", i);
-		createIndexBufferForMesh(components, elements, &elements->meshes[elements->nodes[i].mesh], i);
+		printf("Setting node#%d index buffer!\n", i);
+		components->renderComp.buffers.entities[i].indexCount = elements->meshes[elements->nodes[i].mesh].indexCount;
+		components->renderComp.buffers.entities[i].index = elements->meshes[elements->nodes[i].mesh].index;
+		components->renderComp.buffers.entities[i].indexMemory = elements->meshes[elements->nodes[i].mesh].indexMemory;
 
 		// Set texture buffer
-		printf("Creating node#%d texture!\n", i);
-		uploadTextureDataToGPU(components, elements, &elements->meshes[elements->nodes[i].mesh], i);
+		printf("Setting node#%d texture!\n", i);
+
+		GltfMaterial* nodeMaterial = &elements->materials[nodeMesh->primitives.material];
+		GltfTexture* meshTexture = &elements->textures[nodeMaterial->pbr.baseColorTexture];
+
+		components->renderComp.buffers.entities[i].textureImage = meshTexture->textureImage;
+		components->renderComp.buffers.entities[i].textureImageMemory = meshTexture->textureImageMemory;
+		components->renderComp.buffers.entities[i].textureImageView = meshTexture->textureImageView;
 	} 
 	
 	// !TODO add render support for PBR parameters
@@ -1746,6 +1778,7 @@ bool parseGltf(VulkanComponents* components, const char* fileName)
 	printGltfElementsContents(&elements);
 
 	processGltfBuffers(&elements);
+	processGltfMeshes (components, &elements);
 	processGltfNodes(components, &elements);
 	// Allocate element buffers
 	// Populate element buffers with parameters
