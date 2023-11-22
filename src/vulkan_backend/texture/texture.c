@@ -201,7 +201,8 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 		return false;
 	}
 
-	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
+    // TODO: Figure out if this case ever occurs
+    if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
@@ -209,6 +210,7 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 
 	copyBufferToImage(components, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
+    // TODO: Figure out if this case ever occurs
 	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
 	{
 		printf("Layout transition failure: %s\n", fileName);
