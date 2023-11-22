@@ -1088,12 +1088,12 @@ bool updateUniformBuffer(VulkanComponents* components)
 
 	float eye[] = {0.0f, 0.9f, 1.5f};  // Move camera up and back
 	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
-	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped
+	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped // TODO: Maybe unflip the world
 
     lookAt(components->renderComp.uniform.view, eye, center, up);
 
     float fov = 45.0f; // Field of View in degrees
-    float aspect = (float)components->swapChainComp.swapChainGroup.imageExtent.width / components->swapChainComp.swapChainGroup.imageExtent.height;
+    float aspect = (float)components->swapChainComp.swapChainGroup.imageExtent.width / (float)components->swapChainComp.swapChainGroup.imageExtent.height;
     float near = 0.1f;
     float far = 100.0f;
     perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
@@ -1118,8 +1118,9 @@ VkFormat findSupportedFormat(VulkanComponents* components, const VkFormat* candi
 		VkFormatProperties props;
 		vkGetPhysicalDeviceFormatProperties(components->physicalDeviceComp.physicalDevice, format, &props);
 
+        // TODO: Figure out if both cases are really necessary (currently identical results)
 		if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features)
-		{
+        {
 			return format;
 		} else if (tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) == features)
 		{

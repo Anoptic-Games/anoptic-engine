@@ -151,7 +151,7 @@ void lookAt(float mat[4][4], float eye[3], float center[3], float up[3])
 
 void perspective(float matrix[4][4], float fovDegrees, float aspect, float near, float far)
 {
-    float tanHalfFov = tan(fovDegrees / 2.0f * (M_PI / 180.0f));
+    float tanHalfFov = (float)tan(fovDegrees / 2.0f * (M_PI / 180.0f));
 
     // Initialize matrix to identity
     for (int i = 0; i < 4; ++i)
