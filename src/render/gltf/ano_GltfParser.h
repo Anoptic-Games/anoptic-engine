@@ -192,6 +192,7 @@ typedef struct GltfMesh
 	char* name;
 	VkBuffer vertex;
     VkDeviceMemory vertexMemory;
+	uint32_t indexCount;
     VkBuffer index;
     VkDeviceMemory indexMemory;
 	GltfPrimitive primitives;
