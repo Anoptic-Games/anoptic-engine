@@ -33,13 +33,17 @@ char* extractJsonString(const char *json, jsmntok_t *token)
 
 // !TODO update every parsing function to use this for determining the actual number of tokens to be parsed
 // !TODO step 2 will be to extend the logic in each of them to correctly step over nested objects of arbitrary size
-int calculateTotalTokenSize(jsmntok_t *tokens, int tokenIndex)
+uint32_t calculateTotalTokenSize(jsmntok_t *tokens, int tokenIndex)
 {
 	jsmntok_t token = tokens[tokenIndex];
-	int totalSize = 0;
+	uint32_t totalSize = 0;
 
 	for (int i = tokenIndex + 1; ; ++i)
 	{
+		if(tokens[i].type == JSMN_UNDEFINED && tokens[i].end == 0) // Reached the sentinel token
+		{
+			break;
+		}
 		if (tokens[i].end <= token.end)
 		{
 			totalSize++;
@@ -51,6 +55,41 @@ int calculateTotalTokenSize(jsmntok_t *tokens, int tokenIndex)
 
 	return totalSize + 1; // Include the current token itself
 }
+
+// Tests whether a given character occurs within the given bounds of a string
+bool charExistsBetween(const char arr[], int start, int end, char target)
+{
+	// Validate indices
+	if (start < 0 || end < 0 || start > end)
+	{
+		printf("Invalid indices\n");
+		return 0;
+	}
+
+	// Search for the character between start and end
+	for (int i = start; i <= end; i++)
+	{
+		if (arr[i] == target)
+		{
+			return 1;  // Character found
+		}
+	}
+
+	return 0;  // Character not found
+}
+
+// Returns a reliable offset by which to increment token arrays during parsing
+uint32_t getIncrement(const char *json, jsmntok_t *token)
+{
+	uint32_t valueSize = 0;
+	if (charExistsBetween(json, token[0].end, token[1].start, ':')) // Key-value pair test
+	{
+		// We'll ignore the very concept of a multitude being used as a key
+		valueSize = calculateTotalTokenSize(&token[1], 0);
+	}
+	return valueSize + calculateTotalTokenSize(&token[0], 0); // Add 1 for the key token
+}
+
 // Parsing functions
 
 bool countGltfElements(const char *json, GltfElements *elements)
@@ -214,7 +253,6 @@ void initializeGltfElements(GltfElements *elements)
 
 void helperParseScenes(const char *json, jsmntok_t *tokens, GltfScene *scenes)
 {
-	// Assuming scenes is an array of GltfScene structs with enough space
 	printf("Parsing scenes!\n");
 
 	// The first token after the scenes array token is the first scene object
@@ -224,203 +262,186 @@ void helperParseScenes(const char *json, jsmntok_t *tokens, GltfScene *scenes)
 	{
 		jsmntok_t *sceneToken = &tokens[currentTokenIndex];
 
-		// Check if the current token is a scene object
 		if (sceneToken->type != JSMN_OBJECT)
 		{
 			// Handle error: not an object
 			continue;
 		}
 
-		// Initialize the nodeCount for the current scene
 		scenes[sceneIndex].nodeCount = 0;
-		
 		printf("Scene token size: %d\n", sceneToken->size);
 
-		// Iterate over key-value pairs in the scene
-		for (int pairIndex = 0; pairIndex < sceneToken->size; pairIndex++)
-		{
-			int key_token_index = currentTokenIndex + 1 + pairIndex * 2;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int pairIndex = 0;
+		int keyTokenIndex = currentTokenIndex + 1;
 
-			// Extract the key string
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1]; // +1 for the null terminator
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0'; // Null terminate the string
+		while (pairIndex < sceneToken->size)
+		{
+			jsmntok_t keyToken = tokens[keyTokenIndex];
+			jsmntok_t valueToken = tokens[keyTokenIndex + 1];
+
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
 
 			uint32_t hash = keyHash(key);
 
-			// Use switch statement for hashed key values
 			switch(hash)
 			{
 				case GLTF_NAME:
 					printf("Read NAME\n");
-					scenes[sceneIndex].name = extractJsonString(json, &value_token);
+					scenes[sceneIndex].name = extractJsonString(json, &valueToken);
 					break;
 				case GLTF_NODES:
 					printf("Read NODES\n");
-					// Handle the "nodes" key, which is expected to be an array
-					if (value_token.type == JSMN_ARRAY)
+					if (valueToken.type == JSMN_ARRAY)
 					{
-						// Set the nodeCount for the current scene
-						scenes[sceneIndex].nodeCount = value_token.size;
+						scenes[sceneIndex].nodeCount = valueToken.size;
+						scenes[sceneIndex].nodes = malloc(sizeof(uint32_t) * valueToken.size);
 
-						// Allocate memory for the nodes array
-						scenes[sceneIndex].nodes = malloc(sizeof(uint32_t) * value_token.size);
-
-						// Fill the nodes array with node indices
-						for (int k = 0; k < value_token.size; k++)
+						for (int k = 0; k < valueToken.size; k++)
 						{
-							int node_index = value_token_index + 1 + k;
-							int node_value_length = tokens[node_index].end - tokens[node_index].start;
-							char node_value_str[node_value_length + 1];
-							memcpy(node_value_str, json + tokens[node_index].start, node_value_length);
-							node_value_str[node_value_length] = '\0';
+							int nodeIndex = keyTokenIndex + 2 + k;
+							int nodeValueLength = tokens[nodeIndex].end - tokens[nodeIndex].start;
+							char nodeValueStr[nodeValueLength + 1];
+							memcpy(nodeValueStr, json + tokens[nodeIndex].start, nodeValueLength);
+							nodeValueStr[nodeValueLength] = '\0';
 
-							scenes[sceneIndex].nodes[k] = (uint32_t)strtol(node_value_str, NULL, 10);
+							scenes[sceneIndex].nodes[k] = (uint32_t)strtol(nodeValueStr, NULL, 10);
 						}
 					}
 					break;
 				// Add more cases for other keys if needed
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
+
+			// Update indices for next iteration
+			pairIndex++;
+			keyTokenIndex += getIncrement(json, &tokens[keyTokenIndex]);
 		}
 
 		// Move to the next scene object token
-		currentTokenIndex += 1 + sceneToken->size * 2; // Each key-value pair is 2 tokens, and there's an additional token for the scene object itself
+		currentTokenIndex += calculateTotalTokenSize(tokens, currentTokenIndex);
 	}
 }
 
 void helperParseNodes(const char *json, jsmntok_t *tokens, GltfNode *nodes)
 {
-	// Assuming the first token in tokens is the array of nodes
 	int currentTokenIndex = 1; // Start from the first token after the nodes array token
-	int name_length = 0;;
+	int nameLength = 0;
+	int elementIndex = 0;
 
 	for (int nodeIndex = 0; nodeIndex < tokens[0].size; nodeIndex++)
 	{
 		jsmntok_t *nodeToken = &tokens[currentTokenIndex];
+		uint32_t nodeSize = calculateTotalTokenSize(tokens, currentTokenIndex);
 
-		// Check if the current token is a node object
 		if (nodeToken->type != JSMN_OBJECT)
 		{
 			continue; // Skip non-object tokens
 		}
 
-		// Initialize the GltfNode
 		nodes[nodeIndex].mesh = 0;
 		nodes[nodeIndex].name = NULL;
 		nodes[nodeIndex].rotation = (Vector4){0, 0, 0, 0};
 
-		// Iterate over key-value pairs in the node
-		for (int pairIndex = 0; pairIndex < nodeToken->size; pairIndex++)
-		{
-			int key_token_index = currentTokenIndex + 1 + pairIndex * 2;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int pairIndex = 0;
+		int keyTokenIndex = currentTokenIndex + 1;
 
-			// Extract and hash the key string
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+		while (pairIndex < nodeToken->size)
+		{
+			jsmntok_t keyToken = tokens[keyTokenIndex];
+			jsmntok_t valueToken = tokens[keyTokenIndex + 1];
+
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
+
 			uint32_t hash = keyHash(key);
 
 			switch(hash)
 			{
 				case GLTF_MESH:
-					// Parse the "mesh" key
-					nodes[nodeIndex].mesh = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					nodes[nodeIndex].mesh = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_NAME:
-					// Parse the "name" key
-					name_length = value_token.end - value_token.start;
-					nodes[nodeIndex].name = malloc(name_length + 1);
-					memcpy(nodes[nodeIndex].name, json + value_token.start, name_length);
-					nodes[nodeIndex].name[name_length] = '\0';
+					nameLength = valueToken.end - valueToken.start;
+					nodes[nodeIndex].name = malloc(nameLength + 1);
+					memcpy(nodes[nodeIndex].name, json + valueToken.start, nameLength);
+					nodes[nodeIndex].name[nameLength] = '\0';
 					break;
 
 				case GLTF_ROTATION:
-					// Parse the "rotation" key, expected to be an array
-					if (value_token.type == JSMN_ARRAY)
+					if (valueToken.type == JSMN_ARRAY)
 					{
-						for (int k = 0; k < value_token.size; k++)
+						for (int k = 0; k < valueToken.size; k++)
 						{
-							int element_index = value_token_index + 1 + k;
-							nodes[nodeIndex].rotation.v[k] = atof(json + tokens[element_index].start);
+							elementIndex = keyTokenIndex + 2 + k;
+							nodes[nodeIndex].rotation.v[k] = atof(json + tokens[elementIndex].start);
 						}
 					}
 					break;
 
 				default:
-					// Handle unknown or unhandled keys
 					break;
 			}
+
+			// Update indices for next iteration
+			pairIndex++;
+			keyTokenIndex += getIncrement(json, &tokens[keyTokenIndex]);
 		}
 
 		// Move to the next node object token
-		currentTokenIndex += 1 + nodeToken->size * 2; // Each key-value pair is 2 tokens, and there's an additional token for the node object itself
+		currentTokenIndex += nodeSize;
 	}
 }
 
 void parsePbrMetallicRoughness(const char *json, jsmntok_t *tokens, PbrMetallicRoughness *pbr)
 {
 	int i = 1; // Start from the first token after the PBR object token
-	int pbrEnd = i + tokens[0].size * 2; // Initially set end index for the PBR object
+	int pbrEnd = i + calculateTotalTokenSize(tokens, i);
 
 	while (i < pbrEnd)
 	{
-		jsmntok_t key_token = tokens[i];
-		jsmntok_t value_token = tokens[i + 1];
+		jsmntok_t keyToken = tokens[i];
+		jsmntok_t valueToken = tokens[i + 1];
 
-		int key_length = key_token.end - key_token.start;
-		char key[key_length + 1];
-		memcpy(key, json + key_token.start, key_length);
-		key[key_length] = '\0';
+		int keyLength = keyToken.end - keyToken.start;
+		char key[keyLength + 1];
+		memcpy(key, json + keyToken.start, keyLength);
+		key[keyLength] = '\0';
 		uint32_t hash = keyHash(key);
 
 		switch(hash)
 		{
 			case GLTF_BASECOLORTEXTURE:
-				if (value_token.type == JSMN_OBJECT)
+				if (valueToken.type == JSMN_OBJECT)
 				{
-					int baseTextureEnd = i + 2 + value_token.size * 2; // End index for the baseColorTexture object
-					for (int j = i + 2; j < baseTextureEnd; j += 2)
-					{
-						//jsmntok_t nestedKeyToken = tokens[j];
-						//jsmntok_t nestedValueToken = tokens[j + 1];
-						// ... process nested object ...
-					}
-					i = baseTextureEnd; // Move to the end of the baseColorTexture object
-					pbrEnd += value_token.size * 2; // Update pbrEnd to account for nested object size
+					// Parse nested object
+					int baseTextureEnd = i + calculateTotalTokenSize(tokens, i + 1);
+					i = baseTextureEnd; // Skip the nested object
 				} else
 				{
 					i += 2; // Simple key-value pair
 				}
 				break;
 
-				case GLTF_METALLICFACTOR:
-					//printf("METALIC FACTOR!!!!\n");
-					pbr->metallicFactor = atof(json + value_token.start);
-					i += 2; // Move to the next key-value pair
-					//printf("Current index: %d\n", i);
-					break;
+			case GLTF_METALLICFACTOR:
+				pbr->metallicFactor = atof(json + valueToken.start);
+				i += 2;
+				break;
 
-				case GLTF_ROUGHNESSFACTOR:
-					//printf("ROUGHNESS FACTOR!!!!\n");
-					pbr->roughnessFactor = atof(json + value_token.start);
-					i += 2; // Move to the next key-value pair
-					break;
+			case GLTF_ROUGHNESSFACTOR:
+				pbr->roughnessFactor = atof(json + valueToken.start);
+				i += 2;
+				break;
 
-				default:
-					i += 2; // Skip unknown properties
-					break;
+			default:
+				i += getIncrement(json, &tokens[i]); // Handle unknown properties
+				break;
 		}
 	}
 }
@@ -428,7 +449,7 @@ void parsePbrMetallicRoughness(const char *json, jsmntok_t *tokens, PbrMetallicR
 void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *materials)
 {
 	int currentTokenIndex = 1; // Start from the first token after the materials array token
-	int name_length = 0;
+	int nameLength = 0;
 
 	for (int materialIndex = 0; materialIndex < tokens[0].size; materialIndex++)
 	{
@@ -443,54 +464,59 @@ void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *mat
 		materials[materialIndex].name = NULL;
 		materials[materialIndex].pbr = (PbrMetallicRoughness){0, 0.0f, 0.0f};
 
-		for (int pairIndex = 0; pairIndex < materialToken->size; pairIndex++)
-		{
-			int key_token_index = currentTokenIndex + 1 + pairIndex * 2;
-			jsmntok_t key_token = tokens[key_token_index];
-			int value_token_index = key_token_index + 1;
-			jsmntok_t value_token = tokens[value_token_index];
+		int pairIndex = 0;
+		int keyTokenIndex = currentTokenIndex + 1;
 
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+		while (pairIndex < materialToken->size)
+		{
+			jsmntok_t keyToken = tokens[keyTokenIndex];
+			jsmntok_t valueToken = tokens[keyTokenIndex + 1];
+
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
 			uint32_t hash = keyHash(key);
 
 			switch(hash)
 			{
 				case GLTF_DOUBLESIDED:
-					materials[materialIndex].doubleSided = (strncmp(json + value_token.start, "true", 4) == 0);
+					materials[materialIndex].doubleSided = (strncmp(json + valueToken.start, "true", 4) == 0);
 					break;
 
 				case GLTF_NAME:
-					name_length = value_token.end - value_token.start;
-					materials[materialIndex].name = malloc(name_length + 1);
-					memcpy(materials[materialIndex].name, json + value_token.start, name_length);
-					materials[materialIndex].name[name_length] = '\0';
+					nameLength = valueToken.end - valueToken.start;
+					materials[materialIndex].name = malloc(nameLength + 1);
+					memcpy(materials[materialIndex].name, json + valueToken.start, nameLength);
+					materials[materialIndex].name[nameLength] = '\0';
 					break;
 
 				case GLTF_PBRMETALICROUGHNESS:
-					if (value_token.type == JSMN_OBJECT)
+					if (valueToken.type == JSMN_OBJECT)
 					{
-						jsmntok_t *pbrTokens = &tokens[value_token_index];
-						parsePbrMetallicRoughness(json, pbrTokens, &materials[materialIndex].pbr);
+						parsePbrMetallicRoughness(json, &tokens[keyTokenIndex + 1], &materials[materialIndex].pbr);
 					}
 					break;
 
 				default:
 					break;
 			}
+
+			// Update indices for next iteration
+			pairIndex++;
+			keyTokenIndex += getIncrement(json, &tokens[keyTokenIndex]);
 		}
 
-		currentTokenIndex += 1 + materialToken->size * 2; // Move to the next material object token
+		// Move to the next material object token
+		currentTokenIndex += calculateTotalTokenSize(tokens, currentTokenIndex);
 	}
 }
 
 void parsePrimitive(const char *json, jsmntok_t *tokens, GltfPrimitive *primitive)
 {
-	int end = tokens[0].size * 2 + 1; // Calculate the end index for the Primitive object
+	int end = calculateTotalTokenSize(&tokens[0], 0); // Calculate the end index for the Primitive object
 	//printf("THE END IS: %d\n", end);
-	for (int i = 1; i < end; i += 2) { // Process each key-value pair within the Primitive object
+	for (int i = 1; i < end;) { // Process each key-value pair within the Primitive object
 		jsmntok_t key_token = tokens[i];
 		jsmntok_t value_token = tokens[i + 1];
 
@@ -503,8 +529,9 @@ void parsePrimitive(const char *json, jsmntok_t *tokens, GltfPrimitive *primitiv
 		if (strncmp(key, "attributes", key_length) == 0 && value_token.type == JSMN_OBJECT)
 		{
 			// Process the nested attributes object
-			int attributesEnd = i + 2 + value_token.size * 2; // End index for the attributes object
-			for (int j = i + 2; j < attributesEnd; j += 2)
+			int attributesEnd = calculateTotalTokenSize(&tokens[i+1], 0) + 2; // End index for the attributes object
+			printf("AttributesEnd: %d\n", attributesEnd);
+			for (int j = i + 2; j < attributesEnd; j += getIncrement(json, &tokens[j]))
 			{
 				jsmntok_t nestedKeyToken = tokens[j];
 				jsmntok_t nestedValueToken = tokens[j + 1];
@@ -532,8 +559,9 @@ void parsePrimitive(const char *json, jsmntok_t *tokens, GltfPrimitive *primitiv
 						break;
 				}
 			}
-			end = end + 6;
-			i = attributesEnd - 2; // Correctly position i to the token after the attributes object
+			i = attributesEnd;
+			//end = end + 6;
+			//i = attributesEnd - 2; // Correctly position i to the token after the attributes object
 		} else
 		{
 			// Process non-attributes keys
@@ -552,6 +580,7 @@ void parsePrimitive(const char *json, jsmntok_t *tokens, GltfPrimitive *primitiv
 				default:
 					break;
 			}
+			i += getIncrement(json, &tokens[i]);
 		}
 	}
 }
@@ -573,9 +602,9 @@ void helperParseMeshes(const char *json, jsmntok_t *tokens, GltfMesh *meshes)
 		meshes[meshIndex].name = NULL;
 		memset(&meshes[meshIndex].primitives, 0, sizeof(GltfPrimitive));
 
-		int meshTokenEnd = currentTokenIndex + 1 + meshToken->size * 2;
+		int meshTokenEnd = currentTokenIndex + calculateTotalTokenSize(tokens, currentTokenIndex);
 
-		for (int i = currentTokenIndex + 1; i < meshTokenEnd; i += 2)
+		for (int i = currentTokenIndex + 1; i < meshTokenEnd;)
 		{
 			jsmntok_t key_token = tokens[i];
 			jsmntok_t value_token = tokens[i + 1];
@@ -611,6 +640,7 @@ void helperParseMeshes(const char *json, jsmntok_t *tokens, GltfMesh *meshes)
 				default:
 					break;
 			}
+			i += getIncrement(json, &tokens[i]);
 		}
 
 		currentTokenIndex = meshTokenEnd; // Move to the next mesh object token
@@ -633,37 +663,41 @@ void helperParseTextures(const char *json, jsmntok_t *tokens, GltfTexture *textu
 		textures[textureIndex].sampler = 0;
 		textures[textureIndex].source = 0;
 
-		int textureTokenEnd = currentTokenIndex + 1 + textureToken->size * 2;
+		int textureTokenEnd = currentTokenIndex + calculateTotalTokenSize(tokens, currentTokenIndex);
 
-		for (int i = currentTokenIndex + 1; i < textureTokenEnd; i += 2)
+		for (int i = currentTokenIndex + 1; i < textureTokenEnd;)
 		{
-			jsmntok_t key_token = tokens[i];
-			jsmntok_t value_token = tokens[i + 1];
+			jsmntok_t keyToken = tokens[i];
+			jsmntok_t valueToken = tokens[i + 1];
 
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
+
 			uint32_t hash = keyHash(key);
 
 			switch (hash)
 			{
 				case GLTF_SAMPLER:
-					textures[textureIndex].sampler = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					textures[textureIndex].sampler = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_SOURCE:
-					textures[textureIndex].source = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					textures[textureIndex].source = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				default:
 					break;
 			}
+
+			i += getIncrement(json, &tokens[i]);
 		}
 
 		currentTokenIndex = textureTokenEnd; // Move to the next texture object token
 	}
 }
+
 
 void helperParseImages(const char *json, jsmntok_t *tokens, GltfImage *images)
 {
@@ -682,41 +716,45 @@ void helperParseImages(const char *json, jsmntok_t *tokens, GltfImage *images)
 		images[imageIndex].name = NULL;
 		images[imageIndex].uri = NULL;
 
-		int imageTokenEnd = currentTokenIndex + 1 + imageToken->size * 2;
+		int imageTokenEnd = currentTokenIndex + calculateTotalTokenSize(tokens, currentTokenIndex);
 
-		for (int i = currentTokenIndex + 1; i < imageTokenEnd; i += 2)
+		for (int i = currentTokenIndex + 1; i < imageTokenEnd;)
 		{
-			jsmntok_t key_token = tokens[i];
-			jsmntok_t value_token = tokens[i + 1];
+			jsmntok_t keyToken = tokens[i];
+			jsmntok_t valueToken = tokens[i + 1];
 
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
+
 			uint32_t hash = keyHash(key);
 
 			switch (hash)
 			{
 				case GLTF_MIMETYPE:
-					images[imageIndex].mimeType = extractJsonString(json, &value_token);
+					images[imageIndex].mimeType = extractJsonString(json, &valueToken);
 					break;
 
 				case GLTF_NAME:
-					images[imageIndex].name = extractJsonString(json, &value_token);
+					images[imageIndex].name = extractJsonString(json, &valueToken);
 					break;
 
 				case GLTF_URI:
-					images[imageIndex].uri = extractJsonString(json, &value_token);
+					images[imageIndex].uri = extractJsonString(json, &valueToken);
 					break;
 
 				default:
 					break;
 			}
+
+			i += getIncrement(json, &tokens[i]);
 		}
 
 		currentTokenIndex = imageTokenEnd; // Move to the next image object token
 	}
 }
+
 void parseAccessorMaxMin(const char *json, jsmntok_t *tokens, float *array, int size)
 {
 	//printf("Array size: %d\n", size);
@@ -741,59 +779,60 @@ void helperParseAccessors(const char *json, jsmntok_t *tokens, GltfAccessor *acc
 		}
 
 		GltfAccessor tempAccessor = {0};
-		int actualSize = calculateTotalTokenSize(&tokens[currentTokenIndex], 0);
-
+		int actualSize = calculateTotalTokenSize(tokens, currentTokenIndex);
 		int accessorTokenEnd = currentTokenIndex + actualSize;
-		printf("Tokens to be parsed: %d\n", accessorTokenEnd);
-		for (int i = currentTokenIndex + 1; i < accessorTokenEnd; i += 2)
-		{
-			jsmntok_t key_token = tokens[i];
-			jsmntok_t value_token = tokens[i + 1];
 
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+		for (int i = currentTokenIndex + 1; i < accessorTokenEnd;)
+		{
+			jsmntok_t keyToken = tokens[i];
+			jsmntok_t valueToken = tokens[i + 1];
+
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
 			uint32_t hash = keyHash(key);
-			printf("Current index: %d\n", i);
+
 			switch (hash)
 			{
 				case GLTF_BUFFERVIEW:
-					tempAccessor.bufferView = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					tempAccessor.bufferView = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_COMPONENTTYPE:
-					tempAccessor.componentType = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					tempAccessor.componentType = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_COUNT:
-					tempAccessor.count = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					tempAccessor.count = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_MAX:
-					if (value_token.type == JSMN_ARRAY)
+					if (valueToken.type == JSMN_ARRAY)
 					{
-						parseAccessorMaxMin(json, &tokens[i + 2], tempAccessor.max, value_token.size);
-						i += value_token.size; // Correctly position i after the max array
+						parseAccessorMaxMin(json, &tokens[i + 2], tempAccessor.max, valueToken.size);
+						i += 2 + valueToken.size; // Position after the max array
 					}
 					break;
 
 				case GLTF_MIN:
-					if (value_token.type == JSMN_ARRAY)
+					if (valueToken.type == JSMN_ARRAY)
 					{
-						parseAccessorMaxMin(json, &tokens[i + 2], tempAccessor.min, value_token.size);
-						i += value_token.size; // Correctly position i after the min array
+						parseAccessorMaxMin(json, &tokens[i + 2], tempAccessor.min, valueToken.size);
+						i += 2 + valueToken.size; // Position after the min array
 					}
 					break;
 
 				case GLTF_TYPE:
-					strncpy(tempAccessor.type, json + value_token.start, value_token.end - value_token.start);
-					tempAccessor.type[value_token.end - value_token.start] = '\0';
+					strncpy(tempAccessor.type, json + valueToken.start, valueToken.end - valueToken.start);
+					tempAccessor.type[valueToken.end - valueToken.start] = '\0';
 					break;
 
 				default:
 					break;
 			}
+
+			i += getIncrement(json, &tokens[i]);
 		}
 
 		accessors[accessorIndex] = tempAccessor;
@@ -816,36 +855,39 @@ void helperParseBufferViews(const char *json, jsmntok_t *tokens, GltfBufferView 
 
 		GltfBufferView tempBufferView = {0};
 
-		int bufferViewTokenEnd = currentTokenIndex + 1 + bufferViewToken->size * 2;
+		int bufferViewTokenEnd = currentTokenIndex + calculateTotalTokenSize(tokens, currentTokenIndex);
 
-		for (int i = currentTokenIndex + 1; i < bufferViewTokenEnd; i += 2)
+		for (int i = currentTokenIndex + 1; i < bufferViewTokenEnd;)
 		{
-			jsmntok_t key_token = tokens[i];
-			jsmntok_t value_token = tokens[i + 1];
+			jsmntok_t keyToken = tokens[i];
+			jsmntok_t valueToken = tokens[i + 1];
 
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
+
 			uint32_t hash = keyHash(key);
 
 			switch (hash)
 			{
 				case GLTF_BUFFER:
-					tempBufferView.index = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					tempBufferView.index = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_BYTELENGTH:
-					tempBufferView.byteLength = (uint64_t)strtoll(json + value_token.start, NULL, 10);
+					tempBufferView.byteLength = (uint64_t)strtoll(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_BYTEOFFSET:
-					tempBufferView.byteOffset = (uint64_t)strtoll(json + value_token.start, NULL, 10);
+					tempBufferView.byteOffset = (uint64_t)strtoll(json + valueToken.start, NULL, 10);
 					break;
 
 				default:
 					break;
 			}
+
+			i += getIncrement(json, &tokens[i]);
 		}
 
 		bufferViews[bufferViewIndex] = tempBufferView;
@@ -868,32 +910,35 @@ void helperParseSamplers(const char *json, jsmntok_t *tokens, GltfSampler *sampl
 
 		GltfSampler tempSampler = {0, 0};
 
-		int samplerTokenEnd = currentTokenIndex + 1 + samplerToken->size * 2;
+		int samplerTokenEnd = currentTokenIndex + calculateTotalTokenSize(tokens, currentTokenIndex);
 
-		for (int i = currentTokenIndex + 1; i < samplerTokenEnd; i += 2)
+		for (int i = currentTokenIndex + 1; i < samplerTokenEnd;)
 		{
-			jsmntok_t key_token = tokens[i];
-			jsmntok_t value_token = tokens[i + 1];
+			jsmntok_t keyToken = tokens[i];
+			jsmntok_t valueToken = tokens[i + 1];
 
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
+
 			uint32_t hash = keyHash(key);
 
 			switch (hash)
 			{
 				case GLTF_MAGFILTER:
-					tempSampler.magFilter = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					tempSampler.magFilter = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_MINFILTER:
-					tempSampler.minFilter = (uint32_t)strtol(json + value_token.start, NULL, 10);
+					tempSampler.minFilter = (uint32_t)strtol(json + valueToken.start, NULL, 10);
 					break;
 
 				default:
 					break;
 			}
+
+			i += getIncrement(json, &tokens[i]);
 		}
 
 		samplers[samplerIndex] = tempSampler;
@@ -916,32 +961,35 @@ void helperParseBuffers(const char *json, jsmntok_t *tokens, GltfBuffer *buffers
 
 		GltfBuffer tempBuffer = {0, 0, NULL, NULL};
 
-		int bufferTokenEnd = currentTokenIndex + 1 + bufferToken->size * 2;
+		int bufferTokenEnd = currentTokenIndex + calculateTotalTokenSize(tokens, currentTokenIndex);
 
-		for (int i = currentTokenIndex + 1; i < bufferTokenEnd; i += 2)
+		for (int i = currentTokenIndex + 1; i < bufferTokenEnd;)
 		{
-			jsmntok_t key_token = tokens[i];
-			jsmntok_t value_token = tokens[i + 1];
+			jsmntok_t keyToken = tokens[i];
+			jsmntok_t valueToken = tokens[i + 1];
 
-			int key_length = key_token.end - key_token.start;
-			char key[key_length + 1];
-			memcpy(key, json + key_token.start, key_length);
-			key[key_length] = '\0';
+			int keyLength = keyToken.end - keyToken.start;
+			char key[keyLength + 1];
+			memcpy(key, json + keyToken.start, keyLength);
+			key[keyLength] = '\0';
+
 			uint32_t hash = keyHash(key);
 
 			switch (hash)
 			{
 				case GLTF_BYTELENGTH:
-					tempBuffer.byteLength = (uint64_t)strtoll(json + value_token.start, NULL, 10);
+					tempBuffer.byteLength = (uint64_t)strtoll(json + valueToken.start, NULL, 10);
 					break;
 
 				case GLTF_URI:
-					tempBuffer.uri = extractJsonString(json, &value_token);
+					tempBuffer.uri = extractJsonString(json, &valueToken);
 					break;
 
 				default:
 					break;
 			}
+
+			i += getIncrement(json, &tokens[i]);
 		}
 
 		buffers[bufferIndex] = tempBuffer;
@@ -969,10 +1017,14 @@ bool parseGltfElements(const char *json, GltfElements *elements)
 	}
 
 	// Allocate memory for the tokens
-	tokens = (jsmntok_t *)malloc(sizeof(jsmntok_t) * tokenCount);
+	tokens = (jsmntok_t *)malloc(sizeof(jsmntok_t) * (tokenCount + 1));
 
 	// Pass 2: Parse the JSON and fill the token array
-	tokenCount = jsmn_parse(&parser, json, strlen(json), tokens, tokenCount);
+	jsmn_parse(&parser, json, strlen(json), tokens, tokenCount);
+	
+	jsmntok_t endToken = {.type = JSMN_UNDEFINED, .start = 0, .end = 0, .size = 0};
+	tokens[tokenCount] = endToken;
+	printf("End token type: %d\n", tokens[tokenCount].type);
 
 	// Iterate over all tokens, increment counts and call helper functions
 	for (int i = 0; i < tokenCount; i++)
