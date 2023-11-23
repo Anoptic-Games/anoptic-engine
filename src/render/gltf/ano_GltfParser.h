@@ -170,6 +170,7 @@ typedef struct GltfImage
 
 typedef struct GltfTexture
 {
+	bool processed;
 	uint32_t sampler;
 	uint32_t source;
 	VkImage textureImage;
@@ -185,17 +186,19 @@ typedef struct GltfPrimitive
 
 	uint32_t indices;
 	uint32_t material;
+
+	VkBuffer vertex;
+	VkDeviceMemory vertexMemory;
+	uint32_t indexCount;
+    VkBuffer index;
+    VkDeviceMemory indexMemory;
 } GltfPrimitive;
 
 typedef struct GltfMesh
 {
 	char* name;
-	VkBuffer vertex;
-    VkDeviceMemory vertexMemory;
-	uint32_t indexCount;
-    VkBuffer index;
-    VkDeviceMemory indexMemory;
-	GltfPrimitive primitives;
+	uint32_t primitiveCount;
+	GltfPrimitive* primitives;
 } GltfMesh;
 
 typedef struct PbrMetallicRoughness

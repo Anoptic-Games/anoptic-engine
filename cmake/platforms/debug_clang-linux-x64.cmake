@@ -4,8 +4,8 @@
 # Specify the compilers to use for C and C++
 set(CMAKE_C_COMPILER clang)
 set(CMAKE_CXX_COMPILER clang++)
-set(CMAKE_C_FLAGS "-target x86_64-linux-gnu -g -Wall")
-set(CMAKE_CXX_FLAGS "-target x86_64-linux-gnu -g -Wall")
+set(CMAKE_C_FLAGS "-target x86_64-linux-gnu -g -fsanitize=address -Wall")
+set(CMAKE_CXX_FLAGS "-target x86_64-linux-gnu -g -fsanitize=address -fno-omit-frame-pointer -Wall")
 	
 # Set the system name, processor, and system version
 set(CMAKE_SYSTEM_NAME Linux)
