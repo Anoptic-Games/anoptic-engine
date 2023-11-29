@@ -20,11 +20,11 @@
 
 // Variables
 
-static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
 
 // Vulkan component initialization functions
 
-void enumerateMonitors(Monitors* monitors) 
+void enumerateMonitors(Monitors* monitors) // Instance creation helper
 {
     GLFWmonitor** glfwMonitors = glfwGetMonitors(&(monitors->monitorCount));
     monitors->monitorInfos = malloc(monitors->monitorCount * sizeof(MonitorInfo));
@@ -34,7 +34,7 @@ void enumerateMonitors(Monitors* monitors)
     }
 }
 
-static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
+static void framebufferResizeCallback(GLFWwindow* window, int width, int height) // Called by GLFW on window resize, not part of instance creation but related
 {
 	static uint32_t count = 0;
 	VulkanComponents* components = glfwGetWindowUserPointer(window);
@@ -43,7 +43,7 @@ static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 	components->syncComp.framebufferResized = true;
 }
 
-GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors)
+GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
 {
     if (!glfwInit())
     {
@@ -88,7 +88,7 @@ GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors)
     return window;
 }
 
-VkResult createInstance(VulkanComponents* vkComponents)
+VkResult createInstance(VulkanComponents* vkComponents) // Central component of the init process, should be generalized and given packages of selected extensions, parameters etc
 {
     const char* validationLayers[] = 
     { //!TODO get this thing out of here as soon as we have a config parser
@@ -156,7 +156,7 @@ VkResult createInstance(VulkanComponents* vkComponents)
     return VK_SUCCESS;
 }
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Used in validation layer activation, the entire setup is currently borked and relies on external overrides
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
     VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -191,7 +191,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create
     createInfo->pfnUserCallback = debugCallback;
 }
 
-void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) 
+void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) // As before, entire validator creation chain needs revisiting
 {
 	#ifndef DEBUG_BUILD
     return;
@@ -215,7 +215,7 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 
 
 
-const char** getRequiredExtensions(uint32_t* extensionsCount)
+const char** getRequiredExtensions(uint32_t* extensionsCount) // Central component of init, returns extensions required by GLFW + optional validators, should be extended
 {
     uint32_t glfwExtensionCount = 0;
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -321,7 +321,7 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
     return indices;
 }
 
-struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures)
+struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures) // Selects capabilities required for the instance, extend with checks and error states
 {
 	struct DeviceCapabilities capabilities;
 	//Device features checks
@@ -335,7 +335,7 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysic
 	return capabilities;
 }
 
-bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+bool checkDeviceExtensionSupport(VkPhysicalDevice device) { // Rework extensions system entirely, add interface for defining them and modify this logic to work with that
     size_t requiredExtensionsCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
     
     uint32_t extensionCount;
@@ -367,7 +367,7 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     return true; // All required extensions found
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface)
+bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface) // Greatly extend and integrate with device capability checks, expose via interface
 {
 	struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
 	// Add any features as they become necessary
@@ -379,8 +379,8 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFe
 	return physicalRequirements && queueRequirements && extensionsSupported && deviceFeatures.samplerAnisotropy;
 }
 
-bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice)
-{
+bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Further extend selection logic, split device discovery into dedicated function
+{																																				 //   and retain device attributes in public interface for use in UI or logic
     bool foundPreferredDevice = false;
     components->physicalDeviceComp.deviceCount = 0;
 
@@ -489,7 +489,7 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
 }
 
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices) // Creates a logical device that can actually do stuff.
-{
+{ // Central init component, may need re-visiting for queue selection
     // Device features (optional)
     VkPhysicalDeviceFeatures availableFeatures;
     vkGetPhysicalDeviceFeatures(physicalDevice, &availableFeatures);
@@ -599,7 +599,7 @@ struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, Vk
 }
 
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) 
-{
+{ // Central init component, also used during re-sizes, should work fine as-is but may be extended if needed for arbitrary resolution rendering and scaling
 	    if (capabilities.currentExtent.width != UINT32_MAX)
 	    {
 	    	return capabilities.currentExtent;
@@ -637,7 +637,7 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 }
 
 SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain) // Selects and initializes a swap chain
-{
+{ // Central init component, extend/split logic for different color spaces (HDR rendering). Also cache driver query results
 	struct SwapChainSupportDetails details;
 	if (components->swapChainComp.swapChainSupportDetails.formatCount) // If the details are already populated, fetch the local version
 	{
@@ -779,7 +779,7 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
 }
 
 void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, FrameBufferGroup* frameGroup, ImageViewGroup* viewGroup)
-{
+{ // Memory management requires a comprehensive review and this function should be looked over
     for (size_t i = 0; i < frameGroup->bufferCount; i++) 
     {
         vkDestroyFramebuffer(device, frameGroup->buffers[i], NULL);
@@ -882,8 +882,8 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 
 }
 
-VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags)
-{
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
+{ // Central init component, should be extended to allow for runtime mipmap definition and potential 3D texture support
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
@@ -891,7 +891,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
     viewInfo.format = format;
     viewInfo.subresourceRange.aspectMask = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.levelCount = mipLevels;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
@@ -905,19 +905,19 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 
 
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
-{
+{ // Central init component, only applies to display swapchain images
 	ImageViewGroup viewGroup = {0, NULL};
 	viewGroup.viewCount = imageGroup.imageCount;
 	viewGroup.views = (VkImageView *) calloc(1, sizeof(VkImageView) * viewGroup.viewCount);
 	for (uint32_t i = 0; i < imageGroup.imageCount; i++)
 	{
-		viewGroup.views[i] = createImageView(device, imageGroup.images[i], imageGroup.imageFormat, VK_IMAGE_ASPECT_COLOR_BIT);		
+		viewGroup.views[i] = createImageView(device, imageGroup.images[i], imageGroup.imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);		
 	}
 	return viewGroup;
 }
 
 bool createFramebuffers(VulkanComponents* components)
-{
+{ // Central init component
     components->swapChainComp.framebufferGroup.bufferCount = components->swapChainComp.viewGroup.viewCount;
     components->swapChainComp.framebufferGroup.buffers = (VkFramebuffer*) calloc(1, sizeof(VkFramebuffer) * components->swapChainComp.framebufferGroup.bufferCount);
 
@@ -948,7 +948,7 @@ bool createFramebuffers(VulkanComponents* components)
 }
 
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool)
-{
+{ // Central init component
 	struct QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice, &surface);
 	VkCommandPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -1008,7 +1008,7 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 }
 
 bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, VkBuffer* vertex, VkDeviceMemory* vertexMemory)
-{
+{ // Not core to init, mostly meant for actual rendering
 	VkDeviceSize bufferSize = sizeof(Vertex) * vertexCount;
 
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -1023,7 +1023,7 @@ bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, VkBu
 }
 
 bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuffer* index, VkDeviceMemory* indexMemory)
-{
+{ // Ditto
 	VkDeviceSize bufferSize = sizeof(uint16_t) * indexCount;
 	
 
@@ -1040,7 +1040,7 @@ bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuff
 }
 
 bool createUniformBuffers(VulkanComponents* components)
-{
+{ // Central to init, specific to perspective uniforms (world translation, rotation and projection)
 	VkDeviceSize bufferSize = sizeof(UniformComponents);
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -1060,7 +1060,7 @@ bool createUniformBuffers(VulkanComponents* components)
 }
 
 void printMatrix(float mat[4][4])
-{
+{ // Debug function previously used to sanity-check matrix operation results. Can prolly be removed
     printf("Matrix:\n");
     for (int i = 0; i < 4; i++)
     {
@@ -1073,7 +1073,7 @@ void printMatrix(float mat[4][4])
 }
 
 bool updateUniformBuffer(VulkanComponents* components)
-{
+{ // Changes the perspective (camera) parameters applied to the world-space for a given frame. Should be generalized with its parameters exposed via an interface
     static uint64_t time = 0;
     static uint64_t oldTime = 0;
     time = ano_timestamp_us();
@@ -1111,7 +1111,7 @@ bool updateUniformBuffer(VulkanComponents* components)
 }
 
 VkFormat findSupportedFormat(VulkanComponents* components, const VkFormat* candidates, uint32_t candidateCount, VkImageTiling tiling, VkFormatFeatureFlags features)
-{
+{ // Returns a device-supported format from a list of candidates, currently only used in pipeline images but should be used every time an image is created
 	for (int i = 0; i < candidateCount; i++)
 	{
 		VkFormat format = candidates[i];
@@ -1159,7 +1159,7 @@ bool createDepthResources(VulkanComponents* components)
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
     {
         if (!createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, 
-                         components->swapChainComp.swapChainGroup.imageExtent.height, depthFormat, 
+                         components->swapChainComp.swapChainGroup.imageExtent.height, 1, depthFormat, 
                          VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->renderComp.buffers.depth[i], 
                          &components->renderComp.buffers.depthMemory[i], false))
@@ -1170,10 +1170,10 @@ bool createDepthResources(VulkanComponents* components)
 
         components->renderComp.buffers.depthView[i] = createImageView(components->deviceQueueComp.device, 
                                                                       components->renderComp.buffers.depth[i], 
-                                                                      depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+                                                                      depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
         if(!transitionImageLayout(components, components->renderComp.buffers.depth[i], depthFormat, 
-                                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL))
+                                  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
         {
             printf("Failed to transition depth buffer layout for frame %d!\n", i);
             return false;
@@ -1183,7 +1183,7 @@ bool createDepthResources(VulkanComponents* components)
 }
 
 bool createDescriptorPool(VulkanComponents* components)
-{
+{ // Central to init
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
@@ -1206,7 +1206,7 @@ bool createDescriptorPool(VulkanComponents* components)
 }
 
 bool createDescriptorSets(VulkanComponents* components)
-{
+{ // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
 	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
@@ -1228,7 +1228,7 @@ bool createDescriptorSets(VulkanComponents* components)
 }
 
 void updateDescriptorSets(VulkanComponents* components)
-{
+{ // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
         VkDescriptorBufferInfo bufferInfo = {};
@@ -1276,7 +1276,7 @@ void updateDescriptorSets(VulkanComponents* components)
 
 
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties)
-{
+{ // Central to init, also used externally post-init
 	VkPhysicalDeviceMemoryProperties memProperties;
 	vkGetPhysicalDeviceMemoryProperties(components->physicalDeviceComp.physicalDevice, &memProperties);
 
@@ -1294,7 +1294,7 @@ uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMem
 
 
 bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize)
-{
+{ // Not central to init
     // Create staging buffer
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
@@ -1327,7 +1327,7 @@ bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer ds
 }
 
 VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components)
-{
+{ // Used in init, also external
     VkCommandBufferAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -1347,7 +1347,7 @@ VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components)
 }
 
 void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer commandBuffer)
-{
+{ // Used in init, also external
     vkEndCommandBuffer(commandBuffer);
 
     VkSubmitInfo submitInfo = {};
@@ -1363,7 +1363,7 @@ void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer command
 
 
 bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
-{
+{ // Used in init, also external
 	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
 	
 	VkBufferCopy copyRegion = {};
@@ -1378,7 +1378,7 @@ bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBu
 }
 
 bool createCommandBuffer(VulkanComponents* components)
-{
+{ // Central to init
 	VkCommandBufferAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	allocInfo.commandPool = components->cmdComp.commandPool;
@@ -1398,7 +1398,7 @@ bool createCommandBuffer(VulkanComponents* components)
 }
 
 bool createSyncObjects(VulkanComponents* components) 
-{
+{ // Central to init
     for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
     {
         VkSemaphoreCreateInfo semaphoreInfo = {};
@@ -1420,7 +1420,7 @@ bool createSyncObjects(VulkanComponents* components)
 }
 
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount)
-{
+{ // Central to init, review during validation layer fix
     uint32_t layerCount;
     vkEnumerateInstanceLayerProperties(&layerCount, NULL);
 
@@ -1456,8 +1456,10 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
     return true;
 }
 
-void cleanupMonitors(Monitors* monitors) {
-    if (monitors->monitorInfos) {
+void cleanupMonitors(Monitors* monitors)
+{
+    if (monitors->monitorInfos)
+    {
         free(monitors->monitorInfos);
         monitors->monitorInfos = NULL;
         monitors->monitorCount = 0;
