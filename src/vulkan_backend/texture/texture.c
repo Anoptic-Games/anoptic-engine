@@ -331,7 +331,7 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 
 	copyBufferToImage(components, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
-	generateMipmaps(components, textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
+	generateMipmaps(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
 
     // TODO: Figure out if this case ever occurs
 	/*if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
@@ -361,7 +361,7 @@ bool createTextureImageView(VulkanComponents* components, VkImage textureImage, 
 
 
 bool createTextureSampler(VulkanComponents* components)
-{ // !TODO Currently this creates one sampler that is used across every texture. Max mipmap levels vary between textures, so each texture struct should include a dedicated sampler
+{ // DONE? Turns out maxLod is ignored if the texture in question doesn't have that many levels. I'm sure we'll need more samplers at some point, but we don't need one per texture
 	VkSamplerCreateInfo samplerInfo = {};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 	samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -384,7 +384,7 @@ bool createTextureSampler(VulkanComponents* components)
 	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	samplerInfo.mipLodBias = 0.0f;
 	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = 11.0f; // This shouldn't be hardcoded
+	samplerInfo.maxLod = 20.0f; // This would technically be a 524K texture, I'm sure it's large enough
 	
     if (vkCreateSampler(components->deviceQueueComp.device, &samplerInfo, NULL, &components->renderComp.textureSampler) != VK_SUCCESS)
     {
