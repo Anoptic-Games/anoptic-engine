@@ -44,7 +44,7 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window);
 
 // Generic helper function for creating 2D image views
-VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels);
 
 // You know what this does
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);

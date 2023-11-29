@@ -138,7 +138,7 @@ bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat sw
 }
 
 bool createDescriptorSetLayout(VulkanComponents* components)
-{
+{ // Generalize this to call multiple layout creation functions, for each type of renderable asset supported
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
     uboLayoutBinding.binding = 0;
     uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;

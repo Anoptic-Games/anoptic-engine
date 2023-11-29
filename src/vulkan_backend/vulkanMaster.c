@@ -86,13 +86,8 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	vkCmdBeginRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
+	// Create loop for all extant pipelines once multiple ones are supported, loop through them then through the meshes they apply to
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
-
-	VkBuffer vertexBuffers[] = {components.renderComp.buffers.entities[0].vertex};
-	VkDeviceSize offsets[] = {0};
-	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffers, offsets);
-
-	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[0].index, 0, VK_INDEX_TYPE_UINT16);
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -109,6 +104,13 @@ void recordCommandBuffer(uint32_t imageIndex)
 	scissor.offset = (VkOffset2D){0, 0};
 	scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
 	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
+
+	// Loop through meshes of the current pipeline, bind the associated vertex and index buffers.
+	VkBuffer vertexBuffers[] = {components.renderComp.buffers.entities[0].vertex};
+	VkDeviceSize offsets[] = {0};
+	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffers, offsets);
+
+	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[0].index, 0, VK_INDEX_TYPE_UINT16);
 
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 		components.renderComp.pipelineLayout, 0, 1, &(components.renderComp.descriptorSets[components.syncComp.frameIndex]), 0, NULL);

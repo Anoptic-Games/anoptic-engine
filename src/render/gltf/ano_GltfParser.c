@@ -1489,16 +1489,16 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 		// Create texture image for each primitive
 		if(!texture->processed)
 		{
-			if (!createTextureImage(components, &texture->textureImage, &texture->textureImageMemory, image->uri, flag16))
+			if (!createTextureImage(components, &texture->textureImage, &texture->textureImageMemory, &texture->textureImageView, image->uri, flag16))
 			{
 				success = false;
 			}
 
 			// Create texture image view for each primitive
-			if (!createTextureImageView(components, texture->textureImage, &texture->textureImageView))
+			/*if (!createTextureImageView(components, texture->textureImage, &texture->textureImageView))
 			{
 				success = false;
-			}
+			}*/
 			texture->processed = true;
 		}
 
