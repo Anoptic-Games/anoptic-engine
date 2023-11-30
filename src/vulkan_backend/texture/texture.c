@@ -11,8 +11,8 @@
 
 Texture8 readTexture8bit(char* fileName)
 {
-    Texture8 texture = {};
-    texture.pixels = stbi_load(fileName, &texture.texWidth, &texture.texHeight, &texture.texChannels, STBI_rgb_alpha);
+	Texture8 texture = {};
+	texture.pixels = stbi_load(fileName, &texture.texWidth, &texture.texHeight, &texture.texChannels, STBI_rgb_alpha);
 
 	return texture;
 }
@@ -41,18 +41,18 @@ bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat
 	
 	if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 	{
-	    barrier.srcAccessMask = 0;
-	    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 	
-	    sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-	    destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	} else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 	{
-	    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 	
-	    sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-	    destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 	} else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
 	{
 		barrier.srcAccessMask = 0;
@@ -62,8 +62,8 @@ bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat
 		destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 	} else
 	{
-	    printf("Unsupported layout transition!\n");
-	    return false;
+		printf("Unsupported layout transition!\n");
+		return false;
 	}
 
 	if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
@@ -72,7 +72,7 @@ bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat
 
 		if (hasStencilComponent(format))
 		{
-		    barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+			barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
 		}
 	} else
 	{
@@ -80,12 +80,12 @@ bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat
 	}
 	
 	vkCmdPipelineBarrier(
-	    commandBuffer,
-	    sourceStage, destinationStage,
-	    0,
-	    0, NULL,
-	    0, NULL,
-	    1, &barrier
+		commandBuffer,
+		sourceStage, destinationStage,
+		0,
+		0, NULL,
+		0, NULL,
+		1, &barrier
 	);
 
 	endSingleTimeCommands(components, commandBuffer);
@@ -94,8 +94,8 @@ bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat
 
 void copyBufferToImage(VulkanComponents* components, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
 {
-    VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
-    
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
+	
 	VkBufferImageCopy region = {};
 	region.bufferOffset = 0;
 	region.bufferRowLength = 0;
@@ -114,20 +114,20 @@ void copyBufferToImage(VulkanComponents* components, VkBuffer buffer, VkImage im
 	region.imageExtent.depth = 1;
 
 	vkCmdCopyBufferToImage(
-	    commandBuffer,
-	    buffer,
-	    image,
-	    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-	    1,
-	    &region
+		commandBuffer,
+		buffer,
+		image,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		1,
+		&region
 	);
 	
 	
-    endSingleTimeCommands(components, commandBuffer);
+	endSingleTimeCommands(components, commandBuffer);
 }
 
-bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format, VkImageTiling tiling,
-				VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, VkDeviceMemory* imageMemory, bool flag16)
+bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
+				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, VkDeviceMemory* imageMemory, bool flag16)
 {
 	VkImageCreateInfo imageInfo = {};
 	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -143,13 +143,13 @@ bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, 
 	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	imageInfo.usage = usage;
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageInfo.samples = numSamples;
 	imageInfo.flags = 0; // Optional
 	
 	if (vkCreateImage(components->deviceQueueComp.device, &imageInfo, NULL, image) != VK_SUCCESS)
 	{
-	    printf("Failed to create image!\n");
-	    return false;
+		printf("Failed to create image!\n");
+		return false;
 	}
 
 	VkMemoryRequirements memRequirements;
@@ -162,8 +162,8 @@ bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, 
 	
 	if (vkAllocateMemory(components->deviceQueueComp.device, &allocInfo, NULL, imageMemory) != VK_SUCCESS)
 	{
-	    printf("Failed to allocate image memory!\n");
-	    return false;
+		printf("Failed to allocate image memory!\n");
+		return false;
 	}
 	
 	vkBindImageMemory(components->deviceQueueComp.device, *image, *imageMemory, 0);
@@ -182,9 +182,9 @@ bool generateMipmaps(VulkanComponents* components, VkImage image, VkFormat image
 		return false;
 	}
 
-    VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
 
-    VkImageMemoryBarrier barrier =
+	VkImageMemoryBarrier barrier =
 	{// Zero-initialization to ensure no garbage is carried over
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 		.pNext = NULL,
@@ -195,22 +195,23 @@ bool generateMipmaps(VulkanComponents* components, VkImage image, VkFormat image
 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.image = VK_NULL_HANDLE,
-		.subresourceRange = {
-		    .aspectMask = 0,
-		    .baseMipLevel = 0,
-		    .levelCount = 0,
-		    .baseArrayLayer = 0,
-		    .layerCount = 0
+		.subresourceRange =
+		{
+			.aspectMask = 0,
+			.baseMipLevel = 0,
+			.levelCount = 0,
+			.baseArrayLayer = 0,
+			.layerCount = 0
 		}
 	};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.image = image;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.subresourceRange.levelCount = 1;
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.image = image;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.levelCount = 1;
 
 	int32_t mipWidth = texWidth;
 	int32_t mipHeight = texHeight;
@@ -273,17 +274,17 @@ bool generateMipmaps(VulkanComponents* components, VkImage image, VkFormat image
 		if (mipHeight > 1) mipHeight /= 2;
 	}
 
-    barrier.subresourceRange.baseMipLevel = mipLevels - 1;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	barrier.subresourceRange.baseMipLevel = mipLevels - 1;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-    vkCmdPipelineBarrier(commandBuffer,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-        0, NULL,
-        0, NULL,
-        1, &barrier);
+	vkCmdPipelineBarrier(commandBuffer,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+		0, NULL,
+		0, NULL,
+		1, &barrier);
 
 	endSingleTimeCommands(components, commandBuffer);
 	return true;
@@ -295,9 +296,9 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	Texture8 texture = readTexture8bit(fileName);
 	if (!texture.pixels)
 	{
-        printf("Failed to load texture image: %s\n", fileName);
+		printf("Failed to load texture image: %s\n", fileName);
 		return false;
-    }
+	}
 
 	VkDeviceSize imageSize = texture.texWidth * texture.texHeight * 4;
 	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // Mipmap levels determined dynamically 
@@ -310,20 +311,20 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 
 	void* data;
 	vkMapMemory(components->deviceQueueComp.device, stagingBufferMemory, 0, imageSize, 0, &data);
-    memcpy(data, texture.pixels, (size_t)(imageSize));
+	memcpy(data, texture.pixels, (size_t)(imageSize));
 	vkUnmapMemory(components->deviceQueueComp.device, stagingBufferMemory);
 
 	stbi_image_free(texture.pixels);
 
-	if (!createImage(components, texture.texWidth, texture.texHeight, texture.mipLevels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+	if (!createImage(components, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
 		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
 	{
 		printf("Image creation failure: %s\n", fileName);
 		return false;
 	}
 
-    // TODO: Figure out if this case ever occurs
-    if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	// TODO: Figure out if this case ever occurs
+	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
@@ -333,7 +334,7 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 
 	generateMipmaps(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
 
-    // TODO: Figure out if this case ever occurs
+	// TODO: Figure out if this case ever occurs
 	/*if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
@@ -386,10 +387,10 @@ bool createTextureSampler(VulkanComponents* components)
 	samplerInfo.minLod = 0.0f;
 	samplerInfo.maxLod = 20.0f; // This would technically be a 524K texture, I'm sure it's large enough
 	
-    if (vkCreateSampler(components->deviceQueueComp.device, &samplerInfo, NULL, &components->renderComp.textureSampler) != VK_SUCCESS)
-    {
-        printf("Failed to create texture sampler!\n");
-        return false;
-    }
-    return true;
+	if (vkCreateSampler(components->deviceQueueComp.device, &samplerInfo, NULL, &components->renderComp.textureSampler) != VK_SUCCESS)
+	{
+		printf("Failed to create texture sampler!\n");
+		return false;
+	}
+	return true;
 }

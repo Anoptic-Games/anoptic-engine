@@ -34,6 +34,7 @@ typedef struct ImageViewGroup
 {
 	uint32_t viewCount;
 	VkImageView* views;
+	VkImageView colorView;
 } ImageViewGroup;
 
 typedef struct SwapChainGroup
@@ -43,6 +44,8 @@ typedef struct SwapChainGroup
 	VkExtent2D imageExtent;
 	uint32_t imageCount;
 	VkImage* images;
+	VkImage colorImage;
+	VkDeviceMemory colorImageMemory;
 } SwapChainGroup;
 
 typedef struct InstanceDebugComponents
@@ -80,6 +83,7 @@ typedef struct PhysicalDeviceComponents
     VkPhysicalDevice physicalDevice;
     DeviceCapabilities deviceCapabilities;
     QueueFamilyIndices queueFamilyIndices;
+	VkSampleCountFlagBits msaaSamples;
 } PhysicalDeviceComponents;
 
 typedef struct DeviceQueueComponents
