@@ -70,6 +70,9 @@ bool createUniformBuffers(VulkanComponents* components);
 // Upsades the uniform buffer
 bool updateUniformBuffer(VulkanComponents* components);
 
+// Creates a color draw target for MSAA
+void createColorResources(VulkanComponents* components);
+
 // Creates a depth image and view for the current swapchain
 bool createDepthResources(VulkanComponents* components);
 

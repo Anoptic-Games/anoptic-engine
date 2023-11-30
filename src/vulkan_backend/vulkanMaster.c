@@ -369,6 +369,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	createColorResources(&components); // Make this a bool and add check
+
 	if(!createDepthResources(&components))
 	{
 		printf("Quitting init: depth resource creation failure!\n");
