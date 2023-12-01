@@ -13,18 +13,14 @@
 // Linux-specific implementation of aligned_malloc as defined in the ano_memory API.
 void* ano_aligned_malloc(size_t size, size_t alignment) {
     void* ptr = NULL;
-	
-	if (alignment < sizeof(void *)) // Minimum alignment size is void* 
-	{
+
+    // Ensure the alignment is at least sizeof(void*)
+	if (alignment < sizeof(void *))
    		alignment = sizeof(void *);
-	}
 
-	size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
-
-	int result = posix_memalign(&ptr, alignment, aligned_size);
+	int result = posix_memalign(&ptr, alignment, size);
     if (result != 0) {
-		printf("Size of void*: %zu\n", sizeof(void *));
-		printf("Posix memalign error: %d\n", result);
+		fprintf(stderr, "posix_memalign error: %d\n", result);
         return NULL;  // posix_memalign will set errno appropriately
     }
     return ptr;
