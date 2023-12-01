@@ -8,6 +8,8 @@
 
 #include <stdint.h>
 
+#define LOG_BUFFER_SIZE 4096
+
 typedef enum {
     LOG_DEBUG,
     LOG_INFO,
