@@ -4,75 +4,95 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include "anoptic_logging.h"
+
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 #include <anoptic_memalign.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdalign.h>
 #include <stdio.h>
 
 // Queues of log messages
-_Alignas(64) static char write_buffer[LOG_BUFFER_SIZE];
-_Alignas(64) static char read_buffer[LOG_BUFFER_SIZE];
+_Alignas(64) static char w_buffer[LOG_BUFFER_SIZE];
+_Alignas(64) static char r_buffer[LOG_BUFFER_SIZE];
 
-static _Atomic int swap_flag;
+static char* write_buffer = w_buffer;
+static char* read_buffer = r_buffer;
+
+// Make sure this always matches up to anoptic_logging.h:log_types_t
+static const char* log_strings[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
+
+static atomic_bool write_flag;
+static atomic_bool swap_flag;
 static _Atomic int tail_index;
 
 static _Atomic int log_write_interval;
 
 /* Module Internal */
-int clear_log_queue() {
+void swap_buffers() {
+
+    swap_flag = 1;
+    while(write_flag) {
+        // wait
+    }
+    char* temp = write_buffer;
+    write_buffer = read_buffer;
+    read_buffer = temp;
+
+    swap_flag = 0;
+}
+
+int flush_log_queue() {
+
+    if (tail_index >= LOG_BUFFER_SIZE) {
+        // TODO: Do something
+    }
+
+    swap_buffers();
 
     return 0;
 }
 
-int print_log_message(const char* formattedString, const char* fileTarget) {
-
-    return 0;
+// Version of log_immediate that takes a va_list instead of variadic function signature.
+void ano_log_vimmediate(log_types_t log_type, const char* fileName, int lineNumber, const char* printFormat, va_list args) {
+    // Immediate mode implementation
 }
 
 /* Public */
-// TODO: Clean up this function cause it's a bit of a mess rn
 int ano_log_enqueue(log_types_t log_type, const char* fileName, int lineNumber, const char* printFormat, ...) {
 
     va_list args;
-    int msgMaxLen = LOG_BUFFER_SIZE - tail_index;
-    if (msgMaxLen <= 0) {
-        ano_log_fatal("Not enough space to enqueue log message. Consider increasing LOG_BUFFER_SIZE");
-        return -1; // Failed to enqueue message due to fatal error.
+
+    int maxLen = LOG_BUFFER_SIZE - tail_index;
+    if (maxLen <= 0) {
+        // If buffer is already full, we'll write with log_immediate instead and issue an error.
+        ano_log_immediate(LOG_ERROR, __FILE__, __LINE__,
+                          "Log Buffer already full, Writing in immediate mode instead. [Performance Degradation]");
+
+        va_start(args);
+        ano_log_vimmediate(log_type, fileName, lineNumber, printFormat, args);
+        va_end(args);
+
+        return 1; // Failed to enqueue message, switched to immediate mode instead.
     }
 
-    static const char* logTypes[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
-    if (log_type > (LOG_FATAL - LOG_DEBUG)) {
-        ano_log_fatal("Deferred logger: invalid log_type");
-        return -1;  // Failed to enqueue message due to fatal error.
-    }
+    // Local buffers
+    char msgPrefix[LOG_PREFIX_SIZE];
+    char msgBody[LOG_BUFFER_SIZE - LOG_PREFIX_SIZE];
+    char msgFinal[LOG_BUFFER_SIZE];
 
     // Building the message prefix
-    int prefixLen;
-    char *msgPrefix = ano_aligned_malloc(msgMaxLen, 64);
-    if (msgPrefix == NULL) {
-        ano_log_fatal("Deferred logger: malloc fail on msgPrefix");
-        return -1;  // Failed to enqueue message due to fatal error.
-    }
-    snprintf(msgPrefix, msgMaxLen, "[%-6s] %s:%d:  ", logTypes[log_type], fileName, lineNumber);
+    snprintf(msgPrefix, maxLen, "[%-6s] %s:%d:  ", log_strings[log_type], fileName, lineNumber);
 
-    // Building the log message body
-    int rqLen;
-    char *msgBody = ano_aligned_malloc(msgMaxLen, 64);
-    if (msgBody == NULL) {
-        ano_log_fatal("Deferred logger: malloc fail on msgBody");
-        ano_aligned_free(msgPrefix);
-        return -1;  // Failed to enqueue message due to fatal error.
-    }
-    va_start(args, printFormat);
-    vsnprintf(msgBody, msgMaxLen, printFormat, args);
+    // Building the message body
+    va_start(args);
+    vsnprintf(msgBody, maxLen, printFormat, args);
     va_end(args);
 
     // Putting the prefix and message body together
-    char *msgFinal = ano_aligned_malloc(msgMaxLen, 64);
-    int msgLen = snprintf(msgFinal, msgMaxLen, "%s %s", msgPrefix, msgBody);
+    int msgLen = snprintf(msgFinal, maxLen, "\n%s %s\n", msgPrefix, msgBody);
     ano_aligned_free(msgPrefix);
     ano_aligned_free(msgBody);
 
@@ -84,41 +104,43 @@ int ano_log_enqueue(log_types_t log_type, const char* fileName, int lineNumber, 
         localIndex = tail_index;
     } while (!atomic_compare_exchange_strong(&tail_index, &localIndex, tail_index + msgLen + padding));
 
-    // ... Work of inserting *msgFinal into the secured sector of the writeBuffer
+    // If the buffer got full, we'll write with log_immediate instead and issue an error.
+    if (tail_index >= LOG_BUFFER_SIZE || localIndex >= LOG_BUFFER_SIZE) {
+        ano_log_immediate(LOG_ERROR, __FILE__, __LINE__,
+                          "Log Buffer filled, Writing in immediate mode instead. [Performance Degradation]");
 
-    // Cleanup
-    ano_aligned_free(msgFinal);
+        va_start(args);
+        ano_log_vimmediate(log_type, fileName, lineNumber, printFormat, args);
+        va_end(args);
 
-    return 0;
+        return 1;   // Failed to enqueue deferred message, switched to immediate mode instead.
+    }
+
+    // Inserting *msgFinal into the secured sector of the write_buffer
+    while(swap_flag) {
+        localIndex = 0;
+    }
+    write_flag = 1;
+    int i = 0;
+    while(msgFinal[i] != '\0' && localIndex < tail_index) {
+        write_flag = 1;
+        write_buffer[localIndex++] = msgFinal[i++];
+    }
+    write_flag = 0;
+
+    return 0; // Message enqueued successfully.
 }
 
-/*
-// do all the string formatting locally...
-char *someResultingString; // log_type, filename, line number, formatted message
-
-
-
-
-int padding;
-// !!! CONCERN: what if the padding calculated here is no longer valid by the time the atomic operation occurs?
-
-// Atomically fetch the current tail index and increment it by the message length + padding
-int startPoint = atomic_fetch_add(&tail_index, messageLength + padding);
-
-// Now you can safely write to the buffer starting at 'startPoint'
-
-// Insert the message to this thread-reserved slice of the log queue?
-// copy(someResultingString, logBuffer, startPoint)
-
-    return 0;
-
-*/
-
 void ano_log_immediate(log_types_t log_type, const char* fileName, int lineNumber, const char* printFormat, ...) {
-
+    va_list args;
+    va_start(args);
+    ano_log_vimmediate(log_type, fileName, lineNumber, printFormat, args);
+    va_end(args);
 }
 
 int ano_log_init() {
+
+
 
     return 0;
 }
