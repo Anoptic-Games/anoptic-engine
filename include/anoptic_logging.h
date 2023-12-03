@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 
+#define LOG_PREFIX_SIZE 256
 #define LOG_BUFFER_SIZE 4096
 
 typedef enum {
