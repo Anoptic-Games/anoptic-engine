@@ -13,8 +13,8 @@
 //f1 + f2
 // Builds a log string from all component parts.
 // Returns: length of resulting string
-int build_log_string(char* output, int maxLen, log_types_t log_type,
-                      const char* fileName, int lineNumber,const char* format, va_list args);
+int build_log_string(char* output, int maxLen, log_types_t log_type, const char* fileName,
+                     int lineNumber,const char* format, va_list args);
 
 //f3
 // Adds a log string to the shared buffer.
@@ -31,6 +31,9 @@ int check_log_data();
 void aggregate_log_strings();
 
 //f7
-int write_to_log_file();
+// Writes logData to targetFile.
+// Expects logData to already be fully formatted.
+// if logData consists of several messages, they should be concatenated.
+int write_to_log_file(uint32_t len, const char* logData, const char* targetFile);
 
 #endif //ANOPTICENGINE_LOGGING_CORE_H
