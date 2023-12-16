@@ -16,3 +16,11 @@ elseif (UNIX)
 endif()
 add_test(NAME TEST_anoptic_time COMMAND anotest_time)
 set_tests_properties(TEST_anoptic_time PROPERTIES TIMEOUT 10)
+
+
+# Testing for ``anoptic_logging.h``
+add_executable(anotest_logging anotest_logging.c)
+target_include_directories(anotest_logging PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_sources(anotest_logging PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/logging/logging_core.h)
+add_test(NAME TEST_anoptic_logging COMMAND anotest_logging)
+set_tests_properties(TEST_anoptic_logging PROPERTIES TIMEOUT 100)
