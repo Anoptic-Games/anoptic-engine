@@ -1081,10 +1081,34 @@ bool createUniformBuffers(VulkanComponents* components)
 			printf("Failed to create uniform buffer!");
 			return false;
 		}
+		printf("!!UBO!! UBO buffer: %p\n", components->renderComp.buffers.uniform[i]);
 
 		vkMapMemory(components->deviceQueueComp.device, components->renderComp.buffers.uniformMemory[i], 0, bufferSize, 0, &(components->renderComp.buffers.uniformMapped[i]));
+		printf("!!UBO!! Created mapped UBO buffer at: %p\n", components->renderComp.buffers.uniformMapped[i]);
 	}
 
+	return true;
+}
+
+bool createTransformBuffers(VulkanComponents* components)
+{ // !TODO transition this for dynamic mesh instantiation
+	VkDeviceSize bufferSize = sizeof(ModelTransforms);
+
+	for (size_t i = 0; i < components->renderComp.buffers.entityCount; i++)
+	{
+
+		if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			 &(components->renderComp.buffers.entities[i].transform), &(components->renderComp.buffers.entities[i].transformMemory))) 
+		{
+			printf("Failed to create uniform buffer!");
+			return false;
+		}
+		printf("!!MESHTRANSFORM!! Transform uniform buffer: %p\n", components->renderComp.buffers.entities[i].transform);
+
+		vkMapMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].transformMemory, 0, bufferSize, 0, &(components->renderComp.buffers.entities[i].transformMapped));
+		printf("!!MESHTRANSFORM!! Created mapped memory buffer at %p\n", components->renderComp.buffers.entities[i].transformMapped);
+	}
+	
 	return true;
 }
 
@@ -1115,7 +1139,7 @@ bool updateUniformBuffer(VulkanComponents* components)
 
 	rotateMatrix(components->renderComp.uniform.model, 'Y', angle);
 
-	float eye[] = {0.0f, 0.9f, 1.5f};  // Move camera up and back
+	float eye[] = {0.0f, 0.9f, 3.5f};  // Move camera up and back
 	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
 	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped // TODO: Maybe unflip the world
 
@@ -1126,13 +1150,60 @@ bool updateUniformBuffer(VulkanComponents* components)
 	float near = 0.1f;
 	float far = 100.0f;
 	perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
-
+	
+	//printf("!!UBO!! Mapped UBO buffer on value update: %p\n", components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex]);
 	memcpy(components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex], &(components->renderComp.uniform), sizeof(components->renderComp.uniform));
 
-	angle += ((float)(time-oldTime)) * 0.000001f;
+	angle += ((float)(time-oldTime)) * 0.000000f;
 	if(angle > 2.0f * pi)
 	{
 		angle = 0.0f;	
+	}
+	oldTime = time;
+
+	return true;
+}
+
+bool updateMeshTransforms(VulkanComponents* components, EntityBuffer* entity, float move)
+{
+	static uint64_t time = 0;
+	static uint64_t oldTime = 0;
+	time = ano_timestamp_us();
+	static float angle = 0.0f;
+	const float pi = 3.14159265359f;
+
+	// Initialize ModelTransforms structure
+	ModelTransforms meshTransforms;
+
+	// Initialize translation, rotation, and scale matrices to identity
+	for(int i = 0; i < 4; i++)
+	{
+		for(int j = 0; j < 4; j++)
+		{
+			meshTransforms.translation[i][j] = (i == j) ? 1.0f : 0.0f;
+			meshTransforms.rotation[i][j] = (i == j) ? 1.0f : 0.0f;
+			meshTransforms.scale[i][j] = (i == j) ? 1.0f : 0.0f;
+		}
+	}
+
+	translate(meshTransforms.translation, move, 0.0f, 0.0f);
+
+	// Apply rotation to the mesh's transform
+	rotateMatrix(meshTransforms.rotation, 'Y', angle);
+
+	// TODO: Apply translation and scaling if needed
+	// Example: translateMatrix(meshTransforms.translation, x, y, z);
+	// Example: scaleMatrix(meshTransforms.scale, scaleX, scaleY, scaleZ);
+
+	// Map the buffer and copy the transformation data
+	//printf("!!MESHTRANSFORM!! Mapped transform buffer on value update: %p\n", entity->transformMapped);
+	memcpy(entity->transformMapped, &meshTransforms, sizeof(meshTransforms));
+
+	// Update angle for next frame
+	angle += ((float)(time - oldTime)) * 0.000001f;
+	if (angle > 2.0f * pi)
+	{
+		angle = 0.0f;
 	}
 	oldTime = time;
 
@@ -1223,6 +1294,191 @@ void createColorResources(VulkanComponents* components)
 
 bool createDescriptorPool(VulkanComponents* components)
 { // Central to init
+	VkDescriptorPoolSize poolSize = {};
+	poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSize.descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSize) / sizeof(VkDescriptorPoolSize));
+	poolInfo.pPoolSizes = &poolSize;
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+
+	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.descriptorPool)) != VK_SUCCESS)
+	{
+		printf("Failed to create descriptor pool!\n");
+		return false;
+	}
+
+	return true;
+}
+
+bool createMeshDescriptorPool(VulkanComponents* components)
+{ // Central to init
+	VkDescriptorPoolSize poolSizes[2] = {};
+	poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSizes[0].descriptorCount = (uint32_t)components->renderComp.buffers.entityCount;
+	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSizes[1].descriptorCount = (uint32_t)components->renderComp.buffers.entityCount;
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes) / sizeof(VkDescriptorPoolSize));
+	poolInfo.pPoolSizes = &poolSizes;
+	poolInfo.maxSets = (uint32_t)components->renderComp.buffers.entityCount;
+
+	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.meshDescriptorPool)) != VK_SUCCESS)
+	{
+		printf("Failed to create descriptor pool!\n");
+		return false;
+	}
+
+	return true;
+}
+
+bool createDescriptorSets(VulkanComponents* components)
+{ // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
+	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		layouts[i] = components->renderComp.descriptorSetLayout;
+	}
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.pNext = NULL;
+	allocInfo.descriptorPool = components->renderComp.descriptorPool;
+	allocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+	allocInfo.pSetLayouts = layouts;
+
+	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, components->renderComp.descriptorSets) != VK_SUCCESS)
+	{
+		printf("Failed to allocate descriptor sets!\n");	
+		return false;
+	}
+
+
+	return true;
+}
+
+bool createMeshDescriptorSets(VulkanComponents* components)
+{
+	// Allocate entity descriptor sets
+	size_t entityCount = components->renderComp.buffers.entityCount;
+
+	VkDescriptorSetLayout* layouts = calloc(entityCount, sizeof(VkDescriptorSetLayout));
+
+	for (uint32_t i = 0; i < entityCount; i++)
+	{
+		layouts[i] = components->renderComp.meshDescriptorSetLayout;
+	}
+
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.pNext = NULL;
+	allocInfo.descriptorPool = components->renderComp.meshDescriptorPool;
+	allocInfo.descriptorSetCount = entityCount;
+	allocInfo.pSetLayouts = layouts;
+
+	VkDescriptorSet* tempSets = calloc(entityCount, sizeof(VkDescriptorSet));
+
+	printf("!!DEBUG!!\nMesh descriptors: %d\n", entityCount);
+
+	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, tempSets) != VK_SUCCESS)
+	{
+		printf("Failed to allocate mesh descriptor sets!\n");
+		return false;
+	}
+
+	for (uint32_t j = 0; j < entityCount; j++)
+	{
+		components->renderComp.buffers.entities[j].meshDescriptorSet = tempSets[j];
+	}
+
+	free(layouts);
+	free(tempSets);
+
+	return true;
+}
+
+void updateUboDescriptorSets(VulkanComponents* components)
+{ // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
+
+	// Update scene-wide UBO descriptors
+	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		VkDescriptorBufferInfo bufferInfo = {};
+		bufferInfo.buffer = components->renderComp.buffers.uniform[i];
+		bufferInfo.offset = 0;
+		bufferInfo.range = sizeof(UniformComponents);
+		printf("!!UBO!! UBO buffer on descriptor update: %p\n", components->renderComp.buffers.uniform[i]);
+
+		VkWriteDescriptorSet descriptorWrite = {};
+		descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrite.dstSet = components->renderComp.descriptorSets[i];
+		descriptorWrite.dstBinding = 0;   // Corresponds to binding in shader.
+		descriptorWrite.dstArrayElement = 0;
+		descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		descriptorWrite.descriptorCount = 1;
+		descriptorWrite.pBufferInfo = &bufferInfo;
+
+		vkUpdateDescriptorSets(components->deviceQueueComp.device, 1, &descriptorWrite, 0, NULL);
+	}
+}
+
+void updateMeshDescriptorSets(VulkanComponents* components)
+{ // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
+
+	// Update scene-wide UBO descriptors
+
+	size_t entityCount = components->renderComp.buffers.entityCount;
+	VkDescriptorImageInfo* imageInfos = (VkDescriptorImageInfo*)calloc(entityCount, sizeof(VkDescriptorImageInfo));
+
+	for (size_t i = 0; i < entityCount; i++)
+	{
+		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		imageInfos[i].imageView = components->renderComp.buffers.entities[i].textureImageView;
+		imageInfos[i].sampler = components->renderComp.textureSampler;
+	}
+
+	VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)calloc(entityCount*2, sizeof(VkWriteDescriptorSet));
+
+	VkDescriptorBufferInfo* bufferInfos = (VkDescriptorBufferInfo*)calloc(entityCount, sizeof(VkDescriptorBufferInfo));
+
+	for (size_t j = 0; j < entityCount; j++)
+	{
+		bufferInfos[j].buffer = components->renderComp.buffers.entities[j].transform;
+		bufferInfos[j].offset = 0;
+		bufferInfos[j].range = sizeof(ModelTransforms);
+		printf("!!MESHTRANSFORM!! Transform uniform buffer on descriptor update: %p\n", components->renderComp.buffers.entities[j].transform);
+
+		descriptorWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[j].dstSet = components->renderComp.buffers.entities[j].meshDescriptorSet;
+		descriptorWrites[j].dstBinding = 0;   // Corresponds to binding in shader.
+		descriptorWrites[j].dstArrayElement = 0;
+		descriptorWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		descriptorWrites[j].descriptorCount = 1;
+		descriptorWrites[j].pBufferInfo = &bufferInfos[j];
+	}
+
+	for (size_t j = 0; j < entityCount; j++)
+	{
+		descriptorWrites[j+entityCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[j+entityCount].dstSet = components->renderComp.buffers.entities[j].meshDescriptorSet;
+		descriptorWrites[j+entityCount].dstBinding = 1;
+		descriptorWrites[j+entityCount].dstArrayElement = 0;
+		descriptorWrites[j+entityCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		descriptorWrites[j+entityCount].descriptorCount = 1;
+		descriptorWrites[j+entityCount].pImageInfo = &imageInfos[j];
+	}
+
+	vkUpdateDescriptorSets(components->deviceQueueComp.device, entityCount*2, descriptorWrites, 0, NULL);
+
+	free(imageInfos);
+	free(descriptorWrites);
+}
+
+/*bool createDescriptorPool(VulkanComponents* components)
+{ // Central to init
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
@@ -1242,76 +1498,10 @@ bool createDescriptorPool(VulkanComponents* components)
 	}
 
 	return true;
-}
+}*/
 
-bool createDescriptorSets(VulkanComponents* components)
-{ // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
-	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
-	{
-		layouts[i] = components->renderComp.descriptorSetLayout;
-	}
-	VkDescriptorSetAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = components->renderComp.descriptorPool;
-	allocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
-	allocInfo.pSetLayouts = layouts;
 
-	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, components->renderComp.descriptorSets) != VK_SUCCESS)
-	{
-		printf("Failed to allocate descriptor sets!\n");
-		return false;
-	}
 
-	return true;
-}
-
-void updateDescriptorSets(VulkanComponents* components)
-{ // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
-	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-	{
-		VkDescriptorBufferInfo bufferInfo = {};
-		bufferInfo.buffer = components->renderComp.buffers.uniform[i];
-		bufferInfo.offset = 0;
-		bufferInfo.range = sizeof(UniformComponents);
-
-		size_t entityCount = components->renderComp.buffers.entityCount;
-		VkDescriptorImageInfo* imageInfos = (VkDescriptorImageInfo*)calloc(entityCount, sizeof(VkDescriptorImageInfo));
-
-		for (size_t j = 0; j < entityCount; j++)
-		{
-			imageInfos[j].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			imageInfos[j].imageView = components->renderComp.buffers.entities[j].textureImageView;
-			imageInfos[j].sampler = components->renderComp.textureSampler;
-		}
-
-		VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)calloc((1 + entityCount), sizeof(VkWriteDescriptorSet));
-
-		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[0].dstSet = components->renderComp.descriptorSets[i];
-		descriptorWrites[0].dstBinding = 0;
-		descriptorWrites[0].dstArrayElement = 0;
-		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		descriptorWrites[0].descriptorCount = 1;
-		descriptorWrites[0].pBufferInfo = &bufferInfo;
-
-		for (size_t j = 0; j < entityCount; j++)
-		{
-			descriptorWrites[j + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descriptorWrites[j + 1].dstSet = components->renderComp.descriptorSets[i];
-			descriptorWrites[j + 1].dstBinding = j + 1;
-			descriptorWrites[j + 1].dstArrayElement = 0;
-			descriptorWrites[j + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-			descriptorWrites[j + 1].descriptorCount = 1;
-			descriptorWrites[j + 1].pImageInfo = &imageInfos[j];
-		}
-
-		vkUpdateDescriptorSets(components->deviceQueueComp.device, 1 + entityCount, descriptorWrites, 0, NULL);
-
-		free(imageInfos);
-		free(descriptorWrites);
-	}
-}
 
 
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties)

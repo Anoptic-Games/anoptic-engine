@@ -67,8 +67,14 @@ bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuff
 // Creates uniform buffers for each frame
 bool createUniformBuffers(VulkanComponents* components);
 
-// Upsades the uniform buffer
+// Creates transform buffers for meshes
+bool createTransformBuffers(VulkanComponents* components);
+
+// Updates the uniform buffer
 bool updateUniformBuffer(VulkanComponents* components);
+
+// Updates a mesh's transform matrices
+bool updateMeshTransforms(VulkanComponents* components, EntityBuffer* entity, float move);
 
 // Creates a color draw target for MSAA
 void createColorResources(VulkanComponents* components);
@@ -76,14 +82,23 @@ void createColorResources(VulkanComponents* components);
 // Creates a depth image and view for the current swapchain
 bool createDepthResources(VulkanComponents* components);
 
-// Creates a descriptor pool
+// Creates a UBO descriptor pool
 bool createDescriptorPool(VulkanComponents* components);
+
+// Creates an entity data descriptor pool
+bool createMeshDescriptorPool(VulkanComponents* components);
 
 // Creates a descriptor set
 bool createDescriptorSets(VulkanComponents* components);
 
-// Updates descriptor sets to point to their corresponding uniform buffers
-void updateDescriptorSets(VulkanComponents* components);
+// Creates mesh descriptor sets
+bool createMeshDescriptorSets(VulkanComponents* components);
+
+// Updates UBO descriptor sets to point to their corresponding uniform buffers
+void updateUboDescriptorSets(VulkanComponents* components);
+
+// Updates entities' descriptor sets to point to their respective textures
+void updateMeshDescriptorSets(VulkanComponents* components);
 
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);

@@ -51,6 +51,13 @@ typedef struct UniformComponents
 	mat4 proj;
 } UniformComponents;
 
+typedef struct ModelTransforms
+{
+	mat4 translation;
+	mat4 rotation;
+	mat4 scale;
+} ModelTransforms;
+
 
 
 // Functions
@@ -66,6 +73,9 @@ void rotateMatrix(float mat[4][4], char axis, float angle);
 
 // Creates a view matrix from the provided values
 void lookAt(float mat[4][4], float eye[3], float center[3], float up[3]);
+
+// Performs a simple 3D translation
+void translate(float mat[4][4], float x, float y, float z);
 
 // Creates a perspective matrix from the provided values
 void perspective(float matrix[4][4], float fovDegrees, float aspect, float near, float far);

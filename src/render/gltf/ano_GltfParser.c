@@ -440,15 +440,19 @@ void parsePbrMetallicRoughness(const char *json, jsmntok_t *tokens, PbrMetallicR
 			case GLTF_BASECOLORTEXTURE:
 				if (valueToken.type == JSMN_OBJECT)
 				{
+					printf("FOUND le object :3\n");
 					// Parse nested object
+					pbr->baseColorTexture = atoi(json + tokens[i+3].start);
 					int baseTextureEnd = i + calculateTotalTokenSize(tokens, i + 1);
 					i = baseTextureEnd; // Skip the nested object
 				} else
 				{
+					printf("NOT found le object >:3\n");
 					i += 2; // Simple key-value pair
 				}
 				break;
 
+			// !TODO The actual PBR values are FUCKED :3
 			case GLTF_METALLICFACTOR:
 				pbr->metallicFactor = atof(json + valueToken.start);
 				i += 2;
@@ -476,33 +480,38 @@ void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *mat
 {
 	int currentTokenIndex = 1; // Start from the first token after the materials array token
 	int nameLength = 0;
+	int pairIndex, keyTokenIndex, keyLength;
+	uint32_t hash, keyIncrement;
+	jsmntok_t keyToken, valueToken;
+	jsmntok_t *materialToken;
 
 	for (int materialIndex = 0; materialIndex < tokens[0].size; materialIndex++)
 	{
-		jsmntok_t *materialToken = &tokens[currentTokenIndex];
+		materialToken = &tokens[currentTokenIndex];
+		uint32_t materialSize = calculateTotalTokenSize(tokens, currentTokenIndex);
 
 		if (materialToken->type != JSMN_OBJECT)
 		{
-			continue;
+			continue; // Skip non-object tokens
 		}
 
 		materials[materialIndex].doubleSided = false;
 		materials[materialIndex].name = NULL;
 		materials[materialIndex].pbr = (PbrMetallicRoughness){0, 0.0f, 0.0f};
 
-		int pairIndex = 0;
-		int keyTokenIndex = currentTokenIndex + 1;
+		pairIndex = 0;
+		keyTokenIndex = currentTokenIndex + 1;
 
 		while (pairIndex < materialToken->size)
 		{
-			jsmntok_t keyToken = tokens[keyTokenIndex];
-			jsmntok_t valueToken = tokens[keyTokenIndex + 1];
+			keyToken = tokens[keyTokenIndex];
+			valueToken = tokens[keyTokenIndex + 1];
 
-			int keyLength = keyToken.end - keyToken.start;
+			keyLength = keyToken.end - keyToken.start;
 			char key[keyLength + 1];
 			memcpy(key, json + keyToken.start, keyLength);
 			key[keyLength] = '\0';
-			uint32_t hash = keyHash(key);
+			hash = keyHash(key);
 
 			switch(hash)
 			{
@@ -530,7 +539,7 @@ void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *mat
 
 			// Update indices for next iteration
 			pairIndex++;
-			uint32_t keyIncrement = getIncrement(json, &tokens[keyTokenIndex]);
+			keyIncrement = getIncrement(json, &tokens[keyTokenIndex]);
 			keyTokenIndex += keyIncrement;
 			if (keyIncrement == 0)
 			{
@@ -540,7 +549,7 @@ void helperParseMaterials(const char *json, jsmntok_t *tokens, GltfMaterial *mat
 		}
 
 		// Move to the next material object token
-		currentTokenIndex += calculateTotalTokenSize(tokens, currentTokenIndex);
+		currentTokenIndex += materialSize;
 	}
 }
 
@@ -1500,6 +1509,7 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 				success = false;
 			}*/
 			texture->processed = true;
+			printf("Uploaded texture #%d!\n", primitiveIndex);
 		}
 
 	}
@@ -1537,7 +1547,8 @@ void packageRenderables(VulkanComponents* components, GltfElements* elements)
 
 	// Allocate EntityBuffer for all primitives
 	components->renderComp.buffers.entityCount = totalPrimitiveCount;
-	components->renderComp.buffers.entities = (EntityBuffer*)malloc(sizeof(EntityBuffer) * totalPrimitiveCount);
+	printf("Allocating memory for %d entities!\n", totalPrimitiveCount);
+	components->renderComp.buffers.entities = (EntityBuffer*)calloc(totalPrimitiveCount, sizeof(EntityBuffer));
 
 	// Iterate through all meshes and their primitives
 	uint32_t entityIndex = 0;
