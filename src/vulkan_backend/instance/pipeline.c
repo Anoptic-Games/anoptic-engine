@@ -156,7 +156,9 @@ bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat sw
 	return true;
 }
 
-bool createDescriptorSetLayout(VulkanComponents* components)
+
+
+bool createUboDescriptorSetLayout(VulkanComponents* components)
 { // Generalize this to call multiple layout creation functions, for each type of renderable asset supported
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
 	uboLayoutBinding.binding = 0;
@@ -165,6 +167,26 @@ bool createDescriptorSetLayout(VulkanComponents* components)
 	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	uboLayoutBinding.pImmutableSamplers = NULL; // Optional
 
+	VkDescriptorSetLayoutBinding bindings[1] = {uboLayoutBinding};
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = 1;
+	layoutInfo.pBindings = bindings;
+
+	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &(components->renderComp.descriptorSetLayout)) != VK_SUCCESS)
+	{
+		printf("Failed to create UBO descriptor set layout!\n");
+		return false;
+	}
+
+	return true;
+}
+
+
+bool createMeshDescriptorSetLayout(VulkanComponents* components)
+{
+	// Descriptor set layout binding for the combined image sampler
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
 	samplerLayoutBinding.binding = 1;
 	samplerLayoutBinding.descriptorCount = 1;
@@ -172,14 +194,23 @@ bool createDescriptorSetLayout(VulkanComponents* components)
 	samplerLayoutBinding.pImmutableSamplers = NULL;
 	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+	// Descriptor set layout binding for the extra model transformations uniform buffer
+	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+	uboLayoutBinding.binding = 0; // Binding point 0
+	uboLayoutBinding.descriptorCount = 1;
+	uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	uboLayoutBinding.pImmutableSamplers = NULL;
+	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // Assuming vertex shader will use this buffer
+
+	// Array of bindings
 	VkDescriptorSetLayoutBinding bindings[2] = {uboLayoutBinding, samplerLayoutBinding};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 2;
+	layoutInfo.bindingCount = 2; // Now we have two bindings
 	layoutInfo.pBindings = bindings;
 
-	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &(components->renderComp.descriptorSetLayout)) != VK_SUCCESS)
+	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &(components->renderComp.meshDescriptorSetLayout)) != VK_SUCCESS)
 	{
 		printf("Failed to create descriptor set layout!\n");
 		return false;
@@ -341,7 +372,13 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	colorBlending.blendConstants[2] = 0.0f; // Optional
 	colorBlending.blendConstants[3] = 0.0f; // Optional
 
-	if (!createDescriptorSetLayout(components))
+	if (!createUboDescriptorSetLayout(components))
+	{
+		printf("Failed to create descriptor set layout!\n");
+		return NULL;
+	}
+
+	if (!createMeshDescriptorSetLayout(components))
 	{
 		printf("Failed to create descriptor set layout!\n");
 		return NULL;
@@ -349,8 +386,9 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 1; // Optional
-	pipelineLayoutInfo.pSetLayouts = &(components->renderComp.descriptorSetLayout); // Optional
+	pipelineLayoutInfo.setLayoutCount = 2; // Optional
+	VkDescriptorSetLayout setLayouts[2] = {components->renderComp.descriptorSetLayout, components->renderComp.meshDescriptorSetLayout};
+	pipelineLayoutInfo.pSetLayouts = setLayouts; // Optional
 	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
 	pipelineLayoutInfo.pPushConstantRanges = NULL; // Optional
 

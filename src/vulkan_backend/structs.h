@@ -122,6 +122,11 @@ typedef struct EntityBuffer
 	VkImage textureImage;
 	VkDeviceMemory textureImageMemory;
 	VkImageView textureImageView;
+	VkDescriptorSet meshDescriptorSet;
+	// Transformation data
+	VkBuffer transform;
+	VkDeviceMemory transformMemory;
+	void* transformMapped;
 } EntityBuffer;
 
 typedef struct BufferComponents 
@@ -143,8 +148,10 @@ typedef struct RenderComponents
     VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
 	VkDescriptorSetLayout descriptorSetLayout;
+	VkDescriptorSetLayout meshDescriptorSetLayout; // Move to per-mesh-type struct
 	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
 	VkDescriptorPool descriptorPool;
+	VkDescriptorPool meshDescriptorPool;
 	UniformComponents uniform;
     VkPipeline graphicsPipeline;
 	VkSampler textureSampler;
