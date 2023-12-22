@@ -79,11 +79,30 @@ void measureFrameTime()
 
 
 // Main function
-
+#include "anoptic_logging.h"
 int main()
 {
 	#ifdef DEBUG_BUILD
 	printf("Running in debug mode!\n");
+
+    ano_log_init();
+    for(int i = 0; i < 172; i++) {
+        ano_log_error("Enqueued Log Message # %d\n", (i + 1));
+    }
+
+    ano_log_error("01234567890123456789012");
+
+    ano_log_debug_now("Instantaneous Debug Message!\n");
+
+    for(int i = 0; i < 216; i++) {
+        ano_log_error("Enqueued Log Message # %d\n", (i + 1));
+    }
+
+    ano_log_debug_now("Instantaneous Debug Message!\n");
+
+    ano_log_cleanup();
+
+
 	#endif
 
 	// Initialize Vulkan
