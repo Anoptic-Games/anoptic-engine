@@ -31,6 +31,4 @@ void ano_aligned_free(void* ptr) {
     free(ptr);  // free works for memory allocated by posix_memalign
 }
 
-
-
 #endif

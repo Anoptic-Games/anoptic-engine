@@ -37,10 +37,10 @@ int ano_log_output_dir(const char* directoryPath);
 // TODO: Make sure that the __
 #ifdef DEBUG_BUILD
 #define ano_log_debug(...)  ano_log_enqueue(LOG_DEBUG, __FILE_NAME__, __LINE__, __VA_ARGS__)
-#define ano_log_debugnow(...)  ano_log_immediate(LOG_DEBUG, __FILE_NAME__, __LINE__, __VA_ARGS__)
+#define ano_log_debug_now(...)  ano_log_immediate(LOG_DEBUG, __FILE_NAME__, __LINE__, __VA_ARGS__)
 #else
 #define ano_log_debug(...)  /* Debug logging disabled */
-#define ano_log_debugnow(...)  /* Debug logging disabled */
+#define ano_log_debug_now(...)  /* Debug logging disabled */
 #endif
 
 #define ano_log_info(...)  ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, __VA_ARGS__)

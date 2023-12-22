@@ -9,6 +9,7 @@
 #include <anoptic_memalign.h>
 #include <stdio.h>
 
+
 /* Internal */
 
 // Queue of log messages
@@ -20,6 +21,7 @@ typedef struct {
 static log_queue_t log_buffer;
 static anothread_mutex_t log_buffer_mtx;
 static anothread_mutex_t log_file_mtx;
+static char output_file_path[LOG_PREFIX_MAX];
 
 // f1 + f2 implementation
 int build_log_string(char* output, int maxLen, log_types_t log_type,
@@ -39,8 +41,23 @@ int build_log_string(char* output, int maxLen, log_types_t log_type,
 // f3 implementation
 int enqueue_log_string(int len, const char* string) {
 
-    // TODO: Error Handling
-    ano_mutex_lock(&log_buffer_mtx);
+    // Acquire exclusive lock over log_buffer.
+    int mtxResult = ano_mutex_lock(&log_buffer_mtx);
+    if (mtxResult != 0) {
+        ano_mutex_unlock(&log_buffer_mtx);
+        ano_log_fatal("ano_mutex_lock -> Failed to acquire mutex lock with return code: %d\n", mtxResult);
+        return mtxResult;
+    }
+
+    // Bounds checking to ensure we're not writing past the tail.
+    if ((log_buffer.tail_index + len) >= LOG_BUFFER_MAX) {
+        ano_mutex_unlock(&log_buffer_mtx);
+        fprintf(stderr, "enqueue_log_string -> Buffer Full, Writing Message in Immediate Mode!\n");
+        // write_to_log_file(string, output_file_path);
+        return -1;  // Failure to enqueue, wrote in immediate instead.
+    }
+
+    // Appending to Log Buffer
     int localIndex = log_buffer.tail_index;
     log_buffer.tail_index += len + 1;
     int i = 0;
@@ -50,32 +67,65 @@ int enqueue_log_string(int len, const char* string) {
     log_buffer.data[localIndex++] = '\0';
     ano_mutex_unlock(&log_buffer_mtx);
 
-    return 0;
+    return 0;  // Enqueue Success
 }
 
+/*
 // f4 implementation
 void enqueue_cleanup() {
     // Cleanup, if any is required.
 }
 
 // f5 implementation
+*/
 
 // f6 implementation
 
 // f7 implementation
-int write_to_log_file(uint32_t len, const char* logData, const char* targetFile) {
+int write_to_log_file(const char* logData, const char* fileName) {
 
     ano_mutex_lock(&log_file_mtx);
-    FILE *pFile = fopen(targetFile, "a");
+    FILE *pFile = fopen(fileName, "a");
     if (pFile == NULL) {
-        fprintf(stderr,"write_to_log_file -> Couldn't write to log file!");
+        ano_mutex_unlock(&log_file_mtx);
+        fprintf(stderr,"write_to_log_file -> Couldn't open target file!\n");
+        return -1; // Error
     }
+    fprintf(pFile, "%s", logData);
     ano_mutex_unlock(&log_file_mtx);
 
     return 0; // Success
 }
 
-/* Public */
+int write_all_buffered() {
+
+    char fileMsg[LOG_BUFFER_MAX];
+
+    // Claim mutex ownership over Log Buffer
+    int mtxResult = ano_mutex_lock(&log_buffer_mtx);
+    if (mtxResult != 0) {
+        fprintf(stderr, "write_all_buffered -> Failed to acquire mutex lock with return: %d\n", mtxResult);
+        return mtxResult;
+    }
+
+    // Copy Log Buffer data to a local fileMsg
+    for(int i = 0; i < log_buffer.tail_index; i++) { // TODO: Check bounds gn
+        char c = log_buffer.data[i];
+        if (c == '\0' && i != (log_buffer.tail_index - 1))
+            fileMsg[i] = '\n';`
+        else
+            fileMsg[i] = c;
+    }
+
+    // Reset the Log Buffer to starting state
+    log_buffer.tail_index = 0;
+    ano_mutex_unlock(&log_buffer_mtx);
+
+    // write_to_log_file(fileMsg, output_file_path);
+
+    return 0;
+
+}
 
 /* Public */
 int ano_log_enqueue(log_types_t log_type, const char* fileName, int lineNumber, const char* printFormat, ...) {
@@ -89,17 +139,18 @@ int ano_log_enqueue(log_types_t log_type, const char* fileName, int lineNumber, 
                                log_type, fileName, lineNumber, printFormat, args);
     va_end(args);
 
-    // Bounds checking to ensure we're not writing past the buffer.
-    if ((log_buffer.tail_index + len) >= LOG_BUFFER_MAX) {
-        // message that would trail past the edge of this cycle's buffer.
+    /*
+    if(log_type > LOG_WARN) {
+        fprintf(stderr,"%s", logMessage);
+    } else {
         printf("%s", logMessage);
-        fprintf(stderr, "[Log Buffer Full] -> Message Written in Immediate Mode!\n");
     }
+    */
 
     // Adding message string to shared buffer.
-    enqueue_log_string(len, logMessage);
+    int status = enqueue_log_string(len, logMessage);
 
-    return 0;
+    return status;
 }
 
 void ano_log_immediate(log_types_t log_type, const char* fileName, int lineNumber, const char* printFormat, ...) {
@@ -112,20 +163,31 @@ void ano_log_immediate(log_types_t log_type, const char* fileName, int lineNumbe
                                log_type, fileName, lineNumber, printFormat, args);
     va_end(args);
 
+    if(log_type > LOG_WARN) {
+        fprintf(stderr,"%s", logMessage);
+    } else {
+        printf("%s", logMessage);
+    }
+
     // Print to relevant log streams immediately
-    // ...
+    // write_to_log_file(logMessage, output_file_path);
+
+    // TODO: Remove this
+    write_all_buffered();
 }
 
 int ano_log_init() {
-`
-    if (ano_mutex_init(&log_buffer_mtx, NULL) != 0) {
-        ano_log_fatal("ano_mutex_init -> Log Buffer mutex initialization failed!\n");
-        return -1; // Mutex initialization failed.
+
+    int mtxResult = ano_mutex_init(&log_buffer_mtx, NULL);
+    if (mtxResult != 0) {
+        ano_log_fatal("ano_mutex_init -> Log Buffer mutex initialization failed with return code: %d\n", mtxResult);
+        return mtxResult; // Mutex initialization failed.
     }
 
-    if (ano_mutex_init(&log_file_mtx, NULL) != 0) {
-        ano_log_fatal("ano_mutex_init -> Log File mutex initialization failed!\n");
-        return -2; // Mutex initialization failed.
+    mtxResult = ano_mutex_init(&log_file_mtx, NULL);
+    if (mtxResult != 0) {
+        ano_log_fatal("ano_mutex_init -> Log File mutex initialization failed with return code: %d\n", mtxResult);
+        return mtxResult; // Mutex initialization failed.
     }
 
     log_buffer.data = ano_aligned_malloc(LOG_BUFFER_MAX, 64);
@@ -147,7 +209,7 @@ int ano_log_cleanup() {
     // Clean up the log buffer.
     ano_aligned_free(log_buffer.data);
 
-    return 0;
+    return 0; // Cleanup Success
 }
 
 void ano_log_interval(uint32_t ms)  {
