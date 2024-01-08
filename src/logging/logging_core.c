@@ -112,7 +112,7 @@ int write_all_buffered() {
     for(int i = 0; i < log_buffer.tail_index; i++) { // TODO: Check bounds gn
         char c = log_buffer.data[i];
         if (c == '\0' && i != (log_buffer.tail_index - 1))
-            fileMsg[i] = '\n';`
+            fileMsg[i] = '\n';
         else
             fileMsg[i] = c;
     }
