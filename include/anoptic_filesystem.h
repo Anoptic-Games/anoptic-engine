@@ -8,12 +8,14 @@
 
 #include <stdint.h>
 
-typedef struct {
-    char* pathString;
-    uint32_t length;
-} filepath;
+#define MAXPATH 256
 
-// Game Directory Path
+typedef struct {
+    uint16_t length;
+    char* pathString; // Managed by user.
+} filepath; // User is expected to manage the lifetime of this struct.
+
+// Game Executable Directory Path
 // - Assets
 // - Binaries
 // - Expansions
@@ -26,8 +28,5 @@ filepath ano_fs_gamepath();
 // - Settings
 // - Log Files
 filepath ano_fs_userpath();
-
-
-// Helper Utils for parsing filepaths
 
 #endif //ANOPTICENGINE_ANOPTIC_FILEPATH_H
