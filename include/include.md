@@ -1,11 +1,11 @@
+# (Out of Date -- To be Updated)
 # Include Directory
 
 The `include/` directory contains the public header files for the Anoptic Game Engine. These header files define the public API that games will use to interact with the engine.
 
 ## Directory Structure
 
-The directory structure for `include/` might look something like this:
-
+Typical layout:
 ```plaintext
 include/
 ├── graphics/       # Public graphics API
