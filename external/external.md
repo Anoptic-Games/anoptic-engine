@@ -1,6 +1,6 @@
 # External Directory
 
-The `external/` directory stores third-party source libraries and dependencies for the Anoptic Game Engine. Its purpose is to cleanly separate the engine's native codebase from external components, ensuring clear boundaries for maintenance and licensing.
+The `external/` directory stores third-party source libraries and dependencies for the Anoptic Game Engine.
 
 ## Directory Structure
 
@@ -10,14 +10,19 @@ external/
 ├── glfw/           # GLFW for windowing and input
 ├── jsmn/           # Minimal JSON parsing library
 ├── stb/            # Single-header libraries for various uses
-└── others/         # Other third-party libraries or tools
+├── mimalloc/       # Microsoft's optimized global memory allocator
+└── {...}           # Other third-party libraries or tools
 ```
 
 ## Purpose of Each Subdirectory
 
-- **`glfw/`**: [GLFW](https://www.glfw.org/) - A library for OpenGL, Vulkan, windows, contexts, and input.
+- **`glfw/`**: [glfw](https://www.glfw.org/) - A library for OpenGL, Vulkan contexts, and basic I/O.
 
-- **`others/`**: A placeholder for other third-party libraries.
+- **`jsmn/`**: [jsmn](https://github.com/zserge/jsmn) - A single-header library for JSON parsing.
+
+- **`stb/`**: [stb](https://github.com/nothings/stb) - A collection of single-file public domain libraries for C/C++.
+
+- **`mimalloc/`**: [mimalloc](https://github.com/microsoft/mimalloc) - A compact and powerful general-purpose allocator.
 
 ## Usage
 
@@ -27,7 +32,7 @@ To use libraries from `external/`, reference them in the engine's source files a
 
 ## Git Submodules
 
-Third-party libraries hosted on platforms like GitHub can be integrated as Git submodules. 
+Third-party libraries hosted on platforms like GitHub should be integrated as Git submodules. 
 
 Procedure:
 - **Adding a Submodule**:

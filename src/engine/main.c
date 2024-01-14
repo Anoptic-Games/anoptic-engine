@@ -6,6 +6,8 @@
 #include "engine/main.h" // This works
 
 // Includes
+#include <mimalloc.h>
+#include <mimalloc-override.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
@@ -82,8 +84,29 @@ void measureFrameTime()
 #include "anoptic_logging.h"
 int main()
 {
+    mi_version();
 	#ifdef DEBUG_BUILD
+    // Try to allocate 4 GB of HUGE pages.
+    int gigaMallocStatus = mi_reserve_huge_os_pages_at(4, 0, 0);
+    printf("Huge Page Status: %d\n", gigaMallocStatus);
 	printf("Running in debug mode!\n");
+
+    int ladcount = 128;
+    int *theboys = mi_malloc(ladcount * sizeof(int));
+    for (int i = 0; i < ladcount; i++) {
+        theboys[i] = i + 1;
+    }
+
+    printf("Printing mi_malloc'd heap contents");
+    for (int i = 0; i < ladcount; i++) {
+        printf("Lad %d contents: %d\n", i, theboys[i]);
+    }
+
+    mi_free(theboys);
+
+    // huge malloc
+    //uint64_t *hugeBox = mi_malloc(1000000000 * sizeof(uint64_t));   // This fucks up the heap
+    //mi_free(hugeBox);
 
     ano_log_init();
     for(int i = 0; i < 172; i++) {
@@ -101,7 +124,6 @@ int main()
     ano_log_debug_now("Instantaneous Debug Message!\n");
 
     ano_log_cleanup();
-
 
 	#endif
 
@@ -134,6 +156,5 @@ int main()
 
     // Clean up
     unInitVulkan();
-
     return 0;
 }
