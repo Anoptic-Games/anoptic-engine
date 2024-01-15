@@ -367,14 +367,8 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 
 	// TODO: Figure out why this crashes on Windows?
 	// DONE: It crashes on Windows because we're using _aligned_malloc() from the Win. API, which has its own free() function
-	#ifdef _WIN64
-        // TODO: TEST
-		ano_aligned_free(vertShaderCode.data);
-		ano_aligned_free(fragShaderCode.data);
-	#else
-		free(vertShaderCode.data);
-		free(fragShaderCode.data);
-	#endif
+    ano_aligned_free(vertShaderCode.data);
+    ano_aligned_free(fragShaderCode.data);
 
 	// TODO: generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
 	vkDestroyShaderModule(components->deviceQueueComp.device, vertShaderModule, NULL);
