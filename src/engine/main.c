@@ -155,6 +155,6 @@ int main()
     }
 
     // Clean up
-    unInitVulkan();
+    // unInitVulkan();
     return 0;
 }
