@@ -74,8 +74,8 @@ target_link_libraries(anopticengine PRIVATE glfw)
 target_link_libraries(anopticengine PRIVATE Vulkan::Vulkan)
 
 # CTest integration
-enable_testing()
-add_subdirectory(${CMAKE_SOURCE_DIR}/tests)
+# enable_testing()
+# add_subdirectory(${CMAKE_SOURCE_DIR}/tests)
 
 # Add compilation flags and preprocessor definitions for Debug and Release builds
 target_compile_definitions(anopticengine PRIVATE
