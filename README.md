@@ -42,7 +42,7 @@ Additional guidance:
 - [Microsoft Documentation](https://learn.microsoft.com/en-us/vcpkg/users/platforms/mingw)
 - [CLion Configuration](https://www.jetbrains.com/help/clion/quick-tutorial-on-configuring-clion-on-windows.html#clang-mingw)
 
-Once Mingw-w64 is installed with `gcc` working on your system, go to the repository and run 
+Once Mingw-w64 is installed with `clang` working on your system, go to the repository and run 
 
 Use `build.bat {build-type}`, where {build-type} is 1 for Release, 2 for Debug, and 3 for Tests.
 
