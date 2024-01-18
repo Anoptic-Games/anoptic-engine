@@ -86,8 +86,14 @@ int main()
 {
     mi_version();
 	#ifdef DEBUG_BUILD
+
+    mi_option_enable(mi_option_show_errors);
+    mi_option_enable(mi_option_show_stats);
+    mi_option_enable(mi_option_verbose);
+    mi_option_set(mi_option_reserve_huge_os_pages, 4);
+
     // Try to allocate 4 GB of HUGE pages.
-    int gigaMallocStatus = mi_reserve_huge_os_pages_at(4, 0, 0);
+    int gigaMallocStatus = mi_reserve_huge_os_pages_at(4, 0, 10000);
     printf("Huge Page Status: %d\n", gigaMallocStatus);
 	printf("Running in debug mode!\n");
 
