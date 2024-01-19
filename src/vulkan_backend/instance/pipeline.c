@@ -32,7 +32,7 @@ bool loadFile(const char* filename, struct Buffer* buffer)
 	fseek(file, 0, SEEK_SET);
 
 
-	buffer->data = ano_aligned_malloc(size, alignof(uint32_t));
+	buffer->data = ano_aligned_malloc(size, _Alignof(uint32_t));
 	if (buffer->data == NULL) 
 	{
 		fprintf(stderr, "Failed to allocate memory for file: %s\n", filename);

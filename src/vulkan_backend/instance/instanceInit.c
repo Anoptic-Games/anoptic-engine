@@ -1282,7 +1282,7 @@ bool createDepthResources(VulkanComponents* components)
 	return true;
 }
 
-void createColorResources(VulkanComponents* components)
+void createColorResources(VulkanComponents* components) //TODO: This probably should be generalized later?
 {
 	VkFormat colorFormat = components->swapChainComp.swapChainGroup.imageFormat;
 
@@ -1290,6 +1290,11 @@ void createColorResources(VulkanComponents* components)
 				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.colorImage, &components->swapChainComp.swapChainGroup.colorImageMemory, false);
 	components->swapChainComp.viewGroup.colorView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+
+	createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
+				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.uiImage, &components->swapChainComp.swapChainGroup.uiImageMemory, false);
+	components->swapChainComp.viewGroup.uiView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.uiImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }
 
 bool createDescriptorPool(VulkanComponents* components)
