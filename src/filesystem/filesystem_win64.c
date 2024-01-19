@@ -7,7 +7,7 @@
 
 #include <stdio.h>
 #include <libloaderapi.h>
-#include <malloc.h>
+#include <mimalloc.h>
 
 // Cache the paths.
 static filepath game_root_path;
@@ -19,7 +19,7 @@ filepath ano_fs_gamepath() {
 
     // Return cached path value, if it exists.
     if (game_root_path.length != 0) {
-        filepath result = {.pathString = malloc(game_root_path.length + 1), .length = game_root_path.length};
+        filepath result = {.pathString = mi_malloc(game_root_path.length + 1), .length = game_root_path.length};
         strcpy(result.pathString, game_root_path.pathString);
         return result;
     }
@@ -29,11 +29,11 @@ filepath ano_fs_gamepath() {
     GetModuleFileName(NULL, pathBuffer, MAX_PATH - 1);
 
     int pathLen = strlen(pathBuffer);
-    game_root_path.pathString = malloc(pathLen + 1);
+    game_root_path.pathString = mi_malloc(pathLen + 1);
     game_root_path.length = pathLen;
     strcpy(game_root_path.pathString, pathBuffer);
 
-    return ano_fs_gamepath();
+    return ano_fs_gamepath(); // XD !?
 }
 
 filepath ano_fs_userpath() {
