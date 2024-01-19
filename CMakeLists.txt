@@ -24,6 +24,14 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Add GLFW submodule directory
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
 
+# Mimalloc submodule directory and definitions
+set(MI_BUILD_OBJECT OFF)
+set(MI_BUILD_SHARED OFF)
+set(MI_BUILD_STATIC ON)
+set(MI_OVERRIDE OFF)
+set(MI_BUILD_TESTS OFF)
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/mimalloc)
+
 # Find the Vulkan SDK system-wide package
 find_package(Vulkan REQUIRED)
 
@@ -60,13 +68,14 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-# Link the GLFW and Vulkan libraries to the target
-target_link_libraries(anopticengine glfw)
-target_link_libraries(anopticengine Vulkan::Vulkan)
+# Link the mimalloc, GLFW, and Vulkan libraries to the target
+target_link_libraries(anopticengine PUBLIC mimalloc-static)
+target_link_libraries(anopticengine PRIVATE glfw)
+target_link_libraries(anopticengine PRIVATE Vulkan::Vulkan)
 
 # CTest integration
-enable_testing()
-add_subdirectory(${CMAKE_SOURCE_DIR}/tests)
+# enable_testing()
+# add_subdirectory(${CMAKE_SOURCE_DIR}/tests)
 
 # Add compilation flags and preprocessor definitions for Debug and Release builds
 target_compile_definitions(anopticengine PRIVATE

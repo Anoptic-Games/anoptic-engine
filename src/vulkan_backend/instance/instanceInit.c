@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
+#include <mimalloc.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -27,7 +28,7 @@ static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 void enumerateMonitors(Monitors* monitors) 
 {
     GLFWmonitor** glfwMonitors = glfwGetMonitors(&(monitors->monitorCount));
-    monitors->monitorInfos = malloc(monitors->monitorCount * sizeof(MonitorInfo));
+    monitors->monitorInfos = mi_malloc(monitors->monitorCount * sizeof(MonitorInfo));
     for (int i = 0; i < monitors->monitorCount; i++) 
     {
         monitors->monitorInfos[i].modes = glfwGetVideoModes(glfwMonitors[i], &(monitors->monitorInfos[i].modeCount));
@@ -393,7 +394,7 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
     }
 
     // Allocate memory for the names of every detected device
-    components->physicalDeviceComp.availableDevices = (char**)malloc(sizeof(char*) * components->physicalDeviceComp.deviceCount);
+    components->physicalDeviceComp.availableDevices = (char**)mi_malloc(sizeof(char*) * components->physicalDeviceComp.deviceCount);
 
     VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * components->physicalDeviceComp.deviceCount);
 
@@ -443,7 +444,7 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
                 bestIntegratedDevice = devices[i];
                 maxIntegratedMemory = currentMemorySize;
             }
-            (components->physicalDeviceComp.availableDevices)[i] = (char*)malloc(strlen(deviceProperties.deviceName) +1);
+            (components->physicalDeviceComp.availableDevices)[i] = (char*)mi_malloc(strlen(deviceProperties.deviceName) +1);
             strcpy((components->physicalDeviceComp.availableDevices)[i], deviceProperties.deviceName);
             #ifdef DEBUG_BUILD
 			printf("%s\n", components->physicalDeviceComp.availableDevices[i]);
