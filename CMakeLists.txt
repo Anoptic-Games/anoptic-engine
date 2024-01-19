@@ -21,8 +21,9 @@ endif()
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Add GLFW submodule directory
+# Add GLFW and Freetype submodule directories
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/freetype)
 
 # Find the Vulkan SDK system-wide package
 find_package(Vulkan REQUIRED)
@@ -59,8 +60,9 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-# Link the GLFW and Vulkan libraries to the target
+# Link the GLFW, Freetype and Vulkan libraries to the target
 target_link_libraries(anopticengine glfw)
+target_link_libraries(anopticengine freetype)
 target_link_libraries(anopticengine Vulkan::Vulkan)
 
 # CTest integration

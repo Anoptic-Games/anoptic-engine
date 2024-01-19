@@ -35,6 +35,7 @@ typedef struct ImageViewGroup
 	uint32_t viewCount;
 	VkImageView* views;
 	VkImageView colorView;
+    VkImageView uiView;
 } ImageViewGroup;
 
 typedef struct SwapChainGroup
@@ -46,6 +47,8 @@ typedef struct SwapChainGroup
 	VkImage* images;
 	VkImage colorImage;
 	VkDeviceMemory colorImageMemory;
+    VkImage uiImage;
+    VkDeviceMemory uiImageMemory;
 } SwapChainGroup;
 
 typedef struct InstanceDebugComponents
