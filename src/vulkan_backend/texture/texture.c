@@ -344,7 +344,7 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
 	vkFreeMemory(components->deviceQueueComp.device, stagingBufferMemory, NULL);
 	
-	if(!createTextureImageView(components, *textureImage, textureImageView, texture.mipLevels))
+	if(!createTextureImageView(components, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
 	{
 		printf("Image view creation failure: %s\n", fileName);
 		return false;
@@ -353,9 +353,71 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	return true;
 }
 
-bool createTextureImageView(VulkanComponents* components, VkImage textureImage, VkImageView* textureImageView, uint32_t miplevels)
+bool createTextureImageFromCPUMemory(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, Texture8 texture, VkFormat format, bool flag16)
 {
-	*textureImageView = createImageView(components->deviceQueueComp.device, textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, miplevels);
+	//!TODO Add logic for 16-bit images
+	if (!texture.pixels)
+	{
+		printf("Invalid Texture was given to pass onto the GPU!\n");
+		return false;
+	}
+
+	VkDeviceSize imageSize = texture.texWidth * texture.texHeight * 4;
+	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // Mipmap levels determined dynamically 
+
+	printf("Texture mip levels from CPU Memory: %d\n", texture.mipLevels);
+
+	VkBuffer stagingBuffer;
+	VkDeviceMemory stagingBufferMemory;
+	createDataBuffer(components, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingBufferMemory);
+
+	void* data;
+	vkMapMemory(components->deviceQueueComp.device, stagingBufferMemory, 0, imageSize, 0, &data);
+	memcpy(data, texture.pixels, (size_t)(imageSize));
+	vkUnmapMemory(components->deviceQueueComp.device, stagingBufferMemory);
+
+	stbi_image_free(texture.pixels);
+
+	if (!createImage(components, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, format, VK_IMAGE_TILING_OPTIMAL,
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+	{
+		printf("Image creation failure from CPU Memory!\n");
+		return false;
+	}
+
+	// TODO: Figure out if this case ever occurs
+	if(!transitionImageLayout(components, *textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	{
+		printf("Layout transition failure from CPU Memory!\n");
+		return false;
+	}
+
+	copyBufferToImage(components, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
+
+	generateMipmaps(components, *textureImage, format, texture.texWidth, texture.texHeight, texture.mipLevels);
+
+	// TODO: Figure out if this case ever occurs
+	/*if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
+	{
+		printf("Layout transition failure: %s\n", fileName);
+		return false;
+	}*/
+
+	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
+	vkFreeMemory(components->deviceQueueComp.device, stagingBufferMemory, NULL);
+	
+	if(!createTextureImageView(components, *textureImage, textureImageView, format, texture.mipLevels))
+	{
+		printf("Image view creation failure from CPU Memory!\n");
+		return false;
+	}
+	
+	return true;
+}
+
+bool createTextureImageView(VulkanComponents* components, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels)
+{
+	*textureImageView = createImageView(components->deviceQueueComp.device, textureImage, format, VK_IMAGE_ASPECT_COLOR_BIT, miplevels);
 
 	return true;
 }
