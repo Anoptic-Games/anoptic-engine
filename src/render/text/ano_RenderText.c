@@ -32,13 +32,13 @@ void ft_add_font(char* file_path, int face_index)
 
 void ft_load_glyph_bitmap(int glyph_index)
 {
-    if (FT_Load_Glyph(&face, glyph_index, 0))
+    if (FT_Load_Glyph(face, glyph_index, 0))
     {
         printf("Error when loading glyph with index: %i", glyph_index);
     }
 
-    if (FT_Render_Glyph(&face->glyph, FT_RENDER_MODE_NORMAL)) //TODO: Store glyph data somewhere.
+    if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL)) //TODO: Store glyph data somewhere.
     {
-        
+        printf("Error when rendering glyph with index: %i", glyph_index);
     }
 }
