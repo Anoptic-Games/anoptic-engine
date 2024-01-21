@@ -535,3 +535,17 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	return true;
 }
+
+void drawChar(FT_ULong glyph_number)
+{
+	Texture8 texture = {};
+    FT_Bitmap* bitmap = ft_get_glyph_bitmap(glyph_number);
+    texture.mipLevels = 0;
+    texture.texChannels = 1;
+    texture.pixels = bitmap->buffer;
+    texture.texWidth = bitmap->width;
+    texture.texHeight = bitmap->rows;
+	GlyphTexture glyphTexture = {};
+
+    createTextureImageFromCPUMemory(&components, &(glyphTexture.textureImage), &(glyphTexture.textureImageMemory), &(glyphTexture.textureImageView), texture, VK_FORMAT_R8_SRGB, false);
+}

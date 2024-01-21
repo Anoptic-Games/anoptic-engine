@@ -52,20 +52,9 @@ int ft_load_glyph_bitmap(FT_ULong glyph)
     return 1;
 }
 
-FT_Bitmap ft_get_current_bitmap()
+FT_Bitmap* ft_get_glyph_bitmap(FT_ULong glyph)
 {
-    return face->glyph->bitmap;
-}
+    ft_load_glyph_bitmap(glyph);
 
-void ft_upload_current_glyph_to_GPU()
-{
-    Texture8 texture = {};
-    FT_Bitmap bitmap = ft_get_current_bitmap();
-    texture.mipLevels = 0;
-    texture.texChannels = 1;
-    texture.pixels = bitmap.buffer;
-    texture.texWidth = bitmap.width;
-    texture.texHeight = bitmap.rows;
-
-    //createTextureImageFromCPUMemory();
+    return &(face->glyph->bitmap);
 }
