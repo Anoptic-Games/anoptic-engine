@@ -98,11 +98,10 @@ int main()
 
 	ft_init();
 	ft_add_font("Oswald-VariableFont_wght.ttf", 0);
-	ft_load_glyph_bitmap(67);
 
-	FT_Bitmap bitmap = ft_get_current_bitmap();
-	printf("Glyph Width is: %i\n", bitmap.width);
-	printf("Glyph Height is: %i\n", bitmap.rows);
+	FT_Bitmap* bitmap = ft_get_glyph_bitmap(65);
+	printf("Glyph Width is: %i\n", bitmap->width);
+	printf("Glyph Height is: %i\n", bitmap->rows);
 	// Create a graphics pipeline
 	
 	//parseGltf("viking_room.gltf");
