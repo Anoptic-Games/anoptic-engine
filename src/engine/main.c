@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include "anoptic_time.h"
+#include "render/text/ano_RenderText.h"
 
 // TODO: Figure out if this actually needs to be in main.c
 #ifndef GLFW_INCLUDE_VULKAN
@@ -95,8 +96,15 @@ int main()
 	    return 0;
 	}
 
-	// Create a graphics pipeline
+	ft_init();
+	ft_add_font("Oswald-VariableFont_wght.ttf", 0);
+	ft_load_glyph_bitmap(67);
 
+	FT_Bitmap bitmap = ft_get_current_bitmap();
+	printf("Glyph Width is: %i\n", bitmap.width);
+	printf("Glyph Height is: %i\n", bitmap.rows);
+	// Create a graphics pipeline
+	
 	//parseGltf("viking_room.gltf");
 
     // Main loop
