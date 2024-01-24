@@ -64,6 +64,7 @@ target_include_directories(anopticengine PRIVATE
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
