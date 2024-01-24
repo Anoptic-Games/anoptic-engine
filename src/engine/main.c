@@ -102,10 +102,10 @@ int main()
 	FT_Bitmap* bitmap = ft_get_glyph_bitmap(65);
 	printf("Glyph Width is: %i\n", bitmap->width);
 	printf("Glyph Height is: %i\n", bitmap->rows);
+	ft_debug_save_glyph("Test.bmp", 65);
 	// Create a graphics pipeline
 	
 	//parseGltf("viking_room.gltf");
-
     // Main loop
 	while (!anoShouldClose())
 	{	
