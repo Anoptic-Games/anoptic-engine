@@ -58,3 +58,16 @@ FT_Bitmap* ft_get_glyph_bitmap(FT_ULong glyph)
 
     return &(face->glyph->bitmap);
 }
+
+int ft_debug_save_glyph(char* filename, FT_ULong glyph)
+{
+    FT_Bitmap* glyph_bitmap = ft_get_glyph_bitmap(glyph);
+    int pixel_count = (glyph_bitmap ->rows * glyph_bitmap ->width * 3);
+    unsigned char expanded_glyph_buffer[pixel_count];
+    for (int i = 0; i < pixel_count; i++ )
+    {
+       expanded_glyph_buffer[i] = (glyph_bitmap->buffer)[i/3];
+    }
+    
+    return stbi_write_bmp(filename, glyph_bitmap ->width, glyph_bitmap ->rows, 3, expanded_glyph_buffer);
+}
