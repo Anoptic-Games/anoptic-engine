@@ -478,14 +478,14 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
     	else
     	{
         	fprintf(stderr, "Failed to find a suitable GPU!\n");
-        	free(devices);
+        	mi_free(devices);
         	return false;
     	}
     }
 
     //printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (components->physicalDeviceComp.queueFamilyIndices.graphicsFamily), (components->physicalDeviceComp.queueFamilyIndices.computeFamily), (components->physicalDeviceComp.queueFamilyIndices.transferFamily), (components->physicalDeviceComp.queueFamilyIndices.presentFamily));
 
-    free(devices);
+    mi_free(devices);
     return true;
 }
 
@@ -1270,8 +1270,8 @@ void updateDescriptorSets(VulkanComponents* components)
 
         vkUpdateDescriptorSets(components->deviceQueueComp.device, 1 + entityCount, descriptorWrites, 0, NULL);
 
-        free(imageInfos);
-        free(descriptorWrites);
+        mi_free(imageInfos);
+        mi_free(descriptorWrites);
     }
 }
 
@@ -1459,7 +1459,7 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
 
 void cleanupMonitors(Monitors* monitors) {
     if (monitors->monitorInfos) {
-        free(monitors->monitorInfos);
+        mi_free(monitors->monitorInfos);
         monitors->monitorInfos = NULL;
         monitors->monitorCount = 0;
     }
@@ -1576,10 +1576,10 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 	{
 	    for (uint32_t i = 0; i < components->physicalDeviceComp.deviceCount; i++)
 	    {
-	        free(components->physicalDeviceComp.availableDevices[i]);
+	        mi_free(components->physicalDeviceComp.availableDevices[i]);
 	        components->physicalDeviceComp.availableDevices[i] = NULL;
 	    }
-	    free(components->physicalDeviceComp.availableDevices);
+	    mi_free(components->physicalDeviceComp.availableDevices);
 	    components->physicalDeviceComp.availableDevices = NULL;
 	}
 
