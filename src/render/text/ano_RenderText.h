@@ -4,10 +4,6 @@
 #include FT_FREETYPE_H
 #endif
 
-#define max_glyph_width 14
-#define max_glyph_height 18
-#define glyph_per_atlas_row 16
-
 int ft_init();
 void ft_add_font(char* file_path, int face_index);
 int ft_load_glyph_bitmap(FT_ULong glyph);
