@@ -3,6 +3,7 @@
 
 #include "ano_RenderText.h"
 
+#include <stdint.h>
 
 FT_Library FT_ano_Library;
 FT_Face face; //TODO:Make this take multiple fonts.
@@ -66,21 +67,21 @@ FT_Bitmap* ft_get_glyph_bitmap(FT_ULong glyph)
 int ft_debug_save_glyph(char* filename, FT_ULong glyph)
 {
     FT_Bitmap* glyph_bitmap = ft_get_glyph_bitmap(glyph);
-    int pixel_count = (glyph_bitmap ->rows * glyph_bitmap ->width * 3);
+    uint32_t pixel_count = (glyph_bitmap->rows * glyph_bitmap->width * 3);
     unsigned char expanded_glyph_buffer[pixel_count];
     for (int i = 0; i < pixel_count; i++ )
     {
        expanded_glyph_buffer[i] = (glyph_bitmap->buffer)[i/3];
     }
     
-    return stbi_write_bmp(filename, glyph_bitmap ->width, glyph_bitmap ->rows, 3, expanded_glyph_buffer);
+    return stbi_write_bmp(filename, (int)glyph_bitmap->width, (int)glyph_bitmap->rows, 3, expanded_glyph_buffer);
 }
 
 int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
 {
-    int max_glyph_width, max_glyph_height = 0;
-    int glyph_count = (end - start) + 1;
-    int atlas_dimensions = 1;
+    uint32_t max_glyph_width, max_glyph_height = 0;
+    uint32_t glyph_count = (end - start) + 1;
+    uint32_t atlas_dimensions = 1;
 
     while ((atlas_dimensions * atlas_dimensions) < glyph_count)
     {
@@ -94,10 +95,10 @@ int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
         max_glyph_height = glyph->rows > max_glyph_height ? glyph->rows: max_glyph_height;
     }
 
-    int atlas_width = atlas_dimensions * max_glyph_width;
-    int atlas_height = atlas_dimensions * max_glyph_height;
+    uint32_t atlas_width = atlas_dimensions * max_glyph_width;
+    uint32_t atlas_height = atlas_dimensions * max_glyph_height;
 
-    char atlas_buffer[atlas_width * atlas_height * 3];
+    unsigned char atlas_buffer[atlas_width * atlas_height * 3];
     for (int i = 0; i < atlas_width * atlas_height * 3; i++)
     {
         atlas_buffer[i] = 0;
@@ -105,21 +106,21 @@ int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
 
     for (int i = 0; i < glyph_count; i++)
     {
-        int x_pos = (i % atlas_dimensions) * max_glyph_width;
-        int y_pos = (i / atlas_dimensions) * max_glyph_height;
+        uint32_t x_pos = (i % atlas_dimensions) * max_glyph_width;
+        uint32_t y_pos = (i / atlas_dimensions) * max_glyph_height;
         FT_Bitmap* glyph_bitmap = ft_get_glyph_bitmap(start + i);
 
-        for (int y = 0; y <glyph_bitmap -> rows; y++)
+        for (int y = 0; y < glyph_bitmap->rows; y++)
         {
-            for (int x = 0; x < glyph_bitmap -> width; x++)
+            for (int x = 0; x < glyph_bitmap->width; x++)
             {
-                int target_position = (x_pos + x + ((y + y_pos) * atlas_width)) * 3;
-                atlas_buffer[target_position] = glyph_bitmap -> buffer[x + (y * glyph_bitmap -> width)];
-                atlas_buffer[target_position+1] = glyph_bitmap -> buffer[x + (y * glyph_bitmap -> width)];
-                atlas_buffer[target_position+2] = glyph_bitmap -> buffer[x + (y * glyph_bitmap -> width)];
+                uint32_t target_position = (x_pos + x + ((y + y_pos) * atlas_width)) * 3;
+                atlas_buffer[target_position] = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+                atlas_buffer[target_position+1] = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+                atlas_buffer[target_position+2] = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
             }
         }
     }
 
-    return stbi_write_bmp(filename, atlas_width, atlas_height, 3, atlas_buffer);
+    return stbi_write_bmp(filename, (int)atlas_width, (int)atlas_height, 3, atlas_buffer);
 }
