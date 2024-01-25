@@ -78,9 +78,24 @@ int ft_debug_save_glyph(char* filename, FT_ULong glyph)
 
 int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
 {
+    int max_glyph_width, max_glyph_height = 0;
+    int glyph_count = (end - start) + 1;
+    int atlas_dimensions = 1;
 
-    int atlas_width = glyph_per_atlas_row * max_glyph_width;
-    int atlas_height = (256/glyph_per_atlas_row) * max_glyph_height;
+    while ((atlas_dimensions * atlas_dimensions) < glyph_count)
+    {
+        atlas_dimensions++;
+    }
+
+    for (int i = 0; i < glyph_count; i ++)
+    {
+        FT_Bitmap* glyph = ft_get_glyph_bitmap(start + i);
+        max_glyph_width = glyph->width > max_glyph_width ? glyph->width: max_glyph_width;
+        max_glyph_height = glyph->rows > max_glyph_height ? glyph->rows: max_glyph_height;
+    }
+
+    int atlas_width = atlas_dimensions * max_glyph_width;
+    int atlas_height = atlas_dimensions * max_glyph_height;
 
     char atlas_buffer[atlas_width * atlas_height * 3];
     for (int i = 0; i < atlas_width * atlas_height * 3; i++)
@@ -88,12 +103,11 @@ int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
         atlas_buffer[i] = 0;
     }
 
-
-    for (int i = start; i <= end; i++)
+    for (int i = 0; i < glyph_count; i++)
     {
-        int x_pos = (i % glyph_per_atlas_row) * max_glyph_width;
-        int y_pos = (i / (256/glyph_per_atlas_row)) * max_glyph_height;
-        FT_Bitmap* glyph_bitmap = ft_get_glyph_bitmap(i);
+        int x_pos = (i % atlas_dimensions) * max_glyph_width;
+        int y_pos = (i / atlas_dimensions) * max_glyph_height;
+        FT_Bitmap* glyph_bitmap = ft_get_glyph_bitmap(start + i);
 
         for (int y = 0; y <glyph_bitmap -> rows; y++)
         {
