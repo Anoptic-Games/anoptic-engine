@@ -75,3 +75,37 @@ int ft_debug_save_glyph(char* filename, FT_ULong glyph)
     
     return stbi_write_bmp(filename, glyph_bitmap ->width, glyph_bitmap ->rows, 3, expanded_glyph_buffer);
 }
+
+int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
+{
+
+    int atlas_width = glyph_per_atlas_row * max_glyph_width;
+    int atlas_height = (256/glyph_per_atlas_row) * max_glyph_height;
+
+    char atlas_buffer[atlas_width * atlas_height * 3];
+    for (int i = 0; i < atlas_width * atlas_height * 3; i++)
+    {
+        atlas_buffer[i] = 0;
+    }
+
+
+    for (int i = start; i <= end; i++)
+    {
+        int x_pos = (i % glyph_per_atlas_row) * max_glyph_width;
+        int y_pos = (i / (256/glyph_per_atlas_row)) * max_glyph_height;
+        FT_Bitmap* glyph_bitmap = ft_get_glyph_bitmap(i);
+
+        for (int y = 0; y <glyph_bitmap -> rows; y++)
+        {
+            for (int x = 0; x < glyph_bitmap -> width; x++)
+            {
+                int target_position = (x_pos + x + ((y + y_pos) * atlas_width)) * 3;
+                atlas_buffer[target_position] = glyph_bitmap -> buffer[x + (y * glyph_bitmap -> width)];
+                atlas_buffer[target_position+1] = glyph_bitmap -> buffer[x + (y * glyph_bitmap -> width)];
+                atlas_buffer[target_position+2] = glyph_bitmap -> buffer[x + (y * glyph_bitmap -> width)];
+            }
+        }
+    }
+
+    return stbi_write_bmp(filename, atlas_width, atlas_height, 3, atlas_buffer);
+}
