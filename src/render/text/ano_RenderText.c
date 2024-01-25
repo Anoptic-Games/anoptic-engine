@@ -1,4 +1,8 @@
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+
+
 #include "ano_RenderText.h"
+
 
 FT_Library FT_ano_Library;
 FT_Face face; //TODO:Make this take multiple fonts.
