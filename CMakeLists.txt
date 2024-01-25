@@ -79,3 +79,5 @@ target_compile_options(anopticengine PRIVATE
         "$<$<CONFIG:Debug>:-O0;-g>"
         "$<$<CONFIG:Release>:-O3>"
 )
+
+
