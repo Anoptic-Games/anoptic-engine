@@ -8,4 +8,13 @@
 
 // Anoptic String API
 
+
+int autoStringTest();
+
+// UTF-8 Support
+
+// automatic scoped de-allocation of managed strings
+
+// string slices (copy-on-slice)
+
 #endif //ANOPTICENGINE_ANOPTIC_STRINGS_H
