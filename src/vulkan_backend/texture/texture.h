@@ -34,7 +34,7 @@ Texture8 readTexture8bit(char* fileName);
 // Takes binary texture data and loads it into a Vulkan image object
 bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, char* fileName, bool flag16);
 //Takes a pre-existing Texture8 and loads it into a Vulkan image object
-bool createTextureImageFromCPUMemory(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, Texture8 texture, VkFormat format, bool flag16);
+bool createTextureImageFromCPUMemory(VulkanComponents* components, Texture8 texture, uint32_t atlasIndex, VkFormat format, bool flag16);
 
 // Creates an image view for an entity with an existing texture
 bool createTextureImageView(VulkanComponents* components, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels);

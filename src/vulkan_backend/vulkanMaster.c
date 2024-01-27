@@ -15,6 +15,8 @@
 
 static VulkanComponents components;
 
+static CharAtlas charAtlas;
+
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
 static GLFWwindow* window;
@@ -289,6 +291,32 @@ void drawFrame()
 
 //Init and cleanup functions
 
+void initAtlas()
+{
+	ft_init();
+	ft_add_font("Oswald-Regular.ttf", 0);
+}
+
+// May only be called once most of the vk init process is complete
+void renderAtlas()
+{
+	printf("Rendering font atlas!\n");
+	ft_render_glyph_atlas(&charAtlas, 0, 570);
+
+	Texture8 atlasTexture =
+	{
+		.texWidth = charAtlas.width,
+		.texHeight = charAtlas.height,
+		.texChannels = 3,
+		.mipLevels = 1,
+		.pixels = (stbi_uc*) charAtlas.texels
+	};
+
+	printf("Pushing font atlas to GPU memory!\n");
+	components.renderComp.buffers.glyphTextures = calloc(sizeof(GlyphTexture), 1);
+	createTextureImageFromCPUMemory(&components, atlasTexture, 0, VK_FORMAT_R8G8B8_SRGB, false);
+}
+
 bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 {
 
@@ -302,6 +330,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	cleanupMonitors(&monitors);
 	printf("Here");
 	enumerateMonitors(&monitors);
+
+	// Font atlas creation
+	initAtlas();
 
 	window = initWindow(&components, &monitors);
 
@@ -551,12 +582,15 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	printf("Instance creation complete!\n");
 
+	// Render font atlas and push to GPU memory
+	renderAtlas();
+
 	// Returns true
 	return true;
 }
 
 // Creates a bitmap of a single character
-void drawChar(FT_ULong glyph_number)
+/*void drawChar(FT_ULong glyph_number)
 {
 	Texture8 texture = {};
     FT_Bitmap* bitmap = ft_get_glyph_bitmap(glyph_number);
@@ -568,4 +602,4 @@ void drawChar(FT_ULong glyph_number)
 	GlyphTexture glyphTexture = {};
 
     createTextureImageFromCPUMemory(&components, &(glyphTexture.textureImage), &(glyphTexture.textureImageMemory), &(glyphTexture.textureImageView), texture, VK_FORMAT_R8_SRGB, false);
-}
+}*/

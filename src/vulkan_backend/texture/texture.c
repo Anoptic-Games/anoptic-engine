@@ -353,7 +353,7 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	return true;
 }
 
-bool createTextureImageFromCPUMemory(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, Texture8 texture, VkFormat format, bool flag16)
+bool createTextureImageFromCPUMemory(VulkanComponents* components, Texture8 texture, uint32_t atlasIndex, VkFormat format, bool flag16)
 {
 	//!TODO Add logic for 16-bit images
 	if (!texture.pixels)
@@ -362,8 +362,7 @@ bool createTextureImageFromCPUMemory(VulkanComponents* components, VkImage* text
 		return false;
 	}
 
-	VkDeviceSize imageSize = texture.texWidth * texture.texHeight * 4;
-	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // Mipmap levels determined dynamically 
+	VkDeviceSize imageSize = texture.texWidth * texture.texHeight * 3;
 
 	printf("Texture mip levels from CPU Memory: %d\n", texture.mipLevels);
 
@@ -376,25 +375,25 @@ bool createTextureImageFromCPUMemory(VulkanComponents* components, VkImage* text
 	memcpy(data, texture.pixels, (size_t)(imageSize));
 	vkUnmapMemory(components->deviceQueueComp.device, stagingBufferMemory);
 
-	stbi_image_free(texture.pixels);
-
-	if (!createImage(components, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, format, VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+	if (!createImage(components, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT,
+		format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->renderComp.buffers.glyphTextures[atlasIndex].textureImage,
+		&components->renderComp.buffers.glyphTextures[atlasIndex].textureImageMemory, false))
 	{
 		printf("Image creation failure from CPU Memory!\n");
 		return false;
 	}
 
 	// TODO: Figure out if this case ever occurs
-	if(!transitionImageLayout(components, *textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	if(!transitionImageLayout(components, components->renderComp.buffers.glyphTextures[atlasIndex].textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure from CPU Memory!\n");
 		return false;
 	}
 
-	copyBufferToImage(components, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
+	copyBufferToImage(components, stagingBuffer, components->renderComp.buffers.glyphTextures[atlasIndex].textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
-	generateMipmaps(components, *textureImage, format, texture.texWidth, texture.texHeight, texture.mipLevels);
+	generateMipmaps(components, components->renderComp.buffers.glyphTextures[atlasIndex].textureImage, format, texture.texWidth, texture.texHeight, texture.mipLevels);
 
 	// TODO: Figure out if this case ever occurs
 	/*if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
@@ -406,7 +405,8 @@ bool createTextureImageFromCPUMemory(VulkanComponents* components, VkImage* text
 	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
 	vkFreeMemory(components->deviceQueueComp.device, stagingBufferMemory, NULL);
 	
-	if(!createTextureImageView(components, *textureImage, textureImageView, format, texture.mipLevels))
+	if(!createTextureImageView(components, components->renderComp.buffers.glyphTextures[atlasIndex].textureImage,
+		&components->renderComp.buffers.glyphTextures[atlasIndex].textureImageView, format, texture.mipLevels))
 	{
 		printf("Image view creation failure from CPU Memory!\n");
 		return false;

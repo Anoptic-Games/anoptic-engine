@@ -132,6 +132,14 @@ typedef struct EntityBuffer
 	void* transformMapped;
 } EntityBuffer;
 
+typedef struct GlyphTexture
+{
+	uint32_t sampler;
+	VkImage textureImage;
+	VkDeviceMemory textureImageMemory;
+	VkImageView textureImageView;
+} GlyphTexture;
+
 typedef struct BufferComponents 
 {
 	EntityBuffer* entities;
@@ -143,6 +151,9 @@ typedef struct BufferComponents
 	VkImage depth[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory depthMemory[MAX_FRAMES_IN_FLIGHT];
 	VkImageView depthView[MAX_FRAMES_IN_FLIGHT];
+	//!TODO clean this up
+	GlyphTexture* glyphTextures;
+	uint32_t glyphTextureCount;
 } BufferComponents;
 
 
@@ -231,13 +242,7 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 	Monitors *monitors;
 };
 
-typedef struct GlyphTexture
-{
-	uint32_t sampler;
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
-	VkImageView textureImageView;
-} GlyphTexture;
+
 
 
 #endif

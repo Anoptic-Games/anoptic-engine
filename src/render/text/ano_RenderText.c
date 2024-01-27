@@ -185,9 +185,6 @@ int ft_render_glyph_atlas(CharAtlas* atlas_buffer, FT_ULong start, FT_ULong end)
             }
         }
     }
-
-	free(atlas_buffer->texels);
-	free(atlas_buffer->patterns);
-	
+    	
     return true;
 }
