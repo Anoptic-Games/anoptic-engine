@@ -81,6 +81,7 @@ void measureFrameTime()
 
 
 // Main function
+#include "anoptic_strings.h"
 #include "anoptic_logging.h"
 int main()
 {
@@ -96,6 +97,12 @@ int main()
     int gigaMallocStatus = mi_reserve_huge_os_pages_at(4, 0, 10000);
     printf("Huge Page Status: %d\n", gigaMallocStatus);
 	printf("Running in debug mode!\n");
+
+
+
+    autoStringTest();
+
+
 
     int ladcount = 128;
     int *theboys = mi_malloc(ladcount * sizeof(int));
@@ -132,7 +139,7 @@ int main()
     ano_log_cleanup();
 
 	#endif
-
+    /*
 	// Initialize Vulkan
 	if (!initVulkan())
 	{
@@ -162,5 +169,6 @@ int main()
 
     // Clean up
     // unInitVulkan();
+    */
     return 0;
 }
