@@ -8,6 +8,7 @@
 FT_Library FT_ano_Library;
 FT_Face face; //TODO:Make this take multiple fonts.
 
+// Initializes a FreeType instance
 int ft_init()
 {
     if (FT_Init_FreeType(&FT_ano_Library))
@@ -20,6 +21,7 @@ int ft_init()
     return 1;
 }
 
+// Adds a font-face to the active FreeType instance
 void ft_add_font(char* file_path, int face_index)
 {
     FT_Error error = FT_New_Face(FT_ano_Library, file_path, face_index, &face);
@@ -38,6 +40,7 @@ void ft_add_font(char* file_path, int face_index)
     }
 }
 
+// Renders a single glyph
 int ft_load_glyph_bitmap(FT_ULong glyph)
 {
     FT_UInt glyph_index =  FT_Get_Char_Index(face, glyph);
@@ -57,6 +60,7 @@ int ft_load_glyph_bitmap(FT_ULong glyph)
     return 1;
 }
 
+// Renders and returns a single glyph's bitmap
 FT_Bitmap* ft_get_glyph_bitmap(FT_ULong glyph)
 {
     ft_load_glyph_bitmap(glyph);
@@ -77,9 +81,10 @@ int ft_debug_save_glyph(char* filename, FT_ULong glyph)
     return stbi_write_bmp(filename, (int)glyph_bitmap->width, (int)glyph_bitmap->rows, 3, expanded_glyph_buffer);
 }
 
+// Renders a glyph atlas covering the specified value range, saves to disk
 int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
 {
-    uint32_t max_glyph_width, max_glyph_height = 0;
+    uint32_t max_glyph_width = 0, max_glyph_height = 0;
     uint32_t glyph_count = (end - start) + 1;
     uint32_t atlas_dimensions = 1;
 

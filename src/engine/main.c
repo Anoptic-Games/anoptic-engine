@@ -97,13 +97,13 @@ int main()
 	}
 
 	ft_init();
-	ft_add_font("Oswald-VariableFont_wght.ttf", 0);
+	ft_add_font("Oswald-Regular.ttf", 0);
 
 	FT_Bitmap* bitmap = ft_get_glyph_bitmap(65);
 	printf("Glyph Width is: %i\n", bitmap->width);
 	printf("Glyph Height is: %i\n", bitmap->rows);
 	//ft_debug_save_glyph("Test.bmp", 66);
-	ft_debug_save_glyph_atlas("Example_glyph_atlas.bmp", 0, 255);
+	ft_debug_save_glyph_atlas("Example_glyph_atlas.bmp", 0, 570);
 	// Create a graphics pipeline
 	
 	//parseGltf("viking_room.gltf");

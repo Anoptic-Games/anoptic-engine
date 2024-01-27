@@ -356,6 +356,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Initialize swapchain
 	components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
 	if (components.swapChainComp.swapChainGroup.swapChain == NULL)
 	{
@@ -363,7 +364,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
-	
+
+	// Create image views for swapchain images
 	components.swapChainComp.viewGroup = createImageViews(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup);
 	if (components.swapChainComp.viewGroup.views == NULL)
 	{
@@ -372,6 +374,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Create the main command pool
 	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
 						   components.surface, &(components.cmdComp.commandPool)))
 	{
@@ -380,6 +383,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Create color resources (multisampled 3D render target)
 	createColorResources(&components); // Make this a bool and add check
 
 	if(!createDepthResources(&components))
@@ -387,6 +391,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: depth resource creation failure!\n");
 	}
 
+	// Creates a render pass
 	if (!createRenderPass(&components, components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
 						  &(components.renderComp.renderPass)))
 	{
@@ -395,6 +400,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Initializes the primary graphics pipeline
 	components.renderComp.graphicsPipeline = createGraphicsPipeline(&components);
 	if (components.renderComp.graphicsPipeline == NULL)
 	{
@@ -402,8 +408,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
-	printf("Framebuffers\n");
 
+	// Create framebuffers
+	printf("Framebuffers\n");
 	if (!createFramebuffers(&components))
 	{
 		printf("Quitting init: framebuffer failure!\n");
@@ -425,6 +432,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}*/
 
+	// Creates 8-bit RGB texture sampler
 	if(!createTextureSampler(&components))
 	{
 		printf("Quitting init: texture sampler failure!\n");
@@ -432,6 +440,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+
+	// Load mesh data from glTF file
 	components.renderComp.buffers.entityCount = 1;
 
 	if(!parseGltf(&components, "viking_room.gltf"))
@@ -470,6 +480,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}*/
 
+	// Creates 3D projection uniform buffers (matrices determining camera position and properties), one for each swapchain image
 	if (!createUniformBuffers(&components))
 	{
 		printf("Quitting init: uniform buffer creation failure!\n");
@@ -477,6 +488,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Creates mesh position, rotation, and scale buffers for each entity rendered
 	if (!createTransformBuffers(&components))
 	{
 		printf("Quitting init: transform buffer creation failure!\n");
@@ -484,7 +496,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// HERE
+	// Creates a pool for 3D projection descriptors
 	if (!createDescriptorPool(&components))
 	{
 		printf("Quitting init: UBO descriptor pool creation failure!\n");
@@ -492,6 +504,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Creates a pool for mesh transform descriptors
 	if (!createMeshDescriptorPool(&components))
 	{
 		printf("Quitting init: mesh descriptor pool creation failure!\n");
@@ -499,6 +512,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Creates descriptor sets for 3D projection
 	if (!createDescriptorSets(&components))
 	{
 		printf("Quitting init: UBO descriptor sets creation failure!\n");
@@ -506,6 +520,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Creates descriptor sets for mesh transforms
 	if (!createMeshDescriptorSets(&components))
 	{
 		printf("Quitting init: mesh descriptor pool creation failure!\n");
@@ -513,9 +528,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// These two initialize and populate the descriptor sets
 	updateUboDescriptorSets(&components);
 	updateMeshDescriptorSets(&components);
 
+	// Creates a command buffer
 	if (!createCommandBuffer(&components))
 	{
 		printf("Quitting init: command buffer failure!\n");
@@ -524,6 +541,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 	
 
+	// Creates fences and semaphores for frame synchronization
 	if (!createSyncObjects(&components))
 	{
 		printf("Quitting init: sync failure!\n");
@@ -533,9 +551,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	printf("Instance creation complete!\n");
 
+	// Returns true
 	return true;
 }
 
+// Creates a bitmap of a single character
 void drawChar(FT_ULong glyph_number)
 {
 	Texture8 texture = {};
