@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <mimalloc.h>
 #include <stdlib.h>
+#include "anoptic_memory.h"
 
 // Anoptic Strings Implementation
 
@@ -16,10 +17,11 @@ void intCleanup(const int *in) {
     printf("Cleanup function received number of value of: %d\n", *in);
 }
 
-
+/*
 void heapCleanup(mi_heap_t **in) {
     mi_heap_destroy(*in);
 }
+*/
 
 typedef void ano_void;
 typedef _BitInt(128) u128;
@@ -40,6 +42,7 @@ typedef struct {
 int autoStringTest() {
 
     uint8_t someBytes[1024];
+    uint8_t* stackBytes = ano_salloc(42);
 
     if (true) {
         int intVar __attribute__((__cleanup__(intCleanup))) = 88; // This SIMPLETON here...
@@ -47,10 +50,10 @@ int autoStringTest() {
 
     // Trvly scope-local and thread-local Heap
     if (true) {
-        mi_heap_t *dirleHeap __attribute__((__cleanup__(heapCleanup)))= mi_heap_new();
+        mi_heap_t *dirleHeap LOCALHEAPATTR = mi_heap_new();
 
         dirle_chariot_t *dirleChariots = mi_heap_zalloc_aligned(dirleHeap,
-                                                    226500 * 8192 * sizeof(dirle_chariot_t),
+                                                    4096 * 8192 * sizeof(dirle_chariot_t),
                                                     sizeof(dirle_chariot_t));
         dirle_chariot_t **dirlePanzers = mi_heap_zalloc_aligned(dirleHeap,
                                                     4096 * sizeof(dirle_chariot_t),

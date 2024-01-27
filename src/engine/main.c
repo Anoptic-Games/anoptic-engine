@@ -139,7 +139,7 @@ int main()
     ano_log_cleanup();
 
 	#endif
-    /*
+
 	// Initialize Vulkan
 	if (!initVulkan())
 	{
@@ -169,6 +169,6 @@ int main()
 
     // Clean up
     // unInitVulkan();
-    */
+
     return 0;
 }
