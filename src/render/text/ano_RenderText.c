@@ -8,6 +8,7 @@
 FT_Library FT_ano_Library;
 FT_Face face; //TODO:Make this take multiple fonts.
 
+
 // Initializes a FreeType instance
 int ft_init()
 {
@@ -99,16 +100,14 @@ int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
         max_glyph_width = glyph->width > max_glyph_width ? glyph->width: max_glyph_width;
         max_glyph_height = glyph->rows > max_glyph_height ? glyph->rows: max_glyph_height;
     }
+    
+	CharAtlas atlas_buffer;
 
-    uint32_t atlas_width = atlas_dimensions * max_glyph_width;
-    uint32_t atlas_height = atlas_dimensions * max_glyph_height;
+    atlas_buffer.width = atlas_dimensions * max_glyph_width;
+    atlas_buffer.height = atlas_dimensions * max_glyph_height;
 
-    unsigned char atlas_buffer[atlas_width * atlas_height * 3];
-    for (int i = 0; i < atlas_width * atlas_height * 3; i++)
-    {
-        atlas_buffer[i] = 0;
-    }
-
+    atlas_buffer.texels = calloc(sizeof(BMPtexel), atlas_buffer.width * atlas_buffer.height);
+    
     for (int i = 0; i < glyph_count; i++)
     {
         uint32_t x_pos = (i % atlas_dimensions) * max_glyph_width;
@@ -119,13 +118,76 @@ int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
         {
             for (int x = 0; x < glyph_bitmap->width; x++)
             {
-                uint32_t target_position = (x_pos + x + ((y + y_pos) * atlas_width)) * 3;
-                atlas_buffer[target_position] = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
-                atlas_buffer[target_position+1] = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
-                atlas_buffer[target_position+2] = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+                uint32_t target_position = (x_pos + x + ((y + y_pos) * atlas_buffer.width));
+                atlas_buffer.texels[target_position].r = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+                atlas_buffer.texels[target_position].g = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+                atlas_buffer.texels[target_position].b = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
             }
         }
     }
 
-    return stbi_write_bmp(filename, (int)atlas_width, (int)atlas_height, 3, atlas_buffer);
+	int result = stbi_write_bmp(filename, (int)atlas_buffer.width,
+								(int)atlas_buffer.height, 3, atlas_buffer.texels);
+
+	free(atlas_buffer.texels);
+
+    return result;
+}
+
+// Renders a glyph atlas covering the specified value range to given pointer,
+// returns status code
+int ft_render_glyph_atlas(CharAtlas* atlas_buffer, FT_ULong start, FT_ULong end)
+{
+    uint32_t max_glyph_width = 0, max_glyph_height = 0;
+    uint32_t glyph_count = (end - start) + 1;
+    uint32_t atlas_dimensions = 1;
+
+    while ((atlas_dimensions * atlas_dimensions) < glyph_count)
+    {
+        atlas_dimensions++;
+    }
+
+    for (int i = 0; i < glyph_count; i ++)
+    {
+        FT_Bitmap* glyph = ft_get_glyph_bitmap(start + i);
+        max_glyph_width = glyph->width > max_glyph_width ? glyph->width: max_glyph_width;
+        max_glyph_height = glyph->rows > max_glyph_height ? glyph->rows: max_glyph_height;
+    }
+    
+    atlas_buffer->width = atlas_dimensions * max_glyph_width;
+    atlas_buffer->height = atlas_dimensions * max_glyph_height;
+
+    atlas_buffer->texels = calloc(sizeof(BMPtexel), atlas_buffer->width * atlas_buffer->height);
+    atlas_buffer->patternCount = glyph_count;
+	atlas_buffer->patterns = calloc(sizeof(CharPattern), glyph_count);
+    
+    for (int i = 0; i < glyph_count; i++)
+    {
+        uint32_t x_pos = (i % atlas_dimensions) * max_glyph_width;
+        uint32_t y_pos = (i / atlas_dimensions) * max_glyph_height;
+        FT_Bitmap* glyph_bitmap = ft_get_glyph_bitmap(start + i);
+
+		//!TODO these should be determined more finely based on the glyphs' actual dimensions and
+		// positioning within each cell + kerning info
+		atlas_buffer->patterns[i].startWidth = x_pos;
+		atlas_buffer->patterns[i].startHeight = y_pos;
+		atlas_buffer->patterns[i].endWidth = x_pos + max_glyph_width;
+		atlas_buffer->patterns[i].endHeight = y_pos + max_glyph_height;
+
+        for (int y = 0; y < glyph_bitmap->rows; y++)
+        {
+            for (int x = 0; x < glyph_bitmap->width; x++)
+            {
+                uint32_t target_position = (x_pos + x + ((y + y_pos) * atlas_buffer->width));
+                atlas_buffer->texels[target_position].r = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+                atlas_buffer->texels[target_position].g = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+                atlas_buffer->texels[target_position].b = glyph_bitmap->buffer[x + (y * glyph_bitmap->width)];
+            }
+        }
+    }
+
+	free(atlas_buffer->texels);
+	free(atlas_buffer->patterns);
+	
+    return true;
 }
