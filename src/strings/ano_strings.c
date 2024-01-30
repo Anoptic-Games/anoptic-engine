@@ -11,7 +11,13 @@
 #include "anoptic_memory.h"
 
 // Anoptic Strings Implementation
+void anostr_cleanup(anostr_t *in) {
+    // TODO: Add additional logic to check if it's actually managed by mimalloc.
+    mi_free(in->buffer);
+}
 
+
+// --------------------------- TESTING ---------------------------
 void intCleanup(const int *in) {
 
     printf("Cleanup function received number of value of: %d\n", *in);
@@ -39,8 +45,25 @@ typedef struct {
     uint8_t wheels;
 } dirle_chariot_t;
 
+void stringAllocator(anostr_t *input) {
+    input->len = 5;
+    input->buffer = malloc(sizeof(char) * input->len);
+    input->buffer[0] = 'M';
+    input->buffer[0] = 'e';
+    input->buffer[0] = 'o';
+    input->buffer[0] = 'w';
+    input->buffer[0] = '\0';
+}
+
 int autoStringTest() {
 
+    /*
+    if (true) {
+        anostr_t myString;
+        stringAllocator(&myString);
+        printf("%s", myString.buffer);
+    }
+    */
     uint8_t someBytes[1024];
     uint8_t* stackBytes = ano_salloc(42);
 
