@@ -25,8 +25,9 @@ struct Buffer
 bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass);
 
 // Creates a graphics pipeline
-VkPipeline createGraphicsPipeline(VulkanComponents* components);
+VkPipeline create3DPipeline(VulkanComponents* components);
 
+VkPipeline createFinalImagePipeline(VulkanComponents* components);
 
 
 #endif
