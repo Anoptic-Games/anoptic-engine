@@ -126,6 +126,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].indexCount, 1, 0, 0, 0);
 	}
 	
+	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.uiPipeline);
 
 	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
