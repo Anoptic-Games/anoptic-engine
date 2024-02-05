@@ -7,38 +7,62 @@
 #define ANOPTICENGINE_ANOPTIC_STRINGS_H
 
 #include <stdint.h>
-#include <anoptic_memory.h>
+#include <string.h>
+#include "anoptic_memory.h"
 
 // Anoptic String API
 int autoStringTest();
 
+// String type encapsulating a length a char buffer.
+// Valid storage for ASCII and UTF-8 strings.
 typedef struct {
-    char* buffer;   // "adadad----42th"
-    uint32_t len;   // 42
+    char* buffer;
+    size_t len;
 } anostr_t;
 
+// Immutable string type.
+typedef struct {
+    const char* buffer;
+    size_t len;
+} anostrview_t;
+
+// Type encapsulating an index to a UTF-8 codepoint.
+typedef struct {
+    int32_t index;
+    uint8_t bytesize;
+} anostr_utfhandle_t;
+
 // Cleanup Utilities
-// Frees the anostr_t.buffer allocation.
 void anostr_cleanup(anostr_t *in);
 void anostrbuf_cleanup(char **in);
 
-// UTF-8 Support
-// Get the length of a character buffer in bytes.
-int anostr_bytelen();
+// Get the length of a character string in bytes.
+int anostr_bytelen(const char *in, size_t max);
 
 // Get the number of characters in a UTF-8 string.
-int anostr_utflen();
+int anostr_utflen(const char *in, size_t max);
+
+// Returns a utfhandle (index and bytesize) of the next codepoint in UTF-8 sequence.
+anostr_utfhandle_t anostr_utfnexthdl(anostr_utfhandle_t currentIndex, anostr_t utfString);
+
+// Puts the next UTF-8 codepoint into the *out parameter. Returns the index of the codepoint's start (or -1 if invalid).
+int anostr_utfnextchar(int index, const char *in, char *out); // TODO: size_t max ??
 
 // Check if a UTF-8 string is valid.
-// Returns True if valid, False if not.
-bool anostr_utfcheck();
+bool anostr_utfstrcheck(anostr_t utfString);
+
+// Check if a UTF-8 codepoint is valid.
+bool anostr_utfcodecheck(int index, const char *in);
 
 // Convert a wchar UTF-16 string to a standard UTF-8 string.
-int anostr_utf16_to_utf8();
+int anostr_utfconv_16to8(const wchar_t *in, char *out);
 
-// Unmanaged string slices.
-anostr_t anostr_byteslice(anostr_t in, uint32_t startByte, uint32_t endByte);
-anostr_t anostr_utfslice(anostr_t in, uint32_t startChar, uint32_t endChar);
+// Convert a UTF-8 string to a wchar UTF-16 string.
+int anostr_utfconv_8to16(const char *in, wchar_t *out);
+
+// Unmanaged string slices. // TODO: hmmmm
+anostrview_t anostr_byteslice(anostr_t in, uint32_t startByte, uint32_t endByte);
+anostrview_t anostr_utfslice(anostr_t in, uint32_t startChar, uint32_t endChar);
 
 // Managed string slice macros with scoped de-allocation. // TODO: WIP
 // Stack Slices

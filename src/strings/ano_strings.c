@@ -6,7 +6,6 @@
 #include "anoptic_strings.h"
 
 #include <stdio.h>
-#include <mimalloc.h>
 #include <stdlib.h>
 #include "anoptic_memory.h"
 
@@ -22,12 +21,6 @@ void intCleanup(const int *in) {
 
     printf("Cleanup function received number of value of: %d\n", *in);
 }
-
-/*
-void heapCleanup(mi_heap_t **in) {
-    mi_heap_destroy(*in);
-}
-*/
 
 typedef void ano_void;
 typedef _BitInt(128) u128;
@@ -57,13 +50,6 @@ void stringAllocator(anostr_t *input) {
 
 int autoStringTest() {
 
-    /*
-    if (true) {
-        anostr_t myString;
-        stringAllocator(&myString);
-        printf("%s", myString.buffer);
-    }
-    */
     uint8_t someBytes[1024];
     uint8_t* stackBytes = ano_salloc(42);
 
@@ -113,6 +99,10 @@ int autoStringTest() {
         printf("All chariots released from hell.");
 
     }
+
+    anostr_t meow = {"abcdefhijklmnop\0", 16};
+    //ANOSTR_HEAP_UTFSLICE(meow, 2, 5); // TODO: this might be quite interesting...
+    //ANOSTR_STACK_UTFSLICE(meow, 2, 5);
 
     printf("\n\n\nKALI I CALL ON THEE\n\n\n");
 

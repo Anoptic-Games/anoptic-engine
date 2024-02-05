@@ -98,30 +98,15 @@ int main()
     printf("Huge Page Status: %d\n", gigaMallocStatus);
 	printf("Running in debug mode!\n");
 
-
-
-    autoStringTest();
-
-
-
-    int ladcount = 128;
-    int *theboys = mi_malloc(ladcount * sizeof(int));
-    for (int i = 0; i < ladcount; i++) {
-        theboys[i] = i + 1;
-    }
-
-    printf("Printing mi_malloc'd heap contents");
-    for (int i = 0; i < ladcount; i++) {
-        printf("Lad %d contents: %d\n", i, theboys[i]);
-    }
-
-    mi_free(theboys);
-
-    // huge malloc
-    //uint64_t *hugeBox = mi_malloc(1000000000 * sizeof(uint64_t));   // This fucks up the heap
-    //mi_free(hugeBox);
-
     ano_log_init();
+    ano_log_debug_now("\nchar*\t%d\n"
+                      "size_t\t%d\n"
+                      "uint32_t\t%d\n"
+                      "uint16_t\t%d\n"
+                      "anostr_t\t%d\n",
+                      sizeof(char*), sizeof(size_t), sizeof(uint32_t), sizeof(uint16_t), sizeof(anostr_t));
+
+
     for(int i = 0; i < 172; i++) {
         ano_log_error("Enqueued Log Message # %d\n", (i + 1));
     }
