@@ -50,7 +50,7 @@ int enqueue_log_string(int len, const char* string) {
     }
 
     // Bounds checking to ensure we're not writing past the tail.
-    if ((log_buffer.tail_index + len) >= LOG_BUFFER_MAX) {
+    if ((log_buffer.tail_index + len) >= LOG_BUFFER_MAX) { // TODO: replace this with a memcpy
         ano_mutex_unlock(&log_buffer_mtx);
         fprintf(stderr, "enqueue_log_string -> Buffer Full, Writing Message in Immediate Mode!\n");
         // write_to_log_file(string, output_file_path);
@@ -109,7 +109,7 @@ int write_all_buffered() {
     }
 
     // Copy Log Buffer data to a local fileMsg
-    for(int i = 0; i < log_buffer.tail_index; i++) { // TODO: Check bounds gn
+    for(int i = 0; i < log_buffer.tail_index; i++) { // TODO: replace this with a clean memcpy
         char c = log_buffer.data[i];
         if (c == '\0' && i != (log_buffer.tail_index - 1))
             fileMsg[i] = '\n';

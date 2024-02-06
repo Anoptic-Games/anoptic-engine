@@ -101,7 +101,8 @@ int autoStringTest() {
     }
 
     anostr_t meow = {"abcdefhijklmnop\0", 16};
-    //ANOSTR_HEAP_UTFSLICE(meow, 2, 5); // TODO: this might be quite interesting...
+    ANOSTR_HEAP_BYTESLICE(meow, 2, 5, meow.len); // TODO: this might be quite interesting...
+    ANOSTR_STACK_BYTESLICE(meow, 2, 5, meow.len);
     //ANOSTR_STACK_UTFSLICE(meow, 2, 5);
 
     printf("\n\n\nKALI I CALL ON THEE\n\n\n");
