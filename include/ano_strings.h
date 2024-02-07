@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#ifndef ANOPTICENGINE_ANOPTIC_STRINGS_H
-#define ANOPTICENGINE_ANOPTIC_STRINGS_H
+#ifndef ANOPTICENGINE_ANO_STRINGS_H
+#define ANOPTICENGINE_ANO_STRINGS_H
 
 #include <stdint.h>
 #include <string.h>
@@ -40,7 +40,7 @@ int anostr_bytelen(const char *in, size_t max);
 int anostr_utflen(const char *in, size_t max);
 
 // Returns a utfhandle (index and bytesize) of the next codepoint in UTF-8 sequence.
-anostr_utfhandle_t anostr_utfnexthdl(anostr_utfhandle_t currentIndex, anostr_t utfString);
+anostr_utfhandle_t anostr_utfnexthandle(anostr_utfhandle_t currentIndex, anostr_t utfString);
 
 // Puts the next UTF-8 codepoint into the *out parameter. Returns the index of the codepoint's start (or -1 if invalid).
 int anostr_utfnextchar(int index, const char *in, char *out, size_t max);
@@ -58,7 +58,7 @@ int anostr_utfconv_16to8(const wchar_t *in, char *out, size_t max);
 int anostr_utfconv_8to16(const char *in, wchar_t *out, size_t max);
 
 // Unmanaged string slices. // TODO: hmmmm
-//anostr_t anostr_byteslice(anostr_t in, uint32_t startByte, uint32_t endByte);
+// anostr_t anostr_byteslice(anostr_t in, uint32_t startByte, uint32_t endByte);
 anostr_t anostr_utfslice(anostr_t in, size_t startChar, size_t endChar);
 
 // Puts the slice between 'start' and 'end' in *out parameter, returns size of *out in bytes.
@@ -76,15 +76,6 @@ int anostr_byteslice(const char *in, char *out, size_t start, size_t end, size_t
         (anostr_t){ .buffer = _stack_mem, .len = _sliceSize }; \
     })
 
-// TODO: fix
-#define ANOSTR_STACK_UTFSLICE(in, startChar, endChar) \
-    ({ \
-        anostr_t _slice = anostr_utfslice(in, startChar, endChar); \
-        char* _stack_mem = (char*)ano_salloc(_slice.len); \
-        memcpy(_stack_mem, _slice.buffer, _slice.len); \
-        (anostr_t){ .buffer = _stack_mem, .len = _slice.len }; \
-    })
-
 // Managed Heap Slices
 #define ANOSTR_HEAP_BYTESLICE(in, startByte, endByte, max)  \
     ({                                                      \
@@ -95,6 +86,15 @@ int anostr_byteslice(const char *in, char *out, size_t start, size_t end, size_t
         (anostr_t){ .buffer = _heap_mem, .len = _sliceSize }; \
     })
 
+
+// TODO: fix
+#define ANOSTR_STACK_UTFSLICE(in, startChar, endChar) \
+    ({ \
+        anostr_t _slice = anostr_utfslice(in, startChar, endChar); \
+        char* _stack_mem = (char*)ano_salloc(_slice.len); \
+        memcpy(_stack_mem, _slice.buffer, _slice.len); \
+        (anostr_t){ .buffer = _stack_mem, .len = _slice.len }; \
+    })
 // TODO: fix
 #define ANOSTR_HEAP_UTFSLICE(in, startChar, endChar) \
     ({ \
@@ -104,4 +104,4 @@ int anostr_byteslice(const char *in, char *out, size_t start, size_t end, size_t
         (anostr_t){ .buffer = _heap_mem, .len = _slice.len }; \
     })
 
-#endif //ANOPTICENGINE_ANOPTIC_STRINGS_H
+#endif //ANOPTICENGINE_ANO_STRINGS_H

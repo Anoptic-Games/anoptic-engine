@@ -81,7 +81,7 @@ void measureFrameTime()
 
 
 // Main function
-#include "anoptic_strings.h"
+#include "ano_strings.h"
 #include "anoptic_logging.h"
 int main()
 {

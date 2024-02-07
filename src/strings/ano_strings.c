@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#include "anoptic_strings.h"
+#include "ano_strings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,98 +14,70 @@ void anostr_cleanup(anostr_t *in) {
     // TODO: Add additional logic to check if it's actually managed by mimalloc.
     mi_free(in->buffer);
 }
+// Custom strncpy implementation using SIMD optimization.
+int anostrncpy(const char *in, char * out, size_t max) {
 
-
-// --------------------------- TESTING ---------------------------
-void intCleanup(const int *in) {
-
-    printf("Cleanup function received number of value of: %d\n", *in);
+    return 0;
 }
 
-typedef void ano_void;
-typedef _BitInt(128) u128;
+// Get the length of a character string in bytes.
+int anostr_bytelen(const char *in, size_t max) {
 
-typedef struct {
-    union {
-        struct {
-            uint64_t tdLo;
-            uint64_t tdHi;
-        };
-        u128 tnd; // -IBM
-    };
-    uint64_t wpUUID;
-    uint32_t irctdb;
-    uint8_t wheels;
-} dirle_chariot_t;
-
-void stringAllocator(anostr_t *input) {
-    input->len = 5;
-    input->buffer = malloc(sizeof(char) * input->len);
-    input->buffer[0] = 'M';
-    input->buffer[0] = 'e';
-    input->buffer[0] = 'o';
-    input->buffer[0] = 'w';
-    input->buffer[0] = '\0';
+    return 0;
 }
 
-int autoStringTest() {
+// Get the number of characters in a UTF-8 string.
+int anostr_utflen(const char *in, size_t max) {
 
-    uint8_t someBytes[1024];
-    uint8_t* stackBytes = ano_salloc(42);
+    return 0;
+}
 
-    if (true) {
-        int intVar __attribute__((__cleanup__(intCleanup))) = 88; // This SIMPLETON here...
-    }
+// Returns a utfhandle (index and bytesize) of the next codepoint in UTF-8 sequence.
+anostr_utfhandle_t anostr_utfnexthandle(anostr_utfhandle_t currentIndex, anostr_t utfString) {
 
-    // Trvly scope-local and thread-local Heap
-    if (true) {
-        mi_heap_t *dirleHeap LOCALHEAPATTR = mi_heap_new();
+    return (anostr_utfhandle_t){ 0, 0};
+}
 
-        dirle_chariot_t *dirleChariots = mi_heap_zalloc_aligned(dirleHeap,
-                                                    4096 * 8192 * sizeof(dirle_chariot_t),
-                                                    sizeof(dirle_chariot_t));
-        dirle_chariot_t **dirlePanzers = mi_heap_zalloc_aligned(dirleHeap,
-                                                    4096 * sizeof(dirle_chariot_t),
-                                                    sizeof(dirle_chariot_t));
-        ano_void *dirleWagens = mi_heap_zalloc_aligned(dirleHeap,
-                                                    4096 * sizeof(dirle_chariot_t),
-                                                    sizeof(dirle_chariot_t));
-        // Much like Wagen itself, which can mean a variety of things...
-        // Non-pursuant to anything of... military value.
+// Puts the next UTF-8 codepoint into the *out parameter. Returns the index of the codepoint's start (or -1 if invalid).
+int anostr_utfnextchar(int index, const char *in, char *out, size_t max) {
 
-        dirle_chariot_t *firstOne = &dirleChariots[0];
-        firstOne->tdLo = 0x1488148823237123;
-        firstOne->tdHi = 0x1231488223444777;
-        firstOne->wpUUID = 0x1488abab;
-        firstOne->irctdb = 872282;
-        firstOne->wheels = 8;
-        printf("%llu\t%llu\n\n", firstOne->tdLo, firstOne->tdHi);
-        printf("%llx\n", (unsigned long long)(firstOne->tnd & 0xFFFFFFFFFFFFFFFF));
+    return 0;
+}
 
-        dirleChariots[1].tnd = 0x1488148813374444;
-        dirleChariots[1].wpUUID = 0x1488abac;
-        dirleChariots[1].irctdb = 2222;
-        dirleChariots[1].wheels = 6;
-        printf("%llu\t%llu\n\n", dirleChariots[1].tdLo, dirleChariots[1].tdHi);
+// Check if a UTF-8 string is valid.
+bool anostr_utfstrcheck(anostr_t utfString) {
 
-        srand(0x1488);
-        for (uint32_t i = 2; i < 4096; i++) {
-            dirleChariots[i].tdLo = rand();
-            dirleChariots[i].tdHi = rand();
-            dirleChariots[i].wpUUID = rand();
-            dirleChariots[i].irctdb = rand() % 40000;
-            dirleChariots[i].wheels = rand() % 16;
-        }
-        printf("All chariots released from hell.");
+    return false;
+}
 
-    }
+// Check if a UTF-8 codepoint is valid.
+bool anostr_utfcodecheck(const char *in) {
 
-    anostr_t meow = {"abcdefhijklmnop\0", 16};
-    ANOSTR_HEAP_BYTESLICE(meow, 2, 5, meow.len); // TODO: this might be quite interesting...
-    ANOSTR_STACK_BYTESLICE(meow, 2, 5, meow.len);
-    //ANOSTR_STACK_UTFSLICE(meow, 2, 5);
+    return false;
+}
 
-    printf("\n\n\nKALI I CALL ON THEE\n\n\n");
+// Convert a wchar UTF-16 string to a standard UTF-8 string.
+int anostr_utfconv_16to8(const wchar_t *in, char *out, size_t max) {
+
+    return 0;
+}
+
+// Convert a UTF-8 string to a wchar UTF-16 string.
+int anostr_utfconv_8to16(const char *in, wchar_t *out, size_t max) {
+
+    return 0;
+}
+
+// Unmanaged string slices. // TODO: hmmmm
+// anostr_t anostr_byteslice(anostr_t in, uint32_t startByte, uint32_t endByte);
+anostr_t anostr_utfslice(anostr_t in, size_t startChar, size_t endChar) {
+
+
+    return (anostr_t) { "hello\0", 5};
+}
+
+// Puts the slice between 'start' and 'end' in *out parameter, returns size of *out in bytes.
+int anostr_byteslice(const char *in, char *out, size_t start, size_t end, size_t max) {
 
     return 0;
 }
