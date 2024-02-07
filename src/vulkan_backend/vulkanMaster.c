@@ -416,9 +416,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 	// Create color resources (multisampled 3D render target)
-	createIntermediaryResources(&components); // Make this a bool and add check
-
-	// UI resources go here
+	createColorResources(&components); // Make this a bool and add check
 
 	if(!createDepthResources(&components))
 	{
@@ -435,17 +433,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 	// Initializes the primary graphics pipeline
-	components.renderComp.graphicsPipeline = create3DPipeline(&components);
+	components.renderComp.graphicsPipeline = createGraphicsPipeline(&components);
 	if (components.renderComp.graphicsPipeline == NULL)
 	{
 		printf("Quitting init: pipeline failure!\n");
-		unInitVulkan();
-		return false;
-	}
-	components.renderComp.uiPipeline = createFinalImagePipeline(&components);
-	if (components.renderComp.uiPipeline == NULL)
-	{
-		printf("Quitting init: UI pipeline failure!\n");
 		unInitVulkan();
 		return false;
 	}

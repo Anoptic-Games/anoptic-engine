@@ -77,7 +77,7 @@ bool updateUniformBuffer(VulkanComponents* components);
 bool updateMeshTransforms(VulkanComponents* components, EntityBuffer* entity, float move);
 
 // Creates a color draw target for MSAA
-void createIntermediaryResources(VulkanComponents* components);
+void createColorResources(VulkanComponents* components);
 
 // Creates a depth image and view for the current swapchain
 bool createDepthResources(VulkanComponents* components);

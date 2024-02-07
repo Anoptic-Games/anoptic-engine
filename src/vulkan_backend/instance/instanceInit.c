@@ -798,8 +798,6 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
 	VkImage *swapChainImages = (VkImage *) calloc(imageCount, sizeof(VkImage));
 	vkGetSwapchainImagesKHR(components->deviceQueueComp.device, swapChain, &imageCount, swapChainImages);
 
-	// !IMPORTANT this should probably be changed, in the meantime ~NEVER~ add fresh info to .swapChainGroup
-	//            before calling initSwapChain()
 	SwapChainGroup swapChainGroup = {swapChain, chosenFormat.format, chosenExtent, imageCount, swapChainImages};
 	
 	return swapChainGroup;
@@ -881,7 +879,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 		exit(1);
 	}
 
-	createIntermediaryResources(components);
+	createColorResources(components);
 
 	createDepthResources(components);
 	if (components->renderComp.buffers.depthView[0] == NULL)
@@ -957,7 +955,6 @@ bool createFramebuffers(VulkanComponents* components)
 		{
 			components->swapChainComp.viewGroup.colorView,
 			components->renderComp.buffers.depthView[i],
-			components->swapChainComp.viewGroup.uiView,
 			components->swapChainComp.viewGroup.views[i]
 		};
 	
@@ -1285,17 +1282,17 @@ bool createDepthResources(VulkanComponents* components)
 	return true;
 }
 
-void createIntermediaryResources(VulkanComponents* components) //TODO: This probably should be generalized later?
+void createColorResources(VulkanComponents* components) //TODO: This probably should be generalized later?
 {
 	VkFormat colorFormat = components->swapChainComp.swapChainGroup.imageFormat;
 
 	createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
-				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.colorImage, &components->swapChainComp.swapChainGroup.colorImageMemory, false);
 	components->swapChainComp.viewGroup.colorView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 
 	createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
-				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.uiImage, &components->swapChainComp.swapChainGroup.uiImageMemory, false);
 	components->swapChainComp.viewGroup.uiView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.uiImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }
@@ -1332,7 +1329,7 @@ bool createMeshDescriptorPool(VulkanComponents* components)
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes) / sizeof(VkDescriptorPoolSize));
-	poolInfo.pPoolSizes = poolSizes;
+	poolInfo.pPoolSizes = &poolSizes;
 	poolInfo.maxSets = (uint32_t)components->renderComp.buffers.entityCount;
 
 	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.meshDescriptorPool)) != VK_SUCCESS)
@@ -1389,7 +1386,7 @@ bool createMeshDescriptorSets(VulkanComponents* components)
 
 	VkDescriptorSet* tempSets = calloc(entityCount, sizeof(VkDescriptorSet));
 
-	printf("!!DEBUG!!\nMesh descriptors: %d\n", (int)entityCount);
+	printf("!!DEBUG!!\nMesh descriptors: %d\n", entityCount);
 
 	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, tempSets) != VK_SUCCESS)
 	{

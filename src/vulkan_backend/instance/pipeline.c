@@ -104,22 +104,6 @@ bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat sw
 	depthAttachmentRef.attachment = 1;
 	depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-	// UI target - drawn on top of multisampled rasterized image
-	VkAttachmentDescription uiAttachment = {};
-	uiAttachment.format = swapChainImageFormat; // Use the same format as the swap chain
-	uiAttachment.samples = components->physicalDeviceComp.msaaSamples; // ~~No multisampling needed for UI~~ WRONG, it's getting multisampled
-	uiAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	uiAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; // Not storing UI to resolve attachment
-	uiAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	uiAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	uiAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	uiAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-	VkAttachmentReference uiAttachmentRef = {};
-	colorAttachmentRef.attachment = 2;
-	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-
 	// Present target - resolved from multisampled color image
 	VkAttachmentDescription colorAttachmentResolve = {};
 	colorAttachmentResolve.format = swapChainImageFormat;
@@ -132,55 +116,35 @@ bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat sw
 	colorAttachmentResolve.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
 	VkAttachmentReference colorAttachmentResolveRef = {};
-	colorAttachmentResolveRef.attachment = 3;
+	colorAttachmentResolveRef.attachment = 2;
 	colorAttachmentResolveRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-	VkSubpassDescription mainPass = {};
-	mainPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	mainPass.colorAttachmentCount = 1;
-	mainPass.pColorAttachments = &colorAttachmentRef;
-	mainPass.pDepthStencilAttachment = &depthAttachmentRef;
+	VkSubpassDescription subpass = {};
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &colorAttachmentRef;
+	subpass.pDepthStencilAttachment = &depthAttachmentRef;
+	subpass.pResolveAttachments = &colorAttachmentResolveRef;
 
-	VkSubpassDescription uiPass = {};
-	uiPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	uiPass.colorAttachmentCount = 1;
-	uiPass.pColorAttachments = &uiAttachmentRef;
-	uiPass.pInputAttachments = &colorAttachmentRef;
-	uiPass.pResolveAttachments = &colorAttachmentResolveRef;
-
-
-	VkAttachmentDescription attachments[] = {colorAttachment, depthAttachment, uiAttachment, colorAttachmentResolve};
-	VkSubpassDescription subPasses[] = {mainPass, uiPass};
+	VkAttachmentDescription attachments[] = {colorAttachment, depthAttachment, colorAttachmentResolve};
 
 	VkRenderPassCreateInfo renderPassInfo= {};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 	renderPassInfo.attachmentCount = sizeof(attachments)/sizeof(VkAttachmentDescription);
 	renderPassInfo.pAttachments = attachments;
-	renderPassInfo.subpassCount = 2;
-	renderPassInfo.pSubpasses = subPasses;
+	renderPassInfo.subpassCount = 1;
+	renderPassInfo.pSubpasses = &subpass;
 
-	// Dependencies for the first subpass, taking out-of-scope conditions (semaphores etc) for sync
 	VkSubpassDependency dependency = {};
 	dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
 	dependency.dstSubpass = 0;
-	dependency.dstStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+	dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 	dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 	dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 	dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
 
-	// Dependencies for the second subpass
-	VkSubpassDependency dependencyUI = {};
-	dependencyUI.srcSubpass = 0;  // First subpass
-	dependencyUI.dstSubpass = 1;  // Second subpass
-	dependencyUI.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencyUI.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	dependencyUI.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencyUI.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;  // Include write access for resolve
-
-	VkSubpassDependency dependencies[] = {dependency, dependencyUI};
-
-	renderPassInfo.dependencyCount = sizeof(dependencies) / sizeof(VkSubpassDependency);
-	renderPassInfo.pDependencies = dependencies;
+	renderPassInfo.dependencyCount = 1;
+	renderPassInfo.pDependencies = &dependency;
 
 	
 	if (vkCreateRenderPass(device, &renderPassInfo, NULL, renderPass) != VK_SUCCESS)
@@ -260,7 +224,7 @@ bool createMeshDescriptorSetLayout(VulkanComponents* components)
 
 // The juicy part
 
-VkPipeline create3DPipeline(VulkanComponents* components)
+VkPipeline createGraphicsPipeline(VulkanComponents* components)
 {
 	struct Buffer vertShaderCode;
 	char vertShaderPath[256]; // Adjust size as needed.
@@ -474,153 +438,6 @@ VkPipeline create3DPipeline(VulkanComponents* components)
 	vkDestroyShaderModule(components->deviceQueueComp.device, vertShaderModule, NULL);
 	vkDestroyShaderModule(components->deviceQueueComp.device, fragShaderModule, NULL);
 
-
-	return graphicsPipeline;
-}
-
-VkPipeline createFinalImagePipeline(VulkanComponents* components)
-{
-	// Load shader code, create shader modules, and set up shader stage creation info as before
-	struct Buffer uiShaderCode;
-	char uiShaderPath[256]; // Adjust size as needed.
-	snprintf(uiShaderPath, sizeof(uiShaderPath), "%s/resources/shaders/ui.spv", PROJECT_ROOT);
-	if (!loadFile(uiShaderPath, &uiShaderCode))
-	{
-		printf("Error loading UI shaders!\n");
-		return NULL;
-	}
-	printf("Loaded UI shader code!\n");
-
-	VkShaderModule uiShaderModule = createShaderModule(components->deviceQueueComp.device, &uiShaderCode);
-
-	if (uiShaderModule == NULL)
-	{
-		printf("We failed, bros..\n");
-		return NULL;
-	}
-	printf("Created UI shaders!\n");
-
-	VkPipelineShaderStageCreateInfo uiShaderStageInfo = {};
-	uiShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	uiShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	uiShaderStageInfo.module = uiShaderModule;
-	uiShaderStageInfo.pName = "main";
-
-
-	VkPipelineShaderStageCreateInfo shaderStages[1] = {uiShaderStageInfo};
-
-	// Viewport and scissor setup similar to before, if necessary
-
-	VkViewport viewport = {};
-	viewport.x = 0.0f;
-	viewport.y = 0.0f;
-	viewport.width = (float) components->swapChainComp.swapChainGroup.imageExtent.width;
-	viewport.height = (float) components->swapChainComp.swapChainGroup.imageExtent.height;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-
-	VkRect2D scissor = {};
-	scissor.offset = (VkOffset2D){0, 0};
-	scissor.extent = components->swapChainComp.swapChainGroup.imageExtent;
-
-	VkPipelineViewportStateCreateInfo viewportState = {};
-	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewportState.viewportCount = 1;
-	viewportState.pViewports = &viewport;
-	viewportState.scissorCount = 1;
-	viewportState.pScissors = &scissor;
-
-	// Dynamic state setup similar to before, if necessary
-
-	VkDynamicState dynamicStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-	VkPipelineDynamicStateCreateInfo dynamicState = {};
-	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicState.dynamicStateCount = 2;
-	dynamicState.pDynamicStates = dynamicStates;
-
-	// Pipeline layout setup similar to before
-
-	VkPipelineMultisampleStateCreateInfo multisampling = {};
-	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	multisampling.sampleShadingEnable = VK_FALSE;
-	multisampling.rasterizationSamples = components->physicalDeviceComp.msaaSamples;
-	multisampling.minSampleShading = 1.0f; // Optional
-	multisampling.pSampleMask = NULL; // Optional
-	multisampling.alphaToCoverageEnable = VK_FALSE; // Optional
-	multisampling.alphaToOneEnable = VK_FALSE; // Optional
-
-	VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
-	colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	colorBlendAttachment.blendEnable = VK_FALSE;
-	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
-	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD; // Optional
-	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
-	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
-
-	VkPipelineColorBlendStateCreateInfo colorBlending = {};
-	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	colorBlending.logicOpEnable = VK_FALSE;
-	colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
-	colorBlending.attachmentCount = 1;
-	colorBlending.pAttachments = &colorBlendAttachment;
-	colorBlending.blendConstants[0] = 0.0f; // Optional
-	colorBlending.blendConstants[1] = 0.0f; // Optional
-	colorBlending.blendConstants[2] = 0.0f; // Optional
-	colorBlending.blendConstants[3] = 0.0f; // Optional
-
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
-	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 0; // Optional
-	//VkDescriptorSetLayout setLayouts[2] = {components->renderComp.descriptorSetLayout, components->renderComp.meshDescriptorSetLayout};
-	pipelineLayoutInfo.pSetLayouts = NULL; // Optional
-	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
-	pipelineLayoutInfo.pPushConstantRanges = NULL; // Optional
-
-	printf("Creating UI pipeline layout!\n");
-	// Create pipeline layout similar to before
-	if (vkCreatePipelineLayout(components->deviceQueueComp.device, &pipelineLayoutInfo, NULL, &(components->renderComp.uiPipelineLayout)) != VK_SUCCESS) 
-	{
-		printf("Failed to create pipeline layout!\n");
-		return NULL;
-	}
-
-	// Graphics pipeline creation info
-	VkGraphicsPipelineCreateInfo pipelineInfo = {};
-	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	pipelineInfo.stageCount = 1;
-	pipelineInfo.pStages = shaderStages;
-	pipelineInfo.pVertexInputState = NULL;
-	pipelineInfo.pInputAssemblyState = NULL;
-	pipelineInfo.pViewportState = &viewportState;
-	pipelineInfo.pRasterizationState = NULL;
-	pipelineInfo.pMultisampleState = &multisampling;
-	pipelineInfo.pDepthStencilState = NULL;
-	pipelineInfo.pColorBlendState = &colorBlending;
-	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.layout = components->renderComp.uiPipelineLayout;
-	pipelineInfo.renderPass = components->renderComp.renderPass;
-	pipelineInfo.subpass = 1;
-	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
-	pipelineInfo.basePipelineIndex = -1; // Optional
-
-	printf("Creating UI pipeline!\n");
-	// Create graphics pipeline
-	VkPipeline graphicsPipeline;
-	if (vkCreateGraphicsPipelines(components->deviceQueueComp.device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &graphicsPipeline) != VK_SUCCESS) 
-	{
-		printf("Failed to create graphics pipeline!\n");
-		return NULL;
-	}
-
-	// Cleanup shader code and modules similar to before
-	#ifdef _WIN64
-		// TODO: TEST
-		ano_aligned_free(uiShaderCode.data);
-	#else
-		free(uiShaderCode.data);
-	#endif
 
 	return graphicsPipeline;
 }

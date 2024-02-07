@@ -160,8 +160,7 @@ typedef struct BufferComponents
 typedef struct RenderComponents
 {
     VkRenderPass renderPass;
-    VkPipelineLayout pipelineLayout; // 3D rendering to intermediary MSAA target
-    VkPipelineLayout uiPipelineLayout; // Rendering of UI elements to 3D target and final output
+    VkPipelineLayout pipelineLayout;
 	VkDescriptorSetLayout descriptorSetLayout;
 	VkDescriptorSetLayout meshDescriptorSetLayout; // Move to per-mesh-type struct
 	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
@@ -169,7 +168,6 @@ typedef struct RenderComponents
 	VkDescriptorPool meshDescriptorPool;
 	UniformComponents uniform;
     VkPipeline graphicsPipeline;
-    VkPipeline uiPipeline;
 	VkSampler textureSampler;
 	BufferComponents buffers;
 } RenderComponents;
