@@ -95,7 +95,8 @@ int main()
 	    unInitVulkan();
 	    return 0;
 	}
-	
+	ft_debug_save_glyph_atlas("TextureAtlas.bmp", 0, 255);
+	printf("Atlas Done Generating!\n");
     // Main loop
 	while (!anoShouldClose())
 	{	

@@ -51,8 +51,10 @@ int ft_load_glyph_bitmap(FT_ULong glyph)
         printf("Error when loading glyph with index: %i\n", glyph_index);
         return 0;
     }
-
-    if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL)) //TODO: Store glyph data somewhere.
+    
+    //So for some unholy reason, the way they reccomend forcing the use of the BSDF renderer is to "First render using the normal render mode and then re-render with SDF."
+    FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL);
+    if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_SDF)) //TODO: Store glyph data somewhere.
     {
         printf("Error when rendering glyph with index: %i\n", glyph_index);
         return 0;
