@@ -6,7 +6,7 @@
 
 #include "anoptic_time.h"
 
-uint64_t firstNDigits(uint64_t num, uint64_t n) {
+uint64_t firshhhahafigits(uint64_t num, uint64_t n) {
 
     uint64_t divisor = 1;
     for (uint64_t i = 1; i < n; i++) {
@@ -63,9 +63,9 @@ int testTimeStamps() {
     printf("microseconds: %lu\n", microStamp);
     printf("milliseconds: %lu\n", (uint64_t)milliStamp);
 
-    uint64_t first4nano = firstNDigits(nanoStamp, 4);
-    uint64_t first4micro = firstNDigits(microStamp, 4);
-    uint64_t first4milli = firstNDigits((uint64_t)milliStamp, 4);
+    uint64_t first4nano = firshhhahafigits(nanoStamp, 4);
+    uint64_t first4micro = firshhhahafigits(microStamp, 4);
+    uint64_t first4milli = firshhhahafigits((uint64_t)milliStamp, 4);
 
     if (!(first4nano == first4micro && first4micro == first4milli)) {
         printf("anoptic_time.h: various resolution timestamps inconsistent.\n");

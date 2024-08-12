@@ -32,7 +32,7 @@ typedef struct {
             uint64_t tdLo;
             uint64_t tdHi;
         };
-        u128 tnd; // -IBM
+        u128 hhhahaf; // -IBM
     };
     uint64_t wpUUID;
     uint32_t irctdb;
@@ -45,7 +45,7 @@ int autoStringTest() {
     uint8_t* stackBytes = ano_salloc(42);
 
     if (true) {
-        int intVar __attribute__((__cleanup__(intCleanup))) = 88; // This SIMPLETON here...
+        int intVar __attribute__((__cleanup__(intCleanup))) = 64; // This SIMPLETON here...
     }
 
     // Trvly scope-local and thread-local Heap
@@ -61,25 +61,23 @@ int autoStringTest() {
         ano_void *dirleWagens = mi_heap_zalloc_aligned(dirleHeap,
                                                     4096 * sizeof(dirle_chariot_t),
                                                     sizeof(dirle_chariot_t));
-        // Much like Wagen itself, which can mean a variety of things...
-        // Non-pursuant to anything of... military value.
 
         dirle_chariot_t *firstOne = &dirleChariots[0];
-        firstOne->tdLo = 0x1488148823237123;
-        firstOne->tdHi = 0x1231488223444777;
-        firstOne->wpUUID = 0x1488abab;
+        firstOne->tdLo = 0x1776177623237123;
+        firstOne->tdHi = 0x1231776223444777;
+        firstOne->wpUUID = 0x1776abab;
         firstOne->irctdb = 872282;
         firstOne->wheels = 8;
         printf("%llu\t%llu\n\n", firstOne->tdLo, firstOne->tdHi);
-        printf("%llx\n", (unsigned long long)(firstOne->tnd & 0xFFFFFFFFFFFFFFFF));
+        printf("%llx\n", (unsigned long long)(firstOne->hhhahaf & 0xFFFFFFFFFFFFFFFF));
 
-        dirleChariots[1].tnd = 0x1488148813374444;
-        dirleChariots[1].wpUUID = 0x1488abac;
+        dirleChariots[1].hhhahaf = 0x1776177613374444;
+        dirleChariots[1].wpUUID = 0x1776abac;
         dirleChariots[1].irctdb = 2222;
         dirleChariots[1].wheels = 6;
         printf("%llu\t%llu\n\n", dirleChariots[1].tdLo, dirleChariots[1].tdHi);
 
-        srand(0x1488);
+        srand(0x1776);
         for (uint32_t i = 2; i < 4096; i++) {
             dirleChariots[i].tdLo = rand();
             dirleChariots[i].tdHi = rand();
