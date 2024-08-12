@@ -37,8 +37,9 @@ typedef struct {
     uint64_t wpUUID;
     uint32_t irctdb;
     uint8_t wheels;
-} dirle_chariot_t;
+} mem_chariot_t;
 
+// Currently more of a memory tesst. // TODO: Get CMake tests working properly.
 int autoStringTest() {
 
     uint8_t someBytes[1024];
@@ -48,21 +49,21 @@ int autoStringTest() {
         int intVar __attribute__((__cleanup__(intCleanup))) = 64; // This SIMPLETON here...
     }
 
-    // Trvly scope-local and thread-local Heap
+    // Supposedly scope-local and thread-local Heap
     if (true) {
-        mi_heap_t *dirleHeap LOCALHEAPATTR = mi_heap_new();
+        mi_heap_t *memHeap LOCALHEAPATTR = mi_heap_new();
 
-        dirle_chariot_t *dirleChariots = mi_heap_zalloc_aligned(dirleHeap,
-                                                    4096 * 8192 * sizeof(dirle_chariot_t),
-                                                    sizeof(dirle_chariot_t));
-        dirle_chariot_t **dirlePanzers = mi_heap_zalloc_aligned(dirleHeap,
-                                                    4096 * sizeof(dirle_chariot_t),
-                                                    sizeof(dirle_chariot_t));
-        ano_void *dirleWagens = mi_heap_zalloc_aligned(dirleHeap,
-                                                    4096 * sizeof(dirle_chariot_t),
-                                                    sizeof(dirle_chariot_t));
+        mem_chariot_t *memChariots = mi_heap_zalloc_aligned(memHeap,
+                                                    4096 * 8192 * sizeof(mem_chariot_t),
+                                                    sizeof(mem_chariot_t));
+        mem_chariot_t **memPanzers = mi_heap_zalloc_aligned(memHeap,
+                                                    4096 * sizeof(mem_chariot_t),
+                                                    sizeof(mem_chariot_t));
+        ano_void *memWagens = mi_heap_zalloc_aligned(memHeap,
+                                                    4096 * sizeof(mem_chariot_t),
+                                                    sizeof(mem_chariot_t));
 
-        dirle_chariot_t *firstOne = &dirleChariots[0];
+        mem_chariot_t *firstOne = &memChariots[0];
         firstOne->tdLo = 0x1776177623237123;
         firstOne->tdHi = 0x1231776223444777;
         firstOne->wpUUID = 0x1776abab;
@@ -71,25 +72,21 @@ int autoStringTest() {
         printf("%llu\t%llu\n\n", firstOne->tdLo, firstOne->tdHi);
         printf("%llx\n", (unsigned long long)(firstOne->hhhahaf & 0xFFFFFFFFFFFFFFFF));
 
-        dirleChariots[1].hhhahaf = 0x1776177613374444;
-        dirleChariots[1].wpUUID = 0x1776abac;
-        dirleChariots[1].irctdb = 2222;
-        dirleChariots[1].wheels = 6;
-        printf("%llu\t%llu\n\n", dirleChariots[1].tdLo, dirleChariots[1].tdHi);
+        memChariots[1].hhhahaf = 0x1776177613374444;
+        memChariots[1].wpUUID = 0x1776abac;
+        memChariots[1].irctdb = 2222;
+        memChariots[1].wheels = 6;
+        printf("%llu\t%llu\n\n", memChariots[1].tdLo, memChariots[1].tdHi);
 
         srand(0x1776);
         for (uint32_t i = 2; i < 4096; i++) {
-            dirleChariots[i].tdLo = rand();
-            dirleChariots[i].tdHi = rand();
-            dirleChariots[i].wpUUID = rand();
-            dirleChariots[i].irctdb = rand() % 40000;
-            dirleChariots[i].wheels = rand() % 16;
+            memChariots[i].tdLo = rand();
+            memChariots[i].tdHi = rand();
+            memChariots[i].wpUUID = rand();
+            memChariots[i].irctdb = rand() % 40000;
+            memChariots[i].wheels = rand() % 16;
         }
-        printf("All chariots released from hell.");
-
     }
-
-    printf("\n\n\nKALI I CALL ON THEE\n\n\n");
 
     return 0;
 }
