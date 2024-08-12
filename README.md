@@ -1,8 +1,8 @@
-# Anoptic Game Engine
+## Anoptic Game Engine
 
-The Anoptic Game Engine is an ECS-first runtime designed to handle large numbers of entities and events occurring simultaneously. It generalized for RPGs, RTS, 4X, immersive sims, colony managers, or any other kinds of complex simulation.
+The Anoptic Game Engine is designed to create games that can handle large numbers of events and entities occurring simultaneously. It is tailored for 4X, RTS, or any other kind of complex simulation.
 
-## Getting this Repo
+### Getting this Repo
 
 Make sure to use `--recursive` to fetch all submodules!
 
@@ -10,41 +10,42 @@ Make sure to use `--recursive` to fetch all submodules!
 git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 ```
 
-## Features
+### Runtime Features
 
 - **ECS**: Easily create and manage large numbers of entities with dynamic properties and behaviors.
-- **Event-Driven**: Design and handle events that occur in your games, allowing for complex interactions between different systems.
-- **Vulkan Renderer**: Vulkan rendering backend allows for the most modern approaches in high-performance graphics, on all supported platforms.
-- **Custom Memory Allocation**: Uses mimalloc as a fast malloc() implementation, and provides a rich toolbox of optimized data structures and specialized allocators.
-- **Modular Systems**: Tailor the engine to suit your specific design needs using a highly flexible and extensible architecture.
-- **Cross-platform Compatibility**: Develop games that can run with full feature parity on both Linux and Windows.
-- **Networking Support**: Implement multiplayer functionality and networked gameplay with Anoptic Engine's built-in networking support, enabled by ECS and smart memory allocation strategies.
-- **Audio and Sound Effects**: Create immersive audio experiences with support for HRTF and other advanced systems.
+- **Events**: Enable interactions between different systems via a generalized event bus.
+- **Vulkan Renderer**: Vulkan rendering backend to enable the use of the latest GPU capabilities.
+- **Custom Allocators**: Uses mimalloc for a fast global allocator implementation, as well as several special-purpose local allocators.
+- **Platform Compatibility**: Built and tested for full feature parity on both Linux and Windows.
+- **Networking**: Built-in networking support for p2p or authoritative server.
 
-### Building on Linux
+### Installation
 
-All builds of Anoptic Engine require sure you have the latest version of `clang 17` and `CMake`. Make sure to include both of these in your path.
+All builds of Anoptic Engine require the latest version of `clang 17`, `CMake`, and the `Vulkan SDK`.
 
-cd into the repository and run `build.sh {build-type}`, where {build-type} is 1 for Release, 2 for Debug, and 3 for Tests.
+Acquire a copy of the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), version 1.3.2 or later.
 
-The resulting binaries can be found under ``build/{build-type}/``.
+#### Building on Linux
 
-### Building on Windows
+Use `build.sh {build-type}`, where {build-type} is 1 for Release, 2 for Debug, and 3 for Tests.
 
-Make sure you have CMake installed and in your path: https://cmake.org/install/.
+The resulting binaries can be found under `build/{build-type}/`.
 
-Acquire a copy of the Mingw-w64 toolkit from the official website (https://www.mingw-w64.org/) or through a package manager like MSYS2. Ensure it's added to your system's PATH variable.
+#### Building on Windows
 
-We recommend MSYS2 for the easiest installation process, which can be acquired here: https://www.msys2.org/. 
-Follow Microsoft's documentation here https://learn.microsoft.com/en-us/vcpkg/users/platforms/mingw to make sure you have the Mingw-w64 toolkit installed and working.
+Make sure you have `CMake` installed and in your path: https://cmake.org/install/.
 
-Once Mingw-w64 is installed with ``gcc`` working on your system, go to the repository and run `build.bat {build-type}`, where {build-type} is 1 for Release, 2 for Debug, and 3 for Tests.
+Have a copy of the `Mingw-w64` toolkit in your path.
+We recommend [MSYS2](https://www.msys2.org/) with the [mingw-w64-x64_64-clang](https://packages.msys2.org/package/mingw-w64-x86_64-clang) package. 
 
-### Troubleshooting
+Additional guidance:
+- [Microsoft Documentation](https://learn.microsoft.com/en-us/vcpkg/users/platforms/mingw)
+- [CLion Configuration](https://www.jetbrains.com/help/clion/quick-tutorial-on-configuring-clion-on-windows.html#clang-mingw)
 
-Vulkan rendering backend may have an incompatibility with MSI Afterburner / RivaTuner Statistics Server at this time.
-If you experience errors with the swapchain creation, please try disabling MSI Afterburner / RTSS and try again.
+Once Mingw-w64 is installed with `clang` working on your system, go to the repository and run 
 
-## More
+Use `build.bat {build-type}`, where {build-type} is 1 for Release, 2 for Debug, and 3 for Tests.
 
-Check out the .md files in each subdirectory for more information on a given module.
+### More
+
+Check out the `.md` files in each subdirectory for more information on a given module.

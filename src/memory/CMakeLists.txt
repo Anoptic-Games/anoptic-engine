@@ -8,3 +8,8 @@ elseif (UNIX)
             ${CMAKE_CURRENT_SOURCE_DIR}/memalign_linux.c
     )
 endif()
+
+# Universally compiled source files
+target_sources(anopticengine PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/memory.c
+)

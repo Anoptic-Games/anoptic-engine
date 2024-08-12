@@ -285,10 +285,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	setMonitor(-1);
 	setBorderless(0);
 
-	vulkanGarbage.monitors = &monitors;
-	cleanupMonitors(&monitors);
-	printf("Here");
-	enumerateMonitors(&monitors);
+    vulkanGarbage.monitors = &monitors;
+    cleanupMonitors(&monitors);
+    enumerateMonitors(&monitors);
 
 	window = initWindow(&components, &monitors);
 
