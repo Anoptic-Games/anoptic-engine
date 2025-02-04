@@ -256,6 +256,50 @@ void initializeGltfElements(GltfElements *elements)
 	// Add error checking after each allocation if you need to handle allocation failures
 }
 
+void freeGltfElements(GltfElements *elements)
+{
+    if (elements->scenes)
+    {
+        free(elements->scenes);
+    }
+    if (elements->nodes)
+    {
+        free(elements->nodes);
+    }
+    if (elements->materials)
+    {
+        free(elements->materials);
+    }
+    if (elements->meshes)
+    {
+        free(elements->meshes);
+    }
+    if (elements->textures)
+    {
+        free(elements->textures);
+    }
+    if (elements->images)
+    {
+        free(elements->images);
+    }
+    if (elements->accessors)
+    {
+        free(elements->accessors);
+    }
+    if (elements->bufferViews)
+    {
+        free(elements->bufferViews);
+    }
+    if (elements->samplers)
+    {
+        free(elements->samplers);
+    }
+    if (elements->buffers)
+    {
+        free(elements->buffers);
+    }
+}
+
 void helperParseScenes(const char *json, jsmntok_t *tokens, GltfScene *scenes)
 {
 	printf("Parsing scenes!\n");
@@ -1290,6 +1334,19 @@ void processGltfBuffers(GltfElements* elements)
 	}
 }
 
+void freeGltfBuffers(GltfElements* elements)
+{
+	for (uint32_t i = 0; i < elements->bufferCount; ++i)
+	{
+		GltfBuffer* buffer = &elements->buffers[i];
+		if (buffer->address)
+        {
+            free(buffer->address);
+        }
+		// Handle case where buffer->uri is NULL if needed
+	}
+}
+
 // Function to get the data pointer from a buffer view
 void* getBufferData(GltfElements* elements, uint32_t bufferViewIndex)
 {
@@ -1946,6 +2003,9 @@ bool parseGltf(VulkanComponents* components, const char* fileName)
 	processGltfMeshes (components, &elements);
 	packageRenderables(components, &elements);
 	printf("Loading complete!\nIf this crashes now, it's due to GPU buffer linking/access errors!\n");
+    free(fileBuffer);
+    freeGltfBuffers(&elements);
+    freeGltfElements(&elements);
 	// Allocate element buffers
 	// Populate element buffers with parameters
 

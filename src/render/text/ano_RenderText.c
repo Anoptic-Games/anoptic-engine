@@ -79,7 +79,7 @@ int ft_debug_save_glyph(char* filename, FT_ULong glyph)
 
 int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
 {
-    uint32_t max_glyph_width, max_glyph_height = 0;
+    uint32_t max_glyph_width = 0, max_glyph_height = 0;
     uint32_t glyph_count = (end - start) + 1;
     uint32_t atlas_dimensions = 1;
 
@@ -97,7 +97,6 @@ int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end)
 
     uint32_t atlas_width = atlas_dimensions * max_glyph_width;
     uint32_t atlas_height = atlas_dimensions * max_glyph_height;
-
     unsigned char atlas_buffer[atlas_width * atlas_height * 3];
     for (int i = 0; i < atlas_width * atlas_height * 3; i++)
     {
