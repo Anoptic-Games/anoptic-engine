@@ -30,6 +30,14 @@ static Monitors monitors =
 
 void unInitVulkan() // A celebration
 {
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		if (components.syncComp.frameSubmitted[i])
+		{
+			vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+			components.syncComp.frameSubmitted[i] = false; // reset the status
+		}
+    }
 
 	if (vulkanGarbage.components)
 	{
@@ -78,7 +86,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	clearValues[0].color.float32[0] = 0.0f;
 	clearValues[0].color.float32[1] = 0.0f;
 	clearValues[0].color.float32[2] = 0.0f;
-	clearValues[0].color.float32[3] = 1.0f;
+	clearValues[0].color.float32[3] = 0.0f;
 	clearValues[1].depthStencil.depth = 1.0f;
 	clearValues[1].depthStencil.stencil = 0;
 	renderPassInfo.clearValueCount = sizeof(clearValues) / sizeof(VkClearValue);
@@ -182,14 +190,10 @@ void printUniformTransferState()
 
 void drawFrame() 
 {
-	if (!components.syncComp.skipCheck)
-	{
-		vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
-	} else
-	{
-		components.syncComp.skipCheck -= 1; // Simple way to skip semaphore waits for a given number of frames
-	}
-
+    if (components.syncComp.frameSubmitted[components.syncComp.frameIndex] == true)
+    {
+        vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
+    }
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
@@ -205,11 +209,15 @@ void drawFrame()
 		}
 		//printf("Recreating swap chain!\n");
 		clearSemaphores();
+        vkDeviceWaitIdle(components.deviceQueueComp.device);
 		recreateSwapChain(&components, window);
 		return;
 	} else if (result != VK_SUCCESS) 
 	{
 		printf("Failed to acquire swap chain image!\n");
+        vkDeviceWaitIdle(components.deviceQueueComp.device);
+		recreateSwapChain(&components, window);
+        return;
 	}
 
 	updateUniformBuffer(&components);

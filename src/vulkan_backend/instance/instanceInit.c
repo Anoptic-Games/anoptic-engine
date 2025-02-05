@@ -92,7 +92,7 @@ VkResult createInstance(VulkanComponents* vkComponents) // Central component of 
 {
 	const char* validationLayers[] = 
 	{ //!TODO get this thing out of here as soon as we have a config parser
-		"VK_LAYER_KHRONOS_validation"
+		"VK_LAYER_KHRONOS_validation",
 	};
 	size_t validationCount = sizeof(validationLayers) / sizeof(validationLayers[0]);
 
@@ -804,37 +804,104 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
 }
 
 void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, FrameBufferGroup* frameGroup, ImageViewGroup* viewGroup)
-{ // Memory management requires a comprehensive review and this function should be looked over
-	for (size_t i = 0; i < frameGroup->bufferCount; i++) 
-	{
-		vkDestroyFramebuffer(device, frameGroup->buffers[i], NULL);
-	}
+{
+    // Destroy framebuffers
+    for (size_t i = 0; i < frameGroup->bufferCount; i++) 
+    {
+        vkDestroyFramebuffer(device, frameGroup->buffers[i], NULL);
+    }
 
-	for (size_t i = 0; i < viewGroup->viewCount; i++) 
-	{
-		vkDestroyImageView(device, viewGroup->views[i], NULL);
-	}
+    // Destroy swapchain image views
+    for (size_t i = 0; i < viewGroup->viewCount; i++) 
+    {
+        vkDestroyImageView(device, viewGroup->views[i], NULL);
+    }
 
-		for (size_t i = 0; i < viewGroup->viewCount; i++) 
-	{
-		vkDestroyImageView(device, components->renderComp.buffers.depthView[i], NULL);
-	}
+    // Destroy depth image views
+    if (components->renderComp.buffers.depthView) 
+    {
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+        {
+            if (components->renderComp.buffers.depthView[i] != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(device, components->renderComp.buffers.depthView[i], NULL);
+                components->renderComp.buffers.depthView[i] = VK_NULL_HANDLE;
+            }
+        }
+    }
 
-		for (size_t i = 0; i < viewGroup->viewCount; i++) 
-	{
-		vkDestroyImage(device, components->renderComp.buffers.depth[i], NULL);
-	}
+    // Destroy depth images
+    if (components->renderComp.buffers.depth) 
+    {
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+        {
+            if (components->renderComp.buffers.depth[i] != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(device, components->renderComp.buffers.depth[i], NULL);
+                components->renderComp.buffers.depth[i] = VK_NULL_HANDLE;
+            }
+        }
+    }
 
-		for (size_t i = 0; i < viewGroup->viewCount; i++) 
-	{
-		vkFreeMemory(device, components->renderComp.buffers.depthMemory[i], NULL);
-	}
+    // Free depth memory (important!)
+    if (components->renderComp.buffers.depthMemory) 
+    {
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+        {
+            if (components->renderComp.buffers.depthMemory[i] != VK_NULL_HANDLE)
+            {
+                vkFreeMemory(device, components->renderComp.buffers.depthMemory[i], NULL);
+                components->renderComp.buffers.depthMemory[i] = VK_NULL_HANDLE;
+            }
+        }
+    }
 
-	vkDestroySwapchainKHR(device, swapGroup->swapChain, NULL);
+    // Free color image
+    if (components->swapChainComp.swapChainGroup.colorImage != VK_NULL_HANDLE)
+    {
+        vkDestroyImage(device, components->swapChainComp.swapChainGroup.colorImage, NULL);
+        components->swapChainComp.swapChainGroup.colorImage = VK_NULL_HANDLE;
+    }
+
+    // Free color image memory
+    if (components->swapChainComp.swapChainGroup.colorImageMemory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(device, components->swapChainComp.swapChainGroup.colorImageMemory, NULL);
+        components->swapChainComp.swapChainGroup.colorImageMemory = VK_NULL_HANDLE;
+    }
+
+    // Destroy color image view
+    if (viewGroup->colorView) 
+    {
+        vkDestroyImageView(device, viewGroup->colorView, NULL);
+    }
+
+    // Free UI image
+    if (components->swapChainComp.swapChainGroup.uiImage != VK_NULL_HANDLE)
+    {
+        vkDestroyImage(device, components->swapChainComp.swapChainGroup.uiImage, NULL);
+        components->swapChainComp.swapChainGroup.uiImage = VK_NULL_HANDLE;
+    }
+
+    // Free UI image memory
+    if (components->swapChainComp.swapChainGroup.uiImageMemory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(device, components->swapChainComp.swapChainGroup.uiImageMemory, NULL);
+        components->swapChainComp.swapChainGroup.uiImageMemory = VK_NULL_HANDLE;
+    }
+
+    // Destroy UI image view
+    if (viewGroup->uiView) 
+    {
+        vkDestroyImageView(device, viewGroup->uiView, NULL);
+    }
 }
 
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 {
+    // First, clean up the previous swapchain
+	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
+    
 	int width = 0, height = 0;
 	glfwGetFramebufferSize(window, &width, &height);
 	while (width == 0 || height == 0)
@@ -843,6 +910,9 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 		glfwGetFramebufferSize(window, &width, &height);
 		glfwWaitEvents();
 	}
+    // Explicitly update these to ensure swapchain recreation has the correct values
+    components->swapChainComp.swapChainGroup.imageExtent.width = width;
+    components->swapChainComp.swapChainGroup.imageExtent.height = height;
 
 	if (!components->syncComp.skipCheck)
 	{
@@ -946,6 +1016,10 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 
 bool createFramebuffers(VulkanComponents* components)
 { // Central init component
+    if (components->swapChainComp.framebufferGroup.buffers)
+    { // Deallocate previous buffer
+        free(components->swapChainComp.framebufferGroup.buffers);
+    }
 	components->swapChainComp.framebufferGroup.bufferCount = components->swapChainComp.viewGroup.viewCount;
 	components->swapChainComp.framebufferGroup.buffers = (VkFramebuffer*) calloc(1, sizeof(VkFramebuffer) * components->swapChainComp.framebufferGroup.bufferCount);
 
@@ -1291,6 +1365,7 @@ void createColorResources(VulkanComponents* components) //TODO: This probably sh
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.colorImage, &components->swapChainComp.swapChainGroup.colorImageMemory, false);
 	components->swapChainComp.viewGroup.colorView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 
+    // UI??
 	createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
 				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.uiImage, &components->swapChainComp.swapChainGroup.uiImageMemory, false);

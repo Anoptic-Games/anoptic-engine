@@ -159,10 +159,11 @@ bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, 
 	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	allocInfo.allocationSize = memRequirements.size;
 	allocInfo.memoryTypeIndex = findMemoryType(components, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	
-	if (vkAllocateMemory(components->deviceQueueComp.device, &allocInfo, NULL, imageMemory) != VK_SUCCESS)
+
+	VkResult result = vkAllocateMemory(components->deviceQueueComp.device, &allocInfo, NULL, imageMemory);
+	if (result != VK_SUCCESS)
 	{
-		printf("Failed to allocate image memory!\n");
+		printf("Failed to allocate image memory! Return code: %d\n", result);
 		return false;
 	}
 	
@@ -317,7 +318,7 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	stbi_image_free(texture.pixels);
 
 	if (!createImage(components, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
 	{
 		printf("Image creation failure: %s\n", fileName);
 		return false;

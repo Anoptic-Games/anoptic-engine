@@ -45,6 +45,7 @@ typedef struct SwapChainGroup
 	VkExtent2D imageExtent;
 	uint32_t imageCount;
 	VkImage* images;
+	VkDeviceMemory imageMemory[MAX_FRAMES_IN_FLIGHT]; // Not actually used, swapchain image memory managed by Vulkan.
 	VkImage colorImage;
 	VkDeviceMemory colorImageMemory;
     VkImage uiImage;
