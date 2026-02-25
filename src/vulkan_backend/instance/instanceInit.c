@@ -1495,12 +1495,12 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
 	if(components->renderComp.buffers.entities[0].index)
 	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertex, NULL);
+		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].index, NULL);
 	}
 
 	if(components->renderComp.buffers.entities[0].indexMemory)
 	{
-		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
+		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].indexMemory, NULL);
 	}
 
 	if(components->renderComp.descriptorPool)
