@@ -33,12 +33,14 @@ filepath ano_fs_gamepath() {
     game_root_path.length = pathLen;
     strcpy(game_root_path.pathString, pathBuffer);
 
-    return ano_fs_gamepath(); // XD !?
+    filepath result = {.pathString = mi_malloc(game_root_path.length + 1), .length = game_root_path.length};
+    strcpy(result.pathString, game_root_path.pathString);
+    return result;
 }
 
 filepath ano_fs_userpath() {
 
-    filepath result = {.pathString = malloc(game_user_path.length + 1), .length = game_user_path.length};
+    filepath result = {.pathString = mi_malloc(game_user_path.length + 1), .length = game_user_path.length};
     strcpy(result.pathString, game_user_path.pathString);
     return result;
 }
