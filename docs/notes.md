@@ -90,6 +90,14 @@ This is not novel in concept (Stellaris, Dwarf Fortress, and others do variants)
 
 Details of the scoped resolution algorithms are currently in the architect's head, not in code. Materializing them is a priority once the base ECS and arena system are operational.
 
+### 5. Rendering Philosophy
+
+**No PBR.** The engine does not target photorealism. PBR's per-material cost (roughness maps, metalness maps, environment probes, BRDF LUTs, image-based lighting) optimizes for making 50 objects look photorealistic. This engine optimizes for making a million objects look good. Non-PBR rendering (flat shading, stylized lighting, older visual aesthetics) keeps the material pipeline thin and the per-fragment cost low, freeing GPU budget for entity count.
+
+**Vulkan directly.** The renderer uses the Vulkan API without an abstraction layer. This is deliberate: the engine needs direct control over memory allocation, synchronization, and compute dispatch. The current renderer is a basic rasterization pipeline — functional but rough, largely tutorial-derived, and in need of cleanup rather than replacement.
+
+**Future direction: selective raymarching (SDF).** The long-term rendering vision is a hybrid approach: rasterization for UI, HUD, and conventional geometry; raymarching via signed distance fields for the space environment. SDFs are procedural (asteroids defined by math, not meshes), composable (smooth union/subtraction for constructive geometry), and provide natural LOD (fewer march steps at distance). This maps directly onto the scoped resolution hierarchy. However, rasterization is the immediate path — raymarching is a later-stage addition once the simulation infrastructure is operational.
+
 ## Current State (June 2026)
 
 ### What Exists (in code)
