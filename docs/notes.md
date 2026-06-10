@@ -152,39 +152,62 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 
 ### What Needs to Be Built (bottom-up, in dependency order)
 
-**Layer 0 -- Memory (extend what exists):**
-- Frame arena API: `ano_arena_frame()`, reset at top of main loop
-- Scratch arena API for parsers and transient work
-- Pool/slab allocator for entities with dynamic lifetimes
+**Step 1 -- High-performance logger:**
+Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly -- no dependency on a generic lock-free library. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
 
-**Layer 1 -- Concurrency primitives:**
-- Lock-free MPSC bounded queue (the fetch_add + commit-header design)
-- Thread pool on top of `anoptic_threads`
+**Step 2 -- Dependency update:**
+Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Quick audit for API changes. Fold mimalloc finalization (step 3) into this -- the integration is already done, this is just a version bump and validation that `mi_heap_new` / `mi_heap_destroy` / `mi_heap_zalloc_aligned` still behave. Low risk, low effort.
 
-**Layer 2 -- Logger (finish it):**
-- Wire up `ano_log_output_dir` to set the file path
-- Implement `ano_log_interval` as a flusher thread
-- Replace mutex with lock-free enqueue
-- Uncomment and test file output
+**Step 3 -- mimalloc finalization:**
+Confirm hugepage support still works on current version. Validate scoped heap teardown (`LOCALHEAPATTR`). Ensure global override (`mimalloc-override.h`) is clean. May merge with step 2.
 
-**Layer 3 -- ECS:**
-- Entity ID system (generational indices)
-- Component storage (sparse sets or archetypes)
-- System registration and iteration
-- Arena-backed component allocation
+**Step 4 -- ano_strings:**
+Owned string type: `{char* ptr, uint32_t len, uint32_t capacity}` with `LOCALHEAPATTR`-style scoped cleanup. Allocations go through a heap parameter so strings can live in any arena. Copy-on-slice. ~150 lines. UTF-8 support deferred -- UTF-8 is byte-transparent in storage, so the string type doesn't need to know about it. UTF-8 validation/iteration added later as a layer on top, only when the text renderer demands it.
 
-**Layer 4 -- Event bus:**
-- MPSC/MPMC queue for inter-system events
-- Type-safe event dispatch
+**Step 5 -- Lock-free collections:**
 
-**Layer 5 -- Simulation:**
-- Star system data model
-- Multi-resolution simulation ticking
-- Scoped resolution promotion/demotion
-- Deterministic catch-up
+*Phase A: Classic implementations.* Michael & Scott queue, bounded MPMC ring buffer (Vyukov-style). Correct, tested, benchmarked. These serve as baselines and are usable immediately.
 
-**Layer 6 -- The game:**
-- Everything above, serving an actual playable thing
+*Phase B: Cache-line-striped lock-free structures (experimental/novel).*
+
+The core idea: align the concurrency model to the hardware coherency unit. The x86 cache coherency protocol (MESI/MESIF) already enforces exclusive ownership at the cache-line level (64 bytes). Instead of per-item atomic operations (classic M&S), make the cache line the unit of ownership transfer.
+
+Design sketch:
+```
+[ stripe 0 ]  [ stripe 1 ]  [ stripe 2 ]  [ stripe 3 ]  ...
+  64 bytes       64 bytes      64 bytes      64 bytes
+  owned:T1      owned:T2      owned:T1       free
+
+  - each stripe is cache-line aligned
+  - ownership transferred via atomic on the stripe header
+  - within a stripe, the owner reads/writes with zero atomics
+```
+
+A producer claims a stripe (fetch_add on head index), fills it with plain stores, publishes via release-store on a commit flag. A consumer walks stripes in order via acquire-loads on commit flags. No per-item CAS. The only cross-core cache traffic is the intentional ownership transfer. Thread-local heaps (mimalloc) guarantee that even the allocator doesn't cause false sharing.
+
+This gets batched throughput (amortizing sync cost over N items per stripe) with lock-free progress guarantees (a stalled producer leaves an uncommitted stripe, doesn't block anyone). The 90s papers didn't consider this because they reasoned about abstract shared-memory models, not cache controllers. On a 16-core Ryzen where cache-line bouncing is the dominant cost, aligning the algorithm to the coherency unit is the natural move.
+
+Open problems:
+- Gap handling at stripe granularity (out-of-order publication)
+- Variable-size data (fixed-size event structs under 64 bytes is the likely constraint)
+- Formal linearizability argument (TLA+ or hand proof)
+- Benchmarking against classic M&S and LCRQ on many-core hardware
+
+If this works and benchmarks well, it's worth a paper (DISC or PPoPP). Classic implementations come first as the baseline.
+
+Target structures: ring buffers, queues, heaps. These serve the event bus, job system, and inter-system communication.
+
+**Step 6 -- Additional data structures (as needed):**
+Build structures in tandem with the features that operate on them, not speculatively. stb_ds is acceptable as a stopgap for prototyping (e.g., hash maps during renderer work) without long-term commitment.
+
+**Step 7 -- Renderer rewrite:**
+Full rewrite of the Vulkan renderer. The current implementation is tutorial-derived with poor system design. The rewrite builds the renderer as a proper subsystem: allocates from scratch arenas, logs through the real logger, communicates through the event bus. Scope for v1: one render pass, one pipeline, geometry on screen, driven by the event bus. No PBR. Rasterization only for now. stb_image retained for texture loading.
+
+**Step 8 -- Event bus + input:**
+Global, thread-agnostic event bus. Possibly two buses: one monotonic per-item (classic lock-free, for ordered events like input), one with lock-free cache-line stripes (for high-throughput bulk events like physics/simulation updates). GLFW callbacks enqueue input events; game loop dequeues. Clean producer/consumer boundary. This infrastructure also serves future physics integration.
+
+**Step 9 -- Main game loop + first visual output:**
+The integration milestone. Input moves camera, event bus carries input, simulation updates transforms, renderer draws the frame, all allocated from frame arenas, all logged. A sphere on screen through the full pipeline. This is v0.1: proof that every layer works together. Everything after is building the actual game on trusted infrastructure.
 
 ### Known Technical Debt
 
