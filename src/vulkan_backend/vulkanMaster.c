@@ -197,9 +197,10 @@ void drawFrame()
 		clearSemaphores();
 	    recreateSwapChain(&components, window);
 	    return;
-	} else if (result != VK_SUCCESS) 
+	} else if (result != VK_SUCCESS)
 	{
 	    printf("Failed to acquire swap chain image!\n");
+	    return;
 	}
 
 	updateUniformBuffer(&components);

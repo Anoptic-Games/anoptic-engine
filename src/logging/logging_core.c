@@ -35,6 +35,10 @@ int build_log_string(char* output, int maxLen, log_types_t log_type,
 
     int msgLen = snprintf(output, maxLen, "%s %s", msgPrefix, msgBody);
 
+    // snprintf returns the would-be length on truncation; clamp to what was actually written.
+    if (msgLen >= maxLen)
+        msgLen = maxLen - 1;
+
     return msgLen;
 }
 
@@ -44,8 +48,7 @@ int enqueue_log_string(int len, const char* string) {
     // Acquire exclusive lock over log_buffer.
     int mtxResult = ano_mutex_lock(&log_buffer_mtx);
     if (mtxResult != 0) {
-        ano_mutex_unlock(&log_buffer_mtx);
-        ano_log_fatal("ano_mutex_lock -> Failed to acquire mutex lock with return code: %d\n", mtxResult);
+        fprintf(stderr, "ano_mutex_lock -> Failed to acquire mutex lock with return code: %d\n", mtxResult);
         return mtxResult;
     }
 
@@ -92,6 +95,7 @@ int write_to_log_file(const char* logData, const char* fileName) {
         return -1; // Error
     }
     fprintf(pFile, "%s", logData);
+    fclose(pFile);
     ano_mutex_unlock(&log_file_mtx);
 
     return 0; // Success
