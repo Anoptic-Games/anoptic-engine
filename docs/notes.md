@@ -130,6 +130,16 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 - File output path declared but not wired up; flusher thread not implemented
 - Buffer drain logic exists but file writes are commented out
 
+**High-resolution timing module (`anoptic_time.h`):**
+- Emulator-grade precision timestamps sourced from the highest-resolution monotonic clocks available on each platform: `CLOCK_MONOTONIC` on Linux, `QueryPerformanceCounter` / `QueryPerformanceFrequency` on Windows
+- Windows implementation uses overflow-safe QPC-to-nanosecond conversion: splits counter into seconds and sub-seconds before scaling, avoiding uint64_t overflow on long-running machines. Same technique used by Yuzu/Ryujinx emulator timing code.
+- `cached_performance_frequency` is `_Atomic` for thread-safe lazy initialization without a mutex
+- `ano_busywait`: tight spinloop on the monotonic clock for sub-microsecond waits where OS sleep granularity is too coarse, with `MAX_BUSYWAIT_NS` safety cap
+- `ano_sleep` (Linux): `clock_nanosleep` with `CLOCK_MONOTONIC` and `EINTR` retry loop — not `nanosleep`, which can use `CLOCK_REALTIME` under the hood on some kernels
+- `ano_sleep` (Windows): currently falls back to `Sleep()` (millisecond granularity, 15.6ms default). Upgrade to emulator-grade precision is Step 3 in the build sequence.
+- Separate NTP timestamp stub for future network time synchronization
+- Full API: `ano_timestamp_raw` (ns), `ano_timestamp_us`, `ano_timestamp_ms`, `ano_timestamp_unix` (UTC), `ano_busywait` (spinlock), `ano_sleep` (OS-scheduled)
+
 **Platform abstraction:**
 - Separate implementations for Linux and Windows (memory, time, filesystem)
 - Cross-compilation support via CMake toolchain files (Clang targeting MinGW-w64)
@@ -156,10 +166,10 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly -- no dependency on a generic lock-free library. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
 
 **Step 2 -- Dependency update:**
-Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Quick audit for API changes. Fold mimalloc finalization (step 3) into this -- the integration is already done, this is just a version bump and validation that `mi_heap_new` / `mi_heap_destroy` / `mi_heap_zalloc_aligned` still behave. Low risk, low effort.
+Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Quick audit for API changes. Fold mimalloc finalization into this -- the integration is already done, this is just a version bump and validation that `mi_heap_new` / `mi_heap_destroy` / `mi_heap_zalloc_aligned` still behave. Confirm hugepage support still works on current version. Validate scoped heap teardown (`LOCALHEAPATTR`). Ensure global override (`mimalloc-override.h`) is clean. Low risk, low effort.
 
-**Step 3 -- mimalloc finalization:**
-Confirm hugepage support still works on current version. Validate scoped heap teardown (`LOCALHEAPATTR`). Ensure global override (`mimalloc-override.h`) is clean. May merge with step 2.
+**Step 3 -- Windows high-resolution timing:**
+The Linux timing module (`clock_nanosleep` + `CLOCK_MONOTONIC`) delivers sub-microsecond precision. The Windows side falls back to `Sleep()` which has millisecond granularity at best (15.6ms default timer resolution). Bring `ano_sleep` on Windows up to parity: `timeBeginPeriod(1)` to set the scheduler to 1ms resolution, `WaitableTimer` or `Sleep(1)` for the coarse wait, then spinloop (`ano_busywait`) for the final sub-millisecond remainder. This is the emulator-grade pattern used by Yuzu/Ryujinx for frame-perfect timing. Also consider `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` (Windows 10 1803+) for native sub-millisecond OS sleeps without the spin tail. The tick needs to be deterministic-length; a 15.6ms sleep jitter on Windows makes that impossible.
 
 **Step 4 -- ano_strings:**
 Owned string type: `{char* ptr, uint32_t len, uint32_t capacity}` with `LOCALHEAPATTR`-style scoped cleanup. Allocations go through a heap parameter so strings can live in any arena. Copy-on-slice. ~150 lines. UTF-8 support deferred -- UTF-8 is byte-transparent in storage, so the string type doesn't need to know about it. UTF-8 validation/iteration added later as a layer on top, only when the text renderer demands it.
