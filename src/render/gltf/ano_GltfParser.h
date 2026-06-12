@@ -187,11 +187,7 @@ typedef struct GltfPrimitive
 	uint32_t indices;
 	uint32_t material;
 
-	VkBuffer vertex;
-	VkDeviceMemory vertexMemory;
-	uint32_t indexCount;
-    VkBuffer index;
-    VkDeviceMemory indexMemory;
+	uint32_t meshIndex;
 } GltfPrimitive;
 
 typedef struct GltfMesh

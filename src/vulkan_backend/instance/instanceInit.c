@@ -1185,7 +1185,7 @@ bool updateUniformBuffer(VulkanComponents* components)
 	return true;
 }
 
-bool updateMeshTransforms(VulkanComponents* components, EntityBuffer* entity, float move)
+bool updateMeshTransforms(VulkanComponents* components, RenderEntity* entity, float move)
 {
 	static uint64_t time = 0;
 	static uint64_t oldTime = 0;
@@ -1440,7 +1440,8 @@ void updateMeshDescriptorSets(VulkanComponents* components)
 	for (size_t i = 0; i < entityCount; i++)
 	{
 		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		imageInfos[i].imageView = components->renderComp.buffers.entities[i].textureImageView;
+		uint32_t texIdx = components->renderComp.buffers.entities[i].textureIndex;
+		imageInfos[i].imageView = rendererState.primitives.textureBuffers[texIdx].textureImageView;
 		imageInfos[i].sampler = components->renderComp.textureSampler;
 	}
 
@@ -1703,33 +1704,25 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
 	if(components->renderComp.buffers.entities != NULL)
 	{
-        for (uint32_t i = 0; i < components->renderComp.buffers.entityCount; i++) {
-            bool sharedVertex = false;
-            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].vertex == components->renderComp.buffers.entities[j].vertex) { sharedVertex = true; break; } }
-            if (!sharedVertex && components->renderComp.buffers.entities[i].vertex) {
-                vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].vertex, NULL);
-                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].vertexMemory, NULL);
-            }
-            
-            bool sharedIndex = false;
-            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].index == components->renderComp.buffers.entities[j].index) { sharedIndex = true; break; } }
-            if (!sharedIndex && components->renderComp.buffers.entities[i].index) {
-                vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].index, NULL);
-                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].indexMemory, NULL);
-            }
-
-            bool sharedTexture = false;
-            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].textureImage == components->renderComp.buffers.entities[j].textureImage) { sharedTexture = true; break; } }
-            if (!sharedTexture && components->renderComp.buffers.entities[i].textureImage) {
-                vkDestroyImageView(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].textureImageView, NULL);
-                vkDestroyImage(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].textureImage, NULL);
-                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].textureImageMemory, NULL);
-            }
-
-        }
         free(components->renderComp.buffers.entities);
         components->renderComp.buffers.entities = NULL;
 	}
+
+    for (uint32_t i = 0; i < rendererState.primitives.textureCount; i++)
+    {
+        if (rendererState.primitives.textureBuffers[i].textureImageView)
+            vkDestroyImageView(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImageView, NULL);
+        if (rendererState.primitives.textureBuffers[i].textureImage)
+            vkDestroyImage(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImage, NULL);
+        if (rendererState.primitives.textureBuffers[i].textureImageMemory)
+            vkFreeMemory(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImageMemory, NULL);
+    }
+    if (rendererState.primitives.textureBuffers)
+    {
+        free(rendererState.primitives.textureBuffers);
+        rendererState.primitives.textureBuffers = NULL;
+    }
+    rendererState.primitives.textureCount = 0;
 
 	if(components->renderComp.descriptorPool)
 	{
