@@ -870,7 +870,6 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
         {
             if (components->renderComp.buffers.depthMemory[i] != VK_NULL_HANDLE)
             {
-                vkFreeMemory(device, components->renderComp.buffers.depthMemory[i], NULL);
                 components->renderComp.buffers.depthMemory[i] = VK_NULL_HANDLE;
             }
         }
@@ -886,7 +885,6 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
     // Free color image memory
     if (components->swapChainComp.swapChainGroup.colorImageMemory != VK_NULL_HANDLE)
     {
-        vkFreeMemory(device, components->swapChainComp.swapChainGroup.colorImageMemory, NULL);
         components->swapChainComp.swapChainGroup.colorImageMemory = VK_NULL_HANDLE;
     }
 
@@ -1553,13 +1551,19 @@ void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer command
 { // Used in init, also external
 	vkEndCommandBuffer(commandBuffer);
 
+	VkFenceCreateInfo fenceInfo = {};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	VkFence fence;
+	vkCreateFence(components->deviceQueueComp.device, &fenceInfo, NULL, &fence);
+
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &commandBuffer;
 
-	vkQueueSubmit(components->deviceQueueComp.graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-	vkQueueWaitIdle(components->deviceQueueComp.graphicsQueue);
+	vkQueueSubmit(components->deviceQueueComp.graphicsQueue, 1, &submitInfo, fence);
+	vkWaitForFences(components->deviceQueueComp.device, 1, &fence, VK_TRUE, UINT64_MAX);
+	vkDestroyFence(components->deviceQueueComp.device, fence, NULL);
 
 	vkFreeCommandBuffers(components->deviceQueueComp.device, components->cmdComp.commandPool, 1, &commandBuffer);
 }
@@ -1701,8 +1705,7 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
             vkDestroyImageView(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImageView, NULL);
         if (rendererState.primitives.textureBuffers[i].textureImage)
             vkDestroyImage(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImage, NULL);
-        if (rendererState.primitives.textureBuffers[i].textureImageMemory)
-            vkFreeMemory(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImageMemory, NULL);
+
     }
     if (rendererState.primitives.textureBuffers)
     {
