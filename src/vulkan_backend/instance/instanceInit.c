@@ -885,10 +885,7 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
         vkDestroyImageView(device, viewGroup->colorView, NULL);
     }
 
-    if (swapGroup->swapChain != VK_NULL_HANDLE)
-    {
-        vkDestroySwapchainKHR(device, swapGroup->swapChain, NULL);
-    }
+    // We no longer destroy the swapchain here because Vulkan spec requires oldSwapchain to be valid during recreation
 
     // Free UI image
     if (components->swapChainComp.swapChainGroup.uiImage != VK_NULL_HANDLE)
@@ -1810,6 +1807,10 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 	}
 
 	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
+	if (components->swapChainComp.swapChainGroup.swapChain != VK_NULL_HANDLE)
+	{
+		vkDestroySwapchainKHR(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.swapChain, NULL);
+	}
 
 	if(components->renderComp.buffers.entities != NULL)
 	{
