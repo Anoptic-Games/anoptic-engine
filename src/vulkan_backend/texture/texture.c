@@ -7,6 +7,8 @@
 
 #include "vulkan_backend/texture/texture.h" 
 
+extern GpuAllocator gpuAllocator;
+
 // Functions
 
 Texture8 readTexture8bit(char* fileName)
@@ -184,19 +186,10 @@ bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, 
 	VkMemoryRequirements memRequirements;
 	vkGetImageMemoryRequirements(components->deviceQueueComp.device, *image, &memRequirements);
 	
-	VkMemoryAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = findMemoryType(components, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	GpuAllocation alloc = gpu_alloc(&gpuAllocator, memRequirements, properties);
+	*imageMemory = alloc.memory;
 
-	VkResult result = vkAllocateMemory(components->deviceQueueComp.device, &allocInfo, NULL, imageMemory);
-	if (result != VK_SUCCESS)
-	{
-		printf("Failed to allocate image memory! Return code: %d\n", result);
-		return false;
-	}
-	
-	vkBindImageMemory(components->deviceQueueComp.device, *image, *imageMemory, 0);
+	vkBindImageMemory(components->deviceQueueComp.device, *image, alloc.memory, alloc.offset);
 
 	return true;
 }
