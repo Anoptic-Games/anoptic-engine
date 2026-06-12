@@ -232,13 +232,5 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 	Monitors *monitors;
 };
 
-typedef struct GlyphTexture
-{
-	uint32_t sampler;
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
-	VkImageView textureImageView;
-} GlyphTexture;
-
 
 #endif
