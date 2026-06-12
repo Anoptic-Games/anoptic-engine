@@ -1,6 +1,9 @@
 [submodule "external/glfw"]
 	path = external/glfw
 	url = https://github.com/glfw/glfw.git
+[submodule "external/freetype"]
+	path = external/freetype
+	url = https://github.com/freetype/freetype
 [submodule "external/mimalloc"]
 	path = external/mimalloc
 	url = https://github.com/microsoft/mimalloc.git
