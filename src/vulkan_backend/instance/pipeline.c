@@ -174,11 +174,18 @@ bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* stat
 	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	ssboLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[2] = {uboLayoutBinding, ssboLayoutBinding};
+	VkDescriptorSetLayoutBinding materialLayoutBinding = {};
+	materialLayoutBinding.binding = 2;
+	materialLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	materialLayoutBinding.descriptorCount = 1;
+	materialLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	materialLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[3] = {uboLayoutBinding, ssboLayoutBinding, materialLayoutBinding};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 2;
+	layoutInfo.bindingCount = 3;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -193,26 +200,40 @@ bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* stat
 
 bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* state)
 {
-	// Descriptor set layout binding for the combined image sampler
+	state->bindlessTextures.maxTextures = 4096;
+	state->bindlessTextures.textureCount = 0;
+
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
 	samplerLayoutBinding.binding = 0;
-	samplerLayoutBinding.descriptorCount = 1;
+	samplerLayoutBinding.descriptorCount = state->bindlessTextures.maxTextures;
 	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	samplerLayoutBinding.pImmutableSamplers = NULL;
 	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	VkDescriptorSetLayoutBinding bindings[1] = {samplerLayoutBinding};
+	VkDescriptorBindingFlags bindlessFlags = 
+		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+		VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+
+	VkDescriptorSetLayoutBindingFlagsCreateInfo extendedInfo = {};
+	extendedInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	extendedInfo.bindingCount = 1;
+	extendedInfo.pBindingFlags = &bindlessFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.pNext = &extendedInfo;
+	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
 	layoutInfo.bindingCount = 1;
-	layoutInfo.pBindings = bindings;
+	layoutInfo.pBindings = &samplerLayoutBinding;
 
-	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->prototypes[PIPELINE_FLAT].descriptorLayout) != VK_SUCCESS)
+	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->bindlessTextures.layout) != VK_SUCCESS)
 	{
-		printf("Failed to create material descriptor set layout!\n");
+		printf("Failed to create bindless texture descriptor set layout!\n");
 		return false;
 	}
+
+	state->prototypes[PIPELINE_FLAT].descriptorLayout = state->bindlessTextures.layout;
 
 	return true;
 }

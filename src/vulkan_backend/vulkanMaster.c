@@ -127,34 +127,18 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	uint32_t entityCount = components.renderComp.buffers.entityCount;
 	if (entityCount > 0) {
-		uint32_t batchStart = 0;
-		VkDescriptorSet currentTextureSet = components.renderComp.buffers.entities[0].textureDescriptorSet;
+		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
+			rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
 
-		for (uint32_t i = 0; i <= entityCount; i++) {
-			VkDescriptorSet nextSet = (i < entityCount) ? components.renderComp.buffers.entities[i].textureDescriptorSet : VK_NULL_HANDLE;
+		uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
+		vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
 
-			if (i == entityCount || nextSet != currentTextureSet) {
-				uint32_t batchSize = i - batchStart;
-
-				vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
-					rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &currentTextureSet, 0, NULL);
-
-				uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
-				vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
-
-				vkCmdDrawIndexedIndirect(
-					components.cmdComp.commandBuffer[components.syncComp.frameIndex],
-					rendererState.indirectBuffer.buffer[components.syncComp.frameIndex],
-					batchStart * sizeof(VkDrawIndexedIndirectCommand),
-					batchSize,
-					sizeof(VkDrawIndexedIndirectCommand));
-
-				if (i < entityCount) {
-					currentTextureSet = nextSet;
-					batchStart = i;
-				}
-			}
-		}
+		vkCmdDrawIndexedIndirect(
+			components.cmdComp.commandBuffer[components.syncComp.frameIndex],
+			rendererState.indirectBuffer.buffer[components.syncComp.frameIndex],
+			0,
+			entityCount,
+			sizeof(VkDrawIndexedIndirectCommand));
 	}
 	
 
@@ -329,6 +313,33 @@ void drawFrame()
 
 //Init and cleanup functions
 
+void createMaterialBuffer(VulkanComponents* components, RendererState* state, uint32_t maxEntities) {
+    state->materialBuffer.capacity = maxEntities;
+    state->materialBuffer.count = 0;
+    
+    VkDeviceSize bufferSize = sizeof(MaterialData) * maxEntities;
+    
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        
+        if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &state->materialBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create material buffer!\n");
+        }
+        
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->materialBuffer.buffer[i], &memRequirements);
+        
+        state->materialBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->materialBuffer.buffer[i], state->materialBuffer.allocs[i].memory, state->materialBuffer.allocs[i].offset);
+        
+        state->materialBuffer.mapped[i] = (MaterialData*)state->materialBuffer.allocs[i].mapped;
+    }
+}
+
 void createTransformBuffer(VulkanComponents* components, RendererState* state, uint32_t maxEntities) {
     state->transformBuffer.capacity = maxEntities;
     state->transformBuffer.count = 0;
@@ -457,8 +468,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, components.deviceQueueComp.device);
 
-	createTransformBuffer(&components, &rendererState, 10000);
-	createIndirectDrawBuffer(&components, &rendererState, 10000);
+
 
 	components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
 	if (components.swapChainComp.swapChainGroup.swapChain == NULL)
@@ -511,6 +521,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
+
+	if (!createBindlessTextureArray(&components, &rendererState))
+	{
+		unInitVulkan();
+		return false;
+	}
+
 	if (!ano_vk_init_pipelines(&components, &rendererState))
 	{
 		printf("Quitting init: pipeline failure!\n");
@@ -548,6 +565,12 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 	components.renderComp.buffers.entityCount = 1;
+
+	// In a real application, maxEntities would be dynamic or configured.
+	uint32_t maxEntities = 1000;
+	createTransformBuffer(&components, &rendererState, maxEntities);
+	createMaterialBuffer(&components, &rendererState, maxEntities);
+	createIndirectDrawBuffer(&components, &rendererState, maxEntities);
 
 	if(!parseGltf(&components, "viking_room.gltf"))
 	{
@@ -602,12 +625,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	if (!createMeshDescriptorPool(&components))
-	{
-		printf("Quitting init: mesh descriptor pool creation failure!\n");
-		unInitVulkan();
-		return false;
-	}
 
 	if (!createDescriptorSets(&components, &rendererState))
 	{
@@ -616,15 +633,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	if (!createMeshDescriptorSets(&components, &rendererState))
-	{
-		printf("Quitting init: mesh descriptor pool creation failure!\n");
-		unInitVulkan();
-		return false;
-	}
 
 	updateUboDescriptorSets(&components, &rendererState);
-	updateMeshDescriptorSets(&components);
+
 
 	if (!createCommandBuffer(&components))
 	{

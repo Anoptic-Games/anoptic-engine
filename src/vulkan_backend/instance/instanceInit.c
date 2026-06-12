@@ -558,9 +558,19 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	}
 	
 	// creating the device
+	VkPhysicalDeviceVulkan12Features features12 = {};
+	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	features12.descriptorIndexing = VK_TRUE;
+	features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+	features12.runtimeDescriptorArray = VK_TRUE;
+	features12.descriptorBindingPartiallyBound = VK_TRUE;
+	features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+	features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+
 	VkDeviceCreateInfo createInfo = {};
 
 	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+	createInfo.pNext = &features12;
 	createInfo.queueCreateInfoCount = queueCount;
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
@@ -1304,7 +1314,7 @@ bool createDescriptorPool(VulkanComponents* components, RendererState* state)
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1321,23 +1331,40 @@ bool createDescriptorPool(VulkanComponents* components, RendererState* state)
 	return true;
 }
 
-bool createMeshDescriptorPool(VulkanComponents* components)
-{ // Central to init
-	VkDescriptorPoolSize poolSizes[2] = {};
-	poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[0].descriptorCount = (uint32_t)components->renderComp.buffers.entityCount;
-	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[1].descriptorCount = (uint32_t)components->renderComp.buffers.entityCount;
+bool createBindlessTextureArray(VulkanComponents* components, RendererState* state)
+{
+	VkDescriptorPoolSize poolSize = {};
+	poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSize.descriptorCount = state->bindlessTextures.maxTextures;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes) / sizeof(VkDescriptorPoolSize));
-	poolInfo.pPoolSizes = poolSizes;
-	poolInfo.maxSets = (uint32_t)components->renderComp.buffers.entityCount;
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	poolInfo.maxSets = 1;
 
-	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.meshDescriptorPool)) != VK_SUCCESS)
+	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &state->bindlessTextures.pool) != VK_SUCCESS)
 	{
-		printf("Failed to create descriptor pool!\n");
+		printf("Failed to create bindless texture descriptor pool!\n");
+		return false;
+	}
+
+	VkDescriptorSetVariableDescriptorCountAllocateInfo variableInfo = {};
+	variableInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+	variableInfo.descriptorSetCount = 1;
+	variableInfo.pDescriptorCounts = &state->bindlessTextures.maxTextures;
+
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.pNext = &variableInfo;
+	allocInfo.descriptorPool = state->bindlessTextures.pool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &state->bindlessTextures.layout;
+
+	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, &state->bindlessTextures.set) != VK_SUCCESS)
+	{
+		printf("Failed to allocate bindless texture descriptor set!\n");
 		return false;
 	}
 
@@ -1368,45 +1395,7 @@ bool createDescriptorSets(VulkanComponents* components, RendererState* state)
 	return true;
 }
 
-bool createMeshDescriptorSets(VulkanComponents* components, RendererState* state)
-{
-	// Allocate entity descriptor sets
-	size_t entityCount = components->renderComp.buffers.entityCount;
 
-	VkDescriptorSetLayout* layouts = calloc(entityCount, sizeof(VkDescriptorSetLayout));
-
-	for (uint32_t i = 0; i < entityCount; i++)
-	{
-		layouts[i] = state->prototypes[PIPELINE_FLAT].descriptorLayout;
-	}
-
-	VkDescriptorSetAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.pNext = NULL;
-	allocInfo.descriptorPool = components->renderComp.meshDescriptorPool;
-	allocInfo.descriptorSetCount = (uint32_t)entityCount;
-	allocInfo.pSetLayouts = layouts;
-
-	VkDescriptorSet* tempSets = calloc(entityCount, sizeof(VkDescriptorSet));
-
-	printf("!!DEBUG!!\nMesh descriptors: %u\n", (uint32_t)entityCount);
-
-	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, tempSets) != VK_SUCCESS)
-	{
-		printf("Failed to allocate mesh descriptor sets!\n");
-		return false;
-	}
-
-	for (uint32_t j = 0; j < entityCount; j++)
-	{
-		components->renderComp.buffers.entities[j].textureDescriptorSet = tempSets[j];
-	}
-
-	free(layouts);
-	free(tempSets);
-
-	return true;
-}
 
 void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 { // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
@@ -1425,7 +1414,12 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 		ssboInfo.offset = 0;
 		ssboInfo.range = sizeof(mat4) * state->transformBuffer.capacity;
 
-		VkWriteDescriptorSet descriptorWrites[2] = {};
+		VkDescriptorBufferInfo materialInfo = {};
+		materialInfo.buffer = state->materialBuffer.buffer[i];
+		materialInfo.offset = 0;
+		materialInfo.range = sizeof(MaterialData) * state->materialBuffer.capacity;
+
+		VkWriteDescriptorSet descriptorWrites[3] = {};
 		
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = state->globalSets[i];
@@ -1443,42 +1437,19 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 		descriptorWrites[1].descriptorCount = 1;
 		descriptorWrites[1].pBufferInfo = &ssboInfo;
 
-		vkUpdateDescriptorSets(components->deviceQueueComp.device, 2, descriptorWrites, 0, NULL);
+		descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[2].dstSet = state->globalSets[i];
+		descriptorWrites[2].dstBinding = 2;
+		descriptorWrites[2].dstArrayElement = 0;
+		descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[2].descriptorCount = 1;
+		descriptorWrites[2].pBufferInfo = &materialInfo;
+
+		vkUpdateDescriptorSets(components->deviceQueueComp.device, 3, descriptorWrites, 0, NULL);
 	}
 }
 
-void updateMeshDescriptorSets(VulkanComponents* components)
-{ // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
 
-	size_t entityCount = components->renderComp.buffers.entityCount;
-	VkDescriptorImageInfo* imageInfos = (VkDescriptorImageInfo*)calloc(entityCount, sizeof(VkDescriptorImageInfo));
-
-	for (size_t i = 0; i < entityCount; i++)
-	{
-		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		uint32_t texIdx = components->renderComp.buffers.entities[i].textureIndex;
-		imageInfos[i].imageView = rendererState.primitives.textureBuffers[texIdx].textureImageView;
-		imageInfos[i].sampler = components->renderComp.textureSampler;
-	}
-
-	VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)calloc(entityCount, sizeof(VkWriteDescriptorSet));
-
-	for (size_t j = 0; j < entityCount; j++)
-	{
-		descriptorWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[j].dstSet = components->renderComp.buffers.entities[j].textureDescriptorSet;
-		descriptorWrites[j].dstBinding = 0;
-		descriptorWrites[j].dstArrayElement = 0;
-		descriptorWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		descriptorWrites[j].descriptorCount = 1;
-		descriptorWrites[j].pImageInfo = &imageInfos[j];
-	}
-
-	vkUpdateDescriptorSets(components->deviceQueueComp.device, entityCount, descriptorWrites, 0, NULL);
-
-	free(imageInfos);
-	free(descriptorWrites);
-}
 
 /*bool createDescriptorPool(VulkanComponents* components)
 { // Central to init
@@ -1804,11 +1775,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 	if (components->renderComp.descriptorSetLayout != NULL)
 	{
 		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.descriptorSetLayout, NULL);
-	}
-
-	if (components->renderComp.meshDescriptorSetLayout != NULL)
-	{
-		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.meshDescriptorSetLayout, NULL);
 	}
 
 	if (components->renderComp.textureSampler != NULL)

@@ -41,6 +41,8 @@ bool createTextureImageView(VulkanComponents* components, VkImage textureImage, 
 bool createTextureSampler(VulkanComponents* components);
 
 
+uint32_t bindless_register_texture(VulkanComponents* components, BindlessTextureArray* bta, VkImageView view, VkSampler sampler);
+
 // Helper functions
 
 // Generic function for parametrized image creation

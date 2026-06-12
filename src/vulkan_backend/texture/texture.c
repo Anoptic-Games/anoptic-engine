@@ -17,6 +17,35 @@ Texture8 readTexture8bit(char* fileName)
 	return texture;
 }
 
+uint32_t bindless_register_texture(VulkanComponents* components, BindlessTextureArray* bta, VkImageView view, VkSampler sampler)
+{
+	if (bta->textureCount >= bta->maxTextures) {
+		printf("ERROR: Bindless texture array full!\n");
+		return 0; // Or return a fallback texture index
+	}
+
+	uint32_t index = bta->textureCount;
+	bta->textureCount++;
+
+	VkDescriptorImageInfo imageInfo = {};
+	imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	imageInfo.imageView = view;
+	imageInfo.sampler = sampler;
+
+	VkWriteDescriptorSet descriptorWrite = {};
+	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrite.dstSet = bta->set;
+	descriptorWrite.dstBinding = 0;
+	descriptorWrite.dstArrayElement = index; // The index in the array to update
+	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrite.descriptorCount = 1;
+	descriptorWrite.pImageInfo = &imageInfo;
+
+	vkUpdateDescriptorSets(components->deviceQueueComp.device, 1, &descriptorWrite, 0, NULL);
+
+	return index;
+}
+
 bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels)
 {
 	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
