@@ -1477,12 +1477,16 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 			{
 				success = false;
 			}
+			else
+			{
+				TextureData data = {0};
+				data.textureImage = texture->textureImage;
+				data.textureImageMemory = texture->textureImageMemory;
+				data.textureImageView = texture->textureImageView;
+				ano_vk_register_texture(&rendererState.primitives, data);
+			}
 
 			// Create texture image view for each primitive
-			/*if (!createTextureImageView(components, texture->textureImage, &texture->textureImageView))
-			{
-				success = false;
-			}*/
 			texture->processed = true;
 			printf("Uploaded texture #%d!\n", primitiveIndex);
 		}

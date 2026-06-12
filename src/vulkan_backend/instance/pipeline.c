@@ -367,3 +367,58 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 
 	return true;
 }
+
+void ano_vk_cleanup_pipelines(VulkanComponents* components, RendererState* state)
+{
+	// Global layout
+	if (state->globalSetLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, state->globalSetLayout, NULL);
+		state->globalSetLayout = VK_NULL_HANDLE;
+	}
+
+	// Material layouts
+	if (state->bindlessTextures.layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, state->bindlessTextures.layout, NULL);
+		state->bindlessTextures.layout = VK_NULL_HANDLE;
+	}
+
+	// Global descriptor pool
+	if (state->globalDescriptorPool != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorPool(components->deviceQueueComp.device, state->globalDescriptorPool, NULL);
+		state->globalDescriptorPool = VK_NULL_HANDLE;
+	}
+
+	// Pipelines
+	for (int i = 0; i < PIPELINE_TYPE_COUNT; ++i)
+	{
+		if (state->prototypes[i].cache != VK_NULL_HANDLE)
+		{
+			vkDestroyPipelineCache(components->deviceQueueComp.device, state->prototypes[i].cache, NULL);
+			state->prototypes[i].cache = VK_NULL_HANDLE;
+		}
+
+		if (state->prototypes[i].layout != VK_NULL_HANDLE)
+		{
+			vkDestroyPipelineLayout(components->deviceQueueComp.device, state->prototypes[i].layout, NULL);
+			state->prototypes[i].layout = VK_NULL_HANDLE;
+		}
+
+		if (state->prototypes[i].implementations != NULL)
+		{
+			for (uint32_t j = 0; j < state->prototypes[i].implementationCount; ++j)
+			{
+				if (state->prototypes[i].implementations[j].pipeline != VK_NULL_HANDLE)
+				{
+					vkDestroyPipeline(components->deviceQueueComp.device, state->prototypes[i].implementations[j].pipeline, NULL);
+					state->prototypes[i].implementations[j].pipeline = VK_NULL_HANDLE;
+				}
+			}
+			free(state->prototypes[i].implementations);
+			state->prototypes[i].implementations = NULL;
+			state->prototypes[i].implementationCount = 0;
+		}
+	}
+}

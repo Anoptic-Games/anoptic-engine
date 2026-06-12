@@ -1649,12 +1649,7 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
             vkDestroyImage(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImage, NULL);
 
     }
-    if (rendererState.primitives.textureBuffers)
-    {
-        free(rendererState.primitives.textureBuffers);
-        rendererState.primitives.textureBuffers = NULL;
-    }
-    rendererState.primitives.textureCount = 0;
+    ano_vk_cleanup_primitives(&rendererState.primitives);
 
 	if(components->renderComp.descriptorPool)
 	{
@@ -1665,6 +1660,8 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 	{
 		if(rendererState.transformBuffer.buffer[i])
 			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.transformBuffer.buffer[i], NULL);
+		if(rendererState.materialBuffer.buffer[i])
+			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.materialBuffer.buffer[i], NULL);
 		if(rendererState.indirectBuffer.buffer[i])
 			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.indirectBuffer.buffer[i], NULL);
 	}
@@ -1680,6 +1677,8 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 			vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.uniformMemory[i], NULL);
 		}
 	}
+
+    ano_vk_cleanup_pipelines(components, &rendererState);
 
 	#ifdef DEBUG_BUILD
 	DestroyDebugUtilsMessengerEXT(components->instanceDebug.instance, components->instanceDebug.debugMessenger, NULL);
@@ -1734,6 +1733,7 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
 		ano_vk_cleanup_geometry_pool(&rendererState.globalGeometryPool, components->deviceQueueComp.device);
 		gpu_alloc_destroy(&gpuAllocator);
+		gpu_alloc_destroy(&swapchainAllocator);
 
 		vkDestroyDevice(components->deviceQueueComp.device, NULL);
 	}
