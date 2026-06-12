@@ -6,6 +6,9 @@
 #include "ano_GltfParser.h"
 #include "jsmn.h"
 
+#include <mimalloc.h>
+#include <mimalloc-override.h>
+
 // Utility functions
 
 // This might seem dubious, but trust me

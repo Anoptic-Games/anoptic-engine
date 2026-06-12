@@ -26,6 +26,8 @@
 
 // Function interfaces
 
+extern uint32_t g_ValidationErrors;
+
 // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 bool initVulkan(); // Move to includes
 

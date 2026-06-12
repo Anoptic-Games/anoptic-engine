@@ -158,6 +158,8 @@ VkResult createInstance(VulkanComponents* vkComponents) // Central component of 
 	return VK_SUCCESS;
 }
 
+uint32_t g_ValidationErrors = 0;
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Used in validation layer activation, the entire setup is currently borked and relies on external overrides
 	VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -170,6 +172,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Used in validation layer
 		return VK_FALSE;
 	}
 	printf("Validation layer: %s\n", pCallbackData->pMessage);
+
+	if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+	{
+		g_ValidationErrors++;
+	}
 
 	return VK_FALSE;
 }
@@ -1806,31 +1813,43 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
 	if(components->renderComp.buffers.entities != NULL)
 	{
-		if(components->renderComp.buffers.entities[0].vertex)
-		{
-			vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertex, NULL);
-		}
+        for (uint32_t i = 0; i < components->renderComp.buffers.entityCount; i++) {
+            bool sharedVertex = false;
+            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].vertex == components->renderComp.buffers.entities[j].vertex) { sharedVertex = true; break; } }
+            if (!sharedVertex && components->renderComp.buffers.entities[i].vertex) {
+                vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].vertex, NULL);
+                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].vertexMemory, NULL);
+            }
+            
+            bool sharedIndex = false;
+            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].index == components->renderComp.buffers.entities[j].index) { sharedIndex = true; break; } }
+            if (!sharedIndex && components->renderComp.buffers.entities[i].index) {
+                vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].index, NULL);
+                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].indexMemory, NULL);
+            }
 
-		if(components->renderComp.buffers.entities[0].vertexMemory)
-		{
-			vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
-		}
+            bool sharedTexture = false;
+            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].textureImage == components->renderComp.buffers.entities[j].textureImage) { sharedTexture = true; break; } }
+            if (!sharedTexture && components->renderComp.buffers.entities[i].textureImage) {
+                vkDestroyImageView(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].textureImageView, NULL);
+                vkDestroyImage(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].textureImage, NULL);
+                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].textureImageMemory, NULL);
+            }
+
+            bool sharedTransform = false;
+            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].transform == components->renderComp.buffers.entities[j].transform) { sharedTransform = true; break; } }
+            if (!sharedTransform && components->renderComp.buffers.entities[i].transform) {
+                vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].transform, NULL);
+                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].transformMemory, NULL);
+            }
+        }
+        free(components->renderComp.buffers.entities);
+        components->renderComp.buffers.entities = NULL;
 	}
-
-	//if(components->renderComp.buffers.entities[0].index)
-	//{
-	//	vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].index, NULL);
-	//}
-
-	//if(components->renderComp.buffers.entities[0].indexMemory)
-	//{
-	//	vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].indexMemory, NULL);
-	//}
 
 	if(components->renderComp.descriptorPool)
 	{
 		vkDestroyDescriptorPool(components->deviceQueueComp.device, components->renderComp.descriptorPool, NULL);
-		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.descriptorSetLayout, NULL);
 	}
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
