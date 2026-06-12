@@ -232,6 +232,24 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 	Monitors *monitors;
 };
 
+typedef struct TransformBuffer
+{
+    VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
+    mat4*           mapped[MAX_FRAMES_IN_FLIGHT];  // persistently mapped
+    uint32_t        capacity;   // max entities
+    uint32_t        count;      // current entity count
+} TransformBuffer;
+
+typedef struct IndirectDrawBuffer
+{
+    VkBuffer                        buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation                   allocs[MAX_FRAMES_IN_FLIGHT];
+    VkDrawIndexedIndirectCommand*   mapped[MAX_FRAMES_IN_FLIGHT];
+    uint32_t                        capacity;
+    uint32_t                        drawCount[MAX_FRAMES_IN_FLIGHT];
+} IndirectDrawBuffer;
+
 typedef struct RendererState
 {
     // Pipeline system (Stage 0+)
@@ -250,6 +268,9 @@ typedef struct RendererState
     // Geometry
     GeometryPool            globalGeometryPool;
     RenderPrimitives        primitives;
+
+    TransformBuffer         transformBuffer;
+    IndirectDrawBuffer      indirectBuffer;
 } RendererState;
 
 #endif

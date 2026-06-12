@@ -125,27 +125,36 @@ void recordCommandBuffer(uint32_t imageIndex)
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 		rendererState.prototypes[PIPELINE_FLAT].layout, 0, 1, &(rendererState.globalSets[components.syncComp.frameIndex]), 0, NULL);
 
-	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount; i++) // Iterate through all render packages and issue indexed draw commands
-	{
-		uint32_t meshIdx = components.renderComp.buffers.entities[i].meshIndex;
-		MeshRegion mesh = rendererState.globalGeometryPool.meshes[meshIdx];
+	uint32_t entityCount = components.renderComp.buffers.entityCount;
+	if (entityCount > 0) {
+		uint32_t batchStart = 0;
+		VkDescriptorSet currentTextureSet = components.renderComp.buffers.entities[0].textureDescriptorSet;
 
-		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
-			rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &(components.renderComp.buffers.entities[i].textureDescriptorSet), 0, NULL);
+		for (uint32_t i = 0; i <= entityCount; i++) {
+			VkDescriptorSet nextSet = (i < entityCount) ? components.renderComp.buffers.entities[i].textureDescriptorSet : VK_NULL_HANDLE;
 
-        struct {
-            mat4 model;
-            uint32_t materialIndex;
-        } pc;
-        memcpy(&pc.model, components.renderComp.buffers.entities[i].transform, sizeof(mat4));
-        pc.materialIndex = 0;
+			if (i == entityCount || nextSet != currentTextureSet) {
+				uint32_t batchSize = i - batchStart;
 
-        vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+				vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
+					rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &currentTextureSet, 0, NULL);
 
-		uint32_t firstIndex = mesh.indexOffset / sizeof(uint16_t);
-		int32_t vertexOffset = mesh.baseVertex;
+				uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
+				vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
 
-		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], mesh.indexCount, 1, firstIndex, vertexOffset, 0);
+				vkCmdDrawIndexedIndirect(
+					components.cmdComp.commandBuffer[components.syncComp.frameIndex],
+					rendererState.indirectBuffer.buffer[components.syncComp.frameIndex],
+					batchStart * sizeof(VkDrawIndexedIndirectCommand),
+					batchSize,
+					sizeof(VkDrawIndexedIndirectCommand));
+
+				if (i < entityCount) {
+					currentTextureSet = nextSet;
+					batchStart = i;
+				}
+			}
+		}
 	}
 	
 
@@ -183,8 +192,42 @@ void printUniformTransferState()
 	{
 		printf("Frame %d submitted: %d\n", i, components.syncComp.frameSubmitted[i]);
 	}
-	
 	printf("\n======================================\n");
+}
+
+void updateTransformBuffer(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
+{
+	uint32_t entityCount = components->renderComp.buffers.entityCount;
+	RenderEntity* entities = components->renderComp.buffers.entities;
+	mat4* transforms = state->transformBuffer.mapped[frameIndex];
+
+	for (uint32_t i = 0; i < entityCount; i++) {
+		memcpy(&transforms[i], &entities[i].transform, sizeof(mat4));
+	}
+	state->transformBuffer.count = entityCount;
+}
+
+void buildIndirectCommands(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
+{
+	VkDrawIndexedIndirectCommand* cmds = state->indirectBuffer.mapped[frameIndex];
+	uint32_t entityCount = components->renderComp.buffers.entityCount;
+	RenderEntity* entities = components->renderComp.buffers.entities;
+	uint32_t drawCount = 0;
+
+	for (uint32_t i = 0; i < entityCount; i++) {
+		MeshRegion* mesh = &state->globalGeometryPool.meshes[entities[i].meshIndex];
+
+		cmds[drawCount] = (VkDrawIndexedIndirectCommand){
+			.indexCount    = mesh->indexCount,
+			.instanceCount = 1,
+			.firstIndex    = mesh->indexOffset / sizeof(uint16_t),
+			.vertexOffset  = mesh->baseVertex,
+			.firstInstance = i,
+		};
+		drawCount++;
+	}
+
+	state->indirectBuffer.drawCount[frameIndex] = drawCount;
 }
 
 void drawFrame() 
@@ -213,9 +256,15 @@ void drawFrame()
 	}
 
 	updateUniformBuffer(&components);
-	updateMeshTransforms(&components, &components.renderComp.buffers.entities[0], 2.0f);
-	updateMeshTransforms(&components, &components.renderComp.buffers.entities[1], -2.0f);
-	updateMeshTransforms(&components, &components.renderComp.buffers.entities[2], 0.0f);
+
+	// Update entity transforms
+	float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
+	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount && i < 3; i++) {
+		updateMeshTransforms(&components, &components.renderComp.buffers.entities[i], moveOffsets[i]);
+	}
+
+	updateTransformBuffer(&components, &rendererState, components.syncComp.frameIndex);
+	buildIndirectCommands(&components, &rendererState, components.syncComp.frameIndex);
 
 	vkResetCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0);
 	recordCommandBuffer(imageIndex);
@@ -279,6 +328,61 @@ void drawFrame()
 }
 
 //Init and cleanup functions
+
+void createTransformBuffer(VulkanComponents* components, RendererState* state, uint32_t maxEntities) {
+    state->transformBuffer.capacity = maxEntities;
+    state->transformBuffer.count = 0;
+    
+    VkDeviceSize bufferSize = sizeof(mat4) * maxEntities;
+    
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        
+        if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &state->transformBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create transform buffer!\n");
+        }
+        
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->transformBuffer.buffer[i], &memRequirements);
+        
+        state->transformBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->transformBuffer.buffer[i], state->transformBuffer.allocs[i].memory, state->transformBuffer.allocs[i].offset);
+        
+        state->transformBuffer.mapped[i] = (mat4*)state->transformBuffer.allocs[i].mapped;
+    }
+}
+
+void createIndirectDrawBuffer(VulkanComponents* components, RendererState* state, uint32_t maxDraws) {
+    state->indirectBuffer.capacity = maxDraws;
+    
+    VkDeviceSize bufferSize = sizeof(VkDrawIndexedIndirectCommand) * maxDraws;
+    
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        state->indirectBuffer.drawCount[i] = 0;
+        
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        
+        if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create indirect draw buffer!\n");
+        }
+        
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->indirectBuffer.buffer[i], &memRequirements);
+        
+        state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
+        
+        state->indirectBuffer.mapped[i] = (VkDrawIndexedIndirectCommand*)state->indirectBuffer.allocs[i].mapped;
+    }
+}
 
 bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 {
@@ -352,6 +456,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	gpuAllocator.blockCount = 0;
 
 	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, components.deviceQueueComp.device);
+
+	createTransformBuffer(&components, &rendererState, 10000);
+	createIndirectDrawBuffer(&components, &rendererState, 10000);
 
 	components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
 	if (components.swapChainComp.swapChainGroup.swapChain == NULL)
