@@ -26,6 +26,7 @@ struct Buffer
 bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* state);
 bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* state);
 bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state);
+void ano_vk_cleanup_pipelines(VulkanComponents* components, RendererState* state);
 
 
 
