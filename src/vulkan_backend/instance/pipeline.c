@@ -226,6 +226,7 @@ bool createMeshDescriptorSetLayout(VulkanComponents* components)
 
 VkPipeline createGraphicsPipeline(VulkanComponents* components)
 {
+    // Load vertex shader code
 	struct Buffer vertShaderCode;
 	char vertShaderPath[256]; // Adjust size as needed.
 	snprintf(vertShaderPath, sizeof(vertShaderPath), "%s/resources/shaders/vert.spv", PROJECT_ROOT);
@@ -235,6 +236,7 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 		return NULL;
 	}
 
+    // Load fragment shader code
 	struct Buffer fragShaderCode;
 	char fragShaderPath[256]; // Adjust size as needed.
 	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/frag.spv", PROJECT_ROOT);
@@ -245,6 +247,7 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	}
 	printf("Loaded files!\n");
 
+    // Bundle pre-compiled shaders into shaderModules
 	VkShaderModule vertShaderModule = createShaderModule(components->deviceQueueComp.device, &vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(components->deviceQueueComp.device, &fragShaderCode);
 	if (vertShaderModule == NULL || fragShaderModule == NULL)
@@ -254,6 +257,7 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	}
 	printf("Created shaders!\n");
 
+    // We specify where the shaders should be run
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
 	vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -282,9 +286,9 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	dynamicState.pDynamicStates = dynamicStates;
 
 	// Information on how to process vertex data
-	VkVertexInputBindingDescription bindingDescription = getBindingDescription();
+	VkVertexInputBindingDescription bindingDescription = getBindingDescription(); // From vertex.h, can easily be generalized for different vert layouts
 	VkVertexInputAttributeDescription attributeDescriptions[3];
-	getAttributeDescriptions(&attributeDescriptions[0]);
+	getAttributeDescriptions(&attributeDescriptions[0]); // Also from vertex.h, can be generalized for different precisions
 
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;

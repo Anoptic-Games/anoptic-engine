@@ -28,18 +28,18 @@
 // Function interfaces
 
 // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
-bool initVulkan(); 
+bool initVulkan(); // Move to includes
 
 // A celebration
-void unInitVulkan();
+void unInitVulkan(); // Move to includes
 
 // Draws a single frame
 
-void drawFrame();
+void drawFrame(); // Move to includes
 
 // Returns whether the program has been requested to exit
 
-bool anoShouldClose();
+bool anoShouldClose(); // Move to includes
 
 void drawChar(FT_ULong glyph_number);
 
