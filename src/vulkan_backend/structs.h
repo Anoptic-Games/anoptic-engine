@@ -35,11 +35,6 @@ typedef struct FrameImageGroup
     VkDeviceMemory imageMemory; // This won't be used for the final present images, memory is managed by the swapchain
 } FrameImageGroup;
 
-typedef struct FrameBufferGroup
-{
-	uint32_t bufferCount;
-	VkFramebuffer* buffers; // Necessary for the swapchain
-} FrameBufferGroup;
 
 
 typedef struct ImageViewGroup
@@ -121,7 +116,7 @@ typedef struct SwapChainComponents
 {
     SwapChainGroup swapChainGroup;
     ImageViewGroup viewGroup;
-    FrameBufferGroup framebufferGroup;
+
     SwapChainSupportDetails swapChainSupportDetails;
 } SwapChainComponents;
 
@@ -148,7 +143,7 @@ typedef struct BufferComponents
 
 typedef struct RenderComponents
 {
-    VkRenderPass renderPass; // We'll have multiples of these three
+
     VkPipelineLayout pipelineLayout;
 	VkDescriptorSetLayout descriptorSetLayout; // This is only for the UBO, swapchain-adjacent rendering
 	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT]; // These descriptors deal with scene-wide parameters, move to swapchain

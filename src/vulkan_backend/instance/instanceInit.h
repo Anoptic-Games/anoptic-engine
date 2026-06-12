@@ -40,8 +40,9 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 // Initializes a swap chain
 SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain);
 
-// Does the same, again
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window);
+
+void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, ImageViewGroup* viewGroup);
 
 // Generic helper function for creating 2D image views
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels);
@@ -49,8 +50,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 // You know what this does
 ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 
-// Creates framebuffers
-bool createFramebuffers(VulkanComponents* components);
+
 
 // Creates a command pool
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
