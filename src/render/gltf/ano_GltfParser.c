@@ -1565,29 +1565,31 @@ void packageRenderables(VulkanComponents* components, GltfElements* elements)
 			printf("Setting entity#%d buffers and textures!\n", entityIndex);
 			components->renderComp.buffers.entities[entityIndex].meshIndex = primitive->meshIndex;
 
-			// Wait, the textures are currently allocated per-entity via descriptor sets.
-			// The original code did not assign textureDescriptorSet here, but it assigned images.
-			// Let's create descriptors here if needed, or we just assign texture indices.
 			GltfMaterial* material = &elements->materials[primitive->material];
 			GltfTexture* texture = &elements->textures[material->pbr.baseColorTexture];
 
-			// Store textures into RenderPrimitives or keep them locally for now.
-			// Actually, the descriptor sets are created in vulkanMaster.c later.
-			// For now, let's keep the textureImage data so it can be cleaned up or bound.
-			// Wait! RenderEntity no longer has textureImage.
-			// Where do we store it? We need to store it in `rendererState.primitives`!
-			
-			// For Stage 3: We still create descriptor sets per entity, but where do we store the VkImage?
-			// Let's just create a texture registry entry.
-			uint32_t texIdx = rendererState.primitives.textureCount++;
-			rendererState.primitives.textureBuffers = realloc(rendererState.primitives.textureBuffers, rendererState.primitives.textureCount * sizeof(TextureData));
-			rendererState.primitives.textureBuffers[texIdx].textureImage = texture->textureImage;
-			rendererState.primitives.textureBuffers[texIdx].textureImageMemory = texture->textureImageMemory;
-			rendererState.primitives.textureBuffers[texIdx].textureImageView = texture->textureImageView;
-			rendererState.primitives.textureBuffers[texIdx].usageCount = 1;
-			components->renderComp.buffers.entities[entityIndex].textureIndex = texIdx;
+			// Register texture in bindless array
+			uint32_t bindlessTexIdx = bindless_register_texture(components, &rendererState.bindlessTextures, texture->textureImageView, components->renderComp.textureSampler);
 
-			// The descriptor set creation needs these. We will bind them later in vulkanMaster.c.
+			// Assign material index
+			uint32_t matIdx = entityIndex;
+			components->renderComp.buffers.entities[entityIndex].materialIndex = matIdx;
+
+			// Write MaterialData to SSBO for all frames
+			MaterialData matData = {};
+			matData.albedoIndex = bindlessTexIdx;
+			matData.normalIndex = 0;
+			matData.roughness = 1.0f;
+			matData.emissive = 0.0f;
+			matData.color[0] = 1.0f;
+			matData.color[1] = 1.0f;
+			matData.color[2] = 1.0f;
+			matData.color[3] = 1.0f;
+
+			for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+				rendererState.materialBuffer.mapped[frame][matIdx] = matData;
+			}
+			rendererState.materialBuffer.count++;
 
 			entityIndex++;
 		}

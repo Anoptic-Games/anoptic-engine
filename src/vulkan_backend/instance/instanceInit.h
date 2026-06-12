@@ -85,20 +85,13 @@ bool createDepthResources(VulkanComponents* components);
 // Creates the descriptor pool
 bool createDescriptorPool(VulkanComponents* components, RendererState* state);
 
-// Creates an entity data descriptor pool
-bool createMeshDescriptorPool(VulkanComponents* components);
+bool createBindlessTextureArray(VulkanComponents* components, RendererState* state);
 
 // Creates the descriptor sets
 bool createDescriptorSets(VulkanComponents* components, RendererState* state);
 
-// Creates mesh descriptor sets
-bool createMeshDescriptorSets(VulkanComponents* components, RendererState* state);
-
 // Updates UBO descriptor sets to point to their corresponding uniform buffers
 void updateUboDescriptorSets(VulkanComponents* components, RendererState* state);
-
-// Updates entities' descriptor sets to point to their respective textures
-void updateMeshDescriptorSets(VulkanComponents* components);
 
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);

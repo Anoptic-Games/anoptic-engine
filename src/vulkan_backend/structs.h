@@ -128,8 +128,7 @@ typedef struct SwapChainComponents
 typedef struct RenderEntity
 { // To be extended with animation data
     uint32_t meshIndex;
-    uint32_t textureIndex;
-    VkDescriptorSet textureDescriptorSet;
+    uint32_t materialIndex;   // index into MaterialSSBO
     mat4 transform;
 } RenderEntity;
 
@@ -152,10 +151,8 @@ typedef struct RenderComponents
     VkRenderPass renderPass; // We'll have multiples of these three
     VkPipelineLayout pipelineLayout;
 	VkDescriptorSetLayout descriptorSetLayout; // This is only for the UBO, swapchain-adjacent rendering
-	VkDescriptorSetLayout meshDescriptorSetLayout; // Move to per-mesh-type struct
 	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT]; // These descriptors deal with scene-wide parameters, move to swapchain
 	VkDescriptorPool descriptorPool;
-	VkDescriptorPool meshDescriptorPool;
 	GlobalUBO uniform; // This comes from vertex.h, should probably have a buffer of length n = swap count, move to swapchain
     VkPipeline graphicsPipeline; // We'll have many of these
 	VkSampler textureSampler;   // Also many of these, maybe create whole struct for resource access formats
@@ -241,6 +238,34 @@ typedef struct TransformBuffer
     uint32_t        count;      // current entity count
 } TransformBuffer;
 
+typedef struct MaterialData
+{
+    uint32_t    albedoIndex;        // index into bindless texture array
+    uint32_t    normalIndex;        // 0 = no normal map
+    float       roughness;          // non-PBR: controls stylized specular falloff
+    float       emissive;           // emissive intensity multiplier
+    float       color[4];           // tint color (RGBA)
+} MaterialData;
+
+typedef struct MaterialBuffer
+{
+    VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
+    MaterialData*   mapped[MAX_FRAMES_IN_FLIGHT];  // persistently mapped
+    uint32_t        capacity;   // max entities
+    uint32_t        count;      // current entity count
+} MaterialBuffer;
+
+typedef struct BindlessTextureArray
+{
+    VkDescriptorPool        pool;
+    VkDescriptorSetLayout   layout;
+    VkDescriptorSet         set;            // ONE set, holds ALL textures
+    uint32_t                maxTextures;    // upper bound (e.g. 4096)
+    uint32_t                textureCount;   // current count
+    VkSampler               defaultSampler; // shared linear/repeat sampler
+} BindlessTextureArray;
+
 typedef struct IndirectDrawBuffer
 {
     VkBuffer                        buffer[MAX_FRAMES_IN_FLIGHT];
@@ -270,6 +295,8 @@ typedef struct RendererState
     RenderPrimitives        primitives;
 
     TransformBuffer         transformBuffer;
+    MaterialBuffer          materialBuffer;
+    BindlessTextureArray    bindlessTextures;
     IndirectDrawBuffer      indirectBuffer;
 } RendererState;
 
