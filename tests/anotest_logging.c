@@ -9,9 +9,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* Concurrent enqueue test: THREAD_COUNT producers hammer the shared log
- * buffer simultaneously. Total volume stays under LOG_BUFFER_MAX so every
- * enqueue must succeed. Run under TSan to validate the synchronization. */
+/* Concurrent enqueue test: multiple threads hammer the log buffer.
+ * Total volume stays under LOG_BUFFER_MAX so every enqueue must succeed. */
 
 #define THREAD_COUNT 4
 #define MSGS_PER_THREAD 20
