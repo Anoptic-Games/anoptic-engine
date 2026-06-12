@@ -878,6 +878,11 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
         vkDestroyImageView(device, viewGroup->colorView, NULL);
     }
 
+    if (swapGroup->swapChain != VK_NULL_HANDLE)
+    {
+        vkDestroySwapchainKHR(device, swapGroup->swapChain, NULL);
+    }
+
     // Free UI image
     if (components->swapChainComp.swapChainGroup.uiImage != VK_NULL_HANDLE)
     {
@@ -1791,19 +1796,25 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)  // We wanna make sure all rendering is finished before we destroy anything
 	{  
-		vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+		if (components->syncComp.inFlightFence[i] != VK_NULL_HANDLE)
+		{
+			vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+		}
 	}
 
 	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 
-	if(components->renderComp.buffers.entities[0].vertex)
+	if(components->renderComp.buffers.entities != NULL)
 	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertex, NULL);
-	}
+		if(components->renderComp.buffers.entities[0].vertex)
+		{
+			vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertex, NULL);
+		}
 
-	if(components->renderComp.buffers.entities[0].vertexMemory)
-	{
-		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
+		if(components->renderComp.buffers.entities[0].vertexMemory)
+		{
+			vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
+		}
 	}
 
 	//if(components->renderComp.buffers.entities[0].index)
@@ -1873,6 +1884,16 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 	if (components->renderComp.descriptorSetLayout != NULL)
 	{
 		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.descriptorSetLayout, NULL);
+	}
+
+	if (components->renderComp.meshDescriptorSetLayout != NULL)
+	{
+		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.meshDescriptorSetLayout, NULL);
+	}
+
+	if (components->renderComp.textureSampler != NULL)
+	{
+		vkDestroySampler(components->deviceQueueComp.device, components->renderComp.textureSampler, NULL);
 	}
 
 	if (components->renderComp.graphicsPipeline != NULL)
