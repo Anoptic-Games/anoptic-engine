@@ -525,7 +525,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	VkPhysicalDeviceFeatures availableFeatures;
 	vkGetPhysicalDeviceFeatures(physicalDevice, &availableFeatures);
 	VkPhysicalDeviceFeatures deviceFeatures = {.shaderInt64 = availableFeatures.shaderInt64, .shaderFloat64 = availableFeatures.shaderFloat64,
-												.samplerAnisotropy = availableFeatures.samplerAnisotropy}; // Add more features as required
+												.samplerAnisotropy = availableFeatures.samplerAnisotropy, .multiDrawIndirect = availableFeatures.multiDrawIndirect}; // Add more features as required
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
