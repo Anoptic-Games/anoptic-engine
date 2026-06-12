@@ -143,23 +143,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	}
 }
 
-void clearSemaphores()
-{
-	VkSemaphoreCreateInfo semaphoreInfo = {};
-	semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-	{
-		vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.imageAvailableSemaphore[i], NULL);
-		vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.renderFinishedSemaphore[i], NULL);
-
-		if (vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.imageAvailableSemaphore[i]) != VK_SUCCESS ||
-			vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.renderFinishedSemaphore[i]) != VK_SUCCESS)
-		{
-			printf("Failed to recreate semaphores!\n");
-		}
-	}
-}
 
 void printUniformTransferState()
 {
@@ -192,42 +176,27 @@ void printUniformTransferState()
 
 void drawFrame() 
 {
+	if (components.syncComp.framebufferResized)
+	{
+		components.syncComp.framebufferResized = false;
+		recreateSwapChain(&components, window);
+		return;
+	}
+
     if (components.syncComp.frameSubmitted[components.syncComp.frameIndex] == true)
     {
         vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
     }
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
+	if (result == VK_ERROR_OUT_OF_DATE_KHR) 
 	{
-		//vkDeviceWaitIdle(components.deviceQueueComp.device);
-		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
-		{
-			if (components.syncComp.frameSubmitted[i])
-			{
-				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
-				components.syncComp.frameSubmitted[i] = false; // reset the status
-			}
-		}
-		//printf("Recreating swap chain!\n");
-		clearSemaphores();
-        //vkDeviceWaitIdle(components.deviceQueueComp.device);
 		recreateSwapChain(&components, window);
 		return;
-	} else if (result != VK_SUCCESS) 
+	} else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) 
 	{
 		printf("Failed to acquire swap chain image!\n");
-		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
-		{
-			if (components.syncComp.frameSubmitted[i])
-			{
-				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
-				components.syncComp.frameSubmitted[i] = false; // reset the status
-			}
-		}
-        //vkDeviceWaitIdle(components.deviceQueueComp.device);
-		recreateSwapChain(&components, window);
-        return;
+		return;
 	}
 
 	updateUniformBuffer(&components);
@@ -277,17 +246,6 @@ void drawFrame()
 
 	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
 	{
-		// Handle swap chain recreation
-		vkDeviceWaitIdle(components.deviceQueueComp.device);
-		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
-		{
-			if (components.syncComp.frameSubmitted[i])
-			{
-				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
-				components.syncComp.frameSubmitted[i] = false; // reset the status
-			}
-		}
-		clearSemaphores();
 		recreateSwapChain(&components, window);
 		return;
 	} else if (presentResult != VK_SUCCESS)

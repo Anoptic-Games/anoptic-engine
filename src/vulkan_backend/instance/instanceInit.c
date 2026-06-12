@@ -910,6 +910,9 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
 
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 {
+	// Wait until the device is completely idle before tearing down any resources
+	vkDeviceWaitIdle(components->deviceQueueComp.device);
+
     // First, clean up the previous swapchain
 	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
     
@@ -924,16 +927,6 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
     // Explicitly update these to ensure swapchain recreation has the correct values
     components->swapChainComp.swapChainGroup.imageExtent.width = width;
     components->swapChainComp.swapChainGroup.imageExtent.height = height;
-
-	if (!components->syncComp.skipCheck)
-	{
-		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
-		{
-			vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
-		}
-	}
-
-
 	// Save outdated swapchain
 	VkSwapchainKHR oldSwapChain = components->swapChainComp.swapChainGroup.swapChain;
 	components->swapChainComp.swapChainGroup.swapChain = VK_NULL_HANDLE;
@@ -983,6 +976,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
 	{
 		vkResetFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]));
+        components->syncComp.frameSubmitted[i] = false;
 	}
 	components->syncComp.skipCheck = MAX_FRAMES_IN_FLIGHT; // Skip semaphore waits
 
@@ -1798,13 +1792,7 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 		return;
 	}
 
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)  // We wanna make sure all rendering is finished before we destroy anything
-	{  
-		if (components->syncComp.inFlightFence[i] != VK_NULL_HANDLE)
-		{
-			vkWaitForFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
-		}
-	}
+	vkDeviceWaitIdle(components->deviceQueueComp.device);
 
 	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
 	if (components->swapChainComp.swapChainGroup.swapChain != VK_NULL_HANDLE)
