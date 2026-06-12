@@ -80,12 +80,26 @@ typedef struct VertexData
 typedef struct RenderPrimitives
 {
 	uint32_t vertexCount;
-	VertexData vertexBuffers;
+	VertexData* vertexBuffers;
 	uint32_t indexCount;
-	IndexData indexBuffers;
+	IndexData* indexBuffers;
 	uint32_t textureCount;
-	TextureData textureBuffers;
+	TextureData* textureBuffers;
 } RenderPrimitives;
+
+void ano_vk_register_vertex(RenderPrimitives* primitives, VertexData data);
+void ano_vk_increment_vertex_usage(RenderPrimitives* primitives, uint32_t index);
+void ano_vk_decrement_vertex_usage(RenderPrimitives* primitives, uint32_t index);
+
+void ano_vk_register_index(RenderPrimitives* primitives, IndexData data);
+void ano_vk_increment_index_usage(RenderPrimitives* primitives, uint32_t index);
+void ano_vk_decrement_index_usage(RenderPrimitives* primitives, uint32_t index);
+
+void ano_vk_register_texture(RenderPrimitives* primitives, TextureData data);
+void ano_vk_increment_texture_usage(RenderPrimitives* primitives, uint32_t index);
+void ano_vk_decrement_texture_usage(RenderPrimitives* primitives, uint32_t index);
+
+void ano_vk_cleanup_primitives(RenderPrimitives* primitives);
 
 //====================== Pipeline assets
 
