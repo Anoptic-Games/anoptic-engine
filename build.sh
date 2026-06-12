@@ -21,8 +21,7 @@ case $1 in
     run_tests=0
     ;;
   3)
-    # "Tests" is not a real CMake config; tests build as Debug with the
-    # test suite enabled, then run via CTest.
+    # Debug build with CTest enabled
     build_type="Debug"
     build_dir="Tests"
     toolchain_file="debug_clang-linux-x64.cmake"

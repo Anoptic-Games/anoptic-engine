@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(anopticengine C)
+project(anopticengine)
 
 # Debugging the Build System
 message(STATUS "Toolchain file specified: ${CMAKE_TOOLCHAIN_FILE}")
@@ -7,6 +7,7 @@ message(STATUS "System name: ${CMAKE_SYSTEM_NAME}")
 message(STATUS "System version: ${CMAKE_SYSTEM_VERSION}")
 message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
+message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER}")
 
 # Anoptic Engine Only Supports 64-bit Compilation
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -15,10 +16,8 @@ else()
   message(FATAL_ERROR "64-bit compiler REQUIRED.")
 endif()
 
-# Enable C23 standard.
-# CMAKE_C_EXTENSIONS is ON explicitly: the engine compiles as gnu23.
-# POSIX usage (clock_gettime, clock_nanosleep, CLOCK_MONOTONIC) is declared
-# explicitly via _POSIX_C_SOURCE below rather than inherited accidentally.
+# Enable C23 standard with GNU extensions (gnu23).
+# _POSIX_C_SOURCE declared below for clock_gettime etc.
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
@@ -26,9 +25,7 @@ set(CMAKE_C_EXTENSIONS ON)
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)
 set(ANOPTIC_SANITIZE "" CACHE STRING "Sanitizer for test builds: asan, tsan, or empty")
 
-# Sanitizer flags are global so that mimalloc and all engine code are
-# instrumented together -- TSan in particular reports false positives if it
-# cannot see synchronization inside uninstrumented dependencies.
+# Sanitizer flags are global so mimalloc is instrumented too
 if(ANOPTIC_SANITIZE STREQUAL "asan")
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address,undefined)
@@ -47,7 +44,7 @@ set(MI_OVERRIDE OFF)
 set(MI_BUILD_TESTS OFF)
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/mimalloc)
 
-# pthreads on Linux, winpthreads on MinGW
+# pthreads everywhere: native on Linux, winpthreads on MinGW
 find_package(Threads REQUIRED)
 
 # Add headers into targets so IDEs parse them
@@ -61,10 +58,7 @@ file(GLOB EXTERNAL_SOURCES
         "./external/stb/*.h"
 )
 
-# ---------------------------------------------------------------------------
-# anoptic_core: every module that builds and tests without a GPU.
-# Module subdirectories add their sources to this target.
-# ---------------------------------------------------------------------------
+# anoptic_core: every module that builds and tests without a GPU
 add_library(anoptic_core STATIC ${HEADER_SOURCES} ${EXTERNAL_SOURCES})
 
 target_include_directories(anoptic_core PUBLIC
@@ -76,8 +70,7 @@ target_include_directories(anoptic_core PUBLIC
 
 target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
 
-# clock_gettime / clock_nanosleep / CLOCK_MONOTONIC require a feature-test
-# macro under strict ISO C; declare the POSIX dependency explicitly.
+# Explicit POSIX feature-test macro for clock_gettime etc.
 if(UNIX)
     target_compile_definitions(anoptic_core PUBLIC _POSIX_C_SOURCE=200809L)
 endif()
@@ -99,11 +92,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 
-# ---------------------------------------------------------------------------
-# anopticengine: the engine executable. Requires the Vulkan SDK and GLFW.
-# Skipped (with a warning) when Vulkan is absent so that anoptic_core and
-# the test suite remain buildable on headless/CI machines.
-# ---------------------------------------------------------------------------
+# anopticengine executable (requires Vulkan + GLFW, skipped if absent)
 find_package(Vulkan)
 if(Vulkan_FOUND)
     add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)

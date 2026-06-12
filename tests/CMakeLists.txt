@@ -1,5 +1,4 @@
-# Each test is a standalone executable linking the anoptic_core library.
-# Exit code 0 = pass, nonzero = fail. That's the whole CTest protocol.
+# Test executables link anoptic_core. Exit 0 = pass.
 
 # Testing for ``anoptic_time.h``
 add_executable(anotest_time anotest_time.c)
