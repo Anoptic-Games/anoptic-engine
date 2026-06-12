@@ -167,11 +167,18 @@ bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* stat
 	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	uboLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[1] = {uboLayoutBinding};
+	VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
+	ssboLayoutBinding.binding = 1;
+	ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	ssboLayoutBinding.descriptorCount = 1;
+	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	ssboLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[2] = {uboLayoutBinding, ssboLayoutBinding};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 1;
+	layoutInfo.bindingCount = 2;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -226,7 +233,7 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	VkPushConstantRange pushConstantRange = {};
 	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	pushConstantRange.offset = 0;
-	pushConstantRange.size = sizeof(float) * 16 + sizeof(uint32_t);
+	pushConstantRange.size = sizeof(uint32_t);
 
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
