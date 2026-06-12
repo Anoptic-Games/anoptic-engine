@@ -29,12 +29,28 @@ case $1 in
     extra_flags="-DANOPTIC_TESTS=ON"
     run_tests=1
     ;;
+  4)
+    build_type="Debug"
+    build_dir="Tests-ASan"
+    toolchain_file="debug_clang-linux-x64.cmake"
+    extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=asan"
+    run_tests=1
+    ;;
+  5)
+    build_type="Debug"
+    build_dir="Tests-TSan"
+    toolchain_file="debug_clang-linux-x64.cmake"
+    extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=tsan"
+    run_tests=1
+    ;;
   *)
     echo "Usage: $0 <build_type>"
     echo "  where <build_type> is one of:"
     echo "    1 = Release"
     echo "    2 = Debug"
     echo "    3 = Tests (build + run CTest)"
+    echo "    4 = Tests + AddressSanitizer/UBSan"
+    echo "    5 = Tests + ThreadSanitizer"
     exit 1
     ;;
 esac
