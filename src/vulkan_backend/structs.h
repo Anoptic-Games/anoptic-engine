@@ -125,23 +125,17 @@ typedef struct SwapChainComponents
     SwapChainSupportDetails swapChainSupportDetails;
 } SwapChainComponents;
 
-typedef struct EntityBuffer
+typedef struct RenderEntity
 { // To be extended with animation data
-    VkBuffer vertex;
-    VkDeviceMemory vertexMemory;
-	uint32_t indexCount;
-    VkBuffer index;
-    VkDeviceMemory indexMemory;
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
-	VkImageView textureImageView;
-	VkDescriptorSet textureDescriptorSet;
-	mat4 transform;
-} EntityBuffer;
+    uint32_t meshIndex;
+    uint32_t textureIndex;
+    VkDescriptorSet textureDescriptorSet;
+    mat4 transform;
+} RenderEntity;
 
 typedef struct BufferComponents 
 {
-	EntityBuffer* entities;
+	RenderEntity* entities;
 	uint32_t entityCount;
 	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
@@ -255,6 +249,7 @@ typedef struct RendererState
     uint32_t                frameIndex;
     // Geometry
     GeometryPool            globalGeometryPool;
+    RenderPrimitives        primitives;
 } RendererState;
 
 #endif

@@ -9,6 +9,9 @@
 #include <mimalloc.h>
 #include <mimalloc-override.h>
 
+#include "vulkan_backend/vulkanMaster.h"
+#include "vulkan_backend/gpu_alloc.h"
+
 // Utility functions
 
 // This might seem dubious, but trust me
@@ -1396,56 +1399,6 @@ Vector2* getTexcoordData(GltfElements* elements, GltfAccessor* accessor, uint32_
 	return NULL;
 }
 
-// Function to create a vertex buffer with combined position and texcoord
-bool createCombinedVertexBuffer(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh)
-{
-	Vector3 defaultColor = {0.5f, 0.5f, 0.5f};
-
-	for (uint32_t primitiveIndex = 0; primitiveIndex < mesh->primitiveCount; ++primitiveIndex)
-	{
-		GltfPrimitive* primitive = &mesh->primitives[primitiveIndex];
-		
-		// Access the accessor for position and texcoord of the current primitive
-		GltfAccessor* positionAccessor = &elements->accessors[primitive->position];
-		GltfAccessor* texcoordAccessor = &elements->accessors[primitive->texcoord];
-
-		// Calculate the number of vertices
-		uint32_t vertexCount = positionAccessor->count;
-
-		// Allocate memory for the combined vertex data
-		Vertex* vertices = malloc(sizeof(Vertex) * vertexCount);
-		if (!vertices)
-		{
-			printf("Failed to allocate memory for vertices!");
-			return false; // Allocation failed
-		}
-
-		// Combine position and texcoord data into vertices
-		for (uint32_t i = 0; i < vertexCount; i++)
-		{
-			Vector3* positionData = getPositionData(elements, positionAccessor, i);
-			Vector2* texcoordData = getTexcoordData(elements, texcoordAccessor, i);
-
-			vertices[i].position = *positionData;
-			vertices[i].texCoord = *texcoordData;
-			vertices[i].color = defaultColor;
-		}
-
-		// Create and transfer data to vertex buffer for each primitive
-		if (!createVertexBuffer(components, vertexCount, &primitive->vertex, &primitive->vertexMemory) ||
-			!stagingTransfer(components, vertices, primitive->vertex, sizeof(Vertex) * vertexCount))
-			{
-			printf("Failed to create and transfer vertex buffer for primitive %d!\n", primitiveIndex);
-			free(vertices);
-			return false;
-		}
-
-		free(vertices);
-	}
-
-	return true;
-}
-
 uint16_t* getIndexData(GltfElements* elements, GltfAccessor* accessor, uint32_t index)
 {
 	void* bufferData = getBufferData(elements, accessor->bufferView);
@@ -1479,49 +1432,7 @@ uint16_t* getIndexData(GltfElements* elements, GltfAccessor* accessor, uint32_t 
 	return NULL;
 }
 
-bool createIndexBufferForMesh(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh)
-{
-	for (uint32_t primitiveIndex = 0; primitiveIndex < mesh->primitiveCount; ++primitiveIndex)
-	{
-		GltfPrimitive* primitive = &mesh->primitives[primitiveIndex];
-
-		// Access the accessor for indices of the current primitive
-		GltfAccessor* indexAccessor = &elements->accessors[primitive->indices];
-
-		uint16_t* indices = malloc(sizeof(uint16_t) * indexAccessor->count);
-		if (!indices)
-		{
-			return false; // Allocation failed
-		}
-
-		// Populate the index data from the accessor
-		for (uint32_t i = 0; i < indexAccessor->count; i++)
-		{
-			uint16_t* indexData = getIndexData(elements, indexAccessor, i);
-			if (indexData == NULL)
-			{
-				free(indices);
-				return false;
-			}
-			indices[i] = *indexData;
-		}
-
-		primitive->indexCount = indexAccessor->count;
-
-		// Create and transfer data to index buffer for each primitive
-		if (!createIndexBuffer(components, indexAccessor->count, &primitive->index, &primitive->indexMemory) ||
-			!stagingTransfer(components, indices, primitive->index, sizeof(uint16_t) * indexAccessor->count))
-			{
-			printf("Failed to create and transfer index buffer for primitive %d!\n", primitiveIndex);
-			free(indices);
-			return false;
-		}
-
-		free(indices);
-	}
-
-	return true;
-}
+// Vertices/Indices are processed in processGltfMeshes
 
 
 bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh)
@@ -1583,21 +1494,48 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 
 void processGltfMeshes (VulkanComponents* components, GltfElements* elements)
 {
-	// Iterate through all meshes
-	for (uint32_t i = 0; i < elements->meshCount; i++)
-	{
-		// Create vertex buffer
-		printf("Creating mesh#%d vertex buffer!\n", i);
-		createCombinedVertexBuffer(components, elements, &elements->meshes[i]);
+    Vector3 defaultColor = {0.5f, 0.5f, 0.5f};
 
-		// Create index buffer
-		printf("Creating mesh#%d index buffer!\n", i);
-		createIndexBufferForMesh(components, elements, &elements->meshes[i]);
+    for (uint32_t i = 0; i < elements->meshCount; i++)
+    {
+        GltfMesh* mesh = &elements->meshes[i];
+        for (uint32_t primitiveIndex = 0; primitiveIndex < mesh->primitiveCount; ++primitiveIndex)
+        {
+            GltfPrimitive* primitive = &mesh->primitives[primitiveIndex];
 
-		// Create texture buffer
-		printf("Creating mesh#%d texture!\n", i);
-		uploadTextureDataToGPU(components, elements, &elements->meshes[i]);
-	} 
+            // Vertices
+            GltfAccessor* positionAccessor = &elements->accessors[primitive->position];
+            GltfAccessor* texcoordAccessor = &elements->accessors[primitive->texcoord];
+            uint32_t vertexCount = positionAccessor->count;
+            Vertex* vertices = malloc(sizeof(Vertex) * vertexCount);
+            for (uint32_t v = 0; v < vertexCount; v++) {
+                Vector3* positionData = getPositionData(elements, positionAccessor, v);
+                Vector2* texcoordData = getTexcoordData(elements, texcoordAccessor, v);
+                vertices[v].position = *positionData;
+                vertices[v].texCoord = *texcoordData;
+                vertices[v].color = defaultColor;
+            }
+
+            // Indices
+            GltfAccessor* indexAccessor = &elements->accessors[primitive->indices];
+            uint32_t indexCount = indexAccessor->count;
+            uint16_t* indices = malloc(sizeof(uint16_t) * indexCount);
+            for (uint32_t ind = 0; ind < indexCount; ind++) {
+                uint16_t* indexData = getIndexData(elements, indexAccessor, ind);
+                indices[ind] = *indexData;
+            }
+
+            // Upload to Geometry Pool
+            primitive->meshIndex = geometry_pool_upload(&rendererState.globalGeometryPool, &gpuAllocator, components->deviceQueueComp.device, components->cmdComp.commandPool, components->deviceQueueComp.transferQueue, vertices, vertexCount, indices, indexCount);
+
+            free(vertices);
+            free(indices);
+        }
+
+        // Create texture buffer
+        printf("Creating mesh#%d texture!\n", i);
+        uploadTextureDataToGPU(components, elements, mesh);
+    } 
 }
 
 void packageRenderables(VulkanComponents* components, GltfElements* elements)
@@ -1609,10 +1547,10 @@ void packageRenderables(VulkanComponents* components, GltfElements* elements)
 		totalPrimitiveCount += elements->meshes[meshIndex].primitiveCount;
 	}
 
-	// Allocate EntityBuffer for all primitives
+	// Allocate RenderEntity for all primitives
 	components->renderComp.buffers.entityCount = totalPrimitiveCount;
 	printf("Allocating memory for %d entities!\n", totalPrimitiveCount);
-	components->renderComp.buffers.entities = (EntityBuffer*)calloc(totalPrimitiveCount, sizeof(EntityBuffer));
+	components->renderComp.buffers.entities = (RenderEntity*)calloc(totalPrimitiveCount, sizeof(RenderEntity));
 
 	// Iterate through all meshes and their primitives
 	uint32_t entityIndex = 0;
@@ -1624,20 +1562,32 @@ void packageRenderables(VulkanComponents* components, GltfElements* elements)
 		{
 			GltfPrimitive* primitive = &mesh->primitives[primitiveIndex];
 
-			// Set vertex, index, and texture buffers for each primitive
 			printf("Setting entity#%d buffers and textures!\n", entityIndex);
-			components->renderComp.buffers.entities[entityIndex].vertex = primitive->vertex;
-			components->renderComp.buffers.entities[entityIndex].vertexMemory = primitive->vertexMemory;
-			components->renderComp.buffers.entities[entityIndex].indexCount = primitive->indexCount;
-			components->renderComp.buffers.entities[entityIndex].index = primitive->index;
-			components->renderComp.buffers.entities[entityIndex].indexMemory = primitive->indexMemory;
+			components->renderComp.buffers.entities[entityIndex].meshIndex = primitive->meshIndex;
 
+			// Wait, the textures are currently allocated per-entity via descriptor sets.
+			// The original code did not assign textureDescriptorSet here, but it assigned images.
+			// Let's create descriptors here if needed, or we just assign texture indices.
 			GltfMaterial* material = &elements->materials[primitive->material];
 			GltfTexture* texture = &elements->textures[material->pbr.baseColorTexture];
 
-			components->renderComp.buffers.entities[entityIndex].textureImage = texture->textureImage;
-			components->renderComp.buffers.entities[entityIndex].textureImageMemory = texture->textureImageMemory;
-			components->renderComp.buffers.entities[entityIndex].textureImageView = texture->textureImageView;
+			// Store textures into RenderPrimitives or keep them locally for now.
+			// Actually, the descriptor sets are created in vulkanMaster.c later.
+			// For now, let's keep the textureImage data so it can be cleaned up or bound.
+			// Wait! RenderEntity no longer has textureImage.
+			// Where do we store it? We need to store it in `rendererState.primitives`!
+			
+			// For Stage 3: We still create descriptor sets per entity, but where do we store the VkImage?
+			// Let's just create a texture registry entry.
+			uint32_t texIdx = rendererState.primitives.textureCount++;
+			rendererState.primitives.textureBuffers = realloc(rendererState.primitives.textureBuffers, rendererState.primitives.textureCount * sizeof(TextureData));
+			rendererState.primitives.textureBuffers[texIdx].textureImage = texture->textureImage;
+			rendererState.primitives.textureBuffers[texIdx].textureImageMemory = texture->textureImageMemory;
+			rendererState.primitives.textureBuffers[texIdx].textureImageView = texture->textureImageView;
+			rendererState.primitives.textureBuffers[texIdx].usageCount = 1;
+			components->renderComp.buffers.entities[entityIndex].textureIndex = texIdx;
+
+			// The descriptor set creation needs these. We will bind them later in vulkanMaster.c.
 
 			entityIndex++;
 		}

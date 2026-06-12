@@ -74,7 +74,7 @@ bool createUniformBuffers(VulkanComponents* components);
 bool updateUniformBuffer(VulkanComponents* components);
 
 // Updates a mesh's transform matrices
-bool updateMeshTransforms(VulkanComponents* components, EntityBuffer* entity, float move);
+bool updateMeshTransforms(VulkanComponents* components, RenderEntity* entity, float move);
 
 // Creates a color draw target for MSAA
 void createColorResources(VulkanComponents* components);

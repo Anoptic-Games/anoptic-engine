@@ -117,19 +117,18 @@ void recordCommandBuffer(uint32_t imageIndex)
 	scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
 	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
 
-	// Loop through meshes of the current pipeline, bind the associated vertex and index buffers.
-	VkBuffer* vertexBuffer;
+	// Bind monolithic vertex and index buffers once per frame
 	VkDeviceSize offsets[] = {0};
+	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &rendererState.globalGeometryPool.vertexBuffer, offsets);
+	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 		rendererState.prototypes[PIPELINE_FLAT].layout, 0, 1, &(rendererState.globalSets[components.syncComp.frameIndex]), 0, NULL);
 
 	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount; i++) // Iterate through all render packages and issue indexed draw commands
 	{
-        // Modify these with offsets for sub-allocation
-		vertexBuffer = &components.renderComp.buffers.entities[i].vertex;
-		vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffer, offsets);
-		vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].index, 0, VK_INDEX_TYPE_UINT16);
+		uint32_t meshIdx = components.renderComp.buffers.entities[i].meshIndex;
+		MeshRegion mesh = rendererState.globalGeometryPool.meshes[meshIdx];
 
 		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 			rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &(components.renderComp.buffers.entities[i].textureDescriptorSet), 0, NULL);
@@ -143,7 +142,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 
         vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
-		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].indexCount, 1, 0, 0, 0);
+		uint32_t firstIndex = mesh.indexOffset / sizeof(uint16_t);
+		int32_t vertexOffset = mesh.baseVertex;
+
+		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], mesh.indexCount, 1, firstIndex, vertexOffset, 0);
 	}
 	
 
@@ -166,8 +168,7 @@ void printUniformTransferState()
 	
 	// Buffer Components
 	printf("\n=== Buffer Components ===\n");
-	printf("Vertex buffer: %p\n", (void*)components.renderComp.buffers.entities[0].vertex);
-	printf("Index buffer: %p\n", (void*)components.renderComp.buffers.entities[0].index);
+	printf("Mesh index: %u\n", components.renderComp.buffers.entities[0].meshIndex);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
