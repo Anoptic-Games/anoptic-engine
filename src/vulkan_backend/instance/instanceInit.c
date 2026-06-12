@@ -884,28 +884,6 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
     {
         vkDestroyImageView(device, viewGroup->colorView, NULL);
     }
-
-    // We no longer destroy the swapchain here because Vulkan spec requires oldSwapchain to be valid during recreation
-
-    // Free UI image
-    if (components->swapChainComp.swapChainGroup.uiImage != VK_NULL_HANDLE)
-    {
-        vkDestroyImage(device, components->swapChainComp.swapChainGroup.uiImage, NULL);
-        components->swapChainComp.swapChainGroup.uiImage = VK_NULL_HANDLE;
-    }
-
-    // Free UI image memory
-    if (components->swapChainComp.swapChainGroup.uiImageMemory != VK_NULL_HANDLE)
-    {
-        vkFreeMemory(device, components->swapChainComp.swapChainGroup.uiImageMemory, NULL);
-        components->swapChainComp.swapChainGroup.uiImageMemory = VK_NULL_HANDLE;
-    }
-
-    // Destroy UI image view
-    if (viewGroup->uiView) 
-    {
-        vkDestroyImageView(device, viewGroup->uiView, NULL);
-    }
 }
 
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
@@ -978,7 +956,6 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 		vkResetFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]));
         components->syncComp.frameSubmitted[i] = false;
 	}
-	components->syncComp.skipCheck = MAX_FRAMES_IN_FLIGHT; // Skip semaphore waits
 
 	components->syncComp.framebufferResized = false;
 
@@ -1149,7 +1126,7 @@ bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuff
 
 bool createUniformBuffers(VulkanComponents* components)
 { // Central to init, specific to perspective uniforms (world translation, rotation and projection)
-	VkDeviceSize bufferSize = sizeof(UniformComponents);
+	VkDeviceSize bufferSize = sizeof(GlobalUBO);
 
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
@@ -1166,28 +1143,6 @@ bool createUniformBuffers(VulkanComponents* components)
 		printf("!!UBO!! Created mapped UBO buffer at: %p\n", components->renderComp.buffers.uniformMapped[i]);
 	}
 
-	return true;
-}
-
-bool createTransformBuffers(VulkanComponents* components)
-{ // !TODO transition this for dynamic mesh instantiation
-	VkDeviceSize bufferSize = sizeof(ModelTransforms);
-
-	for (size_t i = 0; i < components->renderComp.buffers.entityCount; i++)
-	{
-
-		if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			 &(components->renderComp.buffers.entities[i].transform), &(components->renderComp.buffers.entities[i].transformMemory))) 
-		{
-			printf("Failed to create uniform buffer!");
-			return false;
-		}
-		printf("!!MESHTRANSFORM!! Transform uniform buffer: %p\n", components->renderComp.buffers.entities[i].transform);
-
-		vkMapMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].transformMemory, 0, bufferSize, 0, &(components->renderComp.buffers.entities[i].transformMapped));
-		printf("!!MESHTRANSFORM!! Created mapped memory buffer at %p\n", components->renderComp.buffers.entities[i].transformMapped);
-	}
-	
 	return true;
 }
 
@@ -1209,14 +1164,6 @@ bool updateUniformBuffer(VulkanComponents* components)
 	static uint64_t time = 0;
 	static uint64_t oldTime = 0;
 	time = ano_timestamp_us();
-	static float angle = 0.0f;
-	const float pi = 3.14159265359f;
-
-	for(int i = 0; i < 4; i++)
-		for(int j = 0; j < 4; j++)
-			components->renderComp.uniform.model[i][j] = (i == j) ? 1.0f : 0.0f;
-
-	rotateMatrix(components->renderComp.uniform.model, 'Y', angle);
 
 	float eye[] = {0.0f, 0.9f, 3.5f};  // Move camera up and back
 	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
@@ -1230,14 +1177,8 @@ bool updateUniformBuffer(VulkanComponents* components)
 	float far = 100.0f;
 	perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
 	
-	//printf("!!UBO!! Mapped UBO buffer on value update: %p\n", components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex]);
 	memcpy(components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex], &(components->renderComp.uniform), sizeof(components->renderComp.uniform));
 
-	angle += ((float)(time-oldTime)) * 0.000000f;
-	if(angle > 2.0f * pi)
-	{
-		angle = 0.0f;	
-	}
 	oldTime = time;
 
 	return true;
@@ -1251,32 +1192,17 @@ bool updateMeshTransforms(VulkanComponents* components, EntityBuffer* entity, fl
 	static float angle = 0.0f;
 	const float pi = 3.14159265359f;
 
-	// Initialize ModelTransforms structure
-	ModelTransforms meshTransforms;
-
-	// Initialize translation, rotation, and scale matrices to identity
+	// Initialize transform matrix to identity
 	for(int i = 0; i < 4; i++)
 	{
 		for(int j = 0; j < 4; j++)
 		{
-			meshTransforms.translation[i][j] = (i == j) ? 1.0f : 0.0f;
-			meshTransforms.rotation[i][j] = (i == j) ? 1.0f : 0.0f;
-			meshTransforms.scale[i][j] = (i == j) ? 1.0f : 0.0f;
+			entity->transform[i][j] = (i == j) ? 1.0f : 0.0f;
 		}
 	}
 
-	translate(meshTransforms.translation, move, 0.0f, 0.0f);
-
-	// Apply rotation to the mesh's transform
-	rotateMatrix(meshTransforms.rotation, 'Y', angle);
-
-	// TODO: Apply translation and scaling if needed
-	// Example: translateMatrix(meshTransforms.translation, x, y, z);
-	// Example: scaleMatrix(meshTransforms.scale, scaleX, scaleY, scaleZ);
-
-	// Map the buffer and copy the transformation data
-	//printf("!!MESHTRANSFORM!! Mapped transform buffer on value update: %p\n", entity->transformMapped);
-	memcpy(entity->transformMapped, &meshTransforms, sizeof(meshTransforms));
+	translate(entity->transform, move, 0.0f, 0.0f);
+	rotateMatrix(entity->transform, 'Y', angle);
 
 	// Update angle for next frame
 	angle += ((float)(time - oldTime)) * 0.000001f;
@@ -1369,12 +1295,6 @@ void createColorResources(VulkanComponents* components) //TODO: This probably sh
 				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.colorImage, &components->swapChainComp.swapChainGroup.colorImageMemory, false);
 	components->swapChainComp.viewGroup.colorView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-
-    // UI??
-	createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
-				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.uiImage, &components->swapChainComp.swapChainGroup.uiImageMemory, false);
-	components->swapChainComp.viewGroup.uiView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.uiImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }
 
 bool createDescriptorPool(VulkanComponents* components)
@@ -1409,7 +1329,7 @@ bool createMeshDescriptorPool(VulkanComponents* components)
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes) / sizeof(VkDescriptorPoolSize));
-	poolInfo.pPoolSizes = &poolSizes;
+	poolInfo.pPoolSizes = poolSizes;
 	poolInfo.maxSets = (uint32_t)components->renderComp.buffers.entityCount;
 
 	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.meshDescriptorPool)) != VK_SUCCESS)
@@ -1461,12 +1381,12 @@ bool createMeshDescriptorSets(VulkanComponents* components)
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.pNext = NULL;
 	allocInfo.descriptorPool = components->renderComp.meshDescriptorPool;
-	allocInfo.descriptorSetCount = entityCount;
+	allocInfo.descriptorSetCount = (uint32_t)entityCount;
 	allocInfo.pSetLayouts = layouts;
 
 	VkDescriptorSet* tempSets = calloc(entityCount, sizeof(VkDescriptorSet));
 
-	printf("!!DEBUG!!\nMesh descriptors: %d\n", entityCount);
+	printf("!!DEBUG!!\nMesh descriptors: %u\n", (uint32_t)entityCount);
 
 	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, tempSets) != VK_SUCCESS)
 	{
@@ -1476,7 +1396,7 @@ bool createMeshDescriptorSets(VulkanComponents* components)
 
 	for (uint32_t j = 0; j < entityCount; j++)
 	{
-		components->renderComp.buffers.entities[j].meshDescriptorSet = tempSets[j];
+		components->renderComp.buffers.entities[j].textureDescriptorSet = tempSets[j];
 	}
 
 	free(layouts);
@@ -1494,7 +1414,7 @@ void updateUboDescriptorSets(VulkanComponents* components)
 		VkDescriptorBufferInfo bufferInfo = {};
 		bufferInfo.buffer = components->renderComp.buffers.uniform[i];
 		bufferInfo.offset = 0;
-		bufferInfo.range = sizeof(UniformComponents);
+		bufferInfo.range = sizeof(GlobalUBO);
 		printf("!!UBO!! UBO buffer on descriptor update: %p\n", components->renderComp.buffers.uniform[i]);
 
 		VkWriteDescriptorSet descriptorWrite = {};
@@ -1513,8 +1433,6 @@ void updateUboDescriptorSets(VulkanComponents* components)
 void updateMeshDescriptorSets(VulkanComponents* components)
 { // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
 
-	// Update scene-wide UBO descriptors
-
 	size_t entityCount = components->renderComp.buffers.entityCount;
 	VkDescriptorImageInfo* imageInfos = (VkDescriptorImageInfo*)calloc(entityCount, sizeof(VkDescriptorImageInfo));
 
@@ -1525,38 +1443,20 @@ void updateMeshDescriptorSets(VulkanComponents* components)
 		imageInfos[i].sampler = components->renderComp.textureSampler;
 	}
 
-	VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)calloc(entityCount*2, sizeof(VkWriteDescriptorSet));
-
-	VkDescriptorBufferInfo* bufferInfos = (VkDescriptorBufferInfo*)calloc(entityCount, sizeof(VkDescriptorBufferInfo));
+	VkWriteDescriptorSet* descriptorWrites = (VkWriteDescriptorSet*)calloc(entityCount, sizeof(VkWriteDescriptorSet));
 
 	for (size_t j = 0; j < entityCount; j++)
 	{
-		bufferInfos[j].buffer = components->renderComp.buffers.entities[j].transform;
-		bufferInfos[j].offset = 0;
-		bufferInfos[j].range = sizeof(ModelTransforms);
-		printf("!!MESHTRANSFORM!! Transform uniform buffer on descriptor update: %p\n", components->renderComp.buffers.entities[j].transform);
-
 		descriptorWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[j].dstSet = components->renderComp.buffers.entities[j].meshDescriptorSet;
-		descriptorWrites[j].dstBinding = 0;   // Corresponds to binding in shader.
+		descriptorWrites[j].dstSet = components->renderComp.buffers.entities[j].textureDescriptorSet;
+		descriptorWrites[j].dstBinding = 0;
 		descriptorWrites[j].dstArrayElement = 0;
-		descriptorWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		descriptorWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		descriptorWrites[j].descriptorCount = 1;
-		descriptorWrites[j].pBufferInfo = &bufferInfos[j];
+		descriptorWrites[j].pImageInfo = &imageInfos[j];
 	}
 
-	for (size_t j = 0; j < entityCount; j++)
-	{
-		descriptorWrites[j+entityCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[j+entityCount].dstSet = components->renderComp.buffers.entities[j].meshDescriptorSet;
-		descriptorWrites[j+entityCount].dstBinding = 1;
-		descriptorWrites[j+entityCount].dstArrayElement = 0;
-		descriptorWrites[j+entityCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		descriptorWrites[j+entityCount].descriptorCount = 1;
-		descriptorWrites[j+entityCount].pImageInfo = &imageInfos[j];
-	}
-
-	vkUpdateDescriptorSets(components->deviceQueueComp.device, entityCount*2, descriptorWrites, 0, NULL);
+	vkUpdateDescriptorSets(components->deviceQueueComp.device, entityCount, descriptorWrites, 0, NULL);
 
 	free(imageInfos);
 	free(descriptorWrites);
@@ -1825,12 +1725,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
                 vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].textureImageMemory, NULL);
             }
 
-            bool sharedTransform = false;
-            for (uint32_t j = 0; j < i; j++) { if (components->renderComp.buffers.entities[i].transform == components->renderComp.buffers.entities[j].transform) { sharedTransform = true; break; } }
-            if (!sharedTransform && components->renderComp.buffers.entities[i].transform) {
-                vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].transform, NULL);
-                vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[i].transformMemory, NULL);
-            }
         }
         free(components->renderComp.buffers.entities);
         components->renderComp.buffers.entities = NULL;

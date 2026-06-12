@@ -44,19 +44,11 @@ typedef struct Vertex
 } Vertex;
 
 
-typedef struct UniformComponents
+typedef struct GlobalUBO
 {
-	mat4 model;
 	mat4 view;
 	mat4 proj;
-} UniformComponents;
-
-typedef struct ModelTransforms
-{
-	mat4 translation;
-	mat4 rotation;
-	mat4 scale;
-} ModelTransforms;
+} GlobalUBO;
 
 
 

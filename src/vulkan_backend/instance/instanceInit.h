@@ -68,7 +68,7 @@ bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuff
 bool createUniformBuffers(VulkanComponents* components);
 
 // Creates transform buffers for meshes
-bool createTransformBuffers(VulkanComponents* components);
+
 
 // Updates the uniform buffer
 bool updateUniformBuffer(VulkanComponents* components);

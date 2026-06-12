@@ -18,44 +18,13 @@
 #include <GLFW/glfw3native.h>
 
 #include "vulkan_backend/vertex/vertex.h"
+#include "vulkan_backend/components.h"
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
 // Structs
 
 // New structs for streamlined state resource management
-
-//!TODO investigate which methods are really required and practical
-// Virtual table type with common operations.
-
-/*
-typedef struct VulkanResourceVTable
-{
-    // Invalidate this resource (e.g. mark its cached state as stale).
-    void (*invalidate)(VulkanResource *self);
-    // Update or re-create the resource if needed.
-    void (*update)(VulkanResource *self);
-    // Clean up and free any allocated memory.
-    void (*destroy)(VulkanResource *self);
-    // (Other operations can be added as needed.)
-} VulkanResourceVTable;
-
-// Base wrapper struct.
-struct VulkanResource
-{
-    VulkanResourceVTable *vtable;  // pointer to virtual methods
-    // Forward dependency buffer:
-    VulkanResource **dependencies; // dynamic array (buffer) of dependents
-    size_t dependencyCount;        // number of dependents registered
-    size_t dependencyCapacity;     // capacity of the dependency array
-    // Underlying Vulkan handle (for example, a VkBuffer, VkImage, etc.)
-    void *vkHandle;
-    // Other state data (cache info, flags, etc.)
-};
-*/
-
-//!NOTE We may defer destruction of out-of-date resources to preserve frame timing
-//!NOTE Dependencies may be tracked via cyclic pointers, allowing invalidated resources to update upstream dependency entries
 
 // New struct for per-frame images
 typedef struct FrameImageGroup
@@ -77,7 +46,6 @@ typedef struct ImageViewGroup
 	uint32_t viewCount;
 	VkImageView* views;
 	VkImageView colorView;
-    VkImageView uiView;
 } ImageViewGroup;
 
 typedef struct SwapChainGroup
@@ -90,8 +58,6 @@ typedef struct SwapChainGroup
 	VkDeviceMemory imageMemory[MAX_FRAMES_IN_FLIGHT]; // Not actually used, swapchain image memory managed by Vulkan.
 	VkImage colorImage;
 	VkDeviceMemory colorImageMemory;
-    VkImage uiImage;
-    VkDeviceMemory uiImageMemory;
 } SwapChainGroup;
 
 typedef struct InstanceDebugComponents
@@ -168,11 +134,8 @@ typedef struct EntityBuffer
 	VkImage textureImage;
 	VkDeviceMemory textureImageMemory;
 	VkImageView textureImageView;
-	VkDescriptorSet meshDescriptorSet;
-	// Transformation data
-	VkBuffer transform;
-	VkDeviceMemory transformMemory;
-	void* transformMapped;
+	VkDescriptorSet textureDescriptorSet;
+	mat4 transform;
 } EntityBuffer;
 
 typedef struct BufferComponents 
@@ -198,7 +161,7 @@ typedef struct RenderComponents
 	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT]; // These descriptors deal with scene-wide parameters, move to swapchain
 	VkDescriptorPool descriptorPool;
 	VkDescriptorPool meshDescriptorPool;
-	UniformComponents uniform; // This comes from vertex.h, should probably have a buffer of length n = swap count, move to swapchain
+	GlobalUBO uniform; // This comes from vertex.h, should probably have a buffer of length n = swap count, move to swapchain
     VkPipeline graphicsPipeline; // We'll have many of these
 	VkSampler textureSampler;   // Also many of these, maybe create whole struct for resource access formats
 	BufferComponents buffers; // This entire thing should probably be moved to swapchain
@@ -213,7 +176,6 @@ typedef struct SynchronizationComponents
     uint32_t frameIndex; // Move to swapchain
     uint32_t imageIndex; // Used to track submitted frames for presentation, move to swapchain
     bool framebufferResized; // Swapchain
-    uint32_t skipCheck; // Almost certainly out of date
 } SynchronizationComponents;
 
 typedef struct CommandComponents
@@ -275,13 +237,22 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 	Monitors *monitors;
 };
 
-typedef struct GlyphTexture
-{ // ??? This must be doog's doing
-	uint32_t sampler;
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
-	VkImageView textureImageView;
-} GlyphTexture;
+typedef struct RendererState
+{
+    // Pipeline system (Stage 0+)
+    PipelinePrototype       prototypes[PIPELINE_TYPE_COUNT];
 
+    // Descriptor infrastructure (to be populated per-stage)
+    VkDescriptorPool        globalDescriptorPool;
+    VkDescriptorSetLayout   globalSetLayout;        // Set 0
+    VkDescriptorSet         globalSets[MAX_FRAMES_IN_FLIGHT];
+
+    // Synchronization — lifted from SynchronizationComponents
+    VkSemaphore             imageAvailable[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore             renderFinished[MAX_FRAMES_IN_FLIGHT];
+    VkFence                 frameFence[MAX_FRAMES_IN_FLIGHT];
+    uint32_t                frameIndex;
+    bool                    frameFenceSubmitted[MAX_FRAMES_IN_FLIGHT];
+} RendererState;
 
 #endif
