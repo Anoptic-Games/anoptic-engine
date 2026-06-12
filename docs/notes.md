@@ -219,6 +219,47 @@ Global, thread-agnostic event bus. Possibly two buses: one monotonic per-item (c
 **Step 9 -- Main game loop + first visual output:**
 The integration milestone. Input moves camera, event bus carries input, simulation updates transforms, renderer draws the frame, all allocated from frame arenas, all logged. A sphere on screen through the full pipeline. This is v0.1: proof that every layer works together. Everything after is building the actual game on trusted infrastructure.
 
+### Branch Archaeology (surveyed June 2026)
+
+Work is fractured across 16 remote branches. Survey results:
+
+**Dead branches (fully merged into main, 0 commits ahead — safe to delete):**
+`ctest-config`, `feature-filepath`, `feature-logging`, `feature-memory`,
+`feature_threading`, `fix-clang-usage`, `fix-vertex-deps`, `git-status-fix`,
+`logging`, `platform-cleanup`, `time-time2`
+
+**`implementation-platformlayer-time` (6 ahead, superseded):**
+Main's time module is a strict improvement of this branch's version (atomic
+frequency caching, error returns). Same unsolved Windows Sleep() granularity.
+Nothing to recover. Notable design decision in commit 264e2a4: "timespans
+removed (they'll be an ECS singleton)." Also contains an alternative
+src/platform/{linux,windows}/ directory layout that main abandoned.
+
+**`feature-strings` (5 ahead) -- RECOVER: this is the Step 4 spec.**
+Contains a fully designed (stub-implemented) string API in include/ano_strings.h:
+- `anostr_t {char* buffer, size_t len}` string type
+- UTF-8 codepoint handles, validation, iteration
+- UTF-16 <-> UTF-8 conversion (needed for Windows paths)
+- Byte slices and UTF slices
+- Managed slice macros (statement expressions + scoped cleanup attr):
+  ANOSTR_STACK_BYTESLICE, ANOSTR_HEAP_BYTESLICE with CLEANUPATTR
+The function signatures for Step 4 already exist, written by the architect
+in 2024. Implementations are stubs returning 0.
+
+**`feature-render-text` (27 ahead) -- PRESERVE as reference for Step 7+.**
+The unicode rabbit hole, materialized. A complete text rendering stack:
+- FreeType integration
+- Glyph atlas generation (stb_image_write), upload to VRAM
+- SDF font rendering (final commit: "Switched to SDF font rendering")
+Predates main's renderer restructure; heavy merge conflicts guaranteed.
+Salvage material for the renderer rewrite's text/UI pass, not a merge candidate.
+Contains feature-render-vertex's 7 commits (MSAA, mipmapping, structurally
+agnostic glTF loading, render asset sharing) in its history.
+
+**`fixes-render-text` (2 unique commits):** VRAM leak mitigation + text debug
+overflow fix, diverged from feature-render-text after PR #41. Note when
+salvaging the text stack.
+
 ### Known Technical Debt
 
 - glTF parser does loose malloc/free instead of arena allocation
