@@ -70,14 +70,14 @@ enable_testing()
 add_subdirectory(${CMAKE_SOURCE_DIR}/tests)
 
 # Add compilation flags and preprocessor definitions for Debug and Release builds
-target_compile_definitions(anopticengine PRIVATE
-        "$<$<CONFIG:Debug>:DEBUG_BUILD>"
-        "$<$<CONFIG:Release>:RELEASE_BUILD>"
+target_compile_options(anopticengine PRIVATE
+    "$<$<CONFIG:Debug>:-O0;-g;-fno-omit-frame-pointer;-fsanitize=address>" # CHANGED
+    "$<$<CONFIG:Release>:-O3>"
 )
 
-target_compile_options(anopticengine PRIVATE
-        "$<$<CONFIG:Debug>:-O0;-g>"
-        "$<$<CONFIG:Release>:-O3>"
+target_link_options(anopticengine PRIVATE
+    "$<$<CONFIG:Debug>:-fsanitize=address>" # CHANGED
 )
+
 
 

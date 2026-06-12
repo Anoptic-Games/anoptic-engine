@@ -97,6 +97,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	// Create loop for all extant pipelines once multiple ones are supported, loop through them then through the meshes they apply to
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
 
+    // Should probably only do this if the viewport's actually changed
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -122,6 +123,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount; i++) // Iterate through all render packages and issue indexed draw commands
 	{
+        // Modify these with offsets for sub-allocation
 		vertexBuffer = &components.renderComp.buffers.entities[i].vertex;
 		vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffer, offsets);
 		vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].index, 0, VK_INDEX_TYPE_UINT16);
@@ -198,7 +200,7 @@ void drawFrame()
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
-		vkDeviceWaitIdle(components.deviceQueueComp.device);
+		//vkDeviceWaitIdle(components.deviceQueueComp.device);
 		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 		{
 			if (components.syncComp.frameSubmitted[i])
@@ -209,13 +211,21 @@ void drawFrame()
 		}
 		//printf("Recreating swap chain!\n");
 		clearSemaphores();
-        vkDeviceWaitIdle(components.deviceQueueComp.device);
+        //vkDeviceWaitIdle(components.deviceQueueComp.device);
 		recreateSwapChain(&components, window);
 		return;
 	} else if (result != VK_SUCCESS) 
 	{
 		printf("Failed to acquire swap chain image!\n");
-        vkDeviceWaitIdle(components.deviceQueueComp.device);
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			if (components.syncComp.frameSubmitted[i])
+			{
+				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+				components.syncComp.frameSubmitted[i] = false; // reset the status
+			}
+		}
+        //vkDeviceWaitIdle(components.deviceQueueComp.device);
 		recreateSwapChain(&components, window);
         return;
 	}
@@ -249,6 +259,8 @@ void drawFrame()
 		printf("Failed to submit draw command buffer!\n");
 		return;
 	}
+
+    // Presentation should happen *before* submitting commands for a new frame, so we're actually taking advantage of buffering
 
 	VkPresentInfoKHR presentInfo = {};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
