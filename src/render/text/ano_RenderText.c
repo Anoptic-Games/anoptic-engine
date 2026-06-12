@@ -6,23 +6,33 @@
 /*
  * Text Rendering Module (DISABLED - pending rewrite)
  *
- * Plan:
- *   1. FreeType init/shutdown, multi-face font registry
- *   2. Glyph rasterization with explicit FT_Set_Pixel_Sizes,
- *      respecting bitmap pitch (not assuming pitch == width)
- *   3. Tight atlas packing (shelf or skyline, not uniform grid)
- *      into a heap-allocated buffer (not stack VLA)
- *   4. GPU upload via a correct staging path:
- *      - R8_UNORM format (not R8_SRGB, near-zero device support)
- *      - imageSize = width * height * 1 (not * 4)
- *      - image created with TRANSFER_SRC for mipmap blits
- *      - copyBufferToImage height != width
- *      - no stbi_image_free on FreeType-owned memory
- *   5. SDF rendering (see feature-render-text branch for prior work)
+ * Rewrite plan:
  *
- * Previous implementation had 4 bugs in the CPU-to-GPU bridge:
- *   - 4x staging buffer overread (assumed RGBA for single-channel data)
- *   - stbi_image_free called on FreeType's internal bitmap buffer
- *   - height passed as width to copyBufferToImage
- *   - image missing TRANSFER_SRC usage for mipmap generation
+ *   1. FreeType init/shutdown with a multi-face font registry.
+ *      Previous code used a single global FT_Face.
+ *
+ *   2. Glyph rasterization with explicit FT_Set_Pixel_Sizes call
+ *      (the old code never set a size). Respect bitmap pitch
+ *      rather than assuming pitch == width.
+ *
+ *   3. Atlas packing into a heap-allocated buffer. The old code
+ *      used a stack VLA (easily >1MB for 256 glyphs). Use shelf
+ *      or skyline packing instead of a uniform grid.
+ *
+ *   4. GPU upload via a corrected staging path in texture.c.
+ *      The removed createTextureImageFromCPUMemory() had these bugs:
+ *        - imageSize = w * h * 4 for single-channel R8 data (4x overread)
+ *        - stbi_image_free() called on FreeType's internal bitmap buffer
+ *        - copyBufferToImage(... texWidth, texWidth) passed width as height
+ *        - VkImage created without TRANSFER_SRC, breaking mipmap blits
+ *        - VK_FORMAT_R8_SRGB has near-zero device support; use R8_UNORM
+ *      When reimplementing, size the staging buffer to w * h * channels,
+ *      copy the bitmap yourself (don't hand FT memory to stbi_image_free),
+ *      and add TRANSFER_SRC to image usage flags if generating mipmaps.
+ *
+ *   5. SDF rendering for resolution-independent text. The
+ *      feature-render-text branch has prior work on this
+ *      (glyph atlas structs, VRAM uploads, SDF pipeline).
+ *
+ * The FreeType submodule and stb_image_write.h are still in the tree.
  */
