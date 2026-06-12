@@ -19,6 +19,7 @@
 
 #include "vulkan_backend/vertex/vertex.h"
 #include "vulkan_backend/components.h"
+#include "vulkan_backend/geometry.h"
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
@@ -252,7 +253,8 @@ typedef struct RendererState
     VkSemaphore             renderFinished[MAX_FRAMES_IN_FLIGHT];
     VkFence                 frameFence[MAX_FRAMES_IN_FLIGHT];
     uint32_t                frameIndex;
-    bool                    frameFenceSubmitted[MAX_FRAMES_IN_FLIGHT];
+    // Geometry
+    GeometryPool            globalGeometryPool;
 } RendererState;
 
 #endif

@@ -38,4 +38,6 @@ GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs,
 void gpu_alloc_reset(GpuAllocator* alloc);   // reset all blocks to offset=0
 void gpu_alloc_destroy(GpuAllocator* alloc);  // free all VkDeviceMemory
 
+extern GpuAllocator gpuAllocator;
+
 #endif
