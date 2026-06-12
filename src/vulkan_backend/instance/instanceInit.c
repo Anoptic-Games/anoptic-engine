@@ -1067,7 +1067,7 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 }
 
 bool allocateBuffer(VulkanComponents* components, VkBuffer buffer, VkMemoryPropertyFlags properties, VkDeviceMemory* bufferMemory)
-{
+{ // Must be re-purposed for a sub-allocation scheme
 	VkMemoryRequirements memRequirements;
 	vkGetBufferMemoryRequirements(components->deviceQueueComp.device, buffer, &memRequirements);
 
@@ -1804,15 +1804,15 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
 	}
 
-	if(components->renderComp.buffers.entities[0].index)
-	{
-		vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertex, NULL);
-	}
+	//if(components->renderComp.buffers.entities[0].index)
+	//{
+	//	vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].index, NULL);
+	//}
 
-	if(components->renderComp.buffers.entities[0].indexMemory)
-	{
-		vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].vertexMemory, NULL);
-	}
+	//if(components->renderComp.buffers.entities[0].indexMemory)
+	//{
+	//	vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.entities[0].indexMemory, NULL);
+	//}
 
 	if(components->renderComp.descriptorPool)
 	{
