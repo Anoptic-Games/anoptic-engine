@@ -24,6 +24,20 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)
+set(ANOPTIC_SANITIZE "" CACHE STRING "Sanitizer for test builds: asan, tsan, or empty")
+
+# Sanitizer flags are global so that mimalloc and all engine code are
+# instrumented together -- TSan in particular reports false positives if it
+# cannot see synchronization inside uninstrumented dependencies.
+if(ANOPTIC_SANITIZE STREQUAL "asan")
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+elseif(ANOPTIC_SANITIZE STREQUAL "tsan")
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
+elseif(NOT ANOPTIC_SANITIZE STREQUAL "")
+    message(FATAL_ERROR "ANOPTIC_SANITIZE must be 'asan', 'tsan', or empty (got '${ANOPTIC_SANITIZE}')")
+endif()
 
 # Mimalloc submodule directory and definitions
 set(MI_BUILD_OBJECT OFF)
