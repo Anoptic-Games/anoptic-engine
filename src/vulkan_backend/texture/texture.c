@@ -157,7 +157,7 @@ void copyBufferToImage(VulkanComponents* components, VkBuffer buffer, VkImage im
 	endSingleTimeCommands(components, commandBuffer);
 }
 
-bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
+bool createImage(VulkanComponents* components, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
 				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, VkDeviceMemory* imageMemory, bool flag16)
 {
 	VkImageCreateInfo imageInfo = {};
@@ -186,7 +186,7 @@ bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, 
 	VkMemoryRequirements memRequirements;
 	vkGetImageMemoryRequirements(components->deviceQueueComp.device, *image, &memRequirements);
 	
-	GpuAllocation alloc = gpu_alloc(&gpuAllocator, memRequirements, properties);
+	GpuAllocation alloc = gpu_alloc(allocator, memRequirements, properties);
 	*imageMemory = alloc.memory;
 
 	vkBindImageMemory(components->deviceQueueComp.device, *image, alloc.memory, alloc.offset);
@@ -339,8 +339,8 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 
 	stbi_image_free(texture.pixels);
 
-	if (!createImage(components, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+	if (!createImage(components, &gpuAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
 	{
 		printf("Image creation failure: %s\n", fileName);
 		return false;
