@@ -78,24 +78,67 @@ void recordCommandBuffer(uint32_t imageIndex)
 		printf("Failed to begin recording command buffer!\n");
 	}
 
-	VkRenderPassBeginInfo renderPassInfo = {};
-	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-	renderPassInfo.renderPass = components.renderComp.renderPass;
-	renderPassInfo.framebuffer = components.swapChainComp.framebufferGroup.buffers[imageIndex];
-	renderPassInfo.renderArea.offset = (VkOffset2D){0, 0};
-	renderPassInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
+	// Transition swapchain image to color attachment optimal
+	VkImageMemoryBarrier swapChainBarrier = {};
+	swapChainBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	swapChainBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	swapChainBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	swapChainBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	swapChainBarrier.image = components.swapChainComp.swapChainGroup.images[imageIndex];
+	swapChainBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	swapChainBarrier.subresourceRange.baseMipLevel = 0;
+	swapChainBarrier.subresourceRange.levelCount = 1;
+	swapChainBarrier.subresourceRange.baseArrayLayer = 0;
+	swapChainBarrier.subresourceRange.layerCount = 1;
+	swapChainBarrier.srcAccessMask = 0;
+	swapChainBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-	VkClearValue clearValues[2] = {};
-	clearValues[0].color.float32[0] = 0.0f;
-	clearValues[0].color.float32[1] = 0.0f;
-	clearValues[0].color.float32[2] = 0.0f;
-	clearValues[0].color.float32[3] = 0.0f;
-	clearValues[1].depthStencil.depth = 1.0f;
-	clearValues[1].depthStencil.stencil = 0;
-	renderPassInfo.clearValueCount = sizeof(clearValues) / sizeof(VkClearValue);
-	renderPassInfo.pClearValues = clearValues;
+	vkCmdPipelineBarrier(
+		components.cmdComp.commandBuffer[components.syncComp.frameIndex],
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		0,
+		0, NULL,
+		0, NULL,
+		1, &swapChainBarrier
+	);
 
-	vkCmdBeginRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
+	VkClearValue clearDepth = {};
+	clearDepth.depthStencil.depth = 1.0f;
+	clearDepth.depthStencil.stencil = 0;
+
+	VkRenderingAttachmentInfo colorAttachment = {};
+	colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+	colorAttachment.imageView = components.swapChainComp.viewGroup.colorView; // MSAA color
+	colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+	colorAttachment.resolveImageView = components.swapChainComp.viewGroup.views[imageIndex];
+	colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	colorAttachment.clearValue = clearColor;
+
+	VkRenderingAttachmentInfo depthAttachment = {};
+	depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+	depthAttachment.imageView = components.renderComp.buffers.depthView[components.syncComp.frameIndex];
+	depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
+	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	depthAttachment.clearValue = clearDepth;
+
+	VkRenderingInfo renderingInfo = {};
+	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+	renderingInfo.renderArea.offset = (VkOffset2D){0, 0};
+	renderingInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
+	renderingInfo.layerCount = 1;
+	renderingInfo.colorAttachmentCount = 1;
+	renderingInfo.pColorAttachments = &colorAttachment;
+	renderingInfo.pDepthAttachment = &depthAttachment;
+	renderingInfo.pStencilAttachment = NULL;
+
+	vkCmdBeginRendering(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderingInfo);
 
 	// Create loop for all extant pipelines once multiple ones are supported, loop through them then through the meshes they apply to
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.prototypes[PIPELINE_FLAT].implementations[0].pipeline);
@@ -141,8 +184,22 @@ void recordCommandBuffer(uint32_t imageIndex)
 			sizeof(VkDrawIndexedIndirectCommand));
 	}
 	
+	vkCmdEndRendering(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
-	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
+	// Transition swapchain image to present
+	swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	swapChainBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	swapChainBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	swapChainBarrier.dstAccessMask = 0;
+
+	vkCmdPipelineBarrier(
+		components.cmdComp.commandBuffer[components.syncComp.frameIndex],
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		0,
+		0, NULL,
+		0, NULL,
+		1, &swapChainBarrier
+	);
 
 	if (vkEndCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex]) != VK_SUCCESS)
 	{
@@ -501,13 +558,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: depth resource creation failure!\n");
 	}
 
-	if (!createRenderPass(&components, components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
-						  &(components.renderComp.renderPass)))
-	{
-		printf("Quitting init: render pass failure\n");
-		unInitVulkan();
-		return false;
-	}
+
 
 	if (!ano_vk_init_global_layout(&components, &rendererState))
 	{
@@ -534,14 +585,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
-	printf("Framebuffers\n");
 
-	if (!createFramebuffers(&components))
-	{
-		printf("Quitting init: framebuffer failure!\n");
-		unInitVulkan();
-		return false;	
-	}
 
 	/*if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
 	{

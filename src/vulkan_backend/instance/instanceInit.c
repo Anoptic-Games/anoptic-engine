@@ -23,7 +23,7 @@
 
 // Variables
 
-static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
+static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
 
 // Vulkan component initialization functions
 
@@ -567,6 +567,12 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
 	features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
 
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
+	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+	dynamicRenderingFeature.dynamicRendering = VK_TRUE;
+
+	features12.pNext = &dynamicRenderingFeature;
+
 	VkDeviceCreateInfo createInfo = {};
 
 	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -574,8 +580,8 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	createInfo.queueCreateInfoCount = queueCount;
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
-	createInfo.enabledExtensionCount = 1; // Replace if more extensions are added
-	printf("Required extensions: %s\n", requiredExtensions[0]);
+	createInfo.enabledExtensionCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
+	printf("Required extensions: %s, %s\n", requiredExtensions[0], requiredExtensions[1]);
 	createInfo.ppEnabledExtensionNames = requiredExtensions;
 
 	if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
@@ -823,14 +829,8 @@ SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, u
 	return swapChainGroup;
 }
 
-void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, FrameBufferGroup* frameGroup, ImageViewGroup* viewGroup)
+void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, ImageViewGroup* viewGroup)
 {
-    // Destroy framebuffers
-    for (size_t i = 0; i < frameGroup->bufferCount; i++) 
-    {
-        vkDestroyFramebuffer(device, frameGroup->buffers[i], NULL);
-    }
-
     // Destroy swapchain image views
     for (size_t i = 0; i < viewGroup->viewCount; i++) 
     {
@@ -838,42 +838,25 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
     }
 
     // Destroy depth image views
-    if (components->renderComp.buffers.depthView) 
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
     {
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+        if (components->renderComp.buffers.depthView[i] != VK_NULL_HANDLE)
         {
-            if (components->renderComp.buffers.depthView[i] != VK_NULL_HANDLE)
-            {
-                vkDestroyImageView(device, components->renderComp.buffers.depthView[i], NULL);
-                components->renderComp.buffers.depthView[i] = VK_NULL_HANDLE;
-            }
+            vkDestroyImageView(device, components->renderComp.buffers.depthView[i], NULL);
+            components->renderComp.buffers.depthView[i] = VK_NULL_HANDLE;
         }
     }
 
     // Destroy depth images
-    if (components->renderComp.buffers.depth) 
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
     {
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+        if (components->renderComp.buffers.depth[i] != VK_NULL_HANDLE)
         {
-            if (components->renderComp.buffers.depth[i] != VK_NULL_HANDLE)
-            {
-                vkDestroyImage(device, components->renderComp.buffers.depth[i], NULL);
-                components->renderComp.buffers.depth[i] = VK_NULL_HANDLE;
-            }
+            vkDestroyImage(device, components->renderComp.buffers.depth[i], NULL);
+            components->renderComp.buffers.depth[i] = VK_NULL_HANDLE;
         }
     }
 
-    // Free depth memory (important!)
-    if (components->renderComp.buffers.depthMemory) 
-    {
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
-        {
-            if (components->renderComp.buffers.depthMemory[i] != VK_NULL_HANDLE)
-            {
-                components->renderComp.buffers.depthMemory[i] = VK_NULL_HANDLE;
-            }
-        }
-    }
 
     // Free color image
     if (components->swapChainComp.swapChainGroup.colorImage != VK_NULL_HANDLE)
@@ -901,7 +884,7 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 	vkDeviceWaitIdle(components->deviceQueueComp.device);
 
     // First, clean up the previous swapchain
-	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
+	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.viewGroup));
     
 	int width = 0, height = 0;
 	glfwGetFramebufferSize(window, &width, &height);
@@ -950,12 +933,6 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 		exit(1);
 	}
 
-	if (!createFramebuffers(components))
-	{
-		printf("Framebuffer re-creation error, exiting!\n");
-		cleanupVulkan(components);
-		exit(1);
-	}
 
 	
 
@@ -1003,42 +980,6 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
 		viewGroup.views[i] = createImageView(device, imageGroup.images[i], imageGroup.imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);		
 	}
 	return viewGroup;
-}
-
-bool createFramebuffers(VulkanComponents* components)
-{ // Central init component
-    if (components->swapChainComp.framebufferGroup.buffers)
-    { // Deallocate previous buffer
-        free(components->swapChainComp.framebufferGroup.buffers);
-    }
-	components->swapChainComp.framebufferGroup.bufferCount = components->swapChainComp.viewGroup.viewCount;
-	components->swapChainComp.framebufferGroup.buffers = (VkFramebuffer*) calloc(1, sizeof(VkFramebuffer) * components->swapChainComp.framebufferGroup.bufferCount);
-
-	for (uint32_t i = 0; i < components->swapChainComp.viewGroup.viewCount; i++) 
-	{
-		VkImageView attachments[] = 
-		{
-			components->swapChainComp.viewGroup.colorView,
-			components->renderComp.buffers.depthView[i],
-			components->swapChainComp.viewGroup.views[i]
-		};
-	
-		VkFramebufferCreateInfo framebufferInfo = {};
-		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		framebufferInfo.renderPass = components->renderComp.renderPass;
-		framebufferInfo.attachmentCount = sizeof(attachments)/sizeof(VkImageView);
-		framebufferInfo.pAttachments = attachments;
-		framebufferInfo.width = components->swapChainComp.swapChainGroup.imageExtent.width;
-		framebufferInfo.height = components->swapChainComp.swapChainGroup.imageExtent.height;
-		framebufferInfo.layers = 1;
-	
-		if (vkCreateFramebuffer(components->deviceQueueComp.device, &framebufferInfo, NULL, (components->swapChainComp.framebufferGroup.buffers+i)) != VK_SUCCESS) 
-		{
-			printf("Failed to create framebuffer!\n");
-			return false;
-		}
-	}
-	return true;
 }
 
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool)
@@ -1687,7 +1628,7 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
 	vkDeviceWaitIdle(components->deviceQueueComp.device);
 
-	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.framebufferGroup), &(components->swapChainComp.viewGroup));
+	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.viewGroup));
 	if (components->swapChainComp.swapChainGroup.swapChain != VK_NULL_HANDLE)
 	{
 		vkDestroySwapchainKHR(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.swapChain, NULL);
@@ -1765,10 +1706,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 		vkDestroyCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, NULL);
 	}	
 
-	if (components->renderComp.renderPass != NULL)
-	{
-		vkDestroyRenderPass(components->deviceQueueComp.device, components->renderComp.renderPass, NULL);
-	}
 
 	if (components->renderComp.pipelineLayout != NULL)
 	{

@@ -21,8 +21,7 @@ struct Buffer
 };
 
 
-// Creates a render pass
-bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass);
+
 
 bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* state);
 bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* state);
