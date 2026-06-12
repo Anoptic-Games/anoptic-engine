@@ -82,20 +82,20 @@ void createColorResources(VulkanComponents* components);
 // Creates a depth image and view for the current swapchain
 bool createDepthResources(VulkanComponents* components);
 
-// Creates a UBO descriptor pool
-bool createDescriptorPool(VulkanComponents* components);
+// Creates the descriptor pool
+bool createDescriptorPool(VulkanComponents* components, RendererState* state);
 
 // Creates an entity data descriptor pool
 bool createMeshDescriptorPool(VulkanComponents* components);
 
-// Creates a descriptor set
-bool createDescriptorSets(VulkanComponents* components);
+// Creates the descriptor sets
+bool createDescriptorSets(VulkanComponents* components, RendererState* state);
 
 // Creates mesh descriptor sets
-bool createMeshDescriptorSets(VulkanComponents* components);
+bool createMeshDescriptorSets(VulkanComponents* components, RendererState* state);
 
 // Updates UBO descriptor sets to point to their corresponding uniform buffers
-void updateUboDescriptorSets(VulkanComponents* components);
+void updateUboDescriptorSets(VulkanComponents* components, RendererState* state);
 
 // Updates entities' descriptor sets to point to their respective textures
 void updateMeshDescriptorSets(VulkanComponents* components);

@@ -98,7 +98,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	vkCmdBeginRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	// Create loop for all extant pipelines once multiple ones are supported, loop through them then through the meshes they apply to
-	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
+	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.prototypes[PIPELINE_FLAT].implementations[0].pipeline);
 
     // Should probably only do this if the viewport's actually changed
 	VkViewport viewport = {};
@@ -122,7 +122,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	VkDeviceSize offsets[] = {0};
 
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
-		components.renderComp.pipelineLayout, 0, 1, &(components.renderComp.descriptorSets[components.syncComp.frameIndex]), 0, NULL);
+		rendererState.prototypes[PIPELINE_FLAT].layout, 0, 1, &(rendererState.globalSets[components.syncComp.frameIndex]), 0, NULL);
 
 	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount; i++) // Iterate through all render packages and issue indexed draw commands
 	{
@@ -132,7 +132,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 		vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].index, 0, VK_INDEX_TYPE_UINT16);
 
 		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
-			components.renderComp.pipelineLayout, 1, 1, &(components.renderComp.buffers.entities[i].textureDescriptorSet), 0, NULL);
+			rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &(components.renderComp.buffers.entities[i].textureDescriptorSet), 0, NULL);
 
         struct {
             mat4 model;
@@ -141,7 +141,7 @@ void recordCommandBuffer(uint32_t imageIndex)
         memcpy(&pc.model, components.renderComp.buffers.entities[i].transform, sizeof(mat4));
         pc.materialIndex = 0;
 
-        vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+        vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
 		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].indexCount, 1, 0, 0, 0);
 	}
@@ -384,8 +384,19 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	components.renderComp.graphicsPipeline = createGraphicsPipeline(&components);
-	if (components.renderComp.graphicsPipeline == NULL)
+	if (!ano_vk_init_global_layout(&components, &rendererState))
+	{
+		printf("Quitting init: global layout failure!\n");
+		unInitVulkan();
+		return false;
+	}
+	if (!ano_vk_init_material_layouts(&components, &rendererState))
+	{
+		printf("Quitting init: material layouts failure!\n");
+		unInitVulkan();
+		return false;
+	}
+	if (!ano_vk_init_pipelines(&components, &rendererState))
 	{
 		printf("Quitting init: pipeline failure!\n");
 		unInitVulkan();
@@ -469,7 +480,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 
 	// HERE
-	if (!createDescriptorPool(&components))
+	if (!createDescriptorPool(&components, &rendererState))
 	{
 		printf("Quitting init: UBO descriptor pool creation failure!\n");
 		unInitVulkan();
@@ -483,21 +494,21 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	if (!createDescriptorSets(&components))
+	if (!createDescriptorSets(&components, &rendererState))
 	{
 		printf("Quitting init: UBO descriptor sets creation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!createMeshDescriptorSets(&components))
+	if (!createMeshDescriptorSets(&components, &rendererState))
 	{
 		printf("Quitting init: mesh descriptor pool creation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	updateUboDescriptorSets(&components);
+	updateUboDescriptorSets(&components, &rendererState);
 	updateMeshDescriptorSets(&components);
 
 	if (!createCommandBuffer(&components))

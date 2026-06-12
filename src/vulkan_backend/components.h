@@ -86,6 +86,7 @@ typedef struct PipelinePrototype
 {
     PipelineType                type;
     VkPipelineLayout            layout;           // shared across all implementations
+    VkDescriptorSetLayout       descriptorLayout; // material descriptor layout
     uint32_t                    implementationCount;
     PipelineImplementation*     implementations;  // allocated as a flat array, not FAM
     VkPipelineCache             cache;
