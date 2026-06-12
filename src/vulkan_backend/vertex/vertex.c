@@ -5,6 +5,11 @@
 
 #include "vertex.h"
 
+// glibc hides M_PI when _POSIX_C_SOURCE is set without _DEFAULT_SOURCE
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 VkVertexInputBindingDescription getBindingDescription(void)
 {
 	VkVertexInputBindingDescription bindingDescription;
@@ -147,6 +152,23 @@ void lookAt(float mat[4][4], float eye[3], float center[3], float up[3])
     mat[3][1] = -dot(u, eye);
     mat[3][2] = dot(f, eye);
     mat[3][3] = 1.0f;
+}
+
+void translate(float mat[4][4], float x, float y, float z)
+{
+    // Initialize the matrix to identity matrix
+    for (int i = 0; i < 4; i++)
+    {
+        for (int j = 0; j < 4; j++)
+        {
+            mat[i][j] = (i == j) ? 1.0f : 0.0f;
+        }
+    }
+
+    // Set the translation components
+    mat[3][0] = x;
+    mat[3][1] = y;
+    mat[3][2] = z;
 }
 
 void perspective(float matrix[4][4], float fovDegrees, float aspect, float near, float far)

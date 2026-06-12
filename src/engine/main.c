@@ -149,11 +149,7 @@ int main()
 	    return 0;
 	}
 
-	// Create a graphics pipeline
-
-	//parseGltf("viking_room.gltf");
-
-    // Main loop
+	// Main loop
 	while (!anoShouldClose())
 	{	
         glfwPollEvents();
@@ -168,7 +164,7 @@ int main()
     }
 
     // Clean up
-    // unInitVulkan();
+    unInitVulkan();
 
     return 0;
 }

@@ -30,6 +30,14 @@ static Monitors monitors =
 
 void unInitVulkan() // A celebration
 {
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	{
+		if (components.syncComp.frameSubmitted[i])
+		{
+			vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+			components.syncComp.frameSubmitted[i] = false; // reset the status
+		}
+    }
 
 	if (vulkanGarbage.components)
 	{
@@ -64,7 +72,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	
 	if (vkBeginCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &beginInfo) != VK_SUCCESS) 
 	{
-	    printf("Failed to begin recording command buffer!\n");
+		printf("Failed to begin recording command buffer!\n");
 	}
 
 	VkRenderPassBeginInfo renderPassInfo = {};
@@ -78,7 +86,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	clearValues[0].color.float32[0] = 0.0f;
 	clearValues[0].color.float32[1] = 0.0f;
 	clearValues[0].color.float32[2] = 0.0f;
-	clearValues[0].color.float32[3] = 1.0f;
+	clearValues[0].color.float32[3] = 0.0f;
 	clearValues[1].depthStencil.depth = 1.0f;
 	clearValues[1].depthStencil.stencil = 0;
 	renderPassInfo.clearValueCount = sizeof(clearValues) / sizeof(VkClearValue);
@@ -86,14 +94,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	vkCmdBeginRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
+	// Create loop for all extant pipelines once multiple ones are supported, loop through them then through the meshes they apply to
 	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, components.renderComp.graphicsPipeline);
 
-	VkBuffer vertexBuffers[] = {components.renderComp.buffers.entities[0].vertex};
-	VkDeviceSize offsets[] = {0};
-	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffers, offsets);
-
-	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[0].index, 0, VK_INDEX_TYPE_UINT16);
-
+    // Should probably only do this if the viewport's actually changed
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -110,81 +114,93 @@ void recordCommandBuffer(uint32_t imageIndex)
 	scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
 	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
 
+	// Loop through meshes of the current pipeline, bind the associated vertex and index buffers.
+	VkBuffer* vertexBuffer;
+	VkDeviceSize offsets[] = {0};
+
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 		components.renderComp.pipelineLayout, 0, 1, &(components.renderComp.descriptorSets[components.syncComp.frameIndex]), 0, NULL);
 
 	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount; i++) // Iterate through all render packages and issue indexed draw commands
 	{
+        // Modify these with offsets for sub-allocation
+		vertexBuffer = &components.renderComp.buffers.entities[i].vertex;
+		vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, vertexBuffer, offsets);
+		vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].index, 0, VK_INDEX_TYPE_UINT16);
+
+		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
+			components.renderComp.pipelineLayout, 1, 1, &(components.renderComp.buffers.entities[i].meshDescriptorSet), 0, NULL);
+
 		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].indexCount, 1, 0, 0, 0);
 	}
 	
 
 	vkCmdEndRenderPass(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
-	if (vkEndCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex]) != VK_SUCCESS) {
-	    printf("Failed to record command buffer!\n");
+	if (vkEndCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex]) != VK_SUCCESS)
+	{
+		printf("Failed to record command buffer!\n");
 	}
 }
 
 void clearSemaphores()
 {
-    VkSemaphoreCreateInfo semaphoreInfo = {};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+	VkSemaphoreCreateInfo semaphoreInfo = {};
+	semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-        vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.imageAvailableSemaphore[i], NULL);
-        vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.renderFinishedSemaphore[i], NULL);
+		vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.imageAvailableSemaphore[i], NULL);
+		vkDestroySemaphore(components.deviceQueueComp.device, components.syncComp.renderFinishedSemaphore[i], NULL);
 
-        if (vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.imageAvailableSemaphore[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.renderFinishedSemaphore[i]) != VK_SUCCESS)
+		if (vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.imageAvailableSemaphore[i]) != VK_SUCCESS ||
+			vkCreateSemaphore(components.deviceQueueComp.device, &semaphoreInfo, NULL, &components.syncComp.renderFinishedSemaphore[i]) != VK_SUCCESS)
 		{
-            printf("Failed to recreate semaphores!\n");
-        }
-    }
+			printf("Failed to recreate semaphores!\n");
+		}
+	}
 }
 
-void printUniformTransferState() {
-    // Swap Chain Components
-    printf("\n=== Swap Chain Components ===\n");
-    printf("Image count: %d\n", components.swapChainComp.swapChainGroup.imageCount);
-    printf("Image extent: width = %d, height = %d\n", components.swapChainComp.swapChainGroup.imageExtent.width, components.swapChainComp.swapChainGroup.imageExtent.height);
-    
-    // Buffer Components
-    printf("\n=== Buffer Components ===\n");
-    printf("Vertex buffer: %p\n", (void*)components.renderComp.buffers.entities[0].vertex);
-    printf("Index buffer: %p\n", (void*)components.renderComp.buffers.entities[0].index);
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
-        printf("Uniform memory %d: %p\n", i, (void*)components.renderComp.buffers.uniformMemory[i]);
-        printf("Uniform buffer mapping %d: %p\n", i, components.renderComp.buffers.uniformMapped[i]);
-    }
+void printUniformTransferState()
+{
+	// Swap Chain Components
+	printf("\n=== Swap Chain Components ===\n");
+	printf("Image count: %d\n", components.swapChainComp.swapChainGroup.imageCount);
+	printf("Image extent: width = %d, height = %d\n", components.swapChainComp.swapChainGroup.imageExtent.width, components.swapChainComp.swapChainGroup.imageExtent.height);
+	
+	// Buffer Components
+	printf("\n=== Buffer Components ===\n");
+	printf("Vertex buffer: %p\n", (void*)components.renderComp.buffers.entities[0].vertex);
+	printf("Index buffer: %p\n", (void*)components.renderComp.buffers.entities[0].index);
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
+		printf("Uniform memory %d: %p\n", i, (void*)components.renderComp.buffers.uniformMemory[i]);
+		printf("Uniform buffer mapping %d: %p\n", i, components.renderComp.buffers.uniformMapped[i]);
+	}
 
-    // Synchronization Components
-    printf("\n=== Synchronization Components ===\n");
-    printf("Current frame index: %d\n", components.syncComp.frameIndex);
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        printf("Frame %d submitted: %d\n", i, components.syncComp.frameSubmitted[i]);
-    }
-    
-    printf("\n======================================\n");
+	// Synchronization Components
+	printf("\n=== Synchronization Components ===\n");
+	printf("Current frame index: %d\n", components.syncComp.frameIndex);
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		printf("Frame %d submitted: %d\n", i, components.syncComp.frameSubmitted[i]);
+	}
+	
+	printf("\n======================================\n");
 }
 
 void drawFrame() 
 {
-	if (!components.syncComp.skipCheck)
-	{
-		vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
-	} else
-	{
-		components.syncComp.skipCheck -= 1; // Simple way to skip semaphore waits for a given number of frames
-	}
-
+    if (components.syncComp.frameSubmitted[components.syncComp.frameIndex] == true)
+    {
+        vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
+    }
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || components.syncComp.framebufferResized) 
 	{
-		vkDeviceWaitIdle(components.deviceQueueComp.device);
+		//vkDeviceWaitIdle(components.deviceQueueComp.device);
 		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 		{
 			if (components.syncComp.frameSubmitted[i])
@@ -195,15 +211,29 @@ void drawFrame()
 		}
 		//printf("Recreating swap chain!\n");
 		clearSemaphores();
-	    recreateSwapChain(&components, window);
-	    return;
-	} else if (result != VK_SUCCESS)
+        //vkDeviceWaitIdle(components.deviceQueueComp.device);
+		recreateSwapChain(&components, window);
+		return;
+	} else if (result != VK_SUCCESS) 
 	{
-	    printf("Failed to acquire swap chain image!\n");
-	    return;
+		printf("Failed to acquire swap chain image!\n");
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			if (components.syncComp.frameSubmitted[i])
+			{
+				vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
+				components.syncComp.frameSubmitted[i] = false; // reset the status
+			}
+		}
+        //vkDeviceWaitIdle(components.deviceQueueComp.device);
+		recreateSwapChain(&components, window);
+        return;
 	}
 
 	updateUniformBuffer(&components);
+	updateMeshTransforms(&components, &components.renderComp.buffers.entities[0], 2.0f);
+	updateMeshTransforms(&components, &components.renderComp.buffers.entities[1], -2.0f);
+	updateMeshTransforms(&components, &components.renderComp.buffers.entities[2], 0.0f);
 
 	vkResetCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0);
 	recordCommandBuffer(imageIndex);
@@ -226,9 +256,11 @@ void drawFrame()
 	vkResetFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex])); // this goes here because multi-threading
 	if (vkQueueSubmit(components.deviceQueueComp.graphicsQueue, 1, &submitInfo, components.syncComp.inFlightFence[components.syncComp.frameIndex]) != VK_SUCCESS) 
 	{
-	    printf("Failed to submit draw command buffer!\n");
-	    return;
+		printf("Failed to submit draw command buffer!\n");
+		return;
 	}
+
+    // Presentation should happen *before* submitting commands for a new frame, so we're actually taking advantage of buffering
 
 	VkPresentInfoKHR presentInfo = {};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -294,10 +326,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (window == NULL)
 	{
-	    // Handle error
-	    printf("Window initialization failed.\n");
-	    unInitVulkan();
-	    return 0;
+		// Handle error
+		printf("Window initialization failed.\n");
+		unInitVulkan();
+		return 0;
 	}
 
 	requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
@@ -305,67 +337,69 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	components.instanceDebug.enableValidationLayers = true;
 	components.syncComp.frameIndex = 0; // Tracks which frame is being processed
 
-    // Initialize Vulkan
-    if (createInstance(&components) != VK_SUCCESS)
-    {
-        fprintf(stderr, "Failed to create Vulkan instance!\n");
-        unInitVulkan();
-        return false;
-    }
-    vulkanGarbage.components = &components;
+	// Initialize Vulkan
+	if (createInstance(&components) != VK_SUCCESS)
+	{
+		fprintf(stderr, "Failed to create Vulkan instance!\n");
+		unInitVulkan();
+		return false;
+	}
+	vulkanGarbage.components = &components;
 
-    // Create a window surface
-    if (createSurface(components.instanceDebug.instance, window, &(components.surface)) != VK_SUCCESS)
-    {
-        fprintf(stderr, "Failed to create window surface!\n");
-        unInitVulkan();
-        return false;
-    }
+	// Create a window surface
+	if (createSurface(components.instanceDebug.instance, window, &(components.surface)) != VK_SUCCESS)
+	{
+		fprintf(stderr, "Failed to create window surface!\n");
+		unInitVulkan();
+		return false;
+	}
 
-    // Pick physical device
-    DeviceCapabilities capabilities;
-    components.physicalDeviceComp.physicalDevice = VK_NULL_HANDLE;
+	// Pick physical device
+	DeviceCapabilities capabilities;
+	components.physicalDeviceComp.physicalDevice = VK_NULL_HANDLE;
 
 	//!TODO replace empty char array with preffered device from VulkanSettings   
 	char* preferredDevice = getChosenDevice();
 	if (!pickPhysicalDevice(&(components), &capabilities, &(components.physicalDeviceComp.queueFamilyIndices), preferredDevice))
-    {
-    	fprintf(stderr, "Quitting init: physical device failure!\n");
-    	unInitVulkan();
-    	return false;
-    }
-    
-    // Create logical device
-    if (createLogicalDevice(components.physicalDeviceComp.physicalDevice, &(components.deviceQueueComp.device), &(components.deviceQueueComp.graphicsQueue), &(components.deviceQueueComp.computeQueue), &(components.deviceQueueComp.transferQueue), &(components.deviceQueueComp.presentQueue), &(components.physicalDeviceComp.queueFamilyIndices)) != VK_SUCCESS)
-    {
-        fprintf(stderr, "Quitting init: logical device failure!\n");
-        unInitVulkan();
-        return false;
-    }
+	{
+		fprintf(stderr, "Quitting init: physical device failure!\n");
+		unInitVulkan();
+		return false;
+	}
+	
+	// Create logical device
+	if (createLogicalDevice(components.physicalDeviceComp.physicalDevice, &(components.deviceQueueComp.device), &(components.deviceQueueComp.graphicsQueue), &(components.deviceQueueComp.computeQueue), &(components.deviceQueueComp.transferQueue), &(components.deviceQueueComp.presentQueue), &(components.physicalDeviceComp.queueFamilyIndices)) != VK_SUCCESS)
+	{
+		fprintf(stderr, "Quitting init: logical device failure!\n");
+		unInitVulkan();
+		return false;
+	}
 
-    components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
-    if (components.swapChainComp.swapChainGroup.swapChain == NULL)
-    {
-    	printf("Quitting init: swap chain failure.\n");
-    	unInitVulkan();
-    	return false;
-    }
-    
-    components.swapChainComp.viewGroup = createImageViews(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup);
-    if (components.swapChainComp.viewGroup.views == NULL)
-    {
-    	printf("Quitting init: image view failure.\n");
-    	unInitVulkan();
-    	return false;
-    }
+	components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
+	if (components.swapChainComp.swapChainGroup.swapChain == NULL)
+	{
+		printf("Quitting init: swap chain failure.\n");
+		unInitVulkan();
+		return false;
+	}
+	
+	components.swapChainComp.viewGroup = createImageViews(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup);
+	if (components.swapChainComp.viewGroup.views == NULL)
+	{
+		printf("Quitting init: image view failure.\n");
+		unInitVulkan();
+		return false;
+	}
 
 	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
-                           components.surface, &(components.cmdComp.commandPool)))
+						   components.surface, &(components.cmdComp.commandPool)))
 	{
 		printf("Quitting init: command pool failure!\n");
 		unInitVulkan();
 		return false;
 	}
+
+	createColorResources(&components); // Make this a bool and add check
 
 	if(!createDepthResources(&components))
 	{
@@ -373,7 +407,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 	if (!createRenderPass(&components, components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.imageFormat,
-                          &(components.renderComp.renderPass)))
+						  &(components.renderComp.renderPass)))
 	{
 		printf("Quitting init: render pass failure\n");
 		unInitVulkan();
@@ -462,23 +496,44 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	if (!createTransformBuffers(&components))
+	{
+		printf("Quitting init: transform buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
 	// HERE
 	if (!createDescriptorPool(&components))
 	{
-		printf("Quitting init: descriptor pool creation failure!\n");
+		printf("Quitting init: UBO descriptor pool creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!createMeshDescriptorPool(&components))
+	{
+		printf("Quitting init: mesh descriptor pool creation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
 	if (!createDescriptorSets(&components))
 	{
-		printf("Quitting init: descriptor sets creation failure!\n");
+		printf("Quitting init: UBO descriptor sets creation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	updateDescriptorSets(&components);
+	if (!createMeshDescriptorSets(&components))
+	{
+		printf("Quitting init: mesh descriptor pool creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
 
+	updateUboDescriptorSets(&components);
+	updateMeshDescriptorSets(&components);
 
 	if (!createCommandBuffer(&components))
 	{
@@ -497,5 +552,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	printf("Instance creation complete!\n");
 
-    return true;
+	return true;
 }
+
