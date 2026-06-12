@@ -7,7 +7,12 @@
 
 int main() {
 
-    ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, "Lol. Lmao even.");
+    if (ano_log_init() != 0)
+        return 1;
 
-    return 0;
+    int status = ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, "Lol. Lmao even.");
+
+    ano_log_cleanup();
+
+    return status;
 }
