@@ -17,6 +17,7 @@
 #endif
 
 #include "instanceInit.h"
+#include "vulkan_backend/vulkanMaster.h"
 
 
 
@@ -1806,6 +1807,10 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 	if (components->deviceQueueComp.device != VK_NULL_HANDLE) 
 	{
 		vkDeviceWaitIdle(components->deviceQueueComp.device);
+
+		ano_vk_cleanup_geometry_pool(&rendererState.globalGeometryPool, components->deviceQueueComp.device);
+		gpu_alloc_destroy(&gpuAllocator);
+
 		vkDestroyDevice(components->deviceQueueComp.device, NULL);
 	}
 

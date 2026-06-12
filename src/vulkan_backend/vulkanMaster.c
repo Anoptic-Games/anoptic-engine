@@ -15,8 +15,8 @@
 // Variables
 
 static VulkanComponents components;
-static RendererState rendererState;
-static GpuAllocator gpuAllocator;
+RendererState rendererState;
+GpuAllocator gpuAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
@@ -344,6 +344,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
+
+	gpuAllocator.device = components.deviceQueueComp.device;
+	vkGetPhysicalDeviceMemoryProperties(components.physicalDeviceComp.physicalDevice, &gpuAllocator.memProps);
+	gpuAllocator.blocks = NULL;
+	gpuAllocator.blockCount = 0;
+
+	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, components.deviceQueueComp.device);
 
 	components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
 	if (components.swapChainComp.swapChainGroup.swapChain == NULL)
