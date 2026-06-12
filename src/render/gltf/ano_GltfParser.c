@@ -1326,8 +1326,12 @@ void processGltfBuffers(GltfElements* elements)
 				buffer->address = data;
 			} else
 			{
-				// Handle error: file read error or size mismatch
-				// Free data if necessary
+				if (data != NULL)
+				{
+					free(data);
+				}
+				printf("glTF buffer %u: file read error or size mismatch (got %lu, expected %lu)\n", i, (unsigned long)length, (unsigned long)buffer->byteLength);
+				buffer->address = NULL;
 			}
 		}
 		// Handle case where buffer->uri is NULL if needed

@@ -1,10 +1,10 @@
 # Build System
 
-The `cmake/` directory in the game engine project contains the public header files for the engine. These header files define the public API that games will use to interact with the engine.
+The `cmake/` directory in contains build system toolchain configurations.
 
 ## Directory Structure
 
-The directory structure for `cmake/` might look something like this:
+The directory structure for `cmake/`:
 
 ```
 cmake/
