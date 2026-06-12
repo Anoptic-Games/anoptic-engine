@@ -1297,7 +1297,7 @@ void createColorResources(VulkanComponents* components) //TODO: This probably sh
 	components->swapChainComp.viewGroup.colorView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }
 
-bool createDescriptorPool(VulkanComponents* components)
+bool createDescriptorPool(VulkanComponents* components, RendererState* state)
 { // Central to init
 	VkDescriptorPoolSize poolSize = {};
 	poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1309,7 +1309,7 @@ bool createDescriptorPool(VulkanComponents* components)
 	poolInfo.pPoolSizes = &poolSize;
 	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
-	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.descriptorPool)) != VK_SUCCESS)
+	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(state->globalDescriptorPool)) != VK_SUCCESS)
 	{
 		printf("Failed to create descriptor pool!\n");
 		return false;
@@ -1341,21 +1341,21 @@ bool createMeshDescriptorPool(VulkanComponents* components)
 	return true;
 }
 
-bool createDescriptorSets(VulkanComponents* components)
+bool createDescriptorSets(VulkanComponents* components, RendererState* state)
 { // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
 	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		layouts[i] = components->renderComp.descriptorSetLayout;
+		layouts[i] = state->globalSetLayout;
 	}
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.pNext = NULL;
-	allocInfo.descriptorPool = components->renderComp.descriptorPool;
+	allocInfo.descriptorPool = state->globalDescriptorPool;
 	allocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
 	allocInfo.pSetLayouts = layouts;
 
-	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, components->renderComp.descriptorSets) != VK_SUCCESS)
+	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, state->globalSets) != VK_SUCCESS)
 	{
 		printf("Failed to allocate descriptor sets!\n");	
 		return false;
@@ -1365,7 +1365,7 @@ bool createDescriptorSets(VulkanComponents* components)
 	return true;
 }
 
-bool createMeshDescriptorSets(VulkanComponents* components)
+bool createMeshDescriptorSets(VulkanComponents* components, RendererState* state)
 {
 	// Allocate entity descriptor sets
 	size_t entityCount = components->renderComp.buffers.entityCount;
@@ -1374,7 +1374,7 @@ bool createMeshDescriptorSets(VulkanComponents* components)
 
 	for (uint32_t i = 0; i < entityCount; i++)
 	{
-		layouts[i] = components->renderComp.meshDescriptorSetLayout;
+		layouts[i] = state->prototypes[PIPELINE_FLAT].descriptorLayout;
 	}
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
@@ -1405,7 +1405,7 @@ bool createMeshDescriptorSets(VulkanComponents* components)
 	return true;
 }
 
-void updateUboDescriptorSets(VulkanComponents* components)
+void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 { // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
 
 	// Update scene-wide UBO descriptors
@@ -1419,7 +1419,7 @@ void updateUboDescriptorSets(VulkanComponents* components)
 
 		VkWriteDescriptorSet descriptorWrite = {};
 		descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrite.dstSet = components->renderComp.descriptorSets[i];
+		descriptorWrite.dstSet = state->globalSets[i];
 		descriptorWrite.dstBinding = 0;   // Corresponds to binding in shader.
 		descriptorWrite.dstArrayElement = 0;
 		descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;

@@ -24,8 +24,9 @@ struct Buffer
 // Creates a render pass
 bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass);
 
-// Creates a graphics pipeline
-VkPipeline createGraphicsPipeline(VulkanComponents* components);
+bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* state);
+bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* state);
+bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state);
 
 
 
