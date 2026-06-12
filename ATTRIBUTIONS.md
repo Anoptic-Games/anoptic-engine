@@ -1,5 +1,3 @@
-The following is a list of third-party libraries and software used in this project. We provide this list as a convenience to users. Please refer to each library's original source for the most up-to-date and accurate license information.
-
 ## Third-Party Attributions
 
 This project makes use of the following third-party libraries:
@@ -16,3 +14,21 @@ This project makes use of the following third-party libraries:
 - **Khronos Docs**: [Vulkan Docs GitHub Repository](https://github.com/KhronosGroup/Vulkan-Docs)
 - **Licenses**: [Khronos Spec Copyright](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/LICENSES)
 
+
+### stb
+- **Description**: Several Single-file public domain libraries for C/C++
+- **Source**: [stb GitHub Repository](https://github.com/nothings/stb)
+- **License**: [MIT License | Public Domain](https://github.com/nothings/stb/blob/master/LICENSE)
+
+
+### jsmn
+- **Description**: A minimalistic JSON parser in C.
+- **Source**: [jsmn GitHub Repository](https://github.com/zserge/jsmn)
+- **License**: [MIT License](https://github.com/zserge/jsmn/blob/master/LICENSE)
+
+
+### mimalloc
+- **Description**: A compact general purpose allocator with excellent performance maintained by Microsoft.
+- **Source**: [mimalloc GitHub Repository](https://github.com/microsoft/mimalloc)
+- **Docs**: [mimalloc Documentation](https://microsoft.github.io/mimalloc/)
+- **License**: [MIT License](https://github.com/microsoft/mimalloc/blob/master/LICENSE)

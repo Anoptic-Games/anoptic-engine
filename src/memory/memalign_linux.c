@@ -10,31 +10,18 @@
 #include <stdio.h>
 
 
-// Linux-specific implementation of aligned_malloc as defined in the ano_memory API.
-void* ano_aligned_malloc(size_t size, size_t alignment) {
-    void* ptr = NULL;
-	
-	if (alignment < sizeof(void *)) // Minimum alignment size is void* 
-	{
-   		alignment = sizeof(void *);
-	}
+#include "anoptic_memalign.h"
+#include <mimalloc.h>
 
-	size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
-
-	int result = posix_memalign(&ptr, alignment, aligned_size);
-    if (result != 0) {
-		printf("Size of void*: %zu\n", sizeof(void *));
-		printf("Posix memalign error: %d\n", result);
-        return NULL;  // posix_memalign will set errno appropriately
-    }
-    return ptr;
+// Windows-specific implementation of aligned_malloc as defined in the ano_memory API.
+inline void* ano_aligned_malloc(size_t size, size_t alignment) {
+    return mi_malloc_aligned(size, alignment);
 }
 
-// Linux-specific implementation of aligned_free as defined in the ano_memory API.
-void ano_aligned_free(void* ptr) {
-    free(ptr);  // free works for memory allocated by posix_memalign
+// Windows-specific implementation of aligned_free as defined in the ano_memory API.
+inline void ano_aligned_free(void* ptr) {
+    mi_free(ptr);
 }
-
 
 
 #endif
