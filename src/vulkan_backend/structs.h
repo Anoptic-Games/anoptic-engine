@@ -23,15 +23,57 @@
 
 // Structs
 
+// New structs for streamlined state resource management
+
+//!TODO investigate which methods are really required and practical
+// Virtual table type with common operations.
+
+/*
+typedef struct VulkanResourceVTable
+{
+    // Invalidate this resource (e.g. mark its cached state as stale).
+    void (*invalidate)(VulkanResource *self);
+    // Update or re-create the resource if needed.
+    void (*update)(VulkanResource *self);
+    // Clean up and free any allocated memory.
+    void (*destroy)(VulkanResource *self);
+    // (Other operations can be added as needed.)
+} VulkanResourceVTable;
+
+// Base wrapper struct.
+struct VulkanResource
+{
+    VulkanResourceVTable *vtable;  // pointer to virtual methods
+    // Forward dependency buffer:
+    VulkanResource **dependencies; // dynamic array (buffer) of dependents
+    size_t dependencyCount;        // number of dependents registered
+    size_t dependencyCapacity;     // capacity of the dependency array
+    // Underlying Vulkan handle (for example, a VkBuffer, VkImage, etc.)
+    void *vkHandle;
+    // Other state data (cache info, flags, etc.)
+};
+*/
+
+//!NOTE We may defer destruction of out-of-date resources to preserve frame timing
+//!NOTE Dependencies may be tracked via cyclic pointers, allowing invalidated resources to update upstream dependency entries
+
+// New struct for per-frame images
+typedef struct FrameImageGroup
+{
+    VkImage image;
+    VkImageView view;
+    VkDeviceMemory imageMemory; // This won't be used for the final present images, memory is managed by the swapchain
+} FrameImageGroup;
+
 typedef struct FrameBufferGroup
 {
 	uint32_t bufferCount;
-	VkFramebuffer* buffers;
+	VkFramebuffer* buffers; // Necessary for the swapchain
 } FrameBufferGroup;
 
 
 typedef struct ImageViewGroup
-{
+{ // Swapchain image views, should be next to the images and memory
 	uint32_t viewCount;
 	VkImageView* views;
 	VkImageView colorView;
@@ -91,7 +133,7 @@ typedef struct PhysicalDeviceComponents
 } PhysicalDeviceComponents;
 
 typedef struct DeviceQueueComponents
-{
+{ // Necessary for just about every operation and pipeline, may need re-formatting if we go with multiple queues of one type
     VkDevice device;
     VkQueue graphicsQueue;
     VkQueue computeQueue;
@@ -117,7 +159,7 @@ typedef struct SwapChainComponents
 } SwapChainComponents;
 
 typedef struct EntityBuffer
-{
+{ // To be extended with animation data
     VkBuffer vertex;
     VkDeviceMemory vertexMemory;
 	uint32_t indexCount;
@@ -140,7 +182,7 @@ typedef struct BufferComponents
 	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
 	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
-	VkFormat depthFormat;
+	VkFormat depthFormat; // All depth resources should live next to the swapchain stuff
 	VkImage depth[MAX_FRAMES_IN_FLIGHT];
 	VkDeviceMemory depthMemory[MAX_FRAMES_IN_FLIGHT];
 	VkImageView depthView[MAX_FRAMES_IN_FLIGHT];
@@ -149,28 +191,29 @@ typedef struct BufferComponents
 
 typedef struct RenderComponents
 {
-    VkRenderPass renderPass;
+    VkRenderPass renderPass; // We'll have multiples of these three
     VkPipelineLayout pipelineLayout;
-	VkDescriptorSetLayout descriptorSetLayout;
+	VkDescriptorSetLayout descriptorSetLayout; // This is only for the UBO, swapchain-adjacent rendering
 	VkDescriptorSetLayout meshDescriptorSetLayout; // Move to per-mesh-type struct
-	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT];
+	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT]; // These descriptors deal with scene-wide parameters, move to swapchain
 	VkDescriptorPool descriptorPool;
 	VkDescriptorPool meshDescriptorPool;
-	UniformComponents uniform;
-    VkPipeline graphicsPipeline;
-	VkSampler textureSampler;
-	BufferComponents buffers;
+	UniformComponents uniform; // This comes from vertex.h, should probably have a buffer of length n = swap count, move to swapchain
+    VkPipeline graphicsPipeline; // We'll have many of these
+	VkSampler textureSampler;   // Also many of these, maybe create whole struct for resource access formats
+	BufferComponents buffers; // This entire thing should probably be moved to swapchain
 } RenderComponents;
 
 typedef struct SynchronizationComponents
 {
-    VkSemaphore imageAvailableSemaphore[MAX_FRAMES_IN_FLIGHT];
+    VkSemaphore imageAvailableSemaphore[MAX_FRAMES_IN_FLIGHT]; // All frame sync objects should also be in swapchain, they're per-frame
     VkSemaphore renderFinishedSemaphore[MAX_FRAMES_IN_FLIGHT];
     VkFence inFlightFence[MAX_FRAMES_IN_FLIGHT];
-	bool frameSubmitted[MAX_FRAMES_IN_FLIGHT]; // Used to keep track of which frames have been used, mitigates resize crash
-    uint32_t frameIndex;
-    bool framebufferResized;
-    uint32_t skipCheck;
+	bool frameSubmitted[MAX_FRAMES_IN_FLIGHT]; // Used to keep track of which frames have been used, mitigates resize crash | Probably outdated, keeping for now
+    uint32_t frameIndex; // Move to swapchain
+    uint32_t imageIndex; // Used to track submitted frames for presentation, move to swapchain
+    bool framebufferResized; // Swapchain
+    uint32_t skipCheck; // Almost certainly out of date
 } SynchronizationComponents;
 
 typedef struct CommandComponents
@@ -231,6 +274,14 @@ struct VulkanGarbage //All the various stuff that needs to be thrown out
 	GLFWwindow *window;
 	Monitors *monitors;
 };
+
+typedef struct GlyphTexture
+{ // ??? This must be doog's doing
+	uint32_t sampler;
+	VkImage textureImage;
+	VkDeviceMemory textureImageMemory;
+	VkImageView textureImageView;
+} GlyphTexture;
 
 
 #endif
