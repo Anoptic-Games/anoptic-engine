@@ -876,6 +876,8 @@ void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGr
     {
         vkDestroyImageView(device, viewGroup->colorView, NULL);
     }
+    
+    gpu_alloc_reset(&swapchainAllocator);
 }
 
 void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
@@ -1213,10 +1215,9 @@ bool createDepthResources(VulkanComponents* components)
 
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
 	{
-		if (!createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, 
-						 components->swapChainComp.swapChainGroup.imageExtent.height, 1,
-						 components->physicalDeviceComp.msaaSamples, depthFormat, VK_IMAGE_TILING_OPTIMAL,
-						 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		if (!createImage(components, &swapchainAllocator, components->swapChainComp.swapChainGroup.imageExtent.width, 
+			components->swapChainComp.swapChainGroup.imageExtent.height, 1, components->physicalDeviceComp.msaaSamples, components->renderComp.buffers.depthFormat, 
+			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
 						 &components->renderComp.buffers.depth[i], &components->renderComp.buffers.depthMemory[i], false))
 		{
 			printf("Failed to create depth resource for frame %d!\n", i);
@@ -1241,8 +1242,8 @@ void createColorResources(VulkanComponents* components) //TODO: This probably sh
 {
 	VkFormat colorFormat = components->swapChainComp.swapChainGroup.imageFormat;
 
-	createImage(components, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
-				1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+	createImage(components, &swapchainAllocator, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
+		1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.colorImage, &components->swapChainComp.swapChainGroup.colorImageMemory, false);
 	components->swapChainComp.viewGroup.colorView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }

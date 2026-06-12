@@ -17,6 +17,7 @@
 static VulkanComponents components;
 RendererState rendererState;
 GpuAllocator gpuAllocator;
+GpuAllocator swapchainAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
@@ -510,7 +511,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 	
-	// Create logical device
+
 	if (createLogicalDevice(components.physicalDeviceComp.physicalDevice, &(components.deviceQueueComp.device), &(components.deviceQueueComp.graphicsQueue), &(components.deviceQueueComp.computeQueue), &(components.deviceQueueComp.transferQueue), &(components.deviceQueueComp.presentQueue), &(components.physicalDeviceComp.queueFamilyIndices)) != VK_SUCCESS)
 	{
 		fprintf(stderr, "Quitting init: logical device failure!\n");
@@ -522,6 +523,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	vkGetPhysicalDeviceMemoryProperties(components.physicalDeviceComp.physicalDevice, &gpuAllocator.memProps);
 	gpuAllocator.blocks = NULL;
 	gpuAllocator.blockCount = 0;
+
+	swapchainAllocator.device = components.deviceQueueComp.device;
+	vkGetPhysicalDeviceMemoryProperties(components.physicalDeviceComp.physicalDevice, &swapchainAllocator.memProps);
+	swapchainAllocator.blocks = NULL;
+	swapchainAllocator.blockCount = 0;
 
 	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, components.deviceQueueComp.device);
 
