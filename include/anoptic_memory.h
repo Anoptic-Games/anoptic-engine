@@ -8,7 +8,7 @@
 #include <mimalloc.h>
 #include <malloc.h>
 #include <mimalloc-override.h>
-#ifdef __LINUX__
+#if defined(__linux__)
 #include <alloca.h>
 #endif
 
