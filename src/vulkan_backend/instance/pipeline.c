@@ -188,26 +188,18 @@ bool createMeshDescriptorSetLayout(VulkanComponents* components)
 {
 	// Descriptor set layout binding for the combined image sampler
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
-	samplerLayoutBinding.binding = 1;
+	samplerLayoutBinding.binding = 0;
 	samplerLayoutBinding.descriptorCount = 1;
 	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	samplerLayoutBinding.pImmutableSamplers = NULL;
 	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// Descriptor set layout binding for the extra model transformations uniform buffer
-	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
-	uboLayoutBinding.binding = 0; // Binding point 0
-	uboLayoutBinding.descriptorCount = 1;
-	uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	uboLayoutBinding.pImmutableSamplers = NULL;
-	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // Assuming vertex shader will use this buffer
-
 	// Array of bindings
-	VkDescriptorSetLayoutBinding bindings[2] = {uboLayoutBinding, samplerLayoutBinding};
+	VkDescriptorSetLayoutBinding bindings[1] = {samplerLayoutBinding};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 2; // Now we have two bindings
+	layoutInfo.bindingCount = 1; // Now we have one binding
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &(components->renderComp.meshDescriptorSetLayout)) != VK_SUCCESS)
@@ -229,7 +221,7 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
     // Load vertex shader code
 	struct Buffer vertShaderCode;
 	char vertShaderPath[256]; // Adjust size as needed.
-	snprintf(vertShaderPath, sizeof(vertShaderPath), "%s/resources/shaders/vert.spv", PROJECT_ROOT);
+	snprintf(vertShaderPath, sizeof(vertShaderPath), "%s/resources/shaders/flat.vert.spv", PROJECT_ROOT);
 	if (!loadFile(vertShaderPath, &vertShaderCode))
 	{
 		printf("Error loading shaders!\n");
@@ -239,7 +231,7 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
     // Load fragment shader code
 	struct Buffer fragShaderCode;
 	char fragShaderPath[256]; // Adjust size as needed.
-	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/frag.spv", PROJECT_ROOT);
+	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/flat.frag.spv", PROJECT_ROOT);
 	if (!loadFile(fragShaderPath, &fragShaderCode))
 	{
 		printf("Error loading shaders!\n");
@@ -388,13 +380,18 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 		return NULL;
 	}
 
+	VkPushConstantRange pushConstantRange = {};
+	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	pushConstantRange.offset = 0;
+	pushConstantRange.size = sizeof(float) * 16 + sizeof(uint32_t);
+
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	pipelineLayoutInfo.setLayoutCount = 2; // Optional
 	VkDescriptorSetLayout setLayouts[2] = {components->renderComp.descriptorSetLayout, components->renderComp.meshDescriptorSetLayout};
 	pipelineLayoutInfo.pSetLayouts = setLayouts; // Optional
-	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
-	pipelineLayoutInfo.pPushConstantRanges = NULL; // Optional
+	pipelineLayoutInfo.pushConstantRangeCount = 1; // Optional
+	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange; // Optional
 
 	if (vkCreatePipelineLayout(components->deviceQueueComp.device, &pipelineLayoutInfo, NULL, &(components->renderComp.pipelineLayout)) != VK_SUCCESS) 
 	{

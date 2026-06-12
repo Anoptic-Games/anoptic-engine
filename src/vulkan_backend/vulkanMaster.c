@@ -8,12 +8,15 @@
 #include <vulkan/vulkan.h>
 
 #include "vulkan_backend/vulkanMaster.h"
+#include "vulkan_backend/gpu_alloc.h"
 
 #define GLFW_INCLUDE_VULKAN
 
 // Variables
 
 static VulkanComponents components;
+static RendererState rendererState;
+static GpuAllocator gpuAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
@@ -129,7 +132,16 @@ void recordCommandBuffer(uint32_t imageIndex)
 		vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].index, 0, VK_INDEX_TYPE_UINT16);
 
 		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
-			components.renderComp.pipelineLayout, 1, 1, &(components.renderComp.buffers.entities[i].meshDescriptorSet), 0, NULL);
+			components.renderComp.pipelineLayout, 1, 1, &(components.renderComp.buffers.entities[i].textureDescriptorSet), 0, NULL);
+
+        struct {
+            mat4 model;
+            uint32_t materialIndex;
+        } pc;
+        memcpy(&pc.model, components.renderComp.buffers.entities[i].transform, sizeof(mat4));
+        pc.materialIndex = 0;
+
+        vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
 		vkCmdDrawIndexed(components.cmdComp.commandBuffer[components.syncComp.frameIndex], components.renderComp.buffers.entities[i].indexCount, 1, 0, 0, 0);
 	}
@@ -454,12 +466,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	if (!createTransformBuffers(&components))
-	{
-		printf("Quitting init: transform buffer creation failure!\n");
-		unInitVulkan();
-		return false;
-	}
+
 
 	// HERE
 	if (!createDescriptorPool(&components))
