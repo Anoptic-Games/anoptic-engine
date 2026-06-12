@@ -227,7 +227,6 @@ The integration milestone. Input moves camera, event bus carries input, simulati
 - `autoStringTest()` runs a ~1 GiB allocation on every debug launch (belongs in test suite)
 - `recordCommandBuffer` binds only entity[0]'s buffers but loops draw calls over all entities
 - `log_strings[]` defined in header; duplicated per translation unit
-- Test suite disabled in CMake
 - 45+ TODO comments scattered through codebase
 - Large blocks of commented-out code in vulkanMaster.c and instanceInit.c
 
