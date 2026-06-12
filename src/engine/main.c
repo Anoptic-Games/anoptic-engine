@@ -12,7 +12,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include "anoptic_time.h"
-#include "render/text/ano_RenderText.h"
 
 // TODO: Figure out if this actually needs to be in main.c
 #ifndef GLFW_INCLUDE_VULKAN
@@ -96,18 +95,7 @@ int main()
 	    return 0;
 	}
 
-	ft_init();
-	ft_add_font("Oswald-VariableFont_wght.ttf", 0);
-
-	FT_Bitmap* bitmap = ft_get_glyph_bitmap(65);
-	printf("Glyph Width is: %i\n", bitmap->width);
-	printf("Glyph Height is: %i\n", bitmap->rows);
-	//ft_debug_save_glyph("Test.bmp", 66);
-	ft_debug_save_glyph_atlas("Example_glyph_atlas.bmp", 0, 255);
-	// Create a graphics pipeline
-	
-	//parseGltf("viking_room.gltf");
-    // Main loop
+	// Main loop
 	while (!anoShouldClose())
 	{	
         glfwPollEvents();

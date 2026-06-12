@@ -1,15 +1,17 @@
-#ifndef FT_FREETYPE_H
-#include <ft2build.h>
-#include <stb_image_write.h>
-#include FT_FREETYPE_H
+/* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
+ *
+ * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
+
+#ifndef ANO_RENDERTEXT_H
+#define ANO_RENDERTEXT_H
+
+/* Text rendering interface (DISABLED - pending rewrite)
+ *
+ * Inputs:  font file path, glyph codepoint(s), pixel size
+ * Outputs: GPU-resident texture atlas, glyph metric lookup table
+ *
+ * See ano_RenderText.c for rewrite plan and bug inventory.
+ */
+
 #endif
-
-int ft_init();
-void ft_add_font(char* file_path, int face_index);
-int ft_load_glyph_bitmap(FT_ULong glyph);
-FT_Bitmap* ft_get_glyph_bitmap(FT_ULong glyph);
-//#ifdef DEBUG_BUILD
-
-int ft_debug_save_glyph(char* filename, FT_ULong glyph);
-int ft_debug_save_glyph_atlas(char* filename, FT_ULong start, FT_ULong end);
-//#endif

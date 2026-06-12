@@ -22,7 +22,6 @@
 #include "vulkan_backend/texture/texture.h"
 
 #include "render/gltf/ano_GltfParser.h"
-#include "render/text/ano_RenderText.h"
 
 
 // Function interfaces
@@ -40,7 +39,5 @@ void drawFrame();
 // Returns whether the program has been requested to exit
 
 bool anoShouldClose();
-
-void drawChar(FT_ULong glyph_number);
 
 #endif
