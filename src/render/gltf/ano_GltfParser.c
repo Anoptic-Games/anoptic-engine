@@ -12,7 +12,10 @@
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
 
-bool parseGltf(VulkanContext* ctx, const char* fileName)
+// Forward declaration for internal recursive instantiation
+static void instantiate_node(ModelAsset* asset, uint32_t nodeIndex, mat4 parentTransform);
+
+ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 {
     cgltf_options options = {0};
     cgltf_data* data = NULL;
@@ -20,27 +23,34 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
     
     if (result != cgltf_result_success) {
         printf("Failed to parse glTF file: %s\n", fileName);
-        return false;
+        return NULL;
     }
     
     result = cgltf_load_buffers(&options, data, fileName);
     if (result != cgltf_result_success) {
         printf("Failed to load glTF buffers for: %s\n", fileName);
         cgltf_free(data);
-        return false;
+        return NULL;
     }
 
     printf("Successfully parsed %s with cgltf!\n", fileName);
 
-    // 1. Upload Geometry
-    uint32_t** geomPoolIndices = calloc(data->meshes_count, sizeof(uint32_t*));
+    ModelAsset* asset = calloc(1, sizeof(ModelAsset));
+    strncpy(asset->name, fileName, 63);
+
+    // 1. Upload Geometry & Map to Asset Meshes
+    asset->meshCount = data->meshes_count;
+    asset->meshes = calloc(asset->meshCount, sizeof(ModelMesh));
     
     for (size_t m = 0; m < data->meshes_count; ++m) {
-        cgltf_mesh* mesh = &data->meshes[m];
-        geomPoolIndices[m] = calloc(mesh->primitives_count, sizeof(uint32_t));
+        cgltf_mesh* cgMesh = &data->meshes[m];
+        ModelMesh* outMesh = &asset->meshes[m];
         
-        for (size_t p = 0; p < mesh->primitives_count; ++p) {
-            cgltf_primitive* prim = &mesh->primitives[p];
+        outMesh->primitiveCount = cgMesh->primitives_count;
+        outMesh->primitives = calloc(outMesh->primitiveCount, sizeof(ModelPrimitive));
+        
+        for (size_t p = 0; p < cgMesh->primitives_count; ++p) {
+            cgltf_primitive* prim = &cgMesh->primitives[p];
             
             // Find accessors
             cgltf_accessor* posAccessor = NULL;
@@ -67,9 +77,9 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
                 if (texAccessor) {
                     cgltf_accessor_read_float(texAccessor, v, &vertices[v].texCoord.v[0], 2);
                 }
-                vertices[v].color.v[0] = 0.5f;
-                vertices[v].color.v[1] = 0.5f;
-                vertices[v].color.v[2] = 0.5f;
+                vertices[v].color.v[0] = 1.0f;
+                vertices[v].color.v[1] = 1.0f;
+                vertices[v].color.v[2] = 1.0f;
             }
             
             uint32_t indexCount = prim->indices->count;
@@ -78,7 +88,15 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
                 indices[i] = (uint16_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
-            geomPoolIndices[m][p] = geometry_pool_upload(&rendererState.globalGeometryPool, &stagingAllocator, ctx->device, rendererState.commandPool, ctx->transferQueue, vertices, vertexCount, indices, indexCount);
+            outMesh->primitives[p].geometryPoolIndex = geometry_pool_upload(
+                &rendererState.globalGeometryPool, 
+                &stagingAllocator, 
+                ctx->device, 
+                rendererState.commandPool, 
+                ctx->transferQueue, 
+                vertices, vertexCount, 
+                indices, indexCount
+            );
             
             free(vertices);
             free(indices);
@@ -93,12 +111,11 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
         }
     }
 
-    // 2. Upload Textures
+    // 2. Upload Textures & Bind Materials
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
     VkBuffer* stagingBuffers = calloc(maxStaging, sizeof(VkBuffer));
     uint32_t stagingCount = 0;
     
-    // We will allocate an array of Vulkan Image Views corresponding to cgltf_textures
     VkImageView* loadedTextures = calloc(data->textures_count, sizeof(VkImageView));
     VkImage* loadedImages = calloc(data->textures_count, sizeof(VkImage));
     GpuAllocation* loadedAllocs = calloc(data->textures_count, sizeof(GpuAllocation));
@@ -107,7 +124,11 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
     for (size_t t = 0; t < data->textures_count; ++t) {
         cgltf_texture* tex = &data->textures[t];
         if (tex->image && tex->image->uri) {
-            bool success = createTextureImage(ctx, textureCmd, &loadedImages[t], &loadedAllocs[t], &loadedTextures[t], (char*)tex->image->uri, false, &stagingBuffers[stagingCount++]);
+            bool success = createTextureImage(
+                ctx, textureCmd, &loadedImages[t], &loadedAllocs[t], 
+                &loadedTextures[t], (char*)tex->image->uri, false, 
+                &stagingBuffers[stagingCount++]
+            );
             textureLoaded[t] = success;
             if (success) {
                 TextureData td = {0};
@@ -127,53 +148,31 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
     free(stagingBuffers);
     gpu_alloc_reset(&stagingAllocator);
 
-    // Count entities based on node instances
-    uint32_t totalEntities = 0;
-    for (size_t n = 0; n < data->nodes_count; ++n) {
-        if (data->nodes[n].mesh) {
-            totalEntities += data->nodes[n].mesh->primitives_count;
-        }
-    }
-
-    // 3. Package Renderables
-    rendererState.entityCount = totalEntities;
-    rendererState.entities = calloc(totalEntities, sizeof(RenderEntity));
-
-    uint32_t entityIdx = 0;
-    for (size_t n = 0; n < data->nodes_count; ++n) {
-        cgltf_node* node = &data->nodes[n];
-        if (!node->mesh) continue;
-
-        cgltf_float matrix[16];
-        cgltf_node_transform_world(node, matrix);
-
-        cgltf_mesh* mesh = node->mesh;
-        size_t m_idx = mesh - data->meshes;
-
-        for (size_t p = 0; p < mesh->primitives_count; ++p) {
-            cgltf_primitive* prim = &mesh->primitives[p];
+    // 3. Bake Material SSBO entries per primitive
+    for (size_t m = 0; m < data->meshes_count; ++m) {
+        cgltf_mesh* cgMesh = &data->meshes[m];
+        ModelMesh* outMesh = &asset->meshes[m];
+        
+        for (size_t p = 0; p < cgMesh->primitives_count; ++p) {
+            cgltf_primitive* prim = &cgMesh->primitives[p];
             
-            rendererState.entities[entityIdx].meshIndex = geomPoolIndices[m_idx][p];
-            
-            // Copy transform matrix
-            float* destMat = (float*)&rendererState.entities[entityIdx].transform;
-            for (int i = 0; i < 16; i++) {
-                destMat[i] = matrix[i];
-            }
-            
-            uint32_t bindlessTexIdx = 0; // Fallback
+            uint32_t bindlessTexIdx = 0; // Fallback index
             if (prim->material && prim->material->has_pbr_metallic_roughness) {
                 cgltf_texture_view* baseColor = &prim->material->pbr_metallic_roughness.base_color_texture;
                 if (baseColor->texture) {
                     size_t texIdx = baseColor->texture - data->textures;
                     if (textureLoaded[texIdx]) {
-                        bindlessTexIdx = bindless_register_texture(ctx, &rendererState.bindlessTextures, loadedTextures[texIdx], rendererState.textureSampler);
+                        bindlessTexIdx = bindless_register_texture(
+                            ctx, &rendererState.bindlessTextures, 
+                            loadedTextures[texIdx], rendererState.textureSampler
+                        );
                     }
                 }
             }
 
-            uint32_t matIdx = entityIdx;
-            rendererState.entities[entityIdx].materialIndex = matIdx;
+            // Assign a persistent material index in the global SSBO
+            uint32_t matIdx = rendererState.materialBuffer.count++;
+            outMesh->primitives[p].materialIndex = matIdx;
             
             MaterialData matData = {0};
             matData.albedoIndex = bindlessTexIdx;
@@ -186,23 +185,107 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
             for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
                 rendererState.materialBuffer.mapped[frame][matIdx] = matData;
             }
-            rendererState.materialBuffer.count++;
-            
-            entityIdx++;
         }
     }
 
-    for (size_t m = 0; m < data->meshes_count; ++m) {
-        free(geomPoolIndices[m]);
-    }
-    free(geomPoolIndices);
-    
     free(loadedTextures);
     free(loadedImages);
     free(loadedAllocs);
     free(textureLoaded);
+
+    // 4. Construct Node Hierarchy
+    asset->nodeCount = data->nodes_count;
+    asset->nodes = calloc(asset->nodeCount, sizeof(ModelNode));
     
+    for (size_t n = 0; n < data->nodes_count; ++n) {
+        cgltf_node* cgNode = &data->nodes[n];
+        ModelNode* outNode = &asset->nodes[n];
+        
+        if (cgNode->name) {
+            strncpy(outNode->name, cgNode->name, 63);
+        }
+        
+        // Extract local transform
+        cgltf_float matrix[16];
+        cgltf_node_transform_local(cgNode, matrix);
+        float* destMat = (float*)&outNode->localTransform;
+        for (int i = 0; i < 16; i++) destMat[i] = matrix[i];
+        
+        outNode->meshIndex = cgNode->mesh ? (cgNode->mesh - data->meshes) : -1;
+        outNode->parentIndex = cgNode->parent ? (cgNode->parent - data->nodes) : -1;
+        
+        outNode->childCount = cgNode->children_count;
+        if (outNode->childCount > 0) {
+            outNode->childIndices = calloc(outNode->childCount, sizeof(uint32_t));
+            for (uint32_t c = 0; c < outNode->childCount; ++c) {
+                outNode->childIndices[c] = cgNode->children[c] - data->nodes;
+            }
+        }
+    }
+    
+    // Store Root Nodes (Fallback to all parentless nodes if scene is incomplete)
+    uint32_t rootCount = 0;
+    for (size_t n = 0; n < data->nodes_count; ++n) {
+        if (!data->nodes[n].parent) rootCount++;
+    }
+    
+    asset->rootNodeCount = rootCount;
+    if (rootCount > 0) {
+        asset->rootNodes = calloc(rootCount, sizeof(uint32_t));
+        uint32_t rIdx = 0;
+        for (size_t n = 0; n < data->nodes_count; ++n) {
+            if (!data->nodes[n].parent) {
+                asset->rootNodes[rIdx++] = n;
+            }
+        }
+    }
+
     cgltf_free(data);
-    printf("Loading complete via cgltf!\n");
-    return true;
+    printf("Successfully extracted ModelAsset: %s\n", fileName);
+    return asset;
+}
+
+static void instantiate_node(ModelAsset* asset, uint32_t nodeIndex, mat4 parentTransform) {
+    ModelNode* node = &asset->nodes[nodeIndex];
+    
+    mat4 worldTransform;
+    multiplyMat4(worldTransform, parentTransform, node->localTransform);
+    
+    // If the node has a mesh, spawn a RenderEntity for each of its primitives
+    if (node->meshIndex >= 0) {
+        ModelMesh* mesh = &asset->meshes[node->meshIndex];
+        
+        // Reallocate the entities array to fit new instances
+        uint32_t currentCount = rendererState.entityCount;
+        rendererState.entityCount += mesh->primitiveCount;
+        rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
+        
+        for (uint32_t p = 0; p < mesh->primitiveCount; p++) {
+            ModelPrimitive* prim = &mesh->primitives[p];
+            uint32_t entIdx = currentCount + p;
+            
+            rendererState.entities[entIdx].meshIndex = prim->geometryPoolIndex;
+            rendererState.entities[entIdx].materialIndex = prim->materialIndex;
+            
+            float* destMat = (float*)&rendererState.entities[entIdx].transform;
+            float* srcMat = (float*)&worldTransform;
+            for (int i = 0; i < 16; i++) {
+                destMat[i] = srcMat[i];
+            }
+        }
+    }
+    
+    // Recurse down children
+    for (uint32_t c = 0; c < node->childCount; c++) {
+        instantiate_node(asset, node->childIndices[c], worldTransform);
+    }
+}
+
+void instantiate_model(ModelAsset* asset, mat4 rootTransform) {
+    if (!asset) return;
+    
+    // Start traversal from root nodes
+    for (uint32_t r = 0; r < asset->rootNodeCount; r++) {
+        instantiate_node(asset, asset->rootNodes[r], rootTransform);
+    }
 }
