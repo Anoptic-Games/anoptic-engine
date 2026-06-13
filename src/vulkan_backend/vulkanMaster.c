@@ -6,6 +6,8 @@
 
 #include <stdio.h>
 #include <vulkan/vulkan.h>
+#include <mimalloc.h>
+#include <mimalloc-override.h>
 
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/gpu_alloc.h"
@@ -63,6 +65,38 @@ void unInitVulkan() // A celebration
 bool anoShouldClose()
 {
 	return glfwWindowShouldClose(window);
+}
+
+void deferred_delete_resource(RendererState* state, DeletionResourceType type, uint32_t handle)
+{
+    uint32_t frameIdx = state->frameIndex;
+    DeletionQueue* q = &state->deletionQueues[frameIdx];
+
+    if (q->count >= q->capacity) {
+        q->capacity = q->capacity == 0 ? 64 : q->capacity * 2;
+        q->tasks = realloc(q->tasks, q->capacity * sizeof(DeletionTask));
+    }
+
+    q->tasks[q->count++] = (DeletionTask){ .type = type, .handle = handle };
+}
+
+void flush_deletion_queue(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
+{
+    DeletionQueue* q = &state->deletionQueues[frameIndex];
+
+    for (uint32_t i = 0; i < q->count; i++) {
+        DeletionTask task = q->tasks[i];
+        switch (task.type) {
+            case RESOURCE_TYPE_GEOMETRY_MESH:
+                geometry_pool_free(&state->globalGeometryPool, task.handle);
+                break;
+            case RESOURCE_TYPE_BINDLESS_TEXTURE:
+                // For now bindless_register_texture handles index. 
+                // We'd add a bindless_free_texture(components, &state->bindlessTextures, task.handle) eventually
+                break;
+        }
+    }
+    q->count = 0; // Clear queue for next time we hit this frame
 }
 
 // Graphics operations
@@ -348,6 +382,58 @@ void updateCullingBuffers(VulkanComponents* components, RendererState* state, ui
     }
 }
 
+#include "anoptic_time.h"
+
+void testAssetUnloadReload(VulkanComponents* comps, RendererState* state) {
+    static uint64_t lastTime = 0;
+    static int phase = 0;
+    static uint32_t originalMeshIndex = 0;
+
+    uint64_t now = ano_timestamp_us();
+    if (lastTime == 0) lastTime = now;
+
+    if (now - lastTime > 1000000) { // 1 second
+        lastTime = now;
+        
+        if (phase == 0) {
+            printf("--- TEST: Unloading original mesh ---\n");
+            // Save original and set fallback
+            originalMeshIndex = comps->renderComp.buffers.entities[0].meshIndex;
+            comps->renderComp.buffers.entities[0].meshIndex = FALLBACK_MESH_INDEX;
+            comps->renderComp.buffers.entities[0].materialIndex = 0; // Use fallback material if possible
+
+            // Defer deletion
+            deferred_delete_resource(state, RESOURCE_TYPE_GEOMETRY_MESH, originalMeshIndex);
+            
+            phase = 1;
+        } else if (phase == 1) {
+            printf("--- TEST: Uploading new mesh to reused memory ---\n");
+            
+            // Upload a simple triangle
+            const Vertex triVertices[] = {
+                {{ 0.0f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.5f, 0.0f}},
+                {{ 0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+                {{-0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}}
+            };
+            const uint16_t triIndices[] = { 0, 1, 2 };
+
+            uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &gpuAllocator,
+                                                       comps->deviceQueueComp.device,
+                                                       comps->cmdComp.commandPool,
+                                                       comps->deviceQueueComp.transferQueue,
+                                                       triVertices, 3, triIndices, 3);
+            
+            printf("--- TEST: New mesh assigned index %u (Expected %u) ---\n", newMeshIdx, originalMeshIndex);
+            
+            // Assign to entity
+            comps->renderComp.buffers.entities[0].meshIndex = newMeshIdx;
+            
+            phase = 2; // Done
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+    }
+}
+
 void drawFrame() 
 {
 	if (components.syncComp.framebufferResized)
@@ -357,10 +443,16 @@ void drawFrame()
 		return;
 	}
 
+    testAssetUnloadReload(&components, &rendererState);
+
     if (components.syncComp.frameSubmitted[components.syncComp.frameIndex] == true)
     {
         vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
     }
+
+    // Process any deferred deletions that were waiting for this frame's previous commands to finish
+    flush_deletion_queue(&components, &rendererState, components.syncComp.frameIndex);
+    
 	uint32_t imageIndex;
 	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) 
@@ -603,6 +695,62 @@ void createCullingBuffers(VulkanComponents* components, RendererState* state, ui
     }
 }
 
+bool createFallbackResources(VulkanComponents* components, RendererState* state)
+{
+    // 1. Fallback Mesh (Simple Cube)
+    const Vertex cubeVertices[] = {
+        {{-0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f}},
+        {{ 0.5f, -0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 0.0f}},
+        {{ 0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+        {{-0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+        {{-0.5f, -0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f}},
+        {{ 0.5f, -0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 0.0f}},
+        {{ 0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+        {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
+    };
+    
+    const uint16_t cubeIndices[] = {
+        0, 1, 2, 2, 3, 0, // front
+        1, 5, 6, 6, 2, 1, // right
+        5, 4, 7, 7, 6, 5, // back
+        4, 0, 3, 3, 7, 4, // left
+        3, 2, 6, 6, 7, 3, // top
+        4, 5, 1, 1, 0, 4  // bottom
+    };
+
+    uint32_t fallbackMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &gpuAllocator,
+                                                    components->deviceQueueComp.device,
+                                                    components->cmdComp.commandPool,
+                                                    components->deviceQueueComp.transferQueue,
+                                                    cubeVertices, 8, cubeIndices, 36);
+
+    if (fallbackMeshIdx != FALLBACK_MESH_INDEX) {
+        printf("Warning: Fallback mesh was assigned index %u instead of %u!\n", fallbackMeshIdx, FALLBACK_MESH_INDEX);
+    }
+
+    // 2. Fallback Texture (2x2 Magenta/Black Checkerboard)
+    unsigned char fallbackPixels[16] = {
+        255, 0, 255, 255,   0, 0, 0, 255,
+        0, 0, 0, 255,       255, 0, 255, 255
+    };
+
+    VkDeviceMemory fallbackImageMemory; // Memory managed by gpu_allocator
+
+    if (!createTextureImageFromPixels(components, &state->fallbackImage, &fallbackImageMemory, &state->fallbackImageView, fallbackPixels, 2, 2)) {
+        printf("Warning: Failed to create fallback texture!\n");
+        return false;
+    }
+
+    // 3. Register Fallback Texture
+    uint32_t fallbackTexIdx = bindless_register_texture(components, &state->bindlessTextures, state->fallbackImageView, components->renderComp.textureSampler);
+    
+    if (fallbackTexIdx != FALLBACK_TEXTURE_INDEX) {
+        printf("Warning: Fallback texture was assigned index %u instead of %u!\n", fallbackTexIdx, FALLBACK_TEXTURE_INDEX);
+    }
+
+    return true;
+}
+
 bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 {
 
@@ -680,6 +828,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	swapchainAllocator.blockCount = 0;
 
 	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, components.deviceQueueComp.device);
+
 
 
 
@@ -766,6 +915,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if(!createTextureSampler(&components))
 	{
 		printf("Quitting init: texture sampler failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!createFallbackResources(&components, &rendererState))
+	{
+		printf("Quitting init: fallback resources failure.\n");
 		unInitVulkan();
 		return false;
 	}

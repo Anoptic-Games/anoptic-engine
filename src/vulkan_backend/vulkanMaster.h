@@ -41,7 +41,9 @@ void unInitVulkan(); // Move to includes
 void drawFrame(); // Move to includes
 
 // Returns whether the program has been requested to exit
+bool anoShouldClose();
 
-bool anoShouldClose(); // Move to includes
+void deferred_delete_resource(RendererState* state, DeletionResourceType type, uint32_t handle);
+void flush_deletion_queue(VulkanComponents* components, RendererState* state, uint32_t frameIndex);
 
 #endif

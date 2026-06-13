@@ -9,9 +9,22 @@
 void ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device)
 {
     pool->meshCount = 0;
-    pool->meshes = NULL;
+    pool->meshCapacity = 100;
+    pool->meshes = calloc(pool->meshCapacity, sizeof(MeshRegion));
     pool->vertexWriteOffset = 0;
     pool->indexWriteOffset = 0;
+    
+    pool->vertexFreeBlocks = NULL;
+    pool->vertexFreeCount = 0;
+    pool->vertexFreeCapacity = 0;
+    
+    pool->indexFreeBlocks = NULL;
+    pool->indexFreeCount = 0;
+    pool->indexFreeCapacity = 0;
+    
+    pool->freeMeshIndices = NULL;
+    pool->freeMeshIndexCount = 0;
+    pool->freeMeshIndexCapacity = 0;
 
     VkDeviceSize vertexPoolSize = 64 * 1024 * 1024; // 64 MB
     VkDeviceSize indexPoolSize = 16 * 1024 * 1024;  // 16 MB
@@ -48,6 +61,16 @@ void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device)
     if (pool->meshes) free(pool->meshes);
     pool->meshes = NULL;
     pool->meshCount = 0;
+    pool->meshCapacity = 0;
+    
+    if (pool->vertexFreeBlocks) free(pool->vertexFreeBlocks);
+    pool->vertexFreeBlocks = NULL;
+    
+    if (pool->indexFreeBlocks) free(pool->indexFreeBlocks);
+    pool->indexFreeBlocks = NULL;
+    
+    if (pool->freeMeshIndices) free(pool->freeMeshIndices);
+    pool->freeMeshIndices = NULL;
 }
 
 uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
@@ -97,16 +120,51 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
+    // Find free blocks or use write offset
+    uint32_t finalVertexOffset = (uint32_t)-1;
+    for (uint32_t i = 0; i < pool->vertexFreeCount; i++) {
+        if (pool->vertexFreeBlocks[i].size >= vertexSize) {
+            finalVertexOffset = pool->vertexFreeBlocks[i].offset;
+            pool->vertexFreeBlocks[i].offset += vertexSize;
+            pool->vertexFreeBlocks[i].size -= vertexSize;
+            if (pool->vertexFreeBlocks[i].size == 0) {
+                pool->vertexFreeBlocks[i] = pool->vertexFreeBlocks[--pool->vertexFreeCount];
+            }
+            break;
+        }
+    }
+    if (finalVertexOffset == (uint32_t)-1) {
+        finalVertexOffset = pool->vertexWriteOffset;
+        pool->vertexWriteOffset += vertexSize;
+    }
+
+    uint32_t finalIndexOffset = (uint32_t)-1;
+    for (uint32_t i = 0; i < pool->indexFreeCount; i++) {
+        if (pool->indexFreeBlocks[i].size >= indexSize) {
+            finalIndexOffset = pool->indexFreeBlocks[i].offset;
+            pool->indexFreeBlocks[i].offset += indexSize;
+            pool->indexFreeBlocks[i].size -= indexSize;
+            if (pool->indexFreeBlocks[i].size == 0) {
+                pool->indexFreeBlocks[i] = pool->indexFreeBlocks[--pool->indexFreeCount];
+            }
+            break;
+        }
+    }
+    if (finalIndexOffset == (uint32_t)-1) {
+        finalIndexOffset = pool->indexWriteOffset;
+        pool->indexWriteOffset += indexSize;
+    }
+
     VkBufferCopy copyRegion = {
         .srcOffset = 0,
-        .dstOffset = pool->vertexWriteOffset,
+        .dstOffset = finalVertexOffset,
         .size = vertexSize
     };
     vkCmdCopyBuffer(cmd, stagingBuffer, pool->vertexBuffer, 1, &copyRegion);
 
     VkBufferCopy indexCopyRegion = {
         .srcOffset = vertexSize,
-        .dstOffset = pool->indexWriteOffset,
+        .dstOffset = finalIndexOffset,
         .size = indexSize
     };
     vkCmdCopyBuffer(cmd, stagingBuffer, pool->indexBuffer, 1, &indexCopyRegion);
@@ -138,15 +196,23 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     // This is a slight leak in the host visible block, but we will fix that by using a dedicated resetable block or ring buffer later.
 
     // Register mesh
-    pool->meshCount++;
-    pool->meshes = realloc(pool->meshes, pool->meshCount * sizeof(MeshRegion));
-    
-    MeshRegion* mesh = &pool->meshes[pool->meshCount - 1];
-    mesh->vertexOffset = pool->vertexWriteOffset;
-    mesh->indexOffset = pool->indexWriteOffset;
+    uint32_t finalMeshIndex = (uint32_t)-1;
+    if (pool->freeMeshIndexCount > 0) {
+        finalMeshIndex = pool->freeMeshIndices[--pool->freeMeshIndexCount];
+    } else {
+        if (pool->meshCount >= pool->meshCapacity) {
+            pool->meshCapacity = pool->meshCapacity == 0 ? 100 : pool->meshCapacity * 2;
+            pool->meshes = realloc(pool->meshes, pool->meshCapacity * sizeof(MeshRegion));
+        }
+        finalMeshIndex = pool->meshCount++;
+    }
+
+    MeshRegion* mesh = &pool->meshes[finalMeshIndex];
+    mesh->vertexOffset = finalVertexOffset;
+    mesh->indexOffset = finalIndexOffset;
     mesh->indexCount = indexCount;
     mesh->vertexCount = vertexCount;
-    mesh->baseVertex = pool->vertexWriteOffset / sizeof(Vertex);
+    mesh->baseVertex = finalVertexOffset / sizeof(Vertex);
 
     // Calculate bounding sphere
     Vector3 minBounds = vertices[0].position;
@@ -174,8 +240,45 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     }
     mesh->boundingSphereRadius = sqrtf(maxDistSq);
 
-    pool->vertexWriteOffset += vertexSize;
-    pool->indexWriteOffset += indexSize;
+    return finalMeshIndex;
+}
 
-    return pool->meshCount - 1;
+void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
+{
+    if (meshIndex >= pool->meshCount || meshIndex == 0) return; // Don't free fallback or out of bounds
+
+    MeshRegion* mesh = &pool->meshes[meshIndex];
+    if (mesh->vertexCount == 0) return; // Already freed
+
+    // Add to vertex free list
+    if (pool->vertexFreeCount >= pool->vertexFreeCapacity) {
+        pool->vertexFreeCapacity = pool->vertexFreeCapacity == 0 ? 32 : pool->vertexFreeCapacity * 2;
+        pool->vertexFreeBlocks = realloc(pool->vertexFreeBlocks, pool->vertexFreeCapacity * sizeof(GeoFreeBlock));
+    }
+    pool->vertexFreeBlocks[pool->vertexFreeCount++] = (GeoFreeBlock){
+        .offset = mesh->vertexOffset,
+        .size = mesh->vertexCount * sizeof(Vertex)
+    };
+
+    // Add to index free list
+    if (mesh->indexCount > 0) {
+        if (pool->indexFreeCount >= pool->indexFreeCapacity) {
+            pool->indexFreeCapacity = pool->indexFreeCapacity == 0 ? 32 : pool->indexFreeCapacity * 2;
+            pool->indexFreeBlocks = realloc(pool->indexFreeBlocks, pool->indexFreeCapacity * sizeof(GeoFreeBlock));
+        }
+        pool->indexFreeBlocks[pool->indexFreeCount++] = (GeoFreeBlock){
+            .offset = mesh->indexOffset,
+            .size = mesh->indexCount * sizeof(uint16_t)
+        };
+    }
+
+    // Add mesh index to free list
+    if (pool->freeMeshIndexCount >= pool->freeMeshIndexCapacity) {
+        pool->freeMeshIndexCapacity = pool->freeMeshIndexCapacity == 0 ? 32 : pool->freeMeshIndexCapacity * 2;
+        pool->freeMeshIndices = realloc(pool->freeMeshIndices, pool->freeMeshIndexCapacity * sizeof(uint32_t));
+    }
+    pool->freeMeshIndices[pool->freeMeshIndexCount++] = meshIndex;
+
+    // Clear mesh
+    memset(mesh, 0, sizeof(MeshRegion));
 }

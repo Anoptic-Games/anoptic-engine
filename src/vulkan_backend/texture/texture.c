@@ -313,6 +313,49 @@ bool generateMipmaps(VulkanComponents* components, VkImage image, VkFormat image
 	return true;
 }
 
+bool createTextureImageFromPixels(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height)
+{
+	VkDeviceSize imageSize = width * height * 4;
+	uint32_t mipLevels = 1;
+
+	VkBuffer stagingBuffer;
+	GpuAllocation stagingAlloc;
+	createDataBuffer(components, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
+
+	void* data = stagingAlloc.mapped;
+	memcpy(data, pixels, (size_t)(imageSize));
+
+	if(!createImage(components, &gpuAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+	{
+		printf("Image creation failure!\n");
+		return false;
+	}
+
+	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
+	{
+		printf("Layout transition failure!\n");
+		return false;
+	}
+
+	copyBufferToImage(components, stagingBuffer, *textureImage, width, height);
+
+	// Instead of mipmaps, just transition to SHADER_READ_ONLY_OPTIMAL
+	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
+	{
+		printf("Layout transition failure!\n");
+		return false;
+	}
+
+	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
+	
+	if(!createTextureImageView(components, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
+	{
+		printf("Image view creation failure!\n");
+		return false;
+	}
+
+	return true;
+}
 bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, char* fileName, bool flag16)
 {
 	//!TODO Add logic for 16-bit images
