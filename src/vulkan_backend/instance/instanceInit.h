@@ -56,7 +56,7 @@ bool createImageViews(VulkanContext* ctx, RendererState* state);
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
 
 // Generic function for data buffer creation, updates buffer and bufferMemory with the created addresses
-bool createDataBuffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation);
+bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation);
 
 // Creates uniform buffers for each frame
 bool createUniformBuffers(VulkanContext* ctx, RendererState* state);

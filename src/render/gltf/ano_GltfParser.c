@@ -188,6 +188,7 @@ bool countGltfElements(const char *json, GltfElements *elements)
 
 	free(tokens);
 
+	gpu_alloc_reset(&stagingAllocator);
 	return true;
 }
 
@@ -1286,6 +1287,7 @@ bool parseGltfElements(const char *json, GltfElements *elements)
 	// Free the tokens array
 	free(tokens);
 
+	gpu_alloc_reset(&stagingAllocator);
 	return true;
 }
 
@@ -1530,7 +1532,7 @@ void processGltfMeshes (VulkanContext* ctx, GltfElements* elements)
             }
 
             // Upload to Geometry Pool
-            primitive->meshIndex = geometry_pool_upload(&rendererState.globalGeometryPool, &gpuAllocator, ctx->device, rendererState.commandPool, ctx->transferQueue, vertices, vertexCount, indices, indexCount);
+            primitive->meshIndex = geometry_pool_upload(&rendererState.globalGeometryPool, &stagingAllocator, ctx->device, rendererState.commandPool, ctx->transferQueue, vertices, vertexCount, indices, indexCount);
 
             free(vertices);
             free(indices);
@@ -1887,6 +1889,7 @@ void printGltfElementsContents(const GltfElements* elements)
 bool createRenderableEntity()
 {
 	// Traverse element buffers from root entity to primitives, assigning pointers
+	gpu_alloc_reset(&stagingAllocator);
 	return true;
 }
 
@@ -1973,5 +1976,6 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
 	// Populate element buffers with parameters
 
 	// Create renderable entity packages
+	gpu_alloc_reset(&stagingAllocator);
 	return true;
 }

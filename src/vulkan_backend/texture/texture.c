@@ -318,7 +318,7 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, Gpu
 
 	VkBuffer stagingBuffer;
 	GpuAllocation stagingAlloc;
-	createDataBuffer(ctx, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
+	createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
 
 	void* data = stagingAlloc.mapped;
 	memcpy(data, pixels, (size_t)(imageSize));
@@ -371,7 +371,7 @@ bool createTextureImage(VulkanContext* ctx, VkImage* textureImage, GpuAllocation
 
 	VkBuffer stagingBuffer;
 	GpuAllocation stagingAlloc;
-	createDataBuffer(ctx, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
+	createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
 
 	void* data = stagingAlloc.mapped;
 	memcpy(data, texture.pixels, (size_t)(imageSize));
