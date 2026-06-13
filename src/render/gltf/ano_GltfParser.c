@@ -32,21 +32,13 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
 
     printf("Successfully parsed %s with cgltf!\n", fileName);
 
-    // Count total primitives to allocate mapping arrays and entities
-    uint32_t totalPrimitives = 0;
-    for (size_t i = 0; i < data->meshes_count; ++i) {
-        totalPrimitives += data->meshes[i].primitives_count;
-    }
-
-    // We need to map from (mesh_index, primitive_index) to a geometry pool index
-    // For simplicity, we just allocate a flat array indexed by a running primitive counter
-    uint32_t* geomPoolIndices = calloc(totalPrimitives, sizeof(uint32_t));
-    VkImageView* primImageViews = calloc(totalPrimitives, sizeof(VkImageView));
-    
     // 1. Upload Geometry
-    uint32_t flatPrimIdx = 0;
+    uint32_t** geomPoolIndices = calloc(data->meshes_count, sizeof(uint32_t*));
+    
     for (size_t m = 0; m < data->meshes_count; ++m) {
         cgltf_mesh* mesh = &data->meshes[m];
+        geomPoolIndices[m] = calloc(mesh->primitives_count, sizeof(uint32_t));
+        
         for (size_t p = 0; p < mesh->primitives_count; ++p) {
             cgltf_primitive* prim = &mesh->primitives[p];
             
@@ -64,7 +56,6 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
             
             if (!posAccessor || !prim->indices) {
                 printf("Warning: Primitive missing positions or indices. Skipping.\n");
-                flatPrimIdx++;
                 continue;
             }
             
@@ -87,17 +78,24 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
                 indices[i] = (uint16_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
-            geomPoolIndices[flatPrimIdx] = geometry_pool_upload(&rendererState.globalGeometryPool, &stagingAllocator, ctx->device, rendererState.commandPool, ctx->transferQueue, vertices, vertexCount, indices, indexCount);
+            geomPoolIndices[m][p] = geometry_pool_upload(&rendererState.globalGeometryPool, &stagingAllocator, ctx->device, rendererState.commandPool, ctx->transferQueue, vertices, vertexCount, indices, indexCount);
             
             free(vertices);
             free(indices);
-            flatPrimIdx++;
+        }
+    }
+
+    // Count staging buffers needed for textures
+    uint32_t maxStaging = 10;
+    for (size_t t = 0; t < data->textures_count; ++t) {
+        if (data->textures[t].image && data->textures[t].image->uri) {
+            maxStaging++;
         }
     }
 
     // 2. Upload Textures
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
-    VkBuffer* stagingBuffers = calloc(totalPrimitives + 10, sizeof(VkBuffer));
+    VkBuffer* stagingBuffers = calloc(maxStaging, sizeof(VkBuffer));
     uint32_t stagingCount = 0;
     
     // We will allocate an array of Vulkan Image Views corresponding to cgltf_textures
@@ -129,31 +127,53 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
     free(stagingBuffers);
     gpu_alloc_reset(&stagingAllocator);
 
-    // 3. Package Renderables
-    rendererState.entityCount = totalPrimitives;
-    rendererState.entities = calloc(totalPrimitives, sizeof(RenderEntity));
+    // Count entities based on node instances
+    uint32_t totalEntities = 0;
+    for (size_t n = 0; n < data->nodes_count; ++n) {
+        if (data->nodes[n].mesh) {
+            totalEntities += data->nodes[n].mesh->primitives_count;
+        }
+    }
 
-    flatPrimIdx = 0;
-    for (size_t m = 0; m < data->meshes_count; ++m) {
-        cgltf_mesh* mesh = &data->meshes[m];
+    // 3. Package Renderables
+    rendererState.entityCount = totalEntities;
+    rendererState.entities = calloc(totalEntities, sizeof(RenderEntity));
+
+    uint32_t entityIdx = 0;
+    for (size_t n = 0; n < data->nodes_count; ++n) {
+        cgltf_node* node = &data->nodes[n];
+        if (!node->mesh) continue;
+
+        cgltf_float matrix[16];
+        cgltf_node_transform_world(node, matrix);
+
+        cgltf_mesh* mesh = node->mesh;
+        size_t m_idx = mesh - data->meshes;
+
         for (size_t p = 0; p < mesh->primitives_count; ++p) {
             cgltf_primitive* prim = &mesh->primitives[p];
             
-            rendererState.entities[flatPrimIdx].meshIndex = geomPoolIndices[flatPrimIdx];
+            rendererState.entities[entityIdx].meshIndex = geomPoolIndices[m_idx][p];
+            
+            // Copy transform matrix
+            float* destMat = (float*)&rendererState.entities[entityIdx].transform;
+            for (int i = 0; i < 16; i++) {
+                destMat[i] = matrix[i];
+            }
             
             uint32_t bindlessTexIdx = 0; // Fallback
             if (prim->material && prim->material->has_pbr_metallic_roughness) {
                 cgltf_texture_view* baseColor = &prim->material->pbr_metallic_roughness.base_color_texture;
                 if (baseColor->texture) {
-                    size_t texIdx = baseColor->texture - data->textures; // pointer arithmetic
+                    size_t texIdx = baseColor->texture - data->textures;
                     if (textureLoaded[texIdx]) {
                         bindlessTexIdx = bindless_register_texture(ctx, &rendererState.bindlessTextures, loadedTextures[texIdx], rendererState.textureSampler);
                     }
                 }
             }
 
-            uint32_t matIdx = flatPrimIdx;
-            rendererState.entities[flatPrimIdx].materialIndex = matIdx;
+            uint32_t matIdx = entityIdx;
+            rendererState.entities[entityIdx].materialIndex = matIdx;
             
             MaterialData matData = {0};
             matData.albedoIndex = bindlessTexIdx;
@@ -168,12 +188,15 @@ bool parseGltf(VulkanContext* ctx, const char* fileName)
             }
             rendererState.materialBuffer.count++;
             
-            flatPrimIdx++;
+            entityIdx++;
         }
     }
 
+    for (size_t m = 0; m < data->meshes_count; ++m) {
+        free(geomPoolIndices[m]);
+    }
     free(geomPoolIndices);
-    free(primImageViews);
+    
     free(loadedTextures);
     free(loadedImages);
     free(loadedAllocs);
