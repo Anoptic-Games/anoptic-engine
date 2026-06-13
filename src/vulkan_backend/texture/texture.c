@@ -329,13 +329,11 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	printf("Texture mip levels: %d\n", texture.mipLevels);
 
 	VkBuffer stagingBuffer;
-	VkDeviceMemory stagingBufferMemory;
-	createDataBuffer(components, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingBufferMemory);
+	GpuAllocation stagingAlloc;
+	createDataBuffer(components, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
 
-	void* data;
-	vkMapMemory(components->deviceQueueComp.device, stagingBufferMemory, 0, imageSize, 0, &data);
+	void* data = stagingAlloc.mapped;
 	memcpy(data, texture.pixels, (size_t)(imageSize));
-	vkUnmapMemory(components->deviceQueueComp.device, stagingBufferMemory);
 
 	stbi_image_free(texture.pixels);
 
@@ -365,8 +363,6 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	}*/
 
 	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
-	vkFreeMemory(components->deviceQueueComp.device, stagingBufferMemory, NULL);
-	
 	if(!createTextureImageView(components, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
 	{
 		printf("Image view creation failure: %s\n", fileName);

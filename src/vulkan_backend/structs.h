@@ -132,7 +132,7 @@ typedef struct BufferComponents
 	RenderEntity* entities;
 	uint32_t entityCount;
 	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
-	VkDeviceMemory uniformMemory[MAX_FRAMES_IN_FLIGHT];
+	GpuAllocation uniformAlloc[MAX_FRAMES_IN_FLIGHT];
 	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
 	VkFormat depthFormat; // All depth resources should live next to the swapchain stuff
 	VkImage depth[MAX_FRAMES_IN_FLIGHT];
