@@ -67,6 +67,25 @@ bool anoShouldClose()
 
 // Graphics operations
 
+static const RenderPassDef g_framePasses[] = {
+    // 1. GPU culling
+    {
+        .type       = PASS_COMPUTE,
+        .prototype  = PIPELINE_COMPUTE_CULL,
+        .dispatchX  = 0,  // computed from entityCount at runtime
+    },
+    // 2. Opaque geometry
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_FLAT,
+        .implementationIndex    = 0,  // opaque variant
+        .colorAttachmentCount   = 1,
+        .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
+    },
+};
+
 void recordCommandBuffer(uint32_t imageIndex) 
 {
 	VkCommandBufferBeginInfo beginInfo = {};
@@ -74,7 +93,9 @@ void recordCommandBuffer(uint32_t imageIndex)
 	beginInfo.flags = 0; // Optional
 	beginInfo.pInheritanceInfo = NULL;// Optional
 	
-	if (vkBeginCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &beginInfo) != VK_SUCCESS) 
+	VkCommandBuffer cmd = components.cmdComp.commandBuffer[components.syncComp.frameIndex];
+
+	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) 
 	{
 		printf("Failed to begin recording command buffer!\n");
 	}
@@ -96,7 +117,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	swapChainBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
 	vkCmdPipelineBarrier(
-		components.cmdComp.commandBuffer[components.syncComp.frameIndex],
+		cmd,
 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 		0,
 		0, NULL,
@@ -104,113 +125,119 @@ void recordCommandBuffer(uint32_t imageIndex)
 		1, &swapChainBarrier
 	);
 
-    // Compute Culling Pass
     uint32_t entityCount = components.renderComp.buffers.entityCount;
-    if (entityCount > 0) {
-        vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline);
-        vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_COMPUTE,
-            rendererState.prototypes[PIPELINE_COMPUTE_CULL].layout, 0, 1, &(rendererState.cullSets[components.syncComp.frameIndex]), 0, NULL);
-        
-        vkCmdDispatch(components.cmdComp.commandBuffer[components.syncComp.frameIndex], (entityCount + 255) / 256, 1, 1);
 
-        VkMemoryBarrier memoryBarrier = {};
-        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    for (int p = 0; p < sizeof(g_framePasses)/sizeof(g_framePasses[0]); p++) {
+        const RenderPassDef* pass = &g_framePasses[p];
 
-        vkCmdPipelineBarrier(
-            components.cmdComp.commandBuffer[components.syncComp.frameIndex],
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-            0,
-            1, &memoryBarrier,
-            0, NULL,
-            0, NULL
-        );
+        if (pass->type == PASS_COMPUTE) {
+            if (entityCount > 0) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.cullSets[components.syncComp.frameIndex]), 0, NULL);
+                
+                // If dispatchX is 0, we compute it from entityCount
+                uint32_t dispatchX = pass->dispatchX == 0 ? (entityCount + 255) / 256 : pass->dispatchX;
+                vkCmdDispatch(cmd, dispatchX, 1, 1);
+
+                VkMemoryBarrier memoryBarrier = {};
+                memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+
+                vkCmdPipelineBarrier(
+                    cmd,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                    0,
+                    1, &memoryBarrier,
+                    0, NULL,
+                    0, NULL
+                );
+            }
+        } else if (pass->type == PASS_GRAPHICS) {
+            VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
+            VkClearValue clearDepth = {};
+            clearDepth.depthStencil.depth = 1.0f;
+            clearDepth.depthStencil.stencil = 0;
+
+            VkRenderingAttachmentInfo colorAttachment = {};
+            colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAttachment.imageView = components.swapChainComp.viewGroup.colorView; // MSAA color
+            colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttachment.resolveMode = pass->resolveMode;
+            colorAttachment.resolveImageView = components.swapChainComp.viewGroup.views[imageIndex];
+            colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttachment.loadOp = pass->colorLoadOp;
+            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAttachment.clearValue = clearColor;
+
+            VkRenderingAttachmentInfo depthAttachment = {};
+            depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAttachment.imageView = components.renderComp.buffers.depthView[components.syncComp.frameIndex];
+            depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
+            depthAttachment.loadOp = pass->depthLoadOp;
+            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAttachment.clearValue = clearDepth;
+
+            VkRenderingInfo renderingInfo = {};
+            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            renderingInfo.renderArea.offset = (VkOffset2D){0, 0};
+            renderingInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
+            renderingInfo.layerCount = 1;
+            renderingInfo.colorAttachmentCount = pass->colorAttachmentCount;
+            renderingInfo.pColorAttachments = &colorAttachment;
+            renderingInfo.pDepthAttachment = &depthAttachment;
+            renderingInfo.pStencilAttachment = NULL;
+
+            vkCmdBeginRendering(cmd, &renderingInfo);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.prototypes[pass->prototype].implementations[pass->implementationIndex].pipeline);
+
+            VkViewport viewport = {};
+            viewport.x = 0.0f;
+            viewport.y = 0.0f;
+            viewport.width = (float)(components.swapChainComp.swapChainGroup.imageExtent.width);
+            viewport.height = (float)(components.swapChainComp.swapChainGroup.imageExtent.height);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            
+            VkRect2D scissor = {};
+            int windowWidth, windowHeight;
+            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            scissor.offset = (VkOffset2D){0, 0};
+            scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+            // Bind monolithic vertex and index buffers once per frame
+            VkDeviceSize offsets[] = {0};
+            vkCmdBindVertexBuffers(cmd, 0, 1, &rendererState.globalGeometryPool.vertexBuffer, offsets);
+            vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.globalSets[components.syncComp.frameIndex]), 0, NULL);
+
+            if (entityCount > 0) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    rendererState.prototypes[pass->prototype].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
+
+                uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
+                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
+
+                vkCmdDrawIndexedIndirectCount(
+                    cmd,
+                    rendererState.indirectBuffer.buffer[components.syncComp.frameIndex],
+                    0,
+                    rendererState.drawCountBuffer[components.syncComp.frameIndex],
+                    0,
+                    rendererState.indirectBuffer.capacity,
+                    sizeof(VkDrawIndexedIndirectCommand));
+            }
+            
+            vkCmdEndRendering(cmd);
+        }
     }
-
-	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
-	VkClearValue clearDepth = {};
-	clearDepth.depthStencil.depth = 1.0f;
-	clearDepth.depthStencil.stencil = 0;
-
-	VkRenderingAttachmentInfo colorAttachment = {};
-	colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	colorAttachment.imageView = components.swapChainComp.viewGroup.colorView; // MSAA color
-	colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-	colorAttachment.resolveImageView = components.swapChainComp.viewGroup.views[imageIndex];
-	colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	colorAttachment.clearValue = clearColor;
-
-	VkRenderingAttachmentInfo depthAttachment = {};
-	depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	depthAttachment.imageView = components.renderComp.buffers.depthView[components.syncComp.frameIndex];
-	depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
-	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	depthAttachment.clearValue = clearDepth;
-
-	VkRenderingInfo renderingInfo = {};
-	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-	renderingInfo.renderArea.offset = (VkOffset2D){0, 0};
-	renderingInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
-	renderingInfo.layerCount = 1;
-	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachments = &colorAttachment;
-	renderingInfo.pDepthAttachment = &depthAttachment;
-	renderingInfo.pStencilAttachment = NULL;
-
-	vkCmdBeginRendering(components.cmdComp.commandBuffer[components.syncComp.frameIndex], &renderingInfo);
-
-	// Create loop for all extant pipelines once multiple ones are supported, loop through them then through the meshes they apply to
-	vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.prototypes[PIPELINE_FLAT].implementations[0].pipeline);
-
-    // Should probably only do this if the viewport's actually changed
-	VkViewport viewport = {};
-	viewport.x = 0.0f;
-	viewport.y = 0.0f;
-	viewport.width = (float)(components.swapChainComp.swapChainGroup.imageExtent.width);
-	viewport.height = (float)(components.swapChainComp.swapChainGroup.imageExtent.height);
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-	vkCmdSetViewport(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &viewport);
-	
-	VkRect2D scissor = {};
-	int windowWidth, windowHeight;
-	glfwGetWindowSize(window, &windowWidth, &windowHeight);
-	scissor.offset = (VkOffset2D){0, 0};
-	scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
-	vkCmdSetScissor(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &scissor);
-
-	// Bind monolithic vertex and index buffers once per frame
-	VkDeviceSize offsets[] = {0};
-	vkCmdBindVertexBuffers(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0, 1, &rendererState.globalGeometryPool.vertexBuffer, offsets);
-	vkCmdBindIndexBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
-
-	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
-		rendererState.prototypes[PIPELINE_FLAT].layout, 0, 1, &(rendererState.globalSets[components.syncComp.frameIndex]), 0, NULL);
-
-	if (entityCount > 0) {
-		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
-			rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
-
-		uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
-		vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
-
-		vkCmdDrawIndexedIndirectCount(
-			components.cmdComp.commandBuffer[components.syncComp.frameIndex],
-			rendererState.indirectBuffer.buffer[components.syncComp.frameIndex],
-			0,
-            rendererState.drawCountBuffer[components.syncComp.frameIndex],
-            0,
-			rendererState.indirectBuffer.capacity,
-			sizeof(VkDrawIndexedIndirectCommand));
-	}
-	
-	vkCmdEndRendering(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
 
 	// Transition swapchain image to present
 	swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -219,7 +246,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	swapChainBarrier.dstAccessMask = 0;
 
 	vkCmdPipelineBarrier(
-		components.cmdComp.commandBuffer[components.syncComp.frameIndex],
+		cmd,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		0,
 		0, NULL,
@@ -227,7 +254,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 		1, &swapChainBarrier
 	);
 
-	if (vkEndCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex]) != VK_SUCCESS)
+	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
 	{
 		printf("Failed to record command buffer!\n");
 	}
@@ -286,18 +313,12 @@ void updateCullingBuffers(VulkanComponents* components, RendererState* state, ui
     CullUBO* ubo = state->cullUboBuffer.mapped[frameIndex];
     GlobalUBO* globalUbo = components->renderComp.buffers.uniformMapped[frameIndex];
     
-    // mat4 viewProj;
-    // We would compute viewProj properly here. Since we only have globalUbo with view and proj:
-    // This is simple mat4 multiplication. For now, since anoptic-engine has limited math functions:
-    memcpy(&ubo->viewProj, &globalUbo->proj, sizeof(mat4)); // Simplified, should be proj * view
+    // Calculate viewProj matrix
+    multiplyMat4(ubo->viewProj, globalUbo->proj, globalUbo->view);
     
-    // Simplistic frustum - no culling effectively unless proper frustum extraction is added
-    for(int i=0; i<6; i++) {
-        ubo->frustumPlanes[i].v[0] = 0.0f;
-        ubo->frustumPlanes[i].v[1] = 0.0f;
-        ubo->frustumPlanes[i].v[2] = 0.0f;
-        ubo->frustumPlanes[i].v[3] = 100000.0f; // very large radius to not cull anything by default
-    }
+    // Extract frustum planes
+    extractFrustumPlanes(ubo->frustumPlanes, ubo->viewProj);
+
     ubo->entityCount = entityCount;
 
     // Update EntitySSBO
@@ -318,8 +339,8 @@ void updateCullingBuffers(VulkanComponents* components, RendererState* state, ui
         meshData[i*4 + 0] = mesh->indexCount;
         meshData[i*4 + 1] = mesh->indexOffset / sizeof(uint16_t);
         meshData[i*4 + 2] = mesh->baseVertex;
-        meshData[i*4 + 3] = 0; // unused
-        
+        meshData[i*4 + 3] = 0; // padding
+
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
         meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];
         meshBounds[i*4 + 2] = mesh->boundingSphereCenter[2];
