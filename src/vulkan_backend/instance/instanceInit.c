@@ -1651,10 +1651,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     }
     ano_vk_cleanup_primitives(&rendererState.primitives);
 
-	if(components->renderComp.descriptorPool)
-	{
-		vkDestroyDescriptorPool(components->deviceQueueComp.device, components->renderComp.descriptorPool, NULL);
-	}
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
@@ -1707,24 +1703,10 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 	}	
 
 
-	if (components->renderComp.pipelineLayout != NULL)
-	{
-		vkDestroyPipelineLayout(components->deviceQueueComp.device, components->renderComp.pipelineLayout, NULL);
-	}
-
-	if (components->renderComp.descriptorSetLayout != NULL)
-	{
-		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, components->renderComp.descriptorSetLayout, NULL);
-	}
 
 	if (components->renderComp.textureSampler != NULL)
 	{
 		vkDestroySampler(components->deviceQueueComp.device, components->renderComp.textureSampler, NULL);
-	}
-
-	if (components->renderComp.graphicsPipeline != NULL)
-	{
-		vkDestroyPipeline(components->deviceQueueComp.device, components->renderComp.graphicsPipeline, NULL);
 	}
 	
 	if (components->deviceQueueComp.device != VK_NULL_HANDLE) 
