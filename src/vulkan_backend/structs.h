@@ -255,6 +255,21 @@ typedef struct BindlessTextureArray
     VkSampler               defaultSampler; // shared linear/repeat sampler
 } BindlessTextureArray;
 
+typedef struct CullUBO
+{
+    mat4 viewProj;
+    Vector4 frustumPlanes[6];
+    uint32_t entityCount;
+    uint32_t padding[3];
+} CullUBO;
+
+typedef struct CullUboBuffer
+{
+    VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
+    CullUBO*        mapped[MAX_FRAMES_IN_FLIGHT];
+} CullUboBuffer;
+
 typedef struct IndirectDrawBuffer
 {
     VkBuffer                        buffer[MAX_FRAMES_IN_FLIGHT];
@@ -285,8 +300,28 @@ typedef struct RendererState
 
     TransformBuffer         transformBuffer;
     MaterialBuffer          materialBuffer;
-    BindlessTextureArray    bindlessTextures;
     IndirectDrawBuffer      indirectBuffer;
+    CullUboBuffer           cullUboBuffer;
+    BindlessTextureArray    bindlessTextures;
+
+    // Culling system (Stage 6)
+    VkDescriptorSetLayout   cullSetLayout;
+    VkDescriptorSet         cullSets[MAX_FRAMES_IN_FLIGHT];
+    VkBuffer                entityBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           entityAllocs[MAX_FRAMES_IN_FLIGHT];
+    void*                   entityMapped[MAX_FRAMES_IN_FLIGHT];
+    VkBuffer                meshDataBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           meshDataAllocs[MAX_FRAMES_IN_FLIGHT];
+    void*                   meshDataMapped[MAX_FRAMES_IN_FLIGHT];
+    VkBuffer                meshBoundsBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           meshBoundsAllocs[MAX_FRAMES_IN_FLIGHT];
+    void*                   meshBoundsMapped[MAX_FRAMES_IN_FLIGHT];
+    VkBuffer                drawCountBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           drawCountAllocs[MAX_FRAMES_IN_FLIGHT];
+    uint32_t*               drawCountMapped[MAX_FRAMES_IN_FLIGHT];
+
+    RenderEntity*           entities;
+    uint32_t                entityCount;
 } RendererState;
 
 #endif

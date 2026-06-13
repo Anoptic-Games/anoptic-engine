@@ -16,6 +16,8 @@ typedef struct MeshRegion
     uint32_t    indexCount;     // number of indices
     uint32_t    vertexCount;    // number of vertices (for non-indexed draws)
     int32_t     baseVertex;     // added to each index value before fetching
+    float       boundingSphereCenter[3];
+    float       boundingSphereRadius;
 } MeshRegion;
 
 typedef struct GeometryPool

@@ -566,6 +566,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingPartiallyBound = VK_TRUE;
 	features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
 	features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+	features12.drawIndirectCount = VK_TRUE;
 
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
@@ -1252,15 +1253,15 @@ bool createDescriptorPool(VulkanComponents* components, RendererState* state)
 { // Central to init
 	VkDescriptorPoolSize poolSize[2] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2;
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 8;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 2;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2;
 
 	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(state->globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1327,10 +1328,26 @@ bool createDescriptorSets(VulkanComponents* components, RendererState* state)
 
 	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, state->globalSets) != VK_SUCCESS)
 	{
-		printf("Failed to allocate descriptor sets!\n");	
+		printf("Failed to allocate global descriptor sets!\n");	
 		return false;
 	}
 
+    VkDescriptorSetLayout cullLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        cullLayouts[i] = state->cullSetLayout;
+    }
+    VkDescriptorSetAllocateInfo cullAllocInfo = {};
+    cullAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    cullAllocInfo.descriptorPool = state->globalDescriptorPool;
+    cullAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    cullAllocInfo.pSetLayouts = cullLayouts;
+
+    if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &cullAllocInfo, state->cullSets) != VK_SUCCESS)
+    {
+        printf("Failed to allocate cull descriptor sets!\n");
+        return false;
+    }
 
 	return true;
 }
@@ -1347,7 +1364,6 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 		bufferInfo.buffer = components->renderComp.buffers.uniform[i];
 		bufferInfo.offset = 0;
 		bufferInfo.range = sizeof(GlobalUBO);
-		printf("!!UBO!! UBO buffer on descriptor update: %p\n", components->renderComp.buffers.uniform[i]);
 
 		VkDescriptorBufferInfo ssboInfo = {};
 		ssboInfo.buffer = state->transformBuffer.buffer[i];
@@ -1386,6 +1402,59 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 		descriptorWrites[2].pBufferInfo = &materialInfo;
 
 		vkUpdateDescriptorSets(components->deviceQueueComp.device, 3, descriptorWrites, 0, NULL);
+
+        // Update cull sets
+        uint32_t maxMeshes = 1024;
+        VkDescriptorBufferInfo cullUboInfo = {};
+        cullUboInfo.buffer = state->cullUboBuffer.buffer[i];
+        cullUboInfo.offset = 0;
+        cullUboInfo.range = sizeof(CullUBO);
+
+        VkDescriptorBufferInfo entityInfo = {};
+        entityInfo.buffer = state->entityBuffer[i];
+        entityInfo.offset = 0;
+        entityInfo.range = sizeof(uint32_t) * 2 * state->entityCount;
+
+        VkDescriptorBufferInfo meshDataInfo = {};
+        meshDataInfo.buffer = state->meshDataBuffer[i];
+        meshDataInfo.offset = 0;
+        meshDataInfo.range = sizeof(uint32_t) * 4 * maxMeshes;
+
+        VkDescriptorBufferInfo meshBoundsInfo = {};
+        meshBoundsInfo.buffer = state->meshBoundsBuffer[i];
+        meshBoundsInfo.offset = 0;
+        meshBoundsInfo.range = sizeof(float) * 4 * maxMeshes;
+
+        VkDescriptorBufferInfo indirectInfo = {};
+        indirectInfo.buffer = state->indirectBuffer.buffer[i];
+        indirectInfo.offset = 0;
+        indirectInfo.range = sizeof(VkDrawIndexedIndirectCommand) * state->indirectBuffer.capacity;
+
+        VkDescriptorBufferInfo countInfo = {};
+        countInfo.buffer = state->drawCountBuffer[i];
+        countInfo.offset = 0;
+        countInfo.range = sizeof(uint32_t);
+
+        VkWriteDescriptorSet cullWrites[7] = {};
+        for(int j=0; j<7; ++j) {
+            cullWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            cullWrites[j].dstSet = state->cullSets[i];
+            cullWrites[j].dstBinding = j;
+            cullWrites[j].dstArrayElement = 0;
+            cullWrites[j].descriptorCount = 1;
+            if (j == 0) cullWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            else cullWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        }
+
+        cullWrites[0].pBufferInfo = &cullUboInfo;
+        cullWrites[1].pBufferInfo = &ssboInfo; // TransformSSBO
+        cullWrites[2].pBufferInfo = &entityInfo;
+        cullWrites[3].pBufferInfo = &meshDataInfo;
+        cullWrites[4].pBufferInfo = &meshBoundsInfo;
+        cullWrites[5].pBufferInfo = &indirectInfo;
+        cullWrites[6].pBufferInfo = &countInfo;
+
+        vkUpdateDescriptorSets(components->deviceQueueComp.device, 7, cullWrites, 0, NULL);
 	}
 }
 
@@ -1660,6 +1729,16 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.materialBuffer.buffer[i], NULL);
 		if(rendererState.indirectBuffer.buffer[i])
 			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.indirectBuffer.buffer[i], NULL);
+		if(rendererState.entityBuffer[i])
+			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.entityBuffer[i], NULL);
+		if(rendererState.meshDataBuffer[i])
+			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.meshDataBuffer[i], NULL);
+		if(rendererState.meshBoundsBuffer[i])
+			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.meshBoundsBuffer[i], NULL);
+		if(rendererState.drawCountBuffer[i])
+			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.drawCountBuffer[i], NULL);
+		if(rendererState.cullUboBuffer.buffer[i])
+			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.cullUboBuffer.buffer[i], NULL);
 	}
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
