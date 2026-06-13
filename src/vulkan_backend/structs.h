@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
+#include "gpu_alloc.h"
 #include <stdbool.h>
 #include <string.h>
 
@@ -260,7 +261,7 @@ typedef struct PerFrameResources
 
     // Depth attachment
     VkImage             depthImage;
-    VkDeviceMemory      depthMemory; // Using VkDeviceMemory for now, fix in Phase 5
+    GpuAllocation       depthAlloc;
     VkImageView         depthView;
 
     // Descriptor sets
@@ -284,7 +285,7 @@ typedef struct RendererState
     uint32_t                imageCount;
     VkImage*                images;
     VkImage                 colorImage;
-    VkDeviceMemory          colorImageMemory; // Using VkDeviceMemory for now, fix in Phase 5
+    GpuAllocation           colorImageAlloc;
     VkImageView             colorView;
     uint32_t                viewCount;
     VkImageView*            views;

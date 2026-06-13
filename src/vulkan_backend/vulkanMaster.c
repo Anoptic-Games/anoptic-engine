@@ -734,9 +734,9 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         0, 0, 0, 255,       255, 0, 255, 255
     };
 
-    VkDeviceMemory fallbackImageMemory; // Memory managed by gpu_allocator
+    GpuAllocation fallbackImageAlloc; // Memory managed by gpu_allocator
 
-    if (!createTextureImageFromPixels(ctx, &state->fallbackImage, &fallbackImageMemory, &state->fallbackImageView, fallbackPixels, 2, 2)) {
+    if (!createTextureImageFromPixels(ctx, &state->fallbackImage, &fallbackImageAlloc, &state->fallbackImageView, fallbackPixels, 2, 2)) {
         printf("Warning: Failed to create fallback texture!\n");
         return false;
     }

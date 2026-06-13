@@ -7,6 +7,7 @@
 #define RENDER_COMPONENTS_H
 
 #include <vulkan/vulkan.h>
+#include "gpu_alloc.h"
 
 //====================== Enums
 
@@ -52,7 +53,7 @@ typedef struct TextureData
 {
 	uint32_t usageCount; // number of active meshes using this resource
 	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
+	GpuAllocation textureImageAlloc;
 	VkImageView textureImageView;
 } TextureData;
 

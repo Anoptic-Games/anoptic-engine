@@ -158,7 +158,7 @@ void copyBufferToImage(VulkanContext* ctx, VkBuffer buffer, VkImage image, uint3
 }
 
 bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
-				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, VkDeviceMemory* imageMemory, bool flag16)
+				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16)
 {
 	VkImageCreateInfo imageInfo = {};
 	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -186,10 +186,8 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 	VkMemoryRequirements memRequirements;
 	vkGetImageMemoryRequirements(ctx->device, *image, &memRequirements);
 	
-	GpuAllocation alloc = gpu_alloc(allocator, memRequirements, properties);
-	*imageMemory = alloc.memory;
-
-	vkBindImageMemory(ctx->device, *image, alloc.memory, alloc.offset);
+	*imageAlloc = gpu_alloc(allocator, memRequirements, properties);
+	vkBindImageMemory(ctx->device, *image, imageAlloc->memory, imageAlloc->offset);
 
 	return true;
 }
@@ -313,7 +311,7 @@ bool generateMipmaps(VulkanContext* ctx, VkImage image, VkFormat imageFormat, in
 	return true;
 }
 
-bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height)
+bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height)
 {
 	VkDeviceSize imageSize = width * height * 4;
 	uint32_t mipLevels = 1;
@@ -325,7 +323,7 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, VkD
 	void* data = stagingAlloc.mapped;
 	memcpy(data, pixels, (size_t)(imageSize));
 
-	if(!createImage(ctx, &gpuAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+	if(!createImage(ctx, &gpuAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
 	{
 		printf("Image creation failure!\n");
 		return false;
@@ -356,7 +354,7 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, VkD
 
 	return true;
 }
-bool createTextureImage(VulkanContext* ctx, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, char* fileName, bool flag16)
+bool createTextureImage(VulkanContext* ctx, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16)
 {
 	//!TODO Add logic for 16-bit images
 	Texture8 texture = readTexture8bit(fileName);
@@ -381,7 +379,7 @@ bool createTextureImage(VulkanContext* ctx, VkImage* textureImage, VkDeviceMemor
 	stbi_image_free(texture.pixels);
 
 	if (!createImage(ctx, &gpuAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
 	{
 		printf("Image creation failure: %s\n", fileName);
 		return false;
