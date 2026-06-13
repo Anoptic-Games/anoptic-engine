@@ -36,9 +36,6 @@
 *.x86_64
 *.hex
 
-# Python and other Garbage
-*.py
-
 # Archives
 *.zip
 
@@ -48,6 +45,7 @@
 *.idb
 *.pdb
 *.save
+*.py
 
 # IDE-specific directories
 .vscode/
