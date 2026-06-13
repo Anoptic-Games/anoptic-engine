@@ -822,9 +822,9 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     }
 
     // Free color image memory (managed by swapchainAllocator, so no manual vkFreeMemory)
-    if (state->colorImageMemory != VK_NULL_HANDLE)
+    if (state->colorImageAlloc.memory != VK_NULL_HANDLE)
     {
-        state->colorImageMemory = VK_NULL_HANDLE;
+        state->colorImageAlloc.memory = VK_NULL_HANDLE;
     }
 
     // Destroy color image view
@@ -1123,7 +1123,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 		if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width, 
 			state->imageExtent.height, 1, ctx->msaaSamples, state->depthFormat, 
 			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
-						 &state->frames[i].depthImage, &state->frames[i].depthMemory, false))
+						 &state->frames[i].depthImage, &state->frames[i].depthAlloc, false))
 		{
 			printf("Failed to create depth resource for frame %d!\n", i);
 			return false;
@@ -1149,7 +1149,7 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 
 	createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
 		1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageMemory, false);
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageAlloc, false);
 	rendererState.colorView = createImageView(ctx->device, rendererState.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }
 

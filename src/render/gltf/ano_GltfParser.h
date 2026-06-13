@@ -174,7 +174,7 @@ typedef struct GltfTexture
 	uint32_t sampler;
 	uint32_t source;
 	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
+	GpuAllocation textureImageAlloc;
 	VkImageView textureImageView;
 } GltfTexture;
 

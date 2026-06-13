@@ -1473,7 +1473,7 @@ bool uploadTextureDataToGPU(VulkanContext* ctx, GltfElements* elements, GltfMesh
 		// Create texture image for each primitive
 		if(!texture->processed)
 		{
-			if (!createTextureImage(ctx, &texture->textureImage, &texture->textureImageMemory, &texture->textureImageView, image->uri, flag16))
+			if (!createTextureImage(ctx, &texture->textureImage, &texture->textureImageAlloc, &texture->textureImageView, image->uri, flag16))
 			{
 				success = false;
 			}
@@ -1481,7 +1481,7 @@ bool uploadTextureDataToGPU(VulkanContext* ctx, GltfElements* elements, GltfMesh
 			{
 				TextureData data = {0};
 				data.textureImage = texture->textureImage;
-				data.textureImageMemory = texture->textureImageMemory;
+				data.textureImageAlloc = texture->textureImageAlloc;
 				data.textureImageView = texture->textureImageView;
 				ano_vk_register_texture(&rendererState.primitives, data);
 			}
