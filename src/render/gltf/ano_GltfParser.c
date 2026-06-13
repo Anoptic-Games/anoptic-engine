@@ -1437,7 +1437,7 @@ uint16_t* getIndexData(GltfElements* elements, GltfAccessor* accessor, uint32_t 
 // Vertices/Indices are processed in processGltfMeshes
 
 
-bool uploadTextureDataToGPU(VulkanContext* ctx, GltfElements* elements, GltfMesh* mesh)
+bool uploadTextureDataToGPU(VulkanContext* ctx, VkCommandBuffer cmd, GltfElements* elements, GltfMesh* mesh, VkBuffer* stagingBuffers, uint32_t* stagingCount)
 {
 	bool success = true;
 
@@ -1475,7 +1475,7 @@ bool uploadTextureDataToGPU(VulkanContext* ctx, GltfElements* elements, GltfMesh
 		// Create texture image for each primitive
 		if(!texture->processed)
 		{
-			if (!createTextureImage(ctx, &texture->textureImage, &texture->textureImageAlloc, &texture->textureImageView, image->uri, flag16))
+			if (!createTextureImage(ctx, cmd, &texture->textureImage, &texture->textureImageAlloc, &texture->textureImageView, image->uri, flag16, &stagingBuffers[(*stagingCount)++]))
 			{
 				success = false;
 			}
@@ -1501,6 +1501,10 @@ bool uploadTextureDataToGPU(VulkanContext* ctx, GltfElements* elements, GltfMesh
 void processGltfMeshes (VulkanContext* ctx, GltfElements* elements)
 {
     Vector3 defaultColor = {0.5f, 0.5f, 0.5f};
+    
+    VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
+    VkBuffer* stagingBuffers = malloc(sizeof(VkBuffer) * 4096);
+    uint32_t stagingCount = 0;
 
     for (uint32_t i = 0; i < elements->meshCount; i++)
     {
@@ -1540,8 +1544,15 @@ void processGltfMeshes (VulkanContext* ctx, GltfElements* elements)
 
         // Create texture buffer
         printf("Creating mesh#%d texture!\n", i);
-        uploadTextureDataToGPU(ctx, elements, mesh);
+        uploadTextureDataToGPU(ctx, textureCmd, elements, mesh, stagingBuffers, &stagingCount);
     } 
+    
+    endSingleTimeCommands(ctx, textureCmd);
+    
+    for (uint32_t i = 0; i < stagingCount; i++) {
+        vkDestroyBuffer(ctx->device, stagingBuffers[i], NULL);
+    }
+    free(stagingBuffers);
 }
 
 void packageRenderables(VulkanContext* ctx, GltfElements* elements)
