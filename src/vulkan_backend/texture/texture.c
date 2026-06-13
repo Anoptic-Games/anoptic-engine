@@ -19,7 +19,7 @@ Texture8 readTexture8bit(char* fileName)
 	return texture;
 }
 
-uint32_t bindless_register_texture(VulkanComponents* components, BindlessTextureArray* bta, VkImageView view, VkSampler sampler)
+uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta, VkImageView view, VkSampler sampler)
 {
 	if (bta->textureCount >= bta->maxTextures) {
 		printf("ERROR: Bindless texture array full!\n");
@@ -43,14 +43,14 @@ uint32_t bindless_register_texture(VulkanComponents* components, BindlessTexture
 	descriptorWrite.descriptorCount = 1;
 	descriptorWrite.pImageInfo = &imageInfo;
 
-	vkUpdateDescriptorSets(components->deviceQueueComp.device, 1, &descriptorWrite, 0, NULL);
+	vkUpdateDescriptorSets(ctx->device, 1, &descriptorWrite, 0, NULL);
 
 	return index;
 }
 
-bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels)
+bool transitionImageLayout(VulkanContext* ctx, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels)
 {
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(ctx);
 
 	VkImageMemoryBarrier barrier = {};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -119,13 +119,13 @@ bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat
 		1, &barrier
 	);
 
-	endSingleTimeCommands(components, commandBuffer);
+	endSingleTimeCommands(ctx, commandBuffer);
 	return true;
 }
 
-void copyBufferToImage(VulkanComponents* components, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
+void copyBufferToImage(VulkanContext* ctx, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
 {
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(ctx);
 	
 	VkBufferImageCopy region = {};
 	region.bufferOffset = 0;
@@ -154,10 +154,10 @@ void copyBufferToImage(VulkanComponents* components, VkBuffer buffer, VkImage im
 	);
 	
 	
-	endSingleTimeCommands(components, commandBuffer);
+	endSingleTimeCommands(ctx, commandBuffer);
 }
 
-bool createImage(VulkanComponents* components, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
+bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
 				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, VkDeviceMemory* imageMemory, bool flag16)
 {
 	VkImageCreateInfo imageInfo = {};
@@ -177,35 +177,35 @@ bool createImage(VulkanComponents* components, GpuAllocator* allocator, uint32_t
 	imageInfo.samples = numSamples;
 	imageInfo.flags = 0; // Optional
 	
-	if (vkCreateImage(components->deviceQueueComp.device, &imageInfo, NULL, image) != VK_SUCCESS)
+	if (vkCreateImage(ctx->device, &imageInfo, NULL, image) != VK_SUCCESS)
 	{
 		printf("Failed to create image!\n");
 		return false;
 	}
 
 	VkMemoryRequirements memRequirements;
-	vkGetImageMemoryRequirements(components->deviceQueueComp.device, *image, &memRequirements);
+	vkGetImageMemoryRequirements(ctx->device, *image, &memRequirements);
 	
 	GpuAllocation alloc = gpu_alloc(allocator, memRequirements, properties);
 	*imageMemory = alloc.memory;
 
-	vkBindImageMemory(components->deviceQueueComp.device, *image, alloc.memory, alloc.offset);
+	vkBindImageMemory(ctx->device, *image, alloc.memory, alloc.offset);
 
 	return true;
 }
 
-bool generateMipmaps(VulkanComponents* components, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
+bool generateMipmaps(VulkanContext* ctx, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
 {
 	// Check that we can actually do linear filtering first..
 	VkFormatProperties formatProperties;
-	vkGetPhysicalDeviceFormatProperties(components->physicalDeviceComp.physicalDevice, imageFormat, &formatProperties);
+	vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice, imageFormat, &formatProperties);
 	if (!(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
 	{ // Change this to an alt case using software generation
 		printf("Texture image does not support bilinear filtering!\n");
 		return false;
 	}
 
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(ctx);
 
 	VkImageMemoryBarrier barrier =
 	{// Zero-initialization to ensure no garbage is carried over
@@ -309,46 +309,46 @@ bool generateMipmaps(VulkanComponents* components, VkImage image, VkFormat image
 		0, NULL,
 		1, &barrier);
 
-	endSingleTimeCommands(components, commandBuffer);
+	endSingleTimeCommands(ctx, commandBuffer);
 	return true;
 }
 
-bool createTextureImageFromPixels(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height)
+bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height)
 {
 	VkDeviceSize imageSize = width * height * 4;
 	uint32_t mipLevels = 1;
 
 	VkBuffer stagingBuffer;
 	GpuAllocation stagingAlloc;
-	createDataBuffer(components, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
+	createDataBuffer(ctx, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
 
 	void* data = stagingAlloc.mapped;
 	memcpy(data, pixels, (size_t)(imageSize));
 
-	if(!createImage(components, &gpuAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
+	if(!createImage(ctx, &gpuAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
 	{
 		printf("Image creation failure!\n");
 		return false;
 	}
 
-	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
+	if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
 	{
 		printf("Layout transition failure!\n");
 		return false;
 	}
 
-	copyBufferToImage(components, stagingBuffer, *textureImage, width, height);
+	copyBufferToImage(ctx, stagingBuffer, *textureImage, width, height);
 
 	// Instead of mipmaps, just transition to SHADER_READ_ONLY_OPTIMAL
-	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
+	if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
 	{
 		printf("Layout transition failure!\n");
 		return false;
 	}
 
-	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
+	vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
 	
-	if(!createTextureImageView(components, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
+	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
 	{
 		printf("Image view creation failure!\n");
 		return false;
@@ -356,7 +356,7 @@ bool createTextureImageFromPixels(VulkanComponents* components, VkImage* texture
 
 	return true;
 }
-bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, char* fileName, bool flag16)
+bool createTextureImage(VulkanContext* ctx, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, char* fileName, bool flag16)
 {
 	//!TODO Add logic for 16-bit images
 	Texture8 texture = readTexture8bit(fileName);
@@ -373,14 +373,14 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 
 	VkBuffer stagingBuffer;
 	GpuAllocation stagingAlloc;
-	createDataBuffer(components, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
+	createDataBuffer(ctx, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc);
 
 	void* data = stagingAlloc.mapped;
 	memcpy(data, texture.pixels, (size_t)(imageSize));
 
 	stbi_image_free(texture.pixels);
 
-	if (!createImage(components, &gpuAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+	if (!createImage(ctx, &gpuAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
 					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory, false))
 	{
 		printf("Image creation failure: %s\n", fileName);
@@ -388,25 +388,25 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	}
 
 	// TODO: Figure out if this case ever occurs
-	if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}
 
-	copyBufferToImage(components, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
+	copyBufferToImage(ctx, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
-	generateMipmaps(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
+	generateMipmaps(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
 
 	// TODO: Figure out if this case ever occurs
-	/*if(!transitionImageLayout(components, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
+	/*if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}*/
 
-	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
-	if(!createTextureImageView(components, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
+	vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
+	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
 	{
 		printf("Image view creation failure: %s\n", fileName);
 		return false;
@@ -415,15 +415,15 @@ bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkD
 	return true;
 }
 
-bool createTextureImageView(VulkanComponents* components, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels)
+bool createTextureImageView(VulkanContext* ctx, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels)
 {
-	*textureImageView = createImageView(components->deviceQueueComp.device, textureImage, format, VK_IMAGE_ASPECT_COLOR_BIT, miplevels);
+	*textureImageView = createImageView(ctx->device, textureImage, format, VK_IMAGE_ASPECT_COLOR_BIT, miplevels);
 
 	return true;
 }
 
 
-bool createTextureSampler(VulkanComponents* components)
+bool createTextureSampler(VulkanContext* ctx, RendererState* state)
 { // DONE? Turns out maxLod is ignored if the texture in question doesn't have that many levels. I'm sure we'll need more samplers at some point, but we don't need one per texture
 	VkSamplerCreateInfo samplerInfo = {};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -435,7 +435,7 @@ bool createTextureSampler(VulkanComponents* components)
 
 	//TODO Physical device properties should be sampled once in the program's lifetime and cached
 	VkPhysicalDeviceProperties properties = {};
-	vkGetPhysicalDeviceProperties(components->physicalDeviceComp.physicalDevice, &properties);
+	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &properties);
 	
 	//TODO Add an anisotropic filter setting to vulkanConfig
 	samplerInfo.anisotropyEnable = VK_TRUE;
@@ -449,7 +449,7 @@ bool createTextureSampler(VulkanComponents* components)
 	samplerInfo.minLod = 0.0f;
 	samplerInfo.maxLod = 20.0f; // This would technically be a 524K texture, I'm sure it's large enough
 	
-	if (vkCreateSampler(components->deviceQueueComp.device, &samplerInfo, NULL, &components->renderComp.textureSampler) != VK_SUCCESS)
+	if (vkCreateSampler(ctx->device, &samplerInfo, NULL, &state->textureSampler) != VK_SUCCESS)
 	{
 		printf("Failed to create texture sampler!\n");
 		return false;

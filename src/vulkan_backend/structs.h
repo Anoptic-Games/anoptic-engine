@@ -30,41 +30,10 @@
 
 // New structs for streamlined state resource management
 
-// New struct for per-frame images
-typedef struct FrameImageGroup
-{
-    VkImage image;
-    VkImageView view;
-    VkDeviceMemory imageMemory; // This won't be used for the final present images, memory is managed by the swapchain
-} FrameImageGroup;
 
 
 
-typedef struct ImageViewGroup
-{ // Swapchain image views, should be next to the images and memory
-	uint32_t viewCount;
-	VkImageView* views;
-	VkImageView colorView;
-} ImageViewGroup;
 
-typedef struct SwapChainGroup
-{
-	VkSwapchainKHR swapChain;
-	VkFormat imageFormat;
-	VkExtent2D imageExtent;
-	uint32_t imageCount;
-	VkImage* images;
-	VkDeviceMemory imageMemory[MAX_FRAMES_IN_FLIGHT]; // Not actually used, swapchain image memory managed by Vulkan.
-	VkImage colorImage;
-	VkDeviceMemory colorImageMemory;
-} SwapChainGroup;
-
-typedef struct InstanceDebugComponents
-{
-    bool enableValidationLayers;
-    VkInstance instance;
-    VkDebugUtilsMessengerEXT debugMessenger;
-} InstanceDebugComponents;
 
 typedef struct DeviceCapabilities // Add queue families, device extensions etc as they're implemented into compute tasks and render functions
 {
@@ -87,24 +56,14 @@ typedef struct QueueFamilyIndices // Stores whether different queue families exi
     uint32_t presentFamily;
 } QueueFamilyIndices;
 
-typedef struct PhysicalDeviceComponents
-{
-    uint32_t deviceCount;
-    char** availableDevices;
-    VkPhysicalDevice physicalDevice;
-    DeviceCapabilities deviceCapabilities;
-    QueueFamilyIndices queueFamilyIndices;
-	VkSampleCountFlagBits msaaSamples;
-} PhysicalDeviceComponents;
 
-typedef struct DeviceQueueComponents
-{ // Necessary for just about every operation and pipeline, may need re-formatting if we go with multiple queues of one type
-    VkDevice device;
-    VkQueue graphicsQueue;
-    VkQueue computeQueue;
-    VkQueue transferQueue;
-    VkQueue presentQueue;
-} DeviceQueueComponents;
+
+typedef struct RenderEntity
+{ // To be extended with animation data
+    uint32_t meshIndex;
+    uint32_t materialIndex;   // index into MaterialSSBO
+    mat4 transform;
+} RenderEntity;
 
 typedef struct SwapChainSupportDetails 
 {
@@ -115,70 +74,24 @@ typedef struct SwapChainSupportDetails
     VkPresentModeKHR *presentModes;
 } SwapChainSupportDetails;
 
-typedef struct SwapChainComponents
+typedef struct VulkanContext
 {
-    SwapChainGroup swapChainGroup;
-    ImageViewGroup viewGroup;
-
-    SwapChainSupportDetails swapChainSupportDetails;
-} SwapChainComponents;
-
-typedef struct RenderEntity
-{ // To be extended with animation data
-    uint32_t meshIndex;
-    uint32_t materialIndex;   // index into MaterialSSBO
-    mat4 transform;
-} RenderEntity;
-
-typedef struct BufferComponents 
-{
-	RenderEntity* entities;
-	uint32_t entityCount;
-	VkBuffer uniform[MAX_FRAMES_IN_FLIGHT];
-	GpuAllocation uniformAlloc[MAX_FRAMES_IN_FLIGHT];
-	void* uniformMapped[MAX_FRAMES_IN_FLIGHT];
-	VkFormat depthFormat; // All depth resources should live next to the swapchain stuff
-	VkImage depth[MAX_FRAMES_IN_FLIGHT];
-	VkDeviceMemory depthMemory[MAX_FRAMES_IN_FLIGHT];
-	VkImageView depthView[MAX_FRAMES_IN_FLIGHT];
-} BufferComponents;
-
-
-typedef struct RenderComponents
-{
-    GlobalUBO uniform; // This comes from vertex.h, should probably have a buffer of length n = swap count, move to swapchain
-	VkSampler textureSampler;   // Also many of these, maybe create whole struct for resource access formats
-	BufferComponents buffers; // This entire thing should probably be moved to swapchain
-} RenderComponents;
-
-typedef struct SynchronizationComponents
-{
-    VkSemaphore imageAvailableSemaphore[MAX_FRAMES_IN_FLIGHT]; // All frame sync objects should also be in swapchain, they're per-frame
-    VkSemaphore renderFinishedSemaphore[MAX_FRAMES_IN_FLIGHT];
-    VkFence inFlightFence[MAX_FRAMES_IN_FLIGHT];
-	bool frameSubmitted[MAX_FRAMES_IN_FLIGHT]; // Used to keep track of which frames have been used, mitigates resize crash | Probably outdated, keeping for now
-    uint32_t frameIndex; // Move to swapchain
-    uint32_t imageIndex; // Used to track submitted frames for presentation, move to swapchain
-    bool framebufferResized; // Swapchain
-} SynchronizationComponents;
-
-typedef struct CommandComponents
-{
-    VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer[MAX_FRAMES_IN_FLIGHT];
-} CommandComponents;
-
-typedef struct VulkanComponents
-{
-    InstanceDebugComponents instanceDebug;
-    PhysicalDeviceComponents physicalDeviceComp;
-    DeviceQueueComponents deviceQueueComp;
-    SwapChainComponents swapChainComp;
-    RenderComponents renderComp;
-    SynchronizationComponents syncComp;
-    CommandComponents cmdComp;
-    VkSurfaceKHR surface;
-} VulkanComponents;
+    VkInstance               instance;
+    VkDebugUtilsMessengerEXT debugMessenger;
+    bool                     enableValidationLayers;
+    VkSurfaceKHR             surface;
+    VkPhysicalDevice         physicalDevice;
+    uint32_t                 deviceCount;
+    char**                   availableDevices;
+    DeviceCapabilities       deviceCapabilities;
+    QueueFamilyIndices       queueFamilyIndices;
+    VkSampleCountFlagBits    msaaSamples;
+    VkDevice                 device;
+    VkQueue                  graphicsQueue;
+    VkQueue                  computeQueue;
+    VkQueue                  transferQueue;
+    VkQueue                  presentQueue;
+} VulkanContext;
 
 typedef struct Dimensions2D
 {
@@ -216,7 +129,7 @@ typedef struct Monitors
 
 struct VulkanGarbage //All the various stuff that needs to be thrown out
 {
-	struct VulkanComponents *components;
+	struct VulkanContext *ctx;
 	GLFWwindow *window;
 	Monitors *monitors;
 };
@@ -298,21 +211,101 @@ typedef struct DeletionQueue {
     uint32_t capacity;
 } DeletionQueue;
 
+typedef struct CullingBuffers {
+    CullUboBuffer           ubo;
+
+    // Per-entity culling input
+    VkBuffer                entityBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           entityAllocs[MAX_FRAMES_IN_FLIGHT];
+    void*                   entityMapped[MAX_FRAMES_IN_FLIGHT];
+
+    // Mesh draw parameters (firstIndex, indexCount, vertexOffset per mesh)
+    VkBuffer                meshDataBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           meshDataAllocs[MAX_FRAMES_IN_FLIGHT];
+    void*                   meshDataMapped[MAX_FRAMES_IN_FLIGHT];
+
+    // Bounding volumes for frustum testing
+    VkBuffer                meshBoundsBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           meshBoundsAllocs[MAX_FRAMES_IN_FLIGHT];
+    void*                   meshBoundsMapped[MAX_FRAMES_IN_FLIGHT];
+
+    // GPU-written draw count (atomic counter output from cull shader)
+    VkBuffer                drawCountBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           drawCountAllocs[MAX_FRAMES_IN_FLIGHT];
+    uint32_t*               drawCountMapped[MAX_FRAMES_IN_FLIGHT];
+
+    // Descriptor infrastructure
+    VkDescriptorSetLayout   setLayout;
+
+
+    // Capacity tracking
+    uint32_t                maxEntities;
+} CullingBuffers;
+
+typedef struct PerFrameResources
+{
+    // Synchronization
+    VkSemaphore         imageAvailable;
+    VkSemaphore         renderFinished;
+    VkFence             frameFence;
+    bool                frameSubmitted;
+
+    // Command recording
+    VkCommandBuffer     commandBuffer;
+
+    // Global UBO (view/proj)
+    VkBuffer            uniformBuffer;
+    GpuAllocation       uniformAlloc;
+    void*               uniformMapped;
+
+    // Depth attachment
+    VkImage             depthImage;
+    VkDeviceMemory      depthMemory; // Using VkDeviceMemory for now, fix in Phase 5
+    VkImageView         depthView;
+
+    // Descriptor sets
+    VkDescriptorSet     globalSet;
+    VkDescriptorSet     cullSet;
+
+    // Deferred resource deletion
+    DeletionQueue       deletionQueue;
+} PerFrameResources;
+
 typedef struct RendererState
 {
+    PerFrameResources       frames[MAX_FRAMES_IN_FLIGHT];
+    uint32_t                frameIndex;
+    bool                    framebufferResized;
+
+    // Swapchain
+    VkSwapchainKHR          swapChain;
+    VkFormat                imageFormat;
+    VkExtent2D              imageExtent;
+    uint32_t                imageCount;
+    VkImage*                images;
+    VkImage                 colorImage;
+    VkDeviceMemory          colorImageMemory; // Using VkDeviceMemory for now, fix in Phase 5
+    VkImageView             colorView;
+    uint32_t                viewCount;
+    VkImageView*            views;
+
+    // Command pool
+    VkCommandPool           commandPool;
+
+    // Render data
+    GlobalUBO               uboData;
+    VkSampler               textureSampler;
+    RenderEntity*           entities;
+    uint32_t                entityCount;
+    VkFormat                depthFormat;
+
     // Pipeline system (Stage 0+)
     PipelinePrototype       prototypes[PIPELINE_TYPE_COUNT];
 
     // Descriptor infrastructure (to be populated per-stage)
     VkDescriptorPool        globalDescriptorPool;
     VkDescriptorSetLayout   globalSetLayout;        // Set 0
-    VkDescriptorSet         globalSets[MAX_FRAMES_IN_FLIGHT];
 
-    // Synchronization — lifted from SynchronizationComponents
-    VkSemaphore             imageAvailable[MAX_FRAMES_IN_FLIGHT];
-    VkSemaphore             renderFinished[MAX_FRAMES_IN_FLIGHT];
-    VkFence                 frameFence[MAX_FRAMES_IN_FLIGHT];
-    uint32_t                frameIndex;
     // Geometry
     GeometryPool            globalGeometryPool;
     RenderPrimitives        primitives;
@@ -320,33 +313,17 @@ typedef struct RendererState
     TransformBuffer         transformBuffer;
     MaterialBuffer          materialBuffer;
     IndirectDrawBuffer      indirectBuffer;
-    CullUboBuffer           cullUboBuffer;
     BindlessTextureArray    bindlessTextures;
 
     // Fallback resources
     VkImage                 fallbackImage;
     VkImageView             fallbackImageView;
 
-    DeletionQueue           deletionQueues[MAX_FRAMES_IN_FLIGHT];
 
-    // Culling system (Stage 6)
-    VkDescriptorSetLayout   cullSetLayout;
-    VkDescriptorSet         cullSets[MAX_FRAMES_IN_FLIGHT];
-    VkBuffer                entityBuffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation           entityAllocs[MAX_FRAMES_IN_FLIGHT];
-    void*                   entityMapped[MAX_FRAMES_IN_FLIGHT];
-    VkBuffer                meshDataBuffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation           meshDataAllocs[MAX_FRAMES_IN_FLIGHT];
-    void*                   meshDataMapped[MAX_FRAMES_IN_FLIGHT];
-    VkBuffer                meshBoundsBuffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation           meshBoundsAllocs[MAX_FRAMES_IN_FLIGHT];
-    void*                   meshBoundsMapped[MAX_FRAMES_IN_FLIGHT];
-    VkBuffer                drawCountBuffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation           drawCountAllocs[MAX_FRAMES_IN_FLIGHT];
-    uint32_t*               drawCountMapped[MAX_FRAMES_IN_FLIGHT];
 
-    RenderEntity*           entities;
-    uint32_t                entityCount;
+    // Culling system
+    CullingBuffers          culling;
 } RendererState;
+
 
 #endif

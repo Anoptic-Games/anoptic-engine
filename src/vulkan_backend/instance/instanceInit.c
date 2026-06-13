@@ -17,6 +17,11 @@
 #endif
 
 #include "instanceInit.h"
+
+VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats, uint32_t formatCount);
+VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, uint32_t preferredMode);
+VkExtent2D chooseSwapExtent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window);
+
 #include "vulkan_backend/vulkanMaster.h"
 
 
@@ -40,13 +45,13 @@ void enumerateMonitors(Monitors* monitors) // Instance creation helper
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height) // Called by GLFW on window resize, not part of instance creation but related
 {
 	static uint32_t count = 0;
-	VulkanComponents* components = glfwGetWindowUserPointer(window);
+	VulkanContext* ctx = glfwGetWindowUserPointer(window);
 	printf("Resize: %d\n", count);
 	count++;
-	components->syncComp.framebufferResized = true;
+	rendererState.framebufferResized = true;
 }
 
-GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
+GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
 {
 	if (!glfwInit())
 	{
@@ -85,13 +90,13 @@ GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors) // Init
 	
 	GLFWwindow *window = glfwCreateWindow((int)resolution.width, (int)resolution.height, "Vulkan", chosenMonitor, NULL);
 	
-	glfwSetWindowUserPointer(window, components);
+	glfwSetWindowUserPointer(window, &rendererState);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 
 	return window;
 }
 
-VkResult createInstance(VulkanComponents* vkComponents) // Central component of the init process, should be generalized and given packages of selected extensions, parameters etc
+VkResult createInstance(VulkanContext* ctx) // Central component of the init process, should be generalized and given packages of selected extensions, parameters etc
 {
 	const char* validationLayers[] = 
 	{ //!TODO get this thing out of here as soon as we have a config parser
@@ -143,7 +148,7 @@ VkResult createInstance(VulkanComponents* vkComponents) // Central component of 
 	}
 	#endif
 
-	if (vkCreateInstance(&createInfo, NULL, &(vkComponents->instanceDebug.instance)) != VK_SUCCESS)
+	if (vkCreateInstance(&createInfo, NULL, &(ctx->instance)) != VK_SUCCESS)
 	{
 		fprintf(stderr, "Failed to create Vulkan instance!\n");
 		free(extensions);
@@ -151,7 +156,7 @@ VkResult createInstance(VulkanComponents* vkComponents) // Central component of 
 	}
 
 	#ifdef DEBUG_BUILD
-		setupDebugMessenger(&(vkComponents->instanceDebug.instance), &(vkComponents->instanceDebug.debugMessenger));
+		setupDebugMessenger(&(ctx->instance), &(ctx->debugMessenger));
 	#endif
 
 	free(extensions);
@@ -391,10 +396,10 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFe
 	return physicalRequirements && queueRequirements && extensionsSupported && deviceFeatures.samplerAnisotropy;
 }
 
-VkSampleCountFlagBits getMaxUsableSampleCount(VulkanComponents* components)
+VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 {
 	VkPhysicalDeviceProperties physicalDeviceProperties;
-	vkGetPhysicalDeviceProperties(components->physicalDeviceComp.physicalDevice, &physicalDeviceProperties); // Cached properties should be preferentially used
+	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &physicalDeviceProperties); // Cached properties should be preferentially used
 
 	VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
 	if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
@@ -407,25 +412,25 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanComponents* components)
 	return VK_SAMPLE_COUNT_1_BIT;
 }
 
-bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Further extend selection logic, split device discovery into dedicated function
+bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Further extend selection logic, split device discovery into dedicated function
 {																																				 //   and retain device attributes in public interface for use in UI or logic
 	bool foundPreferredDevice = false;
-	components->physicalDeviceComp.deviceCount = 0;
+	ctx->deviceCount = 0;
 
-	vkEnumeratePhysicalDevices(components->instanceDebug.instance, &(components->physicalDeviceComp.deviceCount), NULL);
+	vkEnumeratePhysicalDevices(ctx->instance, &(ctx->deviceCount), NULL);
 
-	if (components->physicalDeviceComp.deviceCount == 0) 
+	if (ctx->deviceCount == 0) 
 	{
 		fprintf(stderr, "Failed to find GPUs with Vulkan support!\n");
 		return false;
 	}
 
 	// Allocate memory for the names of every detected device
-	components->physicalDeviceComp.availableDevices = (char**)mi_malloc(sizeof(char*) * components->physicalDeviceComp.deviceCount);
+	ctx->availableDevices = (char**)mi_malloc(sizeof(char*) * ctx->deviceCount);
 
-	VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * components->physicalDeviceComp.deviceCount);
+	VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * ctx->deviceCount);
 
-	vkEnumeratePhysicalDevices(components->instanceDebug.instance, &components->physicalDeviceComp.deviceCount, devices);
+	vkEnumeratePhysicalDevices(ctx->instance, &ctx->deviceCount, devices);
 	
 	VkPhysicalDeviceProperties deviceProperties;
 	VkPhysicalDeviceFeatures deviceFeatures;
@@ -437,22 +442,22 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
 	VkPhysicalDevice bestDedicatedDevice = VK_NULL_HANDLE;
 	VkPhysicalDevice bestIntegratedDevice = VK_NULL_HANDLE;
 
-	printf("DeviceCount: %d\n", components->physicalDeviceComp.deviceCount);
+	printf("DeviceCount: %d\n", ctx->deviceCount);
 	
-	for (uint32_t i = 0; i < components->physicalDeviceComp.deviceCount; i++)
+	for (uint32_t i = 0; i < ctx->deviceCount; i++)
 	{
 		vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
 		vkGetPhysicalDeviceFeatures(devices[i], &deviceFeatures);
 		vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
 		printf("%d\n", i);
 
-		if (isDeviceSuitable(devices[i], deviceFeatures, &(components->surface)))
+		if (isDeviceSuitable(devices[i], deviceFeatures, &(ctx->surface)))
 		{
 
 			//Select the first preffered device if available and break out of the selection loop
 			if (strcmp(deviceProperties.deviceName, preferredDevice) == 0)
 			{
-				components->physicalDeviceComp.physicalDevice = devices[i];
+				ctx->physicalDevice = devices[i];
 				foundPreferredDevice = true;
 				break;
 			}
@@ -471,36 +476,36 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
 				bestIntegratedDevice = devices[i];
 				maxIntegratedMemory = currentMemorySize;
 			}
-			(components->physicalDeviceComp.availableDevices)[i] = (char*)mi_malloc(strlen(deviceProperties.deviceName) +1);
-			strcpy((components->physicalDeviceComp.availableDevices)[i], deviceProperties.deviceName);
+			(ctx->availableDevices)[i] = (char*)mi_malloc(strlen(deviceProperties.deviceName) +1);
+			strcpy((ctx->availableDevices)[i], deviceProperties.deviceName);
 			#ifdef DEBUG_BUILD
-			printf("%s\n", components->physicalDeviceComp.availableDevices[i]);
+			printf("%s\n", ctx->availableDevices[i]);
 			#endif
 		}
 	}
 
 	if (foundPreferredDevice)
 	{
-		vkGetPhysicalDeviceFeatures(components->physicalDeviceComp.physicalDevice, &deviceFeatures);
-		components->physicalDeviceComp.deviceCapabilities = populateCapabilities(components->physicalDeviceComp.physicalDevice, deviceFeatures);
-		components->physicalDeviceComp.queueFamilyIndices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &(components->surface));
+		vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
+		ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+		ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 	}
 	else
 	{
 
 		if (bestDedicatedDevice != VK_NULL_HANDLE)
 		{
-			components->physicalDeviceComp.physicalDevice = bestDedicatedDevice;
-			vkGetPhysicalDeviceFeatures(components->physicalDeviceComp.physicalDevice, &deviceFeatures);
-			components->physicalDeviceComp.deviceCapabilities = populateCapabilities(components->physicalDeviceComp.physicalDevice, deviceFeatures);
-			components->physicalDeviceComp.queueFamilyIndices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &(components->surface));
+			ctx->physicalDevice = bestDedicatedDevice;
+			vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
+			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 		}
 		else if (bestIntegratedDevice != VK_NULL_HANDLE)
 		{
-			components->physicalDeviceComp.physicalDevice = bestIntegratedDevice;
-			vkGetPhysicalDeviceFeatures(components->physicalDeviceComp.physicalDevice, &deviceFeatures);
-			components->physicalDeviceComp.deviceCapabilities = populateCapabilities(components->physicalDeviceComp.physicalDevice, deviceFeatures);
-			components->physicalDeviceComp.queueFamilyIndices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &(components->surface));
+			ctx->physicalDevice = bestIntegratedDevice;
+			vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
+			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 		}
 		else
 		{
@@ -510,10 +515,10 @@ bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabi
 		}
 	}
 
-	components->physicalDeviceComp.msaaSamples = getMaxUsableSampleCount(components);
-	printf("MSAA samples used: %d\n", components->physicalDeviceComp.msaaSamples);
+	ctx->msaaSamples = getMaxUsableSampleCount(ctx);
+	printf("MSAA samples used: %d\n", ctx->msaaSamples);
 
-	//printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (components->physicalDeviceComp.queueFamilyIndices.graphicsFamily), (components->physicalDeviceComp.queueFamilyIndices.computeFamily), (components->physicalDeviceComp.queueFamilyIndices.transferFamily), (components->physicalDeviceComp.queueFamilyIndices.presentFamily));
+	//printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (ctx->queueFamilyIndices.graphicsFamily), (ctx->queueFamilyIndices.computeFamily), (ctx->queueFamilyIndices.transferFamily), (ctx->queueFamilyIndices.presentFamily));
 
 	free(devices);
 	return true;
@@ -646,6 +651,31 @@ struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, Vk
 	return details;
 }
 
+
+VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats, uint32_t formatCount) 
+{
+    for (uint32_t i = 0; i < formatCount; i++) 
+    {
+        if (availableFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB && availableFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) 
+        {
+            return availableFormats[i];
+        }
+    }
+    return availableFormats[0];
+}
+
+VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, uint32_t preferredMode) 
+{
+    for (uint32_t i = 0; i < presentModesCount; i++) 
+    {
+        if (availablePresentModes[i] == preferredMode) 
+        {
+            return availablePresentModes[i];
+        }
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) 
 { // Central init component, also used during re-sizes, should work fine as-is but may be extended if needed for arbitrary resolution rendering and scaling
 		if (capabilities.currentExtent.width != UINT32_MAX)
@@ -685,209 +715,142 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 		}
 }
 
-SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain) // Selects and initializes a swap chain
-{ // Central init component, extend/split logic for different color spaces (HDR rendering). Also cache driver query results
-	struct SwapChainSupportDetails details;
-	if (components->swapChainComp.swapChainSupportDetails.formatCount) // If the details are already populated, fetch the local version
-	{
-		details = components->swapChainComp.swapChainSupportDetails;
-	} else
-	{
-		details = querySwapChainSupport(components->physicalDeviceComp.physicalDevice, &components->surface);
-	}
-	
+bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state) // Selects and initializes a swap chain
+{
+    struct SwapChainSupportDetails details = querySwapChainSupport(ctx->physicalDevice, &(ctx->surface));
 
-	// TODO: Select the best format and present mode
+    VkSurfaceFormatKHR chosenFormat = chooseSwapSurfaceFormat(details.formats, details.formatCount);
+    VkPresentModeKHR chosenPresentMode = chooseSwapPresentMode(details.presentModes, details.presentModesCount, preferredMode);
+    VkExtent2D chosenExtent = chooseSwapExtent(details.capabilities, window);
 
-	//Pick a format
-	VkSurfaceFormatKHR chosenFormat = { .format = 0, .colorSpace = 0};
-	for (uint32_t i = 0; i < details.formatCount; i++)
-	{
-		if ((details.formats+i)->format == VK_FORMAT_B8G8R8A8_SRGB && (details.formats+i)->colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-		{
-			chosenFormat = *(details.formats+i);
-			break;
-		}
-	}
-	if (chosenFormat.format == 0 && chosenFormat.colorSpace == 0)
-	{
-		printf("Failed to select an appropriate image format!\n");
-		SwapChainGroup failure = {NULL};
-		return failure;
-	}
+    uint32_t imageCount = details.capabilities.minImageCount + 1; // It is recommended to request one more image than the minimum
+    if (details.capabilities.maxImageCount > 0 && imageCount > details.capabilities.maxImageCount) 
+    { // If maximum image count is 0, it means there is no strict upper limit
+        imageCount = details.capabilities.maxImageCount;
+    }
 
-	VkPresentModeKHR chosenPresentMode;
-	bool preferredModeFound = false;
-	uint32_t presentModePriority = 0; 
-	
-	for (uint32_t i = 0; i < details.presentModesCount; i++) 
-	{
-		VkPresentModeKHR currentMode = details.presentModes[i];
-	
-		// If the preferred mode is found, use it and break out of loop
-		if (currentMode == preferredMode) 
-		{
-			chosenPresentMode = preferredMode;
-			preferredModeFound = true;
-			break;
-		}
-	
-		// Priority based system
-		uint32_t currentPriority = 0;
-		switch (currentMode) 
-		{
-			case VK_PRESENT_MODE_MAILBOX_KHR:
-				currentPriority = 4;
-				break;
-			case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
-				currentPriority = MAX_FRAMES_IN_FLIGHT;
-				break;
-			case VK_PRESENT_MODE_FIFO_KHR:
-				currentPriority = 2;
-				break;
-			case VK_PRESENT_MODE_IMMEDIATE_KHR:
-				currentPriority = 1;
-				break;
-			default:
-				break;
-		}
-	
-		if (currentPriority > presentModePriority) 
-		{
-			presentModePriority = currentPriority;
-			chosenPresentMode = currentMode;
-		}
-	}
-	
-	if (!preferredModeFound && presentModePriority == 0) 
-	{
-		printf("Failed to select an appropriate present mode!\n");
-		SwapChainGroup failure = {NULL};
-		return failure;
-	}
-	
-	//printf("Present mode:%d\n", chosenPresentMode);
+    VkSwapchainCreateInfoKHR createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    createInfo.surface = ctx->surface;
+    createInfo.minImageCount = imageCount;
+    createInfo.imageFormat = chosenFormat.format;
+    createInfo.imageColorSpace = chosenFormat.colorSpace;
+    createInfo.imageExtent = chosenExtent;
+    createInfo.imageArrayLayers = 1; // Always 1 unless developing stereoscopic 3D
+    createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-	// TODO: Initialize the swap chain
-	VkExtent2D chosenExtent = chooseSwapExtent(details.capabilities, window);
-	uint32_t imageCount = details.capabilities.minImageCount;
-	imageCount = (imageCount > 2) ? imageCount : 2; // Two images is more than plenty
-	imageCount = (imageCount < details.capabilities.maxImageCount) ? imageCount : details.capabilities.maxImageCount; // this should NEVER happen
+    QueueFamilyIndices indices = ctx->queueFamilyIndices;
+    uint32_t queueFamilyIndices[] = {indices.graphicsFamily, indices.presentFamily};
 
-	// Now we finally create the swap chain
-	VkSwapchainCreateInfoKHR createInfo = {};
-	createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-	createInfo.surface = components->surface;
-	createInfo.minImageCount = imageCount;
-	createInfo.imageFormat = chosenFormat.format;
-	createInfo.imageColorSpace = chosenFormat.colorSpace;
-	createInfo.imageExtent = chosenExtent;
-	createInfo.imageArrayLayers = 1; // We DO support VR Half Life Alyx 2
-	createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	struct QueueFamilyIndices indices;
-	if (components->physicalDeviceComp.queueFamilyIndices.graphicsPresent) // Use local copy if available
-	{
-		indices = components->physicalDeviceComp.queueFamilyIndices;
-	} else
-	{
-		indices = findQueueFamilies(components->physicalDeviceComp.physicalDevice, &components->surface);
-	}
-	uint32_t queueFamilyIndices[] = {indices.graphicsFamily, indices.presentFamily};
-	if (indices.graphicsFamily != indices.presentFamily)
-	{
-		createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-		createInfo.queueFamilyIndexCount = 2;
-		createInfo.pQueueFamilyIndices = queueFamilyIndices;
-	} else
-	{
-		createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		createInfo.queueFamilyIndexCount = 0; // Optional
-		createInfo.pQueueFamilyIndices = NULL; // Optional
-	}
-	createInfo.preTransform = details.capabilities.currentTransform;
-	createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-	createInfo.presentMode = chosenPresentMode;
-	createInfo.clipped = VK_TRUE;
-	createInfo.oldSwapchain = oldSwapChain;
+    if (indices.graphicsFamily != indices.presentFamily) 
+    {
+        createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT; // Use concurrent sharing mode if graphics and present queues are different
+        createInfo.queueFamilyIndexCount = 2;
+        createInfo.pQueueFamilyIndices = queueFamilyIndices;
+    } 
+    else 
+    {
+        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; // Use exclusive mode if graphics and present queues are the same
+        createInfo.queueFamilyIndexCount = 0; // Optional
+        createInfo.pQueueFamilyIndices = NULL; // Optional
+    }
 
+    createInfo.preTransform = details.capabilities.currentTransform; // Don"t apply any pre-transformation to the image (e.g. rotation)
+    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // Ignore alpha channel
+    createInfo.presentMode = chosenPresentMode;
+    createInfo.clipped = VK_TRUE; // Discard pixels that are obscured, for example because another window is in front of them
+    createInfo.oldSwapchain = oldSwapChain; // When a swap chain is recreated, the old one must be passed here to aid in resource transfer
 
-	
-	VkSwapchainKHR swapChain;
-	VkResult result = vkCreateSwapchainKHR(components->deviceQueueComp.device, &createInfo, NULL, &swapChain);
-	if ( result != VK_SUCCESS)
-	{
-		printf("Failed to create swap chain - error code %d!\n", result);
-		SwapChainGroup failure = {NULL};
-		return failure;
-	}
+    VkSwapchainKHR swapChain;
+    if (vkCreateSwapchainKHR(ctx->device, &createInfo, NULL, &swapChain) != VK_SUCCESS) 
+    {
+        return false;
+    }
 
-	vkGetSwapchainImagesKHR(components->deviceQueueComp.device, swapChain, &imageCount, NULL);
-	VkImage *swapChainImages = (VkImage *) calloc(imageCount, sizeof(VkImage));
-	vkGetSwapchainImagesKHR(components->deviceQueueComp.device, swapChain, &imageCount, swapChainImages);
+    // Get the array of swap chain images
+    vkGetSwapchainImagesKHR(ctx->device, swapChain, &imageCount, NULL);
+    VkImage* swapChainImages = (VkImage*)malloc(imageCount * sizeof(VkImage));
+    vkGetSwapchainImagesKHR(ctx->device, swapChain, &imageCount, swapChainImages);
 
-	SwapChainGroup swapChainGroup = {swapChain, chosenFormat.format, chosenExtent, imageCount, swapChainImages};
-	
-	return swapChainGroup;
+    state->swapChain = swapChain;
+    state->imageFormat = chosenFormat.format;
+    state->imageExtent = chosenExtent;
+    state->imageCount = imageCount;
+    state->images = swapChainImages;
+
+    return true;
 }
 
-void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, ImageViewGroup* viewGroup)
+
+void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
 {
     // Destroy swapchain image views
-    for (size_t i = 0; i < viewGroup->viewCount; i++) 
+    for (size_t i = 0; i < state->viewCount; i++) 
     {
-        vkDestroyImageView(device, viewGroup->views[i], NULL);
+        vkDestroyImageView(ctx->device, state->views[i], NULL);
     }
+    free(state->views);
+    state->views = NULL;
+    state->viewCount = 0;
 
     // Destroy depth image views
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
     {
-        if (components->renderComp.buffers.depthView[i] != VK_NULL_HANDLE)
+        if (state->frames[i].depthView != VK_NULL_HANDLE)
         {
-            vkDestroyImageView(device, components->renderComp.buffers.depthView[i], NULL);
-            components->renderComp.buffers.depthView[i] = VK_NULL_HANDLE;
+            vkDestroyImageView(ctx->device, state->frames[i].depthView, NULL);
+            state->frames[i].depthView = VK_NULL_HANDLE;
         }
     }
 
     // Destroy depth images
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
     {
-        if (components->renderComp.buffers.depth[i] != VK_NULL_HANDLE)
+        if (state->frames[i].depthImage != VK_NULL_HANDLE)
         {
-            vkDestroyImage(device, components->renderComp.buffers.depth[i], NULL);
-            components->renderComp.buffers.depth[i] = VK_NULL_HANDLE;
+            vkDestroyImage(ctx->device, state->frames[i].depthImage, NULL);
+            state->frames[i].depthImage = VK_NULL_HANDLE;
         }
     }
 
 
     // Free color image
-    if (components->swapChainComp.swapChainGroup.colorImage != VK_NULL_HANDLE)
+    if (state->colorImage != VK_NULL_HANDLE)
     {
-        vkDestroyImage(device, components->swapChainComp.swapChainGroup.colorImage, NULL);
-        components->swapChainComp.swapChainGroup.colorImage = VK_NULL_HANDLE;
+        vkDestroyImage(ctx->device, state->colorImage, NULL);
+        state->colorImage = VK_NULL_HANDLE;
     }
 
-    // Free color image memory
-    if (components->swapChainComp.swapChainGroup.colorImageMemory != VK_NULL_HANDLE)
+    // Free color image memory (managed by swapchainAllocator, so no manual vkFreeMemory)
+    if (state->colorImageMemory != VK_NULL_HANDLE)
     {
-        components->swapChainComp.swapChainGroup.colorImageMemory = VK_NULL_HANDLE;
+        state->colorImageMemory = VK_NULL_HANDLE;
     }
 
     // Destroy color image view
-    if (viewGroup->colorView) 
+    if (state->colorView) 
     {
-        vkDestroyImageView(device, viewGroup->colorView, NULL);
+        vkDestroyImageView(ctx->device, state->colorView, NULL);
+        state->colorView = VK_NULL_HANDLE;
     }
+    
+    // Do NOT destroy the swapchain here because recreateSwapChain needs oldSwapChain
+    if (state->images != NULL) {
+        free(state->images);
+        state->images = NULL;
+    }
+    
     
     gpu_alloc_reset(&swapchainAllocator);
 }
 
-void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
+void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 {
 	// Wait until the device is completely idle before tearing down any resources
-	vkDeviceWaitIdle(components->deviceQueueComp.device);
+	vkDeviceWaitIdle(ctx->device);
 
     // First, clean up the previous swapchain
-	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.viewGroup));
+	cleanupSwapChain(ctx, &rendererState);
     
 	int width = 0, height = 0;
 	glfwGetFramebufferSize(window, &width, &height);
@@ -898,56 +861,49 @@ void recreateSwapChain(VulkanComponents* components, GLFWwindow* window)
 		glfwWaitEvents();
 	}
     // Explicitly update these to ensure swapchain recreation has the correct values
-    components->swapChainComp.swapChainGroup.imageExtent.width = width;
-    components->swapChainComp.swapChainGroup.imageExtent.height = height;
+    rendererState.imageExtent.width = width;
+    rendererState.imageExtent.height = height;
 	// Save outdated swapchain
-	VkSwapchainKHR oldSwapChain = components->swapChainComp.swapChainGroup.swapChain;
-	components->swapChainComp.swapChainGroup.swapChain = VK_NULL_HANDLE;
+	VkSwapchainKHR oldSwapChain = rendererState.swapChain;
+	rendererState.swapChain = VK_NULL_HANDLE;
 
-
-	SwapChainGroup failure = {NULL};
-	//!TODO Change the last element to the desired present mode
-	components->swapChainComp.swapChainGroup = initSwapChain(components, window, getChosenPresentMode(), oldSwapChain);
+	initSwapChain(ctx, window, getChosenPresentMode(), oldSwapChain, &rendererState);
 
 	// Destroy old swapchain
-	vkDestroySwapchainKHR(components->deviceQueueComp.device, oldSwapChain, NULL);
+	vkDestroySwapchainKHR(ctx->device, oldSwapChain, NULL);
 
-	if(components->swapChainComp.swapChainGroup.swapChain == failure.swapChain)
+	if(rendererState.swapChain == VK_NULL_HANDLE)
 	{
 		printf("Swap chain re-creation error, exiting!\n");
-		cleanupVulkan(components);
+		cleanupVulkan(ctx);
 		exit(1);
 	}
-	components->swapChainComp.viewGroup = createImageViews(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup);
-	if (components->swapChainComp.viewGroup.views == NULL)
+	createImageViews(ctx, &rendererState);
+	if (rendererState.views == NULL)
 	{
 		printf("View group re-creation error, exiting!\n");
-		cleanupVulkan(components);
+		cleanupVulkan(ctx);
 		exit(1);
 	}
 
-	createColorResources(components);
+	createColorResources(ctx);
 
-	createDepthResources(components);
-	if (components->renderComp.buffers.depthView[0] == NULL)
+	createDepthResources(ctx, &rendererState);
+	if (rendererState.frames[0].depthView == NULL)
 	{
 		printf("Depth resources re-creation error, exiting!\n");
-		cleanupVulkan(components);
+		cleanupVulkan(ctx);
 		exit(1);
 	}
 
-
-	
-
-	vkResetCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, 0);
+	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
 	{
-		vkResetFences(components->deviceQueueComp.device, 1, &(components->syncComp.inFlightFence[i]));
-        components->syncComp.frameSubmitted[i] = false;
+		vkResetFences(ctx->device, 1, &(rendererState.frames[i].frameFence));
+        rendererState.frames[i].frameSubmitted = false;
 	}
 
-	components->syncComp.framebufferResized = false;
-
+	rendererState.framebufferResized = false;
 }
 
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
@@ -973,17 +929,18 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 }
 
 
-ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup)
-{ // Central init component, only applies to display swapchain images
-	ImageViewGroup viewGroup = {0, NULL};
-	viewGroup.viewCount = imageGroup.imageCount;
-	viewGroup.views = (VkImageView *) calloc(1, sizeof(VkImageView) * viewGroup.viewCount);
-	for (uint32_t i = 0; i < imageGroup.imageCount; i++)
-	{
-		viewGroup.views[i] = createImageView(device, imageGroup.images[i], imageGroup.imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);		
-	}
-	return viewGroup;
+bool createImageViews(VulkanContext* ctx, RendererState* state)
+{
+    state->views = (VkImageView*)malloc(state->imageCount * sizeof(VkImageView));
+    state->viewCount = state->imageCount;
+
+    for (uint32_t i = 0; i < state->imageCount; i++) 
+    {
+        state->views[i] = createImageView(ctx->device, state->images[i], state->imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+    }
+    return true;
 }
+
 
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool)
 { // Central init component
@@ -1001,7 +958,7 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 	return true;
 }
 
-bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation)
+bool createDataBuffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation)
 {
 	VkBufferCreateInfo bufferInfo = {};
 	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1009,38 +966,38 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 	bufferInfo.usage = usage;
 	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-	if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, buffer) != VK_SUCCESS)
+	if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, buffer) != VK_SUCCESS)
 	{
 		printf("Failed to create data buffer!");
 		return false;
 	}
 
 	VkMemoryRequirements memRequirements;
-	vkGetBufferMemoryRequirements(components->deviceQueueComp.device, *buffer, &memRequirements);
+	vkGetBufferMemoryRequirements(ctx->device, *buffer, &memRequirements);
 
 	*allocation = gpu_alloc(&gpuAllocator, memRequirements, properties);
-	vkBindBufferMemory(components->deviceQueueComp.device, *buffer, allocation->memory, allocation->offset);
+	vkBindBufferMemory(ctx->device, *buffer, allocation->memory, allocation->offset);
 
 	return true;
 }
 
 
 
-bool createUniformBuffers(VulkanComponents* components)
+bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 { // Central to init, specific to perspective uniforms (world translation, rotation and projection)
 	VkDeviceSize bufferSize = sizeof(GlobalUBO);
 
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		GpuAllocation alloc;
-		if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			 &(components->renderComp.buffers.uniform[i]), &alloc)) 
+		if (!createDataBuffer(ctx, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			 &(rendererState.frames[i].uniformBuffer), &alloc)) 
 		{
 			printf("Failed to create uniform buffer!");
 			return false;
 		}
 		
-		components->renderComp.buffers.uniformMapped[i] = alloc.mapped;
+		rendererState.frames[i].uniformMapped = alloc.mapped;
 	}
 
 	return true;
@@ -1059,7 +1016,7 @@ void printMatrix(float mat[4][4])
 	}
 }
 
-bool updateUniformBuffer(VulkanComponents* components)
+bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 { // Changes the perspective (camera) parameters applied to the world-space for a given frame. Should be generalized with its parameters exposed via an interface
 	static uint64_t time = 0;
 	static uint64_t oldTime = 0;
@@ -1069,22 +1026,22 @@ bool updateUniformBuffer(VulkanComponents* components)
 	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
 	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped // TODO: Maybe unflip the world
 
-	lookAt(components->renderComp.uniform.view, eye, center, up);
+	lookAt(rendererState.uboData.view, eye, center, up);
 
 	float fov = 45.0f; // Field of View in degrees
-	float aspect = (float)components->swapChainComp.swapChainGroup.imageExtent.width / (float)components->swapChainComp.swapChainGroup.imageExtent.height;
+	float aspect = (float)rendererState.imageExtent.width / (float)rendererState.imageExtent.height;
 	float near = 0.1f;
 	float far = 100.0f;
-	perspective(components->renderComp.uniform.proj, fov, aspect, near, far);
+	perspective(rendererState.uboData.proj, fov, aspect, near, far);
 	
-	memcpy(components->renderComp.buffers.uniformMapped[components->syncComp.frameIndex], &(components->renderComp.uniform), sizeof(components->renderComp.uniform));
+	memcpy(rendererState.frames[rendererState.frameIndex].uniformMapped, &(rendererState.uboData), sizeof(rendererState.uboData));
 
 	oldTime = time;
 
 	return true;
 }
 
-bool updateMeshTransforms(VulkanComponents* components, RenderEntity* entity, float move)
+bool updateMeshTransforms(VulkanContext* ctx, RenderEntity* entity, float move)
 {
 	static uint64_t time = 0;
 	static uint64_t oldTime = 0;
@@ -1115,13 +1072,13 @@ bool updateMeshTransforms(VulkanComponents* components, RenderEntity* entity, fl
 	return true;
 }
 
-VkFormat findSupportedFormat(VulkanComponents* components, const VkFormat* candidates, uint32_t candidateCount, VkImageTiling tiling, VkFormatFeatureFlags features)
+VkFormat findSupportedFormat(VulkanContext* ctx, const VkFormat* candidates, uint32_t candidateCount, VkImageTiling tiling, VkFormatFeatureFlags features)
 { // Returns a device-supported format from a list of candidates, currently only used in pipeline images but should be used every time an image is created
 	for (int i = 0; i < candidateCount; i++)
 	{
 		VkFormat format = candidates[i];
 		VkFormatProperties props;
-		vkGetPhysicalDeviceFormatProperties(components->physicalDeviceComp.physicalDevice, format, &props);
+		vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice, format, &props);
 
 		// TODO: Figure out if both cases are really necessary (currently identical results)
 		if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features)
@@ -1138,10 +1095,10 @@ VkFormat findSupportedFormat(VulkanComponents* components, const VkFormat* candi
 
 
 // !TODO move this to a bottom-level library
-VkFormat findDepthFormat(VulkanComponents* components)
+VkFormat findDepthFormat(VulkanContext* ctx)
 {
 	VkFormat candidates[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
-	return(findSupportedFormat(components, &candidates[0], sizeof(candidates)/sizeof(VkFormat),
+	return(findSupportedFormat(ctx, &candidates[0], sizeof(candidates)/sizeof(VkFormat),
 								VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
 }
 
@@ -1151,32 +1108,32 @@ bool hasStencilComponent(VkFormat format)
 }
 
 
-bool createDepthResources(VulkanComponents* components)
+bool createDepthResources(VulkanContext* ctx, RendererState* state)
 {
-	VkFormat depthFormat = findDepthFormat(components);
+	VkFormat depthFormat = findDepthFormat(ctx);
 	if (depthFormat == VK_FORMAT_UNDEFINED)
 	{
 		printf("No compatible depth formats detected!\n");
 		return false;
 	}
-	components->renderComp.buffers.depthFormat = depthFormat;
+	state->depthFormat = depthFormat;
 
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
 	{
-		if (!createImage(components, &swapchainAllocator, components->swapChainComp.swapChainGroup.imageExtent.width, 
-			components->swapChainComp.swapChainGroup.imageExtent.height, 1, components->physicalDeviceComp.msaaSamples, components->renderComp.buffers.depthFormat, 
+		if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width, 
+			state->imageExtent.height, 1, ctx->msaaSamples, state->depthFormat, 
 			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
-						 &components->renderComp.buffers.depth[i], &components->renderComp.buffers.depthMemory[i], false))
+						 &state->frames[i].depthImage, &state->frames[i].depthMemory, false))
 		{
 			printf("Failed to create depth resource for frame %d!\n", i);
 			return false;
 		}
 
-		components->renderComp.buffers.depthView[i] = createImageView(components->deviceQueueComp.device, 
-																	  components->renderComp.buffers.depth[i], 
+		state->frames[i].depthView = createImageView(ctx->device, 
+																	  state->frames[i].depthImage, 
 																	  depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
-		if(!transitionImageLayout(components, components->renderComp.buffers.depth[i], depthFormat, 
+		if(!transitionImageLayout(ctx, state->frames[i].depthImage, depthFormat, 
 								  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
 		{
 			printf("Failed to transition depth buffer layout for frame %d!\n", i);
@@ -1186,17 +1143,17 @@ bool createDepthResources(VulkanComponents* components)
 	return true;
 }
 
-void createColorResources(VulkanComponents* components) //TODO: This probably should be generalized later?
+void createColorResources(VulkanContext* ctx) //TODO: This probably should be generalized later?
 {
-	VkFormat colorFormat = components->swapChainComp.swapChainGroup.imageFormat;
+	VkFormat colorFormat = rendererState.imageFormat;
 
-	createImage(components, &swapchainAllocator, components->swapChainComp.swapChainGroup.imageExtent.width, components->swapChainComp.swapChainGroup.imageExtent.height,
-		1, components->physicalDeviceComp.msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &components->swapChainComp.swapChainGroup.colorImage, &components->swapChainComp.swapChainGroup.colorImageMemory, false);
-	components->swapChainComp.viewGroup.colorView = createImageView(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+	createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+		1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageMemory, false);
+	rendererState.colorView = createImageView(ctx->device, rendererState.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }
 
-bool createDescriptorPool(VulkanComponents* components, RendererState* state)
+bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
 	VkDescriptorPoolSize poolSize[2] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1210,7 +1167,7 @@ bool createDescriptorPool(VulkanComponents* components, RendererState* state)
 	poolInfo.pPoolSizes = poolSize;
 	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2;
 
-	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(state->globalDescriptorPool)) != VK_SUCCESS)
+	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
 		printf("Failed to create descriptor pool!\n");
 		return false;
@@ -1219,11 +1176,11 @@ bool createDescriptorPool(VulkanComponents* components, RendererState* state)
 	return true;
 }
 
-bool createBindlessTextureArray(VulkanComponents* components, RendererState* state)
+bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state)
 {
 	VkDescriptorPoolSize poolSize = {};
 	poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSize.descriptorCount = state->bindlessTextures.maxTextures;
+	poolSize.descriptorCount = rendererState.bindlessTextures.maxTextures;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1232,7 +1189,7 @@ bool createBindlessTextureArray(VulkanComponents* components, RendererState* sta
 	poolInfo.pPoolSizes = &poolSize;
 	poolInfo.maxSets = 1;
 
-	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &state->bindlessTextures.pool) != VK_SUCCESS)
+	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &rendererState.bindlessTextures.pool) != VK_SUCCESS)
 	{
 		printf("Failed to create bindless texture descriptor pool!\n");
 		return false;
@@ -1241,16 +1198,16 @@ bool createBindlessTextureArray(VulkanComponents* components, RendererState* sta
 	VkDescriptorSetVariableDescriptorCountAllocateInfo variableInfo = {};
 	variableInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
 	variableInfo.descriptorSetCount = 1;
-	variableInfo.pDescriptorCounts = &state->bindlessTextures.maxTextures;
+	variableInfo.pDescriptorCounts = &rendererState.bindlessTextures.maxTextures;
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.pNext = &variableInfo;
-	allocInfo.descriptorPool = state->bindlessTextures.pool;
+	allocInfo.descriptorPool = rendererState.bindlessTextures.pool;
 	allocInfo.descriptorSetCount = 1;
-	allocInfo.pSetLayouts = &state->bindlessTextures.layout;
+	allocInfo.pSetLayouts = &rendererState.bindlessTextures.layout;
 
-	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, &state->bindlessTextures.set) != VK_SUCCESS)
+	if (vkAllocateDescriptorSets(ctx->device, &allocInfo, &rendererState.bindlessTextures.set) != VK_SUCCESS)
 	{
 		printf("Failed to allocate bindless texture descriptor set!\n");
 		return false;
@@ -1259,73 +1216,77 @@ bool createBindlessTextureArray(VulkanComponents* components, RendererState* sta
 	return true;
 }
 
-bool createDescriptorSets(VulkanComponents* components, RendererState* state)
+bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 { // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
 	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		layouts[i] = state->globalSetLayout;
+		layouts[i] = rendererState.globalSetLayout;
 	}
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.pNext = NULL;
-	allocInfo.descriptorPool = state->globalDescriptorPool;
+	allocInfo.descriptorPool = rendererState.globalDescriptorPool;
 	allocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
 	allocInfo.pSetLayouts = layouts;
 
-	if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &allocInfo, state->globalSets) != VK_SUCCESS)
+		VkDescriptorSet globalSetsTemp[MAX_FRAMES_IN_FLIGHT];
+	if (vkAllocateDescriptorSets(ctx->device, &allocInfo, globalSetsTemp) != VK_SUCCESS)
 	{
-		printf("Failed to allocate global descriptor sets!\n");	
+        printf("Failed to allocate global descriptor sets!\n");
 		return false;
 	}
+	for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].globalSet = globalSetsTemp[i];
 
     VkDescriptorSetLayout cullLayouts[MAX_FRAMES_IN_FLIGHT];
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
-        cullLayouts[i] = state->cullSetLayout;
+        cullLayouts[i] = rendererState.culling.setLayout;
     }
     VkDescriptorSetAllocateInfo cullAllocInfo = {};
     cullAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    cullAllocInfo.descriptorPool = state->globalDescriptorPool;
+    cullAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
     cullAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
     cullAllocInfo.pSetLayouts = cullLayouts;
 
-    if (vkAllocateDescriptorSets(components->deviceQueueComp.device, &cullAllocInfo, state->cullSets) != VK_SUCCESS)
+        VkDescriptorSet cullSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &cullAllocInfo, cullSetsTemp) != VK_SUCCESS)
     {
         printf("Failed to allocate cull descriptor sets!\n");
         return false;
     }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].cullSet = cullSetsTemp[i];
 
 	return true;
 }
 
 
 
-void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
+void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 { // Central to init, must be called on asset uploads. Should look into decoupling this somewhat so that entity assets can be managed dynamically.
 
 	// Update scene-wide UBO descriptors
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		VkDescriptorBufferInfo bufferInfo = {};
-		bufferInfo.buffer = components->renderComp.buffers.uniform[i];
+		bufferInfo.buffer = rendererState.frames[i].uniformBuffer;
 		bufferInfo.offset = 0;
 		bufferInfo.range = sizeof(GlobalUBO);
 
 		VkDescriptorBufferInfo ssboInfo = {};
-		ssboInfo.buffer = state->transformBuffer.buffer[i];
+		ssboInfo.buffer = rendererState.transformBuffer.buffer[i];
 		ssboInfo.offset = 0;
-		ssboInfo.range = sizeof(mat4) * state->transformBuffer.capacity;
+		ssboInfo.range = sizeof(mat4) * rendererState.transformBuffer.capacity;
 
 		VkDescriptorBufferInfo materialInfo = {};
-		materialInfo.buffer = state->materialBuffer.buffer[i];
+		materialInfo.buffer = rendererState.materialBuffer.buffer[i];
 		materialInfo.offset = 0;
-		materialInfo.range = sizeof(MaterialData) * state->materialBuffer.capacity;
+		materialInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
 
 		VkWriteDescriptorSet descriptorWrites[3] = {};
 		
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[0].dstSet = state->globalSets[i];
+		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
 		descriptorWrites[0].dstBinding = 0;   // Corresponds to binding in shader.
 		descriptorWrites[0].dstArrayElement = 0;
 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1333,7 +1294,7 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 		descriptorWrites[0].pBufferInfo = &bufferInfo;
 
 		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[1].dstSet = state->globalSets[i];
+		descriptorWrites[1].dstSet = rendererState.frames[i].globalSet;
 		descriptorWrites[1].dstBinding = 1;
 		descriptorWrites[1].dstArrayElement = 0;
 		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1341,51 +1302,51 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 		descriptorWrites[1].pBufferInfo = &ssboInfo;
 
 		descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[2].dstSet = state->globalSets[i];
+		descriptorWrites[2].dstSet = rendererState.frames[i].globalSet;
 		descriptorWrites[2].dstBinding = 2;
 		descriptorWrites[2].dstArrayElement = 0;
 		descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		descriptorWrites[2].descriptorCount = 1;
 		descriptorWrites[2].pBufferInfo = &materialInfo;
 
-		vkUpdateDescriptorSets(components->deviceQueueComp.device, 3, descriptorWrites, 0, NULL);
+		vkUpdateDescriptorSets(ctx->device, 3, descriptorWrites, 0, NULL);
 
         // Update cull sets
         uint32_t maxMeshes = 1024;
         VkDescriptorBufferInfo cullUboInfo = {};
-        cullUboInfo.buffer = state->cullUboBuffer.buffer[i];
+        cullUboInfo.buffer = rendererState.culling.ubo.buffer[i];
         cullUboInfo.offset = 0;
         cullUboInfo.range = sizeof(CullUBO);
 
         VkDescriptorBufferInfo entityInfo = {};
-        entityInfo.buffer = state->entityBuffer[i];
+        entityInfo.buffer = rendererState.culling.entityBuffer[i];
         entityInfo.offset = 0;
-        entityInfo.range = sizeof(uint32_t) * 2 * state->entityCount;
+        entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
 
         VkDescriptorBufferInfo meshDataInfo = {};
-        meshDataInfo.buffer = state->meshDataBuffer[i];
+        meshDataInfo.buffer = rendererState.culling.meshDataBuffer[i];
         meshDataInfo.offset = 0;
         meshDataInfo.range = sizeof(uint32_t) * 4 * maxMeshes;
 
         VkDescriptorBufferInfo meshBoundsInfo = {};
-        meshBoundsInfo.buffer = state->meshBoundsBuffer[i];
+        meshBoundsInfo.buffer = rendererState.culling.meshBoundsBuffer[i];
         meshBoundsInfo.offset = 0;
         meshBoundsInfo.range = sizeof(float) * 4 * maxMeshes;
 
         VkDescriptorBufferInfo indirectInfo = {};
-        indirectInfo.buffer = state->indirectBuffer.buffer[i];
+        indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawIndexedIndirectCommand) * state->indirectBuffer.capacity;
+        indirectInfo.range = sizeof(VkDrawIndexedIndirectCommand) * rendererState.indirectBuffer.capacity;
 
         VkDescriptorBufferInfo countInfo = {};
-        countInfo.buffer = state->drawCountBuffer[i];
+        countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
         countInfo.range = sizeof(uint32_t);
 
         VkWriteDescriptorSet cullWrites[7] = {};
         for(int j=0; j<7; ++j) {
             cullWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            cullWrites[j].dstSet = state->cullSets[i];
+            cullWrites[j].dstSet = rendererState.frames[i].cullSet;
             cullWrites[j].dstBinding = j;
             cullWrites[j].dstArrayElement = 0;
             cullWrites[j].descriptorCount = 1;
@@ -1401,13 +1362,13 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
         cullWrites[5].pBufferInfo = &indirectInfo;
         cullWrites[6].pBufferInfo = &countInfo;
 
-        vkUpdateDescriptorSets(components->deviceQueueComp.device, 7, cullWrites, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 7, cullWrites, 0, NULL);
 	}
 }
 
 
 
-/*bool createDescriptorPool(VulkanComponents* components)
+/*bool createDescriptorPool(VulkanContext* ctx)
 { // Central to init
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1421,7 +1382,7 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 	poolInfo.pPoolSizes = poolSizes;
 	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT;
 
-	if (vkCreateDescriptorPool(components->deviceQueueComp.device, &poolInfo, NULL, &(components->renderComp.descriptorPool)) != VK_SUCCESS)
+	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(ctx->renderComp.descriptorPool)) != VK_SUCCESS)
 	{
 		printf("Failed to create descriptor pool!\n");
 		return false;
@@ -1434,10 +1395,10 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 
 
 
-uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties)
+uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties)
 { // Central to init, also used externally post-init
 	VkPhysicalDeviceMemoryProperties memProperties;
-	vkGetPhysicalDeviceMemoryProperties(components->physicalDeviceComp.physicalDevice, &memProperties);
+	vkGetPhysicalDeviceMemoryProperties(ctx->physicalDevice, &memProperties);
 
 	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
 	{
@@ -1452,14 +1413,14 @@ uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMem
 }
 
 
-bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize)
+bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize)
 { // Not central to init
 	// Create staging buffer
 	VkBuffer stagingBuffer;
 	GpuAllocation stagingAlloc;
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingAlloc)) 
+	if (!createDataBuffer(ctx, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingAlloc)) 
 	{
 		printf("Failed to create staging buffer!");
 		return false;
@@ -1470,28 +1431,28 @@ bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer ds
 	memcpy(mappedMemory, data, bufferSize);
 
 	// Copy data from staging buffer to destination buffer
-	if (!copyBuffer(components, stagingBuffer, dstBuffer, bufferSize))
+	if (!copyBuffer(ctx, stagingBuffer, dstBuffer, bufferSize))
 	{
 		printf("Failed to copy buffers!");
 		return false;
 	}
 
 	// Cleanup staging buffer
-	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
+	vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
 
 	return true;
 }
 
-VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components)
+VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx)
 { // Used in init, also external
 	VkCommandBufferAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandPool = components->cmdComp.commandPool;
+	allocInfo.commandPool = rendererState.commandPool;
 	allocInfo.commandBufferCount = 1;
 
 	VkCommandBuffer commandBuffer;
-	vkAllocateCommandBuffers(components->deviceQueueComp.device, &allocInfo, &commandBuffer);
+	vkAllocateCommandBuffers(ctx->device, &allocInfo, &commandBuffer);
 
 	VkCommandBufferBeginInfo beginInfo = {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1502,31 +1463,31 @@ VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components)
 	return commandBuffer;
 }
 
-void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer commandBuffer)
+void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer)
 { // Used in init, also external
 	vkEndCommandBuffer(commandBuffer);
 
 	VkFenceCreateInfo fenceInfo = {};
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	VkFence fence;
-	vkCreateFence(components->deviceQueueComp.device, &fenceInfo, NULL, &fence);
+	vkCreateFence(ctx->device, &fenceInfo, NULL, &fence);
 
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &commandBuffer;
 
-	vkQueueSubmit(components->deviceQueueComp.graphicsQueue, 1, &submitInfo, fence);
-	vkWaitForFences(components->deviceQueueComp.device, 1, &fence, VK_TRUE, UINT64_MAX);
-	vkDestroyFence(components->deviceQueueComp.device, fence, NULL);
+	vkQueueSubmit(ctx->graphicsQueue, 1, &submitInfo, fence);
+	vkWaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX);
+	vkDestroyFence(ctx->device, fence, NULL);
 
-	vkFreeCommandBuffers(components->deviceQueueComp.device, components->cmdComp.commandPool, 1, &commandBuffer);
+	vkFreeCommandBuffers(ctx->device, rendererState.commandPool, 1, &commandBuffer);
 }
 
 
-bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
+bool copyBuffer(VulkanContext* ctx, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
 { // Used in init, also external
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(components);
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(ctx);
 	
 	VkBufferCopy copyRegion = {};
 	copyRegion.srcOffset = 0; // Optional
@@ -1534,22 +1495,22 @@ bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBu
 	copyRegion.size = size;
 	vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 
-	endSingleTimeCommands(components, commandBuffer);
+	endSingleTimeCommands(ctx, commandBuffer);
 
 	return true;
 }
 
-bool createCommandBuffer(VulkanComponents* components)
+bool createCommandBuffer(VulkanContext* ctx, RendererState* state)
 { // Central to init
 	VkCommandBufferAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = components->cmdComp.commandPool;
+	allocInfo.commandPool = rendererState.commandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
 	for (uint32_t i =0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if (vkAllocateCommandBuffers(components->deviceQueueComp.device, &allocInfo, &(components->cmdComp.commandBuffer[i])) != VK_SUCCESS) 
+		if (vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].commandBuffer)) != VK_SUCCESS) 
 		{
 			printf("Failed to allocate command buffers!\n");
 			return false;
@@ -1559,7 +1520,7 @@ bool createCommandBuffer(VulkanComponents* components)
 	return true;
 }
 
-bool createSyncObjects(VulkanComponents* components) 
+bool createSyncObjects(VulkanContext* ctx, RendererState* state) 
 { // Central to init
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
@@ -1570,9 +1531,9 @@ bool createSyncObjects(VulkanComponents* components)
 		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-		if (vkCreateSemaphore(components->deviceQueueComp.device, &semaphoreInfo, NULL, &(components->syncComp.imageAvailableSemaphore[i])) != VK_SUCCESS ||
-			vkCreateSemaphore(components->deviceQueueComp.device, &semaphoreInfo, NULL, &(components->syncComp.renderFinishedSemaphore[i])) != VK_SUCCESS ||
-			vkCreateFence(components->deviceQueueComp.device, &fenceInfo, NULL, &(components->syncComp.inFlightFence[i])) != VK_SUCCESS)
+		if (vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &(rendererState.frames[i].imageAvailable)) != VK_SUCCESS ||
+			vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &(rendererState.frames[i].renderFinished)) != VK_SUCCESS ||
+			vkCreateFence(ctx->device, &fenceInfo, NULL, &(rendererState.frames[i].frameFence)) != VK_SUCCESS)
 			{
 			printf("Failed to create semaphores!\n");
 			return false;
@@ -1631,143 +1592,143 @@ void cleanupMonitors(Monitors* monitors)
 
 
 
-void cleanupVulkan(VulkanComponents* components) // Frees up the previously initialized Vulkan parameters
+void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vulkan parameters
 {
 	// !TODO ADD INTERMEDIARY FUNCTION TO DESTROY ENTITY STRUCT ASSETS, CALL HERE
 	// !TODO Also texture samplers, image views, etc etc I basically gave up at this point since everything's gonna have to be generalized regardless
-	if (components == NULL)
+	if (ctx == NULL)
 	{
 		return;
 	}
 
-	vkDeviceWaitIdle(components->deviceQueueComp.device);
+	vkDeviceWaitIdle(ctx->device);
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        flush_deletion_queue(components, &rendererState, i);
-        if (rendererState.deletionQueues[i].tasks) {
-            free(rendererState.deletionQueues[i].tasks);
-            rendererState.deletionQueues[i].tasks = NULL;
-            rendererState.deletionQueues[i].capacity = 0;
+        flush_deletion_queue(ctx, &rendererState, i);
+        if (rendererState.frames[i].deletionQueue.tasks) {
+            free(rendererState.frames[i].deletionQueue.tasks);
+            rendererState.frames[i].deletionQueue.tasks = NULL;
+            rendererState.frames[i].deletionQueue.capacity = 0;
         }
     }
 
-	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.viewGroup));
-	if (components->swapChainComp.swapChainGroup.swapChain != VK_NULL_HANDLE)
+	cleanupSwapChain(ctx, &rendererState);
+	if (rendererState.swapChain != VK_NULL_HANDLE)
 	{
-		vkDestroySwapchainKHR(components->deviceQueueComp.device, components->swapChainComp.swapChainGroup.swapChain, NULL);
+		vkDestroySwapchainKHR(ctx->device, rendererState.swapChain, NULL);
 	}
 
-	if(components->renderComp.buffers.entities != NULL)
+	if(rendererState.entities != NULL)
 	{
-        free(components->renderComp.buffers.entities);
-        components->renderComp.buffers.entities = NULL;
+        free(rendererState.entities);
+        rendererState.entities = NULL;
 	}
 
     for (uint32_t i = 0; i < rendererState.primitives.textureCount; i++)
     {
         if (rendererState.primitives.textureBuffers[i].textureImageView)
-            vkDestroyImageView(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImageView, NULL);
+            vkDestroyImageView(ctx->device, rendererState.primitives.textureBuffers[i].textureImageView, NULL);
         if (rendererState.primitives.textureBuffers[i].textureImage)
-            vkDestroyImage(components->deviceQueueComp.device, rendererState.primitives.textureBuffers[i].textureImage, NULL);
+            vkDestroyImage(ctx->device, rendererState.primitives.textureBuffers[i].textureImage, NULL);
 
     }
     ano_vk_cleanup_primitives(&rendererState.primitives);
 
-    if (rendererState.fallbackImageView) vkDestroyImageView(components->deviceQueueComp.device, rendererState.fallbackImageView, NULL);
-    if (rendererState.fallbackImage) vkDestroyImage(components->deviceQueueComp.device, rendererState.fallbackImage, NULL);
+    if (rendererState.fallbackImageView) vkDestroyImageView(ctx->device, rendererState.fallbackImageView, NULL);
+    if (rendererState.fallbackImage) vkDestroyImage(ctx->device, rendererState.fallbackImage, NULL);
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		if(rendererState.transformBuffer.buffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.transformBuffer.buffer[i], NULL);
+			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.materialBuffer.buffer[i], NULL);
+			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
 		if(rendererState.indirectBuffer.buffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.indirectBuffer.buffer[i], NULL);
-		if(rendererState.entityBuffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.entityBuffer[i], NULL);
-		if(rendererState.meshDataBuffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.meshDataBuffer[i], NULL);
-		if(rendererState.meshBoundsBuffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.meshBoundsBuffer[i], NULL);
-		if(rendererState.drawCountBuffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.drawCountBuffer[i], NULL);
-		if(rendererState.cullUboBuffer.buffer[i])
-			vkDestroyBuffer(components->deviceQueueComp.device, rendererState.cullUboBuffer.buffer[i], NULL);
+			vkDestroyBuffer(ctx->device, rendererState.indirectBuffer.buffer[i], NULL);
+		if(rendererState.culling.entityBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.entityBuffer[i], NULL);
+		if(rendererState.culling.meshDataBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.meshDataBuffer[i], NULL);
+		if(rendererState.culling.meshBoundsBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.meshBoundsBuffer[i], NULL);
+		if(rendererState.culling.drawCountBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.drawCountBuffer[i], NULL);
+		if(rendererState.culling.ubo.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
 	}
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if(components->renderComp.buffers.uniform[i])
+		if(rendererState.frames[i].uniformBuffer)
 		{
-			vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.uniform[i], NULL);
+			vkDestroyBuffer(ctx->device, rendererState.frames[i].uniformBuffer, NULL);
 		}
 	}
 
-    ano_vk_cleanup_pipelines(components, &rendererState);
+    ano_vk_cleanup_pipelines(ctx, &rendererState);
 
 	#ifdef DEBUG_BUILD
-	DestroyDebugUtilsMessengerEXT(components->instanceDebug.instance, components->instanceDebug.debugMessenger, NULL);
+	DestroyDebugUtilsMessengerEXT(ctx->instance, ctx->debugMessenger, NULL);
 	#endif
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if (components->syncComp.imageAvailableSemaphore[i])
+		if (rendererState.frames[i].imageAvailable)
 		{
-			vkDestroySemaphore(components->deviceQueueComp.device, components->syncComp.imageAvailableSemaphore[i], NULL);
+			vkDestroySemaphore(ctx->device, rendererState.frames[i].imageAvailable, NULL);
 		}
-		if (components->syncComp.renderFinishedSemaphore[i])
+		if (rendererState.frames[i].renderFinished)
 		{
-			vkDestroySemaphore(components->deviceQueueComp.device, components->syncComp.renderFinishedSemaphore[i], NULL);
+			vkDestroySemaphore(ctx->device, rendererState.frames[i].renderFinished, NULL);
 		}
-		if (components->syncComp.inFlightFence[i])
+		if (rendererState.frames[i].frameFence)
 		{
-			vkDestroyFence(components->deviceQueueComp.device, components->syncComp.inFlightFence[i], NULL);
+			vkDestroyFence(ctx->device, rendererState.frames[i].frameFence, NULL);
 		}
 
 	}
 
 	
-	if (components->cmdComp.commandPool != NULL)
+	if (rendererState.commandPool != NULL)
 	{
-		vkDestroyCommandPool(components->deviceQueueComp.device, components->cmdComp.commandPool, NULL);
+		vkDestroyCommandPool(ctx->device, rendererState.commandPool, NULL);
 	}	
 
 
 
-	if (components->renderComp.textureSampler != NULL)
+	if (rendererState.textureSampler != NULL)
 	{
-		vkDestroySampler(components->deviceQueueComp.device, components->renderComp.textureSampler, NULL);
+		vkDestroySampler(ctx->device, rendererState.textureSampler, NULL);
 	}
 	
-	if (components->deviceQueueComp.device != VK_NULL_HANDLE) 
+	if (ctx->device != VK_NULL_HANDLE) 
 	{
-		vkDeviceWaitIdle(components->deviceQueueComp.device);
+		vkDeviceWaitIdle(ctx->device);
 
-		ano_vk_cleanup_geometry_pool(&rendererState.globalGeometryPool, components->deviceQueueComp.device);
+		ano_vk_cleanup_geometry_pool(&rendererState.globalGeometryPool, ctx->device);
 		gpu_alloc_destroy(&gpuAllocator);
 		gpu_alloc_destroy(&swapchainAllocator);
 
-		vkDestroyDevice(components->deviceQueueComp.device, NULL);
+		vkDestroyDevice(ctx->device, NULL);
 	}
 
-	if (components->physicalDeviceComp.availableDevices != NULL)
+	if (ctx->availableDevices != NULL)
 	{
-		for (uint32_t i = 0; i < components->physicalDeviceComp.deviceCount; i++)
+		for (uint32_t i = 0; i < ctx->deviceCount; i++)
 		{
-			free(components->physicalDeviceComp.availableDevices[i]);
-			components->physicalDeviceComp.availableDevices[i] = NULL;
+			free(ctx->availableDevices[i]);
+			ctx->availableDevices[i] = NULL;
 		}
-		free(components->physicalDeviceComp.availableDevices);
-		components->physicalDeviceComp.availableDevices = NULL;
+		free(ctx->availableDevices);
+		ctx->availableDevices = NULL;
 	}
 
-	if (components->instanceDebug.instance != VK_NULL_HANDLE) 
+	if (ctx->instance != VK_NULL_HANDLE) 
 	{
-		if (components->surface != VK_NULL_HANDLE) 
+		if (ctx->surface != VK_NULL_HANDLE) 
 		{
-			vkDestroySurfaceKHR(components->instanceDebug.instance, components->surface, NULL);
+			vkDestroySurfaceKHR(ctx->instance, ctx->surface, NULL);
 		}
-		vkDestroyInstance(components->instanceDebug.instance, NULL);
+		vkDestroyInstance(ctx->instance, NULL);
 	}
 
 }

@@ -158,7 +158,7 @@ int main()
         // ...
         // Present the image to the window
         // ...
-        //printf("Test: %d\n", components->viewGroup.viewCount);
+        //printf("Test: %d\n", ctx->viewGroup.viewCount);
         drawFrame();
 		//measureFrameTime();
     }
