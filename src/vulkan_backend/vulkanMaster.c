@@ -103,6 +103,12 @@ void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t fra
 // Graphics operations
 
 static const RenderPassDef g_framePasses[] = {
+    // 0. GPU animation update
+    {
+        .type       = PASS_COMPUTE,
+        .prototype  = PIPELINE_COMPUTE_UPDATE,
+        .dispatchX  = 0,
+    },
     // 1. GPU culling
     {
         .type       = PASS_COMPUTE,
@@ -168,8 +174,17 @@ void recordCommandBuffer(uint32_t imageIndex)
         if (pass->type == PASS_COMPUTE) {
             if (entityCount > 0) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
+                
+                VkDescriptorSet set = pass->prototype == PIPELINE_COMPUTE_UPDATE ? 
+                    rendererState.frames[rendererState.frameIndex].updateSet : 
+                    rendererState.frames[rendererState.frameIndex].cullSet;
+                    
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.frames[rendererState.frameIndex].cullSet), 0, NULL);
+                    rendererState.prototypes[pass->prototype].layout, 0, 1, &set, 0, NULL);
+                    
+                if (pass->prototype == PIPELINE_COMPUTE_UPDATE) {
+                    vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &entityCount);
+                }
                 
                 // If dispatchX is 0, we compute it from entityCount
                 uint32_t dispatchX = pass->dispatchX == 0 ? (entityCount + 255) / 256 : pass->dispatchX;
@@ -178,16 +193,16 @@ void recordCommandBuffer(uint32_t imageIndex)
                 VkMemoryBarrier memoryBarrier = {};
                 memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
                 memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-
-                vkCmdPipelineBarrier(
-                    cmd,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                    0,
-                    1, &memoryBarrier,
-                    0, NULL,
-                    0, NULL
-                );
+                
+                if (pass->prototype == PIPELINE_COMPUTE_UPDATE) {
+                    memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+                } else {
+                    memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                        0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+                }
             }
         } else if (pass->type == PASS_GRAPHICS) {
             VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
@@ -326,14 +341,9 @@ void printUniformTransferState()
 
 void updateTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
-	uint32_t entityCount = state->entityCount;
-	RenderEntity* entities = state->entities;
-	mat4* transforms = state->transformBuffer.mapped[frameIndex];
-
-	for (uint32_t i = 0; i < entityCount; i++) {
-		memcpy(&transforms[i], &entities[i].transform, sizeof(mat4));
-	}
-	state->transformBuffer.count = entityCount;
+	// Deprecated: Transforms are now updated via GPU compute shader.
+	// Initial transforms are set directly in instantiate_node().
+	state->transformBuffer.count = state->entityCount;
 }
 
 void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
@@ -430,7 +440,7 @@ void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
             state->entities[0].meshIndex = newMeshIdx;
             
             phase = 2; // Done
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+            //glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
     }
 }
@@ -471,7 +481,7 @@ void drawFrame()
 	// Update entity transforms
 	float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
 	for (uint32_t i = 0; i < rendererState.entityCount && i < 3; i++) {
-		updateMeshTransforms(&ctx, &rendererState.entities[i], moveOffsets[i]);
+		//updateMeshTransforms(&ctx, &rendererState.entities[i], moveOffsets[i]);
 	}
 
 	updateTransformBuffer(&ctx, &rendererState, rendererState.frameIndex);
@@ -567,9 +577,36 @@ void createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
     }
 }
 
-void createTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
-    state->transformBuffer.capacity = maxEntities;
-    state->transformBuffer.count = 0;
+void createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
+    state->angularVelocityBuffer.capacity = maxEntities;
+    state->angularVelocityBuffer.count = 0;
+    
+    VkDeviceSize bufferSize = sizeof(Vector4) * maxEntities;
+    
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->angularVelocityBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create angular velocity buffer!\n");
+        }
+        
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(ctx->device, state->angularVelocityBuffer.buffer[i], &memRequirements);
+        
+        state->angularVelocityBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx->device, state->angularVelocityBuffer.buffer[i], state->angularVelocityBuffer.allocs[i].memory, state->angularVelocityBuffer.allocs[i].offset);
+        
+        state->angularVelocityBuffer.mapped[i] = (Vector4*)state->angularVelocityBuffer.allocs[i].mapped;
+    }
+}
+
+void createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxEntities) {
+    buf->capacity = maxEntities;
+    buf->count = 0;
     
     VkDeviceSize bufferSize = sizeof(mat4) * maxEntities;
     
@@ -580,17 +617,17 @@ void createTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t ma
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
-        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->transformBuffer.buffer[i]) != VK_SUCCESS) {
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &buf->buffer[i]) != VK_SUCCESS) {
             printf("Failed to create transform buffer!\n");
         }
         
         VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(ctx->device, state->transformBuffer.buffer[i], &memRequirements);
+        vkGetBufferMemoryRequirements(ctx->device, buf->buffer[i], &memRequirements);
         
-        state->transformBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(ctx->device, state->transformBuffer.buffer[i], state->transformBuffer.allocs[i].memory, state->transformBuffer.allocs[i].offset);
+        buf->allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx->device, buf->buffer[i], buf->allocs[i].memory, buf->allocs[i].offset);
         
-        state->transformBuffer.mapped[i] = (mat4*)state->transformBuffer.allocs[i].mapped;
+        buf->mapped[i] = (mat4*)buf->allocs[i].mapped;
     }
 }
 
@@ -934,8 +971,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	rendererState.entityCount = 0;
 
 	// In a real application, maxEntities would be dynamic or configured.
-	uint32_t maxEntities = 1000;
-	createTransformBuffer(&ctx, &rendererState, maxEntities);
+	uint32_t maxEntities = 10000;
+	createTransformBuffer(&ctx, &rendererState.transformBuffer, maxEntities);
+	createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities);
+	createAngularVelocityBuffer(&ctx, &rendererState, maxEntities);
 	createMaterialBuffer(&ctx, &rendererState, maxEntities);
 	createIndirectDrawBuffer(&ctx, &rendererState, maxEntities);
     createCullingBuffers(&ctx, &rendererState, maxEntities);
@@ -954,8 +993,26 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		{0, 0, 1, 0},
 		{0, 0, 0, 1}
 	};
+	rotateMatrix(identity, 'X', 3.14159f / 2.0f);
 	instantiate_model(vikingRoomAsset, identity);
-	
+
+	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+		float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
+		for (int i = 0; i < rendererState.entityCount; i++) {
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[0] = 0.0f;
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = 1.0f;
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[2] = 0.0f;
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = 0.0f;
+			
+			memcpy(&rendererState.transformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
+			memcpy(&rendererState.initialTransformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
+			
+			if (i < 3) {
+			    rendererState.transformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
+			    rendererState.initialTransformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
+			}
+		}
+	}
 	/*if (!createVertexBuffer(&ctx, vertices, 8, &rendererState.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");

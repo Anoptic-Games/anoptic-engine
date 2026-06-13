@@ -425,6 +425,93 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	vkDestroyShaderModule(ctx->device, vertShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
 
+    // Compute Update Pipeline
+    VkDescriptorSetLayoutBinding updateBindings[4] = {};
+    
+    // 0: GlobalUBO
+    updateBindings[0].binding = 0;
+    updateBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    updateBindings[0].descriptorCount = 1;
+    updateBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 1: TransformSSBO
+    updateBindings[1].binding = 1;
+    updateBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    updateBindings[1].descriptorCount = 1;
+    updateBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 2: AngularVelocitySSBO
+    updateBindings[2].binding = 2;
+    updateBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    updateBindings[2].descriptorCount = 1;
+    updateBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 3: PrevTransformSSBO
+    updateBindings[3].binding = 3;
+    updateBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    updateBindings[3].descriptorCount = 1;
+    updateBindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo updateLayoutInfo = {};
+    updateLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    updateLayoutInfo.bindingCount = 4;
+    updateLayoutInfo.pBindings = updateBindings;
+
+    if (vkCreateDescriptorSetLayout(ctx->device, &updateLayoutInfo, NULL, &state->updateSetLayout) != VK_SUCCESS)
+    {
+        printf("Failed to create update descriptor set layout!\n");
+        return false;
+    }
+
+    VkPipelineLayoutCreateInfo updatePipelineLayoutInfo = {};
+    updatePipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    updatePipelineLayoutInfo.setLayoutCount = 1;
+    updatePipelineLayoutInfo.pSetLayouts = &state->updateSetLayout;
+    
+    VkPushConstantRange updatePcRange = {};
+    updatePcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    updatePcRange.offset = 0;
+    updatePcRange.size = sizeof(uint32_t);
+    
+    updatePipelineLayoutInfo.pushConstantRangeCount = 1;
+    updatePipelineLayoutInfo.pPushConstantRanges = &updatePcRange;
+
+    if (vkCreatePipelineLayout(ctx->device, &updatePipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].layout) != VK_SUCCESS)
+    {
+        printf("Failed to create compute update pipeline layout!\n");
+        return false;
+    }
+
+    state->prototypes[PIPELINE_COMPUTE_UPDATE].type = PIPELINE_COMPUTE_UPDATE;
+    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations = calloc(1, sizeof(PipelineImplementation));
+
+    struct Buffer updateShaderCode;
+    char updateShaderPath[256];
+    snprintf(updateShaderPath, sizeof(updateShaderPath), "%s/resources/shaders/update.comp.spv", PROJECT_ROOT);
+    if (!loadFile(updateShaderPath, &updateShaderCode)) return false;
+
+    VkShaderModule updateShaderModule = createShaderModule(ctx->device, &updateShaderCode);
+
+    VkComputePipelineCreateInfo updatePipelineInfo = {};
+    updatePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    updatePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_UPDATE].layout;
+    updatePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    updatePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    updatePipelineInfo.stage.module = updateShaderModule;
+    updatePipelineInfo.stage.pName = "main";
+
+    VkPipelineCacheCreateInfo updateCacheInfo = {};
+    updateCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(ctx->device, &updateCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].cache);
+
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_UPDATE].cache, 1, &updatePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations[0].pipeline) != VK_SUCCESS) return false;
+    
+    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(updateShaderCode.data);
+    vkDestroyShaderModule(ctx->device, updateShaderModule, NULL);
+
     // Compute Culling Pipeline
     VkPipelineCacheCreateInfo compCacheInfo = {};
     compCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -483,6 +570,12 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyDescriptorSetLayout(ctx->device, state->culling.setLayout, NULL);
         state->culling.setLayout = VK_NULL_HANDLE;
+    }
+    
+    if (state->updateSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(ctx->device, state->updateSetLayout, NULL);
+        state->updateSetLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts
