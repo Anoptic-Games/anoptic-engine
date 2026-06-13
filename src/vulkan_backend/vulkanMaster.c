@@ -16,7 +16,7 @@
 
 // Variables
 
-static VulkanComponents components;
+static VulkanContext ctx;
 RendererState rendererState;
 GpuAllocator gpuAllocator;
 GpuAllocator swapchainAllocator;
@@ -38,16 +38,16 @@ void unInitVulkan() // A celebration
 {
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 	{
-		if (components.syncComp.frameSubmitted[i])
+		if (rendererState.frames[i].frameSubmitted)
 		{
-			vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[i]), VK_TRUE, UINT64_MAX);
-			components.syncComp.frameSubmitted[i] = false; // reset the status
+			vkWaitForFences(ctx.device, 1, &(rendererState.frames[i].frameFence), VK_TRUE, UINT64_MAX);
+			rendererState.frames[i].frameSubmitted = false; // reset the status
 		}
     }
 
-	if (vulkanGarbage.components)
+	if (vulkanGarbage.ctx)
 	{
-		cleanupVulkan(vulkanGarbage.components);
+		cleanupVulkan(vulkanGarbage.ctx);
 	}
 	
 	if (vulkanGarbage.window)
@@ -69,8 +69,8 @@ bool anoShouldClose()
 
 void deferred_delete_resource(RendererState* state, DeletionResourceType type, uint32_t handle)
 {
-    uint32_t frameIdx = state->frameIndex;
-    DeletionQueue* q = &state->deletionQueues[frameIdx];
+    uint32_t frameIdx = rendererState.frameIndex;
+    DeletionQueue* q = &state->frames[frameIdx].deletionQueue;
 
     if (q->count >= q->capacity) {
         q->capacity = q->capacity == 0 ? 64 : q->capacity * 2;
@@ -80,9 +80,9 @@ void deferred_delete_resource(RendererState* state, DeletionResourceType type, u
     q->tasks[q->count++] = (DeletionTask){ .type = type, .handle = handle };
 }
 
-void flush_deletion_queue(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
+void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
-    DeletionQueue* q = &state->deletionQueues[frameIndex];
+    DeletionQueue* q = &state->frames[frameIndex].deletionQueue;
 
     for (uint32_t i = 0; i < q->count; i++) {
         DeletionTask task = q->tasks[i];
@@ -92,7 +92,7 @@ void flush_deletion_queue(VulkanComponents* components, RendererState* state, ui
                 break;
             case RESOURCE_TYPE_BINDLESS_TEXTURE:
                 // For now bindless_register_texture handles index. 
-                // We'd add a bindless_free_texture(components, &state->bindlessTextures, task.handle) eventually
+                // We'd add a bindless_free_texture(ctx, &state->bindlessTextures, task.handle) eventually
                 break;
         }
     }
@@ -127,7 +127,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	beginInfo.flags = 0; // Optional
 	beginInfo.pInheritanceInfo = NULL;// Optional
 	
-	VkCommandBuffer cmd = components.cmdComp.commandBuffer[components.syncComp.frameIndex];
+	VkCommandBuffer cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
 
 	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) 
 	{
@@ -141,7 +141,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	swapChainBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	swapChainBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	swapChainBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	swapChainBarrier.image = components.swapChainComp.swapChainGroup.images[imageIndex];
+	swapChainBarrier.image = rendererState.images[imageIndex];
 	swapChainBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	swapChainBarrier.subresourceRange.baseMipLevel = 0;
 	swapChainBarrier.subresourceRange.levelCount = 1;
@@ -159,7 +159,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 		1, &swapChainBarrier
 	);
 
-    uint32_t entityCount = components.renderComp.buffers.entityCount;
+    uint32_t entityCount = rendererState.entityCount;
 
     for (int p = 0; p < sizeof(g_framePasses)/sizeof(g_framePasses[0]); p++) {
         const RenderPassDef* pass = &g_framePasses[p];
@@ -168,7 +168,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             if (entityCount > 0) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.cullSets[components.syncComp.frameIndex]), 0, NULL);
+                    rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.frames[rendererState.frameIndex].cullSet), 0, NULL);
                 
                 // If dispatchX is 0, we compute it from entityCount
                 uint32_t dispatchX = pass->dispatchX == 0 ? (entityCount + 255) / 256 : pass->dispatchX;
@@ -196,10 +196,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 
             VkRenderingAttachmentInfo colorAttachment = {};
             colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAttachment.imageView = components.swapChainComp.viewGroup.colorView; // MSAA color
+            colorAttachment.imageView = rendererState.colorView; // MSAA color
             colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colorAttachment.resolveMode = pass->resolveMode;
-            colorAttachment.resolveImageView = components.swapChainComp.viewGroup.views[imageIndex];
+            colorAttachment.resolveImageView = rendererState.views[imageIndex];
             colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colorAttachment.loadOp = pass->colorLoadOp;
             colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -207,7 +207,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 
             VkRenderingAttachmentInfo depthAttachment = {};
             depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAttachment.imageView = components.renderComp.buffers.depthView[components.syncComp.frameIndex];
+            depthAttachment.imageView = rendererState.frames[rendererState.frameIndex].depthView;
             depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
             depthAttachment.loadOp = pass->depthLoadOp;
@@ -217,7 +217,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             VkRenderingInfo renderingInfo = {};
             renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
             renderingInfo.renderArea.offset = (VkOffset2D){0, 0};
-            renderingInfo.renderArea.extent = components.swapChainComp.swapChainGroup.imageExtent;
+            renderingInfo.renderArea.extent = rendererState.imageExtent;
             renderingInfo.layerCount = 1;
             renderingInfo.colorAttachmentCount = pass->colorAttachmentCount;
             renderingInfo.pColorAttachments = &colorAttachment;
@@ -231,8 +231,8 @@ void recordCommandBuffer(uint32_t imageIndex)
             VkViewport viewport = {};
             viewport.x = 0.0f;
             viewport.y = 0.0f;
-            viewport.width = (float)(components.swapChainComp.swapChainGroup.imageExtent.width);
-            viewport.height = (float)(components.swapChainComp.swapChainGroup.imageExtent.height);
+            viewport.width = (float)(rendererState.imageExtent.width);
+            viewport.height = (float)(rendererState.imageExtent.height);
             viewport.minDepth = 0.0f;
             viewport.maxDepth = 1.0f;
             vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -250,7 +250,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.globalSets[components.syncComp.frameIndex]), 0, NULL);
+                rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.frames[rendererState.frameIndex].globalSet), 0, NULL);
 
             if (entityCount > 0) {
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -261,9 +261,9 @@ void recordCommandBuffer(uint32_t imageIndex)
 
                 vkCmdDrawIndexedIndirectCount(
                     cmd,
-                    rendererState.indirectBuffer.buffer[components.syncComp.frameIndex],
+                    rendererState.indirectBuffer.buffer[rendererState.frameIndex],
                     0,
-                    rendererState.drawCountBuffer[components.syncComp.frameIndex],
+                    rendererState.culling.drawCountBuffer[rendererState.frameIndex],
                     0,
                     rendererState.indirectBuffer.capacity,
                     sizeof(VkDrawIndexedIndirectCommand));
@@ -300,33 +300,33 @@ void printUniformTransferState()
 {
 	// Swap Chain Components
 	printf("\n=== Swap Chain Components ===\n");
-	printf("Image count: %d\n", components.swapChainComp.swapChainGroup.imageCount);
-	printf("Image extent: width = %d, height = %d\n", components.swapChainComp.swapChainGroup.imageExtent.width, components.swapChainComp.swapChainGroup.imageExtent.height);
+	printf("Image count: %d\n", rendererState.imageCount);
+	printf("Image extent: width = %d, height = %d\n", rendererState.imageExtent.width, rendererState.imageExtent.height);
 	
 	// Buffer Components
 	printf("\n=== Buffer Components ===\n");
-	printf("Mesh index: %u\n", components.renderComp.buffers.entities[0].meshIndex);
+	printf("Mesh index: %u\n", rendererState.entities[0].meshIndex);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
-		printf("Uniform alloc %d: %p\n", i, (void*)components.renderComp.buffers.uniformAlloc[i].memory);
-		printf("Uniform buffer mapping %d: %p\n", i, components.renderComp.buffers.uniformMapped[i]);
+		printf("Uniform buffer %d: %p\n", i, (void*)rendererState.frames[i].uniformBuffer);
+		printf("Uniform alloc %d: %p\n", i, (void*)rendererState.frames[i].uniformAlloc.memory);
+		printf("Uniform buffer mapping %d: %p\n", i, rendererState.frames[i].uniformMapped);
 	}
 
 	// Synchronization Components
 	printf("\n=== Synchronization Components ===\n");
-	printf("Current frame index: %d\n", components.syncComp.frameIndex);
+	printf("Current frame index: %d\n", rendererState.frameIndex);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		printf("Frame %d submitted: %d\n", i, components.syncComp.frameSubmitted[i]);
+		printf("Frame %d submitted: %d\n", i, rendererState.frames[i].frameSubmitted);
 	}
 	printf("\n======================================\n");
 }
 
-void updateTransformBuffer(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
+void updateTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
-	uint32_t entityCount = components->renderComp.buffers.entityCount;
-	RenderEntity* entities = components->renderComp.buffers.entities;
+	uint32_t entityCount = state->entityCount;
+	RenderEntity* entities = state->entities;
 	mat4* transforms = state->transformBuffer.mapped[frameIndex];
 
 	for (uint32_t i = 0; i < entityCount; i++) {
@@ -335,17 +335,17 @@ void updateTransformBuffer(VulkanComponents* components, RendererState* state, u
 	state->transformBuffer.count = entityCount;
 }
 
-void updateCullingBuffers(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
+void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
-    uint32_t entityCount = components->renderComp.buffers.entityCount;
-    RenderEntity* entities = components->renderComp.buffers.entities;
+    uint32_t entityCount = state->entityCount;
+    RenderEntity* entities = state->entities;
 
     // Reset draw count
-    *state->drawCountMapped[frameIndex] = 0;
+    *state->culling.drawCountMapped[frameIndex] = 0;
 
     // Update CullUBO
-    CullUBO* ubo = state->cullUboBuffer.mapped[frameIndex];
-    GlobalUBO* globalUbo = components->renderComp.buffers.uniformMapped[frameIndex];
+    CullUBO* ubo = state->culling.ubo.mapped[frameIndex];
+    GlobalUBO* globalUbo = state->frames[frameIndex].uniformMapped;
     
     // Calculate viewProj matrix
     multiplyMat4(ubo->viewProj, globalUbo->proj, globalUbo->view);
@@ -356,7 +356,7 @@ void updateCullingBuffers(VulkanComponents* components, RendererState* state, ui
     ubo->entityCount = entityCount;
 
     // Update EntitySSBO
-    uint32_t* entityBuffer = (uint32_t*)state->entityMapped[frameIndex];
+    uint32_t* entityBuffer = (uint32_t*)state->culling.entityMapped[frameIndex];
     for(uint32_t i=0; i < entityCount; i++) {
         entityBuffer[i*2] = entities[i].meshIndex;
         entityBuffer[i*2+1] = entities[i].materialIndex;
@@ -364,8 +364,8 @@ void updateCullingBuffers(VulkanComponents* components, RendererState* state, ui
 
     // Update MeshSSBO and MeshBoundsSSBO
     uint32_t meshCount = state->globalGeometryPool.meshCount;
-    uint32_t* meshData = (uint32_t*)state->meshDataMapped[frameIndex];
-    float* meshBounds = (float*)state->meshBoundsMapped[frameIndex];
+    uint32_t* meshData = (uint32_t*)state->culling.meshDataMapped[frameIndex];
+    float* meshBounds = (float*)state->culling.meshBoundsMapped[frameIndex];
     
     for(uint32_t i=0; i < meshCount; i++) {
         MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
@@ -384,7 +384,7 @@ void updateCullingBuffers(VulkanComponents* components, RendererState* state, ui
 
 #include "anoptic_time.h"
 
-void testAssetUnloadReload(VulkanComponents* comps, RendererState* state) {
+void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
     static uint64_t lastTime = 0;
     static int phase = 0;
     static uint32_t originalMeshIndex = 0;
@@ -398,9 +398,9 @@ void testAssetUnloadReload(VulkanComponents* comps, RendererState* state) {
         if (phase == 0) {
             printf("--- TEST: Unloading original mesh ---\n");
             // Save original and set fallback
-            originalMeshIndex = comps->renderComp.buffers.entities[0].meshIndex;
-            comps->renderComp.buffers.entities[0].meshIndex = FALLBACK_MESH_INDEX;
-            comps->renderComp.buffers.entities[0].materialIndex = 0; // Use fallback material if possible
+            originalMeshIndex = state->entities[0].meshIndex;
+            state->entities[0].meshIndex = FALLBACK_MESH_INDEX;
+            state->entities[0].materialIndex = 0; // Use fallback material if possible
 
             // Defer deletion
             deferred_delete_resource(state, RESOURCE_TYPE_GEOMETRY_MESH, originalMeshIndex);
@@ -418,15 +418,15 @@ void testAssetUnloadReload(VulkanComponents* comps, RendererState* state) {
             const uint16_t triIndices[] = { 0, 1, 2 };
 
             uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &gpuAllocator,
-                                                       comps->deviceQueueComp.device,
-                                                       comps->cmdComp.commandPool,
-                                                       comps->deviceQueueComp.transferQueue,
+                                                       ctx->device,
+                                                       state->commandPool,
+                                                       ctx->transferQueue,
                                                        triVertices, 3, triIndices, 3);
             
             printf("--- TEST: New mesh assigned index %u (Expected %u) ---\n", newMeshIdx, originalMeshIndex);
             
             // Assign to entity
-            comps->renderComp.buffers.entities[0].meshIndex = newMeshIdx;
+            state->entities[0].meshIndex = newMeshIdx;
             
             phase = 2; // Done
             glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -436,28 +436,28 @@ void testAssetUnloadReload(VulkanComponents* comps, RendererState* state) {
 
 void drawFrame() 
 {
-	if (components.syncComp.framebufferResized)
+	if (rendererState.framebufferResized)
 	{
-		components.syncComp.framebufferResized = false;
-		recreateSwapChain(&components, window);
+		rendererState.framebufferResized = false;
+		recreateSwapChain(&ctx, window);
 		return;
 	}
 
-    testAssetUnloadReload(&components, &rendererState);
+    testAssetUnloadReload(&ctx, &rendererState);
 
-    if (components.syncComp.frameSubmitted[components.syncComp.frameIndex] == true)
+    if (rendererState.frames[rendererState.frameIndex].frameSubmitted == true)
     {
-        vkWaitForFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex]), VK_TRUE, UINT64_MAX);
+        vkWaitForFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence), VK_TRUE, UINT64_MAX);
     }
 
     // Process any deferred deletions that were waiting for this frame's previous commands to finish
-    flush_deletion_queue(&components, &rendererState, components.syncComp.frameIndex);
+    flush_deletion_queue(&ctx, &rendererState, rendererState.frameIndex);
     
 	uint32_t imageIndex;
-	VkResult result = vkAcquireNextImageKHR(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup.swapChain, UINT64_MAX, components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex], VK_NULL_HANDLE, &imageIndex);
+	VkResult result = vkAcquireNextImageKHR(ctx.device, rendererState.swapChain, UINT64_MAX, rendererState.frames[rendererState.frameIndex].imageAvailable, VK_NULL_HANDLE, &imageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) 
 	{
-		recreateSwapChain(&components, window);
+		recreateSwapChain(&ctx, window);
 		return;
 	} else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) 
 	{
@@ -465,37 +465,37 @@ void drawFrame()
 		return;
 	}
 
-	updateUniformBuffer(&components);
+	updateUniformBuffer(&ctx, &rendererState);
 
 	// Update entity transforms
 	float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
-	for (uint32_t i = 0; i < components.renderComp.buffers.entityCount && i < 3; i++) {
-		updateMeshTransforms(&components, &components.renderComp.buffers.entities[i], moveOffsets[i]);
+	for (uint32_t i = 0; i < rendererState.entityCount && i < 3; i++) {
+		updateMeshTransforms(&ctx, &rendererState.entities[i], moveOffsets[i]);
 	}
 
-	updateTransformBuffer(&components, &rendererState, components.syncComp.frameIndex);
-	updateCullingBuffers(&components, &rendererState, components.syncComp.frameIndex);
+	updateTransformBuffer(&ctx, &rendererState, rendererState.frameIndex);
+	updateCullingBuffers(&ctx, &rendererState, rendererState.frameIndex);
 
-	vkResetCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0);
+	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
 	recordCommandBuffer(imageIndex);
 
-	//updateUniformBuffer(&components);
+	//updateUniformBuffer(&ctx, &rendererState);
 	
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	
-	VkSemaphore waitSemaphores[] = {components.syncComp.imageAvailableSemaphore[components.syncComp.frameIndex]};
+	VkSemaphore waitSemaphores[] = {rendererState.frames[rendererState.frameIndex].imageAvailable};
 	VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
 	submitInfo.waitSemaphoreCount = 1;
 	submitInfo.pWaitSemaphores = waitSemaphores;
 	submitInfo.pWaitDstStageMask = waitStages;
 	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &(components.cmdComp.commandBuffer[components.syncComp.frameIndex]);
-	VkSemaphore signalSemaphores[] = {components.syncComp.renderFinishedSemaphore[components.syncComp.frameIndex]};
+	submitInfo.pCommandBuffers = &(rendererState.frames[rendererState.frameIndex].commandBuffer);
+	VkSemaphore signalSemaphores[] = {rendererState.frames[rendererState.frameIndex].renderFinished};
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
-	vkResetFences(components.deviceQueueComp.device, 1, &(components.syncComp.inFlightFence[components.syncComp.frameIndex])); // this goes here because multi-threading
-	if (vkQueueSubmit(components.deviceQueueComp.graphicsQueue, 1, &submitInfo, components.syncComp.inFlightFence[components.syncComp.frameIndex]) != VK_SUCCESS) 
+	vkResetFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence)); // this goes here because multi-threading
+	if (vkQueueSubmit(ctx.graphicsQueue, 1, &submitInfo, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS) 
 	{
 		printf("Failed to submit draw command buffer!\n");
 		return;
@@ -508,17 +508,17 @@ void drawFrame()
 	
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pWaitSemaphores = signalSemaphores;
-	VkSwapchainKHR swapChains[] = {components.swapChainComp.swapChainGroup.swapChain};
+	VkSwapchainKHR swapChains[] = {rendererState.swapChain};
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = NULL; // Optional
 
-	VkResult presentResult = vkQueuePresentKHR(components.deviceQueueComp.presentQueue, &presentInfo);
+	VkResult presentResult = vkQueuePresentKHR(ctx.presentQueue, &presentInfo);
 
 	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
 	{
-		recreateSwapChain(&components, window);
+		recreateSwapChain(&ctx, window);
 		return;
 	} else if (presentResult != VK_SUCCESS)
 	{
@@ -526,20 +526,20 @@ void drawFrame()
 		return;
 	}
 
-	components.syncComp.frameSubmitted[components.syncComp.frameIndex] = true;
+	rendererState.frames[rendererState.frameIndex].frameSubmitted = true;
 
 	//printUniformTransferState();
 
-	components.syncComp.frameIndex += 1; // Iterate and reset the frame-in-flight index
-	if (components.syncComp.frameIndex == MAX_FRAMES_IN_FLIGHT)
+	rendererState.frameIndex += 1; // Iterate and reset the frame-in-flight index
+	if (rendererState.frameIndex == MAX_FRAMES_IN_FLIGHT)
 	{
-		components.syncComp.frameIndex = 0;
+		rendererState.frameIndex = 0;
 	}
 }
 
 //Init and cleanup functions
 
-void createMaterialBuffer(VulkanComponents* components, RendererState* state, uint32_t maxEntities) {
+void createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->materialBuffer.capacity = maxEntities;
     state->materialBuffer.count = 0;
     
@@ -552,21 +552,21 @@ void createMaterialBuffer(VulkanComponents* components, RendererState* state, ui
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
-        if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &state->materialBuffer.buffer[i]) != VK_SUCCESS) {
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->materialBuffer.buffer[i]) != VK_SUCCESS) {
             printf("Failed to create material buffer!\n");
         }
         
         VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->materialBuffer.buffer[i], &memRequirements);
+        vkGetBufferMemoryRequirements(ctx->device, state->materialBuffer.buffer[i], &memRequirements);
         
         state->materialBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->materialBuffer.buffer[i], state->materialBuffer.allocs[i].memory, state->materialBuffer.allocs[i].offset);
+        vkBindBufferMemory(ctx->device, state->materialBuffer.buffer[i], state->materialBuffer.allocs[i].memory, state->materialBuffer.allocs[i].offset);
         
         state->materialBuffer.mapped[i] = (MaterialData*)state->materialBuffer.allocs[i].mapped;
     }
 }
 
-void createTransformBuffer(VulkanComponents* components, RendererState* state, uint32_t maxEntities) {
+void createTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->transformBuffer.capacity = maxEntities;
     state->transformBuffer.count = 0;
     
@@ -579,21 +579,21 @@ void createTransformBuffer(VulkanComponents* components, RendererState* state, u
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
-        if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &state->transformBuffer.buffer[i]) != VK_SUCCESS) {
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->transformBuffer.buffer[i]) != VK_SUCCESS) {
             printf("Failed to create transform buffer!\n");
         }
         
         VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->transformBuffer.buffer[i], &memRequirements);
+        vkGetBufferMemoryRequirements(ctx->device, state->transformBuffer.buffer[i], &memRequirements);
         
         state->transformBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->transformBuffer.buffer[i], state->transformBuffer.allocs[i].memory, state->transformBuffer.allocs[i].offset);
+        vkBindBufferMemory(ctx->device, state->transformBuffer.buffer[i], state->transformBuffer.allocs[i].memory, state->transformBuffer.allocs[i].offset);
         
         state->transformBuffer.mapped[i] = (mat4*)state->transformBuffer.allocs[i].mapped;
     }
 }
 
-void createIndirectDrawBuffer(VulkanComponents* components, RendererState* state, uint32_t maxDraws) {
+void createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
     
     VkDeviceSize bufferSize = sizeof(VkDrawIndexedIndirectCommand) * maxDraws;
@@ -607,22 +607,22 @@ void createIndirectDrawBuffer(VulkanComponents* components, RendererState* state
         bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
-        if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
             printf("Failed to create indirect draw buffer!\n");
         }
         
         VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->indirectBuffer.buffer[i], &memRequirements);
+        vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memRequirements);
         
         state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
+        vkBindBufferMemory(ctx->device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
         
         state->indirectBuffer.mapped[i] = (VkDrawIndexedIndirectCommand*)state->indirectBuffer.allocs[i].mapped;
     }
 }
 
-void createCullingBuffers(VulkanComponents* components, RendererState* state, uint32_t maxEntities) {
-    state->entityCount = maxEntities;
+void createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
+    state->culling.maxEntities = maxEntities;
     uint32_t maxMeshes = 1024;
     
     VkDeviceSize entityBufferSize = sizeof(uint32_t) * 2 * maxEntities; // meshIndex, materialIndex
@@ -638,12 +638,12 @@ void createCullingBuffers(VulkanComponents* components, RendererState* state, ui
         entityInfo.size = entityBufferSize;
         entityInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         entityInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(components->deviceQueueComp.device, &entityInfo, NULL, &state->entityBuffer[i]);
+        vkCreateBuffer(ctx->device, &entityInfo, NULL, &state->culling.entityBuffer[i]);
         VkMemoryRequirements memReqs;
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->entityBuffer[i], &memReqs);
-        state->entityAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->entityBuffer[i], state->entityAllocs[i].memory, state->entityAllocs[i].offset);
-        state->entityMapped[i] = state->entityAllocs[i].mapped;
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.entityBuffer[i], &memReqs);
+        state->culling.entityAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx->device, state->culling.entityBuffer[i], state->culling.entityAllocs[i].memory, state->culling.entityAllocs[i].offset);
+        state->culling.entityMapped[i] = state->culling.entityAllocs[i].mapped;
 
         // Mesh Data Buffer
         VkBufferCreateInfo meshInfo = {};
@@ -651,11 +651,11 @@ void createCullingBuffers(VulkanComponents* components, RendererState* state, ui
         meshInfo.size = meshDataSize;
         meshInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         meshInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(components->deviceQueueComp.device, &meshInfo, NULL, &state->meshDataBuffer[i]);
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->meshDataBuffer[i], &memReqs);
-        state->meshDataAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->meshDataBuffer[i], state->meshDataAllocs[i].memory, state->meshDataAllocs[i].offset);
-        state->meshDataMapped[i] = state->meshDataAllocs[i].mapped;
+        vkCreateBuffer(ctx->device, &meshInfo, NULL, &state->culling.meshDataBuffer[i]);
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.meshDataBuffer[i], &memReqs);
+        state->culling.meshDataAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx->device, state->culling.meshDataBuffer[i], state->culling.meshDataAllocs[i].memory, state->culling.meshDataAllocs[i].offset);
+        state->culling.meshDataMapped[i] = state->culling.meshDataAllocs[i].mapped;
 
         // Mesh Bounds Buffer
         VkBufferCreateInfo boundsInfo = {};
@@ -663,11 +663,11 @@ void createCullingBuffers(VulkanComponents* components, RendererState* state, ui
         boundsInfo.size = meshBoundsSize;
         boundsInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         boundsInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(components->deviceQueueComp.device, &boundsInfo, NULL, &state->meshBoundsBuffer[i]);
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->meshBoundsBuffer[i], &memReqs);
-        state->meshBoundsAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->meshBoundsBuffer[i], state->meshBoundsAllocs[i].memory, state->meshBoundsAllocs[i].offset);
-        state->meshBoundsMapped[i] = state->meshBoundsAllocs[i].mapped;
+        vkCreateBuffer(ctx->device, &boundsInfo, NULL, &state->culling.meshBoundsBuffer[i]);
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.meshBoundsBuffer[i], &memReqs);
+        state->culling.meshBoundsAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx->device, state->culling.meshBoundsBuffer[i], state->culling.meshBoundsAllocs[i].memory, state->culling.meshBoundsAllocs[i].offset);
+        state->culling.meshBoundsMapped[i] = state->culling.meshBoundsAllocs[i].mapped;
 
         // Draw Count Buffer
         VkBufferCreateInfo countInfo = {};
@@ -675,11 +675,11 @@ void createCullingBuffers(VulkanComponents* components, RendererState* state, ui
         countInfo.size = drawCountSize;
         countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         countInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(components->deviceQueueComp.device, &countInfo, NULL, &state->drawCountBuffer[i]);
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->drawCountBuffer[i], &memReqs);
-        state->drawCountAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->drawCountBuffer[i], state->drawCountAllocs[i].memory, state->drawCountAllocs[i].offset);
-        state->drawCountMapped[i] = (uint32_t*)state->drawCountAllocs[i].mapped;
+        vkCreateBuffer(ctx->device, &countInfo, NULL, &state->culling.drawCountBuffer[i]);
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.drawCountBuffer[i], &memReqs);
+        state->culling.drawCountAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx->device, state->culling.drawCountBuffer[i], state->culling.drawCountAllocs[i].memory, state->culling.drawCountAllocs[i].offset);
+        state->culling.drawCountMapped[i] = (uint32_t*)state->culling.drawCountAllocs[i].mapped;
 
         // Cull UBO
         VkBufferCreateInfo uboInfo = {};
@@ -687,15 +687,15 @@ void createCullingBuffers(VulkanComponents* components, RendererState* state, ui
         uboInfo.size = uboSize;
         uboInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         uboInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(components->deviceQueueComp.device, &uboInfo, NULL, &state->cullUboBuffer.buffer[i]);
-        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->cullUboBuffer.buffer[i], &memReqs);
-        state->cullUboBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        vkBindBufferMemory(components->deviceQueueComp.device, state->cullUboBuffer.buffer[i], state->cullUboBuffer.allocs[i].memory, state->cullUboBuffer.allocs[i].offset);
-        state->cullUboBuffer.mapped[i] = (CullUBO*)state->cullUboBuffer.allocs[i].mapped;
+        vkCreateBuffer(ctx->device, &uboInfo, NULL, &state->culling.ubo.buffer[i]);
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.ubo.buffer[i], &memReqs);
+        state->culling.ubo.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(ctx->device, state->culling.ubo.buffer[i], state->culling.ubo.allocs[i].memory, state->culling.ubo.allocs[i].offset);
+        state->culling.ubo.mapped[i] = (CullUBO*)state->culling.ubo.allocs[i].mapped;
     }
 }
 
-bool createFallbackResources(VulkanComponents* components, RendererState* state)
+bool createFallbackResources(VulkanContext* ctx, RendererState* state)
 {
     // 1. Fallback Mesh (Simple Cube)
     const Vertex cubeVertices[] = {
@@ -719,9 +719,9 @@ bool createFallbackResources(VulkanComponents* components, RendererState* state)
     };
 
     uint32_t fallbackMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &gpuAllocator,
-                                                    components->deviceQueueComp.device,
-                                                    components->cmdComp.commandPool,
-                                                    components->deviceQueueComp.transferQueue,
+                                                    ctx->device,
+                                                    state->commandPool,
+                                                    ctx->transferQueue,
                                                     cubeVertices, 8, cubeIndices, 36);
 
     if (fallbackMeshIdx != FALLBACK_MESH_INDEX) {
@@ -736,13 +736,13 @@ bool createFallbackResources(VulkanComponents* components, RendererState* state)
 
     VkDeviceMemory fallbackImageMemory; // Memory managed by gpu_allocator
 
-    if (!createTextureImageFromPixels(components, &state->fallbackImage, &fallbackImageMemory, &state->fallbackImageView, fallbackPixels, 2, 2)) {
+    if (!createTextureImageFromPixels(ctx, &state->fallbackImage, &fallbackImageMemory, &state->fallbackImageView, fallbackPixels, 2, 2)) {
         printf("Warning: Failed to create fallback texture!\n");
         return false;
     }
 
     // 3. Register Fallback Texture
-    uint32_t fallbackTexIdx = bindless_register_texture(components, &state->bindlessTextures, state->fallbackImageView, components->renderComp.textureSampler);
+    uint32_t fallbackTexIdx = bindless_register_texture(ctx, &state->bindlessTextures, state->fallbackImageView, state->textureSampler);
     
     if (fallbackTexIdx != FALLBACK_TEXTURE_INDEX) {
         printf("Warning: Fallback texture was assigned index %u instead of %u!\n", fallbackTexIdx, FALLBACK_TEXTURE_INDEX);
@@ -764,7 +764,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
     cleanupMonitors(&monitors);
     enumerateMonitors(&monitors);
 
-	window = initWindow(&components, &monitors);
+	window = initWindow(&ctx, &monitors);
 
 	if (window == NULL)
 	{
@@ -776,20 +776,20 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
 
-	components.instanceDebug.enableValidationLayers = true;
-	components.syncComp.frameIndex = 0; // Tracks which frame is being processed
+	ctx.enableValidationLayers = true;
+	rendererState.frameIndex = 0; // Tracks which frame is being processed
 
 	// Initialize Vulkan
-	if (createInstance(&components) != VK_SUCCESS)
+	if (createInstance(&ctx) != VK_SUCCESS)
 	{
 		fprintf(stderr, "Failed to create Vulkan instance!\n");
 		unInitVulkan();
 		return false;
 	}
-	vulkanGarbage.components = &components;
+	vulkanGarbage.ctx = &ctx;
 
 	// Create a window surface
-	if (createSurface(components.instanceDebug.instance, window, &(components.surface)) != VK_SUCCESS)
+	if (createSurface(ctx.instance, window, &(ctx.surface)) != VK_SUCCESS)
 	{
 		fprintf(stderr, "Failed to create window surface!\n");
 		unInitVulkan();
@@ -798,11 +798,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	// Pick physical device
 	DeviceCapabilities capabilities;
-	components.physicalDeviceComp.physicalDevice = VK_NULL_HANDLE;
+	ctx.physicalDevice = VK_NULL_HANDLE;
 
 	//!TODO replace empty char array with preffered device from VulkanSettings   
 	char* preferredDevice = getChosenDevice();
-	if (!pickPhysicalDevice(&(components), &capabilities, &(components.physicalDeviceComp.queueFamilyIndices), preferredDevice))
+	if (!pickPhysicalDevice(&ctx, &capabilities, &(ctx.queueFamilyIndices), preferredDevice))
 	{
 		fprintf(stderr, "Quitting init: physical device failure!\n");
 		unInitVulkan();
@@ -810,87 +810,87 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 	
 
-	if (createLogicalDevice(components.physicalDeviceComp.physicalDevice, &(components.deviceQueueComp.device), &(components.deviceQueueComp.graphicsQueue), &(components.deviceQueueComp.computeQueue), &(components.deviceQueueComp.transferQueue), &(components.deviceQueueComp.presentQueue), &(components.physicalDeviceComp.queueFamilyIndices)) != VK_SUCCESS)
+	if (createLogicalDevice(ctx.physicalDevice, &(ctx.device), &(ctx.graphicsQueue), &(ctx.computeQueue), &(ctx.transferQueue), &(ctx.presentQueue), &(ctx.queueFamilyIndices)) != VK_SUCCESS)
 	{
 		fprintf(stderr, "Quitting init: logical device failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	gpuAllocator.device = components.deviceQueueComp.device;
-	vkGetPhysicalDeviceMemoryProperties(components.physicalDeviceComp.physicalDevice, &gpuAllocator.memProps);
+	gpuAllocator.device = ctx.device;
+	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &gpuAllocator.memProps);
 	gpuAllocator.blocks = NULL;
 	gpuAllocator.blockCount = 0;
 
-	swapchainAllocator.device = components.deviceQueueComp.device;
-	vkGetPhysicalDeviceMemoryProperties(components.physicalDeviceComp.physicalDevice, &swapchainAllocator.memProps);
+	swapchainAllocator.device = ctx.device;
+	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &swapchainAllocator.memProps);
 	swapchainAllocator.blocks = NULL;
 	swapchainAllocator.blockCount = 0;
 
-	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, components.deviceQueueComp.device);
+	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device);
 
 
 
 
-	components.swapChainComp.swapChainGroup = initSwapChain(&components, window, getChosenPresentMode(), VK_NULL_HANDLE); // Initialize a swap chain
-	if (components.swapChainComp.swapChainGroup.swapChain == NULL)
+	initSwapChain(&ctx, window, getChosenPresentMode(), VK_NULL_HANDLE, &rendererState); // Initialize a swap chain
+	if (rendererState.swapChain == NULL)
 	{
 		printf("Quitting init: swap chain failure.\n");
 		unInitVulkan();
 		return false;
 	}
 	
-	components.swapChainComp.viewGroup = createImageViews(components.deviceQueueComp.device, components.swapChainComp.swapChainGroup);
-	if (components.swapChainComp.viewGroup.views == NULL)
+	createImageViews(&ctx, &rendererState);
+	if (rendererState.views == NULL)
 	{
 		printf("Quitting init: image view failure.\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!createCommandPool(components.deviceQueueComp.device, components.physicalDeviceComp.physicalDevice,
-						   components.surface, &(components.cmdComp.commandPool)))
+	if (!createCommandPool(ctx.device, ctx.physicalDevice,
+						   ctx.surface, &(rendererState.commandPool)))
 	{
 		printf("Quitting init: command pool failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	createColorResources(&components); // Make this a bool and add check
+	createColorResources(&ctx); // Make this a bool and add check
 
-	if(!createDepthResources(&components))
+	if(!createDepthResources(&ctx, &rendererState))
 	{
 		printf("Quitting init: depth resource creation failure!\n");
 	}
 
 
 
-	if (!ano_vk_init_global_layout(&components, &rendererState))
+	if (!ano_vk_init_global_layout(&ctx, &rendererState))
 	{
 		printf("Quitting init: global layout failure!\n");
 		unInitVulkan();
 		return false;
 	}
-	if (!ano_vk_init_cull_layout(&components, &rendererState))
+	if (!ano_vk_init_cull_layout(&ctx, &rendererState))
 	{
 		printf("Quitting init: cull layout failure!\n");
 		unInitVulkan();
 		return false;
 	}
-	if (!ano_vk_init_material_layouts(&components, &rendererState))
+	if (!ano_vk_init_material_layouts(&ctx, &rendererState))
 	{
 		printf("Quitting init: material layouts failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!createBindlessTextureArray(&components, &rendererState))
+	if (!createBindlessTextureArray(&ctx, &rendererState))
 	{
 		unInitVulkan();
 		return false;
 	}
 
-	if (!ano_vk_init_pipelines(&components, &rendererState))
+	if (!ano_vk_init_pipelines(&ctx, &rendererState))
 	{
 		printf("Quitting init: pipeline failure!\n");
 		unInitVulkan();
@@ -898,51 +898,51 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 
-	/*if(!createTextureImage(&components, &components.renderComp.buffers.entities[0], "texture.jpg", false))
+	/*if(!createTextureImage(&ctx, &rendererState.entities[0], "texture.jpg", false))
 	{
 		printf("Quitting init: texture read failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if(!createTextureImageView(&components, &components.renderComp.buffers.entities[0]))
+	if(!createTextureImageView(&ctx, &rendererState.entities[0]))
 	{
 		printf("Quitting init: texture image view failure!\n");
 		unInitVulkan();
 		return false;
 	}*/
 
-	if(!createTextureSampler(&components))
+	if(!createTextureSampler(&ctx, &rendererState))
 	{
 		printf("Quitting init: texture sampler failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!createFallbackResources(&components, &rendererState))
+	if (!createFallbackResources(&ctx, &rendererState))
 	{
 		printf("Quitting init: fallback resources failure.\n");
 		unInitVulkan();
 		return false;
 	}
 
-	components.renderComp.buffers.entityCount = 1;
+	rendererState.entityCount = 1;
 
 	// In a real application, maxEntities would be dynamic or configured.
 	uint32_t maxEntities = 1000;
-	createTransformBuffer(&components, &rendererState, maxEntities);
-	createMaterialBuffer(&components, &rendererState, maxEntities);
-	createIndirectDrawBuffer(&components, &rendererState, maxEntities);
-    createCullingBuffers(&components, &rendererState, maxEntities);
+	createTransformBuffer(&ctx, &rendererState, maxEntities);
+	createMaterialBuffer(&ctx, &rendererState, maxEntities);
+	createIndirectDrawBuffer(&ctx, &rendererState, maxEntities);
+    createCullingBuffers(&ctx, &rendererState, maxEntities);
 
-	if(!parseGltf(&components, "viking_room.gltf"))
+	if(!parseGltf(&ctx, "viking_room.gltf"))
 	{
 		printf("Failed to parse glTF file!\n");
 		unInitVulkan();
 		return false;
 	}
 	
-	/*if (!createVertexBuffer(&components, vertices, 8, &components.renderComp.buffers.entities[0]))
+	/*if (!createVertexBuffer(&ctx, vertices, 8, &rendererState.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();
@@ -950,28 +950,28 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 	// Fill the vertex buffer
-	if (!stagingTransfer(&components, vertices, components.renderComp.buffers.entities[0].vertex, sizeof(vertices)))
+	if (!stagingTransfer(&ctx, vertices, rendererState.entities[0].vertex, sizeof(vertices)))
 	{
 		printf("Quitting init: staging buffer population failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!createIndexBuffer(&components, vertexIndices, 12, &components.renderComp.buffers.entities[0]))
+	if (!createIndexBuffer(&ctx, vertexIndices, 12, &rendererState.entities[0]))
 	{
 		printf("Quitting init: vertex buffer creation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!stagingTransfer(&components, vertexIndices, components.renderComp.buffers.entities[0].index, sizeof(vertexIndices)))
+	if (!stagingTransfer(&ctx, vertexIndices, rendererState.entities[0].index, sizeof(vertexIndices)))
 	{
 		printf("Quitting init: staging buffer population failure!\n");
 		unInitVulkan();
 		return false;
 	}*/
 
-	if (!createUniformBuffers(&components))
+	if (!createUniformBuffers(&ctx, &rendererState))
 	{
 		printf("Quitting init: uniform buffer creation failure!\n");
 		unInitVulkan();
@@ -981,7 +981,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 
 	// HERE
-	if (!createDescriptorPool(&components, &rendererState))
+	if (!createDescriptorPool(&ctx, &rendererState))
 	{
 		printf("Quitting init: UBO descriptor pool creation failure!\n");
 		unInitVulkan();
@@ -989,7 +989,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 
-	if (!createDescriptorSets(&components, &rendererState))
+	if (!createDescriptorSets(&ctx, &rendererState))
 	{
 		printf("Quitting init: UBO descriptor sets creation failure!\n");
 		unInitVulkan();
@@ -997,10 +997,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 
-	updateUboDescriptorSets(&components, &rendererState);
+	updateUboDescriptorSets(&ctx, &rendererState);
 
 
-	if (!createCommandBuffer(&components))
+	if (!createCommandBuffer(&ctx, &rendererState))
 	{
 		printf("Quitting init: command buffer failure!\n");
 		unInitVulkan();
@@ -1008,7 +1008,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 	
 
-	if (!createSyncObjects(&components))
+	if (!createSyncObjects(&ctx, &rendererState))
 	{
 		printf("Quitting init: sync failure!\n");
 		unInitVulkan();

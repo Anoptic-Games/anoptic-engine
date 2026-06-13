@@ -17,13 +17,13 @@
 // Function interfaces
 
 // Initializes a Vulkan instance
-VkResult createInstance(VulkanComponents* vkComponents);
+VkResult createInstance(VulkanContext* ctx);
 
 // Casts a Vulkan instance into the fires of perdition
-void cleanupVulkan(VulkanComponents* components);
+void cleanupVulkan(VulkanContext* ctx);
 
 // Initializes a pointer to a GLFW window, returns a window pointer or NULL on failure
-GLFWwindow* initWindow(VulkanComponents* components, Monitors* monitors);
+GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors);
 
 // Enumerates all monitors and their parameters
 void enumerateMonitors(Monitors* monitors);
@@ -32,23 +32,23 @@ void enumerateMonitors(Monitors* monitors);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
 
 // Selects the optimal graphics device
-bool pickPhysicalDevice(VulkanComponents* components, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice);
+bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice);
 
 // Initializes a logical device based on a chosen physical device
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 
 // Initializes a swap chain
-SwapChainGroup initSwapChain(VulkanComponents *components, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain);
+bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state);
 
-void recreateSwapChain(VulkanComponents* components, GLFWwindow* window);
+void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window);
 
-void cleanupSwapChain(VulkanComponents* components, VkDevice device, SwapChainGroup* swapGroup, ImageViewGroup* viewGroup);
+void cleanupSwapChain(VulkanContext* ctx, RendererState* state);
 
 // Generic helper function for creating 2D image views
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels);
 
 // You know what this does
-ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
+bool createImageViews(VulkanContext* ctx, RendererState* state);
 
 
 
@@ -56,57 +56,57 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
 
 // Generic function for data buffer creation, updates buffer and bufferMemory with the created addresses
-bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation);
+bool createDataBuffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation);
 
 // Creates uniform buffers for each frame
-bool createUniformBuffers(VulkanComponents* components);
+bool createUniformBuffers(VulkanContext* ctx, RendererState* state);
 
 // Creates transform buffers for meshes
 
 
 // Updates the uniform buffer
-bool updateUniformBuffer(VulkanComponents* components);
+bool updateUniformBuffer(VulkanContext* ctx, RendererState* state);
 
 // Updates a mesh's transform matrices
-bool updateMeshTransforms(VulkanComponents* components, RenderEntity* entity, float move);
+bool updateMeshTransforms(VulkanContext* ctx, RenderEntity* entity, float move);
 
 // Creates a color draw target for MSAA
-void createColorResources(VulkanComponents* components);
+void createColorResources(VulkanContext* ctx);
 
 // Creates a depth image and view for the current swapchain
-bool createDepthResources(VulkanComponents* components);
+bool createDepthResources(VulkanContext* ctx, RendererState* state);
 
 // Creates the descriptor pool
-bool createDescriptorPool(VulkanComponents* components, RendererState* state);
+bool createDescriptorPool(VulkanContext* ctx, RendererState* state);
 
-bool createBindlessTextureArray(VulkanComponents* components, RendererState* state);
+bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state);
 
 // Creates the descriptor sets
-bool createDescriptorSets(VulkanComponents* components, RendererState* state);
+bool createDescriptorSets(VulkanContext* ctx, RendererState* state);
 
 // Updates UBO descriptor sets to point to their corresponding uniform buffers
-void updateUboDescriptorSets(VulkanComponents* components, RendererState* state);
+void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state);
 
 // Finds available memory types appropriate for a given buffer
-uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);
+uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
 // Helper function to decrease verbosity of transient command calls
-VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components);
+VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx);
 
 // Returns true if the given format has a stencil component
 bool hasStencilComponent(VkFormat format);
 
 // Helper function to decrease verbosity of transient command calls, to be used after beginSingleTimeCommands()
-void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer commandBuffer);
+void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer);
 
 // Copies data from one GPU buffer to another
-bool copyBuffer(VulkanComponents* components, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+bool copyBuffer(VulkanContext* ctx, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
 // Creates a command buffer
-bool createCommandBuffer(VulkanComponents* components);
+bool createCommandBuffer(VulkanContext* ctx, RendererState* state);
 
 // Creates fences, semaphores, etc.
-bool createSyncObjects(VulkanComponents* components);
+bool createSyncObjects(VulkanContext* ctx, RendererState* state);
 
 // Frees up memory allocated for monitor info
 void cleanupMonitors(Monitors* monitors);

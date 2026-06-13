@@ -73,7 +73,7 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 }
 
 
-bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* state)
+bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 {
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
 	uboLayoutBinding.binding = 0;
@@ -103,7 +103,7 @@ bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* stat
 	layoutInfo.bindingCount = 3;
 	layoutInfo.pBindings = bindings;
 
-	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
+	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
 	{
 		printf("Failed to create global descriptor set layout!\n");
 		return false;
@@ -112,7 +112,7 @@ bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* stat
 	return true;
 }
 
-bool ano_vk_init_cull_layout(VulkanComponents* components, RendererState* state)
+bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
     VkDescriptorSetLayoutBinding bindings[7] = {};
 
@@ -163,7 +163,7 @@ bool ano_vk_init_cull_layout(VulkanComponents* components, RendererState* state)
     layoutInfo.bindingCount = 7;
     layoutInfo.pBindings = bindings;
 
-    if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->cullSetLayout) != VK_SUCCESS)
+    if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
     {
         printf("Failed to create cull descriptor set layout!\n");
         return false;
@@ -173,7 +173,7 @@ bool ano_vk_init_cull_layout(VulkanComponents* components, RendererState* state)
 }
 
 
-bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* state)
+bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 {
 	state->bindlessTextures.maxTextures = 4096;
 	state->bindlessTextures.textureCount = 0;
@@ -202,7 +202,7 @@ bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* s
 	layoutInfo.bindingCount = 1;
 	layoutInfo.pBindings = &samplerLayoutBinding;
 
-	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->bindlessTextures.layout) != VK_SUCCESS)
+	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->bindlessTextures.layout) != VK_SUCCESS)
 	{
 		printf("Failed to create bindless texture descriptor set layout!\n");
 		return false;
@@ -218,12 +218,12 @@ bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* s
 
 // The juicy part
 
-bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
+bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	// 1. Setup cache
 	VkPipelineCacheCreateInfo cacheInfo = {};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	vkCreatePipelineCache(components->deviceQueueComp.device, &cacheInfo, NULL, &state->prototypes[PIPELINE_FLAT].cache);
+	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->prototypes[PIPELINE_FLAT].cache);
 
 	// 2. Setup layout
 	VkPushConstantRange pushConstantRange = {};
@@ -239,7 +239,7 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	pipelineLayoutInfo.pushConstantRangeCount = 1;
 	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
-	if (vkCreatePipelineLayout(components->deviceQueueComp.device, &pipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_FLAT].layout) != VK_SUCCESS) 
+	if (vkCreatePipelineLayout(ctx->device, &pipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_FLAT].layout) != VK_SUCCESS) 
 	{
 		printf("Failed to create pipeline layout!\n");
 		return false;
@@ -260,8 +260,8 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/flat.frag.spv", PROJECT_ROOT);
 	if (!loadFile(fragShaderPath, &fragShaderCode)) return false;
 
-	VkShaderModule vertShaderModule = createShaderModule(components->deviceQueueComp.device, &vertShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(components->deviceQueueComp.device, &fragShaderCode);
+	VkShaderModule vertShaderModule = createShaderModule(ctx->device, &vertShaderCode);
+	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
 	vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -296,14 +296,14 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
-	viewport.width = (float) components->swapChainComp.swapChainGroup.imageExtent.width;
-	viewport.height = (float) components->swapChainComp.swapChainGroup.imageExtent.height;
+	viewport.width = (float) state->imageExtent.width;
+	viewport.height = (float) state->imageExtent.height;
 	viewport.minDepth = 0.0f;
 	viewport.maxDepth = 1.0f;
 
 	VkRect2D scissor = {};
 	scissor.offset = (VkOffset2D){0, 0};
-	scissor.extent = components->swapChainComp.swapChainGroup.imageExtent;
+	scissor.extent = state->imageExtent;
 
 	VkPipelineViewportStateCreateInfo viewportState = {};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -328,7 +328,7 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	VkPipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	multisampling.sampleShadingEnable = VK_FALSE;
-	multisampling.rasterizationSamples = components->physicalDeviceComp.msaaSamples;
+	multisampling.rasterizationSamples = ctx->msaaSamples;
 	multisampling.minSampleShading = 1.0f;
 	multisampling.pSampleMask = NULL;
 	multisampling.alphaToCoverageEnable = VK_FALSE;
@@ -371,8 +371,8 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	depthStencil.maxDepthBounds = 1.0f;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkFormat colorFormat = components->swapChainComp.swapChainGroup.imageFormat;
-	VkFormat depthFormat = components->renderComp.buffers.depthFormat;
+	VkFormat colorFormat = state->imageFormat;
+	VkFormat depthFormat = state->depthFormat;
 
 	VkPipelineRenderingCreateInfo renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
@@ -398,7 +398,7 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	pipelineInfo.subpass = 0;
 
 	// Opaque variant (index 0)
-	if (vkCreateGraphicsPipelines(components->deviceQueueComp.device, state->prototypes[PIPELINE_FLAT].cache, 1, &pipelineInfo, NULL, &state->prototypes[PIPELINE_FLAT].implementations[0].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, state->prototypes[PIPELINE_FLAT].cache, 1, &pipelineInfo, NULL, &state->prototypes[PIPELINE_FLAT].implementations[0].pipeline) != VK_SUCCESS) return false;
 	state->prototypes[PIPELINE_FLAT].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	state->prototypes[PIPELINE_FLAT].implementations[0].depthWrite = VK_TRUE;
 	state->prototypes[PIPELINE_FLAT].implementations[0].blendEnable = VK_FALSE;
@@ -414,7 +414,7 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 	colorBlending.pAttachments = &colorBlendAttachment;
 	
-	if (vkCreateGraphicsPipelines(components->deviceQueueComp.device, state->prototypes[PIPELINE_FLAT].cache, 1, &pipelineInfo, NULL, &state->prototypes[PIPELINE_FLAT].implementations[1].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, state->prototypes[PIPELINE_FLAT].cache, 1, &pipelineInfo, NULL, &state->prototypes[PIPELINE_FLAT].implementations[1].pipeline) != VK_SUCCESS) return false;
 	state->prototypes[PIPELINE_FLAT].implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	state->prototypes[PIPELINE_FLAT].implementations[1].depthWrite = VK_FALSE;
 	state->prototypes[PIPELINE_FLAT].implementations[1].blendEnable = VK_TRUE;
@@ -422,20 +422,20 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
     ano_aligned_free(vertShaderCode.data);
     ano_aligned_free(fragShaderCode.data);
 
-	vkDestroyShaderModule(components->deviceQueueComp.device, vertShaderModule, NULL);
-	vkDestroyShaderModule(components->deviceQueueComp.device, fragShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, vertShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
 
     // Compute Culling Pipeline
     VkPipelineCacheCreateInfo compCacheInfo = {};
     compCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(components->deviceQueueComp.device, &compCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].cache);
+    vkCreatePipelineCache(ctx->device, &compCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].cache);
 
     VkPipelineLayoutCreateInfo compLayoutInfo = {};
     compLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     compLayoutInfo.setLayoutCount = 1;
-    compLayoutInfo.pSetLayouts = &state->cullSetLayout;
+    compLayoutInfo.pSetLayouts = &state->culling.setLayout;
 
-    if (vkCreatePipelineLayout(components->deviceQueueComp.device, &compLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].layout) != VK_SUCCESS)
+    if (vkCreatePipelineLayout(ctx->device, &compLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].layout) != VK_SUCCESS)
     {
         printf("Failed to create compute cull pipeline layout!\n");
         return false;
@@ -450,7 +450,7 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
     snprintf(compShaderPath, sizeof(compShaderPath), "%s/resources/shaders/cull.comp.spv", PROJECT_ROOT);
     if (!loadFile(compShaderPath, &compShaderCode)) return false;
 
-    VkShaderModule compShaderModule = createShaderModule(components->deviceQueueComp.device, &compShaderCode);
+    VkShaderModule compShaderModule = createShaderModule(ctx->device, &compShaderCode);
 
     VkComputePipelineCreateInfo computePipelineInfo = {};
     computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -460,49 +460,49 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
     computePipelineInfo.stage.module = compShaderModule;
     computePipelineInfo.stage.pName = "main";
 
-    if (vkCreateComputePipelines(components->deviceQueueComp.device, state->prototypes[PIPELINE_COMPUTE_CULL].cache, 1, &computePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline) != VK_SUCCESS) return false;
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_CULL].cache, 1, &computePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline) != VK_SUCCESS) return false;
     
     state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
     ano_aligned_free(compShaderCode.data);
-    vkDestroyShaderModule(components->deviceQueueComp.device, compShaderModule, NULL);
+    vkDestroyShaderModule(ctx->device, compShaderModule, NULL);
 
 	return true;
 }
 
-void ano_vk_cleanup_pipelines(VulkanComponents* components, RendererState* state)
+void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	// Global layout
 	if (state->globalSetLayout != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, state->globalSetLayout, NULL);
+		vkDestroyDescriptorSetLayout(ctx->device, state->globalSetLayout, NULL);
 		state->globalSetLayout = VK_NULL_HANDLE;
 	}
 
-    if (state->cullSetLayout != VK_NULL_HANDLE)
+    if (state->culling.setLayout != VK_NULL_HANDLE)
     {
-        vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, state->cullSetLayout, NULL);
-        state->cullSetLayout = VK_NULL_HANDLE;
+        vkDestroyDescriptorSetLayout(ctx->device, state->culling.setLayout, NULL);
+        state->culling.setLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts
 	if (state->bindlessTextures.layout != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, state->bindlessTextures.layout, NULL);
+		vkDestroyDescriptorSetLayout(ctx->device, state->bindlessTextures.layout, NULL);
 		state->bindlessTextures.layout = VK_NULL_HANDLE;
 	}
 
 	// Bindless descriptor pool
 	if (state->bindlessTextures.pool != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorPool(components->deviceQueueComp.device, state->bindlessTextures.pool, NULL);
+		vkDestroyDescriptorPool(ctx->device, state->bindlessTextures.pool, NULL);
 		state->bindlessTextures.pool = VK_NULL_HANDLE;
 	}
 
 	// Global descriptor pool
 	if (state->globalDescriptorPool != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorPool(components->deviceQueueComp.device, state->globalDescriptorPool, NULL);
+		vkDestroyDescriptorPool(ctx->device, state->globalDescriptorPool, NULL);
 		state->globalDescriptorPool = VK_NULL_HANDLE;
 	}
 
@@ -511,13 +511,13 @@ void ano_vk_cleanup_pipelines(VulkanComponents* components, RendererState* state
 	{
 		if (state->prototypes[i].cache != VK_NULL_HANDLE)
 		{
-			vkDestroyPipelineCache(components->deviceQueueComp.device, state->prototypes[i].cache, NULL);
+			vkDestroyPipelineCache(ctx->device, state->prototypes[i].cache, NULL);
 			state->prototypes[i].cache = VK_NULL_HANDLE;
 		}
 
 		if (state->prototypes[i].layout != VK_NULL_HANDLE)
 		{
-			vkDestroyPipelineLayout(components->deviceQueueComp.device, state->prototypes[i].layout, NULL);
+			vkDestroyPipelineLayout(ctx->device, state->prototypes[i].layout, NULL);
 			state->prototypes[i].layout = VK_NULL_HANDLE;
 		}
 
@@ -527,7 +527,7 @@ void ano_vk_cleanup_pipelines(VulkanComponents* components, RendererState* state
 			{
 				if (state->prototypes[i].implementations[j].pipeline != VK_NULL_HANDLE)
 				{
-					vkDestroyPipeline(components->deviceQueueComp.device, state->prototypes[i].implementations[j].pipeline, NULL);
+					vkDestroyPipeline(ctx->device, state->prototypes[i].implementations[j].pipeline, NULL);
 					state->prototypes[i].implementations[j].pipeline = VK_NULL_HANDLE;
 				}
 			}

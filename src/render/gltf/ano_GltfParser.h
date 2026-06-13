@@ -254,6 +254,6 @@ typedef struct GltfElements
 bool count_gltf_elements(const char *json, GltfElements *counts);
 
 // Parses a glTF file, adding asset buffers to memory and creating renderable entity packages
-bool parseGltf(VulkanComponents* components, const char* fileName);
+bool parseGltf(VulkanContext* ctx, const char* fileName);
 
 #endif

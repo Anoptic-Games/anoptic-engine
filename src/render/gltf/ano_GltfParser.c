@@ -1435,7 +1435,7 @@ uint16_t* getIndexData(GltfElements* elements, GltfAccessor* accessor, uint32_t 
 // Vertices/Indices are processed in processGltfMeshes
 
 
-bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements, GltfMesh* mesh)
+bool uploadTextureDataToGPU(VulkanContext* ctx, GltfElements* elements, GltfMesh* mesh)
 {
 	bool success = true;
 
@@ -1473,7 +1473,7 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 		// Create texture image for each primitive
 		if(!texture->processed)
 		{
-			if (!createTextureImage(components, &texture->textureImage, &texture->textureImageMemory, &texture->textureImageView, image->uri, flag16))
+			if (!createTextureImage(ctx, &texture->textureImage, &texture->textureImageMemory, &texture->textureImageView, image->uri, flag16))
 			{
 				success = false;
 			}
@@ -1496,7 +1496,7 @@ bool uploadTextureDataToGPU(VulkanComponents* components, GltfElements* elements
 	return success;
 }
 
-void processGltfMeshes (VulkanComponents* components, GltfElements* elements)
+void processGltfMeshes (VulkanContext* ctx, GltfElements* elements)
 {
     Vector3 defaultColor = {0.5f, 0.5f, 0.5f};
 
@@ -1530,7 +1530,7 @@ void processGltfMeshes (VulkanComponents* components, GltfElements* elements)
             }
 
             // Upload to Geometry Pool
-            primitive->meshIndex = geometry_pool_upload(&rendererState.globalGeometryPool, &gpuAllocator, components->deviceQueueComp.device, components->cmdComp.commandPool, components->deviceQueueComp.transferQueue, vertices, vertexCount, indices, indexCount);
+            primitive->meshIndex = geometry_pool_upload(&rendererState.globalGeometryPool, &gpuAllocator, ctx->device, rendererState.commandPool, ctx->transferQueue, vertices, vertexCount, indices, indexCount);
 
             free(vertices);
             free(indices);
@@ -1538,11 +1538,11 @@ void processGltfMeshes (VulkanComponents* components, GltfElements* elements)
 
         // Create texture buffer
         printf("Creating mesh#%d texture!\n", i);
-        uploadTextureDataToGPU(components, elements, mesh);
+        uploadTextureDataToGPU(ctx, elements, mesh);
     } 
 }
 
-void packageRenderables(VulkanComponents* components, GltfElements* elements)
+void packageRenderables(VulkanContext* ctx, GltfElements* elements)
 {
 	// Count total primitives across all meshes
 	uint32_t totalPrimitiveCount = 0;
@@ -1552,9 +1552,9 @@ void packageRenderables(VulkanComponents* components, GltfElements* elements)
 	}
 
 	// Allocate RenderEntity for all primitives
-	components->renderComp.buffers.entityCount = totalPrimitiveCount;
+	rendererState.entityCount = totalPrimitiveCount;
 	printf("Allocating memory for %d entities!\n", totalPrimitiveCount);
-	components->renderComp.buffers.entities = (RenderEntity*)calloc(totalPrimitiveCount, sizeof(RenderEntity));
+	rendererState.entities = (RenderEntity*)calloc(totalPrimitiveCount, sizeof(RenderEntity));
 
 	// Iterate through all meshes and their primitives
 	uint32_t entityIndex = 0;
@@ -1567,17 +1567,17 @@ void packageRenderables(VulkanComponents* components, GltfElements* elements)
 			GltfPrimitive* primitive = &mesh->primitives[primitiveIndex];
 
 			printf("Setting entity#%d buffers and textures!\n", entityIndex);
-			components->renderComp.buffers.entities[entityIndex].meshIndex = primitive->meshIndex;
+			rendererState.entities[entityIndex].meshIndex = primitive->meshIndex;
 
 			GltfMaterial* material = &elements->materials[primitive->material];
 			GltfTexture* texture = &elements->textures[material->pbr.baseColorTexture];
 
 			// Register texture in bindless array
-			uint32_t bindlessTexIdx = bindless_register_texture(components, &rendererState.bindlessTextures, texture->textureImageView, components->renderComp.textureSampler);
+			uint32_t bindlessTexIdx = bindless_register_texture(ctx, &rendererState.bindlessTextures, texture->textureImageView, rendererState.textureSampler);
 
 			// Assign material index
 			uint32_t matIdx = entityIndex;
-			components->renderComp.buffers.entities[entityIndex].materialIndex = matIdx;
+			rendererState.entities[entityIndex].materialIndex = matIdx;
 
 			// Write MaterialData to SSBO for all frames
 			MaterialData matData = {};
@@ -1937,7 +1937,7 @@ char* readGltfFile(const char* filename, size_t* size)
 }
 
 
-bool parseGltf(VulkanComponents* components, const char* fileName)
+bool parseGltf(VulkanContext* ctx, const char* fileName)
 {
 	GltfElements elements;
 	
@@ -1963,8 +1963,8 @@ bool parseGltf(VulkanComponents* components, const char* fileName)
 	printGltfElementsContents(&elements);
 
 	processGltfBuffers(&elements);
-	processGltfMeshes (components, &elements);
-	packageRenderables(components, &elements);
+	processGltfMeshes (ctx, &elements);
+	packageRenderables(ctx, &elements);
 	printf("Loading complete!\nIf this crashes now, it's due to GPU buffer linking/access errors!\n");
     free(fileBuffer);
     freeGltfBuffers(&elements);

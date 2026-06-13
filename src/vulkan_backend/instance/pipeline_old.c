@@ -72,12 +72,12 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 	return shaderModule;
 }
 
-bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass) 
+bool createRenderPass(VulkanContext* ctx, VkDevice device, VkFormat swapChainImageFormat, VkRenderPass* renderPass) 
 {
 	// Initial draw target - multisampled color
 	VkAttachmentDescription colorAttachment = {};
 	colorAttachment.format = swapChainImageFormat;
-	colorAttachment.samples = components->physicalDeviceComp.msaaSamples;
+	colorAttachment.samples = ctx->msaaSamples;
 	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -91,8 +91,8 @@ bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat sw
 
 	// Depth buffer - multisampled
 	VkAttachmentDescription depthAttachment = {};
-	depthAttachment.format = components->renderComp.buffers.depthFormat;
-	depthAttachment.samples = components->physicalDeviceComp.msaaSamples;
+	depthAttachment.format = state->depthFormat;
+	depthAttachment.samples = ctx->msaaSamples;
 	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -158,7 +158,7 @@ bool createRenderPass(VulkanComponents* components, VkDevice device, VkFormat sw
 
 
 
-bool createUboDescriptorSetLayout(VulkanComponents* components)
+bool createUboDescriptorSetLayout(VulkanContext* ctx)
 { // Generalize this to call multiple layout creation functions, for each type of renderable asset supported
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
 	uboLayoutBinding.binding = 0;
@@ -174,7 +174,7 @@ bool createUboDescriptorSetLayout(VulkanComponents* components)
 	layoutInfo.bindingCount = 1;
 	layoutInfo.pBindings = bindings;
 
-	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &(components->renderComp.descriptorSetLayout)) != VK_SUCCESS)
+	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &(ctx->renderComp.descriptorSetLayout)) != VK_SUCCESS)
 	{
 		printf("Failed to create UBO descriptor set layout!\n");
 		return false;
@@ -184,7 +184,7 @@ bool createUboDescriptorSetLayout(VulkanComponents* components)
 }
 
 
-bool createMeshDescriptorSetLayout(VulkanComponents* components)
+bool createMeshDescriptorSetLayout(VulkanContext* ctx)
 {
 	// Descriptor set layout binding for the combined image sampler
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
@@ -210,7 +210,7 @@ bool createMeshDescriptorSetLayout(VulkanComponents* components)
 	layoutInfo.bindingCount = 2; // Now we have two bindings
 	layoutInfo.pBindings = bindings;
 
-	if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &(components->renderComp.meshDescriptorSetLayout)) != VK_SUCCESS)
+	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &(ctx->renderComp.meshDescriptorSetLayout)) != VK_SUCCESS)
 	{
 		printf("Failed to create descriptor set layout!\n");
 		return false;
@@ -224,7 +224,7 @@ bool createMeshDescriptorSetLayout(VulkanComponents* components)
 
 // The juicy part
 
-VkPipeline createGraphicsPipeline(VulkanComponents* components)
+VkPipeline createGraphicsPipeline(VulkanContext* ctx)
 {
     // Load vertex shader code
 	struct Buffer vertShaderCode;
@@ -248,8 +248,8 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	printf("Loaded files!\n");
 
     // Bundle pre-compiled shaders into shaderModules
-	VkShaderModule vertShaderModule = createShaderModule(components->deviceQueueComp.device, &vertShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(components->deviceQueueComp.device, &fragShaderCode);
+	VkShaderModule vertShaderModule = createShaderModule(ctx->device, &vertShaderCode);
+	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 	if (vertShaderModule == NULL || fragShaderModule == NULL)
 	{
 		printf("We failed, bros..\n");
@@ -305,14 +305,14 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
-	viewport.width = (float) components->swapChainComp.swapChainGroup.imageExtent.width;
-	viewport.height = (float) components->swapChainComp.swapChainGroup.imageExtent.height;
+	viewport.width = (float) state->imageExtent.width;
+	viewport.height = (float) state->imageExtent.height;
 	viewport.minDepth = 0.0f;
 	viewport.maxDepth = 1.0f;
 
 	VkRect2D scissor = {};
 	scissor.offset = (VkOffset2D){0, 0};
-	scissor.extent = components->swapChainComp.swapChainGroup.imageExtent;
+	scissor.extent = state->imageExtent;
 
 	VkPipelineViewportStateCreateInfo viewportState = {};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -349,7 +349,7 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	VkPipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	multisampling.sampleShadingEnable = VK_FALSE;
-	multisampling.rasterizationSamples = components->physicalDeviceComp.msaaSamples;
+	multisampling.rasterizationSamples = ctx->msaaSamples;
 	multisampling.minSampleShading = 1.0f; // Optional
 	multisampling.pSampleMask = NULL; // Optional
 	multisampling.alphaToCoverageEnable = VK_FALSE; // Optional
@@ -391,12 +391,12 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	pipelineLayoutInfo.setLayoutCount = 2; // Optional
-	VkDescriptorSetLayout setLayouts[2] = {components->renderComp.descriptorSetLayout, components->renderComp.meshDescriptorSetLayout};
+	VkDescriptorSetLayout setLayouts[2] = {ctx->renderComp.descriptorSetLayout, ctx->renderComp.meshDescriptorSetLayout};
 	pipelineLayoutInfo.pSetLayouts = setLayouts; // Optional
 	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
 	pipelineLayoutInfo.pPushConstantRanges = NULL; // Optional
 
-	if (vkCreatePipelineLayout(components->deviceQueueComp.device, &pipelineLayoutInfo, NULL, &(components->renderComp.pipelineLayout)) != VK_SUCCESS) 
+	if (vkCreatePipelineLayout(ctx->device, &pipelineLayoutInfo, NULL, &(ctx->renderComp.pipelineLayout)) != VK_SUCCESS) 
 	{
 		printf("Failed to create pipeline layout!\n");
 		return NULL;
@@ -414,14 +414,14 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
 	pipelineInfo.pDepthStencilState = &depthStencil;
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.layout = components->renderComp.pipelineLayout;
-	pipelineInfo.renderPass = components->renderComp.renderPass;
+	pipelineInfo.layout = ctx->renderComp.pipelineLayout;
+	pipelineInfo.renderPass = ctx->renderComp.renderPass;
 	pipelineInfo.subpass = 0;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
 	pipelineInfo.basePipelineIndex = -1; // Optional
 
 	VkPipeline graphicsPipeline;
-	if (vkCreateGraphicsPipelines(components->deviceQueueComp.device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &graphicsPipeline) != VK_SUCCESS) 
+	if (vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &graphicsPipeline) != VK_SUCCESS) 
 	{
 		printf("Failed to create graphics pipeline!\n");
 		return NULL;
@@ -433,8 +433,8 @@ VkPipeline createGraphicsPipeline(VulkanComponents* components)
     ano_aligned_free(fragShaderCode.data);
 
 	// TODO: generalize shader acquisition and lifecycle control, move this stuff to the cleanup function
-	vkDestroyShaderModule(components->deviceQueueComp.device, vertShaderModule, NULL);
-	vkDestroyShaderModule(components->deviceQueueComp.device, fragShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, vertShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
 
 
 	return graphicsPipeline;

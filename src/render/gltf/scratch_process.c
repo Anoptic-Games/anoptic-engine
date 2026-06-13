@@ -1,4 +1,4 @@
-void processGltfMeshes(VulkanComponents* components, GltfElements* elements)
+void processGltfMeshes(VulkanContext* ctx, GltfElements* elements)
 {
     Vector3 defaultColor = {0.5f, 0.5f, 0.5f};
 
@@ -32,7 +32,7 @@ void processGltfMeshes(VulkanComponents* components, GltfElements* elements)
             }
 
             // Upload
-            primitive->meshIndex = geometry_pool_upload(&rendererState.globalGeometryPool, &gpuAllocator, components->deviceQueueComp.device, components->cmdComp.commandPool, components->deviceQueueComp.transferQueue, vertices, vertexCount, indices, indexCount);
+            primitive->meshIndex = geometry_pool_upload(&rendererState.globalGeometryPool, &gpuAllocator, ctx->device, state->commandPool, ctx->transferQueue, vertices, vertexCount, indices, indexCount);
 
             free(vertices);
             free(indices);
