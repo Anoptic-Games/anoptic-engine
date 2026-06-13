@@ -23,6 +23,9 @@
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
+#define FALLBACK_MESH_INDEX 0
+#define FALLBACK_TEXTURE_INDEX 0
+
 // Structs
 
 // New structs for streamlined state resource management
@@ -279,6 +282,22 @@ typedef struct IndirectDrawBuffer
     uint32_t                        drawCount[MAX_FRAMES_IN_FLIGHT];
 } IndirectDrawBuffer;
 
+typedef enum DeletionResourceType {
+    RESOURCE_TYPE_GEOMETRY_MESH,
+    RESOURCE_TYPE_BINDLESS_TEXTURE
+} DeletionResourceType;
+
+typedef struct DeletionTask {
+    DeletionResourceType type;
+    uint32_t handle;
+} DeletionTask;
+
+typedef struct DeletionQueue {
+    DeletionTask* tasks;
+    uint32_t count;
+    uint32_t capacity;
+} DeletionQueue;
+
 typedef struct RendererState
 {
     // Pipeline system (Stage 0+)
@@ -303,6 +322,12 @@ typedef struct RendererState
     IndirectDrawBuffer      indirectBuffer;
     CullUboBuffer           cullUboBuffer;
     BindlessTextureArray    bindlessTextures;
+
+    // Fallback resources
+    VkImage                 fallbackImage;
+    VkImageView             fallbackImageView;
+
+    DeletionQueue           deletionQueues[MAX_FRAMES_IN_FLIGHT];
 
     // Culling system (Stage 6)
     VkDescriptorSetLayout   cullSetLayout;

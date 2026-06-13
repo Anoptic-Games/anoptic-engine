@@ -1642,6 +1642,15 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 
 	vkDeviceWaitIdle(components->deviceQueueComp.device);
 
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        flush_deletion_queue(components, &rendererState, i);
+        if (rendererState.deletionQueues[i].tasks) {
+            free(rendererState.deletionQueues[i].tasks);
+            rendererState.deletionQueues[i].tasks = NULL;
+            rendererState.deletionQueues[i].capacity = 0;
+        }
+    }
+
 	cleanupSwapChain(components, components->deviceQueueComp.device, &(components->swapChainComp.swapChainGroup), &(components->swapChainComp.viewGroup));
 	if (components->swapChainComp.swapChainGroup.swapChain != VK_NULL_HANDLE)
 	{
@@ -1664,6 +1673,8 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
     }
     ano_vk_cleanup_primitives(&rendererState.primitives);
 
+    if (rendererState.fallbackImageView) vkDestroyImageView(components->deviceQueueComp.device, rendererState.fallbackImageView, NULL);
+    if (rendererState.fallbackImage) vkDestroyImage(components->deviceQueueComp.device, rendererState.fallbackImage, NULL);
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
