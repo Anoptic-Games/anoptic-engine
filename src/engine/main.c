@@ -145,8 +145,7 @@ int main()
 	{
 	    // Handle error
 	    printf("Vulkan initialization failed.\n");
-	    unInitVulkan();
-	    return 0;
+	    return -1;
 	}
 
 	// Main loop

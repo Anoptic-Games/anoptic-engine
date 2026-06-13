@@ -66,6 +66,7 @@ target_include_directories(anoptic_core PUBLIC
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/external/stb
         ${CMAKE_SOURCE_DIR}/external/jsmn
+        ${CMAKE_SOURCE_DIR}/external/cgltf
 )
 
 target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
