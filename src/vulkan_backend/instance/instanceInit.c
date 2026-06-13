@@ -958,7 +958,7 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 	return true;
 }
 
-bool createDataBuffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation)
+bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation)
 {
 	VkBufferCreateInfo bufferInfo = {};
 	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -975,7 +975,7 @@ bool createDataBuffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags 
 	VkMemoryRequirements memRequirements;
 	vkGetBufferMemoryRequirements(ctx->device, *buffer, &memRequirements);
 
-	*allocation = gpu_alloc(&gpuAllocator, memRequirements, properties);
+	*allocation = gpu_alloc(allocator, memRequirements, properties);
 	vkBindBufferMemory(ctx->device, *buffer, allocation->memory, allocation->offset);
 
 	return true;
@@ -990,7 +990,7 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		GpuAllocation alloc;
-		if (!createDataBuffer(ctx, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		if (!createDataBuffer(ctx, &gpuAllocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			 &(rendererState.frames[i].uniformBuffer), &alloc)) 
 		{
 			printf("Failed to create uniform buffer!");
@@ -1420,7 +1420,7 @@ bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, V
 	GpuAllocation stagingAlloc;
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-	if (!createDataBuffer(ctx, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingAlloc)) 
+	if (!createDataBuffer(ctx, &stagingAllocator, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingAlloc)) 
 	{
 		printf("Failed to create staging buffer!");
 		return false;
@@ -1707,6 +1707,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		ano_vk_cleanup_geometry_pool(&rendererState.globalGeometryPool, ctx->device);
 		gpu_alloc_destroy(&gpuAllocator);
 		gpu_alloc_destroy(&swapchainAllocator);
+		gpu_alloc_destroy(&stagingAllocator);
 
 		vkDestroyDevice(ctx->device, NULL);
 	}

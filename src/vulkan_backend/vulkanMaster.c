@@ -19,6 +19,7 @@
 static VulkanContext ctx;
 RendererState rendererState;
 GpuAllocator gpuAllocator;
+GpuAllocator stagingAllocator;
 GpuAllocator swapchainAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
@@ -417,7 +418,7 @@ void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
             };
             const uint16_t triIndices[] = { 0, 1, 2 };
 
-            uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &gpuAllocator,
+            uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
                                                        ctx->device,
                                                        state->commandPool,
                                                        ctx->transferQueue,
@@ -718,7 +719,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         4, 5, 1, 1, 0, 4  // bottom
     };
 
-    uint32_t fallbackMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &gpuAllocator,
+    uint32_t fallbackMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
                                                     ctx->device,
                                                     state->commandPool,
                                                     ctx->transferQueue,
@@ -821,6 +822,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &gpuAllocator.memProps);
 	gpuAllocator.blocks = NULL;
 	gpuAllocator.blockCount = 0;
+	stagingAllocator.device = ctx.device;
+	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &stagingAllocator.memProps);
+	stagingAllocator.blocks = NULL;
+	stagingAllocator.blockCount = 0;
 
 	swapchainAllocator.device = ctx.device;
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &swapchainAllocator.memProps);
