@@ -1,0 +1,83 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+struct EntityInfo {
+    uint meshIndex;
+    uint materialIndex;
+};
+
+layout(set = 0, binding = 0) uniform CullUBO {
+    mat4  viewProj;
+    vec4  frustumPlanes[6];
+    uint  entityCount;
+};
+
+layout(set = 0, binding = 1) readonly buffer TransformSSBO {
+    mat4 transforms[];
+};
+
+layout(set = 0, binding = 2) readonly buffer EntitySSBO {
+    EntityInfo entities[];
+};
+
+// Packed mesh region data
+layout(set = 0, binding = 3) readonly buffer MeshSSBO {
+    // x = indexCount, y = firstIndex, z = baseVertex, w = unused
+    uvec4 meshDrawData[];
+};
+
+layout(set = 0, binding = 4) readonly buffer MeshBoundsSSBO {
+    // xyz = bounding sphere center (object space), w = radius
+    vec4 meshBounds[];
+};
+
+struct VkDrawIndexedIndirectCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int  vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 5) buffer IndirectBuffer {
+    VkDrawIndexedIndirectCommand draws[];
+};
+
+layout(set = 0, binding = 6) buffer DrawCount {
+    uint drawCount;
+};
+
+bool isVisible(vec3 center, float radius, mat4 model) {
+    vec4 worldCenter = model * vec4(center, 1.0);
+    // Extract max scale from model matrix
+    float maxScale = max(max(length(model[0].xyz), length(model[1].xyz)), length(model[2].xyz));
+    float worldRadius = radius * maxScale;
+
+    for (int i = 0; i < 6; i++) {
+        if (dot(frustumPlanes[i], worldCenter) < -worldRadius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= entityCount) return;
+
+    EntityInfo entity = entities[idx];
+    mat4 model = transforms[idx];
+    vec4 bounds = meshBounds[entity.meshIndex];
+    uvec4 meshData = meshDrawData[entity.meshIndex];
+
+    if (isVisible(bounds.xyz, bounds.w, model)) {
+        uint drawIdx = atomicAdd(drawCount, 1);
+
+        draws[drawIdx].indexCount    = meshData.x;
+        draws[drawIdx].instanceCount = 1;
+        draws[drawIdx].firstIndex    = meshData.y;
+        draws[drawIdx].vertexOffset  = int(meshData.z);
+        draws[drawIdx].firstInstance = idx;  // entity index
+    }
+}

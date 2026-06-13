@@ -112,6 +112,66 @@ bool ano_vk_init_global_layout(VulkanComponents* components, RendererState* stat
 	return true;
 }
 
+bool ano_vk_init_cull_layout(VulkanComponents* components, RendererState* state)
+{
+    VkDescriptorSetLayoutBinding bindings[7] = {};
+
+    // 0: CullUBO
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 1: TransformSSBO
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 2: EntitySSBO
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 3: MeshSSBO
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 4: MeshBoundsSSBO
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 5: IndirectBuffer
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 6: DrawCount
+    bindings[6].binding = 6;
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 7;
+    layoutInfo.pBindings = bindings;
+
+    if (vkCreateDescriptorSetLayout(components->deviceQueueComp.device, &layoutInfo, NULL, &state->cullSetLayout) != VK_SUCCESS)
+    {
+        printf("Failed to create cull descriptor set layout!\n");
+        return false;
+    }
+
+    return true;
+}
+
 
 bool ano_vk_init_material_layouts(VulkanComponents* components, RendererState* state)
 {
@@ -365,6 +425,48 @@ bool ano_vk_init_pipelines(VulkanComponents* components, RendererState* state)
 	vkDestroyShaderModule(components->deviceQueueComp.device, vertShaderModule, NULL);
 	vkDestroyShaderModule(components->deviceQueueComp.device, fragShaderModule, NULL);
 
+    // Compute Culling Pipeline
+    VkPipelineCacheCreateInfo compCacheInfo = {};
+    compCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(components->deviceQueueComp.device, &compCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].cache);
+
+    VkPipelineLayoutCreateInfo compLayoutInfo = {};
+    compLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    compLayoutInfo.setLayoutCount = 1;
+    compLayoutInfo.pSetLayouts = &state->cullSetLayout;
+
+    if (vkCreatePipelineLayout(components->deviceQueueComp.device, &compLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].layout) != VK_SUCCESS)
+    {
+        printf("Failed to create compute cull pipeline layout!\n");
+        return false;
+    }
+
+    state->prototypes[PIPELINE_COMPUTE_CULL].type = PIPELINE_COMPUTE_CULL;
+    state->prototypes[PIPELINE_COMPUTE_CULL].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_CULL].implementations = calloc(1, sizeof(PipelineImplementation));
+
+    struct Buffer compShaderCode;
+    char compShaderPath[256];
+    snprintf(compShaderPath, sizeof(compShaderPath), "%s/resources/shaders/cull.comp.spv", PROJECT_ROOT);
+    if (!loadFile(compShaderPath, &compShaderCode)) return false;
+
+    VkShaderModule compShaderModule = createShaderModule(components->deviceQueueComp.device, &compShaderCode);
+
+    VkComputePipelineCreateInfo computePipelineInfo = {};
+    computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    computePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_CULL].layout;
+    computePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    computePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    computePipelineInfo.stage.module = compShaderModule;
+    computePipelineInfo.stage.pName = "main";
+
+    if (vkCreateComputePipelines(components->deviceQueueComp.device, state->prototypes[PIPELINE_COMPUTE_CULL].cache, 1, &computePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline) != VK_SUCCESS) return false;
+    
+    state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(compShaderCode.data);
+    vkDestroyShaderModule(components->deviceQueueComp.device, compShaderModule, NULL);
+
 	return true;
 }
 
@@ -376,6 +478,12 @@ void ano_vk_cleanup_pipelines(VulkanComponents* components, RendererState* state
 		vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, state->globalSetLayout, NULL);
 		state->globalSetLayout = VK_NULL_HANDLE;
 	}
+
+    if (state->cullSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(components->deviceQueueComp.device, state->cullSetLayout, NULL);
+        state->cullSetLayout = VK_NULL_HANDLE;
+    }
 
 	// Material layouts
 	if (state->bindlessTextures.layout != VK_NULL_HANDLE)

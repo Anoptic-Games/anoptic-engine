@@ -148,6 +148,32 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     mesh->vertexCount = vertexCount;
     mesh->baseVertex = pool->vertexWriteOffset / sizeof(Vertex);
 
+    // Calculate bounding sphere
+    Vector3 minBounds = vertices[0].position;
+    Vector3 maxBounds = vertices[0].position;
+    for (uint32_t i = 1; i < vertexCount; i++) {
+        if (vertices[i].position.v[0] < minBounds.v[0]) minBounds.v[0] = vertices[i].position.v[0];
+        if (vertices[i].position.v[1] < minBounds.v[1]) minBounds.v[1] = vertices[i].position.v[1];
+        if (vertices[i].position.v[2] < minBounds.v[2]) minBounds.v[2] = vertices[i].position.v[2];
+        if (vertices[i].position.v[0] > maxBounds.v[0]) maxBounds.v[0] = vertices[i].position.v[0];
+        if (vertices[i].position.v[1] > maxBounds.v[1]) maxBounds.v[1] = vertices[i].position.v[1];
+        if (vertices[i].position.v[2] > maxBounds.v[2]) maxBounds.v[2] = vertices[i].position.v[2];
+    }
+    
+    mesh->boundingSphereCenter[0] = (minBounds.v[0] + maxBounds.v[0]) * 0.5f;
+    mesh->boundingSphereCenter[1] = (minBounds.v[1] + maxBounds.v[1]) * 0.5f;
+    mesh->boundingSphereCenter[2] = (minBounds.v[2] + maxBounds.v[2]) * 0.5f;
+
+    float maxDistSq = 0.0f;
+    for (uint32_t i = 0; i < vertexCount; i++) {
+        float dx = vertices[i].position.v[0] - mesh->boundingSphereCenter[0];
+        float dy = vertices[i].position.v[1] - mesh->boundingSphereCenter[1];
+        float dz = vertices[i].position.v[2] - mesh->boundingSphereCenter[2];
+        float distSq = dx*dx + dy*dy + dz*dz;
+        if (distSq > maxDistSq) maxDistSq = distSq;
+    }
+    mesh->boundingSphereRadius = sqrtf(maxDistSq);
+
     pool->vertexWriteOffset += vertexSize;
     pool->indexWriteOffset += indexSize;
 

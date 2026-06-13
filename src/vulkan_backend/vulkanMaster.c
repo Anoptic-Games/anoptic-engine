@@ -104,6 +104,30 @@ void recordCommandBuffer(uint32_t imageIndex)
 		1, &swapChainBarrier
 	);
 
+    // Compute Culling Pass
+    uint32_t entityCount = components.renderComp.buffers.entityCount;
+    if (entityCount > 0) {
+        vkCmdBindPipeline(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline);
+        vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_COMPUTE,
+            rendererState.prototypes[PIPELINE_COMPUTE_CULL].layout, 0, 1, &(rendererState.cullSets[components.syncComp.frameIndex]), 0, NULL);
+        
+        vkCmdDispatch(components.cmdComp.commandBuffer[components.syncComp.frameIndex], (entityCount + 255) / 256, 1, 1);
+
+        VkMemoryBarrier memoryBarrier = {};
+        memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+
+        vkCmdPipelineBarrier(
+            components.cmdComp.commandBuffer[components.syncComp.frameIndex],
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            0,
+            1, &memoryBarrier,
+            0, NULL,
+            0, NULL
+        );
+    }
+
 	VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
 	VkClearValue clearDepth = {};
 	clearDepth.depthStencil.depth = 1.0f;
@@ -169,7 +193,6 @@ void recordCommandBuffer(uint32_t imageIndex)
 	vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 		rendererState.prototypes[PIPELINE_FLAT].layout, 0, 1, &(rendererState.globalSets[components.syncComp.frameIndex]), 0, NULL);
 
-	uint32_t entityCount = components.renderComp.buffers.entityCount;
 	if (entityCount > 0) {
 		vkCmdBindDescriptorSets(components.cmdComp.commandBuffer[components.syncComp.frameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS,
 			rendererState.prototypes[PIPELINE_FLAT].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
@@ -177,11 +200,13 @@ void recordCommandBuffer(uint32_t imageIndex)
 		uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
 		vkCmdPushConstants(components.cmdComp.commandBuffer[components.syncComp.frameIndex], rendererState.prototypes[PIPELINE_FLAT].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
 
-		vkCmdDrawIndexedIndirect(
+		vkCmdDrawIndexedIndirectCount(
 			components.cmdComp.commandBuffer[components.syncComp.frameIndex],
 			rendererState.indirectBuffer.buffer[components.syncComp.frameIndex],
 			0,
-			entityCount,
+            rendererState.drawCountBuffer[components.syncComp.frameIndex],
+            0,
+			rendererState.indirectBuffer.capacity,
 			sizeof(VkDrawIndexedIndirectCommand));
 	}
 	
@@ -249,27 +274,57 @@ void updateTransformBuffer(VulkanComponents* components, RendererState* state, u
 	state->transformBuffer.count = entityCount;
 }
 
-void buildIndirectCommands(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
+void updateCullingBuffers(VulkanComponents* components, RendererState* state, uint32_t frameIndex)
 {
-	VkDrawIndexedIndirectCommand* cmds = state->indirectBuffer.mapped[frameIndex];
-	uint32_t entityCount = components->renderComp.buffers.entityCount;
-	RenderEntity* entities = components->renderComp.buffers.entities;
-	uint32_t drawCount = 0;
+    uint32_t entityCount = components->renderComp.buffers.entityCount;
+    RenderEntity* entities = components->renderComp.buffers.entities;
 
-	for (uint32_t i = 0; i < entityCount; i++) {
-		MeshRegion* mesh = &state->globalGeometryPool.meshes[entities[i].meshIndex];
+    // Reset draw count
+    *state->drawCountMapped[frameIndex] = 0;
 
-		cmds[drawCount] = (VkDrawIndexedIndirectCommand){
-			.indexCount    = mesh->indexCount,
-			.instanceCount = 1,
-			.firstIndex    = mesh->indexOffset / sizeof(uint16_t),
-			.vertexOffset  = mesh->baseVertex,
-			.firstInstance = i,
-		};
-		drawCount++;
-	}
+    // Update CullUBO
+    CullUBO* ubo = state->cullUboBuffer.mapped[frameIndex];
+    GlobalUBO* globalUbo = components->renderComp.buffers.uniformMapped[frameIndex];
+    
+    // mat4 viewProj;
+    // We would compute viewProj properly here. Since we only have globalUbo with view and proj:
+    // This is simple mat4 multiplication. For now, since anoptic-engine has limited math functions:
+    memcpy(&ubo->viewProj, &globalUbo->proj, sizeof(mat4)); // Simplified, should be proj * view
+    
+    // Simplistic frustum - no culling effectively unless proper frustum extraction is added
+    for(int i=0; i<6; i++) {
+        ubo->frustumPlanes[i].v[0] = 0.0f;
+        ubo->frustumPlanes[i].v[1] = 0.0f;
+        ubo->frustumPlanes[i].v[2] = 0.0f;
+        ubo->frustumPlanes[i].v[3] = 100000.0f; // very large radius to not cull anything by default
+    }
+    ubo->entityCount = entityCount;
 
-	state->indirectBuffer.drawCount[frameIndex] = drawCount;
+    // Update EntitySSBO
+    uint32_t* entityBuffer = (uint32_t*)state->entityMapped[frameIndex];
+    for(uint32_t i=0; i < entityCount; i++) {
+        entityBuffer[i*2] = entities[i].meshIndex;
+        entityBuffer[i*2+1] = entities[i].materialIndex;
+    }
+
+    // Update MeshSSBO and MeshBoundsSSBO
+    uint32_t meshCount = state->globalGeometryPool.meshCount;
+    uint32_t* meshData = (uint32_t*)state->meshDataMapped[frameIndex];
+    float* meshBounds = (float*)state->meshBoundsMapped[frameIndex];
+    
+    for(uint32_t i=0; i < meshCount; i++) {
+        MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
+        
+        meshData[i*4 + 0] = mesh->indexCount;
+        meshData[i*4 + 1] = mesh->indexOffset / sizeof(uint16_t);
+        meshData[i*4 + 2] = mesh->baseVertex;
+        meshData[i*4 + 3] = 0; // unused
+        
+        meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
+        meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];
+        meshBounds[i*4 + 2] = mesh->boundingSphereCenter[2];
+        meshBounds[i*4 + 3] = mesh->boundingSphereRadius;
+    }
 }
 
 void drawFrame() 
@@ -306,7 +361,7 @@ void drawFrame()
 	}
 
 	updateTransformBuffer(&components, &rendererState, components.syncComp.frameIndex);
-	buildIndirectCommands(&components, &rendererState, components.syncComp.frameIndex);
+	updateCullingBuffers(&components, &rendererState, components.syncComp.frameIndex);
 
 	vkResetCommandBuffer(components.cmdComp.commandBuffer[components.syncComp.frameIndex], 0);
 	recordCommandBuffer(imageIndex);
@@ -436,7 +491,7 @@ void createIndirectDrawBuffer(VulkanComponents* components, RendererState* state
         VkBufferCreateInfo bufferInfo = {};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
         if (vkCreateBuffer(components->deviceQueueComp.device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
@@ -450,6 +505,80 @@ void createIndirectDrawBuffer(VulkanComponents* components, RendererState* state
         vkBindBufferMemory(components->deviceQueueComp.device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
         
         state->indirectBuffer.mapped[i] = (VkDrawIndexedIndirectCommand*)state->indirectBuffer.allocs[i].mapped;
+    }
+}
+
+void createCullingBuffers(VulkanComponents* components, RendererState* state, uint32_t maxEntities) {
+    state->entityCount = maxEntities;
+    uint32_t maxMeshes = 1024;
+    
+    VkDeviceSize entityBufferSize = sizeof(uint32_t) * 2 * maxEntities; // meshIndex, materialIndex
+    VkDeviceSize meshDataSize = sizeof(uint32_t) * 4 * maxMeshes; // uvec4
+    VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
+    VkDeviceSize drawCountSize = sizeof(uint32_t);
+    VkDeviceSize uboSize = sizeof(CullUBO);
+    
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        // Entity Buffer
+        VkBufferCreateInfo entityInfo = {};
+        entityInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        entityInfo.size = entityBufferSize;
+        entityInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        entityInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(components->deviceQueueComp.device, &entityInfo, NULL, &state->entityBuffer[i]);
+        VkMemoryRequirements memReqs;
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->entityBuffer[i], &memReqs);
+        state->entityAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->entityBuffer[i], state->entityAllocs[i].memory, state->entityAllocs[i].offset);
+        state->entityMapped[i] = state->entityAllocs[i].mapped;
+
+        // Mesh Data Buffer
+        VkBufferCreateInfo meshInfo = {};
+        meshInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        meshInfo.size = meshDataSize;
+        meshInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        meshInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(components->deviceQueueComp.device, &meshInfo, NULL, &state->meshDataBuffer[i]);
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->meshDataBuffer[i], &memReqs);
+        state->meshDataAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->meshDataBuffer[i], state->meshDataAllocs[i].memory, state->meshDataAllocs[i].offset);
+        state->meshDataMapped[i] = state->meshDataAllocs[i].mapped;
+
+        // Mesh Bounds Buffer
+        VkBufferCreateInfo boundsInfo = {};
+        boundsInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        boundsInfo.size = meshBoundsSize;
+        boundsInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        boundsInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(components->deviceQueueComp.device, &boundsInfo, NULL, &state->meshBoundsBuffer[i]);
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->meshBoundsBuffer[i], &memReqs);
+        state->meshBoundsAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->meshBoundsBuffer[i], state->meshBoundsAllocs[i].memory, state->meshBoundsAllocs[i].offset);
+        state->meshBoundsMapped[i] = state->meshBoundsAllocs[i].mapped;
+
+        // Draw Count Buffer
+        VkBufferCreateInfo countInfo = {};
+        countInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        countInfo.size = drawCountSize;
+        countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        countInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(components->deviceQueueComp.device, &countInfo, NULL, &state->drawCountBuffer[i]);
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->drawCountBuffer[i], &memReqs);
+        state->drawCountAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->drawCountBuffer[i], state->drawCountAllocs[i].memory, state->drawCountAllocs[i].offset);
+        state->drawCountMapped[i] = (uint32_t*)state->drawCountAllocs[i].mapped;
+
+        // Cull UBO
+        VkBufferCreateInfo uboInfo = {};
+        uboInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        uboInfo.size = uboSize;
+        uboInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        uboInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(components->deviceQueueComp.device, &uboInfo, NULL, &state->cullUboBuffer.buffer[i]);
+        vkGetBufferMemoryRequirements(components->deviceQueueComp.device, state->cullUboBuffer.buffer[i], &memReqs);
+        state->cullUboBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkBindBufferMemory(components->deviceQueueComp.device, state->cullUboBuffer.buffer[i], state->cullUboBuffer.allocs[i].memory, state->cullUboBuffer.allocs[i].offset);
+        state->cullUboBuffer.mapped[i] = (CullUBO*)state->cullUboBuffer.allocs[i].mapped;
     }
 }
 
@@ -572,6 +701,12 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
+	if (!ano_vk_init_cull_layout(&components, &rendererState))
+	{
+		printf("Quitting init: cull layout failure!\n");
+		unInitVulkan();
+		return false;
+	}
 	if (!ano_vk_init_material_layouts(&components, &rendererState))
 	{
 		printf("Quitting init: material layouts failure!\n");
@@ -621,6 +756,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	createTransformBuffer(&components, &rendererState, maxEntities);
 	createMaterialBuffer(&components, &rendererState, maxEntities);
 	createIndirectDrawBuffer(&components, &rendererState, maxEntities);
+    createCullingBuffers(&components, &rendererState, maxEntities);
 
 	if(!parseGltf(&components, "viking_room.gltf"))
 	{
