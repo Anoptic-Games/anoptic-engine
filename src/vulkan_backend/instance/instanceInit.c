@@ -1703,6 +1703,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	{
 		if(rendererState.transformBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
+		if(rendererState.initialTransformBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.initialTransformBuffer.buffer[i], NULL);
 		if(rendererState.angularVelocityBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.angularVelocityBuffer.buffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
