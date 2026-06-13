@@ -1020,21 +1020,35 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 { // Changes the perspective (camera) parameters applied to the world-space for a given frame. Should be generalized with its parameters exposed via an interface
 	static uint64_t time = 0;
 	static uint64_t oldTime = 0;
+	static uint64_t startTime = 0;
+	static uint32_t frameCount = 0;
+
 	time = ano_timestamp_us();
+	if (startTime == 0) {
+		startTime = time;
+		oldTime = time;
+	}
+
+	float deltaTime = (time - oldTime) / 1000000.0f;
+	float elapsedTime = (time - startTime) / 1000000.0f;
+	
+	state->uboData.time = elapsedTime;
+	state->uboData.deltaTime = deltaTime;
+	state->uboData.frameCount = frameCount++;
 
 	float eye[] = {0.0f, 0.9f, 3.5f};  // Move camera up and back
 	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
 	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped // TODO: Maybe unflip the world
 
-	lookAt(rendererState.uboData.view, eye, center, up);
+	lookAt(state->uboData.view, eye, center, up);
 
 	float fov = 45.0f; // Field of View in degrees
-	float aspect = (float)rendererState.imageExtent.width / (float)rendererState.imageExtent.height;
+	float aspect = (float)state->imageExtent.width / (float)state->imageExtent.height;
 	float near = 0.1f;
 	float far = 100.0f;
-	perspective(rendererState.uboData.proj, fov, aspect, near, far);
+	perspective(state->uboData.proj, fov, aspect, near, far);
 	
-	memcpy(rendererState.frames[rendererState.frameIndex].uniformMapped, &(rendererState.uboData), sizeof(rendererState.uboData));
+	memcpy(state->frames[state->frameIndex].uniformMapped, &(state->uboData), sizeof(GlobalUBO));
 
 	oldTime = time;
 
@@ -1157,15 +1171,15 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
 	VkDescriptorPoolSize poolSize[2] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2;
+	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 8;
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 11;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 2;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2;
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1256,6 +1270,25 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].cullSet = cullSetsTemp[i];
+
+    VkDescriptorSetLayout updateLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        updateLayouts[i] = rendererState.updateSetLayout;
+    }
+    VkDescriptorSetAllocateInfo updateAllocInfo = {};
+    updateAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    updateAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    updateAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    updateAllocInfo.pSetLayouts = updateLayouts;
+
+    VkDescriptorSet updateSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &updateAllocInfo, updateSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate update descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].updateSet = updateSetsTemp[i];
 
 	return true;
 }
@@ -1363,6 +1396,35 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullWrites[6].pBufferInfo = &countInfo;
 
         vkUpdateDescriptorSets(ctx->device, 7, cullWrites, 0, NULL);
+
+        // Update Compute Descriptor Sets
+        VkDescriptorBufferInfo angularVelInfo = {};
+        angularVelInfo.buffer = rendererState.angularVelocityBuffer.buffer[i];
+        angularVelInfo.offset = 0;
+        angularVelInfo.range = sizeof(Vector4) * rendererState.angularVelocityBuffer.capacity;
+
+        VkDescriptorBufferInfo initialTransformInfo = {};
+        initialTransformInfo.buffer = rendererState.initialTransformBuffer.buffer[i];
+        initialTransformInfo.offset = 0;
+        initialTransformInfo.range = sizeof(mat4) * rendererState.initialTransformBuffer.capacity;
+
+        VkWriteDescriptorSet updateWrites[4] = {};
+        for(int j=0; j<4; ++j) {
+            updateWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            updateWrites[j].dstSet = rendererState.frames[i].updateSet;
+            updateWrites[j].dstBinding = j;
+            updateWrites[j].dstArrayElement = 0;
+            updateWrites[j].descriptorCount = 1;
+            if (j == 0) updateWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            else updateWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        }
+
+        updateWrites[0].pBufferInfo = &bufferInfo; // GlobalUBO
+        updateWrites[1].pBufferInfo = &ssboInfo;   // TransformSSBO
+        updateWrites[2].pBufferInfo = &angularVelInfo;
+        updateWrites[3].pBufferInfo = &initialTransformInfo;
+
+        vkUpdateDescriptorSets(ctx->device, 4, updateWrites, 0, NULL);
 	}
 }
 
@@ -1641,6 +1703,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	{
 		if(rendererState.transformBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
+		if(rendererState.angularVelocityBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.angularVelocityBuffer.buffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
 		if(rendererState.indirectBuffer.buffer[i])

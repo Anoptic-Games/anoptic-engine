@@ -26,15 +26,15 @@ typedef struct Vector2
 	float v[2];
 } Vector2;
 
-typedef struct Vector3
-{
-	float v[3];
-} Vector3;
-
 typedef struct Vector4
 {
 	float v[4];
 } Vector4;
+
+typedef struct Vector3
+{
+	float v[3];
+} Vector3;
 
 typedef struct Vertex
 {
@@ -48,6 +48,10 @@ typedef struct GlobalUBO
 {
 	mat4 view;
 	mat4 proj;
+	float time;
+	float deltaTime;
+	uint32_t frameCount;
+	uint32_t padding;
 } GlobalUBO;
 
 

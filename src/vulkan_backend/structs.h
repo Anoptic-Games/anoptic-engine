@@ -144,6 +144,15 @@ typedef struct TransformBuffer
     uint32_t        count;      // current entity count
 } TransformBuffer;
 
+typedef struct AngularVelocityBuffer
+{
+    VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
+    Vector4*        mapped[MAX_FRAMES_IN_FLIGHT];  // xyz = axis * speed, w = unused
+    uint32_t        capacity;   
+    uint32_t        count;      
+} AngularVelocityBuffer;
+
 typedef struct MaterialData
 {
     uint32_t    albedoIndex;        // index into bindless texture array
@@ -267,6 +276,7 @@ typedef struct PerFrameResources
     // Descriptor sets
     VkDescriptorSet     globalSet;
     VkDescriptorSet     cullSet;
+    VkDescriptorSet     updateSet;
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -312,9 +322,13 @@ typedef struct RendererState
     RenderPrimitives        primitives;
 
     TransformBuffer         transformBuffer;
+    TransformBuffer         initialTransformBuffer;
+    AngularVelocityBuffer   angularVelocityBuffer;
     MaterialBuffer          materialBuffer;
     IndirectDrawBuffer      indirectBuffer;
     BindlessTextureArray    bindlessTextures;
+    
+    VkDescriptorSetLayout   updateSetLayout;
 
     // Fallback resources
     VkImage                 fallbackImage;

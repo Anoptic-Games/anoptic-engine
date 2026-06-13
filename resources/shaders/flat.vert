@@ -4,6 +4,10 @@
 layout(set = 0, binding = 0) uniform GlobalUBO {
     mat4 view;
     mat4 proj;
+    float time;
+    float deltaTime;
+    uint frameCount;
+    uint padding;
 } global;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
