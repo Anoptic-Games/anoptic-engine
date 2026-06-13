@@ -45,10 +45,30 @@
 *.idb
 *.pdb
 *.save
+*.py
 
 # IDE-specific directories
 .vscode/
 .idea/
+.claude/
+.openclaw/
+.agents/
+.codex/
+.gemini/
+.idx/
+.antigravity/
+.cursorrules
+.windsurfrules
+.github/copilot-instructions.md
+.aider.conf.yml
+.aider.models.yml
+AGENTS.override.md
+llms-full.txt
+llms.txt
+openclaw.json
+CLAUDE.md
+AGENTS.md
+SKILL.md
 
 # Kernel Module Compile Results
 *.mod*

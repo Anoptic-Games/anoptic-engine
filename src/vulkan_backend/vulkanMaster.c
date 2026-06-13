@@ -931,7 +931,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	rendererState.entityCount = 1;
+	rendererState.entityCount = 0;
 
 	// In a real application, maxEntities would be dynamic or configured.
 	uint32_t maxEntities = 1000;
@@ -940,12 +940,21 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	createIndirectDrawBuffer(&ctx, &rendererState, maxEntities);
     createCullingBuffers(&ctx, &rendererState, maxEntities);
 
-	if(!parseGltf(&ctx, "viking_room.gltf"))
+	ModelAsset* vikingRoomAsset = parseGltf(&ctx, "viking_room.gltf");
+	if(!vikingRoomAsset)
 	{
 		printf("Failed to parse glTF file!\n");
 		unInitVulkan();
 		return false;
 	}
+	
+	mat4 identity = {
+		{1, 0, 0, 0},
+		{0, 1, 0, 0},
+		{0, 0, 1, 0},
+		{0, 0, 0, 1}
+	};
+	instantiate_model(vikingRoomAsset, identity);
 	
 	/*if (!createVertexBuffer(&ctx, vertices, 8, &rendererState.entities[0]))
 	{
