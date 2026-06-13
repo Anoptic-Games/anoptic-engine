@@ -384,6 +384,13 @@ void ano_vk_cleanup_pipelines(VulkanComponents* components, RendererState* state
 		state->bindlessTextures.layout = VK_NULL_HANDLE;
 	}
 
+	// Bindless descriptor pool
+	if (state->bindlessTextures.pool != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorPool(components->deviceQueueComp.device, state->bindlessTextures.pool, NULL);
+		state->bindlessTextures.pool = VK_NULL_HANDLE;
+	}
+
 	// Global descriptor pool
 	if (state->globalDescriptorPool != VK_NULL_HANDLE)
 	{

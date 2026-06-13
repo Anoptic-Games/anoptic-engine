@@ -143,13 +143,7 @@ typedef struct BufferComponents
 
 typedef struct RenderComponents
 {
-
-    VkPipelineLayout pipelineLayout;
-	VkDescriptorSetLayout descriptorSetLayout; // This is only for the UBO, swapchain-adjacent rendering
-	VkDescriptorSet descriptorSets[MAX_FRAMES_IN_FLIGHT]; // These descriptors deal with scene-wide parameters, move to swapchain
-	VkDescriptorPool descriptorPool;
-	GlobalUBO uniform; // This comes from vertex.h, should probably have a buffer of length n = swap count, move to swapchain
-    VkPipeline graphicsPipeline; // We'll have many of these
+    GlobalUBO uniform; // This comes from vertex.h, should probably have a buffer of length n = swap count, move to swapchain
 	VkSampler textureSampler;   // Also many of these, maybe create whole struct for resource access formats
 	BufferComponents buffers; // This entire thing should probably be moved to swapchain
 } RenderComponents;
