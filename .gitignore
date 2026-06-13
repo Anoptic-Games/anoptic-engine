@@ -45,7 +45,21 @@
 *.idb
 *.pdb
 *.save
+
+# macOS metadata
+.DS_Store
+
+# No Python
 *.py
+*.pyc
+__pycache__/
+requirements.txt
+setup.py
+setup.cfg
+pyproject.toml
+Pipfile
+Pipfile.lock
+poetry.lock
 
 # IDE-specific directories
 .vscode/
@@ -69,6 +83,9 @@ openclaw.json
 CLAUDE.md
 AGENTS.md
 SKILL.md
+*.swp
+*.swo
+*~
 
 # Kernel Module Compile Results
 *.mod*
