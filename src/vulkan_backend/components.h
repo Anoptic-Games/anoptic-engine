@@ -20,6 +20,32 @@ typedef enum PipelineType
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
 } PipelineType;
 
+typedef enum PassType
+{
+    PASS_COMPUTE,       // compute dispatch (culling, SDF evaluation, etc.)
+    PASS_GRAPHICS,      // rasterization pass
+} PassType;
+
+typedef struct RenderPassDef
+{
+    PassType            type;
+    PipelineType        prototype;              // which pipeline prototype to bind
+    uint32_t            implementationIndex;    // which variant (opaque, transparent, etc.)
+
+    // Graphics-only:
+    uint32_t                colorAttachmentCount;
+    VkFormat                colorFormats[4];
+    VkFormat                depthFormat;
+    VkAttachmentLoadOp      colorLoadOp;
+    VkAttachmentLoadOp      depthLoadOp;
+    VkClearValue            colorClear;
+    VkClearValue            depthClear;
+    VkResolveModeFlagBits   resolveMode;
+
+    // Compute-only:
+    uint32_t                dispatchX, dispatchY, dispatchZ;
+} RenderPassDef;
+
 //====================== Primitive assets
 
 typedef struct TextureData

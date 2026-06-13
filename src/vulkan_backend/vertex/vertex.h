@@ -72,5 +72,11 @@ void translate(float mat[4][4], float x, float y, float z);
 // Creates a perspective matrix from the provided values
 void perspective(float matrix[4][4], float fovDegrees, float aspect, float near, float far);
 
+// Multiplies two 4x4 matrices: result = a * b
+void multiplyMat4(mat4 result, const mat4 a, const mat4 b);
+
+// Extracts the 6 frustum planes from a view-projection matrix
+void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj);
+
 
 #endif
