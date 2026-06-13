@@ -1133,7 +1133,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 																	  state->frames[i].depthImage, 
 																	  depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
-		if(!transitionImageLayout(ctx, state->frames[i].depthImage, depthFormat, 
+		if(!transitionImageLayout(ctx, VK_NULL_HANDLE, state->frames[i].depthImage, depthFormat, 
 								  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
 		{
 			printf("Failed to transition depth buffer layout for frame %d!\n", i);

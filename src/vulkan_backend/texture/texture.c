@@ -48,9 +48,9 @@ uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta
 	return index;
 }
 
-bool transitionImageLayout(VulkanContext* ctx, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels)
+bool transitionImageLayout(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels)
 {
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(ctx);
+	VkCommandBuffer commandBuffer = cmd == VK_NULL_HANDLE ? beginSingleTimeCommands(ctx) : cmd;
 
 	VkImageMemoryBarrier barrier = {};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -119,13 +119,13 @@ bool transitionImageLayout(VulkanContext* ctx, VkImage image, VkFormat format, V
 		1, &barrier
 	);
 
-	endSingleTimeCommands(ctx, commandBuffer);
+	if (cmd == VK_NULL_HANDLE) endSingleTimeCommands(ctx, commandBuffer);
 	return true;
 }
 
-void copyBufferToImage(VulkanContext* ctx, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
+void copyBufferToImage(VulkanContext* ctx, VkCommandBuffer cmd, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
 {
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(ctx);
+	VkCommandBuffer commandBuffer = cmd == VK_NULL_HANDLE ? beginSingleTimeCommands(ctx) : cmd;
 	
 	VkBufferImageCopy region = {};
 	region.bufferOffset = 0;
@@ -154,7 +154,7 @@ void copyBufferToImage(VulkanContext* ctx, VkBuffer buffer, VkImage image, uint3
 	);
 	
 	
-	endSingleTimeCommands(ctx, commandBuffer);
+	if (cmd == VK_NULL_HANDLE) endSingleTimeCommands(ctx, commandBuffer);
 }
 
 bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
@@ -192,7 +192,7 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 	return true;
 }
 
-bool generateMipmaps(VulkanContext* ctx, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
+bool generateMipmaps(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
 {
 	// Check that we can actually do linear filtering first..
 	VkFormatProperties formatProperties;
@@ -203,7 +203,7 @@ bool generateMipmaps(VulkanContext* ctx, VkImage image, VkFormat imageFormat, in
 		return false;
 	}
 
-	VkCommandBuffer commandBuffer = beginSingleTimeCommands(ctx);
+	VkCommandBuffer commandBuffer = cmd == VK_NULL_HANDLE ? beginSingleTimeCommands(ctx) : cmd;
 
 	VkImageMemoryBarrier barrier =
 	{// Zero-initialization to ensure no garbage is carried over
@@ -307,11 +307,11 @@ bool generateMipmaps(VulkanContext* ctx, VkImage image, VkFormat imageFormat, in
 		0, NULL,
 		1, &barrier);
 
-	endSingleTimeCommands(ctx, commandBuffer);
+	if (cmd == VK_NULL_HANDLE) endSingleTimeCommands(ctx, commandBuffer);
 	return true;
 }
 
-bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height)
+bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height, VkBuffer* outStagingBuffer)
 {
 	VkDeviceSize imageSize = width * height * 4;
 	uint32_t mipLevels = 1;
@@ -329,22 +329,22 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, Gpu
 		return false;
 	}
 
-	if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
+	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
 	{
 		printf("Layout transition failure!\n");
 		return false;
 	}
 
-	copyBufferToImage(ctx, stagingBuffer, *textureImage, width, height);
+	copyBufferToImage(ctx, cmd, stagingBuffer, *textureImage, width, height);
 
 	// Instead of mipmaps, just transition to SHADER_READ_ONLY_OPTIMAL
-	if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
+	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
 	{
 		printf("Layout transition failure!\n");
 		return false;
 	}
 
-	vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
+	if (outStagingBuffer) *outStagingBuffer = stagingBuffer; else vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
 	
 	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
 	{
@@ -354,7 +354,7 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkImage* textureImage, Gpu
 
 	return true;
 }
-bool createTextureImage(VulkanContext* ctx, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16)
+bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, VkBuffer* outStagingBuffer)
 {
 	//!TODO Add logic for 16-bit images
 	Texture8 texture = readTexture8bit(fileName);
@@ -386,24 +386,24 @@ bool createTextureImage(VulkanContext* ctx, VkImage* textureImage, GpuAllocation
 	}
 
 	// TODO: Figure out if this case ever occurs
-	if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}
 
-	copyBufferToImage(ctx, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
+	copyBufferToImage(ctx, cmd, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
-	generateMipmaps(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
+	generateMipmaps(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
 
 	// TODO: Figure out if this case ever occurs
-	/*if(!transitionImageLayout(ctx, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
+	/*if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}*/
 
-	vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
+	if (outStagingBuffer) *outStagingBuffer = stagingBuffer; else vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
 	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
 	{
 		printf("Image view creation failure: %s\n", fileName);
