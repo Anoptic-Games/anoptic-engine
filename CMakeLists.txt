@@ -66,6 +66,7 @@ target_include_directories(anoptic_core PUBLIC
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/external/stb
         ${CMAKE_SOURCE_DIR}/external/jsmn
+        ${CMAKE_SOURCE_DIR}/external/cgltf
 )
 
 target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
@@ -97,16 +98,21 @@ find_package(Vulkan)
 if(Vulkan_FOUND)
     add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
 
-    add_executable(anopticengine ./src/engine/main.c)
-
-    # Define the project root path
-    target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+    # anoptic_render library
+    add_library(anoptic_render STATIC "")
+    target_link_libraries(anoptic_render PUBLIC anoptic_core glfw Vulkan::Vulkan)
+    target_compile_definitions(anoptic_render PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
     # Renderer module subdirectories
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-    target_link_libraries(anopticengine PRIVATE anoptic_core glfw Vulkan::Vulkan)
+    add_executable(anopticengine ./src/engine/main.c)
+
+    # Define the project root path
+    target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
+    target_link_libraries(anopticengine PRIVATE anoptic_render)
 
     target_compile_options(anopticengine PRIVATE
             "$<$<CONFIG:Debug>:-O0;-g>"

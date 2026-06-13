@@ -69,6 +69,18 @@ cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} -DCMAKE_TOOLCHAIN_FILE=${t
 # Build the project
 cmake --build ./build/${build_dir}
 
+# Conditionally copy assets if they exist
+if [ -d "./assets" ]; then
+    echo "Copying assets to build directory..."
+    cp -r ./assets/* ./build/${build_dir}/
+    
+    # If building tests, ensure assets are in the tests working directory as well
+    if [ ${run_tests} -eq 1 ]; then
+        mkdir -p ./build/${build_dir}/tests
+        cp -r ./assets/* ./build/${build_dir}/tests/
+    fi
+fi
+
 # Run the test suite
 if [ ${run_tests} -eq 1 ]; then
     ctest --test-dir ./build/${build_dir} --output-on-failure
