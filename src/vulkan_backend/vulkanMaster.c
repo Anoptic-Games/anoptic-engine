@@ -275,7 +275,7 @@ void printUniformTransferState()
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		printf("Uniform buffer %d: %p\n", i, (void*)components.renderComp.buffers.uniform[i]);
-		printf("Uniform memory %d: %p\n", i, (void*)components.renderComp.buffers.uniformMemory[i]);
+		printf("Uniform alloc %d: %p\n", i, (void*)components.renderComp.buffers.uniformAlloc[i].memory);
 		printf("Uniform buffer mapping %d: %p\n", i, components.renderComp.buffers.uniformMapped[i]);
 	}
 

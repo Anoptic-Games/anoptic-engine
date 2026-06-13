@@ -56,13 +56,7 @@ ImageViewGroup createImageViews(VkDevice device, SwapChainGroup imageGroup);
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
 
 // Generic function for data buffer creation, updates buffer and bufferMemory with the created addresses
-bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, VkDeviceMemory* bufferMemory);
-
-// Creates a vertex buffer
-bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, VkBuffer* vertex, VkDeviceMemory* vertexMemory);
-
-// Creates an index buffer
-bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuffer* index, VkDeviceMemory* indexMemory);
+bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation);
 
 // Creates uniform buffers for each frame
 bool createUniformBuffers(VulkanComponents* components);
@@ -95,12 +89,6 @@ void updateUboDescriptorSets(VulkanComponents* components, RendererState* state)
 
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanComponents* components, uint32_t typeFilter, VkMemoryPropertyFlags properties);
-
-// Allocates memory for a buffer
-bool allocateBuffer(VulkanComponents* components, VkBuffer buffer, VkMemoryPropertyFlags properties, VkDeviceMemory* bufferMemory);
-
-// Transfers data from the host to a destination buffer
-bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize);
 
 // Helper function to decrease verbosity of transient command calls
 VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components);

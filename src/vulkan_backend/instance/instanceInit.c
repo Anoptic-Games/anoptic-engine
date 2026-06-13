@@ -1001,27 +1001,7 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 	return true;
 }
 
-bool allocateBuffer(VulkanComponents* components, VkBuffer buffer, VkMemoryPropertyFlags properties, VkDeviceMemory* bufferMemory)
-{ // Must be re-purposed for a sub-allocation scheme
-	VkMemoryRequirements memRequirements;
-	vkGetBufferMemoryRequirements(components->deviceQueueComp.device, buffer, &memRequirements);
-
-	VkMemoryAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = findMemoryType(components, memRequirements.memoryTypeBits, properties);
-
-	if (vkAllocateMemory(components->deviceQueueComp.device, &allocInfo, NULL, bufferMemory) != VK_SUCCESS)
-	{
-		printf("Failed to allocate buffer memory!");
-		return false;
-	}
-
-	vkBindBufferMemory(components->deviceQueueComp.device, buffer, *bufferMemory, 0);
-	return true;
-}
-
-bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, VkDeviceMemory* bufferMemory)
+bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation)
 {
 	VkBufferCreateInfo bufferInfo = {};
 	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1035,47 +1015,16 @@ bool createDataBuffer(VulkanComponents* components, VkDeviceSize size, VkBufferU
 		return false;
 	}
 
-	if (!allocateBuffer(components, *buffer, properties, bufferMemory))
-	{
-		// Clean up the created buffer before returning
-		vkDestroyBuffer(components->deviceQueueComp.device, *buffer, NULL);
-		return false;
-	}
+	VkMemoryRequirements memRequirements;
+	vkGetBufferMemoryRequirements(components->deviceQueueComp.device, *buffer, &memRequirements);
+
+	*allocation = gpu_alloc(&gpuAllocator, memRequirements, properties);
+	vkBindBufferMemory(components->deviceQueueComp.device, *buffer, allocation->memory, allocation->offset);
 
 	return true;
 }
 
-bool createVertexBuffer(VulkanComponents* components, uint32_t vertexCount, VkBuffer* vertex, VkDeviceMemory* vertexMemory)
-{ // Not core to init, mostly meant for actual rendering
-	VkDeviceSize bufferSize = sizeof(Vertex) * vertexCount;
 
-	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, properties, vertex, vertexMemory)) 
-	{
-		printf("Failed to create vertex buffer!");
-		return false;
-	}
-	
-	return true;
-}
-
-bool createIndexBuffer(VulkanComponents* components, uint32_t indexCount, VkBuffer* index, VkDeviceMemory* indexMemory)
-{ // Ditto
-	VkDeviceSize bufferSize = sizeof(uint16_t) * indexCount;
-	
-
-	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, properties, index, indexMemory)) 
-	{
-		printf("Failed to create index buffer!");
-		return false;
-	}
-	
-	return true;
-
-}
 
 bool createUniformBuffers(VulkanComponents* components)
 { // Central to init, specific to perspective uniforms (world translation, rotation and projection)
@@ -1083,17 +1032,15 @@ bool createUniformBuffers(VulkanComponents* components)
 
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-
+		GpuAllocation alloc;
 		if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			 &(components->renderComp.buffers.uniform[i]), &(components->renderComp.buffers.uniformMemory[i]))) 
+			 &(components->renderComp.buffers.uniform[i]), &alloc)) 
 		{
 			printf("Failed to create uniform buffer!");
 			return false;
 		}
-		printf("!!UBO!! UBO buffer: %p\n", components->renderComp.buffers.uniform[i]);
-
-		vkMapMemory(components->deviceQueueComp.device, components->renderComp.buffers.uniformMemory[i], 0, bufferSize, 0, &(components->renderComp.buffers.uniformMapped[i]));
-		printf("!!UBO!! Created mapped UBO buffer at: %p\n", components->renderComp.buffers.uniformMapped[i]);
+		
+		components->renderComp.buffers.uniformMapped[i] = alloc.mapped;
 	}
 
 	return true;
@@ -1509,20 +1456,18 @@ bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer ds
 { // Not central to init
 	// Create staging buffer
 	VkBuffer stagingBuffer;
-	VkDeviceMemory stagingBufferMemory;
+	GpuAllocation stagingAlloc;
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingBufferMemory)) 
+	if (!createDataBuffer(components, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingAlloc)) 
 	{
 		printf("Failed to create staging buffer!");
 		return false;
 	}
 
 	// Map the staging buffer's memory, copy the data, and then unmap
-	void* mappedMemory;
-	vkMapMemory(components->deviceQueueComp.device, stagingBufferMemory, 0, bufferSize, 0, &mappedMemory);
+	void* mappedMemory = stagingAlloc.mapped;
 	memcpy(mappedMemory, data, bufferSize);
-	vkUnmapMemory(components->deviceQueueComp.device, stagingBufferMemory);
 
 	// Copy data from staging buffer to destination buffer
 	if (!copyBuffer(components, stagingBuffer, dstBuffer, bufferSize))
@@ -1533,7 +1478,6 @@ bool stagingTransfer(VulkanComponents* components, const void* data, VkBuffer ds
 
 	// Cleanup staging buffer
 	vkDestroyBuffer(components->deviceQueueComp.device, stagingBuffer, NULL);
-	vkFreeMemory(components->deviceQueueComp.device, stagingBufferMemory, NULL);
 
 	return true;
 }
@@ -1746,10 +1690,6 @@ void cleanupVulkan(VulkanComponents* components) // Frees up the previously init
 		if(components->renderComp.buffers.uniform[i])
 		{
 			vkDestroyBuffer(components->deviceQueueComp.device, components->renderComp.buffers.uniform[i], NULL);
-		}
-		if(components->renderComp.buffers.uniformMemory[i])
-		{
-			vkFreeMemory(components->deviceQueueComp.device, components->renderComp.buffers.uniformMemory[i], NULL);
 		}
 	}
 
