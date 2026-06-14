@@ -263,11 +263,25 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	VkShaderModule vertShaderModule = createShaderModule(ctx->device, &vertShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
+	VkSpecializationMapEntry specMapEntry = {};
+	specMapEntry.constantID = 0;
+	specMapEntry.offset = 0;
+	specMapEntry.size = sizeof(VkBool32);
+
+	VkBool32 useFirstInstance = ctx->deviceCapabilities.drawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
+
+	VkSpecializationInfo specInfo = {};
+	specInfo.mapEntryCount = 1;
+	specInfo.pMapEntries = &specMapEntry;
+	specInfo.dataSize = sizeof(VkBool32);
+	specInfo.pData = &useFirstInstance;
+
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
 	vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
 	vertShaderStageInfo.module = vertShaderModule;
 	vertShaderStageInfo.pName = "main";
+	vertShaderStageInfo.pSpecializationInfo = &specInfo;
 
 	VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
 	fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -539,6 +553,19 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     VkShaderModule compShaderModule = createShaderModule(ctx->device, &compShaderCode);
 
+    VkSpecializationMapEntry compSpecMapEntry = {};
+    compSpecMapEntry.constantID = 0;
+    compSpecMapEntry.offset = 0;
+    compSpecMapEntry.size = sizeof(VkBool32);
+
+    VkBool32 compUseFirstInstance = ctx->deviceCapabilities.drawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
+
+    VkSpecializationInfo compSpecInfo = {};
+    compSpecInfo.mapEntryCount = 1;
+    compSpecInfo.pMapEntries = &compSpecMapEntry;
+    compSpecInfo.dataSize = sizeof(VkBool32);
+    compSpecInfo.pData = &compUseFirstInstance;
+
     VkComputePipelineCreateInfo computePipelineInfo = {};
     computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     computePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_CULL].layout;
@@ -546,6 +573,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     computePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     computePipelineInfo.stage.module = compShaderModule;
     computePipelineInfo.stage.pName = "main";
+    computePipelineInfo.stage.pSpecializationInfo = &compSpecInfo;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_CULL].cache, 1, &computePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline) != VK_SUCCESS) return false;
     
