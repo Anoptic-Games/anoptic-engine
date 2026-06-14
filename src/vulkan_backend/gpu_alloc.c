@@ -52,9 +52,14 @@ GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemory
     VkDeviceSize blockSize = reqs.size > DEFAULT_BLOCK_SIZE ? reqs.size : DEFAULT_BLOCK_SIZE;
     
     // Expand blocks array
+    void* temp = realloc(alloc->blocks, (alloc->blockCount + 1) * sizeof(GpuBlock));
+    if (!temp) {
+        printf("Host OOM: Failed to allocate memory for GPU block tracking array!\n");
+        return (GpuAllocation){0};
+    }
+    alloc->blocks = temp;
+    GpuBlock* newBlock = &alloc->blocks[alloc->blockCount];
     alloc->blockCount++;
-    alloc->blocks = realloc(alloc->blocks, alloc->blockCount * sizeof(GpuBlock));
-    GpuBlock* newBlock = &alloc->blocks[alloc->blockCount - 1];
 
     newBlock->size = blockSize;
     newBlock->offset = 0;
