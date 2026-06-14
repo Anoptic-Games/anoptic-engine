@@ -902,14 +902,15 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	// Wait until the device is completely idle before tearing down any resources
 	vkDeviceWaitIdle(ctx->device);
 
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		vkDestroySemaphore(ctx->device, rendererState.frames[i].imageAvailable, NULL);
-		vkDestroySemaphore(ctx->device, rendererState.frames[i].renderFinished, NULL);
+	// This is completely unecessary and introduces a bug on reinit.
+	// for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].imageAvailable, NULL);
+	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].renderFinished, NULL);
 		
-		VkSemaphoreCreateInfo semaphoreInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-		vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].imageAvailable);
-		vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].renderFinished);
-	}
+	// 	VkSemaphoreCreateInfo semaphoreInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	// 	vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].imageAvailable);
+	// 	vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].renderFinished);
+	// }
 
     // First, clean up the previous swapchain
 	cleanupSwapChain(ctx, &rendererState);
