@@ -148,6 +148,16 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     free(stagingBuffers);
     gpu_alloc_reset(&stagingAllocator);
 
+    // Pre-validate material buffer capacity
+    uint32_t totalPrimitives = 0;
+    for (size_t m = 0; m < data->meshes_count; ++m) {
+        totalPrimitives += data->meshes[m].primitives_count;
+    }
+    if (rendererState.materialBuffer.count + totalPrimitives > rendererState.materialBuffer.capacity) {
+        printf("Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.\n", 
+               totalPrimitives, rendererState.materialBuffer.capacity, rendererState.materialBuffer.count);
+    }
+
     // 3. Bake Material SSBO entries per primitive
     for (size_t m = 0; m < data->meshes_count; ++m) {
         cgltf_mesh* cgMesh = &data->meshes[m];
@@ -171,19 +181,31 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             }
 
             // Assign a persistent material index in the global SSBO
-            uint32_t matIdx = rendererState.materialBuffer.count++;
+            uint32_t matIdx = 0;
+            bool writeMaterial = false;
+            
+            if (rendererState.materialBuffer.count < rendererState.materialBuffer.capacity) {
+                matIdx = rendererState.materialBuffer.count++;
+                writeMaterial = true;
+            } else {
+                // If capacity is exhausted, reuse index 0 (fallback)
+                matIdx = 0;
+            }
+            
             outMesh->primitives[p].materialIndex = matIdx;
             
-            MaterialData matData = {0};
-            matData.albedoIndex = bindlessTexIdx;
-            matData.roughness = 1.0f;
-            matData.color[0] = 1.0f;
-            matData.color[1] = 1.0f;
-            matData.color[2] = 1.0f;
-            matData.color[3] = 1.0f;
-            
-            for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
-                rendererState.materialBuffer.mapped[frame][matIdx] = matData;
+            if (writeMaterial) {
+                MaterialData matData = {0};
+                matData.albedoIndex = bindlessTexIdx;
+                matData.roughness = 1.0f;
+                matData.color[0] = 1.0f;
+                matData.color[1] = 1.0f;
+                matData.color[2] = 1.0f;
+                matData.color[3] = 1.0f;
+                
+                for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+                    rendererState.materialBuffer.mapped[frame][matIdx] = matData;
+                }
             }
         }
     }
