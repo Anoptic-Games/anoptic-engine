@@ -14,6 +14,15 @@ layout(set = 0, binding = 1) readonly buffer TransformSSBO {
     mat4 transforms[];
 } transformBuf;
 
+struct EntityInfo {
+    uint meshIndex;
+    uint materialIndex;
+};
+
+layout(set = 0, binding = 3) readonly buffer EntitySSBO {
+    EntityInfo entities[];
+} entityBuf;
+
 layout(push_constant) uniform PushConstants {
     uint transformBaseOffset;
 } pc;
@@ -26,12 +35,20 @@ layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) flat out uint outMaterialIndex;
 
+layout(constant_id = 0) const bool USE_FIRST_INSTANCE = true;
+
 void main() {
-    uint entityIndex = pc.transformBaseOffset + gl_InstanceIndex;
+    uint entityIndex;
+    if (USE_FIRST_INSTANCE) {
+        entityIndex = pc.transformBaseOffset + gl_InstanceIndex;
+    } else {
+        entityIndex = pc.transformBaseOffset + gl_DrawIDARB;
+    }
+    
     mat4 model = transformBuf.transforms[entityIndex];
 
     gl_Position = global.proj * global.view * model * vec4(inPosition, 1.0);
     fragColor = inColor;
     fragTexCoord = inTexCoord;
-    outMaterialIndex = entityIndex;
+    outMaterialIndex = entityBuf.entities[entityIndex].materialIndex;
 }
