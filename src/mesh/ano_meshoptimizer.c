@@ -2,6 +2,83 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <stdlib.h>
+#include <assert.h>
+
+#define K_CACHE_SIZE_MAX 16
+#define K_VALENCE_MAX 8
+
+typedef struct {
+    float cache[1 + K_CACHE_SIZE_MAX];
+    float live[1 + K_VALENCE_MAX];
+} vertex_score_table_t;
+
+// Tuned to minimize the ACMR of a GPU that has a cache profile similar to NVidia and AMD
+static const vertex_score_table_t kVertexScoreTable = {
+    {0.0f, 0.779f, 0.791f, 0.789f, 0.981f, 0.843f, 0.726f, 0.847f, 0.882f, 0.867f, 0.799f, 0.642f, 0.613f, 0.600f, 0.568f, 0.372f, 0.234f},
+    {0.0f, 0.995f, 0.713f, 0.450f, 0.404f, 0.059f, 0.005f, 0.147f, 0.006f}
+};
+
+typedef struct {
+    uint32_t* counts;
+    uint32_t* offsets;
+    uint32_t* data;
+} triangle_adjacency_t;
+
+static inline float get_vertex_score(const vertex_score_table_t* table, int cache_position, uint32_t live_triangles) {
+    assert(cache_position >= -1 && cache_position < (int)K_CACHE_SIZE_MAX);
+    uint32_t live_triangles_clamped = live_triangles < K_VALENCE_MAX ? live_triangles : K_VALENCE_MAX;
+    return table->cache[1 + cache_position] + table->live[live_triangles_clamped];
+}
+
+static void build_triangle_adjacency(triangle_adjacency_t* adjacency, const uint32_t* indices, size_t index_count, size_t vertex_count) {
+    size_t face_count = index_count / 3;
+
+    memset(adjacency->counts, 0, vertex_count * sizeof(uint32_t));
+
+    for (size_t i = 0; i < index_count; ++i) {
+        assert(indices[i] < vertex_count);
+        adjacency->counts[indices[i]]++;
+    }
+
+    uint32_t offset = 0;
+    for (size_t i = 0; i < vertex_count; ++i) {
+        adjacency->offsets[i] = offset;
+        offset += adjacency->counts[i];
+    }
+
+    assert(offset == index_count);
+
+    for (size_t i = 0; i < face_count; ++i) {
+        uint32_t a = indices[i * 3 + 0];
+        uint32_t b = indices[i * 3 + 1];
+        uint32_t c = indices[i * 3 + 2];
+
+        adjacency->data[adjacency->offsets[a]++] = (uint32_t)i;
+        adjacency->data[adjacency->offsets[b]++] = (uint32_t)i;
+        adjacency->data[adjacency->offsets[c]++] = (uint32_t)i;
+    }
+
+    for (size_t i = 0; i < vertex_count; ++i) {
+        assert(adjacency->offsets[i] >= adjacency->counts[i]);
+        adjacency->offsets[i] -= adjacency->counts[i];
+    }
+}
+
+static uint32_t get_next_triangle_dead_end(uint32_t* input_cursor, const uint8_t* emitted_flags, size_t face_count) {
+    while (*input_cursor < face_count) {
+        if (!emitted_flags[*input_cursor]) {
+            return *input_cursor;
+        }
+        (*input_cursor)++;
+    }
+    return ~0u;
+}
+
+static inline size_t align_up(size_t size, size_t alignment) {
+    return (size + alignment - 1) & ~(alignment - 1);
+}
+
 
 size_t ano_build_meshlets_bound(size_t index_count, size_t max_vertices, size_t max_triangles) {
     size_t safe_index_count = index_count - (index_count % 3);
@@ -20,10 +97,180 @@ size_t ano_build_meshlets_bound(size_t index_count, size_t max_vertices, size_t 
 }
 
 void ano_optimize_vertex_cache(uint32_t* destination, const uint32_t* indices, size_t index_count, size_t vertex_count) {
-    (void)vertex_count;
-    // TODO: Implement a linear-time vertex cache optimizer (e.g., Forsyth's algorithm or Tipsify).
-    // For now, we perform a direct copy assuming the mesh was pre-optimized in the asset pipeline.
-    memcpy(destination, indices, index_count * sizeof(uint32_t));
+    assert(index_count % 3 == 0);
+
+    if (index_count == 0 || vertex_count == 0) {
+        return;
+    }
+
+    const uint32_t* src_indices = indices;
+    uint32_t* indices_copy = NULL;
+
+    // support in-place optimization
+    if (destination == indices) {
+        indices_copy = (uint32_t*)malloc(index_count * sizeof(uint32_t));
+        if (!indices_copy) {
+            return;
+        }
+        memcpy(indices_copy, indices, index_count * sizeof(uint32_t));
+        src_indices = indices_copy;
+    }
+
+    uint32_t cache_size = 16;
+    size_t face_count = index_count / 3;
+
+    // Partition a single block of scratch memory for all helper arrays
+    size_t counts_offset = 0;
+    size_t offsets_offset = align_up(counts_offset + vertex_count * sizeof(uint32_t), 16);
+    size_t data_offset = align_up(offsets_offset + vertex_count * sizeof(uint32_t), 16);
+    size_t emitted_flags_offset = align_up(data_offset + index_count * sizeof(uint32_t), 16);
+    size_t vertex_scores_offset = align_up(emitted_flags_offset + face_count * sizeof(uint8_t), 16);
+    size_t triangle_scores_offset = align_up(vertex_scores_offset + vertex_count * sizeof(float), 16);
+    size_t total_memory_size = align_up(triangle_scores_offset + face_count * sizeof(float), 16);
+
+    void* scratch = malloc(total_memory_size);
+    if (!scratch) {
+        free(indices_copy);
+        return;
+    }
+
+    uint32_t* counts = (uint32_t*)((char*)scratch + counts_offset);
+    uint32_t* offsets = (uint32_t*)((char*)scratch + offsets_offset);
+    uint32_t* data = (uint32_t*)((char*)scratch + data_offset);
+    uint8_t* emitted_flags = (uint8_t*)((char*)scratch + emitted_flags_offset);
+    float* vertex_scores = (float*)((char*)scratch + vertex_scores_offset);
+    float* triangle_scores = (float*)((char*)scratch + triangle_scores_offset);
+
+    memset(counts, 0, vertex_count * sizeof(uint32_t));
+    memset(emitted_flags, 0, face_count * sizeof(uint8_t));
+
+    triangle_adjacency_t adjacency;
+    adjacency.counts = counts;
+    adjacency.offsets = offsets;
+    adjacency.data = data;
+
+    build_triangle_adjacency(&adjacency, src_indices, index_count, vertex_count);
+
+    uint32_t* live_triangles = adjacency.counts;
+    const vertex_score_table_t* table = &kVertexScoreTable;
+
+    for (size_t i = 0; i < vertex_count; ++i) {
+        vertex_scores[i] = get_vertex_score(table, -1, live_triangles[i]);
+    }
+
+    for (size_t i = 0; i < face_count; ++i) {
+        uint32_t a = src_indices[i * 3 + 0];
+        uint32_t b = src_indices[i * 3 + 1];
+        uint32_t c = src_indices[i * 3 + 2];
+
+        triangle_scores[i] = vertex_scores[a] + vertex_scores[b] + vertex_scores[c];
+    }
+
+    uint32_t cache_holder[2 * (K_CACHE_SIZE_MAX + 4)];
+    uint32_t* cache = cache_holder;
+    uint32_t* cache_new = cache_holder + K_CACHE_SIZE_MAX + 4;
+    size_t cache_count = 0;
+
+    uint32_t current_triangle = 0;
+    uint32_t input_cursor = 1;
+    uint32_t output_triangle = 0;
+
+    while (current_triangle != ~0u) {
+        assert(output_triangle < face_count);
+
+        uint32_t a = src_indices[current_triangle * 3 + 0];
+        uint32_t b = src_indices[current_triangle * 3 + 1];
+        uint32_t c = src_indices[current_triangle * 3 + 2];
+
+        destination[output_triangle * 3 + 0] = a;
+        destination[output_triangle * 3 + 1] = b;
+        destination[output_triangle * 3 + 2] = c;
+        output_triangle++;
+
+        emitted_flags[current_triangle] = 1;
+        triangle_scores[current_triangle] = 0.0f;
+
+        size_t cache_write = 0;
+        cache_new[cache_write++] = a;
+        cache_new[cache_write++] = b;
+        cache_new[cache_write++] = c;
+
+        for (size_t i = 0; i < cache_count; ++i) {
+            uint32_t index = cache[i];
+            cache_new[cache_write] = index;
+            cache_write += (index != a) & (index != b) & (index != c);
+        }
+
+        uint32_t* cache_temp = cache;
+        cache = cache_new;
+        cache_new = cache_temp;
+        cache_count = cache_write > cache_size ? cache_size : cache_write;
+
+        for (size_t k = 0; k < 3; ++k) {
+            uint32_t index = src_indices[current_triangle * 3 + k];
+
+            uint32_t* neighbors = &adjacency.data[0] + adjacency.offsets[index];
+            size_t neighbors_size = adjacency.counts[index];
+
+            for (size_t i = 0; i < neighbors_size; ++i) {
+                uint32_t tri = neighbors[i];
+
+                if (tri == current_triangle) {
+                    neighbors[i] = neighbors[neighbors_size - 1];
+                    adjacency.counts[index]--;
+                    break;
+                }
+            }
+        }
+
+        uint32_t best_triangle = ~0u;
+        float best_score = 0.0f;
+
+        for (size_t i = 0; i < cache_write; ++i) {
+            uint32_t index = cache[i];
+
+            if (adjacency.counts[index] == 0) {
+                continue;
+            }
+
+            int cache_position = i >= cache_size ? -1 : (int)i;
+
+            float score = get_vertex_score(table, cache_position, live_triangles[index]);
+            float score_diff = score - vertex_scores[index];
+
+            vertex_scores[index] = score;
+
+            const uint32_t* neighbors_begin = &adjacency.data[0] + adjacency.offsets[index];
+            const uint32_t* neighbors_end = neighbors_begin + adjacency.counts[index];
+
+            for (const uint32_t* it = neighbors_begin; it != neighbors_end; ++it) {
+                uint32_t tri = *it;
+                assert(!emitted_flags[tri]);
+
+                float tri_score = triangle_scores[tri] + score_diff;
+                assert(tri_score > 0.0f);
+
+                if (best_score < tri_score) {
+                    best_triangle = tri;
+                    best_score = tri_score;
+                }
+
+                triangle_scores[tri] = tri_score;
+            }
+        }
+
+        current_triangle = best_triangle;
+
+        if (current_triangle == ~0u) {
+            current_triangle = get_next_triangle_dead_end(&input_cursor, emitted_flags, face_count);
+        }
+    }
+
+    assert(input_cursor == face_count);
+    assert(output_triangle == face_count);
+
+    free(scratch);
+    free(indices_copy);
 }
 
 size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, uint8_t* meshlet_triangles, 
