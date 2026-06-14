@@ -902,14 +902,15 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	// Wait until the device is completely idle before tearing down any resources
 	vkDeviceWaitIdle(ctx->device);
 
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		vkDestroySemaphore(ctx->device, rendererState.frames[i].imageAvailable, NULL);
-		vkDestroySemaphore(ctx->device, rendererState.frames[i].renderFinished, NULL);
+	// This is completely unecessary and introduces a bug on reinit.
+	// for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].imageAvailable, NULL);
+	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].renderFinished, NULL);
 		
-		VkSemaphoreCreateInfo semaphoreInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-		vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].imageAvailable);
-		vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].renderFinished);
-	}
+	// 	VkSemaphoreCreateInfo semaphoreInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	// 	vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].imageAvailable);
+	// 	vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].renderFinished);
+	// }
 
     // First, clean up the previous swapchain
 	cleanupSwapChain(ctx, &rendererState);
@@ -1040,6 +1041,7 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 	*allocation = gpu_alloc(allocator, memRequirements, properties);
 	if (allocation->memory == VK_NULL_HANDLE) {
 		vkDestroyBuffer(ctx->device, *buffer, NULL);
+		*buffer = VK_NULL_HANDLE; // don't leave a dangling handle for teardown to double-free
 		return false;
 	}
 	vkBindBufferMemory(ctx->device, *buffer, allocation->memory, allocation->offset);
@@ -1244,7 +1246,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 11;
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 12; // SSBO/frame: 3 global + 6 cull + 3 update (sync w/ set layouts)
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

@@ -49,6 +49,9 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
     pool->vertexAlloc = gpu_alloc(alloc, vReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (pool->vertexAlloc.memory == VK_NULL_HANDLE) {
         vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null handle (cleanup guards on it) + free meshes
+        free(pool->meshes);
+        pool->meshes = NULL;
         return false;
     }
     vkBindBufferMemory(device, pool->vertexBuffer, pool->vertexAlloc.memory, pool->vertexAlloc.offset);
@@ -68,6 +71,10 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
     if (pool->indexAlloc.memory == VK_NULL_HANDLE) {
         vkDestroyBuffer(device, pool->vertexBuffer, NULL);
         vkDestroyBuffer(device, pool->indexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null both handles + free meshes
+        pool->indexBuffer = VK_NULL_HANDLE;
+        free(pool->meshes);
+        pool->meshes = NULL;
         return false;
     }
     vkBindBufferMemory(device, pool->indexBuffer, pool->indexAlloc.memory, pool->indexAlloc.offset);
@@ -159,16 +166,14 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // Find free blocks or use write offset
+    // Plan both allocations BEFORE mutating any pool state: an index-pool bailout must not strand an already-committed vertex reservation (free block or bump head).
+    // freeIdx >= 0 means satisfied from that free block; -1 means from the bump head.
     uint32_t finalVertexOffset = (uint32_t)-1;
+    int vertexFreeIdx = -1;
     for (uint32_t i = 0; i < pool->vertexFreeCount; i++) {
         if (pool->vertexFreeBlocks[i].size >= vertexSize) {
             finalVertexOffset = pool->vertexFreeBlocks[i].offset;
-            pool->vertexFreeBlocks[i].offset += vertexSize;
-            pool->vertexFreeBlocks[i].size -= vertexSize;
-            if (pool->vertexFreeBlocks[i].size == 0) {
-                pool->vertexFreeBlocks[i] = pool->vertexFreeBlocks[--pool->vertexFreeCount];
-            }
+            vertexFreeIdx = (int)i;
             break;
         }
     }
@@ -180,19 +185,15 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
             vkDestroyCommandPool(device, transientPool, NULL);
             return 0; // Return fallback mesh
         }
-        finalVertexOffset = pool->vertexWriteOffset;
-        pool->vertexWriteOffset += vertexSize;
+        finalVertexOffset = pool->vertexWriteOffset; // bump head, committed below
     }
 
     uint32_t finalIndexOffset = (uint32_t)-1;
+    int indexFreeIdx = -1;
     for (uint32_t i = 0; i < pool->indexFreeCount; i++) {
         if (pool->indexFreeBlocks[i].size >= indexSize) {
             finalIndexOffset = pool->indexFreeBlocks[i].offset;
-            pool->indexFreeBlocks[i].offset += indexSize;
-            pool->indexFreeBlocks[i].size -= indexSize;
-            if (pool->indexFreeBlocks[i].size == 0) {
-                pool->indexFreeBlocks[i] = pool->indexFreeBlocks[--pool->indexFreeCount];
-            }
+            indexFreeIdx = (int)i;
             break;
         }
     }
@@ -204,7 +205,26 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
             vkDestroyCommandPool(device, transientPool, NULL);
             return 0; // Return fallback mesh
         }
-        finalIndexOffset = pool->indexWriteOffset;
+        finalIndexOffset = pool->indexWriteOffset; // bump head, committed below
+    }
+
+    // Both fit — now commit the reservations.
+    if (vertexFreeIdx >= 0) {
+        pool->vertexFreeBlocks[vertexFreeIdx].offset += vertexSize;
+        pool->vertexFreeBlocks[vertexFreeIdx].size -= vertexSize;
+        if (pool->vertexFreeBlocks[vertexFreeIdx].size == 0) {
+            pool->vertexFreeBlocks[vertexFreeIdx] = pool->vertexFreeBlocks[--pool->vertexFreeCount];
+        }
+    } else {
+        pool->vertexWriteOffset += vertexSize;
+    }
+    if (indexFreeIdx >= 0) {
+        pool->indexFreeBlocks[indexFreeIdx].offset += indexSize;
+        pool->indexFreeBlocks[indexFreeIdx].size -= indexSize;
+        if (pool->indexFreeBlocks[indexFreeIdx].size == 0) {
+            pool->indexFreeBlocks[indexFreeIdx] = pool->indexFreeBlocks[--pool->indexFreeCount];
+        }
+    } else {
         pool->indexWriteOffset += indexSize;
     }
 
@@ -222,12 +242,11 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     };
     vkCmdCopyBuffer(cmd, stagingBuffer, pool->indexBuffer, 1, &indexCopyRegion);
 
-    VkMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT
-    };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+    // Upload ordering comes from vkWaitForFences below (+ vkDeviceWaitIdle on entry), not a barrier:
+    // this cmd runs on the transfer queue, which doesn't support VERTEX_INPUT
+    // (VUID-vkCmdPipelineBarrier-dstStageMask), and a same-queue barrier can't order the
+    // graphics-queue vertex fetches anyway. A dedicated transfer queue would instead need a
+    // graphics-side queue-family-ownership acquire to make the writes visible to vertex input.
 
     vkEndCommandBuffer(cmd);
 
