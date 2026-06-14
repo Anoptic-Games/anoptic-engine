@@ -45,7 +45,7 @@ void enumerateMonitors(Monitors* monitors) // Instance creation helper
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height) // Called by GLFW on window resize, not part of instance creation but related
 {
 	static uint32_t count = 0;
-	VulkanContext* ctx = glfwGetWindowUserPointer(window);
+	// VulkanContext* ctx = glfwGetWindowUserPointer(window);
 	printf("Resize: %d\n", count);
 	count++;
 	rendererState.framebufferResized = true;
@@ -338,12 +338,25 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	return indices;
 }
 
-struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures) // Selects capabilities required for the instance, extend with checks and error states
+struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selects capabilities required for the instance, extend with checks and error states
 {
 	struct DeviceCapabilities capabilities;
+
+	VkPhysicalDeviceVulkan12Features features12 = {};
+	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+
+	VkPhysicalDeviceFeatures2 features2 = {};
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = &features12;
+
+	vkGetPhysicalDeviceFeatures2(device, &features2);
+
 	//Device features checks
-	capabilities.float64 = deviceFeatures.shaderFloat64;
-	capabilities.int64 = deviceFeatures.shaderInt64;
+	capabilities.float64 = features2.features.shaderFloat64;
+	capabilities.int64 = features2.features.shaderInt64;
+	capabilities.drawIndirectCount = features12.drawIndirectCount;
+	capabilities.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
+
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
 	capabilities.graphics = indices.graphicsPresent;
@@ -384,16 +397,43 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) { // Rework extensions
 	return true; // All required extensions found
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface) // Greatly extend and integrate with device capability checks, expose via interface
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly extend and integrate with device capability checks, expose via interface
 {
 	struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
-	// Add any features as they become necessary
 	bool extensionsSupported = checkDeviceExtensionSupport(device);
-	//Since the GPU we're selecting is already the most performant one by default, there's no point selecting Discrete only
-	bool physicalRequirements = deviceFeatures.geometryShader && deviceFeatures.shaderFloat64 && deviceFeatures.shaderInt64;
 	bool queueRequirements = indices.graphicsPresent;
 
-	return physicalRequirements && queueRequirements && extensionsSupported && deviceFeatures.samplerAnisotropy;
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
+	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+
+	VkPhysicalDeviceVulkan12Features features12 = {};
+	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	features12.pNext = &dynamicRenderingFeature;
+
+	VkPhysicalDeviceFeatures2 features2 = {};
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = &features12;
+
+	vkGetPhysicalDeviceFeatures2(device, &features2);
+
+	bool physicalRequirements = features2.features.geometryShader && features2.features.shaderFloat64 && features2.features.shaderInt64 && features2.features.samplerAnisotropy;
+	
+	// Check specifically required Vulkan 1.2 and dynamic rendering features
+	bool requiredFeatures12 = features12.descriptorIndexing &&
+	                          features12.shaderSampledImageArrayNonUniformIndexing &&
+	                          features12.runtimeDescriptorArray &&
+	                          features12.descriptorBindingPartiallyBound &&
+	                          features12.descriptorBindingVariableDescriptorCount &&
+	                          features12.descriptorBindingSampledImageUpdateAfterBind;
+	bool requiredDynamicRendering = dynamicRenderingFeature.dynamicRendering;
+	bool requiredMultiDraw = features2.features.multiDrawIndirect;
+
+	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
+		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.\n");
+		return false;
+	}
+
+	return physicalRequirements && queueRequirements && extensionsSupported;
 }
 
 VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
@@ -433,7 +473,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 	vkEnumeratePhysicalDevices(ctx->instance, &ctx->deviceCount, devices);
 	
 	VkPhysicalDeviceProperties deviceProperties;
-	VkPhysicalDeviceFeatures deviceFeatures;
+	// VkPhysicalDeviceFeatures deviceFeatures;
 	VkPhysicalDeviceMemoryProperties memProperties;
 
 	VkDeviceSize maxDedicatedMemory = 0;
@@ -447,11 +487,10 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 	for (uint32_t i = 0; i < ctx->deviceCount; i++)
 	{
 		vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
-		vkGetPhysicalDeviceFeatures(devices[i], &deviceFeatures);
 		vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
 		printf("%d\n", i);
 
-		if (isDeviceSuitable(devices[i], deviceFeatures, &(ctx->surface)))
+		if (isDeviceSuitable(devices[i], &(ctx->surface)))
 		{
 
 			//Select the first preffered device if available and break out of the selection loop
@@ -486,8 +525,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 
 	if (foundPreferredDevice)
 	{
-		vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
-		ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+		ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
 		ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 	}
 	else
@@ -496,15 +534,13 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		if (bestDedicatedDevice != VK_NULL_HANDLE)
 		{
 			ctx->physicalDevice = bestDedicatedDevice;
-			vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
-			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
 			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 		}
 		else if (bestIntegratedDevice != VK_NULL_HANDLE)
 		{
 			ctx->physicalDevice = bestIntegratedDevice;
-			vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
-			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
 			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 		}
 		else
@@ -526,11 +562,31 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices) // Creates a logical device that can actually do stuff.
 { // Central init component, may need re-visiting for queue selection
-	// Device features (optional)
-	VkPhysicalDeviceFeatures availableFeatures;
-	vkGetPhysicalDeviceFeatures(physicalDevice, &availableFeatures);
-	VkPhysicalDeviceFeatures deviceFeatures = {.shaderInt64 = availableFeatures.shaderInt64, .shaderFloat64 = availableFeatures.shaderFloat64,
-												.samplerAnisotropy = availableFeatures.samplerAnisotropy, .multiDrawIndirect = availableFeatures.multiDrawIndirect}; // Add more features as required
+	// Query supported features via vkGetPhysicalDeviceFeatures2
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR queryDynamicRendering = {};
+	queryDynamicRendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+
+	VkPhysicalDeviceVulkan11Features queryFeatures11 = {};
+	queryFeatures11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+	queryFeatures11.pNext = &queryDynamicRendering;
+
+	VkPhysicalDeviceVulkan12Features queryFeatures12 = {};
+	queryFeatures12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	queryFeatures12.pNext = &queryFeatures11;
+
+	VkPhysicalDeviceFeatures2 features2 = {};
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = &queryFeatures12;
+
+	vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+
+	VkPhysicalDeviceFeatures deviceFeatures = {};
+	deviceFeatures.shaderInt64 = features2.features.shaderInt64;
+	deviceFeatures.shaderFloat64 = features2.features.shaderFloat64;
+	deviceFeatures.samplerAnisotropy = features2.features.samplerAnisotropy;
+	deviceFeatures.multiDrawIndirect = features2.features.multiDrawIndirect;
+	deviceFeatures.geometryShader = features2.features.geometryShader;
+	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -565,19 +621,25 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	// creating the device
 	VkPhysicalDeviceVulkan12Features features12 = {};
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-	features12.descriptorIndexing = VK_TRUE;
-	features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-	features12.runtimeDescriptorArray = VK_TRUE;
-	features12.descriptorBindingPartiallyBound = VK_TRUE;
-	features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
-	features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-	features12.drawIndirectCount = VK_TRUE;
+	// Only request what the device actually supports based on the query
+	features12.descriptorIndexing = queryFeatures12.descriptorIndexing;
+	features12.shaderSampledImageArrayNonUniformIndexing = queryFeatures12.shaderSampledImageArrayNonUniformIndexing;
+	features12.runtimeDescriptorArray = queryFeatures12.runtimeDescriptorArray;
+	features12.descriptorBindingPartiallyBound = queryFeatures12.descriptorBindingPartiallyBound;
+	features12.descriptorBindingVariableDescriptorCount = queryFeatures12.descriptorBindingVariableDescriptorCount;
+	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
+	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
+
+	VkPhysicalDeviceVulkan11Features features11 = {};
+	features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+	features11.shaderDrawParameters = queryFeatures11.shaderDrawParameters; // flat.vert uses gl_DrawID -> SPIR-V DrawParameters cap
 
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
-	dynamicRenderingFeature.dynamicRendering = VK_TRUE;
+	dynamicRenderingFeature.dynamicRendering = queryDynamicRendering.dynamicRendering;
 
-	features12.pNext = &dynamicRenderingFeature;
+	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering (preserved) -> NULL
+	features12.pNext = &features11;
 
 	VkDeviceCreateInfo createInfo = {};
 
@@ -849,6 +911,16 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	// Wait until the device is completely idle before tearing down any resources
 	vkDeviceWaitIdle(ctx->device);
 
+	// This is completely unecessary and introduces a bug on reinit.
+	// for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].imageAvailable, NULL);
+	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].renderFinished, NULL);
+		
+	// 	VkSemaphoreCreateInfo semaphoreInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	// 	vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].imageAvailable);
+	// 	vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].renderFinished);
+	// }
+
     // First, clean up the previous swapchain
 	cleanupSwapChain(ctx, &rendererState);
     
@@ -976,6 +1048,11 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 	vkGetBufferMemoryRequirements(ctx->device, *buffer, &memRequirements);
 
 	*allocation = gpu_alloc(allocator, memRequirements, properties);
+	if (allocation->memory == VK_NULL_HANDLE) {
+		vkDestroyBuffer(ctx->device, *buffer, NULL);
+		*buffer = VK_NULL_HANDLE; // don't leave a dangling handle for teardown to double-free
+		return false;
+	}
 	vkBindBufferMemory(ctx->device, *buffer, allocation->memory, allocation->offset);
 
 	return true;
@@ -1165,6 +1242,11 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 		1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageAlloc, false);
 	rendererState.colorView = createImageView(ctx->device, rendererState.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+	
+	if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+	{
+		printf("Failed to transition color image layout!\n");
+	}
 }
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
@@ -1173,7 +1255,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 11;
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 12; // SSBO/frame: 3 global + 6 cull + 3 update (sync w/ set layouts)
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1316,7 +1398,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		materialInfo.offset = 0;
 		materialInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
 
-		VkWriteDescriptorSet descriptorWrites[3] = {};
+		VkWriteDescriptorSet descriptorWrites[4] = {};
 		
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
@@ -1342,7 +1424,20 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[2].descriptorCount = 1;
 		descriptorWrites[2].pBufferInfo = &materialInfo;
 
-		vkUpdateDescriptorSets(ctx->device, 3, descriptorWrites, 0, NULL);
+		VkDescriptorBufferInfo entityInfo = {};
+		entityInfo.buffer = rendererState.culling.entityBuffer[i];
+		entityInfo.offset = 0;
+		entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
+
+		descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[3].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[3].dstBinding = 3;
+		descriptorWrites[3].dstArrayElement = 0;
+		descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[3].descriptorCount = 1;
+		descriptorWrites[3].pBufferInfo = &entityInfo;
+
+		vkUpdateDescriptorSets(ctx->device, 4, descriptorWrites, 0, NULL);
 
         // Update cull sets
         uint32_t maxMeshes = 1024;
@@ -1350,11 +1445,6 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullUboInfo.buffer = rendererState.culling.ubo.buffer[i];
         cullUboInfo.offset = 0;
         cullUboInfo.range = sizeof(CullUBO);
-
-        VkDescriptorBufferInfo entityInfo = {};
-        entityInfo.buffer = rendererState.culling.entityBuffer[i];
-        entityInfo.offset = 0;
-        entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
 
         VkDescriptorBufferInfo meshDataInfo = {};
         meshDataInfo.buffer = rendererState.culling.meshDataBuffer[i];
@@ -1774,6 +1864,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		gpu_alloc_destroy(&gpuAllocator);
 		gpu_alloc_destroy(&swapchainAllocator);
 		gpu_alloc_destroy(&stagingAllocator);
+		gpu_alloc_destroy(&textureAllocator);
 
 		vkDestroyDevice(ctx->device, NULL);
 	}

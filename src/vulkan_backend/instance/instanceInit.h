@@ -34,6 +34,9 @@ VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *su
 // Selects the optimal graphics device
 bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice);
 
+// Populates physical device capabilities
+struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device);
+
 // Initializes a logical device based on a chosen physical device
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 

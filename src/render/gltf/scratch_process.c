@@ -25,7 +25,7 @@ void processGltfMeshes(VulkanContext* ctx, GltfElements* elements)
             // Indices
             GltfAccessor* indexAccessor = &elements->accessors[primitive->indices];
             uint32_t indexCount = indexAccessor->count;
-            uint16_t* indices = malloc(sizeof(uint16_t) * indexCount);
+            uint32_t* indices = malloc(sizeof(uint32_t) * indexCount);
             for (uint32_t ind = 0; ind < indexCount; ind++) {
                 uint16_t* indexData = getIndexData(elements, indexAccessor, ind);
                 indices[ind] = *indexData;

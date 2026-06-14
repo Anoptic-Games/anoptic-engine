@@ -83,16 +83,16 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             }
             
             uint32_t indexCount = prim->indices->count;
-            uint16_t* indices = calloc(indexCount, sizeof(uint16_t));
+            uint32_t* indices = calloc(indexCount, sizeof(uint32_t));
             for (uint32_t i = 0; i < indexCount; ++i) {
-                indices[i] = (uint16_t)cgltf_accessor_read_index(prim->indices, i);
+                indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
             outMesh->primitives[p].geometryPoolIndex = geometry_pool_upload(
                 &rendererState.globalGeometryPool, 
                 &stagingAllocator, 
                 ctx->device, 
-                rendererState.commandPool, 
+                ctx->queueFamilyIndices.transferFamily, 
                 ctx->transferQueue, 
                 vertices, vertexCount, 
                 indices, indexCount
@@ -120,6 +120,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     VkImage* loadedImages = calloc(data->textures_count, sizeof(VkImage));
     GpuAllocation* loadedAllocs = calloc(data->textures_count, sizeof(GpuAllocation));
     bool* textureLoaded = calloc(data->textures_count, sizeof(bool));
+    uint32_t* bindlessIndices = calloc(data->textures_count, sizeof(uint32_t));
 
     for (size_t t = 0; t < data->textures_count; ++t) {
         cgltf_texture* tex = &data->textures[t];
@@ -136,6 +137,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 td.textureImageAlloc = loadedAllocs[t];
                 td.textureImageView = loadedTextures[t];
                 ano_vk_register_texture(&rendererState.primitives, td);
+                
+                bindlessIndices[t] = bindless_register_texture(
+                    ctx, &rendererState.bindlessTextures, 
+                    loadedTextures[t], rendererState.textureSampler
+                );
             }
         }
     }
@@ -147,6 +153,16 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     }
     free(stagingBuffers);
     gpu_alloc_reset(&stagingAllocator);
+
+    // Pre-validate material buffer capacity
+    uint32_t totalPrimitives = 0;
+    for (size_t m = 0; m < data->meshes_count; ++m) {
+        totalPrimitives += data->meshes[m].primitives_count;
+    }
+    if (rendererState.materialBuffer.count + totalPrimitives > rendererState.materialBuffer.capacity) {
+        printf("Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.\n", 
+               totalPrimitives, rendererState.materialBuffer.capacity, rendererState.materialBuffer.count);
+    }
 
     // 3. Bake Material SSBO entries per primitive
     for (size_t m = 0; m < data->meshes_count; ++m) {
@@ -162,28 +178,37 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (baseColor->texture) {
                     size_t texIdx = baseColor->texture - data->textures;
                     if (textureLoaded[texIdx]) {
-                        bindlessTexIdx = bindless_register_texture(
-                            ctx, &rendererState.bindlessTextures, 
-                            loadedTextures[texIdx], rendererState.textureSampler
-                        );
+                        bindlessTexIdx = bindlessIndices[texIdx];
                     }
                 }
             }
 
             // Assign a persistent material index in the global SSBO
-            uint32_t matIdx = rendererState.materialBuffer.count++;
+            uint32_t matIdx = 0;
+            bool writeMaterial = false;
+            
+            if (rendererState.materialBuffer.count < rendererState.materialBuffer.capacity) {
+                matIdx = rendererState.materialBuffer.count++;
+                writeMaterial = true;
+            } else {
+                // If capacity is exhausted, reuse index 0 (fallback)
+                matIdx = 0;
+            }
+            
             outMesh->primitives[p].materialIndex = matIdx;
             
-            MaterialData matData = {0};
-            matData.albedoIndex = bindlessTexIdx;
-            matData.roughness = 1.0f;
-            matData.color[0] = 1.0f;
-            matData.color[1] = 1.0f;
-            matData.color[2] = 1.0f;
-            matData.color[3] = 1.0f;
-            
-            for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
-                rendererState.materialBuffer.mapped[frame][matIdx] = matData;
+            if (writeMaterial) {
+                MaterialData matData = {0};
+                matData.albedoIndex = bindlessTexIdx;
+                matData.roughness = 1.0f;
+                matData.color[0] = 1.0f;
+                matData.color[1] = 1.0f;
+                matData.color[2] = 1.0f;
+                matData.color[3] = 1.0f;
+                
+                for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
+                    rendererState.materialBuffer.mapped[frame][matIdx] = matData;
+                }
             }
         }
     }
@@ -192,6 +217,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     free(loadedImages);
     free(loadedAllocs);
     free(textureLoaded);
+    free(bindlessIndices);
 
     // 4. Construct Node Hierarchy
     asset->nodeCount = data->nodes_count;
