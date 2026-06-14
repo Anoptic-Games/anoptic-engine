@@ -62,6 +62,8 @@ bool isVisible(vec3 center, float radius, mat4 model) {
     return true;
 }
 
+layout(constant_id = 0) const bool USE_FIRST_INSTANCE = true;
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
 
@@ -84,7 +86,11 @@ void main() {
         draws[idx].instanceCount = 1;
         draws[idx].firstIndex    = meshData.y;
         draws[idx].vertexOffset  = int(meshData.z);
-        draws[idx].firstInstance = idx;  // entity index
+        if (USE_FIRST_INSTANCE) {
+            draws[idx].firstInstance = idx;  // entity index
+        } else {
+            draws[idx].firstInstance = 0;
+        }
     } else {
         draws[idx].instanceCount = 0;
     }

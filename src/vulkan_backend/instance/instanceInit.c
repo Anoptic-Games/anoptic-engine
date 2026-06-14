@@ -45,7 +45,7 @@ void enumerateMonitors(Monitors* monitors) // Instance creation helper
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height) // Called by GLFW on window resize, not part of instance creation but related
 {
 	static uint32_t count = 0;
-	VulkanContext* ctx = glfwGetWindowUserPointer(window);
+	// VulkanContext* ctx = glfwGetWindowUserPointer(window);
 	printf("Resize: %d\n", count);
 	count++;
 	rendererState.framebufferResized = true;
@@ -355,6 +355,7 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	capabilities.float64 = features2.features.shaderFloat64;
 	capabilities.int64 = features2.features.shaderInt64;
 	capabilities.drawIndirectCount = features12.drawIndirectCount;
+	capabilities.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
 
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
@@ -472,7 +473,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 	vkEnumeratePhysicalDevices(ctx->instance, &ctx->deviceCount, devices);
 	
 	VkPhysicalDeviceProperties deviceProperties;
-	VkPhysicalDeviceFeatures deviceFeatures;
+	// VkPhysicalDeviceFeatures deviceFeatures;
 	VkPhysicalDeviceMemoryProperties memProperties;
 
 	VkDeviceSize maxDedicatedMemory = 0;
@@ -581,6 +582,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	deviceFeatures.samplerAnisotropy = features2.features.samplerAnisotropy;
 	deviceFeatures.multiDrawIndirect = features2.features.multiDrawIndirect;
 	deviceFeatures.geometryShader = features2.features.geometryShader;
+	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];

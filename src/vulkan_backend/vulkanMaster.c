@@ -488,10 +488,10 @@ void drawFrame()
 	updateUniformBuffer(&ctx, &rendererState);
 
 	// Update entity transforms
-	float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
-	for (uint32_t i = 0; i < rendererState.entityCount && i < 3; i++) {
+	// float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
+	// for (uint32_t i = 0; i < rendererState.entityCount && i < 3; i++) {
 		//updateMeshTransforms(&ctx, &rendererState.entities[i], moveOffsets[i]);
-	}
+	// }
 
 	updateTransformBuffer(&ctx, &rendererState, rendererState.frameIndex);
 	updateCullingBuffers(&ctx, &rendererState, rendererState.frameIndex);
