@@ -439,7 +439,7 @@ void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
 
             uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
                                                        ctx->device,
-                                                       state->commandPool,
+                                                       ctx->queueFamilyIndices.transferFamily,
                                                        ctx->transferQueue,
                                                        triVertices, 3, triIndices, 3);
             
@@ -808,7 +808,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
 
     uint32_t fallbackMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
                                                     ctx->device,
-                                                    state->commandPool,
+                                                    ctx->queueFamilyIndices.transferFamily,
                                                     ctx->transferQueue,
                                                     cubeVertices, 8, cubeIndices, 36);
 
@@ -919,7 +919,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	swapchainAllocator.blocks = NULL;
 	swapchainAllocator.blockCount = 0;
 
-	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device)) {
+	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device, ctx.queueFamilyIndices.graphicsFamily, ctx.queueFamilyIndices.transferFamily)) {
 		printf("Quitting init: geometry pool creation failure!\n");
 		unInitVulkan();
 		return false;

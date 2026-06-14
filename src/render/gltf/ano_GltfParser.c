@@ -92,7 +92,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 &rendererState.globalGeometryPool, 
                 &stagingAllocator, 
                 ctx->device, 
-                rendererState.commandPool, 
+                ctx->queueFamilyIndices.transferFamily, 
                 ctx->transferQueue, 
                 vertices, vertexCount, 
                 indices, indexCount

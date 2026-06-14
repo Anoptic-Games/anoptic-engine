@@ -54,13 +54,13 @@ typedef struct GeometryPool
     uint32_t        freeMeshIndexCapacity;
 } GeometryPool;
 
-bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device);
+bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily);
 void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device);
 
 // Upload mesh data, return a MeshRegion handle (index into meshes[]).
 // Data is staged through a staging buffer -> device-local transfer.
 uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
-                              VkCommandPool cmdPool, VkQueue transferQueue,
+                              uint32_t transferFamily, VkQueue transferQueue,
                               const Vertex* vertices, uint32_t vertexCount,
                               const uint16_t* indices, uint32_t indexCount);
 
