@@ -120,6 +120,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     VkImage* loadedImages = calloc(data->textures_count, sizeof(VkImage));
     GpuAllocation* loadedAllocs = calloc(data->textures_count, sizeof(GpuAllocation));
     bool* textureLoaded = calloc(data->textures_count, sizeof(bool));
+    uint32_t* bindlessIndices = calloc(data->textures_count, sizeof(uint32_t));
 
     for (size_t t = 0; t < data->textures_count; ++t) {
         cgltf_texture* tex = &data->textures[t];
@@ -136,6 +137,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 td.textureImageAlloc = loadedAllocs[t];
                 td.textureImageView = loadedTextures[t];
                 ano_vk_register_texture(&rendererState.primitives, td);
+                
+                bindlessIndices[t] = bindless_register_texture(
+                    ctx, &rendererState.bindlessTextures, 
+                    loadedTextures[t], rendererState.textureSampler
+                );
             }
         }
     }
@@ -172,10 +178,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (baseColor->texture) {
                     size_t texIdx = baseColor->texture - data->textures;
                     if (textureLoaded[texIdx]) {
-                        bindlessTexIdx = bindless_register_texture(
-                            ctx, &rendererState.bindlessTextures, 
-                            loadedTextures[texIdx], rendererState.textureSampler
-                        );
+                        bindlessTexIdx = bindlessIndices[texIdx];
                     }
                 }
             }
@@ -214,6 +217,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     free(loadedImages);
     free(loadedAllocs);
     free(textureLoaded);
+    free(bindlessIndices);
 
     // 4. Construct Node Hierarchy
     asset->nodeCount = data->nodes_count;
