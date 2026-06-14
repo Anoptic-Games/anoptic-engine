@@ -21,13 +21,14 @@ git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 
 ### Installation
 
-All builds of Anoptic Engine require the latest version of `clang 17`, `CMake`, and the `Vulkan SDK`.
+All builds of Anoptic Engine require the latest version of `clang 17`, `CMake`, `glslc` and the `Vulkan SDK`.
 
 Acquire a copy of the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), version 1.3.2 or later.
 
 #### Building on Linux
 
 Use `build.sh {build-type}`, where {build-type} is 1 for Release, 2 for Debug, and 3 for Tests.
+Use `resources/shaders/compile.sh` to build your shaders.
 
 The resulting binaries can be found under `build/{build-type}/`.
 

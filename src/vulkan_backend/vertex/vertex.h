@@ -26,15 +26,15 @@ typedef struct Vector2
 	float v[2];
 } Vector2;
 
-typedef struct Vector3
-{
-	float v[3];
-} Vector3;
-
 typedef struct Vector4
 {
 	float v[4];
 } Vector4;
+
+typedef struct Vector3
+{
+	float v[3];
+} Vector3;
 
 typedef struct Vertex
 {
@@ -44,19 +44,15 @@ typedef struct Vertex
 } Vertex;
 
 
-typedef struct UniformComponents
+typedef struct GlobalUBO
 {
-	mat4 model;
 	mat4 view;
 	mat4 proj;
-} UniformComponents;
-
-typedef struct ModelTransforms
-{
-	mat4 translation;
-	mat4 rotation;
-	mat4 scale;
-} ModelTransforms;
+	float time;
+	float deltaTime;
+	uint32_t frameCount;
+	uint32_t padding;
+} GlobalUBO;
 
 
 
@@ -79,6 +75,12 @@ void translate(float mat[4][4], float x, float y, float z);
 
 // Creates a perspective matrix from the provided values
 void perspective(float matrix[4][4], float fovDegrees, float aspect, float near, float far);
+
+// Multiplies two 4x4 matrices: result = a * b
+void multiplyMat4(mat4 result, const mat4 a, const mat4 b);
+
+// Extracts the 6 frustum planes from a view-projection matrix
+void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj);
 
 
 #endif
