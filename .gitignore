@@ -61,10 +61,15 @@ Pipfile
 Pipfile.lock
 poetry.lock
 
+# Doc-generated pdfs
+docs/*.pdf
+docs/references/*.pdf
+
 # IDE-specific directories
 .vscode/
 .idea/
 .claude/*.txt
+.claude/*.md
 .openclaw/
 .agents/
 .codex/
