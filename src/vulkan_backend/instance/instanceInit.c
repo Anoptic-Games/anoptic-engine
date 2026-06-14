@@ -1369,7 +1369,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		materialInfo.offset = 0;
 		materialInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
 
-		VkWriteDescriptorSet descriptorWrites[3] = {};
+		VkWriteDescriptorSet descriptorWrites[4] = {};
 		
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
@@ -1395,7 +1395,20 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[2].descriptorCount = 1;
 		descriptorWrites[2].pBufferInfo = &materialInfo;
 
-		vkUpdateDescriptorSets(ctx->device, 3, descriptorWrites, 0, NULL);
+		VkDescriptorBufferInfo entityInfo = {};
+		entityInfo.buffer = rendererState.culling.entityBuffer[i];
+		entityInfo.offset = 0;
+		entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
+
+		descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[3].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[3].dstBinding = 3;
+		descriptorWrites[3].dstArrayElement = 0;
+		descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[3].descriptorCount = 1;
+		descriptorWrites[3].pBufferInfo = &entityInfo;
+
+		vkUpdateDescriptorSets(ctx->device, 4, descriptorWrites, 0, NULL);
 
         // Update cull sets
         uint32_t maxMeshes = 1024;
@@ -1403,11 +1416,6 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullUboInfo.buffer = rendererState.culling.ubo.buffer[i];
         cullUboInfo.offset = 0;
         cullUboInfo.range = sizeof(CullUBO);
-
-        VkDescriptorBufferInfo entityInfo = {};
-        entityInfo.buffer = rendererState.culling.entityBuffer[i];
-        entityInfo.offset = 0;
-        entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
 
         VkDescriptorBufferInfo meshDataInfo = {};
         meshDataInfo.buffer = rendererState.culling.meshDataBuffer[i];
