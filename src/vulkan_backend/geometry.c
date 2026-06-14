@@ -28,6 +28,9 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
 
     VkDeviceSize vertexPoolSize = 64 * 1024 * 1024; // 64 MB
     VkDeviceSize indexPoolSize = 16 * 1024 * 1024;  // 16 MB
+    
+    pool->vertexCapacity = vertexPoolSize;
+    pool->indexCapacity = indexPoolSize;
 
     uint32_t queueFamilyIndices[] = {graphicsFamily, transferFamily};
     bool concurrent = (graphicsFamily != transferFamily);
@@ -170,6 +173,13 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
         }
     }
     if (finalVertexOffset == (uint32_t)-1) {
+        if ((VkDeviceSize)pool->vertexWriteOffset + vertexSize > pool->vertexCapacity) {
+            printf("Error: Geometry mega-buffer vertex pool exhausted! Requested %llu, Capacity %llu\n",
+                   (unsigned long long)(pool->vertexWriteOffset + vertexSize), (unsigned long long)pool->vertexCapacity);
+            vkDestroyBuffer(device, stagingBuffer, NULL);
+            vkDestroyCommandPool(device, transientPool, NULL);
+            return 0; // Return fallback mesh
+        }
         finalVertexOffset = pool->vertexWriteOffset;
         pool->vertexWriteOffset += vertexSize;
     }
@@ -187,6 +197,13 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
         }
     }
     if (finalIndexOffset == (uint32_t)-1) {
+        if ((VkDeviceSize)pool->indexWriteOffset + indexSize > pool->indexCapacity) {
+            printf("Error: Geometry mega-buffer index pool exhausted! Requested %llu, Capacity %llu\n",
+                   (unsigned long long)(pool->indexWriteOffset + indexSize), (unsigned long long)pool->indexCapacity);
+            vkDestroyBuffer(device, stagingBuffer, NULL);
+            vkDestroyCommandPool(device, transientPool, NULL);
+            return 0; // Return fallback mesh
+        }
         finalIndexOffset = pool->indexWriteOffset;
         pool->indexWriteOffset += indexSize;
     }
