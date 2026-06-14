@@ -68,8 +68,10 @@ typedef struct MeshData
 typedef struct RenderPrimitives
 {
 	uint32_t meshCount;
+	uint32_t meshCapacity;
 	MeshData* meshes;
 	uint32_t textureCount;
+	uint32_t textureCapacity;
 	TextureData* textureBuffers;
 } RenderPrimitives;
 
