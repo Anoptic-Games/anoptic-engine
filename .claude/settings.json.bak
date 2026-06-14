@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Bash(./build.sh *)", "Bash(cmake *)", "Bash(ctest *)",
+      "Bash(git diff *)", "Bash(git status)", "Bash(git log *)",
+      "Read", "Edit", "Grep", "Glob"
+    ],
+    "deny": [
+      "Bash(git push *)", "Bash(git reset --hard *)", "Bash(rm -rf *)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" || exit 0; git status --porcelain | grep -qE '\\.(c|h)$|CMakeLists|build\\.sh$' || exit 0; ./build.sh 2 1>&2 && ctest --test-dir build --output-on-failure 1>&2 || exit 2",
+            "timeout": 900,
+            "statusMessage": "Gate: build + tests..."
+          }
+        ]
+      }
+    ]
+  }
+}
