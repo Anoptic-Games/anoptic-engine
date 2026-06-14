@@ -275,14 +275,23 @@ void recordCommandBuffer(uint32_t imageIndex)
                 uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
 
-                vkCmdDrawIndexedIndirectCount(
-                    cmd,
-                    rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                    0,
-                    rendererState.culling.drawCountBuffer[rendererState.frameIndex],
-                    0,
-                    rendererState.indirectBuffer.capacity,
-                    sizeof(VkDrawIndexedIndirectCommand));
+                if (ctx.deviceCapabilities.drawIndirectCount) {
+                    vkCmdDrawIndexedIndirectCount(
+                        cmd,
+                        rendererState.indirectBuffer.buffer[rendererState.frameIndex],
+                        0,
+                        rendererState.culling.drawCountBuffer[rendererState.frameIndex],
+                        0,
+                        rendererState.indirectBuffer.capacity,
+                        sizeof(VkDrawIndexedIndirectCommand));
+                } else {
+                    vkCmdDrawIndexedIndirect(
+                        cmd,
+                        rendererState.indirectBuffer.buffer[rendererState.frameIndex],
+                        0,
+                        rendererState.indirectBuffer.capacity,
+                        sizeof(VkDrawIndexedIndirectCommand));
+                }
             }
             
             vkCmdEndRendering(cmd);

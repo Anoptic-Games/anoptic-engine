@@ -338,12 +338,24 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	return indices;
 }
 
-struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures) // Selects capabilities required for the instance, extend with checks and error states
+struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selects capabilities required for the instance, extend with checks and error states
 {
 	struct DeviceCapabilities capabilities;
+
+	VkPhysicalDeviceVulkan12Features features12 = {};
+	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+
+	VkPhysicalDeviceFeatures2 features2 = {};
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = &features12;
+
+	vkGetPhysicalDeviceFeatures2(device, &features2);
+
 	//Device features checks
-	capabilities.float64 = deviceFeatures.shaderFloat64;
-	capabilities.int64 = deviceFeatures.shaderInt64;
+	capabilities.float64 = features2.features.shaderFloat64;
+	capabilities.int64 = features2.features.shaderInt64;
+	capabilities.drawIndirectCount = features12.drawIndirectCount;
+
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
 	capabilities.graphics = indices.graphicsPresent;
@@ -384,16 +396,43 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) { // Rework extensions
 	return true; // All required extensions found
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkPhysicalDeviceFeatures deviceFeatures, VkSurfaceKHR *surface) // Greatly extend and integrate with device capability checks, expose via interface
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly extend and integrate with device capability checks, expose via interface
 {
 	struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
-	// Add any features as they become necessary
 	bool extensionsSupported = checkDeviceExtensionSupport(device);
-	//Since the GPU we're selecting is already the most performant one by default, there's no point selecting Discrete only
-	bool physicalRequirements = deviceFeatures.geometryShader && deviceFeatures.shaderFloat64 && deviceFeatures.shaderInt64;
 	bool queueRequirements = indices.graphicsPresent;
 
-	return physicalRequirements && queueRequirements && extensionsSupported && deviceFeatures.samplerAnisotropy;
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
+	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+
+	VkPhysicalDeviceVulkan12Features features12 = {};
+	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	features12.pNext = &dynamicRenderingFeature;
+
+	VkPhysicalDeviceFeatures2 features2 = {};
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = &features12;
+
+	vkGetPhysicalDeviceFeatures2(device, &features2);
+
+	bool physicalRequirements = features2.features.geometryShader && features2.features.shaderFloat64 && features2.features.shaderInt64 && features2.features.samplerAnisotropy;
+	
+	// Check specifically required Vulkan 1.2 and dynamic rendering features
+	bool requiredFeatures12 = features12.descriptorIndexing &&
+	                          features12.shaderSampledImageArrayNonUniformIndexing &&
+	                          features12.runtimeDescriptorArray &&
+	                          features12.descriptorBindingPartiallyBound &&
+	                          features12.descriptorBindingVariableDescriptorCount &&
+	                          features12.descriptorBindingSampledImageUpdateAfterBind;
+	bool requiredDynamicRendering = dynamicRenderingFeature.dynamicRendering;
+	bool requiredMultiDraw = features2.features.multiDrawIndirect;
+
+	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
+		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.\n");
+		return false;
+	}
+
+	return physicalRequirements && queueRequirements && extensionsSupported;
 }
 
 VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
@@ -447,11 +486,10 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 	for (uint32_t i = 0; i < ctx->deviceCount; i++)
 	{
 		vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
-		vkGetPhysicalDeviceFeatures(devices[i], &deviceFeatures);
 		vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
 		printf("%d\n", i);
 
-		if (isDeviceSuitable(devices[i], deviceFeatures, &(ctx->surface)))
+		if (isDeviceSuitable(devices[i], &(ctx->surface)))
 		{
 
 			//Select the first preffered device if available and break out of the selection loop
@@ -486,8 +524,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 
 	if (foundPreferredDevice)
 	{
-		vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
-		ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+		ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
 		ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 	}
 	else
@@ -496,15 +533,13 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		if (bestDedicatedDevice != VK_NULL_HANDLE)
 		{
 			ctx->physicalDevice = bestDedicatedDevice;
-			vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
-			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
 			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 		}
 		else if (bestIntegratedDevice != VK_NULL_HANDLE)
 		{
 			ctx->physicalDevice = bestIntegratedDevice;
-			vkGetPhysicalDeviceFeatures(ctx->physicalDevice, &deviceFeatures);
-			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice, deviceFeatures);
+			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
 			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 		}
 		else
@@ -526,11 +561,26 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices) // Creates a logical device that can actually do stuff.
 { // Central init component, may need re-visiting for queue selection
-	// Device features (optional)
-	VkPhysicalDeviceFeatures availableFeatures;
-	vkGetPhysicalDeviceFeatures(physicalDevice, &availableFeatures);
-	VkPhysicalDeviceFeatures deviceFeatures = {.shaderInt64 = availableFeatures.shaderInt64, .shaderFloat64 = availableFeatures.shaderFloat64,
-												.samplerAnisotropy = availableFeatures.samplerAnisotropy, .multiDrawIndirect = availableFeatures.multiDrawIndirect}; // Add more features as required
+	// Query supported features via vkGetPhysicalDeviceFeatures2
+	VkPhysicalDeviceDynamicRenderingFeaturesKHR queryDynamicRendering = {};
+	queryDynamicRendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+
+	VkPhysicalDeviceVulkan12Features queryFeatures12 = {};
+	queryFeatures12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	queryFeatures12.pNext = &queryDynamicRendering;
+
+	VkPhysicalDeviceFeatures2 features2 = {};
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = &queryFeatures12;
+
+	vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+
+	VkPhysicalDeviceFeatures deviceFeatures = {};
+	deviceFeatures.shaderInt64 = features2.features.shaderInt64;
+	deviceFeatures.shaderFloat64 = features2.features.shaderFloat64;
+	deviceFeatures.samplerAnisotropy = features2.features.samplerAnisotropy;
+	deviceFeatures.multiDrawIndirect = features2.features.multiDrawIndirect;
+	deviceFeatures.geometryShader = features2.features.geometryShader;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -565,17 +615,18 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	// creating the device
 	VkPhysicalDeviceVulkan12Features features12 = {};
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-	features12.descriptorIndexing = VK_TRUE;
-	features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-	features12.runtimeDescriptorArray = VK_TRUE;
-	features12.descriptorBindingPartiallyBound = VK_TRUE;
-	features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
-	features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
-	features12.drawIndirectCount = VK_TRUE;
+	// Only request what the device actually supports based on the query
+	features12.descriptorIndexing = queryFeatures12.descriptorIndexing;
+	features12.shaderSampledImageArrayNonUniformIndexing = queryFeatures12.shaderSampledImageArrayNonUniformIndexing;
+	features12.runtimeDescriptorArray = queryFeatures12.runtimeDescriptorArray;
+	features12.descriptorBindingPartiallyBound = queryFeatures12.descriptorBindingPartiallyBound;
+	features12.descriptorBindingVariableDescriptorCount = queryFeatures12.descriptorBindingVariableDescriptorCount;
+	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
+	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
 
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
-	dynamicRenderingFeature.dynamicRendering = VK_TRUE;
+	dynamicRenderingFeature.dynamicRendering = queryDynamicRendering.dynamicRendering;
 
 	features12.pNext = &dynamicRenderingFeature;
 
