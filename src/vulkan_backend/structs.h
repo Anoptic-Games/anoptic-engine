@@ -43,6 +43,7 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 	bool transfer;
 	bool float64;
 	bool int64;
+	bool drawIndirectCount;
 } DeviceCapabilities;
 
 typedef struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
