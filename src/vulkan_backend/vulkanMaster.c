@@ -21,6 +21,7 @@ RendererState rendererState;
 GpuAllocator gpuAllocator;
 GpuAllocator stagingAllocator;
 GpuAllocator swapchainAllocator;
+GpuAllocator textureAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
@@ -918,6 +919,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &swapchainAllocator.memProps);
 	swapchainAllocator.blocks = NULL;
 	swapchainAllocator.blockCount = 0;
+
+	textureAllocator.device = ctx.device;
+	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &textureAllocator.memProps);
+	textureAllocator.blocks = NULL;
+	textureAllocator.blockCount = 0;
 
 	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device, ctx.queueFamilyIndices.graphicsFamily, ctx.queueFamilyIndices.transferFamily)) {
 		printf("Quitting init: geometry pool creation failure!\n");

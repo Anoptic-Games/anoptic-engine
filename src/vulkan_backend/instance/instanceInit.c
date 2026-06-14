@@ -1853,6 +1853,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		gpu_alloc_destroy(&gpuAllocator);
 		gpu_alloc_destroy(&swapchainAllocator);
 		gpu_alloc_destroy(&stagingAllocator);
+		gpu_alloc_destroy(&textureAllocator);
 
 		vkDestroyDevice(ctx->device, NULL);
 	}
