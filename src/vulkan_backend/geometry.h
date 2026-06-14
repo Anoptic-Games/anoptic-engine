@@ -54,7 +54,7 @@ typedef struct GeometryPool
     uint32_t        freeMeshIndexCapacity;
 } GeometryPool;
 
-void ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device);
+bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device);
 void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device);
 
 // Upload mesh data, return a MeshRegion handle (index into meshes[]).

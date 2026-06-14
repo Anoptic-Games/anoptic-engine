@@ -559,7 +559,7 @@ void drawFrame()
 
 //Init and cleanup functions
 
-void createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
+bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->materialBuffer.capacity = maxEntities;
     state->materialBuffer.count = 0;
     
@@ -580,13 +580,18 @@ void createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
         vkGetBufferMemoryRequirements(ctx->device, state->materialBuffer.buffer[i], &memRequirements);
         
         state->materialBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->materialBuffer.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->materialBuffer.buffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->materialBuffer.buffer[i], state->materialBuffer.allocs[i].memory, state->materialBuffer.allocs[i].offset);
         
         state->materialBuffer.mapped[i] = (MaterialData*)state->materialBuffer.allocs[i].mapped;
     }
+    return true;
 }
 
-void createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
+bool createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->angularVelocityBuffer.capacity = maxEntities;
     state->angularVelocityBuffer.count = 0;
     
@@ -607,13 +612,18 @@ void createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint3
         vkGetBufferMemoryRequirements(ctx->device, state->angularVelocityBuffer.buffer[i], &memRequirements);
         
         state->angularVelocityBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->angularVelocityBuffer.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->angularVelocityBuffer.buffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->angularVelocityBuffer.buffer[i], state->angularVelocityBuffer.allocs[i].memory, state->angularVelocityBuffer.allocs[i].offset);
         
         state->angularVelocityBuffer.mapped[i] = (Vector4*)state->angularVelocityBuffer.allocs[i].mapped;
     }
+    return true;
 }
 
-void createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxEntities) {
+bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxEntities) {
     buf->capacity = maxEntities;
     buf->count = 0;
     
@@ -634,13 +644,18 @@ void createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
         vkGetBufferMemoryRequirements(ctx->device, buf->buffer[i], &memRequirements);
         
         buf->allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (buf->allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, buf->buffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, buf->buffer[i], buf->allocs[i].memory, buf->allocs[i].offset);
         
         buf->mapped[i] = (mat4*)buf->allocs[i].mapped;
     }
+    return true;
 }
 
-void createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
+bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
     
     VkDeviceSize bufferSize = sizeof(VkDrawIndexedIndirectCommand) * maxDraws;
@@ -662,13 +677,18 @@ void createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
         vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memRequirements);
         
         state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->indirectBuffer.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->indirectBuffer.buffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
         
         state->indirectBuffer.mapped[i] = (VkDrawIndexedIndirectCommand*)state->indirectBuffer.allocs[i].mapped;
     }
+    return true;
 }
 
-void createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
+bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->culling.maxEntities = maxEntities;
     uint32_t maxMeshes = 1024;
     
@@ -689,6 +709,10 @@ void createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         VkMemoryRequirements memReqs;
         vkGetBufferMemoryRequirements(ctx->device, state->culling.entityBuffer[i], &memReqs);
         state->culling.entityAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->culling.entityAllocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.entityBuffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->culling.entityBuffer[i], state->culling.entityAllocs[i].memory, state->culling.entityAllocs[i].offset);
         state->culling.entityMapped[i] = state->culling.entityAllocs[i].mapped;
 
@@ -701,6 +725,10 @@ void createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         vkCreateBuffer(ctx->device, &meshInfo, NULL, &state->culling.meshDataBuffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.meshDataBuffer[i], &memReqs);
         state->culling.meshDataAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->culling.meshDataAllocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.meshDataBuffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->culling.meshDataBuffer[i], state->culling.meshDataAllocs[i].memory, state->culling.meshDataAllocs[i].offset);
         state->culling.meshDataMapped[i] = state->culling.meshDataAllocs[i].mapped;
 
@@ -713,6 +741,10 @@ void createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         vkCreateBuffer(ctx->device, &boundsInfo, NULL, &state->culling.meshBoundsBuffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.meshBoundsBuffer[i], &memReqs);
         state->culling.meshBoundsAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->culling.meshBoundsAllocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.meshBoundsBuffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->culling.meshBoundsBuffer[i], state->culling.meshBoundsAllocs[i].memory, state->culling.meshBoundsAllocs[i].offset);
         state->culling.meshBoundsMapped[i] = state->culling.meshBoundsAllocs[i].mapped;
 
@@ -725,6 +757,10 @@ void createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         vkCreateBuffer(ctx->device, &countInfo, NULL, &state->culling.drawCountBuffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.drawCountBuffer[i], &memReqs);
         state->culling.drawCountAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->culling.drawCountAllocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.drawCountBuffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->culling.drawCountBuffer[i], state->culling.drawCountAllocs[i].memory, state->culling.drawCountAllocs[i].offset);
         state->culling.drawCountMapped[i] = (uint32_t*)state->culling.drawCountAllocs[i].mapped;
 
@@ -737,9 +773,14 @@ void createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         vkCreateBuffer(ctx->device, &uboInfo, NULL, &state->culling.ubo.buffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.ubo.buffer[i], &memReqs);
         state->culling.ubo.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->culling.ubo.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.ubo.buffer[i], NULL);
+            return false;
+        }
         vkBindBufferMemory(ctx->device, state->culling.ubo.buffer[i], state->culling.ubo.allocs[i].memory, state->culling.ubo.allocs[i].offset);
         state->culling.ubo.mapped[i] = (CullUBO*)state->culling.ubo.allocs[i].mapped;
     }
+    return true;
 }
 
 bool createFallbackResources(VulkanContext* ctx, RendererState* state)
@@ -878,7 +919,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	swapchainAllocator.blocks = NULL;
 	swapchainAllocator.blockCount = 0;
 
-	ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device);
+	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device)) {
+		printf("Quitting init: geometry pool creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
 
 
 
@@ -981,12 +1026,17 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	// In a real application, maxEntities would be dynamic or configured.
 	uint32_t maxEntities = 10000;
-	createTransformBuffer(&ctx, &rendererState.transformBuffer, maxEntities);
-	createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities);
-	createAngularVelocityBuffer(&ctx, &rendererState, maxEntities);
-	createMaterialBuffer(&ctx, &rendererState, maxEntities);
-	createIndirectDrawBuffer(&ctx, &rendererState, maxEntities);
-    createCullingBuffers(&ctx, &rendererState, maxEntities);
+	if (!createTransformBuffer(&ctx, &rendererState.transformBuffer, maxEntities) ||
+	    !createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities) ||
+	    !createAngularVelocityBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createMaterialBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createCullingBuffers(&ctx, &rendererState, maxEntities))
+	{
+		printf("Quitting init: buffer creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
 
 	ModelAsset* vikingRoomAsset = parseGltf(&ctx, "viking_room.gltf");
 	if(!vikingRoomAsset)
