@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 
-bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device)
+bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily)
 {
     pool->meshCount = 0;
     pool->meshCapacity = 100;
@@ -29,11 +29,16 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
     VkDeviceSize vertexPoolSize = 64 * 1024 * 1024; // 64 MB
     VkDeviceSize indexPoolSize = 16 * 1024 * 1024;  // 16 MB
 
+    uint32_t queueFamilyIndices[] = {graphicsFamily, transferFamily};
+    bool concurrent = (graphicsFamily != transferFamily);
+
     VkBufferCreateInfo vInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = vertexPoolSize,
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = concurrent ? 2 : 0,
+        .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
     vkCreateBuffer(device, &vInfo, NULL, &pool->vertexBuffer);
     VkMemoryRequirements vReqs;
@@ -49,7 +54,9 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = indexPoolSize,
         .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = concurrent ? 2 : 0,
+        .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
     vkCreateBuffer(device, &iInfo, NULL, &pool->indexBuffer);
     VkMemoryRequirements iReqs;
@@ -85,10 +92,13 @@ void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device)
 }
 
 uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
-                              VkCommandPool cmdPool, VkQueue transferQueue,
+                              uint32_t transferFamily, VkQueue transferQueue,
                               const Vertex* vertices, uint32_t vertexCount,
                               const uint16_t* indices, uint32_t indexCount)
 {
+    // Wait for any in-flight draws to complete before mutating shared device-local buffers
+    vkDeviceWaitIdle(device);
+
     // Need a staging buffer
     VkDeviceSize vertexSize = sizeof(Vertex) * vertexCount;
     VkDeviceSize indexSize = sizeof(uint16_t) * indexCount;
@@ -119,11 +129,22 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     memcpy(mapped, vertices, vertexSize);
     memcpy(mapped + vertexSize, indices, indexSize);
 
+    VkCommandPoolCreateInfo poolInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = transferFamily
+    };
+    VkCommandPool transientPool;
+    if (vkCreateCommandPool(device, &poolInfo, NULL, &transientPool) != VK_SUCCESS) {
+        vkDestroyBuffer(device, stagingBuffer, NULL);
+        return -1;
+    }
+
     // Record commands
     VkCommandBufferAllocateInfo allocCmdInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandPool = cmdPool,
+        .commandPool = transientPool,
         .commandBufferCount = 1
     };
     VkCommandBuffer cmd;
@@ -184,6 +205,13 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     };
     vkCmdCopyBuffer(cmd, stagingBuffer, pool->indexBuffer, 1, &indexCopyRegion);
 
+    VkMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+
     vkEndCommandBuffer(cmd);
 
     // Submit and wait
@@ -203,7 +231,8 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     vkDestroyFence(device, fence, NULL);
-    vkFreeCommandBuffers(device, cmdPool, 1, &cmd);
+    vkFreeCommandBuffers(device, transientPool, 1, &cmd);
+    vkDestroyCommandPool(device, transientPool, NULL);
 
     // Cleanup staging buffer
     vkDestroyBuffer(device, stagingBuffer, NULL);
