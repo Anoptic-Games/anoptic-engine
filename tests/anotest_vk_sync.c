@@ -6,9 +6,9 @@
 extern uint32_t g_ValidationErrors;
 extern struct VulkanGarbage vulkanGarbage;
 
-// Expose internal functions for testing if needed
-extern VkCommandBuffer beginSingleTimeCommands(VulkanComponents* components);
-extern void endSingleTimeCommands(VulkanComponents* components, VkCommandBuffer commandBuffer);
+// Expose internal functions for testing
+extern VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx);
+extern void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer);
 
 int main() {
     printf("Starting Vulkan Synchronization Primitives test...\n");
@@ -18,7 +18,7 @@ int main() {
         printf("Failed to init Vulkan!\n");
         return 1;
     }
-    VulkanComponents* comps = vulkanGarbage.components;
+    VulkanContext* ctx = vulkanGarbage.ctx;
 
     if (g_ValidationErrors > 0) {
         printf("Error: Validation errors occurred during initVulkan!\n");
@@ -28,7 +28,7 @@ int main() {
 
     // 1. Test Single Time Command submission which inherently tests vkQueueSubmit and vkQueueWaitIdle
     printf("Testing synchronous command buffer submission...\n");
-    VkCommandBuffer cmd = beginSingleTimeCommands(comps);
+    VkCommandBuffer cmd = beginSingleTimeCommands(ctx);
     
     // Perform a dummy operation (e.g., pipeline barrier without any actual memory transition just to have a command)
     VkMemoryBarrier memBarrier = {};
@@ -46,7 +46,7 @@ int main() {
         0, NULL
     );
     
-    endSingleTimeCommands(comps, cmd);
+    endSingleTimeCommands(ctx, cmd);
 
     if (g_ValidationErrors > 0) {
         printf("Error: Validation errors occurred during synchronous command submission!\n");
@@ -60,11 +60,8 @@ int main() {
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    // We won't actually wait on the semaphore because there's no swapchain image acquisition in this headless test,
-    // which would cause a deadlock or timeout. Instead, we'll just test the Fence.
-    
     // Use the first pre-allocated command buffer
-    VkCommandBuffer cmdAsync = comps->cmdComp.commandBuffer[0];
+    VkCommandBuffer cmdAsync = rendererState.frames[0].commandBuffer;
     
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -87,16 +84,16 @@ int main() {
     submitInfo.pCommandBuffers = &cmdAsync;
     
     // Ensure the fence is reset before submission
-    vkResetFences(comps->deviceQueueComp.device, 1, &comps->syncComp.inFlightFence[0]);
+    vkResetFences(ctx->device, 1, &rendererState.frames[0].frameFence);
 
-    if (vkQueueSubmit(comps->deviceQueueComp.graphicsQueue, 1, &submitInfo, comps->syncComp.inFlightFence[0]) != VK_SUCCESS) {
+    if (vkQueueSubmit(ctx->graphicsQueue, 1, &submitInfo, rendererState.frames[0].frameFence) != VK_SUCCESS) {
         printf("Error: Failed to submit draw command buffer!\n");
         unInitVulkan();
         return 1;
     }
 
     // Wait for the queue to finish executing using the Fence
-    vkWaitForFences(comps->deviceQueueComp.device, 1, &comps->syncComp.inFlightFence[0], VK_TRUE, UINT64_MAX);
+    vkWaitForFences(ctx->device, 1, &rendererState.frames[0].frameFence, VK_TRUE, UINT64_MAX);
 
     if (g_ValidationErrors > 0) {
         printf("Error: Validation errors occurred during asynchronous submission!\n");
@@ -113,7 +110,7 @@ int main() {
     badFenceInfo.flags = 0xFFFFFFFF; // Invalid flags
     
     VkFence badFence;
-    vkCreateFence(comps->deviceQueueComp.device, &badFenceInfo, NULL, &badFence);
+    vkCreateFence(ctx->device, &badFenceInfo, NULL, &badFence);
 
     unInitVulkan();
 

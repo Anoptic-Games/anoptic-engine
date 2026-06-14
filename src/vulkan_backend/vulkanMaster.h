@@ -46,4 +46,8 @@ bool anoShouldClose();
 void deferred_delete_resource(RendererState* state, DeletionResourceType type, uint32_t handle);
 void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t frameIndex);
 
+extern PFN_vkCmdDrawMeshTasksEXT pfnVkCmdDrawMeshTasksEXT;
+extern PFN_vkCmdDrawMeshTasksIndirectEXT pfnVkCmdDrawMeshTasksIndirectEXT;
+extern PFN_vkCmdDrawMeshTasksIndirectCountEXT pfnVkCmdDrawMeshTasksIndirectCountEXT;
+
 #endif

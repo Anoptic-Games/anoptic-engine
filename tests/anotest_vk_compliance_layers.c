@@ -14,7 +14,7 @@ int main() {
         printf("Failed to init Vulkan!\n");
         return 1;
     }
-    VulkanComponents* comps = vulkanGarbage.components;
+    VulkanContext* ctx = vulkanGarbage.ctx;
 
     // The initialization itself should not have caused validation errors
     if (g_ValidationErrors > 0) {
@@ -30,7 +30,7 @@ int main() {
     badInfo.size = 0; // Invalid size
     badInfo.usage = 0; // Invalid usage
     VkBuffer badBuffer;
-    vkCreateBuffer(comps->deviceQueueComp.device, &badInfo, NULL, &badBuffer);
+    vkCreateBuffer(ctx->device, &badInfo, NULL, &badBuffer);
 
     unInitVulkan();
 

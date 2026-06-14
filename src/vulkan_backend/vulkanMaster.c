@@ -17,6 +17,9 @@
 // Variables
 
 static VulkanContext ctx;
+PFN_vkCmdDrawMeshTasksEXT pfnVkCmdDrawMeshTasksEXT = NULL;
+PFN_vkCmdDrawMeshTasksIndirectEXT pfnVkCmdDrawMeshTasksIndirectEXT = NULL;
+PFN_vkCmdDrawMeshTasksIndirectCountEXT pfnVkCmdDrawMeshTasksIndirectCountEXT = NULL;
 RendererState rendererState;
 GpuAllocator gpuAllocator;
 GpuAllocator stagingAllocator;
@@ -201,7 +204,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 } else {
                     memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 }
             }
@@ -274,24 +277,24 @@ void recordCommandBuffer(uint32_t imageIndex)
                     rendererState.prototypes[pass->prototype].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
 
                 uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
+                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_MESH_BIT_EXT, 0, sizeof(uint32_t), &baseOffset);
 
                 if (ctx.deviceCapabilities.drawIndirectCount) {
-                    vkCmdDrawIndexedIndirectCount(
+                    pfnVkCmdDrawMeshTasksIndirectCountEXT(
                         cmd,
                         rendererState.indirectBuffer.buffer[rendererState.frameIndex],
                         0,
                         rendererState.culling.drawCountBuffer[rendererState.frameIndex],
                         0,
                         rendererState.indirectBuffer.capacity,
-                        sizeof(VkDrawIndexedIndirectCommand));
+                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
                 } else {
-                    vkCmdDrawIndexedIndirect(
+                    pfnVkCmdDrawMeshTasksIndirectEXT(
                         cmd,
                         rendererState.indirectBuffer.buffer[rendererState.frameIndex],
                         0,
-                        entityCount, // cull.comp writes only [0,entityCount); buffer isn't zeroed beyond, so capacity would draw uninit slots
-                        sizeof(VkDrawIndexedIndirectCommand));
+                        entityCount,
+                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
                 }
             }
             
@@ -391,10 +394,14 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     for(uint32_t i=0; i < meshCount; i++) {
         MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
         
-        meshData[i*4 + 0] = mesh->indexCount;
-        meshData[i*4 + 1] = mesh->indexOffset / sizeof(uint32_t);
-        meshData[i*4 + 2] = mesh->baseVertex;
-        meshData[i*4 + 3] = 0; // padding
+        meshData[i*8 + 0] = mesh->meshletCount;
+        meshData[i*8 + 1] = mesh->meshletOffset;
+        meshData[i*8 + 2] = mesh->uniqueVerticesOffset;
+        meshData[i*8 + 3] = mesh->trianglesOffset;
+        meshData[i*8 + 4] = mesh->vertexOffset;
+        meshData[i*8 + 5] = 0; // Padding/Unused
+        meshData[i*8 + 6] = 0;
+        meshData[i*8 + 7] = 0;
 
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
         meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];
@@ -658,34 +665,35 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
 
 bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
-    
-    VkDeviceSize bufferSize = sizeof(VkDrawIndexedIndirectCommand) * maxDraws;
-    
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    VkDeviceSize bufferSize = sizeof(VkDrawMeshTasksIndirectCommandEXT) * maxDraws;
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
-        
-        VkBufferCreateInfo bufferInfo = {};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        
+        VkBufferCreateInfo bufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = bufferSize,
+            .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+
         if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
             printf("Failed to create indirect draw buffer!\n");
+            return false;
         }
-        
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memRequirements);
-        
-        state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        VkMemoryRequirements memReqs;
+        vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memReqs);
+
+        state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (state->indirectBuffer.allocs[i].memory == VK_NULL_HANDLE) {
             vkDestroyBuffer(ctx->device, state->indirectBuffer.buffer[i], NULL);
             return false;
         }
+
         vkBindBufferMemory(ctx->device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
-        
-        state->indirectBuffer.mapped[i] = (VkDrawIndexedIndirectCommand*)state->indirectBuffer.allocs[i].mapped;
+        state->indirectBuffer.mapped[i] = (VkDrawMeshTasksIndirectCommandEXT*)state->indirectBuffer.allocs[i].mapped;
     }
+
     return true;
 }
 
@@ -694,7 +702,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     uint32_t maxMeshes = 1024;
     
     VkDeviceSize entityBufferSize = sizeof(uint32_t) * 2 * maxEntities; // meshIndex, materialIndex
-    VkDeviceSize meshDataSize = sizeof(uint32_t) * 4 * maxMeshes; // uvec4
+    VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
     VkDeviceSize drawCountSize = sizeof(uint32_t);
     VkDeviceSize uboSize = sizeof(CullUBO);
@@ -905,6 +913,16 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
+
+    pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
+    pfnVkCmdDrawMeshTasksIndirectEXT = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectEXT");
+    pfnVkCmdDrawMeshTasksIndirectCountEXT = (PFN_vkCmdDrawMeshTasksIndirectCountEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectCountEXT");
+
+    if (!pfnVkCmdDrawMeshTasksEXT || !pfnVkCmdDrawMeshTasksIndirectEXT || !pfnVkCmdDrawMeshTasksIndirectCountEXT) {
+        fprintf(stderr, "Failed to load mesh shader extension function pointers!\n");
+        unInitVulkan();
+        return false;
+    }
 
 	gpuAllocator.device = ctx.device;
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &gpuAllocator.memProps);

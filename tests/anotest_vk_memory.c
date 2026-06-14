@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <assert.h>
 #include "vulkan_backend/vulkanMaster.h"
-#include "vulkan_backend/memory/memory.h"
+#include "vulkan_backend/gpu_alloc.h"
 
 extern struct VulkanGarbage vulkanGarbage;
 
@@ -13,7 +14,7 @@ int main() {
         printf("Failed to init Vulkan!\n");
         return 1;
     }
-    VulkanComponents* comps = vulkanGarbage.components;
+    VulkanContext* ctx = vulkanGarbage.ctx;
 
     // 1. Create a dummy buffer manually
     VkBufferCreateInfo bufferInfo = {};
@@ -23,7 +24,7 @@ int main() {
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VkBuffer testBuffer;
-    if (vkCreateBuffer(comps->deviceQueueComp.device, &bufferInfo, NULL, &testBuffer) != VK_SUCCESS) {
+    if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &testBuffer) != VK_SUCCESS) {
         printf("Failed to create test buffer!\n");
         unInitVulkan();
         return 1;
@@ -31,59 +32,36 @@ int main() {
 
     // 2. Query memory requirements
     VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(comps->deviceQueueComp.device, testBuffer, &memRequirements);
+    vkGetBufferMemoryRequirements(ctx->device, testBuffer, &memRequirements);
 
     if (memRequirements.size < 1024) {
-        printf("Error: memory requirement size (%zu) is less than requested size (1024)!\n", memRequirements.size);
-        vkDestroyBuffer(comps->deviceQueueComp.device, testBuffer, NULL);
+        printf("Error: memory requirement size (%zu) is less than requested size (1024)!\n", (size_t)memRequirements.size);
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
         unInitVulkan();
         return 1;
     }
 
-    if (memRequirements.alignment == 0) {
-        printf("Error: memory requirement alignment is 0!\n");
-        vkDestroyBuffer(comps->deviceQueueComp.device, testBuffer, NULL);
+    // 3. Test gpu_alloc with device local memory properties
+    // We can use the globally defined gpuAllocator
+    GpuAllocation allocation = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    if (allocation.memory == VK_NULL_HANDLE) {
+        printf("Error: gpu_alloc returned null memory handle!\n");
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
         unInitVulkan();
         return 1;
     }
 
-    if (memRequirements.memoryTypeBits == 0) {
-        printf("Error: memory requirement type bits is 0!\n");
-        vkDestroyBuffer(comps->deviceQueueComp.device, testBuffer, NULL);
+    // 4. Bind the allocated memory to our test buffer
+    if (vkBindBufferMemory(ctx->device, testBuffer, allocation.memory, allocation.offset) != VK_SUCCESS) {
+        printf("Error: failed to bind buffer memory!\n");
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
         unInitVulkan();
         return 1;
     }
 
-    // 3. Test findMemoryType with valid requirements
-    uint32_t validMemType = findMemoryType(comps, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (validMemType == UINT32_MAX) {
-        printf("Error: failed to find valid memory type!\n");
-        vkDestroyBuffer(comps->deviceQueueComp.device, testBuffer, NULL);
-        unInitVulkan();
-        return 1;
-    }
-
-    // 4. Test findMemoryType with impossible typeFilter (0)
-    uint32_t invalidMemType = findMemoryType(comps, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (invalidMemType != UINT32_MAX) {
-        printf("Error: findMemoryType succeeded with impossible type filter 0!\n");
-        vkDestroyBuffer(comps->deviceQueueComp.device, testBuffer, NULL);
-        unInitVulkan();
-        return 1;
-    }
-
-    // 5. Test allocateBuffer logic (it internally calls vkBindBufferMemory)
-    VkDeviceMemory testMemory;
-    if (!allocateBuffer(comps, testBuffer, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &testMemory)) {
-        printf("Error: allocateBuffer failed!\n");
-        vkDestroyBuffer(comps->deviceQueueComp.device, testBuffer, NULL);
-        unInitVulkan();
-        return 1;
-    }
-
-    // Cleanup
-    vkDestroyBuffer(comps->deviceQueueComp.device, testBuffer, NULL);
-    vkFreeMemory(comps->deviceQueueComp.device, testMemory, NULL);
+    // 5. Cleanup local test buffer (allocations from gpuAllocator are freed during allocator teardown in unInitVulkan)
+    vkDestroyBuffer(ctx->device, testBuffer, NULL);
 
     unInitVulkan();
     printf("Memory Allocation test passed successfully!\n");
