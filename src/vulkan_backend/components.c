@@ -70,10 +70,12 @@ void ano_vk_cleanup_primitives(RenderPrimitives* primitives) {
         primitives->meshes = NULL;
     }
     primitives->meshCount = 0;
+    primitives->meshCapacity = 0; // must track the freed pointer; else re-register skips realloc and derefs NULL
 
     if (primitives->textureBuffers) {
         free(primitives->textureBuffers);
         primitives->textureBuffers = NULL;
     }
     primitives->textureCount = 0;
+    primitives->textureCapacity = 0;
 }
