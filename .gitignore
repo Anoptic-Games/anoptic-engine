@@ -68,8 +68,6 @@ docs/references/*.pdf
 # IDE-specific directories
 .vscode/
 .idea/
-.claude/*.txt
-.claude/*.md
 .openclaw/
 .agents/
 .codex/
@@ -113,3 +111,11 @@ CMakeCache.txt
 
 # Test assets
 assets/*
+
+# Exceptions
+.claude/*
+!.claude/settings.json
+!.claude/skills/
+!.claude/skills/**
+!.claude/hooks/
+!.claude/hooks/**
