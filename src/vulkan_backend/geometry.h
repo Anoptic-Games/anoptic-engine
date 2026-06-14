@@ -36,6 +36,9 @@ typedef struct GeometryPool
 
     uint32_t        vertexWriteOffset;  // current write head (bytes)
     uint32_t        indexWriteOffset;
+    
+    VkDeviceSize    vertexCapacity;
+    VkDeviceSize    indexCapacity;
 
     GeoFreeBlock*   vertexFreeBlocks;
     uint32_t        vertexFreeCount;
