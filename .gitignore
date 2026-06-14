@@ -47,10 +47,24 @@
 *.save
 *.py
 
+# macOS metadata
+.DS_Store
+
+# No Python
+*.pyc
+__pycache__/
+requirements.txt
+setup.py
+setup.cfg
+pyproject.toml
+Pipfile
+Pipfile.lock
+poetry.lock
+
 # IDE-specific directories
 .vscode/
 .idea/
-.claude/
+.claude/*.txt
 .openclaw/
 .agents/
 .codex/
@@ -70,6 +84,11 @@ CLAUDE.md
 AGENTS.md
 SKILL.md
 
+# Editor swap files
+*.swp
+*.swo
+*~
+
 # Kernel Module Compile Results
 *.mod*
 *.cmd
@@ -88,4 +107,4 @@ CMakeFiles/
 CMakeCache.txt
 
 # Test assets
-/assets/*
+assets/*
