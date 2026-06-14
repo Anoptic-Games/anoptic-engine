@@ -49,6 +49,9 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
     pool->vertexAlloc = gpu_alloc(alloc, vReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (pool->vertexAlloc.memory == VK_NULL_HANDLE) {
         vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null handle (cleanup guards on it) + free meshes
+        free(pool->meshes);
+        pool->meshes = NULL;
         return false;
     }
     vkBindBufferMemory(device, pool->vertexBuffer, pool->vertexAlloc.memory, pool->vertexAlloc.offset);
@@ -68,6 +71,10 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
     if (pool->indexAlloc.memory == VK_NULL_HANDLE) {
         vkDestroyBuffer(device, pool->vertexBuffer, NULL);
         vkDestroyBuffer(device, pool->indexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null both handles + free meshes
+        pool->indexBuffer = VK_NULL_HANDLE;
+        free(pool->meshes);
+        pool->meshes = NULL;
         return false;
     }
     vkBindBufferMemory(device, pool->indexBuffer, pool->indexAlloc.memory, pool->indexAlloc.offset);
