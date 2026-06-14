@@ -1222,6 +1222,11 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 		1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageAlloc, false);
 	rendererState.colorView = createImageView(ctx->device, rendererState.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+	
+	if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+	{
+		printf("Failed to transition color image layout!\n");
+	}
 }
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
