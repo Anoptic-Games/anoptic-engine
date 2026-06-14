@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+#include <mimalloc-override.h>
 #include "pipeline.h"
 
 #include <stdio.h>
