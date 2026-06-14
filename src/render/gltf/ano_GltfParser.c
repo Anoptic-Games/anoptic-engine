@@ -83,9 +83,9 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             }
             
             uint32_t indexCount = prim->indices->count;
-            uint16_t* indices = calloc(indexCount, sizeof(uint16_t));
+            uint32_t* indices = calloc(indexCount, sizeof(uint32_t));
             for (uint32_t i = 0; i < indexCount; ++i) {
-                indices[i] = (uint16_t)cgltf_accessor_read_index(prim->indices, i);
+                indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
             outMesh->primitives[p].geometryPoolIndex = geometry_pool_upload(

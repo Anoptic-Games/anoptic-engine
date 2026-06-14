@@ -97,14 +97,14 @@ void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device)
 uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                               uint32_t transferFamily, VkQueue transferQueue,
                               const Vertex* vertices, uint32_t vertexCount,
-                              const uint16_t* indices, uint32_t indexCount)
+                              const uint32_t* indices, uint32_t indexCount)
 {
     // Wait for any in-flight draws to complete before mutating shared device-local buffers
     vkDeviceWaitIdle(device);
 
     // Need a staging buffer
     VkDeviceSize vertexSize = sizeof(Vertex) * vertexCount;
-    VkDeviceSize indexSize = sizeof(uint16_t) * indexCount;
+    VkDeviceSize indexSize = sizeof(uint32_t) * indexCount;
     VkDeviceSize totalSize = vertexSize + indexSize;
 
     VkBufferCreateInfo stagingInfo = {
@@ -329,7 +329,7 @@ void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
         }
         pool->indexFreeBlocks[pool->indexFreeCount++] = (GeoFreeBlock){
             .offset = mesh->indexOffset,
-            .size = mesh->indexCount * sizeof(uint16_t)
+            .size = mesh->indexCount * sizeof(uint32_t)
         };
     }
 

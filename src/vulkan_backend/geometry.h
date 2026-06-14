@@ -65,7 +65,7 @@ void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device);
 uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                               uint32_t transferFamily, VkQueue transferQueue,
                               const Vertex* vertices, uint32_t vertexCount,
-                              const uint16_t* indices, uint32_t indexCount);
+                              const uint32_t* indices, uint32_t indexCount);
 
 // Free a mesh region, adding its memory and index to the free lists
 void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex);
