@@ -118,6 +118,31 @@ if(Vulkan_FOUND)
             "$<$<CONFIG:Debug>:-O0;-g>"
             "$<$<CONFIG:Release>:-O3>"
     )
+
+    # Shaders: compile at build time so .spv don't silently desync from source. 
+    # glslc is located by FindVulkan (Vulkan_GLSLC_EXECUTABLE),
+    # If glslc is absent, fallback to existing .spv (which may be stale).
+    if(Vulkan_GLSLC_EXECUTABLE)
+        set(SHADER_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
+        set(SPV_OUTPUTS "")
+        foreach(shader IN ITEMS flat.vert flat.frag cull.comp update.comp)
+            add_custom_command(
+                    OUTPUT  ${SHADER_DIR}/${shader}.spv
+                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER_DIR}/${shader} -o ${SHADER_DIR}/${shader}.spv
+                    DEPENDS ${SHADER_DIR}/${shader}
+                    COMMENT "glslc ${shader} -> ${shader}.spv"
+                    VERBATIM)
+            list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${shader}.spv)
+        endforeach()
+        add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
+        add_dependencies(anopticengine anoptic_shaders)
+    else()
+        message(WARNING
+            "glslc not found — skipping shader compilation; using the committed "
+            "resources/shaders/*.spv, which may be stale. Install the Vulkan SDK and "
+            "set VULKAN_SDK (source its setup-env.sh) or put glslc on PATH to recompile "
+            "shaders automatically.")
+    endif()
 else()
     message(WARNING "Vulkan SDK not found: building anoptic_core and tests only.")
 endif()
