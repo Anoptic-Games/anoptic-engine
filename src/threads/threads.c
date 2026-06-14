@@ -86,6 +86,7 @@ int ano_thread_cond_destroy(anothread_cond_t *conditionVariable) {
 
 
 /* Spinlocks */
+#if !defined(__APPLE__)   // macOS: provided by threads_macos.c
 int ano_thread_spin_init(anothread_spinlock_t *lock, int pshared) {
 
     return pthread_spin_init(lock, pshared);
@@ -110,6 +111,7 @@ int ano_thread_spin_unlock(anothread_spinlock_t *lock) {
 
     return pthread_spin_unlock(lock);
 }
+#endif
 
 
 /* Read-Write Locks */
@@ -192,6 +194,7 @@ void* ano_thread_getspecific(anothread_key_t key) {
 
 
 /* Synchronization Barriers */
+#if !defined(__APPLE__)   // macOS: provided by threads_macos.c
 
 int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrierattr_t *attr, unsigned int count) {
 
@@ -207,3 +210,4 @@ int ano_thread_barrier_destroy(anothread_barrier_t *barrier) {
 
     return pthread_barrier_destroy(barrier);
 }
+#endif
