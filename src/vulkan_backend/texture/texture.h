@@ -32,21 +32,25 @@ typedef struct Texture8
 Texture8 readTexture8bit(char* fileName);
 
 // Takes binary texture data and loads it into a Vulkan image object
-bool createTextureImage(VulkanComponents* components, VkImage* textureImage, VkDeviceMemory* textureImageMemory, VkImageView* textureImageView, char* fileName, bool flag16);
+bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, VkBuffer* outStagingBuffer);
+
+bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height, VkBuffer* outStagingBuffer);
 
 // Creates an image view for an entity with an existing texture
-bool createTextureImageView(VulkanComponents* components, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels);
+bool createTextureImageView(VulkanContext* ctx, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels);
 
 // Creates a sampler definition for use in shaders
-bool createTextureSampler(VulkanComponents* components);
+bool createTextureSampler(VulkanContext* ctx, RendererState* state);
 
+
+uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta, VkImageView view, VkSampler sampler);
 
 // Helper functions
 
 // Generic function for parametrized image creation
-bool createImage(VulkanComponents* components, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
-				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, VkDeviceMemory* imageMemory, bool flag16);
+bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
+				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16);
 // Transitions an image layout for use in rendering
-bool transitionImageLayout(VulkanComponents* components, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels);
+bool transitionImageLayout(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels);
 
 #endif

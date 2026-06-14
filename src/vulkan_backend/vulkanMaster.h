@@ -26,6 +26,10 @@
 
 // Function interfaces
 
+extern RendererState rendererState;
+
+extern uint32_t g_ValidationErrors;
+
 // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 bool initVulkan(); // Move to includes
 
@@ -37,7 +41,9 @@ void unInitVulkan(); // Move to includes
 void drawFrame(); // Move to includes
 
 // Returns whether the program has been requested to exit
+bool anoShouldClose();
 
-bool anoShouldClose(); // Move to includes
+void deferred_delete_resource(RendererState* state, DeletionResourceType type, uint32_t handle);
+void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t frameIndex);
 
 #endif

@@ -1,0 +1,60 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4 view;
+    mat4 proj;
+    float time;
+    float deltaTime;
+    uint frameCount;
+    uint padding;
+} global;
+
+layout(set = 0, binding = 1) buffer TransformSSBO {
+    mat4 transforms[];
+};
+
+layout(set = 0, binding = 2) readonly buffer AngularVelocitySSBO {
+    vec4 angularVelocities[]; // vec4 for alignment (xyz = axis*speed)
+};
+
+layout(set = 0, binding = 3) readonly buffer InitialTransformSSBO {
+    mat4 initialTransforms[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint entityCount;
+} pc;
+
+mat4 rotationMatrix(vec3 axis, float angle) {
+    axis = normalize(axis);
+    float s = sin(angle);
+    float c = cos(angle);
+    float oc = 1.0 - c;
+    
+    return mat4(
+        oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
+        oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
+        oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+        0.0,                                0.0,                                0.0,                                1.0
+    );
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.entityCount) return;
+
+    vec3 angVel = angularVelocities[idx].xyz;
+    float speed = length(angVel);
+
+    if (speed > 0.001) {
+        // Absolute rotation from global time
+        mat4 absRot = rotationMatrix(angVel, speed * global.time);
+        
+        // Evaluate from initial state
+        transforms[idx] = initialTransforms[idx] * absRot;
+    } else {
+        transforms[idx] = initialTransforms[idx];
+    }
+}

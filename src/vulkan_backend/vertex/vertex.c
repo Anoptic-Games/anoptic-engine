@@ -194,4 +194,69 @@ void perspective(float matrix[4][4], float fovDegrees, float aspect, float near,
 
 }
 
+void multiplyMat4(mat4 result, const mat4 a, const mat4 b)
+{
+    mat4 temp = {0};
+    for (int i = 0; i < 4; ++i) { // row
+        for (int j = 0; j < 4; ++j) { // col
+            temp[i][j] = 0.0f;
+            for (int k = 0; k < 4; ++k) {
+                // OpenGL / Vulkan typical column-major ordering in memory:
+                // If a[i][j] is a[col][row], then temp[col][row] += a[k][row] * b[col][k]
+                // Let's assume a[i][j] is a[col][row] standard for GLM, which means:
+                temp[i][j] += a[k][j] * b[i][k];
+            }
+        }
+    }
+    memcpy(result, temp, sizeof(mat4));
+}
 
+void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj)
+{
+    // Left
+    planes[0].v[0] = viewProj[0][3] + viewProj[0][0];
+    planes[0].v[1] = viewProj[1][3] + viewProj[1][0];
+    planes[0].v[2] = viewProj[2][3] + viewProj[2][0];
+    planes[0].v[3] = viewProj[3][3] + viewProj[3][0];
+
+    // Right
+    planes[1].v[0] = viewProj[0][3] - viewProj[0][0];
+    planes[1].v[1] = viewProj[1][3] - viewProj[1][0];
+    planes[1].v[2] = viewProj[2][3] - viewProj[2][0];
+    planes[1].v[3] = viewProj[3][3] - viewProj[3][0];
+
+    // Bottom
+    planes[2].v[0] = viewProj[0][3] + viewProj[0][1];
+    planes[2].v[1] = viewProj[1][3] + viewProj[1][1];
+    planes[2].v[2] = viewProj[2][3] + viewProj[2][1];
+    planes[2].v[3] = viewProj[3][3] + viewProj[3][1];
+
+    // Top
+    planes[3].v[0] = viewProj[0][3] - viewProj[0][1];
+    planes[3].v[1] = viewProj[1][3] - viewProj[1][1];
+    planes[3].v[2] = viewProj[2][3] - viewProj[2][1];
+    planes[3].v[3] = viewProj[3][3] - viewProj[3][1];
+
+    // Near
+    planes[4].v[0] = viewProj[0][3] + viewProj[0][2];
+    planes[4].v[1] = viewProj[1][3] + viewProj[1][2];
+    planes[4].v[2] = viewProj[2][3] + viewProj[2][2];
+    planes[4].v[3] = viewProj[3][3] + viewProj[3][2];
+
+    // Far
+    planes[5].v[0] = viewProj[0][3] - viewProj[0][2];
+    planes[5].v[1] = viewProj[1][3] - viewProj[1][2];
+    planes[5].v[2] = viewProj[2][3] - viewProj[2][2];
+    planes[5].v[3] = viewProj[3][3] - viewProj[3][2];
+
+    // Normalize
+    for (int i = 0; i < 6; ++i) {
+        float length = sqrtf(planes[i].v[0]*planes[i].v[0] + planes[i].v[1]*planes[i].v[1] + planes[i].v[2]*planes[i].v[2]);
+        if (length > 0.0f) {
+            planes[i].v[0] /= length;
+            planes[i].v[1] /= length;
+            planes[i].v[2] /= length;
+            planes[i].v[3] /= length;
+        }
+    }
+}
