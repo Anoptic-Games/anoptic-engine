@@ -290,7 +290,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                         cmd,
                         rendererState.indirectBuffer.buffer[rendererState.frameIndex],
                         0,
-                        rendererState.indirectBuffer.capacity,
+                        entityCount, // cull.comp writes only [0,entityCount); buffer isn't zeroed beyond, so capacity would draw uninit slots
                         sizeof(VkDrawIndexedIndirectCommand));
                 }
             }
