@@ -264,11 +264,6 @@ void recordCommandBuffer(uint32_t imageIndex)
             scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-            // Bind monolithic vertex and index buffers once per frame
-            VkDeviceSize offsets[] = {0};
-            vkCmdBindVertexBuffers(cmd, 0, 1, &rendererState.globalGeometryPool.vertexBuffer, offsets);
-            vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.frames[rendererState.frameIndex].globalSet), 0, NULL);
 
