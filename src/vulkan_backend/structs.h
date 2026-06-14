@@ -200,11 +200,11 @@ typedef struct CullUboBuffer
 
 typedef struct IndirectDrawBuffer
 {
-    VkBuffer                        buffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation                   allocs[MAX_FRAMES_IN_FLIGHT];
-    VkDrawIndexedIndirectCommand*   mapped[MAX_FRAMES_IN_FLIGHT];
-    uint32_t                        capacity;
-    uint32_t                        drawCount[MAX_FRAMES_IN_FLIGHT];
+    VkBuffer                            buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation                       allocs[MAX_FRAMES_IN_FLIGHT];
+    VkDrawMeshTasksIndirectCommandEXT*  mapped[MAX_FRAMES_IN_FLIGHT];
+    uint32_t                            capacity;
+    uint32_t                            drawCount[MAX_FRAMES_IN_FLIGHT];
 } IndirectDrawBuffer;
 
 typedef enum DeletionResourceType {

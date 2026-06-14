@@ -80,14 +80,14 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	uboLayoutBinding.binding = 0;
 	uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	uboLayoutBinding.descriptorCount = 1;
-	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
 	uboLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
 	ssboLayoutBinding.binding = 1;
 	ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	ssboLayoutBinding.descriptorCount = 1;
-	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
 	ssboLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding materialLayoutBinding = {};
@@ -101,14 +101,43 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	entityLayoutBinding.binding = 3;
 	entityLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	entityLayoutBinding.descriptorCount = 1;
-	entityLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	entityLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
 	entityLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[4] = {uboLayoutBinding, ssboLayoutBinding, materialLayoutBinding, entityLayoutBinding};
+	VkDescriptorSetLayoutBinding vertexBufferLayoutBinding = {};
+	vertexBufferLayoutBinding.binding = 4;
+	vertexBufferLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	vertexBufferLayoutBinding.descriptorCount = 1;
+	vertexBufferLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	vertexBufferLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding indexBufferLayoutBinding = {};
+	indexBufferLayoutBinding.binding = 5;
+	indexBufferLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	indexBufferLayoutBinding.descriptorCount = 1;
+	indexBufferLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	indexBufferLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding meshDataLayoutBinding = {};
+	meshDataLayoutBinding.binding = 6;
+	meshDataLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	meshDataLayoutBinding.descriptorCount = 1;
+	meshDataLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	meshDataLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[7] = {
+		uboLayoutBinding, 
+		ssboLayoutBinding, 
+		materialLayoutBinding, 
+		entityLayoutBinding,
+		vertexBufferLayoutBinding,
+		indexBufferLayoutBinding,
+		meshDataLayoutBinding
+	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 4;
+	layoutInfo.bindingCount = 7;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -235,7 +264,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
 	// 2. Setup layout
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	pushConstantRange.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = sizeof(uint32_t);
 
@@ -258,17 +287,17 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	state->prototypes[PIPELINE_FLAT].implementations = calloc(2, sizeof(PipelineImplementation));
 
 	// Load shaders
-	struct Buffer vertShaderCode;
-	char vertShaderPath[256];
-	snprintf(vertShaderPath, sizeof(vertShaderPath), "%s/resources/shaders/flat.vert.spv", PROJECT_ROOT);
-	if (!loadFile(vertShaderPath, &vertShaderCode)) return false;
+	struct Buffer meshShaderCode;
+	char meshShaderPath[256];
+	snprintf(meshShaderPath, sizeof(meshShaderPath), "%s/resources/shaders/flat.mesh.spv", PROJECT_ROOT);
+	if (!loadFile(meshShaderPath, &meshShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
 	char fragShaderPath[256];
 	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/flat.frag.spv", PROJECT_ROOT);
 	if (!loadFile(fragShaderPath, &fragShaderCode)) return false;
 
-	VkShaderModule vertShaderModule = createShaderModule(ctx->device, &vertShaderCode);
+	VkShaderModule meshShaderModule = createShaderModule(ctx->device, &meshShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
 	VkSpecializationMapEntry specMapEntry = {};
@@ -284,12 +313,12 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	specInfo.dataSize = sizeof(VkBool32);
 	specInfo.pData = &useFirstInstance;
 
-	VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
-	vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-	vertShaderStageInfo.module = vertShaderModule;
-	vertShaderStageInfo.pName = "main";
-	vertShaderStageInfo.pSpecializationInfo = &specInfo;
+	VkPipelineShaderStageCreateInfo meshShaderStageInfo = {};
+	meshShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	meshShaderStageInfo.stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+	meshShaderStageInfo.module = meshShaderModule;
+	meshShaderStageInfo.pName = "main";
+	meshShaderStageInfo.pSpecializationInfo = &specInfo;
 
 	VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
 	fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -297,24 +326,8 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	fragShaderStageInfo.module = fragShaderModule;
 	fragShaderStageInfo.pName = "main";
 
-	VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+	VkPipelineShaderStageCreateInfo shaderStages[] = {meshShaderStageInfo, fragShaderStageInfo};
 
-	VkVertexInputBindingDescription bindingDescription = getBindingDescription();
-	VkVertexInputAttributeDescription attributeDescriptions[3];
-	getAttributeDescriptions(attributeDescriptions);
-
-	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
-	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInputInfo.vertexBindingDescriptionCount = 1;
-	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	vertexInputInfo.vertexAttributeDescriptionCount = 3;
-	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
-
-	VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
-	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	inputAssembly.primitiveRestartEnable = VK_FALSE;
-	
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -407,8 +420,8 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	pipelineInfo.pNext = &renderingInfo;
 	pipelineInfo.stageCount = 2;
 	pipelineInfo.pStages = shaderStages;
-	pipelineInfo.pVertexInputState = &vertexInputInfo;
-	pipelineInfo.pInputAssemblyState = &inputAssembly;
+	pipelineInfo.pVertexInputState = NULL; // Mesh shaders do not take vertex input
+	pipelineInfo.pInputAssemblyState = NULL; // Mesh shaders do not take input assembly
 	pipelineInfo.pViewportState = &viewportState;
 	pipelineInfo.pRasterizationState = &rasterizer;
 	pipelineInfo.pMultisampleState = &multisampling;
@@ -428,8 +441,8 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	// Blended variant (index 1)
 	depthStencil.depthWriteEnable = VK_FALSE;
 	colorBlendAttachment.blendEnable = VK_TRUE;
-	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
 	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
 	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
 	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -441,10 +454,10 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	state->prototypes[PIPELINE_FLAT].implementations[1].depthWrite = VK_FALSE;
 	state->prototypes[PIPELINE_FLAT].implementations[1].blendEnable = VK_TRUE;
 
-    ano_aligned_free(vertShaderCode.data);
+    ano_aligned_free(meshShaderCode.data);
     ano_aligned_free(fragShaderCode.data);
 
-	vkDestroyShaderModule(ctx->device, vertShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, meshShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
 
     // Compute Update Pipeline

@@ -21,10 +21,20 @@ layout(set = 0, binding = 2) readonly buffer EntitySSBO {
     EntityInfo entities[];
 };
 
+struct MeshData {
+    uint meshletCount;
+    uint meshletOffset;
+    uint uniqueVerticesOffset;
+    uint trianglesOffset;
+    uint vertexOffset;
+    uint padding1;
+    uint padding2;
+    uint padding3;
+};
+
 // Packed mesh region data
 layout(set = 0, binding = 3) readonly buffer MeshSSBO {
-    // x = indexCount, y = firstIndex, z = baseVertex, w = unused
-    uvec4 meshDrawData[];
+    MeshData meshDrawData[];
 };
 
 layout(set = 0, binding = 4) readonly buffer MeshBoundsSSBO {
@@ -32,16 +42,14 @@ layout(set = 0, binding = 4) readonly buffer MeshBoundsSSBO {
     vec4 meshBounds[];
 };
 
-struct VkDrawIndexedIndirectCommand {
-    uint indexCount;
-    uint instanceCount;
-    uint firstIndex;
-    int  vertexOffset;
-    uint firstInstance;
+struct VkDrawMeshTasksIndirectCommandEXT {
+    uint groupCountX;
+    uint groupCountY;
+    uint groupCountZ;
 };
 
 layout(set = 0, binding = 5) buffer IndirectBuffer {
-    VkDrawIndexedIndirectCommand draws[];
+    VkDrawMeshTasksIndirectCommandEXT draws[];
 };
 
 layout(set = 0, binding = 6) buffer DrawCount {
@@ -68,10 +76,10 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
 
     if (idx == 0) {
-        drawCount = entityCount; // Set the count for vkCmdDrawIndexedIndirectCount
+        drawCount = entityCount; // Set the count for vkCmdDrawMeshTasksIndirectCountEXT
     }
 
-    // We write to draws[idx] directly so unused entries have instanceCount = 0
+    // We write to draws[idx] directly so unused entries have groupCountX = 0
     if (idx >= entityCount) {
         return;
     }
@@ -79,19 +87,15 @@ void main() {
     EntityInfo entity = entities[idx];
     mat4 model = transforms[idx];
     vec4 bounds = meshBounds[entity.meshIndex];
-    uvec4 meshData = meshDrawData[entity.meshIndex];
+    MeshData mData = meshDrawData[entity.meshIndex];
 
     if (isVisible(bounds.xyz, bounds.w, model)) {
-        draws[idx].indexCount    = meshData.x;
-        draws[idx].instanceCount = 1;
-        draws[idx].firstIndex    = meshData.y;
-        draws[idx].vertexOffset  = int(meshData.z);
-        if (USE_FIRST_INSTANCE) {
-            draws[idx].firstInstance = idx;  // entity index
-        } else {
-            draws[idx].firstInstance = 0;
-        }
+        draws[idx].groupCountX = mData.meshletCount;
+        draws[idx].groupCountY = 1;
+        draws[idx].groupCountZ = 1;
     } else {
-        draws[idx].instanceCount = 0;
+        draws[idx].groupCountX = 0;
+        draws[idx].groupCountY = 0;
+        draws[idx].groupCountZ = 0;
     }
 }
