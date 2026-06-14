@@ -197,6 +197,7 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 	*imageAlloc = gpu_alloc(allocator, memRequirements, properties);
 	if (imageAlloc->memory == VK_NULL_HANDLE) {
 		vkDestroyImage(ctx->device, *image, NULL);
+		*image = VK_NULL_HANDLE; // don't leave a dangling handle for teardown to double-free
 		return false;
 	}
 	vkBindImageMemory(ctx->device, *image, imageAlloc->memory, imageAlloc->offset);

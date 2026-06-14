@@ -1041,6 +1041,7 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 	*allocation = gpu_alloc(allocator, memRequirements, properties);
 	if (allocation->memory == VK_NULL_HANDLE) {
 		vkDestroyBuffer(ctx->device, *buffer, NULL);
+		*buffer = VK_NULL_HANDLE; // don't leave a dangling handle for teardown to double-free
 		return false;
 	}
 	vkBindBufferMemory(ctx->device, *buffer, allocation->memory, allocation->offset);
