@@ -64,7 +64,7 @@ poetry.lock
 # IDE-specific directories
 .vscode/
 .idea/
-.claude/
+.claude/*.txt
 .openclaw/
 .agents/
 .codex/
