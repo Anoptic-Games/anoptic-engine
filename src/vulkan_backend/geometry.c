@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 
-void ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device)
+bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily)
 {
     pool->meshCount = 0;
     pool->meshCapacity = 100;
@@ -28,30 +28,58 @@ void ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
 
     VkDeviceSize vertexPoolSize = 64 * 1024 * 1024; // 64 MB
     VkDeviceSize indexPoolSize = 16 * 1024 * 1024;  // 16 MB
+    
+    pool->vertexCapacity = vertexPoolSize;
+    pool->indexCapacity = indexPoolSize;
+
+    uint32_t queueFamilyIndices[] = {graphicsFamily, transferFamily};
+    bool concurrent = (graphicsFamily != transferFamily);
 
     VkBufferCreateInfo vInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = vertexPoolSize,
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = concurrent ? 2 : 0,
+        .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
     vkCreateBuffer(device, &vInfo, NULL, &pool->vertexBuffer);
     VkMemoryRequirements vReqs;
     vkGetBufferMemoryRequirements(device, pool->vertexBuffer, &vReqs);
     pool->vertexAlloc = gpu_alloc(alloc, vReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (pool->vertexAlloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null handle (cleanup guards on it) + free meshes
+        free(pool->meshes);
+        pool->meshes = NULL;
+        return false;
+    }
     vkBindBufferMemory(device, pool->vertexBuffer, pool->vertexAlloc.memory, pool->vertexAlloc.offset);
 
     VkBufferCreateInfo iInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = indexPoolSize,
         .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = concurrent ? 2 : 0,
+        .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
     vkCreateBuffer(device, &iInfo, NULL, &pool->indexBuffer);
     VkMemoryRequirements iReqs;
     vkGetBufferMemoryRequirements(device, pool->indexBuffer, &iReqs);
     pool->indexAlloc = gpu_alloc(alloc, iReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (pool->indexAlloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        vkDestroyBuffer(device, pool->indexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null both handles + free meshes
+        pool->indexBuffer = VK_NULL_HANDLE;
+        free(pool->meshes);
+        pool->meshes = NULL;
+        return false;
+    }
     vkBindBufferMemory(device, pool->indexBuffer, pool->indexAlloc.memory, pool->indexAlloc.offset);
+
+    return true;
 }
 
 void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device)
@@ -74,13 +102,16 @@ void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device)
 }
 
 uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
-                              VkCommandPool cmdPool, VkQueue transferQueue,
+                              uint32_t transferFamily, VkQueue transferQueue,
                               const Vertex* vertices, uint32_t vertexCount,
-                              const uint16_t* indices, uint32_t indexCount)
+                              const uint32_t* indices, uint32_t indexCount)
 {
+    // Wait for any in-flight draws to complete before mutating shared device-local buffers
+    vkDeviceWaitIdle(device);
+
     // Need a staging buffer
     VkDeviceSize vertexSize = sizeof(Vertex) * vertexCount;
-    VkDeviceSize indexSize = sizeof(uint16_t) * indexCount;
+    VkDeviceSize indexSize = sizeof(uint32_t) * indexCount;
     VkDeviceSize totalSize = vertexSize + indexSize;
 
     VkBufferCreateInfo stagingInfo = {
@@ -97,6 +128,10 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
 
     GpuAllocation stagingAlloc = gpu_alloc(alloc, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (stagingAlloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, stagingBuffer, NULL);
+        return -1;
+    }
     vkBindBufferMemory(device, stagingBuffer, stagingAlloc.memory, stagingAlloc.offset);
 
     // Copy data
@@ -104,11 +139,22 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     memcpy(mapped, vertices, vertexSize);
     memcpy(mapped + vertexSize, indices, indexSize);
 
+    VkCommandPoolCreateInfo poolInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = transferFamily
+    };
+    VkCommandPool transientPool;
+    if (vkCreateCommandPool(device, &poolInfo, NULL, &transientPool) != VK_SUCCESS) {
+        vkDestroyBuffer(device, stagingBuffer, NULL);
+        return -1;
+    }
+
     // Record commands
     VkCommandBufferAllocateInfo allocCmdInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandPool = cmdPool,
+        .commandPool = transientPool,
         .commandBufferCount = 1
     };
     VkCommandBuffer cmd;
@@ -120,38 +166,65 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // Find free blocks or use write offset
+    // Plan both allocations BEFORE mutating any pool state: an index-pool bailout must not strand an already-committed vertex reservation (free block or bump head).
+    // freeIdx >= 0 means satisfied from that free block; -1 means from the bump head.
     uint32_t finalVertexOffset = (uint32_t)-1;
+    int vertexFreeIdx = -1;
     for (uint32_t i = 0; i < pool->vertexFreeCount; i++) {
         if (pool->vertexFreeBlocks[i].size >= vertexSize) {
             finalVertexOffset = pool->vertexFreeBlocks[i].offset;
-            pool->vertexFreeBlocks[i].offset += vertexSize;
-            pool->vertexFreeBlocks[i].size -= vertexSize;
-            if (pool->vertexFreeBlocks[i].size == 0) {
-                pool->vertexFreeBlocks[i] = pool->vertexFreeBlocks[--pool->vertexFreeCount];
-            }
+            vertexFreeIdx = (int)i;
             break;
         }
     }
     if (finalVertexOffset == (uint32_t)-1) {
-        finalVertexOffset = pool->vertexWriteOffset;
-        pool->vertexWriteOffset += vertexSize;
+        if ((VkDeviceSize)pool->vertexWriteOffset + vertexSize > pool->vertexCapacity) {
+            printf("Error: Geometry mega-buffer vertex pool exhausted! Requested %llu, Capacity %llu\n",
+                   (unsigned long long)(pool->vertexWriteOffset + vertexSize), (unsigned long long)pool->vertexCapacity);
+            vkDestroyBuffer(device, stagingBuffer, NULL);
+            vkDestroyCommandPool(device, transientPool, NULL);
+            return 0; // Return fallback mesh
+        }
+        finalVertexOffset = pool->vertexWriteOffset; // bump head, committed below
     }
 
     uint32_t finalIndexOffset = (uint32_t)-1;
+    int indexFreeIdx = -1;
     for (uint32_t i = 0; i < pool->indexFreeCount; i++) {
         if (pool->indexFreeBlocks[i].size >= indexSize) {
             finalIndexOffset = pool->indexFreeBlocks[i].offset;
-            pool->indexFreeBlocks[i].offset += indexSize;
-            pool->indexFreeBlocks[i].size -= indexSize;
-            if (pool->indexFreeBlocks[i].size == 0) {
-                pool->indexFreeBlocks[i] = pool->indexFreeBlocks[--pool->indexFreeCount];
-            }
+            indexFreeIdx = (int)i;
             break;
         }
     }
     if (finalIndexOffset == (uint32_t)-1) {
-        finalIndexOffset = pool->indexWriteOffset;
+        if ((VkDeviceSize)pool->indexWriteOffset + indexSize > pool->indexCapacity) {
+            printf("Error: Geometry mega-buffer index pool exhausted! Requested %llu, Capacity %llu\n",
+                   (unsigned long long)(pool->indexWriteOffset + indexSize), (unsigned long long)pool->indexCapacity);
+            vkDestroyBuffer(device, stagingBuffer, NULL);
+            vkDestroyCommandPool(device, transientPool, NULL);
+            return 0; // Return fallback mesh
+        }
+        finalIndexOffset = pool->indexWriteOffset; // bump head, committed below
+    }
+
+    // Both fit — now commit the reservations.
+    if (vertexFreeIdx >= 0) {
+        pool->vertexFreeBlocks[vertexFreeIdx].offset += vertexSize;
+        pool->vertexFreeBlocks[vertexFreeIdx].size -= vertexSize;
+        if (pool->vertexFreeBlocks[vertexFreeIdx].size == 0) {
+            pool->vertexFreeBlocks[vertexFreeIdx] = pool->vertexFreeBlocks[--pool->vertexFreeCount];
+        }
+    } else {
+        pool->vertexWriteOffset += vertexSize;
+    }
+    if (indexFreeIdx >= 0) {
+        pool->indexFreeBlocks[indexFreeIdx].offset += indexSize;
+        pool->indexFreeBlocks[indexFreeIdx].size -= indexSize;
+        if (pool->indexFreeBlocks[indexFreeIdx].size == 0) {
+            pool->indexFreeBlocks[indexFreeIdx] = pool->indexFreeBlocks[--pool->indexFreeCount];
+        }
+    } else {
         pool->indexWriteOffset += indexSize;
     }
 
@@ -168,6 +241,12 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
         .size = indexSize
     };
     vkCmdCopyBuffer(cmd, stagingBuffer, pool->indexBuffer, 1, &indexCopyRegion);
+
+    // Upload ordering comes from vkWaitForFences below (+ vkDeviceWaitIdle on entry), not a barrier:
+    // this cmd runs on the transfer queue, which doesn't support VERTEX_INPUT
+    // (VUID-vkCmdPipelineBarrier-dstStageMask), and a same-queue barrier can't order the
+    // graphics-queue vertex fetches anyway. A dedicated transfer queue would instead need a
+    // graphics-side queue-family-ownership acquire to make the writes visible to vertex input.
 
     vkEndCommandBuffer(cmd);
 
@@ -188,7 +267,8 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     vkDestroyFence(device, fence, NULL);
-    vkFreeCommandBuffers(device, cmdPool, 1, &cmd);
+    vkFreeCommandBuffers(device, transientPool, 1, &cmd);
+    vkDestroyCommandPool(device, transientPool, NULL);
 
     // Cleanup staging buffer
     vkDestroyBuffer(device, stagingBuffer, NULL);
@@ -268,7 +348,7 @@ void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
         }
         pool->indexFreeBlocks[pool->indexFreeCount++] = (GeoFreeBlock){
             .offset = mesh->indexOffset,
-            .size = mesh->indexCount * sizeof(uint16_t)
+            .size = mesh->indexCount * sizeof(uint32_t)
         };
     }
 
