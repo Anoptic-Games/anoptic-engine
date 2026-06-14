@@ -14,12 +14,16 @@ static uint32_t findMemoryType(VkPhysicalDeviceMemoryProperties memProps, uint32
         }
     }
     printf("Failed to find suitable memory type!\n");
-    return 0;
+    return UINT32_MAX;
 }
 
 GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemoryPropertyFlags props)
 {
     uint32_t memoryType = findMemoryType(alloc->memProps, reqs.memoryTypeBits, props);
+    if (memoryType == UINT32_MAX) {
+        GpuAllocation empty = {0};
+        return empty;
+    }
     
     // Find an existing block with enough space and matching type
     for (uint32_t i = 0; i < alloc->blockCount; i++)
@@ -66,11 +70,13 @@ GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemory
     if (vkAllocateMemory(alloc->device, &allocInfo, NULL, &newBlock->memory) != VK_SUCCESS)
     {
         printf("Failed to allocate GPU block memory!\n");
+        // Revert block count expansion
+        alloc->blockCount--;
         GpuAllocation empty = {0};
         return empty;
     }
 
-    if (props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+    if (alloc->memProps.memoryTypes[memoryType].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
     {
         vkMapMemory(alloc->device, newBlock->memory, 0, blockSize, 0, &newBlock->mapped);
     }

@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 
-void ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device)
+bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device)
 {
     pool->meshCount = 0;
     pool->meshCapacity = 100;
@@ -39,6 +39,10 @@ void ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
     VkMemoryRequirements vReqs;
     vkGetBufferMemoryRequirements(device, pool->vertexBuffer, &vReqs);
     pool->vertexAlloc = gpu_alloc(alloc, vReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (pool->vertexAlloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        return false;
+    }
     vkBindBufferMemory(device, pool->vertexBuffer, pool->vertexAlloc.memory, pool->vertexAlloc.offset);
 
     VkBufferCreateInfo iInfo = {
@@ -51,7 +55,14 @@ void ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
     VkMemoryRequirements iReqs;
     vkGetBufferMemoryRequirements(device, pool->indexBuffer, &iReqs);
     pool->indexAlloc = gpu_alloc(alloc, iReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (pool->indexAlloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        vkDestroyBuffer(device, pool->indexBuffer, NULL);
+        return false;
+    }
     vkBindBufferMemory(device, pool->indexBuffer, pool->indexAlloc.memory, pool->indexAlloc.offset);
+
+    return true;
 }
 
 void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device)
@@ -97,6 +108,10 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
 
     GpuAllocation stagingAlloc = gpu_alloc(alloc, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (stagingAlloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, stagingBuffer, NULL);
+        return -1;
+    }
     vkBindBufferMemory(device, stagingBuffer, stagingAlloc.memory, stagingAlloc.offset);
 
     // Copy data
