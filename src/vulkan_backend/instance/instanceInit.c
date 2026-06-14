@@ -566,9 +566,13 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR queryDynamicRendering = {};
 	queryDynamicRendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
 
+	VkPhysicalDeviceVulkan11Features queryFeatures11 = {};
+	queryFeatures11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+	queryFeatures11.pNext = &queryDynamicRendering;
+
 	VkPhysicalDeviceVulkan12Features queryFeatures12 = {};
 	queryFeatures12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-	queryFeatures12.pNext = &queryDynamicRendering;
+	queryFeatures12.pNext = &queryFeatures11;
 
 	VkPhysicalDeviceFeatures2 features2 = {};
 	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -626,11 +630,16 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
 	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
 
+	VkPhysicalDeviceVulkan11Features features11 = {};
+	features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+	features11.shaderDrawParameters = queryFeatures11.shaderDrawParameters; // flat.vert uses gl_DrawID -> SPIR-V DrawParameters cap
+
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
 	dynamicRenderingFeature.dynamicRendering = queryDynamicRendering.dynamicRendering;
 
-	features12.pNext = &dynamicRenderingFeature;
+	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering (preserved) -> NULL
+	features12.pNext = &features11;
 
 	VkDeviceCreateInfo createInfo = {};
 
