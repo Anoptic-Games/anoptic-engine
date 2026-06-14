@@ -62,9 +62,19 @@ bool isVisible(vec3 center, float radius, mat4 model) {
     return true;
 }
 
+layout(constant_id = 0) const bool USE_FIRST_INSTANCE = true;
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= entityCount) return;
+
+    if (idx == 0) {
+        drawCount = entityCount; // Set the count for vkCmdDrawIndexedIndirectCount
+    }
+
+    // We write to draws[idx] directly so unused entries have instanceCount = 0
+    if (idx >= entityCount) {
+        return;
+    }
 
     EntityInfo entity = entities[idx];
     mat4 model = transforms[idx];
@@ -72,12 +82,16 @@ void main() {
     uvec4 meshData = meshDrawData[entity.meshIndex];
 
     if (isVisible(bounds.xyz, bounds.w, model)) {
-        uint drawIdx = atomicAdd(drawCount, 1);
-
-        draws[drawIdx].indexCount    = meshData.x;
-        draws[drawIdx].instanceCount = 1;
-        draws[drawIdx].firstIndex    = meshData.y;
-        draws[drawIdx].vertexOffset  = int(meshData.z);
-        draws[drawIdx].firstInstance = idx;  // entity index
+        draws[idx].indexCount    = meshData.x;
+        draws[idx].instanceCount = 1;
+        draws[idx].firstIndex    = meshData.y;
+        draws[idx].vertexOffset  = int(meshData.z);
+        if (USE_FIRST_INSTANCE) {
+            draws[idx].firstInstance = idx;  // entity index
+        } else {
+            draws[idx].firstInstance = 0;
+        }
+    } else {
+        draws[idx].instanceCount = 0;
     }
 }

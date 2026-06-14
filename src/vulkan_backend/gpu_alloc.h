@@ -41,5 +41,6 @@ void gpu_alloc_destroy(GpuAllocator* alloc);  // free all VkDeviceMemory
 extern GpuAllocator gpuAllocator;
 extern GpuAllocator swapchainAllocator;
 extern GpuAllocator stagingAllocator;
+extern GpuAllocator textureAllocator;
 
 #endif
