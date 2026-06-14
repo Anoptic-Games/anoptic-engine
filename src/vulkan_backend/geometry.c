@@ -159,16 +159,14 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // Find free blocks or use write offset
+    // Plan both allocations BEFORE mutating any pool state: an index-pool bailout must not strand an already-committed vertex reservation (free block or bump head).
+    // freeIdx >= 0 means satisfied from that free block; -1 means from the bump head.
     uint32_t finalVertexOffset = (uint32_t)-1;
+    int vertexFreeIdx = -1;
     for (uint32_t i = 0; i < pool->vertexFreeCount; i++) {
         if (pool->vertexFreeBlocks[i].size >= vertexSize) {
             finalVertexOffset = pool->vertexFreeBlocks[i].offset;
-            pool->vertexFreeBlocks[i].offset += vertexSize;
-            pool->vertexFreeBlocks[i].size -= vertexSize;
-            if (pool->vertexFreeBlocks[i].size == 0) {
-                pool->vertexFreeBlocks[i] = pool->vertexFreeBlocks[--pool->vertexFreeCount];
-            }
+            vertexFreeIdx = (int)i;
             break;
         }
     }
@@ -180,19 +178,15 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
             vkDestroyCommandPool(device, transientPool, NULL);
             return 0; // Return fallback mesh
         }
-        finalVertexOffset = pool->vertexWriteOffset;
-        pool->vertexWriteOffset += vertexSize;
+        finalVertexOffset = pool->vertexWriteOffset; // bump head, committed below
     }
 
     uint32_t finalIndexOffset = (uint32_t)-1;
+    int indexFreeIdx = -1;
     for (uint32_t i = 0; i < pool->indexFreeCount; i++) {
         if (pool->indexFreeBlocks[i].size >= indexSize) {
             finalIndexOffset = pool->indexFreeBlocks[i].offset;
-            pool->indexFreeBlocks[i].offset += indexSize;
-            pool->indexFreeBlocks[i].size -= indexSize;
-            if (pool->indexFreeBlocks[i].size == 0) {
-                pool->indexFreeBlocks[i] = pool->indexFreeBlocks[--pool->indexFreeCount];
-            }
+            indexFreeIdx = (int)i;
             break;
         }
     }
@@ -204,7 +198,26 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
             vkDestroyCommandPool(device, transientPool, NULL);
             return 0; // Return fallback mesh
         }
-        finalIndexOffset = pool->indexWriteOffset;
+        finalIndexOffset = pool->indexWriteOffset; // bump head, committed below
+    }
+
+    // Both fit — now commit the reservations.
+    if (vertexFreeIdx >= 0) {
+        pool->vertexFreeBlocks[vertexFreeIdx].offset += vertexSize;
+        pool->vertexFreeBlocks[vertexFreeIdx].size -= vertexSize;
+        if (pool->vertexFreeBlocks[vertexFreeIdx].size == 0) {
+            pool->vertexFreeBlocks[vertexFreeIdx] = pool->vertexFreeBlocks[--pool->vertexFreeCount];
+        }
+    } else {
+        pool->vertexWriteOffset += vertexSize;
+    }
+    if (indexFreeIdx >= 0) {
+        pool->indexFreeBlocks[indexFreeIdx].offset += indexSize;
+        pool->indexFreeBlocks[indexFreeIdx].size -= indexSize;
+        if (pool->indexFreeBlocks[indexFreeIdx].size == 0) {
+            pool->indexFreeBlocks[indexFreeIdx] = pool->indexFreeBlocks[--pool->indexFreeCount];
+        }
+    } else {
         pool->indexWriteOffset += indexSize;
     }
 
