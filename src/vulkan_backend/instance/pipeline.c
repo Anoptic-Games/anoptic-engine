@@ -96,11 +96,18 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	materialLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	materialLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[3] = {uboLayoutBinding, ssboLayoutBinding, materialLayoutBinding};
+	VkDescriptorSetLayoutBinding entityLayoutBinding = {};
+	entityLayoutBinding.binding = 3;
+	entityLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	entityLayoutBinding.descriptorCount = 1;
+	entityLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	entityLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[4] = {uboLayoutBinding, ssboLayoutBinding, materialLayoutBinding, entityLayoutBinding};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 3;
+	layoutInfo.bindingCount = 4;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
