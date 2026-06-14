@@ -264,7 +264,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             // Bind monolithic vertex and index buffers once per frame
             VkDeviceSize offsets[] = {0};
             vkCmdBindVertexBuffers(cmd, 0, 1, &rendererState.globalGeometryPool.vertexBuffer, offsets);
-            vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.frames[rendererState.frameIndex].globalSet), 0, NULL);
@@ -392,7 +392,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
         
         meshData[i*4 + 0] = mesh->indexCount;
-        meshData[i*4 + 1] = mesh->indexOffset / sizeof(uint16_t);
+        meshData[i*4 + 1] = mesh->indexOffset / sizeof(uint32_t);
         meshData[i*4 + 2] = mesh->baseVertex;
         meshData[i*4 + 3] = 0; // padding
 
@@ -436,7 +436,7 @@ void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
                 {{ 0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
                 {{-0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}}
             };
-            const uint16_t triIndices[] = { 0, 1, 2 };
+            const uint32_t triIndices[] = { 0, 1, 2 };
 
             uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
                                                        ctx->device,
@@ -798,7 +798,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
     };
     
-    const uint16_t cubeIndices[] = {
+    const uint32_t cubeIndices[] = {
         0, 1, 2, 2, 3, 0, // front
         1, 5, 6, 6, 2, 1, // right
         5, 4, 7, 7, 6, 5, // back
