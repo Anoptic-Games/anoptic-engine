@@ -7,7 +7,8 @@
 
 #include "vulkan_backend/texture/texture.h" 
 
-extern GpuAllocator gpuAllocator;
+extern GpuAllocator textureAllocator;
+extern GpuAllocator stagingAllocator;
 
 // Functions
 
@@ -334,7 +335,7 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkIma
 	void* data = stagingAlloc.mapped;
 	memcpy(data, pixels, (size_t)(imageSize));
 
-	if(!createImage(ctx, &gpuAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
+	if(!createImage(ctx, &textureAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
 	{
 		printf("Image creation failure!\n");
 		return false;
@@ -389,7 +390,7 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 
 	stbi_image_free(texture.pixels);
 
-	if (!createImage(ctx, &gpuAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+	if (!createImage(ctx, &textureAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
 					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
 	{
 		printf("Image creation failure: %s\n", fileName);
