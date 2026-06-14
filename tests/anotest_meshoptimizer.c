@@ -182,11 +182,69 @@ static void test_bounds_checks() {
     free(meshlet_triangles);
 }
 
+static void test_vertex_cache_optimization() {
+    printf("Running test_vertex_cache_optimization...\n");
+
+    // Simple grid: 2 triangles (4 vertices)
+    // Triangles: [0, 1, 2], [2, 1, 3]
+    uint32_t indices[] = {
+        0, 1, 2,
+        2, 1, 3
+    };
+    uint32_t optimized[6];
+
+    ano_optimize_vertex_cache(optimized, indices, 6, 4);
+
+    // Make sure we still have 6 indices and they represent the same set of triangles
+    int found_t1 = 0;
+    int found_t2 = 0;
+    for (int i = 0; i < 6; i += 3) {
+        uint32_t a = optimized[i];
+        uint32_t b = optimized[i+1];
+        uint32_t c = optimized[i+2];
+        
+        // Check if it's triangle (0,1,2) in some rotation/permutation
+        if ((a == 0 && b == 1 && c == 2) || (a == 1 && b == 2 && c == 0) || (a == 2 && b == 0 && c == 1) ||
+            (a == 0 && b == 2 && c == 1) || (a == 1 && b == 0 && c == 2) || (a == 2 && b == 1 && c == 0)) {
+            found_t1 = 1;
+        }
+        // Check if it's triangle (2,1,3) in some rotation/permutation
+        if ((a == 2 && b == 1 && c == 3) || (a == 1 && b == 3 && c == 2) || (a == 3 && b == 2 && c == 1) ||
+            (a == 2 && b == 3 && c == 1) || (a == 1 && b == 2 && c == 3) || (a == 3 && b == 1 && c == 2)) {
+            found_t2 = 1;
+        }
+    }
+    assert(found_t1 && found_t2);
+
+    // Test in-place optimization
+    uint32_t in_place[6] = { 0, 1, 2, 2, 1, 3 };
+    ano_optimize_vertex_cache(in_place, in_place, 6, 4);
+    
+    found_t1 = 0;
+    found_t2 = 0;
+    for (int i = 0; i < 6; i += 3) {
+        uint32_t a = in_place[i];
+        uint32_t b = in_place[i+1];
+        uint32_t c = in_place[i+2];
+        if ((a == 0 && b == 1 && c == 2) || (a == 1 && b == 2 && c == 0) || (a == 2 && b == 0 && c == 1) ||
+            (a == 0 && b == 2 && c == 1) || (a == 1 && b == 0 && c == 2) || (a == 2 && b == 1 && c == 0)) {
+            found_t1 = 1;
+        }
+        if ((a == 2 && b == 1 && c == 3) || (a == 1 && b == 3 && c == 2) || (a == 3 && b == 2 && c == 1) ||
+            (a == 2 && b == 3 && c == 1) || (a == 1 && b == 2 && c == 3) || (a == 3 && b == 1 && c == 2)) {
+            found_t2 = 1;
+        }
+    }
+    assert(found_t1 && found_t2);
+}
+
 int main() {
     test_meshlet_bounds_calculation();
     test_degenerate_triangles();
     test_meshlet_limits();
     test_bounds_checks();
+    test_vertex_cache_optimization();
     printf("All tests passed successfully!\n");
     return 0;
 }
+
