@@ -62,7 +62,8 @@ toolchain_path="$script_dir/cmake/platforms/${toolchain_file}"
 
 # macOS: Homebrew clang, no toolchain file (Apple clang rejects C23). Else: toolchain file.
 if [ "$(uname -s)" = "Darwin" ]; then
-    llvm_prefix="$(brew --prefix llvm 2>/dev/null)"
+    # || true: keep set -e from aborting here when llvm is absent; the check below reports it.
+    llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
     if [ -z "$llvm_prefix" ] || [ ! -x "$llvm_prefix/bin/clang" ]; then
         echo "Error: Homebrew LLVM clang not found. Install it with 'brew install llvm'."
         exit 1
