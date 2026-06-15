@@ -85,6 +85,46 @@ void ano_vk_decrement_texture_usage(RenderPrimitives* primitives, uint32_t index
 
 void ano_vk_cleanup_primitives(RenderPrimitives* primitives);
 
+// PBR Feature Flags mapping to glTF properties and extensions
+typedef enum PbrFeatureBits {
+    PBR_FEATURE_NONE = 0,
+    // Core properties
+    PBR_FEATURE_BASE_COLOR_FACTOR          = 1 << 0,
+    PBR_FEATURE_BASE_COLOR_TEXTURE         = 1 << 1,
+    PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR  = 1 << 2,
+    PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE = 1 << 3,
+    PBR_FEATURE_NORMAL_TEXTURE             = 1 << 4,
+    PBR_FEATURE_OCCLUSION_TEXTURE          = 1 << 5,
+    PBR_FEATURE_EMISSIVE_FACTOR            = 1 << 6,
+    PBR_FEATURE_EMISSIVE_TEXTURE           = 1 << 7,
+    
+    // Alpha modes
+    PBR_FEATURE_ALPHA_MODE_OPAQUE          = 1 << 8,
+    PBR_FEATURE_ALPHA_MODE_MASK            = 1 << 9,
+    PBR_FEATURE_ALPHA_MODE_BLEND           = 1 << 10,
+    
+    // Double-sided
+    PBR_FEATURE_DOUBLE_SIDED               = 1 << 11,
+    
+    // Ratified extensions
+    PBR_FEATURE_CLEARCOAT                  = 1 << 12,
+    PBR_FEATURE_TRANSMISSION               = 1 << 13,
+    PBR_FEATURE_VOLUME                     = 1 << 14,
+    PBR_FEATURE_IOR                        = 1 << 15,
+    PBR_FEATURE_SPECULAR                   = 1 << 16,
+    PBR_FEATURE_SHEEN                      = 1 << 17,
+    PBR_FEATURE_IRIDESCENCE                = 1 << 18,
+    PBR_FEATURE_ANISOTROPY                 = 1 << 19,
+    PBR_FEATURE_DISPERSION                 = 1 << 20,
+    PBR_FEATURE_DIFFUSE_TRANSMISSION       = 1 << 21,
+    PBR_FEATURE_EMISSIVE_STRENGTH          = 1 << 22,
+    
+    // Legacy extensions
+    PBR_FEATURE_SPECULAR_GLOSSINESS        = 1 << 23,
+} PbrFeatureBits;
+
+typedef uint32_t PbrFeatureFlags;
+
 typedef struct PipelineImplementation
 {
     VkPipeline           pipeline;
@@ -103,6 +143,20 @@ typedef struct PipelinePrototype
     uint32_t                    implementationCount;
     PipelineImplementation*     implementations;  // allocated as a flat array, not FAM
     VkPipelineCache             cache;
+    PbrFeatureFlags             supportedFeatures; // PBR features supported by this pipeline
 } PipelinePrototype;
+
+// Forward declaration of RendererState to avoid circular dependencies
+struct RendererState;
+
+// Pure compatibility check helper
+bool ano_vk_check_feature_compatibility(PbrFeatureFlags pipelineFeatures, PbrFeatureFlags requiredFeatures, PbrFeatureFlags* outUnsupported);
+
+// Query features globally supported by all active graphics pipelines
+PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct RendererState* state);
+
+// Forward declaration of MaterialData to allow initialization helper
+struct MaterialData;
+void ano_vk_init_default_material_data(struct MaterialData* mat);
 
 #endif

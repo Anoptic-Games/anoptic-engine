@@ -4,6 +4,7 @@
 
 #include <mimalloc-override.h>
 #include "vulkan_backend/components.h"
+#include "vulkan_backend/structs.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -78,4 +79,70 @@ void ano_vk_cleanup_primitives(RenderPrimitives* primitives) {
     }
     primitives->textureCount = 0;
     primitives->textureCapacity = 0;
+}
+
+bool ano_vk_check_feature_compatibility(PbrFeatureFlags pipelineFeatures, PbrFeatureFlags requiredFeatures, PbrFeatureFlags* outUnsupported) {
+    PbrFeatureFlags unsupported = requiredFeatures & ~pipelineFeatures;
+    if (outUnsupported) {
+        *outUnsupported = unsupported;
+    }
+    return (unsupported == PBR_FEATURE_NONE);
+}
+
+PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct RendererState* state) {
+    PbrFeatureFlags features = PBR_FEATURE_NONE;
+    for (int i = 0; i < PIPELINE_TYPE_COUNT; ++i) {
+        if (state->prototypes[i].layout != VK_NULL_HANDLE && state->prototypes[i].implementationCount > 0) {
+            if (state->prototypes[i].implementations[0].bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+                features |= state->prototypes[i].supportedFeatures;
+            }
+        }
+    }
+    return features;
+}
+
+void ano_vk_init_default_material_data(struct MaterialData* mat) {
+    memset(mat, 0, sizeof(struct MaterialData));
+    
+    mat->features = PBR_FEATURE_NONE;
+    
+    mat->baseColorFactor[0] = 1.0f;
+    mat->baseColorFactor[1] = 1.0f;
+    mat->baseColorFactor[2] = 1.0f;
+    mat->baseColorFactor[3] = 1.0f;
+    
+    mat->metallicFactor = 1.0f;
+    mat->roughnessFactor = 1.0f;
+    
+    mat->normalScale = 1.0f;
+    
+    mat->occlusionStrength = 1.0f;
+    
+    mat->emissiveStrength = 1.0f;
+    
+    mat->alphaCutoff = 0.5f;
+    mat->alphaMode = 0; // OPAQUE
+    
+    mat->ior = 1.5f;
+    
+    mat->specularFactor = 1.0f;
+    mat->specularColorFactor[0] = 1.0f;
+    mat->specularColorFactor[1] = 1.0f;
+    mat->specularColorFactor[2] = 1.0f;
+    mat->specularColorFactor[3] = 1.0f;
+    
+    mat->attenuationDistance = 1e30f;
+    mat->attenuationColor[0] = 1.0f;
+    mat->attenuationColor[1] = 1.0f;
+    mat->attenuationColor[2] = 1.0f;
+    mat->attenuationColor[3] = 1.0f;
+    
+    mat->iridescenceIor = 1.3f;
+    mat->iridescenceThicknessMinimum = 100.0f;
+    mat->iridescenceThicknessMaximum = 400.0f;
+    
+    mat->diffuseTransmissionColorFactor[0] = 1.0f;
+    mat->diffuseTransmissionColorFactor[1] = 1.0f;
+    mat->diffuseTransmissionColorFactor[2] = 1.0f;
+    mat->diffuseTransmissionColorFactor[3] = 1.0f;
 }

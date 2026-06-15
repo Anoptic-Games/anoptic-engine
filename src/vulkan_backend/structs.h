@@ -157,11 +157,96 @@ typedef struct AngularVelocityBuffer
 
 typedef struct MaterialData
 {
-    uint32_t    albedoIndex;        // index into bindless texture array
-    uint32_t    normalIndex;        // 0 = no normal map
-    float       roughness;          // non-PBR: controls stylized specular falloff
-    float       emissive;           // emissive intensity multiplier
-    float       color[4];           // tint color (RGBA)
+    // Feature flags identifying which features are active in this material
+    uint32_t    features;           // PbrFeatureFlags bitmask
+    uint32_t    baseColorTexture;   // Index in bindless array (0 = fallback)
+    uint32_t    pad0[2];            // Align baseColorFactor to 16 bytes
+
+    // 1. pbrMetallicRoughness
+    float       baseColorFactor[4];
+    uint32_t    metallicRoughnessTexture;
+    float       metallicFactor;
+    float       roughnessFactor;
+
+    // 2. Core Material Properties
+    uint32_t    normalTexture;
+    float       normalScale;
+    uint32_t    occlusionTexture;
+    float       occlusionStrength;
+    uint32_t    emissiveTexture;
+    
+    // 3. Emissive Factor (aligned to 16 bytes since offset is 64)
+    float       emissiveFactor[4];  // RGB + 1 padding element
+    uint32_t    alphaMode;          // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+    float       alphaCutoff;
+    uint32_t    doubleSided;        // 0 = false, 1 = true
+
+    // 4. KHR_materials_clearcoat
+    uint32_t    clearcoatTexture;
+    uint32_t    clearcoatRoughnessTexture;
+    uint32_t    clearcoatNormalTexture;
+    float       clearcoatFactor;
+    float       clearcoatRoughnessFactor;
+
+    // 5. KHR_materials_transmission
+    uint32_t    transmissionTexture;
+    float       transmissionFactor;
+
+    // 6. KHR_materials_volume
+    uint32_t    thicknessTexture;
+    float       thicknessFactor;
+    float       attenuationDistance;
+    uint32_t    pad1[3];            // Align attenuationColor to 16 bytes
+
+    float       attenuationColor[4]; // RGB + 1 padding element
+
+    // 7. KHR_materials_ior
+    float       ior;
+
+    // 8. KHR_materials_specular
+    uint32_t    specularTexture;
+    uint32_t    specularColorTexture;
+    float       specularFactor;
+
+    float       specularColorFactor[4]; // RGB + 1 padding element
+
+    // 9. KHR_materials_sheen
+    uint32_t    sheenColorTexture;
+    uint32_t    sheenRoughnessTexture;
+    uint32_t    pad2[2];            // Align sheenColorFactor to 16 bytes
+
+    float       sheenColorFactor[4]; // RGB + 1 padding element
+    float       sheenRoughnessFactor;
+
+    // 10. KHR_materials_iridescence
+    uint32_t    iridescenceTexture;
+    uint32_t    iridescenceThicknessTexture;
+    float       iridescenceFactor;
+    float       iridescenceIor;
+    float       iridescenceThicknessMinimum;
+    float       iridescenceThicknessMaximum;
+
+    // 11. KHR_materials_anisotropy
+    uint32_t    anisotropyTexture;
+    float       anisotropyStrength;
+    float       anisotropyRotation;
+
+    // 12. KHR_materials_dispersion
+    float       dispersion;
+
+    // 13. KHR_materials_diffuse_transmission
+    uint32_t    diffuseTransmissionTexture;
+    uint32_t    diffuseTransmissionColorTexture;
+    float       diffuseTransmissionFactor;
+    uint32_t    pad3[2];            // Align diffuseTransmissionColorFactor to 16 bytes
+
+    float       diffuseTransmissionColorFactor[4]; // RGB + 1 padding element
+
+    // 14. KHR_materials_emissive_strength
+    float       emissiveStrength;
+
+    // Final padding to align structure size to a multiple of 16 (total size = 320 bytes)
+    uint32_t    padding[3];
 } MaterialData;
 
 typedef struct MaterialBuffer
