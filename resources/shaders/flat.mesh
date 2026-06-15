@@ -10,7 +10,8 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     float time;
     float deltaTime;
     uint frameCount;
-    uint padding;
+    uint lightCount;
+    vec4 cameraPos;
 } global;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {

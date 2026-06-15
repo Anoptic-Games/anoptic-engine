@@ -1137,6 +1137,13 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 
 	lookAt(state->uboData.view, eye, center, up);
 
+	// Publish the camera world position so the fragment stage doesn't have to
+	// recover it via a per-fragment inverse(view).
+	state->uboData.cameraPos[0] = eye[0];
+	state->uboData.cameraPos[1] = eye[1];
+	state->uboData.cameraPos[2] = eye[2];
+	state->uboData.cameraPos[3] = 1.0f;
+
 	float fov = 45.0f; // Field of View in degrees
 	float aspect = (float)state->imageExtent.width / (float)state->imageExtent.height;
 	float near = 0.1f;

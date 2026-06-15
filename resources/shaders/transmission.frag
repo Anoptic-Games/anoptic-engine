@@ -66,6 +66,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     float deltaTime;
     uint frameCount;
     uint lightCount;
+    vec4 cameraPos;
 } global;
 
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
@@ -207,9 +208,7 @@ void main() {
         normal = -normal;
     }
     
-    mat4 invView = inverse(global.view);
-    vec3 cameraPos = invView[3].xyz;
-    vec3 V = normalize(cameraPos - fragWorldPos);
+    vec3 V = normalize(global.cameraPos.xyz - fragWorldPos);
     
     // Ambient & transmissive color contributions (evaluated once)
     vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion * (1.0 - transmission);
