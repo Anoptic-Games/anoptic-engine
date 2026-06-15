@@ -138,7 +138,6 @@ void main() {
     if (!gl_FrontFacing) {
         N = -N;
     }
-    N = -N;
     
     mat4 invView = inverse(global.view);
     vec3 cameraPos = invView[3].xyz;
