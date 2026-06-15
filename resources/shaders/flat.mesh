@@ -28,7 +28,7 @@ layout(set = 0, binding = 3) readonly buffer EntitySSBO {
 
 struct PackedVertex {
     float px, py, pz;
-    float cx, cy, cz;
+    float nx, ny, nz;
     float u, v;
 };
 
@@ -63,7 +63,7 @@ layout(push_constant) uniform PushConstants {
     uint transformBaseOffset;
 } pc;
 
-layout(location = 0) out vec3 fragColor[];
+layout(location = 0) out vec3 fragNormal[];
 layout(location = 1) out vec2 fragTexCoord[];
 layout(location = 2) flat out uint outMaterialIndex[];
 layout(location = 3) out vec3 fragWorldPos[];
@@ -117,14 +117,14 @@ void main() {
 
         PackedVertex v = vertexBuf.vertices[globalVertexIdx];
         vec3 position = vec3(v.px, v.py, v.pz);
-        vec3 color    = vec3(v.cx, v.cy, v.cz);
+        vec3 normal   = vec3(v.nx, v.ny, v.nz);
         vec2 texCoord = vec2(v.u, v.v);
 
         mat4 model = transformBuf.transforms[entityIndex];
         vec4 worldPos = model * vec4(position, 1.0);
         gl_MeshVerticesEXT[i].gl_Position = global.proj * global.view * worldPos;
 
-        fragColor[i] = color;
+        fragNormal[i] = mat3(model) * normal;
         fragTexCoord[i] = texCoord;
         outMaterialIndex[i] = materialIndex;
         fragWorldPos[i] = worldPos.xyz;

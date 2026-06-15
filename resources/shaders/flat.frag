@@ -75,7 +75,7 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
-layout(location = 0) in vec3 fragColor;
+layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragTexCoord;
 layout(location = 2) flat in uint inMaterialIndex;
 layout(location = 3) in vec3 fragWorldPos;
@@ -134,11 +134,11 @@ void main() {
         occlusion = texture(textures[nonuniformEXT(mat.occlusionTexture)], fragTexCoord).r;
     }
 
-    // Quick Test: Swap dFdx and dFdy to flip the normal outward
-    vec3 N = normalize(cross(dFdy(fragWorldPos), dFdx(fragWorldPos)));
+    vec3 N = normalize(fragNormal);
     if (!gl_FrontFacing) {
         N = -N;
     }
+    N = -N;
     
     mat4 invView = inverse(global.view);
     vec3 cameraPos = invView[3].xyz;
