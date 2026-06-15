@@ -56,7 +56,8 @@ struct MaterialData {
     uint      pad3[2];            // Align diffuseTransmissionColorFactor to 16 bytes
     vec4      diffuseTransmissionColorFactor;
     float     emissiveStrength;
-    uint      padding[3];
+    uint      pipelineType;
+    uint      padding[2];
 };
 
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {

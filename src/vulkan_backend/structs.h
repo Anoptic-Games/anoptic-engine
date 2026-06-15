@@ -245,8 +245,10 @@ typedef struct MaterialData
     // 14. KHR_materials_emissive_strength
     float       emissiveStrength;
 
+    uint32_t    pipelineType;
+
     // Final padding to align structure size to a multiple of 16 (total size = 320 bytes)
-    uint32_t    padding[3];
+    uint32_t    padding[2];
 } MaterialData;
 
 typedef struct MaterialBuffer
@@ -273,7 +275,8 @@ typedef struct CullUBO
     mat4 viewProj;
     Vector4 frustumPlanes[6];
     uint32_t entityCount;
-    uint32_t padding[3];
+    uint32_t maxEntities;
+    uint32_t padding[2];
 } CullUBO;
 
 typedef struct CullUboBuffer
@@ -330,6 +333,11 @@ typedef struct CullingBuffers {
     VkBuffer                drawCountBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           drawCountAllocs[MAX_FRAMES_IN_FLIGHT];
     uint32_t*               drawCountMapped[MAX_FRAMES_IN_FLIGHT];
+
+    // GPU-written compacted entity indices (1-to-1 mapping for visible elements)
+    VkBuffer                compactedEntityIndicesBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           compactedEntityIndicesAllocs[MAX_FRAMES_IN_FLIGHT];
+    uint32_t*               compactedEntityIndicesMapped[MAX_FRAMES_IN_FLIGHT];
 
     // Descriptor infrastructure
     VkDescriptorSetLayout   setLayout;

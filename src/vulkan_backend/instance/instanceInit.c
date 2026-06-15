@@ -1432,7 +1432,12 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		globalMeshInfo.offset = 0;
 		globalMeshInfo.range = sizeof(uint32_t) * 4 * maxMeshes;
 
-		VkWriteDescriptorSet descriptorWrites[7] = {};
+		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
+		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
+		compactedEntityIndicesInfo.offset = 0;
+		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+
+		VkWriteDescriptorSet descriptorWrites[8] = {};
 		
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
@@ -1495,7 +1500,15 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[6].descriptorCount = 1;
 		descriptorWrites[6].pBufferInfo = &globalMeshInfo;
 
-		vkUpdateDescriptorSets(ctx->device, 7, descriptorWrites, 0, NULL);
+		descriptorWrites[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[7].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[7].dstBinding = 7;
+		descriptorWrites[7].dstArrayElement = 0;
+		descriptorWrites[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[7].descriptorCount = 1;
+		descriptorWrites[7].pBufferInfo = &compactedEntityIndicesInfo;
+
+		vkUpdateDescriptorSets(ctx->device, 8, descriptorWrites, 0, NULL);
 
         // Update cull sets
         VkDescriptorBufferInfo cullUboInfo = {};
@@ -1516,15 +1529,25 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity;
+        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT;
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
-        countInfo.range = sizeof(uint32_t);
+        countInfo.range = sizeof(uint32_t) * PIPELINE_TYPE_COUNT;
 
-        VkWriteDescriptorSet cullWrites[7] = {};
-        for(int j=0; j<7; ++j) {
+        VkDescriptorBufferInfo compactedEntityIndicesCullInfo = {};
+        compactedEntityIndicesCullInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
+        compactedEntityIndicesCullInfo.offset = 0;
+        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+
+        VkDescriptorBufferInfo materialCullInfo = {};
+        materialCullInfo.buffer = rendererState.materialBuffer.buffer[i];
+        materialCullInfo.offset = 0;
+        materialCullInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
+
+        VkWriteDescriptorSet cullWrites[9] = {};
+        for(int j=0; j<9; ++j) {
             cullWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             cullWrites[j].dstSet = rendererState.frames[i].cullSet;
             cullWrites[j].dstBinding = j;
@@ -1541,8 +1564,10 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullWrites[4].pBufferInfo = &meshBoundsInfo;
         cullWrites[5].pBufferInfo = &indirectInfo;
         cullWrites[6].pBufferInfo = &countInfo;
+        cullWrites[7].pBufferInfo = &compactedEntityIndicesCullInfo;
+        cullWrites[8].pBufferInfo = &materialCullInfo;
 
-        vkUpdateDescriptorSets(ctx->device, 7, cullWrites, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 9, cullWrites, 0, NULL);
 
         // Update Compute Descriptor Sets
         VkDescriptorBufferInfo angularVelInfo = {};
@@ -1866,6 +1891,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.culling.meshBoundsBuffer[i], NULL);
 		if(rendererState.culling.drawCountBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.drawCountBuffer[i], NULL);
+		if(rendererState.culling.compactedEntityIndicesBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.compactedEntityIndicesBuffer[i], NULL);
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
 	}
