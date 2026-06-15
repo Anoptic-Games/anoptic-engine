@@ -27,6 +27,14 @@
 #define FALLBACK_MESH_INDEX 0
 #define FALLBACK_TEXTURE_INDEX 0
 
+// Sentinel values for optional entity components.
+// NO_MESH_INDEX marks a transform-only entity (e.g. a pure light) that the
+// culling pass must skip so it draws no geometry. NO_LIGHT_INDEX marks an
+// entity that carries no light. Both match the 0xFFFFFFFF "absent" convention
+// already used for optional bindless textures in MaterialData.
+#define NO_MESH_INDEX  0xFFFFFFFFu
+#define NO_LIGHT_INDEX 0xFFFFFFFFu
+
 // Structs
 
 // New structs for streamlined state resource management
@@ -63,8 +71,9 @@ typedef struct QueueFamilyIndices // Stores whether different queue families exi
 
 typedef struct RenderEntity
 { // To be extended with animation data
-    uint32_t meshIndex;
+    uint32_t meshIndex;       // index into geometry pool, or NO_MESH_INDEX for transform-only entities
     uint32_t materialIndex;   // index into MaterialSSBO
+    uint32_t lightIndex;      // index into the light SSBO, or NO_LIGHT_INDEX if this entity is not a light
     mat4 transform;
 } RenderEntity;
 
@@ -260,6 +269,53 @@ typedef struct MaterialBuffer
     uint32_t        count;      // current entity count
 } MaterialBuffer;
 
+// ---------------------------------------------------------------------------
+// Lighting
+//
+// Punctual light sources following the glTF KHR_lights_punctual model, mirroring
+// the engine's glTF-based MaterialData convention. A light is an entity
+// component: its world-space position and direction are NOT stored here, they
+// are derived in the fragment shader from the driving entity's live transform
+// (transforms[transformIndex]) so GPU animation (orbit/spin) applies for free.
+// Only photometric parameters and the transform link live in this struct.
+//
+// LightData is laid out as 3 x vec4 (48 bytes) for std430. The leading vec3 +
+// float pack into one 16-byte row (standard std430 vec3+scalar packing); the C
+// layout below matches byte-for-byte.
+// ---------------------------------------------------------------------------
+typedef enum LightType
+{
+    LIGHT_TYPE_DIRECTIONAL = 0, // infinitely distant, uses direction only
+    LIGHT_TYPE_POINT       = 1, // omnidirectional, uses position + range
+    LIGHT_TYPE_SPOT        = 2, // cone, uses position + direction + range + cones
+} LightType;
+
+typedef struct LightData
+{
+    // row 0
+    float       color[3];       // linear RGB, normalized (intensity carries magnitude)
+    float       intensity;      // brightness multiplier (candela-like for point/spot, lux-like for directional)
+    // row 1
+    float       range;          // attenuation cutoff distance; <= 0 means unbounded (ignored for directional)
+    float       innerConeCos;   // cosine of spot inner cone half-angle (full intensity within)
+    float       outerConeCos;   // cosine of spot outer cone half-angle (zero intensity beyond)
+    uint32_t    type;           // LightType
+    // row 2
+    uint32_t    transformIndex; // entity/transform index that drives world position + direction
+    uint32_t    enabled;        // 0 = ignored, 1 = active
+    uint32_t    pad0;
+    uint32_t    pad1;
+} LightData; // 48 bytes
+
+typedef struct LightBuffer
+{
+    VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
+    LightData*      mapped[MAX_FRAMES_IN_FLIGHT];  // persistently mapped
+    uint32_t        capacity;   // max lights
+    uint32_t        count;      // current light count
+} LightBuffer;
+
 typedef struct BindlessTextureArray
 {
     VkDescriptorPool        pool;
@@ -420,6 +476,7 @@ typedef struct RendererState
     TransformBuffer         initialTransformBuffer;
     AngularVelocityBuffer   angularVelocityBuffer;
     MaterialBuffer          materialBuffer;
+    LightBuffer             lightBuffer;
     IndirectDrawBuffer      indirectBuffer;
     BindlessTextureArray    bindlessTextures;
     

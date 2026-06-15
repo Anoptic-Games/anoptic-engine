@@ -143,6 +143,12 @@ void main() {
     }
 
     EntityInfo entity = entities[idx];
+
+    // Transform-only entities (e.g. pure lights) carry no geometry; skip them.
+    if (entity.meshIndex == 0xFFFFFFFFu) {
+        return;
+    }
+
     mat4 model = transforms[idx];
     vec4 bounds = meshBounds[entity.meshIndex];
     MeshData mData = meshDrawData[entity.meshIndex];

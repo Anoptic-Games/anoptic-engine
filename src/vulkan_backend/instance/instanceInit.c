@@ -1273,7 +1273,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 18; // SSBO/frame: 6 global + 6 cull + 3 update (sync w/ set layouts)
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 19; // SSBO/frame: 8 global (bindings 1-8) + 8 cull (bindings 1-8) + 3 update (sync w/ set layouts)
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1437,8 +1437,13 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		compactedEntityIndicesInfo.offset = 0;
 		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
 
-		VkWriteDescriptorSet descriptorWrites[8] = {};
-		
+		VkDescriptorBufferInfo lightInfo = {};
+		lightInfo.buffer = rendererState.lightBuffer.buffer[i];
+		lightInfo.offset = 0;
+		lightInfo.range = sizeof(LightData) * rendererState.lightBuffer.capacity;
+
+		VkWriteDescriptorSet descriptorWrites[9] = {};
+
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
 		descriptorWrites[0].dstBinding = 0;   // Corresponds to binding in shader.
@@ -1508,7 +1513,15 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[7].descriptorCount = 1;
 		descriptorWrites[7].pBufferInfo = &compactedEntityIndicesInfo;
 
-		vkUpdateDescriptorSets(ctx->device, 8, descriptorWrites, 0, NULL);
+		descriptorWrites[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[8].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[8].dstBinding = 8;
+		descriptorWrites[8].dstArrayElement = 0;
+		descriptorWrites[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[8].descriptorCount = 1;
+		descriptorWrites[8].pBufferInfo = &lightInfo;
+
+		vkUpdateDescriptorSets(ctx->device, 9, descriptorWrites, 0, NULL);
 
         // Update cull sets
         VkDescriptorBufferInfo cullUboInfo = {};
@@ -1881,6 +1894,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.angularVelocityBuffer.buffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
+		if(rendererState.lightBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.lightBuffer.buffer[i], NULL);
 		if(rendererState.indirectBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.indirectBuffer.buffer[i], NULL);
 		if(rendererState.culling.entityBuffer[i])
