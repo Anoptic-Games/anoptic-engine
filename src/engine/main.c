@@ -166,7 +166,10 @@ int main()
 #else
 	// Headless engine: no renderer. Console / server entry point.
 	printf("Anoptic Engine — headless console mode.\n");
-    // while (true) {};
+    while (true) {
+        printf("Waiting...\n");
+        ano_sleep(3 * 1000000);
+    };
 	// TODO: simulation / server loop goes here.
 #endif
 
