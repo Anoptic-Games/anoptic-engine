@@ -17,6 +17,7 @@ typedef enum PipelineType
     PIPELINE_PARTICLE,          // Point-sprite / billboard particles
     PIPELINE_SDF_COMPOSITE,     // SDF raymarching compositing pass (future)
     PIPELINE_UI,                // UI overlay (future)
+    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type

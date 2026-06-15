@@ -76,7 +76,45 @@ layout(location = 0) out vec4 outColor;
 void main() {
     MaterialData mat = materialBuf.materials[inMaterialIndex];
     vec4 texColor = texture(textures[nonuniformEXT(mat.baseColorTexture)], fragTexCoord);
+    vec4 baseColor = texColor * mat.baseColorFactor;
     
-    // We apply base color if we have a tint, or just default to texColor
-    outColor = texColor * mat.baseColorFactor;
+    // Resolve transmission factor
+    float transmission = mat.transmissionFactor;
+    if (mat.transmissionTexture != 0) {
+        transmission *= texture(textures[nonuniformEXT(mat.transmissionTexture)], fragTexCoord).r;
+    }
+    
+    // Resolve thickness
+    float thickness = mat.thicknessFactor;
+    if (mat.thicknessTexture != 0) {
+        thickness *= texture(textures[nonuniformEXT(mat.thicknessTexture)], fragTexCoord).g; // GLTF thickness is in G channel
+    }
+    
+    // Beer-Lambert law for volume absorption
+    vec3 transmissionTint = vec3(1.0);
+    if (thickness > 0.0 && mat.attenuationDistance > 0.0) {
+        vec3 k = -log(mat.attenuationColor.rgb + vec3(1e-5)) / max(mat.attenuationDistance, 0.0001);
+        transmissionTint = exp(-k * thickness);
+    }
+    
+    // Flat / Face normal calculation
+    vec3 normal = normalize(cross(dFdx(fragWorldPos), dFdy(fragWorldPos)));
+    if (!gl_FrontFacing) {
+        normal = -normal;
+    }
+    
+    // Single neutral global directional light
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    vec3 lightColor = vec3(1.0); // neutral white light
+    vec3 ambient = vec3(0.2);
+    vec3 lighting = ambient + lightColor * diffuse * 0.8;
+    
+    vec3 transmissiveColor = baseColor.rgb * transmissionTint;
+    vec3 opaqueColor = baseColor.rgb * lighting;
+    vec3 finalColor = mix(opaqueColor, transmissiveColor, transmission);
+    
+    // Glass usually has some transparency
+    float alpha = mix(baseColor.a, 0.3, transmission);
+    outColor = vec4(finalColor, alpha);
 }

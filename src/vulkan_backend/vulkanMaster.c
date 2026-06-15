@@ -129,6 +129,16 @@ static const RenderPassDef g_framePasses[] = {
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
+    // 3. Transmissive geometry
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_TRANSMISSION,
+        .implementationIndex    = 1,  // blended transmission variant
+        .colorAttachmentCount   = 1,
+        .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
+    },
 };
 
 void recordCommandBuffer(uint32_t imageIndex) 
@@ -1112,13 +1122,32 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	rotateMatrix(identity, 'X', 3.14159f / 2.0f);
 	instantiate_model(vikingRoomAsset, identity);
 
+	uint32_t vikingRoomEntityCount = rendererState.entityCount;
+
+	ModelAsset* candleHolderAsset = parseGltf(&ctx, "GlassHurricaneCandleHolder.gltf");
+	if(!candleHolderAsset)
+	{
+		printf("Failed to parse GlassHurricaneCandleHolder glTF file!\n");
+		unInitVulkan();
+		return false;
+	}
+	
+	mat4 candleTransform = {
+		{1, 0, 0, 0},
+		{0, 1, 0, 0},
+		{0, 0, 1, 0},
+		{0, 0, 0, 1}
+	};
+	candleTransform[3][0] = 2.0f; // Orbit radius of 5 units on X
+	instantiate_model(candleHolderAsset, candleTransform);
+
 	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
 		float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
 		for (int i = 0; i < rendererState.entityCount; i++) {
 			rendererState.angularVelocityBuffer.mapped[frame][i].v[0] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = 1.0f;
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = i >= vikingRoomEntityCount ? 0.5f : 1.0f; // slightly slower orbit for candle holder
 			rendererState.angularVelocityBuffer.mapped[frame][i].v[2] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = 0.0f;
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = i >= vikingRoomEntityCount ? 1.0f : 0.0f; // Orbit flag
 			
 			memcpy(&rendererState.transformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
 			memcpy(&rendererState.initialTransformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
