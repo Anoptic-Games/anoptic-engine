@@ -398,9 +398,12 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     
     // Calculate viewProj matrix
     multiplyMat4(ubo->viewProj, globalUbo->proj, globalUbo->view);
-    
+
     // Extract frustum planes
     extractFrustumPlanes(ubo->frustumPlanes, ubo->viewProj);
+
+    // Publish the active light count to the fragment stage.
+    globalUbo->lightCount = state->lightBuffer.count;
 
     ubo->entityCount = entityCount;
     ubo->maxEntities = state->culling.maxEntities;
@@ -623,6 +626,64 @@ bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
         state->materialBuffer.mapped[i] = (MaterialData*)state->materialBuffer.allocs[i].mapped;
     }
     return true;
+}
+
+bool createLightBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxLights) {
+    state->lightBuffer.capacity = maxLights;
+    state->lightBuffer.count = 0;
+
+    VkDeviceSize bufferSize = sizeof(LightData) * maxLights;
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->lightBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create light buffer!\n");
+        }
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(ctx->device, state->lightBuffer.buffer[i], &memRequirements);
+
+        state->lightBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->lightBuffer.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->lightBuffer.buffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, state->lightBuffer.buffer[i], state->lightBuffer.allocs[i].memory, state->lightBuffer.allocs[i].offset);
+
+        state->lightBuffer.mapped[i] = (LightData*)state->lightBuffer.allocs[i].mapped;
+    }
+    return true;
+}
+
+// Appends a transform-only light entity (no geometry) to the scene and registers
+// its LightData in the light buffer. `light` supplies the photometric parameters;
+// this fills in transformIndex (the new entity) and marks it enabled, then writes
+// the entry into every frame's light buffer. Must be called before the per-frame
+// transform upload loop so the light's transform reaches the transform buffers.
+// Returns the new entity index.
+static uint32_t addLightEntity(LightData light, mat4 transform) {
+    uint32_t entIdx = rendererState.entityCount;
+    rendererState.entityCount += 1;
+    rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
+
+    uint32_t lightIdx = rendererState.lightBuffer.count++;
+
+    rendererState.entities[entIdx].meshIndex = NO_MESH_INDEX;   // skipped by culling -> draws nothing
+    rendererState.entities[entIdx].materialIndex = 0;
+    rendererState.entities[entIdx].lightIndex = lightIdx;
+    memcpy(&rendererState.entities[entIdx].transform, transform, sizeof(mat4));
+
+    light.transformIndex = entIdx;
+    light.enabled = 1;
+    for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+        rendererState.lightBuffer.mapped[frame][lightIdx] = light;
+    }
+    return entIdx;
 }
 
 bool createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
@@ -1097,6 +1158,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities) ||
 	    !createAngularVelocityBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createMaterialBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createLightBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createCullingBuffers(&ctx, &rendererState, maxEntities))
 	{
@@ -1141,18 +1203,102 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	candleTransform[3][0] = 2.0f; // Orbit radius of 5 units on X
 	instantiate_model(candleHolderAsset, candleTransform);
 
+	// -------------------------------------------------------------
+	// Scene lights (generalized light format, replacing the values
+	// formerly hard-coded in the fragment shaders). Each light is a
+	// transform-only entity: it carries no geometry (culling skips it)
+	// and its world position/direction are derived from its transform,
+	// so it participates in the GPU transform/animation system.
+	//
+	// Convention: a light's "forward" is the entity local -Z axis, i.e.
+	// -transform[2] (column 2). For directional/spot lights set column 2
+	// to the negated travel direction; translation lives in column 3.
+	// -------------------------------------------------------------
+	uint32_t firstLightEntity = rendererState.entityCount;
+
+	// Directional key light (warm white), shining from up/front (0.5,1,0.3).
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[2][0] = 0.4319f; xform[2][1] = 0.8638f; xform[2][2] = 0.2591f; // normalized (0.5,1,0.3)
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 0.96f; l.color[2] = 0.9f;
+		l.intensity = 2.5f;
+		l.range = 0.0f; // directional: unbounded
+		l.type = LIGHT_TYPE_DIRECTIONAL;
+		addLightEntity(l, xform);
+	}
+
+	// Warm point light (orbits the origin to exercise the animation path).
+	uint32_t warmLightEntity;
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 0.0f; xform[3][1] = 1.5f; xform[3][2] = 1.2f;
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 0.95f; l.color[2] = 0.8f;
+		l.intensity = 5.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		warmLightEntity = addLightEntity(l, xform);
+	}
+
+	// Cool blue fill from the opposite side.
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = -2.0f; xform[3][1] = 2.0f; xform[3][2] = -1.0f;
+		LightData l = {0};
+		l.color[0] = 0.4f; l.color[1] = 0.6f; l.color[2] = 1.0f;
+		l.intensity = 4.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		addLightEntity(l, xform);
+	}
+
+	// Red rim/accent light.
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 2.0f; xform[3][1] = 0.5f; xform[3][2] = 0.0f;
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 0.3f; l.color[2] = 0.3f;
+		l.intensity = 3.5f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		addLightEntity(l, xform);
+	}
+
+	// Greenish/cyan fill from below.
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 0.0f; xform[3][1] = -1.0f; xform[3][2] = 1.0f;
+		LightData l = {0};
+		l.color[0] = 0.3f; l.color[1] = 1.0f; l.color[2] = 0.8f;
+		l.intensity = 2.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		addLightEntity(l, xform);
+	}
+
+	// Overhead spotlight aimed straight down (demonstrates the spot type).
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 0.0f; xform[3][1] = 4.0f; xform[3][2] = 0.0f;
+		// forward = -column2 = (0,-1,0): aim down. column2 stays identity (0,0,1)? No:
+		xform[2][0] = 0.0f; xform[2][1] = 1.0f; xform[2][2] = 0.0f; // -column2 = (0,-1,0)
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 1.0f; l.color[2] = 1.0f;
+		l.intensity = 20.0f; l.range = 12.0f; l.type = LIGHT_TYPE_SPOT;
+		l.innerConeCos = 0.966f; // ~15 degrees
+		l.outerConeCos = 0.906f; // ~25 degrees
+		addLightEntity(l, xform);
+	}
+
 	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
 		float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
 		for (int i = 0; i < rendererState.entityCount; i++) {
+			bool isLight  = (uint32_t)i >= firstLightEntity;
+			bool isCandle = !isLight && (uint32_t)i >= vikingRoomEntityCount;
+			bool orbit    = isCandle || (uint32_t)i == warmLightEntity;
+
 			rendererState.angularVelocityBuffer.mapped[frame][i].v[0] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = i >= vikingRoomEntityCount ? 0.5f : 1.0f; // slightly slower orbit for candle holder
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = orbit ? 0.5f : (isLight ? 0.0f : 1.0f);
 			rendererState.angularVelocityBuffer.mapped[frame][i].v[2] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = i >= vikingRoomEntityCount ? 1.0f : 0.0f; // Orbit flag
-			
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = orbit ? 1.0f : 0.0f; // orbit flag
+
 			memcpy(&rendererState.transformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
 			memcpy(&rendererState.initialTransformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
-			
-			if (i < 3) {
+
+			if (!isLight && i < 3) {
 			    rendererState.transformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
 			    rendererState.initialTransformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
 			}

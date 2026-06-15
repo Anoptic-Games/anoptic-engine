@@ -666,6 +666,7 @@ static void instantiate_node(ModelAsset* asset, uint32_t nodeIndex, mat4 parentT
             
             rendererState.entities[entIdx].meshIndex = prim->geometryPoolIndex;
             rendererState.entities[entIdx].materialIndex = prim->materialIndex;
+            rendererState.entities[entIdx].lightIndex = NO_LIGHT_INDEX; // mesh entities carry no light by default
             
             float* destMat = (float*)&rendererState.entities[entIdx].transform;
             float* srcMat = (float*)&worldTransform;

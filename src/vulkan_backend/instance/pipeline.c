@@ -88,7 +88,9 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	ssboLayoutBinding.binding = 1;
 	ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	ssboLayoutBinding.descriptorCount = 1;
-	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	// Also visible to the fragment stage: lights derive world position/direction
+	// from their driving entity's transform (transforms[transformIndex]).
+	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT;
 	ssboLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding materialLayoutBinding = {};
@@ -133,20 +135,28 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	compactedEntityIndicesLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
 	compactedEntityIndicesLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[8] = {
-		uboLayoutBinding, 
-		ssboLayoutBinding, 
-		materialLayoutBinding, 
+	VkDescriptorSetLayoutBinding lightLayoutBinding = {};
+	lightLayoutBinding.binding = 8;
+	lightLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lightLayoutBinding.descriptorCount = 1;
+	lightLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	lightLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[9] = {
+		uboLayoutBinding,
+		ssboLayoutBinding,
+		materialLayoutBinding,
 		entityLayoutBinding,
 		vertexBufferLayoutBinding,
 		indexBufferLayoutBinding,
 		meshDataLayoutBinding,
-		compactedEntityIndicesLayoutBinding
+		compactedEntityIndicesLayoutBinding,
+		lightLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 8;
+	layoutInfo.bindingCount = 9;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)

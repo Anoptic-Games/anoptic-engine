@@ -65,12 +65,59 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     float time;
     float deltaTime;
     uint frameCount;
-    uint padding;
+    uint lightCount;
 } global;
 
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
 } materialBuf;
+
+// ---------------------------------------------------------------------------
+// Punctual lights (KHR_lights_punctual style). A light's world position and
+// direction are NOT stored in LightData; they are derived from its driving
+// entity's live transform (transforms[transformIndex]) so GPU animation applies.
+// ---------------------------------------------------------------------------
+const uint LIGHT_TYPE_DIRECTIONAL = 0u;
+const uint LIGHT_TYPE_POINT       = 1u;
+const uint LIGHT_TYPE_SPOT        = 2u;
+
+struct LightData {
+    vec3  color;
+    float intensity;
+    float range;
+    float innerConeCos;
+    float outerConeCos;
+    uint  type;
+    uint  transformIndex;
+    uint  enabled;
+    uint  pad0;
+    uint  pad1;
+};
+
+layout(set = 0, binding = 1) readonly buffer TransformSSBO {
+    mat4 transforms[];
+} transformBuf;
+
+layout(set = 0, binding = 8) readonly buffer LightSSBO {
+    LightData lights[];
+} lightBuf;
+
+// glTF range-based attenuation: inverse-square with a smooth window cutoff.
+// range <= 0 means unbounded (pure inverse-square).
+float getRangeAttenuation(float range, float dist) {
+    float invSqr = 1.0 / max(dist * dist, 0.0001);
+    if (range <= 0.0) {
+        return invSqr;
+    }
+    float f = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+    return f * f * invSqr;
+}
+
+// Spot cone falloff. spotForward is the light's aim; L points surface->light.
+float getSpotAttenuation(vec3 spotForward, vec3 L, float innerConeCos, float outerConeCos) {
+    float cosAngle = dot(spotForward, -L);
+    return smoothstep(outerConeCos, innerConeCos, cosAngle);
+}
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
@@ -168,20 +215,43 @@ void main() {
     vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion * (1.0 - transmission);
     vec3 transmissive = baseColor.rgb * transmissionTint * transmission;
     
-    // Directional light contribution
-    vec3 L_dir = normalize(vec3(0.5, 1.0, 0.3));
-    vec3 direct_dir = calculatePBRDirect(baseColor.rgb, metallic, roughness, normal, V, L_dir, transmission) * vec3(0.4);
-    
-    // Point light contribution
-    vec3 lightPos = vec3(0.0, 1.5, 1.2);
-    vec3 L_point = lightPos - fragWorldPos;
-    float dist = length(L_point);
-    L_point = normalize(L_point);
-    float attenuation = 1.0 / (dist * dist + 0.1);
-    vec3 pointLightColor = vec3(1.0, 0.95, 0.8) * 2.0;
-    vec3 direct_point = calculatePBRDirect(baseColor.rgb, metallic, roughness, normal, V, L_point, transmission) * pointLightColor * attenuation;
-    
-    vec3 finalColor = ambient + transmissive + direct_dir + direct_point;
+    // Accumulate every active light from the scene light buffer.
+    vec3 accumulatedDirect = vec3(0.0);
+    for (uint i = 0u; i < global.lightCount; i++) {
+        LightData light = lightBuf.lights[i];
+        if (light.enabled == 0u) {
+            continue;
+        }
+
+        // Derive world placement from the light's driving entity transform.
+        mat4 lightXform = transformBuf.transforms[light.transformIndex];
+        vec3 lightPos = lightXform[3].xyz;
+        vec3 lightForward = normalize(-lightXform[2].xyz); // entity local -Z is forward
+
+        vec3 L;
+        float attenuation;
+        if (light.type == LIGHT_TYPE_DIRECTIONAL) {
+            L = -lightForward;        // surface -> light (opposite the travel direction)
+            attenuation = 1.0;
+        } else {
+            vec3 toLight = lightPos - fragWorldPos;
+            float dist = length(toLight);
+            L = toLight / max(dist, 0.0001);
+            attenuation = getRangeAttenuation(light.range, dist);
+            if (light.type == LIGHT_TYPE_SPOT) {
+                attenuation *= getSpotAttenuation(lightForward, L, light.innerConeCos, light.outerConeCos);
+            }
+        }
+
+        if (attenuation <= 0.0) {
+            continue;
+        }
+
+        vec3 radiance = light.color * light.intensity * attenuation;
+        accumulatedDirect += calculatePBRDirect(baseColor.rgb, metallic, roughness, normal, V, L, transmission) * radiance;
+    }
+
+    vec3 finalColor = ambient + transmissive + accumulatedDirect;
     
     // Glass usually has some transparency
     float alpha = mix(baseColor.a, 0.3, transmission);

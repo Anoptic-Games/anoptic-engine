@@ -51,7 +51,7 @@ typedef struct GlobalUBO
 	float time;
 	float deltaTime;
 	uint32_t frameCount;
-	uint32_t padding;
+	uint32_t lightCount;   // number of active lights in the light SSBO (set 0, binding 8)
 } GlobalUBO;
 
 
