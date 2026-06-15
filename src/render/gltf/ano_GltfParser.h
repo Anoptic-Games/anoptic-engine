@@ -60,4 +60,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName);
 // For now, it just appends the RenderEntities directly to the RendererState.
 void instantiate_model(ModelAsset* asset, mat4 rootTransform);
 
+// Forward declaration of cgltf_material to avoid header inclusion issues
+struct cgltf_material;
+
+// Identifies all the PBR properties and extensions used by a glTF material
+PbrFeatureFlags ano_gltf_identify_material_features(const struct cgltf_material* material);
+
 #endif

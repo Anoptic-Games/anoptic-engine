@@ -28,7 +28,7 @@ VkExtent2D chooseSwapExtent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* w
 
 // Variables
 
-static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
+static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_EXT_MESH_SHADER_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
 
 // Vulkan component initialization functions
 
@@ -403,8 +403,12 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 	bool extensionsSupported = checkDeviceExtensionSupport(device);
 	bool queueRequirements = indices.graphicsPresent;
 
+	VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
+	meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeature = {};
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+	dynamicRenderingFeature.pNext = &meshShaderFeatures;
 
 	VkPhysicalDeviceVulkan12Features features12 = {};
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -418,7 +422,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 
 	bool physicalRequirements = features2.features.geometryShader && features2.features.shaderFloat64 && features2.features.shaderInt64 && features2.features.samplerAnisotropy;
 	
-	// Check specifically required Vulkan 1.2 and dynamic rendering features
+	// Check specifically required Vulkan 1.2, dynamic rendering, and mesh shader features
 	bool requiredFeatures12 = features12.descriptorIndexing &&
 	                          features12.shaderSampledImageArrayNonUniformIndexing &&
 	                          features12.runtimeDescriptorArray &&
@@ -427,9 +431,10 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 	                          features12.descriptorBindingSampledImageUpdateAfterBind;
 	bool requiredDynamicRendering = dynamicRenderingFeature.dynamicRendering;
 	bool requiredMultiDraw = features2.features.multiDrawIndirect;
+	bool requiredMeshShader = meshShaderFeatures.meshShader;
 
-	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
-		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.\n");
+	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw || !requiredMeshShader) {
+		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, multiDrawIndirect, or meshShader features.\n");
 		return false;
 	}
 
@@ -560,11 +565,15 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 	return true;
 }
 
-VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices) // Creates a logical device that can actually do stuff.
-{ // Central init component, may need re-visiting for queue selection
+VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices)
+{
 	// Query supported features via vkGetPhysicalDeviceFeatures2
+	VkPhysicalDeviceMeshShaderFeaturesEXT queryMeshShaderFeatures = {};
+	queryMeshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+
 	VkPhysicalDeviceDynamicRenderingFeaturesKHR queryDynamicRendering = {};
 	queryDynamicRendering.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+	queryDynamicRendering.pNext = &queryMeshShaderFeatures;
 
 	VkPhysicalDeviceVulkan11Features queryFeatures11 = {};
 	queryFeatures11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -630,6 +639,14 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
 	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
 
+	VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
+	meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+	meshShaderFeatures.taskShader = queryMeshShaderFeatures.taskShader;
+	meshShaderFeatures.meshShader = queryMeshShaderFeatures.meshShader;
+	meshShaderFeatures.multiviewMeshShader = VK_FALSE;
+	meshShaderFeatures.primitiveFragmentShadingRateMeshShader = VK_FALSE;
+	meshShaderFeatures.meshShaderQueries = queryMeshShaderFeatures.meshShaderQueries;
+
 	VkPhysicalDeviceVulkan11Features features11 = {};
 	features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
 	features11.shaderDrawParameters = queryFeatures11.shaderDrawParameters; // flat.vert uses gl_DrawID -> SPIR-V DrawParameters cap
@@ -638,7 +655,8 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
 	dynamicRenderingFeature.dynamicRendering = queryDynamicRendering.dynamicRendering;
 
-	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering (preserved) -> NULL
+	dynamicRenderingFeature.pNext = &meshShaderFeatures;
+	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering -> mesh shader -> NULL
 	features12.pNext = &features11;
 
 	VkDeviceCreateInfo createInfo = {};
@@ -649,7 +667,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
 	createInfo.enabledExtensionCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
-	printf("Required extensions: %s, %s\n", requiredExtensions[0], requiredExtensions[1]);
+	printf("Required extensions: %s, %s, %s\n", requiredExtensions[0], requiredExtensions[1], requiredExtensions[2]);
 	createInfo.ppEnabledExtensionNames = requiredExtensions;
 
 	if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
@@ -1115,9 +1133,16 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 
 	float eye[] = {0.0f, 0.9f, 3.5f};  // Move camera up and back
 	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
-	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped // TODO: Maybe unflip the world
+	float up[] = {0.0f, 1.0f, 0.0f};  // World is unflipped
 
 	lookAt(state->uboData.view, eye, center, up);
+
+	// Publish the camera world position so the fragment stage doesn't have to
+	// recover it via a per-fragment inverse(view).
+	state->uboData.cameraPos[0] = eye[0];
+	state->uboData.cameraPos[1] = eye[1];
+	state->uboData.cameraPos[2] = eye[2];
+	state->uboData.cameraPos[3] = 1.0f;
 
 	float fov = 45.0f; // Field of View in degrees
 	float aspect = (float)state->imageExtent.width / (float)state->imageExtent.height;
@@ -1255,13 +1280,13 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 12; // SSBO/frame: 3 global + 6 cull + 3 update (sync w/ set layouts)
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 19; // SSBO/frame: 8 global (bindings 1-8) + 8 cull (bindings 1-8) + 3 update (sync w/ set layouts)
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 2;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 4; // safe margin
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1398,8 +1423,34 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		materialInfo.offset = 0;
 		materialInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
 
-		VkWriteDescriptorSet descriptorWrites[4] = {};
-		
+		VkDescriptorBufferInfo vertexBufferInfo = {};
+		vertexBufferInfo.buffer = rendererState.globalGeometryPool.vertexBuffer;
+		vertexBufferInfo.offset = 0;
+		vertexBufferInfo.range = rendererState.globalGeometryPool.vertexCapacity;
+
+		VkDescriptorBufferInfo indexBufferInfo = {};
+		indexBufferInfo.buffer = rendererState.globalGeometryPool.indexBuffer;
+		indexBufferInfo.offset = 0;
+		indexBufferInfo.range = rendererState.globalGeometryPool.indexCapacity;
+
+		uint32_t maxMeshes = 1024;
+		VkDescriptorBufferInfo globalMeshInfo = {};
+		globalMeshInfo.buffer = rendererState.culling.meshDataBuffer[i];
+		globalMeshInfo.offset = 0;
+		globalMeshInfo.range = sizeof(uint32_t) * 4 * maxMeshes;
+
+		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
+		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
+		compactedEntityIndicesInfo.offset = 0;
+		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+
+		VkDescriptorBufferInfo lightInfo = {};
+		lightInfo.buffer = rendererState.lightBuffer.buffer[i];
+		lightInfo.offset = 0;
+		lightInfo.range = sizeof(LightData) * rendererState.lightBuffer.capacity;
+
+		VkWriteDescriptorSet descriptorWrites[9] = {};
+
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
 		descriptorWrites[0].dstBinding = 0;   // Corresponds to binding in shader.
@@ -1437,10 +1488,49 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[3].descriptorCount = 1;
 		descriptorWrites[3].pBufferInfo = &entityInfo;
 
-		vkUpdateDescriptorSets(ctx->device, 4, descriptorWrites, 0, NULL);
+		descriptorWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[4].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[4].dstBinding = 4;
+		descriptorWrites[4].dstArrayElement = 0;
+		descriptorWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[4].descriptorCount = 1;
+		descriptorWrites[4].pBufferInfo = &vertexBufferInfo;
+
+		descriptorWrites[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[5].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[5].dstBinding = 5;
+		descriptorWrites[5].dstArrayElement = 0;
+		descriptorWrites[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[5].descriptorCount = 1;
+		descriptorWrites[5].pBufferInfo = &indexBufferInfo;
+
+		descriptorWrites[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[6].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[6].dstBinding = 6;
+		descriptorWrites[6].dstArrayElement = 0;
+		descriptorWrites[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[6].descriptorCount = 1;
+		descriptorWrites[6].pBufferInfo = &globalMeshInfo;
+
+		descriptorWrites[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[7].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[7].dstBinding = 7;
+		descriptorWrites[7].dstArrayElement = 0;
+		descriptorWrites[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[7].descriptorCount = 1;
+		descriptorWrites[7].pBufferInfo = &compactedEntityIndicesInfo;
+
+		descriptorWrites[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[8].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[8].dstBinding = 8;
+		descriptorWrites[8].dstArrayElement = 0;
+		descriptorWrites[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[8].descriptorCount = 1;
+		descriptorWrites[8].pBufferInfo = &lightInfo;
+
+		vkUpdateDescriptorSets(ctx->device, 9, descriptorWrites, 0, NULL);
 
         // Update cull sets
-        uint32_t maxMeshes = 1024;
         VkDescriptorBufferInfo cullUboInfo = {};
         cullUboInfo.buffer = rendererState.culling.ubo.buffer[i];
         cullUboInfo.offset = 0;
@@ -1449,7 +1539,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo meshDataInfo = {};
         meshDataInfo.buffer = rendererState.culling.meshDataBuffer[i];
         meshDataInfo.offset = 0;
-        meshDataInfo.range = sizeof(uint32_t) * 4 * maxMeshes;
+        meshDataInfo.range = sizeof(uint32_t) * 8 * maxMeshes;
 
         VkDescriptorBufferInfo meshBoundsInfo = {};
         meshBoundsInfo.buffer = rendererState.culling.meshBoundsBuffer[i];
@@ -1459,15 +1549,25 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawIndexedIndirectCommand) * rendererState.indirectBuffer.capacity;
+        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT;
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
-        countInfo.range = sizeof(uint32_t);
+        countInfo.range = sizeof(uint32_t) * PIPELINE_TYPE_COUNT;
 
-        VkWriteDescriptorSet cullWrites[7] = {};
-        for(int j=0; j<7; ++j) {
+        VkDescriptorBufferInfo compactedEntityIndicesCullInfo = {};
+        compactedEntityIndicesCullInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
+        compactedEntityIndicesCullInfo.offset = 0;
+        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+
+        VkDescriptorBufferInfo materialCullInfo = {};
+        materialCullInfo.buffer = rendererState.materialBuffer.buffer[i];
+        materialCullInfo.offset = 0;
+        materialCullInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
+
+        VkWriteDescriptorSet cullWrites[9] = {};
+        for(int j=0; j<9; ++j) {
             cullWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             cullWrites[j].dstSet = rendererState.frames[i].cullSet;
             cullWrites[j].dstBinding = j;
@@ -1484,8 +1584,10 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullWrites[4].pBufferInfo = &meshBoundsInfo;
         cullWrites[5].pBufferInfo = &indirectInfo;
         cullWrites[6].pBufferInfo = &countInfo;
+        cullWrites[7].pBufferInfo = &compactedEntityIndicesCullInfo;
+        cullWrites[8].pBufferInfo = &materialCullInfo;
 
-        vkUpdateDescriptorSets(ctx->device, 7, cullWrites, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 9, cullWrites, 0, NULL);
 
         // Update Compute Descriptor Sets
         VkDescriptorBufferInfo angularVelInfo = {};
@@ -1799,6 +1901,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.angularVelocityBuffer.buffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
+		if(rendererState.lightBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.lightBuffer.buffer[i], NULL);
 		if(rendererState.indirectBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.indirectBuffer.buffer[i], NULL);
 		if(rendererState.culling.entityBuffer[i])
@@ -1809,6 +1913,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.culling.meshBoundsBuffer[i], NULL);
 		if(rendererState.culling.drawCountBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.drawCountBuffer[i], NULL);
+		if(rendererState.culling.compactedEntityIndicesBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.compactedEntityIndicesBuffer[i], NULL);
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
 	}

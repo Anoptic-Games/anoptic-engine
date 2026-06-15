@@ -27,6 +27,14 @@
 #define FALLBACK_MESH_INDEX 0
 #define FALLBACK_TEXTURE_INDEX 0
 
+// Sentinel values for optional entity components.
+// NO_MESH_INDEX marks a transform-only entity (e.g. a pure light) that the
+// culling pass must skip so it draws no geometry. NO_LIGHT_INDEX marks an
+// entity that carries no light. Both match the 0xFFFFFFFF "absent" convention
+// already used for optional bindless textures in MaterialData.
+#define NO_MESH_INDEX  0xFFFFFFFFu
+#define NO_LIGHT_INDEX 0xFFFFFFFFu
+
 // Structs
 
 // New structs for streamlined state resource management
@@ -63,8 +71,9 @@ typedef struct QueueFamilyIndices // Stores whether different queue families exi
 
 typedef struct RenderEntity
 { // To be extended with animation data
-    uint32_t meshIndex;
+    uint32_t meshIndex;       // index into geometry pool, or NO_MESH_INDEX for transform-only entities
     uint32_t materialIndex;   // index into MaterialSSBO
+    uint32_t lightIndex;      // index into the light SSBO, or NO_LIGHT_INDEX if this entity is not a light
     mat4 transform;
 } RenderEntity;
 
@@ -157,11 +166,98 @@ typedef struct AngularVelocityBuffer
 
 typedef struct MaterialData
 {
-    uint32_t    albedoIndex;        // index into bindless texture array
-    uint32_t    normalIndex;        // 0 = no normal map
-    float       roughness;          // non-PBR: controls stylized specular falloff
-    float       emissive;           // emissive intensity multiplier
-    float       color[4];           // tint color (RGBA)
+    // Feature flags identifying which features are active in this material
+    uint32_t    features;           // PbrFeatureFlags bitmask
+    uint32_t    baseColorTexture;   // Index in bindless array (0 = fallback)
+    uint32_t    pad0[2];            // Align baseColorFactor to 16 bytes
+
+    // 1. pbrMetallicRoughness
+    float       baseColorFactor[4];
+    uint32_t    metallicRoughnessTexture;
+    float       metallicFactor;
+    float       roughnessFactor;
+
+    // 2. Core Material Properties
+    uint32_t    normalTexture;
+    float       normalScale;
+    uint32_t    occlusionTexture;
+    float       occlusionStrength;
+    uint32_t    emissiveTexture;
+    
+    // 3. Emissive Factor (aligned to 16 bytes since offset is 64)
+    float       emissiveFactor[4];  // RGB + 1 padding element
+    uint32_t    alphaMode;          // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+    float       alphaCutoff;
+    uint32_t    doubleSided;        // 0 = false, 1 = true
+
+    // 4. KHR_materials_clearcoat
+    uint32_t    clearcoatTexture;
+    uint32_t    clearcoatRoughnessTexture;
+    uint32_t    clearcoatNormalTexture;
+    float       clearcoatFactor;
+    float       clearcoatRoughnessFactor;
+
+    // 5. KHR_materials_transmission
+    uint32_t    transmissionTexture;
+    float       transmissionFactor;
+
+    // 6. KHR_materials_volume
+    uint32_t    thicknessTexture;
+    float       thicknessFactor;
+    float       attenuationDistance;
+    uint32_t    pad1[3];            // Align attenuationColor to 16 bytes
+
+    float       attenuationColor[4]; // RGB + 1 padding element
+
+    // 7. KHR_materials_ior
+    float       ior;
+
+    // 8. KHR_materials_specular
+    uint32_t    specularTexture;
+    uint32_t    specularColorTexture;
+    float       specularFactor;
+
+    float       specularColorFactor[4]; // RGB + 1 padding element
+
+    // 9. KHR_materials_sheen
+    uint32_t    sheenColorTexture;
+    uint32_t    sheenRoughnessTexture;
+    uint32_t    pad2[2];            // Align sheenColorFactor to 16 bytes
+
+    float       sheenColorFactor[4]; // RGB + 1 padding element
+    float       sheenRoughnessFactor;
+
+    // 10. KHR_materials_iridescence
+    uint32_t    iridescenceTexture;
+    uint32_t    iridescenceThicknessTexture;
+    float       iridescenceFactor;
+    float       iridescenceIor;
+    float       iridescenceThicknessMinimum;
+    float       iridescenceThicknessMaximum;
+
+    // 11. KHR_materials_anisotropy
+    uint32_t    anisotropyTexture;
+    float       anisotropyStrength;
+    float       anisotropyRotation;
+
+    // 12. KHR_materials_dispersion
+    float       dispersion;
+
+    // 13. KHR_materials_diffuse_transmission
+    uint32_t    diffuseTransmissionTexture;
+    uint32_t    diffuseTransmissionColorTexture;
+    float       diffuseTransmissionFactor;
+    uint32_t    pad3[2];            // Align diffuseTransmissionColorFactor to 16 bytes
+
+    float       diffuseTransmissionColorFactor[4]; // RGB + 1 padding element
+
+    // 14. KHR_materials_emissive_strength
+    float       emissiveStrength;
+
+    uint32_t    pipelineType;
+
+    // Final padding to align structure size to a multiple of 16 (total size = 320 bytes)
+    uint32_t    padding[2];
 } MaterialData;
 
 typedef struct MaterialBuffer
@@ -172,6 +268,53 @@ typedef struct MaterialBuffer
     uint32_t        capacity;   // max entities
     uint32_t        count;      // current entity count
 } MaterialBuffer;
+
+// ---------------------------------------------------------------------------
+// Lighting
+//
+// Punctual light sources following the glTF KHR_lights_punctual model, mirroring
+// the engine's glTF-based MaterialData convention. A light is an entity
+// component: its world-space position and direction are NOT stored here, they
+// are derived in the fragment shader from the driving entity's live transform
+// (transforms[transformIndex]) so GPU animation (orbit/spin) applies for free.
+// Only photometric parameters and the transform link live in this struct.
+//
+// LightData is laid out as 3 x vec4 (48 bytes) for std430. The leading vec3 +
+// float pack into one 16-byte row (standard std430 vec3+scalar packing); the C
+// layout below matches byte-for-byte.
+// ---------------------------------------------------------------------------
+typedef enum LightType
+{
+    LIGHT_TYPE_DIRECTIONAL = 0, // infinitely distant, uses direction only
+    LIGHT_TYPE_POINT       = 1, // omnidirectional, uses position + range
+    LIGHT_TYPE_SPOT        = 2, // cone, uses position + direction + range + cones
+} LightType;
+
+typedef struct LightData
+{
+    // row 0
+    float       color[3];       // linear RGB, normalized (intensity carries magnitude)
+    float       intensity;      // brightness multiplier (candela-like for point/spot, lux-like for directional)
+    // row 1
+    float       range;          // attenuation cutoff distance; <= 0 means unbounded (ignored for directional)
+    float       innerConeCos;   // cosine of spot inner cone half-angle (full intensity within)
+    float       outerConeCos;   // cosine of spot outer cone half-angle (zero intensity beyond)
+    uint32_t    type;           // LightType
+    // row 2
+    uint32_t    transformIndex; // entity/transform index that drives world position + direction
+    uint32_t    enabled;        // 0 = ignored, 1 = active
+    uint32_t    pad0;
+    uint32_t    pad1;
+} LightData; // 48 bytes
+
+typedef struct LightBuffer
+{
+    VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
+    LightData*      mapped[MAX_FRAMES_IN_FLIGHT];  // persistently mapped
+    uint32_t        capacity;   // max lights
+    uint32_t        count;      // current light count
+} LightBuffer;
 
 typedef struct BindlessTextureArray
 {
@@ -188,7 +331,8 @@ typedef struct CullUBO
     mat4 viewProj;
     Vector4 frustumPlanes[6];
     uint32_t entityCount;
-    uint32_t padding[3];
+    uint32_t maxEntities;
+    uint32_t padding[2];
 } CullUBO;
 
 typedef struct CullUboBuffer
@@ -200,11 +344,11 @@ typedef struct CullUboBuffer
 
 typedef struct IndirectDrawBuffer
 {
-    VkBuffer                        buffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation                   allocs[MAX_FRAMES_IN_FLIGHT];
-    VkDrawIndexedIndirectCommand*   mapped[MAX_FRAMES_IN_FLIGHT];
-    uint32_t                        capacity;
-    uint32_t                        drawCount[MAX_FRAMES_IN_FLIGHT];
+    VkBuffer                            buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation                       allocs[MAX_FRAMES_IN_FLIGHT];
+    VkDrawMeshTasksIndirectCommandEXT*  mapped[MAX_FRAMES_IN_FLIGHT];
+    uint32_t                            capacity;
+    uint32_t                            drawCount[MAX_FRAMES_IN_FLIGHT];
 } IndirectDrawBuffer;
 
 typedef enum DeletionResourceType {
@@ -245,6 +389,11 @@ typedef struct CullingBuffers {
     VkBuffer                drawCountBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           drawCountAllocs[MAX_FRAMES_IN_FLIGHT];
     uint32_t*               drawCountMapped[MAX_FRAMES_IN_FLIGHT];
+
+    // GPU-written compacted entity indices (1-to-1 mapping for visible elements)
+    VkBuffer                compactedEntityIndicesBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           compactedEntityIndicesAllocs[MAX_FRAMES_IN_FLIGHT];
+    uint32_t*               compactedEntityIndicesMapped[MAX_FRAMES_IN_FLIGHT];
 
     // Descriptor infrastructure
     VkDescriptorSetLayout   setLayout;
@@ -327,6 +476,7 @@ typedef struct RendererState
     TransformBuffer         initialTransformBuffer;
     AngularVelocityBuffer   angularVelocityBuffer;
     MaterialBuffer          materialBuffer;
+    LightBuffer             lightBuffer;
     IndirectDrawBuffer      indirectBuffer;
     BindlessTextureArray    bindlessTextures;
     

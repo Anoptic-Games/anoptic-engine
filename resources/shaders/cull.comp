@@ -11,6 +11,7 @@ layout(set = 0, binding = 0) uniform CullUBO {
     mat4  viewProj;
     vec4  frustumPlanes[6];
     uint  entityCount;
+    uint  maxEntities;
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -21,36 +22,108 @@ layout(set = 0, binding = 2) readonly buffer EntitySSBO {
     EntityInfo entities[];
 };
 
-// Packed mesh region data
+struct MeshData {
+    uint meshletCount;
+    uint meshletOffset;
+    uint uniqueVerticesOffset;
+    uint trianglesOffset;
+    uint vertexOffset;
+    uint padding1;
+    uint padding2;
+    uint padding3;
+};
+
 layout(set = 0, binding = 3) readonly buffer MeshSSBO {
-    // x = indexCount, y = firstIndex, z = baseVertex, w = unused
-    uvec4 meshDrawData[];
+    MeshData meshDrawData[];
 };
 
 layout(set = 0, binding = 4) readonly buffer MeshBoundsSSBO {
-    // xyz = bounding sphere center (object space), w = radius
     vec4 meshBounds[];
 };
 
-struct VkDrawIndexedIndirectCommand {
-    uint indexCount;
-    uint instanceCount;
-    uint firstIndex;
-    int  vertexOffset;
-    uint firstInstance;
+struct VkDrawMeshTasksIndirectCommandEXT {
+    uint groupCountX;
+    uint groupCountY;
+    uint groupCountZ;
 };
 
 layout(set = 0, binding = 5) buffer IndirectBuffer {
-    VkDrawIndexedIndirectCommand draws[];
+    VkDrawMeshTasksIndirectCommandEXT draws[];
 };
 
 layout(set = 0, binding = 6) buffer DrawCount {
-    uint drawCount;
+    uint drawCounts[];
+};
+
+layout(set = 0, binding = 7) writeonly buffer CompactedEntityIndices {
+    uint entityIndices[];
+};
+
+struct MaterialData {
+    uint      features;
+    uint      baseColorTexture;
+    uint      pad0[2];
+    vec4      baseColorFactor;
+    uint      metallicRoughnessTexture;
+    float     metallicFactor;
+    float     roughnessFactor;
+    uint      normalTexture;
+    float     normalScale;
+    uint      occlusionTexture;
+    float     occlusionStrength;
+    uint      emissiveTexture;
+    vec4      emissiveFactor;
+    uint      alphaMode;
+    float     alphaCutoff;
+    uint      doubleSided;
+    uint      clearcoatTexture;
+    uint      clearcoatRoughnessTexture;
+    uint      clearcoatNormalTexture;
+    float     clearcoatFactor;
+    float     clearcoatRoughnessFactor;
+    uint      transmissionTexture;
+    float     transmissionFactor;
+    uint      thicknessTexture;
+    float     thicknessFactor;
+    float     attenuationDistance;
+    uint      pad1[3];
+    vec4      attenuationColor;
+    float     ior;
+    uint      specularTexture;
+    uint      specularColorTexture;
+    float     specularFactor;
+    vec4      specularColorFactor;
+    uint      sheenColorTexture;
+    uint      sheenRoughnessTexture;
+    uint      pad2[2];
+    vec4      sheenColorFactor;
+    float     sheenRoughnessFactor;
+    uint      iridescenceTexture;
+    uint      iridescenceThicknessTexture;
+    float     iridescenceFactor;
+    float     iridescenceIor;
+    float     iridescenceThicknessMinimum;
+    float     iridescenceThicknessMaximum;
+    uint      anisotropyTexture;
+    float     anisotropyStrength;
+    float     anisotropyRotation;
+    float     dispersion;
+    uint      diffuseTransmissionTexture;
+    uint      diffuseTransmissionColorTexture;
+    float     diffuseTransmissionFactor;
+    uint      pad3[2];
+    vec4      diffuseTransmissionColorFactor;
+    float     emissiveStrength;
+    uint      pipelineType;
+    uint      padding[2];
+};
+
+layout(set = 0, binding = 8) readonly buffer MaterialSSBO {
+    MaterialData materials[];
 };
 
 bool isVisible(vec3 center, float radius, mat4 model) {
     vec4 worldCenter = model * vec4(center, 1.0);
-    // Extract max scale from model matrix
     float maxScale = max(max(length(model[0].xyz), length(model[1].xyz)), length(model[2].xyz));
     float worldRadius = radius * maxScale;
 
@@ -62,36 +135,37 @@ bool isVisible(vec3 center, float radius, mat4 model) {
     return true;
 }
 
-layout(constant_id = 0) const bool USE_FIRST_INSTANCE = true;
-
 void main() {
     uint idx = gl_GlobalInvocationID.x;
 
-    if (idx == 0) {
-        drawCount = entityCount; // Set the count for vkCmdDrawIndexedIndirectCount
-    }
-
-    // We write to draws[idx] directly so unused entries have instanceCount = 0
     if (idx >= entityCount) {
         return;
     }
 
     EntityInfo entity = entities[idx];
+
+    // Transform-only entities (e.g. pure lights) carry no geometry; skip them.
+    if (entity.meshIndex == 0xFFFFFFFFu) {
+        return;
+    }
+
     mat4 model = transforms[idx];
     vec4 bounds = meshBounds[entity.meshIndex];
-    uvec4 meshData = meshDrawData[entity.meshIndex];
+    MeshData mData = meshDrawData[entity.meshIndex];
+    
+    // Look up material and pipeline type
+    uint pipelineType = materials[entity.materialIndex].pipelineType;
 
     if (isVisible(bounds.xyz, bounds.w, model)) {
-        draws[idx].indexCount    = meshData.x;
-        draws[idx].instanceCount = 1;
-        draws[idx].firstIndex    = meshData.y;
-        draws[idx].vertexOffset  = int(meshData.z);
-        if (USE_FIRST_INSTANCE) {
-            draws[idx].firstInstance = idx;  // entity index
-        } else {
-            draws[idx].firstInstance = 0;
-        }
-    } else {
-        draws[idx].instanceCount = 0;
+        uint writeIdx = atomicAdd(drawCounts[pipelineType], 1);
+        
+        // Compact draws by pipeline type
+        uint destIdx = pipelineType * maxEntities + writeIdx;
+        draws[destIdx].groupCountX = mData.meshletCount;
+        draws[destIdx].groupCountY = 1;
+        draws[destIdx].groupCountZ = 1;
+        
+        // Save the original entity index
+        entityIndices[destIdx] = idx;
     }
 }

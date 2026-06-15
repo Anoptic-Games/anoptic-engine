@@ -59,7 +59,6 @@ struct MaterialData {
     uint      pipelineType;
     uint      padding[2];
 };
-
 layout(set = 0, binding = 0) uniform GlobalUBO {
     mat4 view;
     mat4 proj;
@@ -130,7 +129,7 @@ layout(location = 3) in vec3 fragWorldPos;
 
 layout(location = 0) out vec4 outColor;
 
-vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, vec3 L) {
+vec3 calculatePBRDirect(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, vec3 L, float transmission) {
     // Clamp roughness to prevent collapsing specular highlights (roughness = 0.0 -> specular = 0.0)
     roughness = max(roughness, 0.04);
 
@@ -159,7 +158,10 @@ vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, 
 
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
 
-    return (kD * albedo / 3.14159 + specular) * NdotL;
+    vec3 diffuse = (kD * albedo / 3.14159) * NdotL;
+    vec3 specularReflection = specular * NdotL;
+
+    return diffuse * (1.0 - transmission) + specularReflection;
 }
 
 void main() {
@@ -167,6 +169,25 @@ void main() {
     vec4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexture != 0xFFFFFFFF) {
         baseColor *= texture(textures[nonuniformEXT(mat.baseColorTexture)], fragTexCoord);
+    }
+    
+    // Resolve transmission factor
+    float transmission = mat.transmissionFactor;
+    if (mat.transmissionTexture != 0xFFFFFFFF) {
+        transmission *= texture(textures[nonuniformEXT(mat.transmissionTexture)], fragTexCoord).r;
+    }
+    
+    // Resolve thickness
+    float thickness = mat.thicknessFactor;
+    if (mat.thicknessTexture != 0xFFFFFFFF) {
+        thickness *= texture(textures[nonuniformEXT(mat.thicknessTexture)], fragTexCoord).g; // GLTF thickness is in G channel
+    }
+    
+    // Beer-Lambert law for volume absorption
+    vec3 transmissionTint = vec3(1.0);
+    if (thickness > 0.0 && mat.attenuationDistance > 0.0) {
+        vec3 k = -log(mat.attenuationColor.rgb + vec3(1e-5)) / max(mat.attenuationDistance, 0.0001);
+        transmissionTint = exp(-k * thickness);
     }
     
     float metallic = mat.metallicFactor;
@@ -182,19 +203,19 @@ void main() {
         occlusion = texture(textures[nonuniformEXT(mat.occlusionTexture)], fragTexCoord).r;
     }
 
-    vec3 N = normalize(fragNormal);
+    vec3 normal = normalize(fragNormal);
     if (!gl_FrontFacing) {
-        N = -N;
+        normal = -normal;
     }
     
     vec3 V = normalize(global.cameraPos.xyz - fragWorldPos);
     
-    // -------------------------------------------------------------
-    // Direct Lighting Calculation
-    // -------------------------------------------------------------
-    vec3 accumulatedDirect = vec3(0.0);
-
+    // Ambient & transmissive color contributions (evaluated once)
+    vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion * (1.0 - transmission);
+    vec3 transmissive = baseColor.rgb * transmissionTint * transmission;
+    
     // Accumulate every active light from the scene light buffer.
+    vec3 accumulatedDirect = vec3(0.0);
     for (uint i = 0u; i < global.lightCount; i++) {
         LightData light = lightBuf.lights[i];
         if (light.enabled == 0u) {
@@ -226,14 +247,12 @@ void main() {
         }
 
         vec3 radiance = light.color * light.intensity * attenuation;
-        accumulatedDirect += calculatePBR(baseColor.rgb, metallic, roughness, N, V, L) * radiance;
+        accumulatedDirect += calculatePBRDirect(baseColor.rgb, metallic, roughness, normal, V, L, transmission) * radiance;
     }
 
-    // -------------------------------------------------------------
-    // Ambient & Final Color Assembly
-    // -------------------------------------------------------------
-    vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion;
-    vec3 finalColor = ambient + accumulatedDirect;
-
-    outColor = vec4(finalColor, 1.0);
+    vec3 finalColor = ambient + transmissive + accumulatedDirect;
+    
+    // Glass usually has some transparency
+    float alpha = mix(baseColor.a, 0.3, transmission);
+    outColor = vec4(finalColor, alpha);
 }

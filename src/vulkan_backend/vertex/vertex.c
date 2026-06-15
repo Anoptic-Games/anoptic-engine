@@ -30,7 +30,7 @@ void getAttributeDescriptions(VkVertexInputAttributeDescription* attributeDescri
     attributeDescriptions[1].binding = 0;
     attributeDescriptions[1].location = 1;
     attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[1].offset = offsetof(Vertex, color);
+    attributeDescriptions[1].offset = offsetof(Vertex, normal);
 
     attributeDescriptions[2].binding = 0;
     attributeDescriptions[2].location = 2;
@@ -56,22 +56,22 @@ void rotateMatrix(float mat[4][4], char axis, float angle)
         case 'x':
         case 'X':
             rotationMatrix[1][1] = c;
-            rotationMatrix[1][2] = -s;
-            rotationMatrix[2][1] = s;
+            rotationMatrix[1][2] = s;
+            rotationMatrix[2][1] = -s;
             rotationMatrix[2][2] = c;
             break;
         case 'y':
         case 'Y':
             rotationMatrix[0][0] = c;
-            rotationMatrix[0][2] = s;
-            rotationMatrix[2][0] = -s;
+            rotationMatrix[0][2] = -s;
+            rotationMatrix[2][0] = s;
             rotationMatrix[2][2] = c;
             break;
         case 'z':
         case 'Z':
             rotationMatrix[0][0] = c;
-            rotationMatrix[0][1] = -s;
-            rotationMatrix[1][0] = s;
+            rotationMatrix[0][1] = s;
+            rotationMatrix[1][0] = -s;
             rotationMatrix[1][1] = c;
             break;
         default:
@@ -175,7 +175,7 @@ void perspective(float matrix[4][4], float fovDegrees, float aspect, float near,
 {
     float tanHalfFov = (float)tan(fovDegrees / 2.0f * (M_PI / 180.0f));
 
-    // Initialize matrix to identity
+    // Initialize matrix to 0
     for (int i = 0; i < 4; ++i)
 	{
         for (int j = 0; j < 4; ++j)
@@ -185,12 +185,12 @@ void perspective(float matrix[4][4], float fovDegrees, float aspect, float near,
     }
 
     matrix[0][0] = 1.0f / (aspect * tanHalfFov);
-    matrix[1][1] = 1.0f / tanHalfFov;
+    matrix[1][1] = -1.0f / tanHalfFov; // Y flip for Vulkan!
 	matrix[2][2] = (far + near) / (near - far);
 
     matrix[2][3] = -1.0f;
 	matrix[3][2] = (2 * far * near) / (near - far);
-	matrix[3][3] = 1.0f;  // Set the homogenous coordinate to 1
+	matrix[3][3] = 0.0f;
 
 }
 
