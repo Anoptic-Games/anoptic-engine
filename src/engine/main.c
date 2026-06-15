@@ -3,34 +3,32 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#include "engine/main.h" // This works
-
-// Includes
+// Core includes (compiled in both graphical and headless builds)
 #include <mimalloc.h>
 #include <mimalloc-override.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <vulkan/vulkan.h>
 #include <stdbool.h>
 #include <string.h>
 #include "anoptic_time.h"
 
-// TODO: Figure out if this actually needs to be in main.c
+#ifndef HEADLESS_BUILD
+// Renderer interface + Vulkan/GLFW — only compiled into the graphical engine.
+#include "engine/main.h" // This works
+#include <vulkan/vulkan.h>
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #endif
 
-// Rendering module still WIP
-
 // Structs
-
 VulkanSettings vulkanSettings =
 { //!TODO change this dynamically via vulkanSettings.h interface
 	.preferredDevice = "",
 	.preferredMode = 1
 };
+#endif // !HEADLESS_BUILD
 
 // Variables
 
@@ -140,6 +138,7 @@ int main()
 
 	#endif
 
+#ifndef HEADLESS_BUILD
 	// Initialize Vulkan
 	if (!initVulkan())
 	{
@@ -164,6 +163,12 @@ int main()
 
     // Clean up
     unInitVulkan();
+#else
+	// Headless engine: no renderer. Console / server entry point.
+	printf("Anoptic Engine — headless console mode.\n");
+    // while (true) {};
+	// TODO: simulation / server loop goes here.
+#endif
 
     return 0;
 }

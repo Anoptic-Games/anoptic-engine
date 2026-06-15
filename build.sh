@@ -42,6 +42,14 @@ case $1 in
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=tsan"
     run_tests=1
     ;;
+  6)
+    # Headless: core + CTest, renderer explicitly disabled (no Vulkan probe)
+    build_type="Debug"
+    build_dir="Headless"
+    toolchain_file="debug_clang-linux-x64.cmake"
+    extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON"
+    run_tests=1
+    ;;
   *)
     echo "Usage: $0 <build_type>"
     echo "  where <build_type> is one of:"
@@ -50,6 +58,7 @@ case $1 in
     echo "    3 = Tests (build + run CTest)"
     echo "    4 = Tests + AddressSanitizer/UBSan"
     echo "    5 = Tests + ThreadSanitizer"
+    echo "    6 = Headless tests (core + CTest, no renderer)"
     exit 1
     ;;
 esac
