@@ -38,4 +38,13 @@ if(TARGET anoptic_render)
     target_link_libraries(anotest_vk_sync PRIVATE anoptic_render)
     add_test(NAME anotest_vk_sync COMMAND anotest_vk_sync)
     set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT 30 LABELS "unit;vulkan")
+else()
+    message(WARNING
+        "\n"
+        "################################################################\n"
+        "##  !!!  VULKAN TESTS SKIPPED  !!!                            ##\n"
+        "##  No anoptic_render target (headless or no Vulkan SDK).     ##\n"
+        "##  These tests are NOT compiled here and can rot unnoticed.  ##\n"
+        "##  Run a non-headless build with the Vulkan SDK to cover.    ##\n"
+        "################################################################\n")
 endif()
