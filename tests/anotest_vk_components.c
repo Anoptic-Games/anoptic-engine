@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <assert.h>
 
+#include "vulkan_backend/structs.h"
 #include "vulkan_backend/components.h"
 
 int main() {

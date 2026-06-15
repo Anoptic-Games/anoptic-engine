@@ -20,15 +20,14 @@ struct Buffer
     char* data;
 };
 
-
-
+// Shader loading utilities shared by pipeline implementations
+bool loadFile(const char* filename, struct Buffer* buffer);
+VkShaderModule createShaderModule(VkDevice device, struct Buffer* code);
 
 bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state);
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state);
-
-
 
 #endif

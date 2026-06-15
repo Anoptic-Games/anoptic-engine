@@ -17,6 +17,9 @@
 // Variables
 
 static VulkanContext ctx;
+PFN_vkCmdDrawMeshTasksEXT pfnVkCmdDrawMeshTasksEXT = NULL;
+PFN_vkCmdDrawMeshTasksIndirectEXT pfnVkCmdDrawMeshTasksIndirectEXT = NULL;
+PFN_vkCmdDrawMeshTasksIndirectCountEXT pfnVkCmdDrawMeshTasksIndirectCountEXT = NULL;
 RendererState rendererState;
 GpuAllocator gpuAllocator;
 GpuAllocator stagingAllocator;
@@ -126,6 +129,16 @@ static const RenderPassDef g_framePasses[] = {
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
+    // 3. Transmissive geometry
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_TRANSMISSION,
+        .implementationIndex    = 1,  // blended transmission variant
+        .colorAttachmentCount   = 1,
+        .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
+    },
 };
 
 void recordCommandBuffer(uint32_t imageIndex) 
@@ -174,6 +187,22 @@ void recordCommandBuffer(uint32_t imageIndex)
 
         if (pass->type == PASS_COMPUTE) {
             if (entityCount > 0) {
+                if (pass->prototype == PIPELINE_COMPUTE_CULL) {
+                    // Zero out the entire indirect buffer and draw count buffer
+                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0, 
+                        sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT, 0);
+                    vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
+                        sizeof(uint32_t) * PIPELINE_TYPE_COUNT, 0);
+
+                    // Add a barrier to make sure the fill completes before the compute shader writes to it
+                    VkMemoryBarrier fillBarrier = {};
+                    fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                    fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, 1, &fillBarrier, 0, NULL, 0, NULL);
+                }
+
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
                 
                 VkDescriptorSet set = pass->prototype == PIPELINE_COMPUTE_UPDATE ? 
@@ -201,7 +230,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 } else {
                     memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 }
             }
@@ -261,11 +290,6 @@ void recordCommandBuffer(uint32_t imageIndex)
             scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-            // Bind monolithic vertex and index buffers once per frame
-            VkDeviceSize offsets[] = {0};
-            vkCmdBindVertexBuffers(cmd, 0, 1, &rendererState.globalGeometryPool.vertexBuffer, offsets);
-            vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 rendererState.prototypes[pass->prototype].layout, 0, 1, &(rendererState.frames[rendererState.frameIndex].globalSet), 0, NULL);
 
@@ -273,25 +297,29 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     rendererState.prototypes[pass->prototype].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
 
-                uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t), &baseOffset);
+                uint32_t pipelineType = pass->prototype;
+                uint32_t baseOffset = pipelineType * rendererState.culling.maxEntities;
+                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_MESH_BIT_EXT, 0, sizeof(uint32_t), &baseOffset);
+
+                VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * rendererState.indirectBuffer.capacity * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                VkDeviceSize countOffset = (VkDeviceSize)pipelineType * sizeof(uint32_t);
 
                 if (ctx.deviceCapabilities.drawIndirectCount) {
-                    vkCmdDrawIndexedIndirectCount(
+                    pfnVkCmdDrawMeshTasksIndirectCountEXT(
                         cmd,
                         rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        0,
+                        indirectOffset,
                         rendererState.culling.drawCountBuffer[rendererState.frameIndex],
-                        0,
+                        countOffset,
                         rendererState.indirectBuffer.capacity,
-                        sizeof(VkDrawIndexedIndirectCommand));
+                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
                 } else {
-                    vkCmdDrawIndexedIndirect(
+                    pfnVkCmdDrawMeshTasksIndirectEXT(
                         cmd,
                         rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        0,
-                        entityCount, // cull.comp writes only [0,entityCount); buffer isn't zeroed beyond, so capacity would draw uninit slots
-                        sizeof(VkDrawIndexedIndirectCommand));
+                        indirectOffset,
+                        entityCount,
+                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
                 }
             }
             
@@ -362,7 +390,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     RenderEntity* entities = state->entities;
 
     // Reset draw count
-    *state->culling.drawCountMapped[frameIndex] = 0;
+    memset(state->culling.drawCountMapped[frameIndex], 0, sizeof(uint32_t) * PIPELINE_TYPE_COUNT);
 
     // Update CullUBO
     CullUBO* ubo = state->culling.ubo.mapped[frameIndex];
@@ -370,11 +398,15 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     
     // Calculate viewProj matrix
     multiplyMat4(ubo->viewProj, globalUbo->proj, globalUbo->view);
-    
+
     // Extract frustum planes
     extractFrustumPlanes(ubo->frustumPlanes, ubo->viewProj);
 
+    // Publish the active light count to the fragment stage.
+    globalUbo->lightCount = state->lightBuffer.count;
+
     ubo->entityCount = entityCount;
+    ubo->maxEntities = state->culling.maxEntities;
 
     // Update EntitySSBO
     uint32_t* entityBuffer = (uint32_t*)state->culling.entityMapped[frameIndex];
@@ -391,10 +423,14 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     for(uint32_t i=0; i < meshCount; i++) {
         MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
         
-        meshData[i*4 + 0] = mesh->indexCount;
-        meshData[i*4 + 1] = mesh->indexOffset / sizeof(uint32_t);
-        meshData[i*4 + 2] = mesh->baseVertex;
-        meshData[i*4 + 3] = 0; // padding
+        meshData[i*8 + 0] = mesh->meshletCount;
+        meshData[i*8 + 1] = mesh->meshletOffset;
+        meshData[i*8 + 2] = mesh->uniqueVerticesOffset;
+        meshData[i*8 + 3] = mesh->trianglesOffset;
+        meshData[i*8 + 4] = mesh->vertexOffset;
+        meshData[i*8 + 5] = 0; // Padding/Unused
+        meshData[i*8 + 6] = 0;
+        meshData[i*8 + 7] = 0;
 
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
         meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];
@@ -592,6 +628,64 @@ bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
     return true;
 }
 
+bool createLightBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxLights) {
+    state->lightBuffer.capacity = maxLights;
+    state->lightBuffer.count = 0;
+
+    VkDeviceSize bufferSize = sizeof(LightData) * maxLights;
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->lightBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create light buffer!\n");
+        }
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(ctx->device, state->lightBuffer.buffer[i], &memRequirements);
+
+        state->lightBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->lightBuffer.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->lightBuffer.buffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, state->lightBuffer.buffer[i], state->lightBuffer.allocs[i].memory, state->lightBuffer.allocs[i].offset);
+
+        state->lightBuffer.mapped[i] = (LightData*)state->lightBuffer.allocs[i].mapped;
+    }
+    return true;
+}
+
+// Appends a transform-only light entity (no geometry) to the scene and registers
+// its LightData in the light buffer. `light` supplies the photometric parameters;
+// this fills in transformIndex (the new entity) and marks it enabled, then writes
+// the entry into every frame's light buffer. Must be called before the per-frame
+// transform upload loop so the light's transform reaches the transform buffers.
+// Returns the new entity index.
+static uint32_t addLightEntity(LightData light, mat4 transform) {
+    uint32_t entIdx = rendererState.entityCount;
+    rendererState.entityCount += 1;
+    rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
+
+    uint32_t lightIdx = rendererState.lightBuffer.count++;
+
+    rendererState.entities[entIdx].meshIndex = NO_MESH_INDEX;   // skipped by culling -> draws nothing
+    rendererState.entities[entIdx].materialIndex = 0;
+    rendererState.entities[entIdx].lightIndex = lightIdx;
+    memcpy(&rendererState.entities[entIdx].transform, transform, sizeof(mat4));
+
+    light.transformIndex = entIdx;
+    light.enabled = 1;
+    for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+        rendererState.lightBuffer.mapped[frame][lightIdx] = light;
+    }
+    return entIdx;
+}
+
 bool createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->angularVelocityBuffer.capacity = maxEntities;
     state->angularVelocityBuffer.count = 0;
@@ -658,34 +752,35 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
 
 bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
-    
-    VkDeviceSize bufferSize = sizeof(VkDrawIndexedIndirectCommand) * maxDraws;
-    
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    VkDeviceSize bufferSize = sizeof(VkDrawMeshTasksIndirectCommandEXT) * maxDraws * PIPELINE_TYPE_COUNT;
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
-        
-        VkBufferCreateInfo bufferInfo = {};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        
+        VkBufferCreateInfo bufferInfo = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = bufferSize,
+            .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        };
+
         if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
             printf("Failed to create indirect draw buffer!\n");
+            return false;
         }
-        
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memRequirements);
-        
-        state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        VkMemoryRequirements memReqs;
+        vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memReqs);
+
+        state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if (state->indirectBuffer.allocs[i].memory == VK_NULL_HANDLE) {
             vkDestroyBuffer(ctx->device, state->indirectBuffer.buffer[i], NULL);
             return false;
         }
+
         vkBindBufferMemory(ctx->device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
-        
-        state->indirectBuffer.mapped[i] = (VkDrawIndexedIndirectCommand*)state->indirectBuffer.allocs[i].mapped;
+        state->indirectBuffer.mapped[i] = (VkDrawMeshTasksIndirectCommandEXT*)state->indirectBuffer.allocs[i].mapped;
     }
+
     return true;
 }
 
@@ -694,9 +789,10 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     uint32_t maxMeshes = 1024;
     
     VkDeviceSize entityBufferSize = sizeof(uint32_t) * 2 * maxEntities; // meshIndex, materialIndex
-    VkDeviceSize meshDataSize = sizeof(uint32_t) * 4 * maxMeshes; // uvec4
+    VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
-    VkDeviceSize drawCountSize = sizeof(uint32_t);
+    VkDeviceSize drawCountSize = sizeof(uint32_t) * PIPELINE_TYPE_COUNT;
+    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * PIPELINE_TYPE_COUNT;
     VkDeviceSize uboSize = sizeof(CullUBO);
     
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -753,7 +849,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         VkBufferCreateInfo countInfo = {};
         countInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         countInfo.size = drawCountSize;
-        countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         countInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         vkCreateBuffer(ctx->device, &countInfo, NULL, &state->culling.drawCountBuffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.drawCountBuffer[i], &memReqs);
@@ -764,6 +860,22 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         }
         vkBindBufferMemory(ctx->device, state->culling.drawCountBuffer[i], state->culling.drawCountAllocs[i].memory, state->culling.drawCountAllocs[i].offset);
         state->culling.drawCountMapped[i] = (uint32_t*)state->culling.drawCountAllocs[i].mapped;
+
+        // Compacted Entity Indices Buffer
+        VkBufferCreateInfo compactedInfo = {};
+        compactedInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        compactedInfo.size = compactedEntityIndicesSize;
+        compactedInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        compactedInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(ctx->device, &compactedInfo, NULL, &state->culling.compactedEntityIndicesBuffer[i]);
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.compactedEntityIndicesBuffer[i], &memReqs);
+        state->culling.compactedEntityIndicesAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->culling.compactedEntityIndicesAllocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.compactedEntityIndicesBuffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, state->culling.compactedEntityIndicesBuffer[i], state->culling.compactedEntityIndicesAllocs[i].memory, state->culling.compactedEntityIndicesAllocs[i].offset);
+        state->culling.compactedEntityIndicesMapped[i] = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
 
         // Cull UBO
         VkBufferCreateInfo uboInfo = {};
@@ -906,6 +1018,16 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+    pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
+    pfnVkCmdDrawMeshTasksIndirectEXT = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectEXT");
+    pfnVkCmdDrawMeshTasksIndirectCountEXT = (PFN_vkCmdDrawMeshTasksIndirectCountEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectCountEXT");
+
+    if (!pfnVkCmdDrawMeshTasksEXT || !pfnVkCmdDrawMeshTasksIndirectEXT || !pfnVkCmdDrawMeshTasksIndirectCountEXT) {
+        fprintf(stderr, "Failed to load mesh shader extension function pointers!\n");
+        unInitVulkan();
+        return false;
+    }
+
 	gpuAllocator.device = ctx.device;
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &gpuAllocator.memProps);
 	gpuAllocator.blocks = NULL;
@@ -1036,6 +1158,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities) ||
 	    !createAngularVelocityBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createMaterialBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createLightBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createCullingBuffers(&ctx, &rendererState, maxEntities))
 	{
@@ -1058,21 +1181,124 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		{0, 0, 1, 0},
 		{0, 0, 0, 1}
 	};
-	rotateMatrix(identity, 'X', 3.14159f / 2.0f);
+	rotateMatrix(identity, 'X', -3.14159f / 2.0f);
 	instantiate_model(vikingRoomAsset, identity);
+
+	uint32_t vikingRoomEntityCount = rendererState.entityCount;
+
+	ModelAsset* candleHolderAsset = parseGltf(&ctx, "GlassHurricaneCandleHolder.gltf");
+	if(!candleHolderAsset)
+	{
+		printf("Failed to parse GlassHurricaneCandleHolder glTF file!\n");
+		unInitVulkan();
+		return false;
+	}
+	
+	mat4 candleTransform = {
+		{1, 0, 0, 0},
+		{0, 1, 0, 0},
+		{0, 0, 1, 0},
+		{0, 0, 0, 1}
+	};
+	candleTransform[3][0] = 2.0f; // Orbit radius of 5 units on X
+	instantiate_model(candleHolderAsset, candleTransform);
+
+	// -------------------------------------------------------------
+	// Scene lights (generalized light format, replacing the values
+	// formerly hard-coded in the fragment shaders). Each light is a
+	// transform-only entity: it carries no geometry (culling skips it)
+	// and its world position/direction are derived from its transform,
+	// so it participates in the GPU transform/animation system.
+	//
+	// Convention: a light's "forward" is the entity local -Z axis, i.e.
+	// -transform[2] (column 2). For directional/spot lights set column 2
+	// to the negated travel direction; translation lives in column 3.
+	// -------------------------------------------------------------
+	uint32_t firstLightEntity = rendererState.entityCount;
+
+	// Directional key light (warm white), shining from up/front (0.5,1,0.3).
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[2][0] = 0.4319f; xform[2][1] = 0.8638f; xform[2][2] = 0.2591f; // normalized (0.5,1,0.3)
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 0.96f; l.color[2] = 0.9f;
+		l.intensity = 2.5f;
+		l.range = 0.0f; // directional: unbounded
+		l.type = LIGHT_TYPE_DIRECTIONAL;
+		addLightEntity(l, xform);
+	}
+
+	// Warm point light (orbits the origin to exercise the animation path).
+	uint32_t warmLightEntity;
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 0.0f; xform[3][1] = 1.5f; xform[3][2] = 1.2f;
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 0.95f; l.color[2] = 0.8f;
+		l.intensity = 5.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		warmLightEntity = addLightEntity(l, xform);
+	}
+
+	// Cool blue fill from the opposite side.
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = -2.0f; xform[3][1] = 2.0f; xform[3][2] = -1.0f;
+		LightData l = {0};
+		l.color[0] = 0.4f; l.color[1] = 0.6f; l.color[2] = 1.0f;
+		l.intensity = 4.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		addLightEntity(l, xform);
+	}
+
+	// Red rim/accent light.
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 2.0f; xform[3][1] = 0.5f; xform[3][2] = 0.0f;
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 0.3f; l.color[2] = 0.3f;
+		l.intensity = 3.5f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		addLightEntity(l, xform);
+	}
+
+	// Greenish/cyan fill from below.
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 0.0f; xform[3][1] = -1.0f; xform[3][2] = 1.0f;
+		LightData l = {0};
+		l.color[0] = 0.3f; l.color[1] = 1.0f; l.color[2] = 0.8f;
+		l.intensity = 2.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
+		addLightEntity(l, xform);
+	}
+
+	// Overhead spotlight aimed straight down (demonstrates the spot type).
+	{
+		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		xform[3][0] = 0.0f; xform[3][1] = 4.0f; xform[3][2] = 0.0f;
+		// forward = -column2 = (0,-1,0): aim down. column2 stays identity (0,0,1)? No:
+		xform[2][0] = 0.0f; xform[2][1] = 1.0f; xform[2][2] = 0.0f; // -column2 = (0,-1,0)
+		LightData l = {0};
+		l.color[0] = 1.0f; l.color[1] = 1.0f; l.color[2] = 1.0f;
+		l.intensity = 20.0f; l.range = 12.0f; l.type = LIGHT_TYPE_SPOT;
+		l.innerConeCos = 0.966f; // ~15 degrees
+		l.outerConeCos = 0.906f; // ~25 degrees
+		addLightEntity(l, xform);
+	}
 
 	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
 		float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
 		for (int i = 0; i < rendererState.entityCount; i++) {
+			bool isLight  = (uint32_t)i >= firstLightEntity;
+			bool isCandle = !isLight && (uint32_t)i >= vikingRoomEntityCount;
+			bool orbit    = isCandle || (uint32_t)i == warmLightEntity;
+
 			rendererState.angularVelocityBuffer.mapped[frame][i].v[0] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = 1.0f;
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = orbit ? 0.5f : (isLight ? 0.0f : 1.0f);
 			rendererState.angularVelocityBuffer.mapped[frame][i].v[2] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = 0.0f;
-			
+			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = orbit ? 1.0f : 0.0f; // orbit flag
+
 			memcpy(&rendererState.transformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
 			memcpy(&rendererState.initialTransformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
-			
-			if (i < 3) {
+
+			if (!isLight && i < 3) {
 			    rendererState.transformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
 			    rendererState.initialTransformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
 			}

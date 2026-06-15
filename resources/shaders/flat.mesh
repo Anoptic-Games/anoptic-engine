@@ -1,0 +1,142 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(triangles, max_vertices = 64, max_primitives = 126) out;
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4 view;
+    mat4 proj;
+    float time;
+    float deltaTime;
+    uint frameCount;
+    uint lightCount;
+    vec4 cameraPos;
+} global;
+
+layout(set = 0, binding = 1) readonly buffer TransformSSBO {
+    mat4 transforms[];
+} transformBuf;
+
+struct EntityInfo {
+    uint meshIndex;
+    uint materialIndex;
+};
+
+layout(set = 0, binding = 3) readonly buffer EntitySSBO {
+    EntityInfo entities[];
+} entityBuf;
+
+struct PackedVertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+};
+
+layout(set = 0, binding = 4, std430) readonly buffer VertexBuffer {
+    PackedVertex vertices[];
+} vertexBuf;
+
+layout(set = 0, binding = 5, std430) readonly buffer IndexBuffer {
+    uint data[];
+} indexBuf;
+
+struct MeshData {
+    uint meshletCount;
+    uint meshletOffset;
+    uint uniqueVerticesOffset;
+    uint trianglesOffset;
+    uint vertexOffset;
+    uint padding1;
+    uint padding2;
+    uint padding3;
+};
+
+layout(set = 0, binding = 6, std430) readonly buffer MeshSSBO {
+    MeshData meshDrawData[];
+} meshBuf;
+
+layout(set = 0, binding = 7) readonly buffer CompactedEntityIndices {
+    uint entityIndices[];
+} compactedBuf;
+
+layout(push_constant) uniform PushConstants {
+    uint transformBaseOffset;
+} pc;
+
+layout(location = 0) out vec3 fragNormal[];
+layout(location = 1) out vec2 fragTexCoord[];
+layout(location = 2) flat out uint outMaterialIndex[];
+layout(location = 3) out vec3 fragWorldPos[];
+
+uint getLocalIndex(uint baseByteOffset, uint triangleOffset, uint t, uint vertexInTriangle) {
+    uint byteOffset = baseByteOffset + triangleOffset + t * 3 + vertexInTriangle;
+    uint uintIdx = byteOffset / 4;
+    uint byteIdx = byteOffset % 4;
+    uint val = indexBuf.data[uintIdx];
+    return (val >> (byteIdx * 8)) & 0xFFu;
+}
+
+void main() {
+    uint drawId = gl_DrawID;
+    uint entityIndex = compactedBuf.entityIndices[pc.transformBaseOffset + drawId];
+
+    EntityInfo entity = entityBuf.entities[entityIndex];
+    uint meshIndex = entity.meshIndex;
+    uint materialIndex = entity.materialIndex;
+
+    MeshData mData = meshBuf.meshDrawData[meshIndex];
+    uint meshletCount          = mData.meshletCount;
+    uint meshletOffsetBytes    = mData.meshletOffset;
+    uint uniqueVertOffsetBytes = mData.uniqueVerticesOffset;
+    uint trianglesOffsetBytes  = mData.trianglesOffset;
+    uint vertexOffsetBytes     = mData.vertexOffset;
+
+    uint meshletOffsetUint     = meshletOffsetBytes / 4;
+    uint uniqueVertOffsetUint   = uniqueVertOffsetBytes / 4;
+    uint globalVertexBase       = vertexOffsetBytes / 32;
+
+    uint m = gl_WorkGroupID.x;
+    if (m >= meshletCount) {
+        return;
+    }
+
+    uint meshletIndex = meshletOffsetUint + m * 4;
+    uint vertexOffset   = indexBuf.data[meshletIndex + 0];
+    uint triangleOffset = indexBuf.data[meshletIndex + 1];
+    uint vertexCount    = indexBuf.data[meshletIndex + 2];
+    uint triangleCount  = indexBuf.data[meshletIndex + 3];
+
+    SetMeshOutputsEXT(vertexCount, triangleCount);
+
+    uint ti = gl_LocalInvocationID.x;
+
+    // Load vertices (strided loop to handle arbitrary vertex count)
+    for (uint i = ti; i < vertexCount; i += 64) {
+        uint vertexIdx = indexBuf.data[uniqueVertOffsetUint + vertexOffset + i];
+        uint globalVertexIdx = globalVertexBase + vertexIdx;
+
+        PackedVertex v = vertexBuf.vertices[globalVertexIdx];
+        vec3 position = vec3(v.px, v.py, v.pz);
+        vec3 normal   = vec3(v.nx, v.ny, v.nz);
+        vec2 texCoord = vec2(v.u, v.v);
+
+        mat4 model = transformBuf.transforms[entityIndex];
+        vec4 worldPos = model * vec4(position, 1.0);
+        gl_MeshVerticesEXT[i].gl_Position = global.proj * global.view * worldPos;
+
+        fragNormal[i] = mat3(model) * normal;
+        fragTexCoord[i] = texCoord;
+        outMaterialIndex[i] = materialIndex;
+        fragWorldPos[i] = worldPos.xyz;
+    }
+
+    // Load triangles (strided loop to handle arbitrary primitive count up to 126)
+    for (uint i = ti; i < triangleCount; i += 64) {
+        uint i0 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 0);
+        uint i1 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 1);
+        uint i2 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 2);
+
+        gl_PrimitiveTriangleIndicesEXT[i] = uvec3(i0, i1, i2);
+    }
+}

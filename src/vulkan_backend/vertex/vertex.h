@@ -39,7 +39,7 @@ typedef struct Vector3
 typedef struct Vertex
 {
 	Vector3 position;
-	Vector3 color;
+	Vector3 normal;
 	Vector2 texCoord;
 } Vertex;
 
@@ -51,7 +51,8 @@ typedef struct GlobalUBO
 	float time;
 	float deltaTime;
 	uint32_t frameCount;
-	uint32_t padding;
+	uint32_t lightCount;   // number of active lights in the light SSBO (set 0, binding 8)
+	float cameraPos[4];    // world-space camera position (xyz; w unused), avoids per-fragment inverse(view)
 } GlobalUBO;
 
 

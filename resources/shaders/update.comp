@@ -8,7 +8,8 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     float time;
     float deltaTime;
     uint frameCount;
-    uint padding;
+    uint lightCount;
+    vec4 cameraPos;
 } global;
 
 layout(set = 0, binding = 1) buffer TransformSSBO {
@@ -16,7 +17,7 @@ layout(set = 0, binding = 1) buffer TransformSSBO {
 };
 
 layout(set = 0, binding = 2) readonly buffer AngularVelocitySSBO {
-    vec4 angularVelocities[]; // vec4 for alignment (xyz = axis*speed)
+    vec4 angularVelocities[]; // vec4 for alignment (xyz = axis*speed, w = orbit flag)
 };
 
 layout(set = 0, binding = 3) readonly buffer InitialTransformSSBO {
@@ -34,9 +35,9 @@ mat4 rotationMatrix(vec3 axis, float angle) {
     float oc = 1.0 - c;
     
     return mat4(
-        oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
-        oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
-        oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+        oc * axis.x * axis.x + c,           oc * axis.x * axis.y + axis.z * s,  oc * axis.z * axis.x - axis.y * s,  0.0,
+        oc * axis.x * axis.y - axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z + axis.x * s,  0.0,
+        oc * axis.z * axis.x + axis.y * s,  oc * axis.y * axis.z - axis.x * s,  oc * axis.z * axis.z + c,           0.0,
         0.0,                                0.0,                                0.0,                                1.0
     );
 }
@@ -52,8 +53,12 @@ void main() {
         // Absolute rotation from global time
         mat4 absRot = rotationMatrix(angVel, speed * global.time);
         
-        // Evaluate from initial state
-        transforms[idx] = initialTransforms[idx] * absRot;
+        // Check if global orbit is enabled (w component)
+        if (angularVelocities[idx].w > 0.5) {
+            transforms[idx] = absRot * initialTransforms[idx];
+        } else {
+            transforms[idx] = initialTransforms[idx] * absRot;
+        }
     } else {
         transforms[idx] = initialTransforms[idx];
     }

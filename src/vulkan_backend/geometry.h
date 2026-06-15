@@ -8,14 +8,19 @@
 #include <vulkan/vulkan.h>
 #include "vulkan_backend/gpu_alloc.h"
 #include "vulkan_backend/vertex/vertex.h"
+#include "mesh/ano_meshoptimizer.h"
 
 typedef struct MeshRegion
 {
     uint32_t    vertexOffset;   // byte offset into the vertex mega-buffer
-    uint32_t    indexOffset;    // byte offset into the index mega-buffer
-    uint32_t    indexCount;     // number of indices
-    uint32_t    vertexCount;    // number of vertices (for non-indexed draws)
-    int32_t     baseVertex;     // added to each index value before fetching
+    uint32_t    vertexCount;    // number of vertices
+    uint32_t    indexOffset;    // byte offset of metadata block in index buffer
+    uint32_t    indexCount;     // total metadata size in bytes (used for freeing)
+    uint32_t    meshletOffset;  // byte offset of meshlets in index buffer
+    uint32_t    meshletCount;   // number of meshlets
+    uint32_t    uniqueVerticesOffset; // byte offset of unique vertices in index buffer
+    uint32_t    trianglesOffset; // byte offset of local triangles in index buffer
+    uint32_t    boundsOffset;   // byte offset of bounds in index buffer
     float       boundingSphereCenter[3];
     float       boundingSphereRadius;
 } MeshRegion;
