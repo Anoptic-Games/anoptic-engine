@@ -6,9 +6,11 @@
 #define ANOPTICENGINE_ANOPTIC_MEMORY_H
 
 #include <mimalloc.h>
-#include <malloc.h>
+#if !defined(__APPLE__)
+#include <malloc.h>             // macOS provides no <malloc.h>
+#endif
 #include <mimalloc-override.h>
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 #include <alloca.h>
 #endif
 

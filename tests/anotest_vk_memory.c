@@ -35,32 +35,69 @@ int main() {
     vkGetBufferMemoryRequirements(ctx->device, testBuffer, &memRequirements);
 
     if (memRequirements.size < 1024) {
-        printf("Error: memory requirement size (%zu) is less than requested size (1024)!\n", (size_t)memRequirements.size);
+        printf("Error: memory requirement size (%zu) is less than requested size (1024)!\n", memRequirements.size);
         vkDestroyBuffer(ctx->device, testBuffer, NULL);
         unInitVulkan();
         return 1;
     }
 
-    // 3. Test gpu_alloc with device local memory properties
-    // We can use the globally defined gpuAllocator
-    GpuAllocation allocation = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    
-    if (allocation.memory == VK_NULL_HANDLE) {
-        printf("Error: gpu_alloc returned null memory handle!\n");
+    if (memRequirements.alignment == 0) {
+        printf("Error: memory requirement alignment is 0!\n");
         vkDestroyBuffer(ctx->device, testBuffer, NULL);
         unInitVulkan();
         return 1;
     }
 
-    // 4. Bind the allocated memory to our test buffer
-    if (vkBindBufferMemory(ctx->device, testBuffer, allocation.memory, allocation.offset) != VK_SUCCESS) {
-        printf("Error: failed to bind buffer memory!\n");
+    if (memRequirements.memoryTypeBits == 0) {
+        printf("Error: memory requirement type bits is 0!\n");
         vkDestroyBuffer(ctx->device, testBuffer, NULL);
         unInitVulkan();
         return 1;
     }
 
-    // 5. Cleanup local test buffer (allocations from gpuAllocator are freed during allocator teardown in unInitVulkan)
+    // 3. Test findMemoryType with valid requirements
+    uint32_t validMemType = findMemoryType(ctx, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (validMemType == UINT32_MAX) {
+        printf("Error: failed to find valid memory type!\n");
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
+        unInitVulkan();
+        return 1;
+    }
+
+    // 4. Test findMemoryType with impossible typeFilter (0)
+    uint32_t invalidMemType = findMemoryType(ctx, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (invalidMemType != UINT32_MAX) {
+        printf("Error: findMemoryType succeeded with impossible type filter 0!\n");
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
+        unInitVulkan();
+        return 1;
+    }
+
+    // 5. Test the arena allocator: gpu_alloc should hand back a block, which we bind to the buffer.
+    GpuAllocation testAlloc = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (testAlloc.memory == VK_NULL_HANDLE || testAlloc.size < memRequirements.size) {
+        printf("Error: gpu_alloc failed to return a valid allocation!\n");
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
+        unInitVulkan();
+        return 1;
+    }
+
+    if (testAlloc.offset % memRequirements.alignment != 0) {
+        printf("Error: gpu_alloc offset (%zu) violates required alignment (%zu)!\n", testAlloc.offset, memRequirements.alignment);
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
+        unInitVulkan();
+        return 1;
+    }
+
+    if (vkBindBufferMemory(ctx->device, testBuffer, testAlloc.memory, testAlloc.offset) != VK_SUCCESS) {
+        printf("Error: failed to bind buffer to arena allocation!\n");
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
+        unInitVulkan();
+        return 1;
+    }
+
+    // Cleanup. gpu_alloc has arena semantics — no individual free; the allocator
+    // is torn down by unInitVulkan.
     vkDestroyBuffer(ctx->device, testBuffer, NULL);
 
     unInitVulkan();
