@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <assert.h>
 
+#include "vulkan_backend/structs.h"
 #include "vulkan_backend/components.h"
 
 int main() {
@@ -48,6 +49,29 @@ int main() {
     
     assert(primitives.meshCount == 0);
     assert(primitives.textureCount == 0);
+
+    // Test PBR feature flags and material default initialization
+    MaterialData mat;
+    ano_vk_init_default_material_data(&mat);
+    assert(mat.features == PBR_FEATURE_NONE);
+    assert(mat.baseColorFactor[0] == 1.0f);
+    assert(mat.metallicFactor == 1.0f);
+    assert(mat.roughnessFactor == 1.0f);
+    assert(mat.ior == 1.5f);
+    assert(mat.alphaMode == 0);
+    assert(mat.emissiveStrength == 1.0f);
+
+    PbrFeatureFlags pipeline = PBR_FEATURE_BASE_COLOR_FACTOR | PBR_FEATURE_BASE_COLOR_TEXTURE;
+    PbrFeatureFlags required = PBR_FEATURE_BASE_COLOR_TEXTURE | PBR_FEATURE_NORMAL_TEXTURE;
+    PbrFeatureFlags unsupported = 0;
+    
+    bool compat = ano_vk_check_feature_compatibility(pipeline, required, &unsupported);
+    assert(!compat);
+    assert(unsupported == PBR_FEATURE_NORMAL_TEXTURE);
+
+    compat = ano_vk_check_feature_compatibility(pipeline, PBR_FEATURE_BASE_COLOR_TEXTURE, &unsupported);
+    assert(compat);
+    assert(unsupported == PBR_FEATURE_NONE);
     
     printf("Vulkan components test passed!\n");
     return 0;

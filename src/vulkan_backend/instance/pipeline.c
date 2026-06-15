@@ -285,6 +285,11 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	state->prototypes[PIPELINE_FLAT].type = PIPELINE_FLAT;
 	state->prototypes[PIPELINE_FLAT].implementationCount = 2;
 	state->prototypes[PIPELINE_FLAT].implementations = calloc(2, sizeof(PipelineImplementation));
+	state->prototypes[PIPELINE_FLAT].supportedFeatures = 
+		PBR_FEATURE_BASE_COLOR_FACTOR | 
+		PBR_FEATURE_BASE_COLOR_TEXTURE | 
+		PBR_FEATURE_ALPHA_MODE_OPAQUE | 
+		PBR_FEATURE_ALPHA_MODE_BLEND;
 
 	// Load shaders
 	struct Buffer meshShaderCode;
@@ -520,6 +525,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_UPDATE].type = PIPELINE_COMPUTE_UPDATE;
     state->prototypes[PIPELINE_COMPUTE_UPDATE].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_UPDATE].supportedFeatures = PBR_FEATURE_NONE;
 
     struct Buffer updateShaderCode;
     char updateShaderPath[256];
@@ -566,6 +572,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_CULL].type = PIPELINE_COMPUTE_CULL;
     state->prototypes[PIPELINE_COMPUTE_CULL].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_CULL].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_CULL].supportedFeatures = PBR_FEATURE_NONE;
 
     struct Buffer compShaderCode;
     char compShaderPath[256];
