@@ -104,6 +104,27 @@ PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct Rend
 void ano_vk_init_default_material_data(struct MaterialData* mat) {
     memset(mat, 0, sizeof(struct MaterialData));
     
+    // Initialize all texture indices to 0xFFFFFFFF (no texture sentinel)
+    mat->baseColorTexture = 0xFFFFFFFF;
+    mat->metallicRoughnessTexture = 0xFFFFFFFF;
+    mat->normalTexture = 0xFFFFFFFF;
+    mat->occlusionTexture = 0xFFFFFFFF;
+    mat->emissiveTexture = 0xFFFFFFFF;
+    mat->clearcoatTexture = 0xFFFFFFFF;
+    mat->clearcoatRoughnessTexture = 0xFFFFFFFF;
+    mat->clearcoatNormalTexture = 0xFFFFFFFF;
+    mat->transmissionTexture = 0xFFFFFFFF;
+    mat->thicknessTexture = 0xFFFFFFFF;
+    mat->specularTexture = 0xFFFFFFFF;
+    mat->specularColorTexture = 0xFFFFFFFF;
+    mat->sheenColorTexture = 0xFFFFFFFF;
+    mat->sheenRoughnessTexture = 0xFFFFFFFF;
+    mat->iridescenceTexture = 0xFFFFFFFF;
+    mat->iridescenceThicknessTexture = 0xFFFFFFFF;
+    mat->anisotropyTexture = 0xFFFFFFFF;
+    mat->diffuseTransmissionTexture = 0xFFFFFFFF;
+    mat->diffuseTransmissionColorTexture = 0xFFFFFFFF;
+
     mat->features = PBR_FEATURE_NONE;
     
     mat->baseColorFactor[0] = 1.0f;
