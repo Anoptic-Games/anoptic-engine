@@ -6,6 +6,7 @@
 #include <mimalloc-override.h>
 #include "pipeline.h"
 #include "pipelines/flat.h"
+#include "pipelines/transmission.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -266,6 +267,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	}
 
 	state->prototypes[PIPELINE_FLAT].descriptorLayout = state->bindlessTextures.layout;
+	state->prototypes[PIPELINE_TRANSMISSION].descriptorLayout = state->bindlessTextures.layout;
 
 	return true;
 }
@@ -278,6 +280,11 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	if (!ano_pipeline_flat_init(ctx, state, &state->prototypes[PIPELINE_FLAT]))
+	{
+		return false;
+	}
+
+	if (!ano_pipeline_transmission_init(ctx, state, &state->prototypes[PIPELINE_TRANSMISSION]))
 	{
 		return false;
 	}

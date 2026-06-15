@@ -561,6 +561,13 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     if (supportedFeatures & PBR_FEATURE_EMISSIVE_STRENGTH) {
                         matData.emissiveStrength = (float)prim->material->emissive_strength.emissive_strength;
                     }
+                    
+                    // Determine which pipeline prototype to use
+                    uint32_t selectedPipeline = PIPELINE_FLAT;
+                    if (supportedFeatures & (PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME)) {
+                        selectedPipeline = PIPELINE_TRANSMISSION;
+                    }
+                    matData.pipelineType = selectedPipeline;
                 }
                 
                 for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
