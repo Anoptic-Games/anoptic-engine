@@ -54,11 +54,14 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             
             // Find accessors
             cgltf_accessor* posAccessor = NULL;
+            cgltf_accessor* normAccessor = NULL;
             cgltf_accessor* texAccessor = NULL;
             
             for (size_t a = 0; a < prim->attributes_count; ++a) {
                 if (prim->attributes[a].type == cgltf_attribute_type_position) {
                     posAccessor = prim->attributes[a].data;
+                } else if (prim->attributes[a].type == cgltf_attribute_type_normal) {
+                    normAccessor = prim->attributes[a].data;
                 } else if (prim->attributes[a].type == cgltf_attribute_type_texcoord) {
                     texAccessor = prim->attributes[a].data;
                 }
@@ -74,12 +77,16 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             
             for (uint32_t v = 0; v < vertexCount; ++v) {
                 cgltf_accessor_read_float(posAccessor, v, &vertices[v].position.v[0], 3);
+                if (normAccessor) {
+                    cgltf_accessor_read_float(normAccessor, v, &vertices[v].normal.v[0], 3);
+                } else {
+                    vertices[v].normal.v[0] = 0.0f;
+                    vertices[v].normal.v[1] = 1.0f;
+                    vertices[v].normal.v[2] = 0.0f;
+                }
                 if (texAccessor) {
                     cgltf_accessor_read_float(texAccessor, v, &vertices[v].texCoord.v[0], 2);
                 }
-                vertices[v].color.v[0] = 1.0f;
-                vertices[v].color.v[1] = 1.0f;
-                vertices[v].color.v[2] = 1.0f;
             }
             
             uint32_t indexCount = prim->indices->count;

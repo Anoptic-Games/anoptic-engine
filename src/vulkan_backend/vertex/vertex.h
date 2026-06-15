@@ -39,7 +39,7 @@ typedef struct Vector3
 typedef struct Vertex
 {
 	Vector3 position;
-	Vector3 color;
+	Vector3 normal;
 	Vector2 texCoord;
 } Vertex;
 

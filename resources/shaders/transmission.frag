@@ -74,7 +74,7 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
-layout(location = 0) in vec3 fragColor;
+layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragTexCoord;
 layout(location = 2) flat in uint inMaterialIndex;
 layout(location = 3) in vec3 fragWorldPos;
@@ -155,8 +155,7 @@ void main() {
         occlusion = texture(textures[nonuniformEXT(mat.occlusionTexture)], fragTexCoord).r;
     }
 
-    // Flat / Face normal calculation
-    vec3 normal = normalize(cross(dFdx(fragWorldPos), dFdy(fragWorldPos)));
+    vec3 normal = normalize(fragNormal);
     if (!gl_FrontFacing) {
         normal = -normal;
     }
