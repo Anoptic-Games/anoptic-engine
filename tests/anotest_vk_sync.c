@@ -5,7 +5,7 @@
 
 extern uint32_t g_ValidationErrors;
 extern struct VulkanGarbage vulkanGarbage;
-extern RendererState rendererState;
+// rendererState is declared extern in vulkanMaster.h
 
 int main() {
     printf("Starting Vulkan Synchronization Primitives test...\n");

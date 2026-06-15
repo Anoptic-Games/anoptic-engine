@@ -81,6 +81,13 @@ int main() {
         return 1;
     }
 
+    if (testAlloc.offset % memRequirements.alignment != 0) {
+        printf("Error: gpu_alloc offset (%zu) violates required alignment (%zu)!\n", testAlloc.offset, memRequirements.alignment);
+        vkDestroyBuffer(ctx->device, testBuffer, NULL);
+        unInitVulkan();
+        return 1;
+    }
+
     if (vkBindBufferMemory(ctx->device, testBuffer, testAlloc.memory, testAlloc.offset) != VK_SUCCESS) {
         printf("Error: failed to bind buffer to arena allocation!\n");
         vkDestroyBuffer(ctx->device, testBuffer, NULL);
