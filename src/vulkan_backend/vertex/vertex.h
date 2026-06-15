@@ -52,6 +52,7 @@ typedef struct GlobalUBO
 	float deltaTime;
 	uint32_t frameCount;
 	uint32_t lightCount;   // number of active lights in the light SSBO (set 0, binding 8)
+	float cameraPos[4];    // world-space camera position (xyz; w unused), avoids per-fragment inverse(view)
 } GlobalUBO;
 
 
