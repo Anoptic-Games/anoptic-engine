@@ -1133,7 +1133,7 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 
 	float eye[] = {0.0f, 0.9f, 3.5f};  // Move camera up and back
 	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
-	float up[] = {0.0f, -1.0f, 0.0f};  // World is flipped // TODO: Maybe unflip the world
+	float up[] = {0.0f, 1.0f, 0.0f};  // World is unflipped
 
 	lookAt(state->uboData.view, eye, center, up);
 

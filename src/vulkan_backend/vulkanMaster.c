@@ -1119,7 +1119,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		{0, 0, 1, 0},
 		{0, 0, 0, 1}
 	};
-	rotateMatrix(identity, 'X', 3.14159f / 2.0f);
+	rotateMatrix(identity, 'X', -3.14159f / 2.0f);
 	instantiate_model(vikingRoomAsset, identity);
 
 	uint32_t vikingRoomEntityCount = rendererState.entityCount;
