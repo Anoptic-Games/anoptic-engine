@@ -125,19 +125,27 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	meshDataLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
 	meshDataLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[7] = {
+	VkDescriptorSetLayoutBinding compactedEntityIndicesLayoutBinding = {};
+	compactedEntityIndicesLayoutBinding.binding = 7;
+	compactedEntityIndicesLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	compactedEntityIndicesLayoutBinding.descriptorCount = 1;
+	compactedEntityIndicesLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	compactedEntityIndicesLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[8] = {
 		uboLayoutBinding, 
 		ssboLayoutBinding, 
 		materialLayoutBinding, 
 		entityLayoutBinding,
 		vertexBufferLayoutBinding,
 		indexBufferLayoutBinding,
-		meshDataLayoutBinding
+		meshDataLayoutBinding,
+		compactedEntityIndicesLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 7;
+	layoutInfo.bindingCount = 8;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -151,7 +159,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[7] = {};
+    VkDescriptorSetLayoutBinding bindings[9] = {};
 
     // 0: CullUBO
     bindings[0].binding = 0;
@@ -195,9 +203,21 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    // 7: CompactedEntityIndices
+    bindings[7].binding = 7;
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 8: MaterialSSBO
+    bindings[8].binding = 8;
+    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[8].descriptorCount = 1;
+    bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 7;
+    layoutInfo.bindingCount = 9;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)

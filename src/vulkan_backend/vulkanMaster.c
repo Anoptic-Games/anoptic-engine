@@ -177,6 +177,22 @@ void recordCommandBuffer(uint32_t imageIndex)
 
         if (pass->type == PASS_COMPUTE) {
             if (entityCount > 0) {
+                if (pass->prototype == PIPELINE_COMPUTE_CULL) {
+                    // Zero out the entire indirect buffer and draw count buffer
+                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0, 
+                        sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT, 0);
+                    vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
+                        sizeof(uint32_t) * PIPELINE_TYPE_COUNT, 0);
+
+                    // Add a barrier to make sure the fill completes before the compute shader writes to it
+                    VkMemoryBarrier fillBarrier = {};
+                    fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                    fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, 1, &fillBarrier, 0, NULL, 0, NULL);
+                }
+
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
                 
                 VkDescriptorSet set = pass->prototype == PIPELINE_COMPUTE_UPDATE ? 
@@ -271,23 +287,27 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     rendererState.prototypes[pass->prototype].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
 
-                uint32_t baseOffset = 0; // base offset is 0 because firstInstance inherently handles the offset
+                uint32_t pipelineType = pass->prototype;
+                uint32_t baseOffset = pipelineType * rendererState.culling.maxEntities;
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_MESH_BIT_EXT, 0, sizeof(uint32_t), &baseOffset);
+
+                VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * rendererState.indirectBuffer.capacity * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                VkDeviceSize countOffset = (VkDeviceSize)pipelineType * sizeof(uint32_t);
 
                 if (ctx.deviceCapabilities.drawIndirectCount) {
                     pfnVkCmdDrawMeshTasksIndirectCountEXT(
                         cmd,
                         rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        0,
+                        indirectOffset,
                         rendererState.culling.drawCountBuffer[rendererState.frameIndex],
-                        0,
+                        countOffset,
                         rendererState.indirectBuffer.capacity,
                         sizeof(VkDrawMeshTasksIndirectCommandEXT));
                 } else {
                     pfnVkCmdDrawMeshTasksIndirectEXT(
                         cmd,
                         rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        0,
+                        indirectOffset,
                         entityCount,
                         sizeof(VkDrawMeshTasksIndirectCommandEXT));
                 }
@@ -360,7 +380,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     RenderEntity* entities = state->entities;
 
     // Reset draw count
-    *state->culling.drawCountMapped[frameIndex] = 0;
+    memset(state->culling.drawCountMapped[frameIndex], 0, sizeof(uint32_t) * PIPELINE_TYPE_COUNT);
 
     // Update CullUBO
     CullUBO* ubo = state->culling.ubo.mapped[frameIndex];
@@ -373,6 +393,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     extractFrustumPlanes(ubo->frustumPlanes, ubo->viewProj);
 
     ubo->entityCount = entityCount;
+    ubo->maxEntities = state->culling.maxEntities;
 
     // Update EntitySSBO
     uint32_t* entityBuffer = (uint32_t*)state->culling.entityMapped[frameIndex];
@@ -660,14 +681,14 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
 
 bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
-    VkDeviceSize bufferSize = sizeof(VkDrawMeshTasksIndirectCommandEXT) * maxDraws;
+    VkDeviceSize bufferSize = sizeof(VkDrawMeshTasksIndirectCommandEXT) * maxDraws * PIPELINE_TYPE_COUNT;
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
         VkBufferCreateInfo bufferInfo = {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = bufferSize,
-            .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE
         };
 
@@ -699,7 +720,8 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     VkDeviceSize entityBufferSize = sizeof(uint32_t) * 2 * maxEntities; // meshIndex, materialIndex
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
-    VkDeviceSize drawCountSize = sizeof(uint32_t);
+    VkDeviceSize drawCountSize = sizeof(uint32_t) * PIPELINE_TYPE_COUNT;
+    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * PIPELINE_TYPE_COUNT;
     VkDeviceSize uboSize = sizeof(CullUBO);
     
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -756,7 +778,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         VkBufferCreateInfo countInfo = {};
         countInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         countInfo.size = drawCountSize;
-        countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         countInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         vkCreateBuffer(ctx->device, &countInfo, NULL, &state->culling.drawCountBuffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.drawCountBuffer[i], &memReqs);
@@ -767,6 +789,22 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         }
         vkBindBufferMemory(ctx->device, state->culling.drawCountBuffer[i], state->culling.drawCountAllocs[i].memory, state->culling.drawCountAllocs[i].offset);
         state->culling.drawCountMapped[i] = (uint32_t*)state->culling.drawCountAllocs[i].mapped;
+
+        // Compacted Entity Indices Buffer
+        VkBufferCreateInfo compactedInfo = {};
+        compactedInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        compactedInfo.size = compactedEntityIndicesSize;
+        compactedInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        compactedInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(ctx->device, &compactedInfo, NULL, &state->culling.compactedEntityIndicesBuffer[i]);
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.compactedEntityIndicesBuffer[i], &memReqs);
+        state->culling.compactedEntityIndicesAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->culling.compactedEntityIndicesAllocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.compactedEntityIndicesBuffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, state->culling.compactedEntityIndicesBuffer[i], state->culling.compactedEntityIndicesAllocs[i].memory, state->culling.compactedEntityIndicesAllocs[i].offset);
+        state->culling.compactedEntityIndicesMapped[i] = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
 
         // Cull UBO
         VkBufferCreateInfo uboInfo = {};

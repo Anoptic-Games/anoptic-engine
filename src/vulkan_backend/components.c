@@ -145,4 +145,6 @@ void ano_vk_init_default_material_data(struct MaterialData* mat) {
     mat->diffuseTransmissionColorFactor[1] = 1.0f;
     mat->diffuseTransmissionColorFactor[2] = 1.0f;
     mat->diffuseTransmissionColorFactor[3] = 1.0f;
+
+    mat->pipelineType = 0; // PIPELINE_FLAT
 }
