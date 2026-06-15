@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Bash(./build.sh *)", "Bash(cmake *)", "Bash(ctest *)",
+      "Bash(git diff *)", "Bash(git status)", "Bash(git log *)",
+      "Read", "Edit", "Grep", "Glob"
+    ],
+    "deny": [
+      "Bash(git push *)", "Bash(git reset --hard *)", "Bash(rm -rf *)"
+    ]
+  },
+  "hooks": {}
+}
