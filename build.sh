@@ -42,6 +42,14 @@ case $1 in
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=tsan"
     run_tests=1
     ;;
+  6)
+    # Headless: core + CTest, renderer explicitly disabled (no Vulkan probe)
+    build_type="Debug"
+    build_dir="Headless"
+    toolchain_file="debug_clang-linux-x64.cmake"
+    extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON"
+    run_tests=1
+    ;;
   *)
     echo "Usage: $0 <build_type>"
     echo "  where <build_type> is one of:"
@@ -50,6 +58,7 @@ case $1 in
     echo "    3 = Tests (build + run CTest)"
     echo "    4 = Tests + AddressSanitizer/UBSan"
     echo "    5 = Tests + ThreadSanitizer"
+    echo "    6 = Headless tests (core + CTest, no renderer)"
     exit 1
     ;;
 esac
@@ -60,11 +69,24 @@ script_dir=$(dirname "$0")
 # Path to the toolchain file
 toolchain_path="$script_dir/cmake/platforms/${toolchain_file}"
 
+# macOS: Homebrew clang, no toolchain file (Apple clang rejects C23). Else: toolchain file.
+if [ "$(uname -s)" = "Darwin" ]; then
+    # || true: keep set -e from aborting here when llvm is absent; the check below reports it.
+    llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
+    if [ -z "$llvm_prefix" ] || [ ! -x "$llvm_prefix/bin/clang" ]; then
+        echo "Error: Homebrew LLVM clang not found. Install it with 'brew install llvm'."
+        exit 1
+    fi
+    platform_args="-DCMAKE_C_COMPILER=$llvm_prefix/bin/clang -DCMAKE_CXX_COMPILER=$llvm_prefix/bin/clang++"
+else
+    platform_args="-DCMAKE_TOOLCHAIN_FILE=${toolchain_path}"
+fi
+
 # Create build directory if not exist
 mkdir -p ./build/${build_dir}
 
 # Configure the build
-cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} -DCMAKE_TOOLCHAIN_FILE=${toolchain_path} -S . -B ./build/${build_dir}
+cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
 
 # Build the project
 cmake --build ./build/${build_dir}

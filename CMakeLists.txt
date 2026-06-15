@@ -17,15 +17,15 @@ else()
 endif()
 
 # Enable C23 standard with GNU extensions (gnu23).
-# _POSIX_C_SOURCE declared below for clock_gettime etc.
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)
+option(ANOPTIC_HEADLESS "Build without the Vulkan renderer" OFF)
 set(ANOPTIC_SANITIZE "" CACHE STRING "Sanitizer for test builds: asan, tsan, or empty")
 
-# Sanitizer flags are global so mimalloc is instrumented too
+# Sanitizer flags
 if(ANOPTIC_SANITIZE STREQUAL "asan")
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
     add_link_options(-fsanitize=address,undefined)
@@ -79,6 +79,7 @@ endif()
 target_compile_definitions(anoptic_core PUBLIC
         "$<$<CONFIG:Debug>:DEBUG_BUILD>"
         "$<$<CONFIG:Release>:RELEASE_BUILD>"
+        "$<$<BOOL:${ANOPTIC_HEADLESS}>:HEADLESS_BUILD>"
 )
 
 target_compile_options(anoptic_core PRIVATE
@@ -94,8 +95,11 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 
-# anopticengine executable (requires Vulkan + GLFW, skipped if absent)
-find_package(Vulkan)
+# Renderer (default on).
+if(NOT ANOPTIC_HEADLESS)
+    find_package(Vulkan)
+endif()
+
 if(Vulkan_FOUND)
     add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
 
@@ -108,20 +112,7 @@ if(Vulkan_FOUND)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-    add_executable(anopticengine ./src/engine/main.c)
-
-    # Define the project root path
-    target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
-
-    target_link_libraries(anopticengine PRIVATE anoptic_render)
-
-    target_compile_options(anopticengine PRIVATE
-            "$<$<CONFIG:Debug>:-O0;-g>"
-            "$<$<CONFIG:Release>:-O3>"
-    )
-
-    # Shaders: compile at build time so .spv don't silently desync from source. 
-    # glslc is located by FindVulkan (Vulkan_GLSLC_EXECUTABLE),
+    # Shaders: compile at build time so .spv don't silently desync from source.
     # If glslc is absent, fallback to existing .spv (which may be stale).
     if(Vulkan_GLSLC_EXECUTABLE)
         set(SHADER_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
@@ -136,16 +127,30 @@ if(Vulkan_FOUND)
             list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${shader}.spv)
         endforeach()
         add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
-        add_dependencies(anopticengine anoptic_shaders)
     else()
-        message(WARNING
-            "glslc not found — skipping shader compilation; using the committed "
-            "resources/shaders/*.spv, which may be stale. Install the Vulkan SDK and "
-            "set VULKAN_SDK (source its setup-env.sh) or put glslc on PATH to recompile "
-            "shaders automatically.")
+        message(WARNING "glslc not found: using committed resources/shaders/*.spv (may be stale).")
     endif()
-else()
-    message(WARNING "Vulkan SDK not found: building anoptic_core and tests only.")
+elseif(NOT ANOPTIC_HEADLESS)
+    message(WARNING "Vulkan SDK not found: building anoptic_core + tests only (use -DANOPTIC_HEADLESS=ON for a console engine).")
+endif()
+
+# anopticengine: headless links anoptic_core (main.c's HEADLESS_BUILD path);
+# a renderer build links anoptic_render. Neither => no runnable engine, so it
+# isn't built. Tests don't touch main.c and are unaffected either way.
+if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
+    add_executable(anopticengine ./src/engine/main.c)
+    target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+    target_compile_options(anopticengine PRIVATE
+            "$<$<CONFIG:Debug>:-O0;-g>"
+            "$<$<CONFIG:Release>:-O3>")
+    if(Vulkan_FOUND)
+        target_link_libraries(anopticengine PRIVATE anoptic_render)
+        if(TARGET anoptic_shaders)
+            add_dependencies(anopticengine anoptic_shaders)
+        endif()
+    else()
+        target_link_libraries(anopticengine PRIVATE anoptic_core)
+    endif()
 endif()
 
 # CTest integration

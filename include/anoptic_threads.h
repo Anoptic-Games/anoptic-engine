@@ -9,6 +9,7 @@
 
 #include <stddef.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 // Represents a thread handle.
 typedef pthread_t anothread_t;
@@ -25,6 +26,10 @@ typedef pthread_cond_t anothread_cond_t;
 typedef pthread_condattr_t anothread_condattr_t;
 
 // Represents spinlock types
+#if defined(__APPLE__)
+// macOS libpthread has no pthread_spinlock_t; define it (C23 atomics).
+typedef atomic_int pthread_spinlock_t;
+#endif
 typedef pthread_spinlock_t anothread_spinlock_t;
 
 // Represents rwlock types.
@@ -32,6 +37,17 @@ typedef pthread_rwlock_t anothread_rwlock_t;
 typedef pthread_rwlockattr_t anothread_rwlockattr_t;
 
 // Represents barrier types
+#if defined(__APPLE__)
+// macOS libpthread has no pthread_barrier_t/attr; define per glibc's shape (C23 atomics).
+typedef struct {
+	unsigned int count;       // required arrivals, set at init
+	atomic_uint  arrived;     // arrivals in the current round
+	atomic_uint  generation;  // phase counter; enables barrier reuse
+} pthread_barrier_t;
+typedef struct {
+	int pshared;
+} pthread_barrierattr_t;
+#endif
 typedef pthread_barrier_t anothread_barrier_t;
 typedef pthread_barrierattr_t anothread_barrierattr_t;
 
@@ -41,6 +57,7 @@ typedef pthread_key_t anothread_key_t;
 
 // Function signature for thread entry point.
 //typedef void *(*ano_thread_func)(void *arg);
+
 
 /* Thread Management */
 
@@ -67,6 +84,7 @@ int ano_mutex_destroy(anothread_mutex_t *mutex);
 
 
 /* Condition Variables */
+
 int ano_thread_cond_init(anothread_cond_t *conditionVariable, const anothread_condattr_t *attr);
 
 int ano_thread_cond_wait(anothread_cond_t *conditionVariable, anothread_mutex_t *external_mutex);
