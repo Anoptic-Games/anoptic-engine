@@ -81,7 +81,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	uboLayoutBinding.binding = 0;
 	uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	uboLayoutBinding.descriptorCount = 1;
-	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT;
 	uboLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
