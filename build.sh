@@ -60,11 +60,23 @@ script_dir=$(dirname "$0")
 # Path to the toolchain file
 toolchain_path="$script_dir/cmake/platforms/${toolchain_file}"
 
+# macOS: Homebrew clang, no toolchain file (Apple clang rejects C23). Else: toolchain file.
+if [ "$(uname -s)" = "Darwin" ]; then
+    llvm_prefix="$(brew --prefix llvm 2>/dev/null)"
+    if [ -z "$llvm_prefix" ] || [ ! -x "$llvm_prefix/bin/clang" ]; then
+        echo "Error: Homebrew LLVM clang not found. Install it with 'brew install llvm'."
+        exit 1
+    fi
+    platform_args="-DCMAKE_C_COMPILER=$llvm_prefix/bin/clang -DCMAKE_CXX_COMPILER=$llvm_prefix/bin/clang++"
+else
+    platform_args="-DCMAKE_TOOLCHAIN_FILE=${toolchain_path}"
+fi
+
 # Create build directory if not exist
 mkdir -p ./build/${build_dir}
 
 # Configure the build
-cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} -DCMAKE_TOOLCHAIN_FILE=${toolchain_path} -S . -B ./build/${build_dir}
+cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
 
 # Build the project
 cmake --build ./build/${build_dir}
