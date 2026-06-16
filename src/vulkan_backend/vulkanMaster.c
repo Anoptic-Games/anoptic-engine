@@ -188,9 +188,12 @@ void recordCommandBuffer(uint32_t imageIndex)
         if (pass->type == PASS_COMPUTE) {
             if (entityCount > 0) {
                 if (pass->prototype == PIPELINE_COMPUTE_CULL) {
-                    // Zero out the entire indirect buffer and draw count buffer
-                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0, 
-                        sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT, 0);
+                    // Zero the entire indirect buffer (sized for the larger command format)
+                    // so unwritten slots decode as no-op draws on either path, plus the draw count.
+                    VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+                        ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
+                        cmdStride * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT, 0);
                     vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
                         sizeof(uint32_t) * PIPELINE_TYPE_COUNT, 0);
 
@@ -229,8 +232,12 @@ void recordCommandBuffer(uint32_t imageIndex)
                     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 } else {
+                    // The cull pass feeds the indirect commands (DRAW_INDIRECT) and the
+                    // compacted/entity SSBOs read by the geometry stage (mesh or vertex).
+                    VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
+                        ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
                     memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT,
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 }
             }
@@ -299,27 +306,36 @@ void recordCommandBuffer(uint32_t imageIndex)
 
                 uint32_t pipelineType = pass->prototype;
                 uint32_t baseOffset = pipelineType * rendererState.culling.maxEntities;
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_MESH_BIT_EXT, 0, sizeof(uint32_t), &baseOffset);
+                bool useMesh = ctx.deviceCapabilities.meshShader;
+                VkShaderStageFlags pcStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, pcStage, 0, sizeof(uint32_t), &baseOffset);
 
-                VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * rendererState.indirectBuffer.capacity * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
+                VkBuffer drawCountBuf = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
                 VkDeviceSize countOffset = (VkDeviceSize)pipelineType * sizeof(uint32_t);
+                uint32_t maxDraws = rendererState.indirectBuffer.capacity;
 
-                if (ctx.deviceCapabilities.drawIndirectCount) {
-                    pfnVkCmdDrawMeshTasksIndirectCountEXT(
-                        cmd,
-                        rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        indirectOffset,
-                        rendererState.culling.drawCountBuffer[rendererState.frameIndex],
-                        countOffset,
-                        rendererState.indirectBuffer.capacity,
-                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                if (useMesh) {
+                    VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * maxDraws * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                    if (ctx.deviceCapabilities.drawIndirectCount) {
+                        pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset,
+                            drawCountBuf, countOffset, maxDraws, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                    } else {
+                        pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset,
+                            entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                    }
                 } else {
-                    pfnVkCmdDrawMeshTasksIndirectEXT(
-                        cmd,
-                        rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        indirectOffset,
-                        entityCount,
-                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                    // Fallback: classic indexed indirect over the shared geometry index buffer.
+                    // The cull pass wrote mesh-local firstIndex/indexCount + per-mesh vertexOffset.
+                    vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                    VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * maxDraws * sizeof(VkDrawIndexedIndirectCommand);
+                    if (ctx.deviceCapabilities.drawIndirectCount) {
+                        vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset,
+                            drawCountBuf, countOffset, maxDraws, sizeof(VkDrawIndexedIndirectCommand));
+                    } else {
+                        vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset,
+                            entityCount, sizeof(VkDrawIndexedIndirectCommand));
+                    }
                 }
             }
             
@@ -428,8 +444,8 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         meshData[i*8 + 2] = mesh->uniqueVerticesOffset;
         meshData[i*8 + 3] = mesh->trianglesOffset;
         meshData[i*8 + 4] = mesh->vertexOffset;
-        meshData[i*8 + 5] = 0; // Padding/Unused
-        meshData[i*8 + 6] = 0;
+        meshData[i*8 + 5] = mesh->classicIndexCount;       // fallback: VkDrawIndexedIndirectCommand.indexCount
+        meshData[i*8 + 6] = mesh->classicIndexOffset / 4;  // fallback: firstIndex (u32 index units)
         meshData[i*8 + 7] = 0;
 
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
@@ -752,7 +768,11 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
 
 bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
-    VkDeviceSize bufferSize = sizeof(VkDrawMeshTasksIndirectCommandEXT) * maxDraws * PIPELINE_TYPE_COUNT;
+    // Size for the larger of the two command formats so one allocation serves both
+    // paths: VkDrawMeshTasksIndirectCommandEXT (12 B) or VkDrawIndexedIndirectCommand (20 B).
+    VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+        ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+    VkDeviceSize bufferSize = cmdStride * maxDraws * PIPELINE_TYPE_COUNT;
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
@@ -1018,14 +1038,18 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-    pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
-    pfnVkCmdDrawMeshTasksIndirectEXT = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectEXT");
-    pfnVkCmdDrawMeshTasksIndirectCountEXT = (PFN_vkCmdDrawMeshTasksIndirectCountEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectCountEXT");
+    // Mesh-shader entry points only exist on the mesh path. The fallback path draws
+    // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
+    if (ctx.deviceCapabilities.meshShader) {
+        pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
+        pfnVkCmdDrawMeshTasksIndirectEXT = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectEXT");
+        pfnVkCmdDrawMeshTasksIndirectCountEXT = (PFN_vkCmdDrawMeshTasksIndirectCountEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectCountEXT");
 
-    if (!pfnVkCmdDrawMeshTasksEXT || !pfnVkCmdDrawMeshTasksIndirectEXT || !pfnVkCmdDrawMeshTasksIndirectCountEXT) {
-        fprintf(stderr, "Failed to load mesh shader extension function pointers!\n");
-        unInitVulkan();
-        return false;
+        if (!pfnVkCmdDrawMeshTasksEXT || !pfnVkCmdDrawMeshTasksIndirectEXT || !pfnVkCmdDrawMeshTasksIndirectCountEXT) {
+            fprintf(stderr, "Failed to load mesh shader extension function pointers!\n");
+            unInitVulkan();
+            return false;
+        }
     }
 
 	gpuAllocator.device = ctx.device;

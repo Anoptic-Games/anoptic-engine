@@ -15,9 +15,13 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache);
 
+	// Mesh stage on capable devices, vertex stage on the fallback path.
+	bool useMesh = ctx->deviceCapabilities.meshShader;
+	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+
 	// 2. Setup layout
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	pushConstantRange.stageFlags = geometryStage;
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = sizeof(uint32_t);
 
@@ -47,39 +51,25 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 		PBR_FEATURE_ALPHA_MODE_OPAQUE | 
 		PBR_FEATURE_ALPHA_MODE_BLEND;
 
-	// Load shaders
-	struct Buffer meshShaderCode;
-	char meshShaderPath[256];
-	snprintf(meshShaderPath, sizeof(meshShaderPath), "%s/resources/shaders/flat.mesh.spv", PROJECT_ROOT);
-	if (!loadFile(meshShaderPath, &meshShaderCode)) return false;
+	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
+	struct Buffer geomShaderCode;
+	char geomShaderPath[256];
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
+	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
 	char fragShaderPath[256];
 	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/flat.frag.spv", PROJECT_ROOT);
 	if (!loadFile(fragShaderPath, &fragShaderCode)) return false;
 
-	VkShaderModule meshShaderModule = createShaderModule(ctx->device, &meshShaderCode);
+	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
-	VkSpecializationMapEntry specMapEntry = {};
-	specMapEntry.constantID = 0;
-	specMapEntry.offset = 0;
-	specMapEntry.size = sizeof(VkBool32);
-
-	VkBool32 useFirstInstance = ctx->deviceCapabilities.drawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
-
-	VkSpecializationInfo specInfo = {};
-	specInfo.mapEntryCount = 1;
-	specInfo.pMapEntries = &specMapEntry;
-	specInfo.dataSize = sizeof(VkBool32);
-	specInfo.pData = &useFirstInstance;
-
-	VkPipelineShaderStageCreateInfo meshShaderStageInfo = {};
-	meshShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	meshShaderStageInfo.stage = VK_SHADER_STAGE_MESH_BIT_EXT;
-	meshShaderStageInfo.module = meshShaderModule;
-	meshShaderStageInfo.pName = "main";
-	meshShaderStageInfo.pSpecializationInfo = &specInfo;
+	VkPipelineShaderStageCreateInfo geomShaderStageInfo = {};
+	geomShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	geomShaderStageInfo.stage = geometryStage;
+	geomShaderStageInfo.module = geomShaderModule;
+	geomShaderStageInfo.pName = "main";
 
 	VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
 	fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -87,7 +77,7 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	fragShaderStageInfo.module = fragShaderModule;
 	fragShaderStageInfo.pName = "main";
 
-	VkPipelineShaderStageCreateInfo shaderStages[] = {meshShaderStageInfo, fragShaderStageInfo};
+	VkPipelineShaderStageCreateInfo shaderStages[] = {geomShaderStageInfo, fragShaderStageInfo};
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -176,13 +166,24 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	renderingInfo.pColorAttachmentFormats = &colorFormat;
 	renderingInfo.depthAttachmentFormat = depthFormat;
 
+	// The mesh path needs neither vertex-input nor input-assembly state. The fallback
+	// vertex path uses programmable vertex pulling (no vertex buffers, so an empty
+	// vertex-input state) and a triangle-list assembly over the bound index buffer.
+	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	inputAssembly.primitiveRestartEnable = VK_FALSE;
+
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineInfo.pNext = &renderingInfo;
 	pipelineInfo.stageCount = 2;
 	pipelineInfo.pStages = shaderStages;
-	pipelineInfo.pVertexInputState = NULL;
-	pipelineInfo.pInputAssemblyState = NULL;
+	pipelineInfo.pVertexInputState = useMesh ? NULL : &vertexInputInfo;
+	pipelineInfo.pInputAssemblyState = useMesh ? NULL : &inputAssembly;
 	pipelineInfo.pViewportState = &viewportState;
 	pipelineInfo.pRasterizationState = &rasterizer;
 	pipelineInfo.pMultisampleState = &multisampling;
@@ -215,10 +216,10 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
 
-	ano_aligned_free(meshShaderCode.data);
+	ano_aligned_free(geomShaderCode.data);
 	ano_aligned_free(fragShaderCode.data);
 
-	vkDestroyShaderModule(ctx->device, meshShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
 
 	return true;

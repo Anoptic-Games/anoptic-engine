@@ -21,6 +21,8 @@ typedef struct MeshRegion
     uint32_t    uniqueVerticesOffset; // byte offset of unique vertices in index buffer
     uint32_t    trianglesOffset; // byte offset of local triangles in index buffer
     uint32_t    boundsOffset;   // byte offset of bounds in index buffer
+    uint32_t    classicIndexOffset; // byte offset of the plain u32 triangle-list index region (fallback path)
+    uint32_t    classicIndexCount;  // number of u32 indices in the classic region (fallback path)
     float       boundingSphereCenter[3];
     float       boundingSphereRadius;
 } MeshRegion;
