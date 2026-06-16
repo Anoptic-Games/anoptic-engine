@@ -52,7 +52,7 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 	bool float64;
 	bool int64;
 	bool drawIndirectCount;
-	bool drawIndirectFirstInstance;
+	bool meshShader;            // VK_EXT_mesh_shader present and meshShader feature usable; false selects the vertex-shader fallback path
 } DeviceCapabilities;
 
 typedef struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each

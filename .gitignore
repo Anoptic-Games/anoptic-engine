@@ -64,6 +64,7 @@ poetry.lock
 # Doc-generated pdfs
 docs/*.pdf
 docs/references/*.pdf
+docs/artifacts/*
 
 # IDE-specific directories
 .vscode/

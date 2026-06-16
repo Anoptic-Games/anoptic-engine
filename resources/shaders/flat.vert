@@ -1,0 +1,76 @@
+#version 460
+#extension GL_ARB_shader_draw_parameters : require
+
+// Fallback geometry stage for devices without VK_EXT_mesh_shader.
+// This is the per-vertex half of flat.mesh: same SSBOs, same outputs. The cull
+// compute pass emits VkDrawIndexedIndirectCommands and the hardware index/vertex
+// fetch expands the mesh the way the mesh shader expanded meshlets, so here we only
+// transform one vertex. flat.frag / transmission.frag consume the outputs unchanged.
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4 view;
+    mat4 proj;
+    float time;
+    float deltaTime;
+    uint frameCount;
+    uint lightCount;
+    vec4 cameraPos;
+} global;
+
+layout(set = 0, binding = 1) readonly buffer TransformSSBO {
+    mat4 transforms[];
+} transformBuf;
+
+struct EntityInfo {
+    uint meshIndex;
+    uint materialIndex;
+};
+
+layout(set = 0, binding = 3) readonly buffer EntitySSBO {
+    EntityInfo entities[];
+} entityBuf;
+
+struct PackedVertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+};
+
+layout(set = 0, binding = 4, std430) readonly buffer VertexBuffer {
+    PackedVertex vertices[];
+} vertexBuf;
+
+layout(set = 0, binding = 7) readonly buffer CompactedEntityIndices {
+    uint entityIndices[];
+} compactedBuf;
+
+layout(push_constant) uniform PushConstants {
+    uint transformBaseOffset;
+} pc;
+
+layout(location = 0) out vec3 fragNormal;
+layout(location = 1) out vec2 fragTexCoord;
+layout(location = 2) flat out uint outMaterialIndex;
+layout(location = 3) out vec3 fragWorldPos;
+
+void main() {
+    // Same entity lookup as flat.mesh: gl_DrawID indexes the compacted visible list.
+    uint entityIndex = compactedBuf.entityIndices[pc.transformBaseOffset + uint(gl_DrawIDARB)];
+    EntityInfo entity = entityBuf.entities[entityIndex];
+
+    // Programmable vertex pulling. gl_VertexIndex = command.vertexOffset + indexBuffer[i],
+    // i.e. the global vertex index into the shared vertex mega-buffer.
+    PackedVertex v = vertexBuf.vertices[gl_VertexIndex];
+    vec3 position = vec3(v.px, v.py, v.pz);
+    vec3 normal   = vec3(v.nx, v.ny, v.nz);
+    vec2 texCoord = vec2(v.u, v.v);
+
+    mat4 model = transformBuf.transforms[entityIndex];
+    vec4 worldPos = model * vec4(position, 1.0);
+
+    gl_Position      = global.proj * global.view * worldPos;
+    fragNormal       = mat3(model) * normal;
+    fragTexCoord     = texCoord;
+    outMaterialIndex = entity.materialIndex;
+    fragWorldPos     = worldPos.xyz;
+}

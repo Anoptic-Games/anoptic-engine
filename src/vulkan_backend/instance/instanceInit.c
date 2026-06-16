@@ -28,7 +28,10 @@ VkExtent2D chooseSwapExtent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* w
 
 // Variables
 
-static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_EXT_MESH_SHADER_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
+// Hard-required device extensions. VK_EXT_mesh_shader is NOT here: it is optional
+// and appended dynamically in createLogicalDevice when the device supports it.
+// Devices without it take the vertex-shader fallback path.
+static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
 
 // Vulkan component initialization functions
 
@@ -342,8 +345,12 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 {
 	struct DeviceCapabilities capabilities;
 
+	VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
+	meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+
 	VkPhysicalDeviceVulkan12Features features12 = {};
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	features12.pNext = &meshShaderFeatures;
 
 	VkPhysicalDeviceFeatures2 features2 = {};
 	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -355,7 +362,11 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	capabilities.float64 = features2.features.shaderFloat64;
 	capabilities.int64 = features2.features.shaderInt64;
 	capabilities.drawIndirectCount = features12.drawIndirectCount;
-	capabilities.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
+	// Drivers leave meshShaderFeatures untouched when VK_EXT_mesh_shader is absent,
+	// so a true value here implies both the extension and the feature are usable.
+	capabilities.meshShader = meshShaderFeatures.meshShader;
+	// Test hook: force the vertex-shader fallback path on mesh-capable hardware.
+	if (getenv("ANO_FORCE_NO_MESH_SHADER")) capabilities.meshShader = false;
 
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
@@ -431,11 +442,15 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 	                          features12.descriptorBindingSampledImageUpdateAfterBind;
 	bool requiredDynamicRendering = dynamicRenderingFeature.dynamicRendering;
 	bool requiredMultiDraw = features2.features.multiDrawIndirect;
-	bool requiredMeshShader = meshShaderFeatures.meshShader;
 
-	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw || !requiredMeshShader) {
-		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, multiDrawIndirect, or meshShader features.\n");
+	// Mesh shader is preferred but NOT required: devices without it render via the
+	// vertex-shader fallback path. Everything below is needed by BOTH paths.
+	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
+		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.\n");
 		return false;
+	}
+	if (!meshShaderFeatures.meshShader) {
+		fprintf(stderr, "Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.\n");
 	}
 
 	return physicalRequirements && queueRequirements && extensionsSupported;
@@ -595,7 +610,6 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	deviceFeatures.samplerAnisotropy = features2.features.samplerAnisotropy;
 	deviceFeatures.multiDrawIndirect = features2.features.multiDrawIndirect;
 	deviceFeatures.geometryShader = features2.features.geometryShader;
-	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -639,6 +653,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
 	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
 
+	// Mirror populateCapabilities: the fallback path activates when the feature is
+	// absent or the test override forces it off.
+	bool meshSupported = queryMeshShaderFeatures.meshShader && !getenv("ANO_FORCE_NO_MESH_SHADER");
+
 	VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
 	meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
 	meshShaderFeatures.taskShader = queryMeshShaderFeatures.taskShader;
@@ -655,8 +673,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
 	dynamicRenderingFeature.dynamicRendering = queryDynamicRendering.dynamicRendering;
 
-	dynamicRenderingFeature.pNext = &meshShaderFeatures;
-	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering -> mesh shader -> NULL
+	// Only chain the mesh-shader feature struct when we will actually enable the
+	// extension; chaining it otherwise is invalid usage on non-mesh devices.
+	dynamicRenderingFeature.pNext = meshSupported ? (void*)&meshShaderFeatures : NULL;
+	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering -> [mesh shader] -> NULL
 	features12.pNext = &features11;
 
 	VkDeviceCreateInfo createInfo = {};
@@ -666,9 +686,20 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	createInfo.queueCreateInfoCount = queueCount;
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
-	createInfo.enabledExtensionCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
-	printf("Required extensions: %s, %s, %s\n", requiredExtensions[0], requiredExtensions[1], requiredExtensions[2]);
-	createInfo.ppEnabledExtensionNames = requiredExtensions;
+
+	// Build the enabled-extension list: the hard-required set, plus VK_EXT_mesh_shader
+	// only when the device supports it (and the fallback is not forced).
+	uint32_t requiredExtensionCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
+	const char* enabledExtensions[8];
+	uint32_t enabledExtensionCount = 0;
+	for (uint32_t i = 0; i < requiredExtensionCount; i++)
+		enabledExtensions[enabledExtensionCount++] = requiredExtensions[i];
+	if (meshSupported)
+		enabledExtensions[enabledExtensionCount++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+
+	createInfo.enabledExtensionCount = enabledExtensionCount;
+	createInfo.ppEnabledExtensionNames = enabledExtensions;
+	printf("Enabling %u device extensions (mesh shader: %s)\n", enabledExtensionCount, meshSupported ? "yes" : "no");
 
 	if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
 	{
