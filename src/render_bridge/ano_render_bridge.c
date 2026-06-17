@@ -1,0 +1,75 @@
+/* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
+ *
+ * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
+
+/* Logic<->render bridge: ring storage allocation/teardown. The hot-path push/pop
+ * are inlined in anoptic_render_bridge.h; only the (cold) init/destroy live here.
+ * Platform-agnostic and GPU-free — part of anoptic_core. Design of record:
+ * docs/artifacts/VK_BACKEND_INTEROP.md. */
+
+#include "anoptic_render_bridge.h"
+
+#include <stdint.h>
+
+// Smallest power of two >= v, with a floor of 2. Returns 0 only on overflow
+// (v > 2^31), which the caller treats as failure.
+static uint32_t next_pow2_u32(uint32_t v)
+{
+    if (v < 2u) return 2u;
+    v--;
+    v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16;
+    return v + 1u; // wraps to 0 if v was > 2^31
+}
+
+bool ano_spsc_init(AnoSpscRing *ring, mi_heap_t *heap, uint32_t capacity_pow2, uint32_t stride)
+{
+    if (!ring || !heap || stride == 0u) return false;
+
+    uint32_t cap = next_pow2_u32(capacity_pow2);
+    if (cap == 0u) return false;                       // capacity overflow
+    if ((size_t)cap > SIZE_MAX / stride) return false; // cap*stride overflow
+
+    uint8_t *buffer = mi_heap_calloc(heap, cap, stride);
+    if (!buffer) return false;
+
+    atomic_init(&ring->tail, 0u);
+    atomic_init(&ring->head, 0u);
+    ring->mask   = cap - 1u;
+    ring->stride = stride;
+    ring->buffer = buffer;
+    return true;
+}
+
+void ano_spsc_destroy(AnoSpscRing *ring)
+{
+    if (!ring) return;
+    if (ring->buffer) {
+        mi_free(ring->buffer);
+        ring->buffer = NULL;
+    }
+    ring->mask   = 0u;
+    ring->stride = 0u;
+    atomic_store_explicit(&ring->head, 0u, memory_order_relaxed);
+    atomic_store_explicit(&ring->tail, 0u, memory_order_relaxed);
+}
+
+bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
+                            uint32_t cmd_capacity_pow2, uint32_t evt_capacity_pow2)
+{
+    if (!bridge || !heap) return false;
+    if (!ano_spsc_init(&bridge->commands, heap, cmd_capacity_pow2, (uint32_t)sizeof(RenderCommand)))
+        return false;
+    if (!ano_spsc_init(&bridge->events, heap, evt_capacity_pow2, (uint32_t)sizeof(RenderEvent))) {
+        ano_spsc_destroy(&bridge->commands);
+        return false;
+    }
+    return true;
+}
+
+void ano_render_bridge_destroy(AnoRenderBridge *bridge)
+{
+    if (!bridge) return;
+    ano_spsc_destroy(&bridge->commands);
+    ano_spsc_destroy(&bridge->events);
+}
