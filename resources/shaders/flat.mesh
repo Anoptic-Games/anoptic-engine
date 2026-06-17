@@ -47,14 +47,81 @@ struct MeshData {
     uint uniqueVerticesOffset;
     uint trianglesOffset;
     uint vertexOffset;
-    uint padding1;
-    uint padding2;
-    uint padding3;
+    uint classicIndexCount;  // fallback path only
+    uint classicFirstIndex;  // fallback path only
+    uint boundsOffset;       // byte offset of per-meshlet bounds block in indexBuf (sphere + normal cone)
 };
 
 layout(set = 0, binding = 6, std430) readonly buffer MeshSSBO {
     MeshData meshDrawData[];
 } meshBuf;
+
+// Per-material flags. Only doubleSided is read here, to exempt double-sided meshlets
+// from backface cone culling. Bound at set 0 / binding 2 to match flat.frag's MaterialSSBO
+// (the graphics descriptor set is shared across the mesh and fragment stages). The full
+// struct is declared so std430 strides match; unread fields are inert padding here.
+struct MaterialData {
+    uint      features;
+    uint      baseColorTexture;
+    uint      pad0[2];
+    vec4      baseColorFactor;
+    uint      metallicRoughnessTexture;
+    float     metallicFactor;
+    float     roughnessFactor;
+    uint      normalTexture;
+    float     normalScale;
+    uint      occlusionTexture;
+    float     occlusionStrength;
+    uint      emissiveTexture;
+    vec4      emissiveFactor;
+    uint      alphaMode;
+    float     alphaCutoff;
+    uint      doubleSided;
+    uint      clearcoatTexture;
+    uint      clearcoatRoughnessTexture;
+    uint      clearcoatNormalTexture;
+    float     clearcoatFactor;
+    float     clearcoatRoughnessFactor;
+    uint      transmissionTexture;
+    float     transmissionFactor;
+    uint      thicknessTexture;
+    float     thicknessFactor;
+    float     attenuationDistance;
+    uint      pad1[3];
+    vec4      attenuationColor;
+    float     ior;
+    uint      specularTexture;
+    uint      specularColorTexture;
+    float     specularFactor;
+    vec4      specularColorFactor;
+    uint      sheenColorTexture;
+    uint      sheenRoughnessTexture;
+    uint      pad2[2];
+    vec4      sheenColorFactor;
+    float     sheenRoughnessFactor;
+    uint      iridescenceTexture;
+    uint      iridescenceThicknessTexture;
+    float     iridescenceFactor;
+    float     iridescenceIor;
+    float     iridescenceThicknessMinimum;
+    float     iridescenceThicknessMaximum;
+    uint      anisotropyTexture;
+    float     anisotropyStrength;
+    float     anisotropyRotation;
+    float     dispersion;
+    uint      diffuseTransmissionTexture;
+    uint      diffuseTransmissionColorTexture;
+    float     diffuseTransmissionFactor;
+    uint      pad3[2];
+    vec4      diffuseTransmissionColorFactor;
+    float     emissiveStrength;
+    uint      pipelineType;
+    uint      padding[2];
+};
+
+layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
+    MaterialData materials[];
+} materialBuf;
 
 layout(set = 0, binding = 7) readonly buffer CompactedEntityIndices {
     uint entityIndices[];
@@ -100,6 +167,54 @@ void main() {
     if (m >= meshletCount) {
         return;
     }
+
+    // --- Per-meshlet backface cone culling -------------------------------------------
+    // STOPGAP placement. This rejects a meshlet whose normal cone is entirely backfacing
+    // before any vertex transform or primitive setup, by emitting zero outputs. NOTE that
+    // the mesh workgroup is still *dispatched* (the cull pass sets groupCountX =
+    // meshletCount); we only skip its work, not its launch.
+    //
+    // CANONICAL approach: move this test into a task (amplification) shader that runs
+    // ahead of the mesh stage and uses EmitMeshTasksEXT to launch mesh workgroups only
+    // for surviving meshlets — culled clusters then cost nothing, not even a dispatch.
+    // That requires a new pipeline stage + payload plumbing; deferred. Per-meshlet frustum
+    // culling (the sphere is in the same bounds struct) could also be added right here.
+    //
+    // The bounds block lives in indexBuf at mData.boundsOffset; each entry is the 48-byte
+    // ano_meshlet_bounds_gpu_t (sphere[4] + cone_apex/cutoff[4] + cone_axis/pad[4] floats).
+    {
+        uint boundsBase = (mData.boundsOffset / 4u) + m * 12u;
+        vec3  coneApex   = vec3(uintBitsToFloat(indexBuf.data[boundsBase + 4u]),
+                                uintBitsToFloat(indexBuf.data[boundsBase + 5u]),
+                                uintBitsToFloat(indexBuf.data[boundsBase + 6u]));
+        float coneCutoff = uintBitsToFloat(indexBuf.data[boundsBase + 7u]);
+        vec3  coneAxis   = vec3(uintBitsToFloat(indexBuf.data[boundsBase + 8u]),
+                                uintBitsToFloat(indexBuf.data[boundsBase + 9u]),
+                                uintBitsToFloat(indexBuf.data[boundsBase + 10u]));
+
+        // Double-sided materials show both faces, so a backface cone never hides them.
+        bool singleSided = (materialBuf.materials[materialIndex].doubleSided == 0u);
+
+        // Transform cone into world space. axis uses mat3(model), matching how this shader
+        // already transforms normals below. CAVEAT: this is only exact for rotation +
+        // uniform scale; non-uniform scale wants the inverse-transpose, and a mirrored
+        // (negative-determinant) model flips winding and inverts the test. Such transforms
+        // can wrongly cull — acceptable for the current uniform-scale asset set, revisit
+        // if non-uniform/mirrored instances appear.
+        mat4 model = transformBuf.transforms[entityIndex];
+        vec3 apexWorld = (model * vec4(coneApex, 1.0)).xyz;
+        vec3 axisWorld = normalize(mat3(model) * coneAxis);
+
+        // meshoptimizer convention: cluster is fully backfacing (cull) when
+        //   dot(normalize(apex - camera), axis) >= cutoff.
+        // Degenerate cones get cutoff == 1, so the test is effectively never taken.
+        vec3 viewDir = normalize(apexWorld - global.cameraPos.xyz);
+        if (singleSided && dot(viewDir, axisWorld) >= coneCutoff) {
+            SetMeshOutputsEXT(0u, 0u);
+            return;
+        }
+    }
+    // ---------------------------------------------------------------------------------
 
     uint meshletIndex = meshletOffsetUint + m * 4;
     uint vertexOffset   = indexBuf.data[meshletIndex + 0];
