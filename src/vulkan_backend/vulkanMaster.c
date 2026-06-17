@@ -423,8 +423,10 @@ void updateTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t fr
 
 void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
+    // The render slot authority is the cull/dispatch bound; dead slots within
+    // [0, slotHighWater) self-skip in the shaders (meshIndex == NO_MESH_INDEX).
+    state->entityCount = state->slots.slotHighWater;
     uint32_t entityCount = state->entityCount;
-    RenderEntity* entities = state->entities;
 
     // Reset draw count
     memset(state->culling.drawCountMapped[frameIndex], 0, sizeof(uint32_t) * PIPELINE_TYPE_COUNT);
@@ -445,12 +447,10 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     ubo->entityCount = entityCount;
     ubo->maxEntities = state->culling.maxEntities;
 
-    // Update EntitySSBO
-    uint32_t* entityBuffer = (uint32_t*)state->culling.entityMapped[frameIndex];
-    for(uint32_t i=0; i < entityCount; i++) {
-        entityBuffer[i*2] = entities[i].meshIndex;
-        entityBuffer[i*2+1] = entities[i].materialIndex;
-    }
+    // The EntitySSBO (mesh/material per slot) is seeded once at init and mutated
+    // sparsely through the command bridge (render_apply_commands) — no per-frame
+    // O(N) rewrite. MeshSSBO/MeshBoundsSSBO below are per-mesh (bounded by
+    // meshCount, not entity count) and refreshed so geometry-pool changes apply.
 
     // Update MeshSSBO and MeshBoundsSSBO
     uint32_t meshCount = state->globalGeometryPool.meshCount;
@@ -610,6 +610,22 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 
 #include "anoptic_time.h"
 
+// Producer-side helper (stand-in for the future logic-thread graphics extract):
+// submit a discrete mesh/material swap for a renderable. The render consumer
+// applies it sparsely across frames in flight by resolving render_id -> slot.
+static void submitMeshMatUpdate(RendererState* state, uint32_t render_id, uint32_t mesh, uint32_t material) {
+    RenderCommand cmd = {
+        .kind           = RCMD_UPDATE,
+        .render_id      = render_id,
+        .fields         = RFIELD_MESH_MAT,
+        .mesh_index     = mesh,
+        .material_index = material,
+        .light_index    = ANO_RENDER_NO_LIGHT,
+    };
+    if (!ano_render_submit(&state->bridge, &cmd))
+        printf("Warning: render command ring full; mesh/material update dropped.\n");
+}
+
 void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
     static uint64_t lastTime = 0;
     static int phase = 0;
@@ -627,6 +643,9 @@ void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
             originalMeshIndex = state->entities[0].meshIndex;
             state->entities[0].meshIndex = FALLBACK_MESH_INDEX;
             state->entities[0].materialIndex = 0; // Use fallback material if possible
+            // Push the swap through the bridge; the consumer mutates the GPU
+            // EntitySSBO sparsely (entities[] stays the CPU-side record).
+            submitMeshMatUpdate(state, /*render_id*/ 0, FALLBACK_MESH_INDEX, 0);
 
             // Defer deletion
             deferred_delete_resource(state, RESOURCE_TYPE_GEOMETRY_MESH, originalMeshIndex);
@@ -651,9 +670,10 @@ void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
             
             printf("--- TEST: New mesh assigned index %u (Expected %u) ---\n", newMeshIdx, originalMeshIndex);
             
-            // Assign to entity
+            // Assign to entity (CPU record) + push the swap through the bridge.
             state->entities[0].meshIndex = newMeshIdx;
-            
+            submitMeshMatUpdate(state, /*render_id*/ 0, newMeshIdx, state->entities[0].materialIndex);
+
             phase = 2; // Done
             //glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
@@ -1530,6 +1550,18 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	rendererState.globalFrame = 0;
 	for (uint32_t i = 0; i < rendererState.entityCount; i++)
 		(void)render_slots_alloc(&rendererState.slots, i);
+
+	// Seed the cull EntitySSBO once per frame-in-flight (mesh/material per slot).
+	// Thereafter it is mutated only through the command bridge, never rewritten
+	// per frame. render_id == slot == entity index here (append-only init).
+	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
+		uint32_t* entityBuffer = (uint32_t*)rendererState.culling.entityMapped[frame];
+		for (uint32_t i = 0; i < rendererState.entityCount; i++) {
+			uint32_t slot = render_slots_resolve(&rendererState.slots, i);
+			entityBuffer[slot * 2]     = rendererState.entities[i].meshIndex;
+			entityBuffer[slot * 2 + 1] = rendererState.entities[i].materialIndex;
+		}
+	}
 
 	if (!createUniformBuffers(&ctx, &rendererState))
 	{
