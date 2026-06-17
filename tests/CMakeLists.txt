@@ -18,6 +18,12 @@ target_link_libraries(anotest_meshoptimizer PRIVATE anoptic_core m)
 add_test(NAME anoptic_meshoptimizer COMMAND anotest_meshoptimizer)
 set_tests_properties(anoptic_meshoptimizer PROPERTIES TIMEOUT 10 LABELS "unit;mesh")
 
+# Testing for ``anoptic_ecs.h``
+add_executable(anotest_ecs anotest_ecs.c)
+target_link_libraries(anotest_ecs PRIVATE anoptic_core)
+add_test(NAME anoptic_ecs COMMAND anotest_ecs)
+set_tests_properties(anoptic_ecs PROPERTIES TIMEOUT 10 LABELS "unit;ecs")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
