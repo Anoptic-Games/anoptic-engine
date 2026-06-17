@@ -32,6 +32,12 @@ set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;co
 
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
+    # Render-side slot authority: pure logic, links anoptic_render but needs no GPU device.
+    add_executable(anotest_render_slots anotest_render_slots.c)
+    target_link_libraries(anotest_render_slots PRIVATE anoptic_render)
+    add_test(NAME anoptic_render_slots COMMAND anotest_render_slots)
+    set_tests_properties(anoptic_render_slots PROPERTIES TIMEOUT 10 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)

@@ -11,4 +11,5 @@ target_sources(anoptic_render PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/texture/texture.c
 	${CMAKE_CURRENT_SOURCE_DIR}/gpu_alloc.c
 	${CMAKE_CURRENT_SOURCE_DIR}/geometry.c
+	${CMAKE_CURRENT_SOURCE_DIR}/render_slots.c
 )

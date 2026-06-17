@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <mimalloc.h>   // mi_heap_t: table storage lives in a caller-provided heap
 
 #define ANO_RENDER_SLOT_UNMAPPED 0xFFFFFFFFu
 
@@ -39,9 +40,11 @@ typedef struct RenderSlotQuarantine
 
 typedef struct RenderSlotTable
 {
-    // render_id -> gpu slot (ANO_RENDER_SLOT_UNMAPPED == not mapped). Chunk-grown;
-    // logical ids are dense (ECS recycles them) so this stays a flat indexed map,
-    // no hashing.
+    mi_heap_t            *heap;   // backs all table storage; not owned
+
+    // render_id -> gpu slot (ANO_RENDER_SLOT_UNMAPPED == not mapped). Grown on
+    // demand; logical ids are dense (ECS recycles them) so this stays a flat
+    // indexed map, no hashing.
     uint32_t             *logicalToSlot;
     uint32_t              logicalCapacity;
 
@@ -63,10 +66,11 @@ typedef struct RenderSlotTable
     uint32_t              framesInFlight; // == MAX_FRAMES_IN_FLIGHT
 } RenderSlotTable;
 
-// in:  table, framesInFlight (>= 1)
-// out: true on success; false on allocation failure
-// inv: zero-initializes counts; grows storage lazily as slots/ids are touched.
-bool render_slots_init(RenderSlotTable *table, uint32_t framesInFlight);
+// in:  table, heap (backs all storage), maxSlots (physical slot ceiling, == GPU
+//      per-entity buffer capacity), framesInFlight (>= 1)
+// out: true on success; false on bad args / allocation failure
+// inv: zero-initializes counts; grows logical map / free-list / quarantine lazily.
+bool render_slots_init(RenderSlotTable *table, mi_heap_t *heap, uint32_t maxSlots, uint32_t framesInFlight);
 
 // Releases all slot-table storage.
 void render_slots_destroy(RenderSlotTable *table);
