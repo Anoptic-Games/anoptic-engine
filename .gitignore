@@ -106,6 +106,7 @@ dkms.conf
 build
 build/
 build/*
+build-*/
 CMakeFiles
 CMakeFiles/
 CMakeCache.txt

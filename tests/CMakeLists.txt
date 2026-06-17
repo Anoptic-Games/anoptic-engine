@@ -24,6 +24,12 @@ target_link_libraries(anotest_ecs PRIVATE anoptic_core)
 add_test(NAME anoptic_ecs COMMAND anotest_ecs)
 set_tests_properties(anoptic_ecs PROPERTIES TIMEOUT 10 LABELS "unit;ecs")
 
+# Testing for ``anoptic_render_bridge.h`` (SPSC rings; concurrency)
+add_executable(anotest_render_bridge anotest_render_bridge.c)
+target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
+add_test(NAME anoptic_render_bridge COMMAND anotest_render_bridge)
+set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)

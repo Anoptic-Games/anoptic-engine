@@ -174,21 +174,32 @@ typedef struct DisplayState
 // Bounded SPSC ring
 // ---------------------------------------------------------------------------
 
+// Hardware cache-line size assumed for false-sharing avoidance (x86-64 / arm64).
+#define ANO_CACHE_LINE 64
+
 // Single-producer/single-consumer bounded ring over fixed-size POD elements.
 // Lock-free, wait-free on both ends; capacity is a power of two so index
 // wrap is a mask. The producer owns `tail`, the consumer owns `head`; each reads
 // the other's index with acquire and publishes its own with release.
+//
+// tail (producer) and head (consumer) sit on separate cache lines: the producer's
+// frequent tail-store must not invalidate the line the consumer spins on for head
+// (and vice versa), or the ring degrades into a cache-line ping-pong. Because a
+// member carries _Alignas(64), the whole struct aligns to 64 — so an embedding
+// struct (AnoRenderBridge) inherits 64-byte alignment automatically on the stack
+// or in static storage. A HEAP-allocated owner must request 64-byte alignment
+// (e.g. mi_heap_malloc_aligned) for the separation to hold.
 //
 // This is the minimal purpose-built ring the bridge needs now; it should migrate
 // to anoptic_collections.h when the generic lock-free collections land (notes.md
 // Step 5).
 typedef struct AnoSpscRing
 {
-    _Atomic uint32_t head;    // consumer cursor: next index to read
-    _Atomic uint32_t tail;    // producer cursor: next index to write
-    uint32_t         mask;    // capacity - 1 (capacity is a power of two)
-    uint32_t         stride;  // element size in bytes
-    uint8_t         *buffer;  // capacity * stride bytes
+    _Alignas(ANO_CACHE_LINE) _Atomic uint32_t tail; // producer-owned cursor: next index to write
+    _Alignas(ANO_CACHE_LINE) _Atomic uint32_t head; // consumer-owned cursor: next index to read
+    _Alignas(ANO_CACHE_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
+    uint32_t                          stride;       // element size in bytes
+    uint8_t                          *buffer;       // capacity * stride bytes
 } AnoSpscRing;
 
 // in:  ring, heap, capacity_pow2 (rounded up to a power of two, >= 2), stride (> 0)
