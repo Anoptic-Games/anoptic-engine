@@ -103,7 +103,8 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	materialLayoutBinding.binding = 2;
 	materialLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	materialLayoutBinding.descriptorCount = 1;
-	materialLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// Geometry stage reads doubleSided for per-meshlet cone culling (flat.mesh); fragment reads the rest.
+	materialLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
 	materialLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding entityLayoutBinding = {};
