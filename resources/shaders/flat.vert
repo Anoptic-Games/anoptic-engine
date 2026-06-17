@@ -1,5 +1,4 @@
 #version 460
-#extension GL_ARB_shader_draw_parameters : require
 
 // Fallback geometry stage for devices without VK_EXT_mesh_shader.
 // This is the per-vertex half of flat.mesh: same SSBOs, same outputs. The cull
@@ -54,8 +53,10 @@ layout(location = 2) flat out uint outMaterialIndex;
 layout(location = 3) out vec3 fragWorldPos;
 
 void main() {
-    // Same entity lookup as flat.mesh: gl_DrawID indexes the compacted visible list.
-    uint entityIndex = compactedBuf.entityIndices[pc.transformBaseOffset + uint(gl_DrawIDARB)];
+    // Same entity lookup as flat.mesh, but Metal/MoltenVK has no DrawIndex builtin so
+    // gl_DrawID is unavailable here. The cull pass packs each draw's ordinal into
+    // firstInstance instead; instanceCount is always 1, so gl_InstanceIndex equals it.
+    uint entityIndex = compactedBuf.entityIndices[pc.transformBaseOffset + uint(gl_InstanceIndex)];
     EntityInfo entity = entityBuf.entities[entityIndex];
 
     // Programmable vertex pulling. gl_VertexIndex = command.vertexOffset + indexBuffer[i],

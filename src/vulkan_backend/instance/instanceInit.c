@@ -119,6 +119,13 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 	createInfo.pApplicationInfo = &appInfo;
 
+	#ifdef __APPLE__
+	// MoltenVK is a non-conformant (portability) driver. The loader only
+	// enumerates it when this flag is set; the matching VK_KHR_portability_enumeration
+	// instance extension is requested in getRequiredExtensions().
+	createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+	#endif
+
 	// Enable validation layers if necessary
 	// Here we assume they are not necessary
 	createInfo.enabledLayerCount = 0;
@@ -245,15 +252,26 @@ const char** getRequiredExtensions(uint32_t* extensionsCount) // Central compone
 	totalExtensionCount += 1;
 	#endif
 
+	#ifdef __APPLE__
+	// Pairs with VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR so the loader
+	// will surface the MoltenVK portability driver.
+	totalExtensionCount += 1;
+	#endif
+
 	const char** extensions = calloc(totalExtensionCount, sizeof(char*));
 
+	uint32_t idx = 0;
 	for (uint32_t i = 0; i < glfwExtensionCount; i++)
 	{
-		extensions[i] = strdup(glfwExtensions[i]);
+		extensions[idx++] = strdup(glfwExtensions[i]);
 	}
 
 	#ifdef DEBUG_BUILD
-	extensions[glfwExtensionCount] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	extensions[idx++] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	#endif
+
+	#ifdef __APPLE__
+	extensions[idx++] = strdup(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 	#endif
 
 	*extensionsCount = totalExtensionCount;
@@ -431,8 +449,12 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 
 	vkGetPhysicalDeviceFeatures2(device, &features2);
 
-	bool physicalRequirements = features2.features.geometryShader && features2.features.shaderFloat64 && features2.features.shaderInt64 && features2.features.samplerAnisotropy;
-	
+	// geometryShader and shaderFloat64 are intentionally NOT required: no shader
+	// stage or pipeline in the engine consumes them. Apple Silicon / MoltenVK
+	// exposes neither (Metal has no geometry-shader stage and no fp64), and
+	// gating on them would reject otherwise-capable devices for no reason.
+	bool physicalRequirements = features2.features.shaderInt64 && features2.features.samplerAnisotropy;
+
 	// Check specifically required Vulkan 1.2, dynamic rendering, and mesh shader features
 	bool requiredFeatures12 = features12.descriptorIndexing &&
 	                          features12.shaderSampledImageArrayNonUniformIndexing &&
@@ -610,6 +632,9 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	deviceFeatures.samplerAnisotropy = features2.features.samplerAnisotropy;
 	deviceFeatures.multiDrawIndirect = features2.features.multiDrawIndirect;
 	deviceFeatures.geometryShader = features2.features.geometryShader;
+	// Vertex fallback path packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
+	// (read as gl_InstanceIndex), which requires this feature for a nonzero value in an indirect draw.
+	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -696,6 +721,12 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 		enabledExtensions[enabledExtensionCount++] = requiredExtensions[i];
 	if (meshSupported)
 		enabledExtensions[enabledExtensionCount++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+	#ifdef __APPLE__
+	// Vulkan spec: when a physical device exposes VK_KHR_portability_subset it
+	// MUST be enabled, or vkCreateDevice fails. MoltenVK always exposes it.
+	// String literal avoids pulling in the beta-gated vulkan_beta.h header.
+	enabledExtensions[enabledExtensionCount++] = "VK_KHR_portability_subset";
+	#endif
 
 	createInfo.enabledExtensionCount = enabledExtensionCount;
 	createInfo.ppEnabledExtensionNames = enabledExtensions;
