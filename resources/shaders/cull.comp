@@ -41,8 +41,10 @@ layout(set = 0, binding = 4) readonly buffer MeshBoundsSSBO {
     vec4 meshBounds[];
 };
 
-// Selects the indirect command format written below. Both draw paths identify the
-// entity via the compacted-index buffer + gl_DrawID, so firstInstance is never used.
+// Selects the indirect command format written below. The mesh path identifies the
+// entity via the compacted-index buffer + gl_DrawID. The fallback path instead packs
+// the draw ordinal into firstInstance (read as gl_InstanceIndex), since Metal/MoltenVK
+// has no DrawIndex builtin to translate gl_DrawID in a vertex shader.
 layout(constant_id = 1) const bool useMeshShader = true;
 
 // Raw u32 view of the indirect buffer so one shader writes either command format:
@@ -177,10 +179,11 @@ void main() {
             indirectData[b + 1u] = 1u;                       // instanceCount
             indirectData[b + 2u] = mData.classicFirstIndex;  // firstIndex
             indirectData[b + 3u] = mData.vertexOffset / 32u; // vertexOffset (Vertex = 32 B) -> gl_VertexIndex base
-            indirectData[b + 4u] = 0u;                       // firstInstance (vertex shader uses gl_DrawID)
+            indirectData[b + 4u] = writeIdx;                 // firstInstance = draw ordinal; flat.vert reads it as gl_InstanceIndex (no DrawIndex builtin on Metal)
         }
 
-        // Save the original entity index (read by the geometry shader stage via gl_DrawID)
+        // Save the original entity index. flat.mesh reads it via gl_DrawID; flat.vert
+        // via gl_InstanceIndex (= firstInstance above). Both resolve to this slot.
         entityIndices[destIdx] = idx;
     }
 }
