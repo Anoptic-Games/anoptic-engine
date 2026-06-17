@@ -86,6 +86,11 @@ uint32_t render_slots_alloc(RenderSlotTable *table, uint32_t render_id);
 // out: the base slot of the range, or ANO_RENDER_SLOT_UNMAPPED on failure.
 uint32_t render_slots_alloc_range(RenderSlotTable *table, const uint32_t *render_ids, uint32_t count);
 
+// Raises the physical slot ceiling to `newCapacity` (no-op if already >=). The
+// caller grows the backing GPU buffers to match BEFORE calling this; this only
+// lifts the gate that `_alloc` / `_alloc_range` enforce. Never shrinks.
+void render_slots_set_capacity(RenderSlotTable *table, uint32_t newCapacity);
+
 // out: the physical slot mapped to `render_id`, or ANO_RENDER_SLOT_UNMAPPED.
 uint32_t render_slots_resolve(const RenderSlotTable *table, uint32_t render_id);
 
