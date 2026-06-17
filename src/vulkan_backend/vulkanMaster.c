@@ -749,74 +749,63 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 
 #include "anoptic_time.h"
 
-// Producer-side helper (stand-in for the future logic-thread graphics extract):
-// submit a discrete mesh/material swap for a renderable. The render consumer
-// applies it sparsely across frames in flight by resolving render_id -> slot.
-static void submitMeshMatUpdate(RendererState* state, uint32_t render_id, uint32_t mesh, uint32_t material) {
-    RenderCommand cmd = {
-        .kind           = RCMD_UPDATE,
-        .render_id      = render_id,
-        .fields         = RFIELD_MESH_MAT,
-        .mesh_index     = mesh,
-        .material_index = material,
-        .light_index    = ANO_RENDER_NO_LIGHT,
-    };
-    if (!ano_render_submit(&state->bridge, &cmd))
-        printf("Warning: render command ring full; mesh/material update dropped.\n");
+// ---------------------------------------------------------------------------
+// Render-thread lifecycle (VK_BACKEND_INTEROP.md: the render master is its own
+// thread). This thread owns ALL Vulkan AND all GLFW: GLFW requires every window
+// and event call to issue from a single thread, so device init, the frame loop,
+// glfwPollEvents, swapchain recreation, and teardown all live here. The main
+// (logic/ECS) thread is the sole render-command PRODUCER and touches no GLFW or
+// Vulkan. (Portability note: GLFW additionally pins window/event handling to the
+// process main thread on macOS; the consistent-single-thread split below is
+// correct on Linux/X11/Wayland and is revisited when macOS support lands.)
+//
+// Coordination is two lock-free atomics (engine policy: no mutexes outside the
+// pre-existing Vulkan internals):
+//   g_renderPhase      render -> main : BOOT -> READY (bridge live) | FAILED
+//   g_windowWantsClose render -> main : the user asked to close the window
+//   g_renderShouldStop main  -> render: leave the loop, then tear down
+// Shutdown is ordered so the producer always quiesces BEFORE the bridge dies:
+// render flags windowWantsClose but keeps consuming; main stops producing, sets
+// shouldStop, then joins; only after the loop exits does render run unInitVulkan.
+// ---------------------------------------------------------------------------
+enum { RENDER_PHASE_BOOT = 0, RENDER_PHASE_READY = 1, RENDER_PHASE_FAILED = 2 };
+static atomic_int  g_renderPhase      = RENDER_PHASE_BOOT;
+static atomic_bool g_windowWantsClose = false;
+static atomic_bool g_renderShouldStop = false;
+
+// Producer endpoint. Valid only once anoRenderIsReady() (the bridge is created in
+// initVulkan and destroyed in unInitVulkan).
+AnoRenderBridge* anoRenderBridge(void) { return &rendererState.bridge; }
+bool anoRenderIsReady(void)            { return atomic_load(&g_renderPhase) == RENDER_PHASE_READY; }
+bool anoRenderInitFailed(void)         { return atomic_load(&g_renderPhase) == RENDER_PHASE_FAILED; }
+bool anoRenderWindowWantsClose(void)   { return atomic_load(&g_windowWantsClose); }
+void anoRenderRequestStop(void)        { atomic_store(&g_renderShouldStop, true); }
+
+// render_id 0's original geometry index, for the stand-in producer. Safe to read
+// after READY: the render thread does not mutate entities[] after init.
+uint32_t anoRenderEntity0Mesh(void) {
+    return rendererState.entities ? rendererState.entities[0].meshIndex : NO_MESH_INDEX;
 }
 
-void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
-    static uint64_t lastTime = 0;
-    static int phase = 0;
-    static uint32_t originalMeshIndex = 0;
-
-    uint64_t now = ano_timestamp_us();
-    if (lastTime == 0) lastTime = now;
-
-    if (now - lastTime > 1000000) { // 1 second
-        lastTime = now;
-        
-        if (phase == 0) {
-            printf("--- TEST: Unloading original mesh ---\n");
-            // Save original and set fallback
-            originalMeshIndex = state->entities[0].meshIndex;
-            state->entities[0].meshIndex = FALLBACK_MESH_INDEX;
-            state->entities[0].materialIndex = 0; // Use fallback material if possible
-            // Push the swap through the bridge; the consumer mutates the GPU
-            // EntitySSBO sparsely (entities[] stays the CPU-side record).
-            submitMeshMatUpdate(state, /*render_id*/ 0, FALLBACK_MESH_INDEX, 0);
-
-            // Defer deletion
-            deferred_delete_resource(state, RESOURCE_TYPE_GEOMETRY_MESH, originalMeshIndex);
-            
-            phase = 1;
-        } else if (phase == 1) {
-            printf("--- TEST: Uploading new mesh to reused memory ---\n");
-            
-            // Upload a simple triangle
-            const Vertex triVertices[] = {
-                {{ 0.0f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.5f, 0.0f}},
-                {{ 0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
-                {{-0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}}
-            };
-            const uint32_t triIndices[] = { 0, 1, 2 };
-
-            uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
-                                                       ctx->device,
-                                                       ctx->queueFamilyIndices.transferFamily,
-                                                       ctx->transferQueue,
-                                                       triVertices, 3, triIndices, 3);
-            
-            printf("--- TEST: New mesh assigned index %u (Expected %u) ---\n", newMeshIdx, originalMeshIndex);
-            
-            // Assign to entity (CPU record) + push the swap through the bridge.
-            state->entities[0].meshIndex = newMeshIdx;
-            submitMeshMatUpdate(state, /*render_id*/ 0, newMeshIdx, state->entities[0].materialIndex);
-
-            phase = 2; // Done
-            //glfwSetWindowShouldClose(window, GLFW_TRUE);
-        }
+// ano_thread_create entry point: the whole render master. Returns NULL.
+void* anoRenderThreadMain(void* arg) {
+    (void)arg;
+    if (!initVulkan()) {
+        printf("Vulkan initialization failed.\n");
+        atomic_store(&g_renderPhase, RENDER_PHASE_FAILED);
+        return NULL;
     }
+    atomic_store(&g_renderPhase, RENDER_PHASE_READY);
+
+    while (!atomic_load(&g_renderShouldStop)) {
+        glfwPollEvents();
+        if (anoShouldClose())
+            atomic_store(&g_windowWantsClose, true);
+        drawFrame();
+    }
+
+    unInitVulkan();
+    return NULL;
 }
 
 void drawFrame() 
@@ -828,7 +817,9 @@ void drawFrame()
 		return;
 	}
 
-    testAssetUnloadReload(&ctx, &rendererState);
+    // Discrete ECS->render transitions arrive via the bridge from the logic
+    // thread; they are drained in render_apply_commands (below). No producer runs
+    // on this thread anymore.
 
     if (rendererState.frames[rendererState.frameIndex].frameSubmitted == true)
     {
