@@ -154,8 +154,13 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     VkDeviceSize unique_vertices_size = unique_vertex_count * sizeof(uint32_t);
     VkDeviceSize local_triangles_size = (local_indices_count * sizeof(uint8_t) + 3) & ~3;
     VkDeviceSize bounds_size = meshlet_count * sizeof(ano_meshlet_bounds_gpu_t);
+    // Plain u32 triangle-list indices for the vertex-shader fallback path. This is
+    // exactly the caller's mesh-local index array; the hardware index/vertex fetch
+    // expands it the way the mesh shader expands meshlets. 4-byte aligned, so it sits
+    // index-buffer-ready after the 16-aligned bounds block.
+    VkDeviceSize classic_indices_size = indexCount * sizeof(uint32_t);
 
-    VkDeviceSize total_metadata_size = meshlets_size + unique_vertices_size + local_triangles_size + bounds_size;
+    VkDeviceSize total_metadata_size = meshlets_size + unique_vertices_size + local_triangles_size + bounds_size + classic_indices_size;
 
     VkDeviceSize vertexSize = sizeof(Vertex) * vertexCount;
     VkDeviceSize totalSize = vertexSize + total_metadata_size;
@@ -202,6 +207,7 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
         memset(meta_ptr + meshlets_size + unique_vertices_size + local_indices_count, 0, local_triangles_size - local_indices_count);
     }
     memcpy(meta_ptr + meshlets_size + unique_vertices_size + local_triangles_size, bounds, bounds_size);
+    memcpy(meta_ptr + meshlets_size + unique_vertices_size + local_triangles_size + bounds_size, indices, classic_indices_size);
 
     VkCommandPoolCreateInfo poolInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -366,6 +372,8 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     mesh->uniqueVerticesOffset = finalIndexOffset + (uint32_t)meshlets_size;
     mesh->trianglesOffset = finalIndexOffset + (uint32_t)(meshlets_size + unique_vertices_size);
     mesh->boundsOffset = finalIndexOffset + (uint32_t)(meshlets_size + unique_vertices_size + local_triangles_size);
+    mesh->classicIndexOffset = finalIndexOffset + (uint32_t)(meshlets_size + unique_vertices_size + local_triangles_size + bounds_size);
+    mesh->classicIndexCount = indexCount;
 
     // Calculate bounding sphere
     Vector3 minBounds = vertices[0].position;
