@@ -182,6 +182,9 @@ void main() {
     //
     // The bounds block lives in indexBuf at mData.boundsOffset; each entry is the 48-byte
     // ano_meshlet_bounds_gpu_t (sphere[4] + cone_apex/cutoff[4] + cone_axis/pad[4] floats).
+    // ssa: This is still broken. We'll just skip cone culling until we implement it properly
+    //      in task shaders.
+    /*
     {
         uint boundsBase = (mData.boundsOffset / 4u) + m * 12u;
         vec3  coneApex   = vec3(uintBitsToFloat(indexBuf.data[boundsBase + 4u]),
@@ -195,25 +198,40 @@ void main() {
         // Double-sided materials show both faces, so a backface cone never hides them.
         bool singleSided = (materialBuf.materials[materialIndex].doubleSided == 0u);
 
-        // Transform cone into world space. axis uses mat3(model), matching how this shader
-        // already transforms normals below. CAVEAT: this is only exact for rotation +
-        // uniform scale; non-uniform scale wants the inverse-transpose, and a mirrored
-        // (negative-determinant) model flips winding and inverts the test. Such transforms
-        // can wrongly cull — acceptable for the current uniform-scale asset set, revisit
-        // if non-uniform/mirrored instances appear.
         mat4 model = transformBuf.transforms[entityIndex];
-        vec3 apexWorld = (model * vec4(coneApex, 1.0)).xyz;
-        vec3 axisWorld = normalize(mat3(model) * coneAxis);
 
-        // meshoptimizer convention: cluster is fully backfacing (cull) when
+        // meshoptimizer's cone (apex + axis + cutoff half-angle) is only sound under a
+        // RIGID model basis: rotation + uniform scale, non-mirrored. Under non-uniform
+        // scale, shear, or a mirrored (negative-determinant) basis, neither mat3(model)*axis
+        // nor the fixed cutoff describe the world-space cone, and the test wrongly culls
+        // in-view meshlets (e.g. mirrored / non-uniformly-scaled glTF nodes). So detect a
+        // rigid basis and only cone-cull then; non-rigid instances skip the cull — a
+        // performance miss, never a visual dropout. (The canonical fix is task-shader cone
+        // culling with a properly derived world cone; this gate keeps the stopgap honest.)
+        mat3 basis = mat3(model);
+        float l0 = dot(basis[0], basis[0]);
+        float l1 = dot(basis[1], basis[1]);
+        float l2 = dot(basis[2], basis[2]);
+        bool uniformScale = abs(l0 - l1) <= 1e-3 * max(l0, l1) &&
+                            abs(l0 - l2) <= 1e-3 * max(l0, l2);
+        bool orthogonal   = abs(dot(basis[0], basis[1])) <= 1e-3 * sqrt(l0 * l1) &&
+                            abs(dot(basis[0], basis[2])) <= 1e-3 * sqrt(l0 * l2) &&
+                            abs(dot(basis[1], basis[2])) <= 1e-3 * sqrt(l1 * l2);
+        bool rigid = uniformScale && orthogonal && determinant(basis) > 0.0;
+
+        // Transform cone into world space (normalize absorbs the uniform scale).
+        // meshoptimizer convention: fully backfacing (cull) when
         //   dot(normalize(apex - camera), axis) >= cutoff.
         // Degenerate cones get cutoff == 1, so the test is effectively never taken.
-        vec3 viewDir = normalize(apexWorld - global.cameraPos.xyz);
-        if (singleSided && dot(viewDir, axisWorld) >= coneCutoff) {
+        vec3 apexWorld = (model * vec4(coneApex, 1.0)).xyz;
+        vec3 axisWorld = normalize(basis * coneAxis);
+        vec3 viewDir   = normalize(apexWorld - global.cameraPos.xyz);
+        if (singleSided && rigid && dot(viewDir, axisWorld) >= coneCutoff) {
             SetMeshOutputsEXT(0u, 0u);
             return;
         }
     }
+    */
     // ---------------------------------------------------------------------------------
 
     uint meshletIndex = meshletOffsetUint + m * 4;
