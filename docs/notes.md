@@ -94,7 +94,16 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 
 **No PBR.** The engine does not target photorealism. PBR's per-material cost (roughness maps, metalness maps, environment probes, BRDF LUTs, image-based lighting) optimizes for making 50 objects look photorealistic. This engine optimizes for making a million objects look good. Non-PBR rendering (flat shading, stylized lighting, older visual aesthetics) keeps the material pipeline thin and the per-fragment cost low, freeing GPU budget for entity count.
 
-**Vulkan directly.** The renderer uses the Vulkan API without an abstraction layer. This is deliberate: the engine needs direct control over memory allocation, synchronization, and compute dispatch. The current renderer is a basic rasterization pipeline — functional but rough, largely tutorial-derived, and in need of cleanup rather than replacement.
+**Vulkan directly.** The renderer uses the Vulkan API without an abstraction layer. This is deliberate: the engine needs direct control over memory allocation, synchronization, and compute dispatch. The renderer is now GPU-driven and meshlet-based (see below), a substantial advance over the early tutorial-derived rasterizer.
+
+**GPU-driven meshlet rendering, with a compatibility fallback.** The frame is built on the GPU: a compute pass animates entity transforms, a compute culling pass frustum-tests every entity and writes an indirect draw list, and geometry is drawn from a shared vertex + meshlet mega-buffer. Meshes are decomposed into meshlets (via the `ano_meshoptimizer` wrapper) at upload time.
+
+Because `VK_EXT_mesh_shader` is unavailable on a large slice of still-current hardware (pre-2019 discrete GPUs, older integrated graphics, software rasterizers), the renderer carries **two interchangeable geometry paths selected automatically at device-creation time**:
+
+- **Mesh path** (preferred): the cull pass emits `VkDrawMeshTasksIndirectCommandEXT`s and a mesh shader (`flat.mesh`) expands meshlets on the GPU.
+- **Fallback path**: on devices without the extension, the cull pass emits `VkDrawIndexedIndirectCommand`s and a vertex shader (`flat.vert`) renders the same geometry via classic indexed indirect draws. A meshlet is just an indexed primitive cluster, so the hardware index/vertex fetch performs the expansion the mesh shader did in software. Each mesh stores a plain u32 index region alongside its meshlet metadata for this purpose.
+
+The two paths differ only in the geometry stage and the indirect command format. Resource handling, the geometry pool, the compute culling/animation passes, materials, punctual lighting, and the fragment shaders are shared verbatim. The active path is keyed off `DeviceCapabilities.meshShader`; `ANO_FORCE_NO_MESH_SHADER=1` forces the fallback for testing. Trade-off: the fallback retains per-entity frustum culling but drops per-meshlet cone culling. Full design and phasing live in `PLANS_COMPATIBILITY.md`.
 
 **Future direction: selective raymarching (SDF).** The long-term rendering vision is a hybrid approach: rasterization for UI, HUD, and conventional geometry; raymarching via signed distance fields for the space environment. SDFs are procedural (asteroids defined by math, not meshes), composable (smooth union/subtraction for constructive geometry), and provide natural LOD (fewer march steps at distance). This maps directly onto the scoped resolution hierarchy. However, rasterization is the immediate path — raymarching is a later-stage addition once the simulation infrastructure is operational.
 
@@ -102,7 +111,15 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 
 ### What Exists (in code)
 
-**Vulkan renderer (basic, functional):**
+**Vulkan renderer (GPU-driven, meshlet-based):**
+
+> The bullets below were written for the original tutorial-derived rasterizer. The
+> renderer has since moved to a GPU-driven, meshlet-based pipeline (compute animation +
+> compute culling + indirect draws over a shared mega-buffer) with a dual mesh-shader /
+> vertex-shader geometry path — see the Rendering Philosophy section above and
+> `PLANS_COMPATIBILITY.md`. This list is retained as a record of the foundational pieces,
+> most of which still exist.
+
 - Instance creation, physical/logical device selection, swap chain, image views
 - Graphics pipeline with vertex/fragment shaders
 - Vertex and index buffer management

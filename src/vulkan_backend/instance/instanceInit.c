@@ -28,7 +28,10 @@ VkExtent2D chooseSwapExtent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* w
 
 // Variables
 
-static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_EXT_MESH_SHADER_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
+// Hard-required device extensions. VK_EXT_mesh_shader is NOT here: it is optional
+// and appended dynamically in createLogicalDevice when the device supports it.
+// Devices without it take the vertex-shader fallback path.
+static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
 
 // Vulkan component initialization functions
 
@@ -115,6 +118,13 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	VkInstanceCreateInfo createInfo = {};
 	createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 	createInfo.pApplicationInfo = &appInfo;
+
+	#ifdef __APPLE__
+	// MoltenVK is a non-conformant (portability) driver. The loader only
+	// enumerates it when this flag is set; the matching VK_KHR_portability_enumeration
+	// instance extension is requested in getRequiredExtensions().
+	createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+	#endif
 
 	// Enable validation layers if necessary
 	// Here we assume they are not necessary
@@ -242,15 +252,26 @@ const char** getRequiredExtensions(uint32_t* extensionsCount) // Central compone
 	totalExtensionCount += 1;
 	#endif
 
+	#ifdef __APPLE__
+	// Pairs with VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR so the loader
+	// will surface the MoltenVK portability driver.
+	totalExtensionCount += 1;
+	#endif
+
 	const char** extensions = calloc(totalExtensionCount, sizeof(char*));
 
+	uint32_t idx = 0;
 	for (uint32_t i = 0; i < glfwExtensionCount; i++)
 	{
-		extensions[i] = strdup(glfwExtensions[i]);
+		extensions[idx++] = strdup(glfwExtensions[i]);
 	}
 
 	#ifdef DEBUG_BUILD
-	extensions[glfwExtensionCount] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	extensions[idx++] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	#endif
+
+	#ifdef __APPLE__
+	extensions[idx++] = strdup(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 	#endif
 
 	*extensionsCount = totalExtensionCount;
@@ -342,8 +363,12 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 {
 	struct DeviceCapabilities capabilities;
 
+	VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
+	meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+
 	VkPhysicalDeviceVulkan12Features features12 = {};
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	features12.pNext = &meshShaderFeatures;
 
 	VkPhysicalDeviceFeatures2 features2 = {};
 	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -355,7 +380,11 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	capabilities.float64 = features2.features.shaderFloat64;
 	capabilities.int64 = features2.features.shaderInt64;
 	capabilities.drawIndirectCount = features12.drawIndirectCount;
-	capabilities.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
+	// Drivers leave meshShaderFeatures untouched when VK_EXT_mesh_shader is absent,
+	// so a true value here implies both the extension and the feature are usable.
+	capabilities.meshShader = meshShaderFeatures.meshShader;
+	// Test hook: force the vertex-shader fallback path on mesh-capable hardware.
+	if (getenv("ANO_FORCE_NO_MESH_SHADER")) capabilities.meshShader = false;
 
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
@@ -420,8 +449,12 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 
 	vkGetPhysicalDeviceFeatures2(device, &features2);
 
-	bool physicalRequirements = features2.features.geometryShader && features2.features.shaderFloat64 && features2.features.shaderInt64 && features2.features.samplerAnisotropy;
-	
+	// geometryShader and shaderFloat64 are intentionally NOT required: no shader
+	// stage or pipeline in the engine consumes them. Apple Silicon / MoltenVK
+	// exposes neither (Metal has no geometry-shader stage and no fp64), and
+	// gating on them would reject otherwise-capable devices for no reason.
+	bool physicalRequirements = features2.features.shaderInt64 && features2.features.samplerAnisotropy;
+
 	// Check specifically required Vulkan 1.2, dynamic rendering, and mesh shader features
 	bool requiredFeatures12 = features12.descriptorIndexing &&
 	                          features12.shaderSampledImageArrayNonUniformIndexing &&
@@ -431,11 +464,15 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 	                          features12.descriptorBindingSampledImageUpdateAfterBind;
 	bool requiredDynamicRendering = dynamicRenderingFeature.dynamicRendering;
 	bool requiredMultiDraw = features2.features.multiDrawIndirect;
-	bool requiredMeshShader = meshShaderFeatures.meshShader;
 
-	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw || !requiredMeshShader) {
-		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, multiDrawIndirect, or meshShader features.\n");
+	// Mesh shader is preferred but NOT required: devices without it render via the
+	// vertex-shader fallback path. Everything below is needed by BOTH paths.
+	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
+		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.\n");
 		return false;
+	}
+	if (!meshShaderFeatures.meshShader) {
+		fprintf(stderr, "Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.\n");
 	}
 
 	return physicalRequirements && queueRequirements && extensionsSupported;
@@ -595,6 +632,8 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	deviceFeatures.samplerAnisotropy = features2.features.samplerAnisotropy;
 	deviceFeatures.multiDrawIndirect = features2.features.multiDrawIndirect;
 	deviceFeatures.geometryShader = features2.features.geometryShader;
+	// Vertex fallback path packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
+	// (read as gl_InstanceIndex), which requires this feature for a nonzero value in an indirect draw.
 	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
 
 	// We'll have 4 unique queues at the very most
@@ -639,6 +678,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
 	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
 
+	// Mirror populateCapabilities: the fallback path activates when the feature is
+	// absent or the test override forces it off.
+	bool meshSupported = queryMeshShaderFeatures.meshShader && !getenv("ANO_FORCE_NO_MESH_SHADER");
+
 	VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
 	meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
 	meshShaderFeatures.taskShader = queryMeshShaderFeatures.taskShader;
@@ -655,8 +698,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
 	dynamicRenderingFeature.dynamicRendering = queryDynamicRendering.dynamicRendering;
 
-	dynamicRenderingFeature.pNext = &meshShaderFeatures;
-	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering -> mesh shader -> NULL
+	// Only chain the mesh-shader feature struct when we will actually enable the
+	// extension; chaining it otherwise is invalid usage on non-mesh devices.
+	dynamicRenderingFeature.pNext = meshSupported ? (void*)&meshShaderFeatures : NULL;
+	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering -> [mesh shader] -> NULL
 	features12.pNext = &features11;
 
 	VkDeviceCreateInfo createInfo = {};
@@ -666,9 +711,26 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	createInfo.queueCreateInfoCount = queueCount;
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
-	createInfo.enabledExtensionCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
-	printf("Required extensions: %s, %s, %s\n", requiredExtensions[0], requiredExtensions[1], requiredExtensions[2]);
-	createInfo.ppEnabledExtensionNames = requiredExtensions;
+
+	// Build the enabled-extension list: the hard-required set, plus VK_EXT_mesh_shader
+	// only when the device supports it (and the fallback is not forced).
+	uint32_t requiredExtensionCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
+	const char* enabledExtensions[8];
+	uint32_t enabledExtensionCount = 0;
+	for (uint32_t i = 0; i < requiredExtensionCount; i++)
+		enabledExtensions[enabledExtensionCount++] = requiredExtensions[i];
+	if (meshSupported)
+		enabledExtensions[enabledExtensionCount++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+	#ifdef __APPLE__
+	// Vulkan spec: when a physical device exposes VK_KHR_portability_subset it
+	// MUST be enabled, or vkCreateDevice fails. MoltenVK always exposes it.
+	// String literal avoids pulling in the beta-gated vulkan_beta.h header.
+	enabledExtensions[enabledExtensionCount++] = "VK_KHR_portability_subset";
+	#endif
+
+	createInfo.enabledExtensionCount = enabledExtensionCount;
+	createInfo.ppEnabledExtensionNames = enabledExtensions;
+	printf("Enabling %u device extensions (mesh shader: %s)\n", enabledExtensionCount, meshSupported ? "yes" : "no");
 
 	if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
 	{
