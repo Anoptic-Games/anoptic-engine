@@ -94,6 +94,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/ecs)
 
 # Renderer (default on).
 if(NOT ANOPTIC_HEADLESS)
