@@ -47,9 +47,10 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 		PBR_FEATURE_BASE_COLOR_TEXTURE | 
 		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR | 
 		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE | 
-		PBR_FEATURE_OCCLUSION_TEXTURE | 
-		PBR_FEATURE_ALPHA_MODE_OPAQUE | 
-		PBR_FEATURE_ALPHA_MODE_BLEND;
+		PBR_FEATURE_OCCLUSION_TEXTURE |
+		PBR_FEATURE_ALPHA_MODE_OPAQUE |
+		PBR_FEATURE_ALPHA_MODE_BLEND |
+		PBR_FEATURE_DOUBLE_SIDED;   // rasterizer uses cullMode NONE, so all geometry is double-sided
 
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
 	struct Buffer geomShaderCode;
