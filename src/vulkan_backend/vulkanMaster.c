@@ -291,10 +291,12 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdSetViewport(cmd, 0, 1, &viewport);
             
             VkRect2D scissor = {};
-            int windowWidth, windowHeight;
-            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            // Must match the viewport's units: the swapchain image is sized in physical
+            // pixels (imageExtent), whereas glfwGetWindowSize returns logical points.
+            // On a Retina/HiDPI display those differ by the backing scale, so using the
+            // window size here clips rendering to a sub-rectangle of the surface.
             scissor.offset = (VkOffset2D){0, 0};
-            scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
+            scissor.extent = rendererState.imageExtent;
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
