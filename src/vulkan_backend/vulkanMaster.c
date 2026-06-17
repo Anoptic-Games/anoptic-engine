@@ -50,6 +50,23 @@ void unInitVulkan() // A celebration
 		}
     }
 
+	// ECS<->render bridge teardown. CPU-only; safe on a zeroed state (early-init
+	// failure) since the destroys guard NULL and the heap free is gated below.
+	ano_render_bridge_destroy(&rendererState.bridge);
+	render_slots_destroy(&rendererState.slots);
+	if (rendererState.pending)
+	{
+		mi_free(rendererState.pending);
+		rendererState.pending = NULL;
+		rendererState.pendingCount = 0;
+		rendererState.pendingCapacity = 0;
+	}
+	if (rendererState.renderHeap)
+	{
+		mi_heap_destroy(rendererState.renderHeap);
+		rendererState.renderHeap = NULL;
+	}
+
 	if (vulkanGarbage.ctx)
 	{
 		cleanupVulkan(vulkanGarbage.ctx);
@@ -459,6 +476,138 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     }
 }
 
+// ---------------------------------------------------------------------------
+// ECS <-> render bridge consumer (VK_BACKEND_INTEROP.md S5-S7, S9).
+//
+// Drains discrete state-transition commands from the logic thread and applies
+// them to the mapped GPU buffers by render slot, propagating each across all
+// MAX_FRAMES_IN_FLIGHT copies, then advances the slot quarantine and reports
+// retired render_ids back. Cost is O(pending changes), never O(entities).
+//
+// NOTE: the slot authority is wired and live, but the legacy entities[] +
+// per-frame updateCullingBuffers() path is still authoritative for the existing
+// scene. With no command producer running yet this consumer drains an empty ring
+// (a no-op beyond advancing the frame counter), so it is behavior-neutral. The
+// cutover — making slots/slotHighWater authoritative and deleting the O(N)
+// rewrite — is gated on on-hardware verification.
+// ---------------------------------------------------------------------------
+
+// Applies one resolved command's flagged fields to a single frame's buffers.
+// Teleports target initialTransform (the GPU animation pass derives the live
+// transform from it); mesh/material land in the cull entity SSBO; light params
+// translate into GPU LightData with the driving slot as transformIndex.
+static void applyCommandToFrame(RendererState* s, const RenderCommand* c, uint32_t slot, uint32_t f)
+{
+    if (c->kind == RCMD_DESTROY) {
+        uint32_t* ent = (uint32_t*)s->culling.entityMapped[f];
+        ent[slot * 2] = NO_MESH_INDEX; // dead-mark: the cull pass skips it
+        return;
+    }
+
+    uint32_t fields = (c->kind == RCMD_CREATE)
+        ? (RFIELD_TRANSFORM | RFIELD_MESH_MAT | RFIELD_ANIM |
+           (c->light_index != ANO_RENDER_NO_LIGHT ? RFIELD_LIGHT : 0u))
+        : c->fields;
+
+    if (fields & RFIELD_TRANSFORM)
+        memcpy(&s->initialTransformBuffer.mapped[f][slot], &c->transform, sizeof(mat4));
+    if (fields & RFIELD_ANIM)
+        s->angularVelocityBuffer.mapped[f][slot] = c->angular_velocity;
+    if (fields & RFIELD_MESH_MAT) {
+        uint32_t* ent = (uint32_t*)s->culling.entityMapped[f];
+        ent[slot * 2]     = c->mesh_index;
+        ent[slot * 2 + 1] = c->material_index;
+    }
+    if ((fields & RFIELD_LIGHT) && c->light_index != ANO_RENDER_NO_LIGHT) {
+        LightData* L = &s->lightBuffer.mapped[f][c->light_index];
+        L->color[0]      = c->light.color[0];
+        L->color[1]      = c->light.color[1];
+        L->color[2]      = c->light.color[2];
+        L->intensity     = c->light.intensity;
+        L->range         = c->light.range;
+        L->innerConeCos  = c->light.innerConeCos;
+        L->outerConeCos  = c->light.outerConeCos;
+        L->type          = (uint32_t)c->light.type;
+        L->transformIndex = slot; // world pos/dir derived from this slot's live transform
+        L->enabled       = 1u;
+    }
+}
+
+static bool pendingReserve(RendererState* s, uint32_t need)
+{
+    if (need <= s->pendingCapacity) return true;
+    uint32_t newcap = s->pendingCapacity ? s->pendingCapacity : 64u;
+    while (newcap < need) newcap *= 2u;
+    PendingRenderCommand* p = mi_heap_realloc(s->renderHeap, s->pending,
+                                              (size_t)newcap * sizeof(PendingRenderCommand));
+    if (!p) return false;
+    s->pending = p;
+    s->pendingCapacity = newcap;
+    return true;
+}
+
+static void render_apply_commands(RendererState* state, uint32_t frameIndex)
+{
+    // 1. Ingest: assign/retire slots once, queue each command for per-frame apply.
+    RenderCommand cmd;
+    while (ano_render_next_command(&state->bridge, &cmd)) {
+        if (cmd.kind == RCMD_CREATE) {
+            if (render_slots_alloc(&state->slots, cmd.render_id) == ANO_RENDER_SLOT_UNMAPPED)
+                continue; // at capacity: drop (chunked growth is the follow-up)
+        } else if (cmd.kind == RCMD_BULK_CREATE && cmd.batch) {
+            render_slots_alloc_range(&state->slots, cmd.batch->render_ids, cmd.batch->count);
+        }
+        if (!pendingReserve(state, state->pendingCount + 1u))
+            continue;
+        state->pending[state->pendingCount++] = (PendingRenderCommand){
+            .cmd = cmd, .pendingFrameMask = (1u << MAX_FRAMES_IN_FLIGHT) - 1u,
+        };
+    }
+
+    // 2. Apply commands flagged for this frame; compact the list; retire a
+    //    DESTROY's slot once its dead-mark has reached every frame in flight.
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < state->pendingCount; i++) {
+        PendingRenderCommand pc = state->pending[i];
+        if (pc.pendingFrameMask & (1u << frameIndex)) {
+            if (pc.cmd.kind == RCMD_BULK_CREATE && pc.cmd.batch) {
+                const RenderCreateBatch* b = pc.cmd.batch;
+                uint32_t* ent = (uint32_t*)state->culling.entityMapped[frameIndex];
+                for (uint32_t e = 0; e < b->count; e++) {
+                    uint32_t slot = render_slots_resolve(&state->slots, b->render_ids[e]);
+                    if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
+                    memcpy(&state->initialTransformBuffer.mapped[frameIndex][slot], &b->transforms[e], sizeof(mat4));
+                    state->angularVelocityBuffer.mapped[frameIndex][slot] = b->anim[e];
+                    ent[slot * 2]     = b->mesh[e];
+                    ent[slot * 2 + 1] = b->material[e];
+                }
+            } else {
+                uint32_t slot = render_slots_resolve(&state->slots, pc.cmd.render_id);
+                if (slot != ANO_RENDER_SLOT_UNMAPPED)
+                    applyCommandToFrame(state, &pc.cmd, slot, frameIndex);
+            }
+            pc.pendingFrameMask &= ~(1u << frameIndex);
+        }
+        if (pc.pendingFrameMask != 0u) {
+            state->pending[w++] = pc;                                   // keep: more frames to go
+        } else if (pc.cmd.kind == RCMD_DESTROY) {
+            render_slots_retire(&state->slots, pc.cmd.render_id, state->globalFrame);
+        }
+    }
+    state->pendingCount = w;
+
+    // 3. Free + report slots whose referencing frames have all retired.
+    uint32_t retired[64];
+    uint32_t n;
+    do {
+        n = render_slots_collect_retired(&state->slots, state->globalFrame, retired, 64u);
+        for (uint32_t i = 0; i < n; i++) {
+            RenderEvent ev = { .kind = REVENT_SLOT_RETIRED, .render_id = retired[i] };
+            (void)ano_render_emit_event(&state->bridge, &ev);
+        }
+    } while (n == 64u);
+}
+
 #include "anoptic_time.h"
 
 void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
@@ -553,6 +702,9 @@ void drawFrame()
 	updateTransformBuffer(&ctx, &rendererState, rendererState.frameIndex);
 	updateCullingBuffers(&ctx, &rendererState, rendererState.frameIndex);
 
+	// Ingest discrete ECS->render state transitions for this frame slot.
+	render_apply_commands(&rendererState, rendererState.frameIndex);
+
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
 	recordCommandBuffer(imageIndex);
 
@@ -612,6 +764,7 @@ void drawFrame()
 	{
 		rendererState.frameIndex = 0;
 	}
+	rendererState.globalFrame += 1; // monotonic; gates slot-quarantine retirement
 }
 
 //Init and cleanup functions
@@ -1360,6 +1513,23 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}*/
+
+	// ECS <-> render bridge: render-owned slot authority + command/event rings.
+	// (VK_BACKEND_INTEROP.md). render_id == entity index here because init is
+	// append-only, so the slot mapping is identity and contiguous — this is the
+	// seam the logic-side ECS will own once entities[] is retired.
+	rendererState.renderHeap = mi_heap_new();
+	if (!rendererState.renderHeap ||
+	    !render_slots_init(&rendererState.slots, rendererState.renderHeap, maxEntities, MAX_FRAMES_IN_FLIGHT) ||
+	    !ano_render_bridge_init(&rendererState.bridge, rendererState.renderHeap, 4096, 1024))
+	{
+		printf("Quitting init: render bridge / slot authority failure!\n");
+		unInitVulkan();
+		return false;
+	}
+	rendererState.globalFrame = 0;
+	for (uint32_t i = 0; i < rendererState.entityCount; i++)
+		(void)render_slots_alloc(&rendererState.slots, i);
 
 	if (!createUniformBuffers(&ctx, &rendererState))
 	{
