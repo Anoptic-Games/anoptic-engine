@@ -73,6 +73,32 @@ static void test_lifecycle(mi_heap_t *heap)
     render_slots_destroy(&t);
 }
 
+// render_slots_set_capacity lifts the alloc/alloc_range ceiling (the GPU buffers
+// are grown to match by the renderer before this is called); it never shrinks.
+static void test_set_capacity(mi_heap_t *heap)
+{
+    RenderSlotTable t;
+    CHECK(render_slots_init(&t, heap, 2, 2), "init (maxSlots 2, fif 2)");
+
+    CHECK(render_slots_alloc(&t, 0) == 0, "alloc 0 -> slot 0");
+    CHECK(render_slots_alloc(&t, 1) == 1, "alloc 1 -> slot 1");
+    CHECK(render_slots_alloc(&t, 2) == ANO_RENDER_SLOT_UNMAPPED, "at capacity -> UNMAPPED");
+
+    // Raise the ceiling; the high-water alloc resumes from where it stalled.
+    render_slots_set_capacity(&t, 4);
+    CHECK(t.slotCapacity == 4, "capacity raised to 4");
+    CHECK(render_slots_alloc(&t, 2) == 2, "alloc 2 -> slot 2 after growth");
+    uint32_t ids[1] = { 3 };
+    CHECK(render_slots_alloc_range(&t, ids, 1) == 3, "range -> slot 3 fills new capacity");
+    CHECK(render_slots_alloc(&t, 4) == ANO_RENDER_SLOT_UNMAPPED, "at new capacity -> UNMAPPED");
+
+    // Never shrinks: a smaller request is ignored.
+    render_slots_set_capacity(&t, 1);
+    CHECK(t.slotCapacity == 4, "set_capacity never shrinks");
+
+    render_slots_destroy(&t);
+}
+
 int main(void)
 {
     mi_heap_t *heap = mi_heap_new();
@@ -80,6 +106,7 @@ int main(void)
 
     test_bulk_range(heap);
     test_lifecycle(heap);
+    test_set_capacity(heap);
 
     mi_heap_destroy(heap);
 

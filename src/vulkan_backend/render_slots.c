@@ -96,6 +96,11 @@ uint32_t render_slots_resolve(const RenderSlotTable *t, uint32_t render_id)
     return t->logicalToSlot[render_id];
 }
 
+void render_slots_set_capacity(RenderSlotTable *t, uint32_t newCapacity)
+{
+    if (newCapacity > t->slotCapacity) t->slotCapacity = newCapacity;
+}
+
 void render_slots_retire(RenderSlotTable *t, uint32_t render_id, uint64_t currentFrame)
 {
     uint32_t slot = render_slots_resolve(t, render_id);
