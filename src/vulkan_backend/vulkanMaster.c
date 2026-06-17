@@ -450,7 +450,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         meshData[i*8 + 4] = mesh->vertexOffset;
         meshData[i*8 + 5] = mesh->classicIndexCount;       // fallback: VkDrawIndexedIndirectCommand.indexCount
         meshData[i*8 + 6] = mesh->classicIndexOffset / 4;  // fallback: firstIndex (u32 index units)
-        meshData[i*8 + 7] = 0;
+        meshData[i*8 + 7] = mesh->boundsOffset;            // byte offset of per-meshlet bounds (sphere+cone) in metadata buffer; consumed by flat.mesh cone cull
 
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
         meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];

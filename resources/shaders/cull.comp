@@ -30,7 +30,7 @@ struct MeshData {
     uint vertexOffset;       // byte offset into the vertex mega-buffer
     uint classicIndexCount;  // fallback: VkDrawIndexedIndirectCommand.indexCount
     uint classicFirstIndex;  // fallback: firstIndex (u32 index units)
-    uint padding3;
+    uint boundsOffset;       // byte offset of per-meshlet bounds block; unused here, consumed by flat.mesh cone cull
 };
 
 layout(set = 0, binding = 3) readonly buffer MeshSSBO {
