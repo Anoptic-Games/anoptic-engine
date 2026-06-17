@@ -127,6 +127,7 @@ static const RenderPassDef g_framePasses[] = {
         .colorAttachmentCount   = 1,
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
     // 3. Transmissive geometry
@@ -136,7 +137,8 @@ static const RenderPassDef g_framePasses[] = {
         .implementationIndex    = 1,  // blended transmission variant
         .colorAttachmentCount   = 1,
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
-        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // test against opaque depth (no write)
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_DONT_CARE, // last pass; nothing reads depth after
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
 };
@@ -264,7 +266,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
             depthAttachment.loadOp = pass->depthLoadOp;
-            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAttachment.storeOp = pass->depthStoreOp;
             depthAttachment.clearValue = clearDepth;
 
             VkRenderingInfo renderingInfo = {};

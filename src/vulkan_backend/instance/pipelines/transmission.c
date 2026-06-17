@@ -52,7 +52,8 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		PBR_FEATURE_ALPHA_MODE_BLEND |
 		PBR_FEATURE_TRANSMISSION |
 		PBR_FEATURE_VOLUME |
-		PBR_FEATURE_IOR;
+		PBR_FEATURE_IOR |
+		PBR_FEATURE_DOUBLE_SIDED;   // rasterizer uses cullMode NONE, so all geometry is double-sided
 
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
 	struct Buffer geomShaderCode;
