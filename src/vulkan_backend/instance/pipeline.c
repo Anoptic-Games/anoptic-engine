@@ -77,11 +77,17 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 
 bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 {
+	// The per-vertex geometry work runs in the mesh stage on capable devices and in
+	// the vertex stage on the fallback path. VK_SHADER_STAGE_MESH_BIT_EXT is invalid
+	// on devices without the extension, so the stage flag must track the active path.
+	VkShaderStageFlags geometryStage = ctx->deviceCapabilities.meshShader
+		? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
 	uboLayoutBinding.binding = 0;
 	uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	uboLayoutBinding.descriptorCount = 1;
-	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	uboLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
 	uboLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
@@ -90,49 +96,50 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	ssboLayoutBinding.descriptorCount = 1;
 	// Also visible to the fragment stage: lights derive world position/direction
 	// from their driving entity's transform (transforms[transformIndex]).
-	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	ssboLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
 	ssboLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding materialLayoutBinding = {};
 	materialLayoutBinding.binding = 2;
 	materialLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	materialLayoutBinding.descriptorCount = 1;
-	materialLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// Geometry stage reads doubleSided for per-meshlet cone culling (flat.mesh); fragment reads the rest.
+	materialLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
 	materialLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding entityLayoutBinding = {};
 	entityLayoutBinding.binding = 3;
 	entityLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	entityLayoutBinding.descriptorCount = 1;
-	entityLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	entityLayoutBinding.stageFlags = geometryStage;
 	entityLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding vertexBufferLayoutBinding = {};
 	vertexBufferLayoutBinding.binding = 4;
 	vertexBufferLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	vertexBufferLayoutBinding.descriptorCount = 1;
-	vertexBufferLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	vertexBufferLayoutBinding.stageFlags = geometryStage;
 	vertexBufferLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding indexBufferLayoutBinding = {};
 	indexBufferLayoutBinding.binding = 5;
 	indexBufferLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	indexBufferLayoutBinding.descriptorCount = 1;
-	indexBufferLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	indexBufferLayoutBinding.stageFlags = geometryStage;
 	indexBufferLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding meshDataLayoutBinding = {};
 	meshDataLayoutBinding.binding = 6;
 	meshDataLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	meshDataLayoutBinding.descriptorCount = 1;
-	meshDataLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	meshDataLayoutBinding.stageFlags = geometryStage;
 	meshDataLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding compactedEntityIndicesLayoutBinding = {};
 	compactedEntityIndicesLayoutBinding.binding = 7;
 	compactedEntityIndicesLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	compactedEntityIndicesLayoutBinding.descriptorCount = 1;
-	compactedEntityIndicesLayoutBinding.stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	compactedEntityIndicesLayoutBinding.stageFlags = geometryStage;
 	compactedEntityIndicesLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding lightLayoutBinding = {};
@@ -415,18 +422,19 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     VkShaderModule compShaderModule = createShaderModule(ctx->device, &compShaderCode);
 
+    // constant_id 1: useMeshShader (selects the indirect command format the cull pass writes)
+    VkBool32 compUseMeshShader = ctx->deviceCapabilities.meshShader ? VK_TRUE : VK_FALSE;
+
     VkSpecializationMapEntry compSpecMapEntry = {};
-    compSpecMapEntry.constantID = 0;
+    compSpecMapEntry.constantID = 1;
     compSpecMapEntry.offset = 0;
     compSpecMapEntry.size = sizeof(VkBool32);
-
-    VkBool32 compUseFirstInstance = ctx->deviceCapabilities.drawIndirectFirstInstance ? VK_TRUE : VK_FALSE;
 
     VkSpecializationInfo compSpecInfo = {};
     compSpecInfo.mapEntryCount = 1;
     compSpecInfo.pMapEntries = &compSpecMapEntry;
     compSpecInfo.dataSize = sizeof(VkBool32);
-    compSpecInfo.pData = &compUseFirstInstance;
+    compSpecInfo.pData = &compUseMeshShader;
 
     VkComputePipelineCreateInfo computePipelineInfo = {};
     computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;

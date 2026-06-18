@@ -26,6 +26,15 @@ GpuAllocator stagingAllocator;
 GpuAllocator swapchainAllocator;
 GpuAllocator textureAllocator;
 
+// Entity (render-slot) buffer sizing. INITIAL_ENTITY_CAPACITY is just the
+// starting slot count, NOT a ceiling: the slot-indexed GPU buffers grow on demand
+// (see ensureEntityCapacity) in ENTITY_GROWTH_CHUNK-aligned, geometrically-doubling
+// steps. PALETTE_CAPACITY sizes the material/light palettes, which are indexed by
+// distinct material/light, not by entity, so they scale on their own axis.
+#define INITIAL_ENTITY_CAPACITY 10000u
+#define ENTITY_GROWTH_CHUNK      8192u
+#define PALETTE_CAPACITY        10000u
+
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
 static GLFWwindow* window;
@@ -49,6 +58,23 @@ void unInitVulkan() // A celebration
 			rendererState.frames[i].frameSubmitted = false; // reset the status
 		}
     }
+
+	// ECS<->render bridge teardown. CPU-only; safe on a zeroed state (early-init
+	// failure) since the destroys guard NULL and the heap free is gated below.
+	ano_render_bridge_destroy(&rendererState.bridge);
+	render_slots_destroy(&rendererState.slots);
+	if (rendererState.pending)
+	{
+		mi_free(rendererState.pending);
+		rendererState.pending = NULL;
+		rendererState.pendingCount = 0;
+		rendererState.pendingCapacity = 0;
+	}
+	if (rendererState.renderHeap)
+	{
+		mi_heap_destroy(rendererState.renderHeap);
+		rendererState.renderHeap = NULL;
+	}
 
 	if (vulkanGarbage.ctx)
 	{
@@ -127,6 +153,7 @@ static const RenderPassDef g_framePasses[] = {
         .colorAttachmentCount   = 1,
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
     // 3. Transmissive geometry
@@ -136,7 +163,8 @@ static const RenderPassDef g_framePasses[] = {
         .implementationIndex    = 1,  // blended transmission variant
         .colorAttachmentCount   = 1,
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
-        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // test against opaque depth (no write)
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_DONT_CARE, // last pass; nothing reads depth after
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
 };
@@ -188,9 +216,12 @@ void recordCommandBuffer(uint32_t imageIndex)
         if (pass->type == PASS_COMPUTE) {
             if (entityCount > 0) {
                 if (pass->prototype == PIPELINE_COMPUTE_CULL) {
-                    // Zero out the entire indirect buffer and draw count buffer
-                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0, 
-                        sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT, 0);
+                    // Zero the entire indirect buffer (sized for the larger command format)
+                    // so unwritten slots decode as no-op draws on either path, plus the draw count.
+                    VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+                        ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
+                        cmdStride * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT, 0);
                     vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
                         sizeof(uint32_t) * PIPELINE_TYPE_COUNT, 0);
 
@@ -229,8 +260,12 @@ void recordCommandBuffer(uint32_t imageIndex)
                     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 } else {
+                    // The cull pass feeds the indirect commands (DRAW_INDIRECT) and the
+                    // compacted/entity SSBOs read by the geometry stage (mesh or vertex).
+                    VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
+                        ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
                     memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT,
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 }
             }
@@ -257,7 +292,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
             depthAttachment.loadOp = pass->depthLoadOp;
-            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAttachment.storeOp = pass->depthStoreOp;
             depthAttachment.clearValue = clearDepth;
 
             VkRenderingInfo renderingInfo = {};
@@ -284,10 +319,12 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdSetViewport(cmd, 0, 1, &viewport);
             
             VkRect2D scissor = {};
-            int windowWidth, windowHeight;
-            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            // Must match the viewport's units: the swapchain image is sized in physical
+            // pixels (imageExtent), whereas glfwGetWindowSize returns logical points.
+            // On a Retina/HiDPI display those differ by the backing scale, so using the
+            // window size here clips rendering to a sub-rectangle of the surface.
             scissor.offset = (VkOffset2D){0, 0};
-            scissor.extent = (VkExtent2D){(uint32_t)windowWidth, (uint32_t)windowHeight};
+            scissor.extent = rendererState.imageExtent;
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -299,27 +336,36 @@ void recordCommandBuffer(uint32_t imageIndex)
 
                 uint32_t pipelineType = pass->prototype;
                 uint32_t baseOffset = pipelineType * rendererState.culling.maxEntities;
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_MESH_BIT_EXT, 0, sizeof(uint32_t), &baseOffset);
+                bool useMesh = ctx.deviceCapabilities.meshShader;
+                VkShaderStageFlags pcStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, pcStage, 0, sizeof(uint32_t), &baseOffset);
 
-                VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * rendererState.indirectBuffer.capacity * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
+                VkBuffer drawCountBuf = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
                 VkDeviceSize countOffset = (VkDeviceSize)pipelineType * sizeof(uint32_t);
+                uint32_t maxDraws = rendererState.indirectBuffer.capacity;
 
-                if (ctx.deviceCapabilities.drawIndirectCount) {
-                    pfnVkCmdDrawMeshTasksIndirectCountEXT(
-                        cmd,
-                        rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        indirectOffset,
-                        rendererState.culling.drawCountBuffer[rendererState.frameIndex],
-                        countOffset,
-                        rendererState.indirectBuffer.capacity,
-                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                if (useMesh) {
+                    VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * maxDraws * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                    if (ctx.deviceCapabilities.drawIndirectCount) {
+                        pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset,
+                            drawCountBuf, countOffset, maxDraws, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                    } else {
+                        pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset,
+                            entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                    }
                 } else {
-                    pfnVkCmdDrawMeshTasksIndirectEXT(
-                        cmd,
-                        rendererState.indirectBuffer.buffer[rendererState.frameIndex],
-                        indirectOffset,
-                        entityCount,
-                        sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                    // Fallback: classic indexed indirect over the shared geometry index buffer.
+                    // The cull pass wrote mesh-local firstIndex/indexCount + per-mesh vertexOffset.
+                    vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                    VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * maxDraws * sizeof(VkDrawIndexedIndirectCommand);
+                    if (ctx.deviceCapabilities.drawIndirectCount) {
+                        vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset,
+                            drawCountBuf, countOffset, maxDraws, sizeof(VkDrawIndexedIndirectCommand));
+                    } else {
+                        vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset,
+                            entityCount, sizeof(VkDrawIndexedIndirectCommand));
+                    }
                 }
             }
             
@@ -386,8 +432,10 @@ void updateTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t fr
 
 void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
+    // The render slot authority is the cull/dispatch bound; dead slots within
+    // [0, slotHighWater) self-skip in the shaders (meshIndex == NO_MESH_INDEX).
+    state->entityCount = state->slots.slotHighWater;
     uint32_t entityCount = state->entityCount;
-    RenderEntity* entities = state->entities;
 
     // Reset draw count
     memset(state->culling.drawCountMapped[frameIndex], 0, sizeof(uint32_t) * PIPELINE_TYPE_COUNT);
@@ -408,12 +456,10 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     ubo->entityCount = entityCount;
     ubo->maxEntities = state->culling.maxEntities;
 
-    // Update EntitySSBO
-    uint32_t* entityBuffer = (uint32_t*)state->culling.entityMapped[frameIndex];
-    for(uint32_t i=0; i < entityCount; i++) {
-        entityBuffer[i*2] = entities[i].meshIndex;
-        entityBuffer[i*2+1] = entities[i].materialIndex;
-    }
+    // The EntitySSBO (mesh/material per slot) is seeded once at init and mutated
+    // sparsely through the command bridge (render_apply_commands) — no per-frame
+    // O(N) rewrite. MeshSSBO/MeshBoundsSSBO below are per-mesh (bounded by
+    // meshCount, not entity count) and refreshed so geometry-pool changes apply.
 
     // Update MeshSSBO and MeshBoundsSSBO
     uint32_t meshCount = state->globalGeometryPool.meshCount;
@@ -428,9 +474,9 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         meshData[i*8 + 2] = mesh->uniqueVerticesOffset;
         meshData[i*8 + 3] = mesh->trianglesOffset;
         meshData[i*8 + 4] = mesh->vertexOffset;
-        meshData[i*8 + 5] = 0; // Padding/Unused
-        meshData[i*8 + 6] = 0;
-        meshData[i*8 + 7] = 0;
+        meshData[i*8 + 5] = mesh->classicIndexCount;       // fallback: VkDrawIndexedIndirectCommand.indexCount
+        meshData[i*8 + 6] = mesh->classicIndexOffset / 4;  // fallback: firstIndex (u32 index units)
+        meshData[i*8 + 7] = mesh->boundsOffset;            // byte offset of per-meshlet bounds (sphere+cone) in metadata buffer; consumed by flat.mesh cone cull
 
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
         meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];
@@ -439,56 +485,327 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     }
 }
 
-#include "anoptic_time.h"
+// ---------------------------------------------------------------------------
+// ECS <-> render bridge consumer (VK_BACKEND_INTEROP.md S5-S7, S9).
+//
+// Drains discrete state-transition commands from the logic thread and applies
+// them to the mapped GPU buffers by render slot, propagating each across all
+// MAX_FRAMES_IN_FLIGHT copies, then advances the slot quarantine and reports
+// retired render_ids back. Cost is O(pending changes), never O(entities).
+//
+// NOTE: the slot authority is wired and live, but the legacy entities[] +
+// per-frame updateCullingBuffers() path is still authoritative for the existing
+// scene. With no command producer running yet this consumer drains an empty ring
+// (a no-op beyond advancing the frame counter), so it is behavior-neutral. The
+// cutover — making slots/slotHighWater authoritative and deleting the O(N)
+// rewrite — is gated on on-hardware verification.
+// ---------------------------------------------------------------------------
 
-void testAssetUnloadReload(VulkanContext* ctx, RendererState* state) {
-    static uint64_t lastTime = 0;
-    static int phase = 0;
-    static uint32_t originalMeshIndex = 0;
+// Applies one resolved command's flagged fields to a single frame's buffers.
+// Teleports target initialTransform (the GPU animation pass derives the live
+// transform from it); mesh/material land in the cull entity SSBO; light params
+// translate into GPU LightData with the driving slot as transformIndex.
+static void applyCommandToFrame(RendererState* s, const RenderCommand* c, uint32_t slot, uint32_t f)
+{
+    if (c->kind == RCMD_DESTROY) {
+        uint32_t* ent = (uint32_t*)s->culling.entityMapped[f];
+        ent[slot * 2] = NO_MESH_INDEX; // dead-mark: the cull pass skips it
+        return;
+    }
 
-    uint64_t now = ano_timestamp_us();
-    if (lastTime == 0) lastTime = now;
+    uint32_t fields = (c->kind == RCMD_CREATE)
+        ? (RFIELD_TRANSFORM | RFIELD_MESH_MAT | RFIELD_ANIM |
+           (c->light_index != ANO_RENDER_NO_LIGHT ? RFIELD_LIGHT : 0u))
+        : c->fields;
 
-    if (now - lastTime > 1000000) { // 1 second
-        lastTime = now;
-        
-        if (phase == 0) {
-            printf("--- TEST: Unloading original mesh ---\n");
-            // Save original and set fallback
-            originalMeshIndex = state->entities[0].meshIndex;
-            state->entities[0].meshIndex = FALLBACK_MESH_INDEX;
-            state->entities[0].materialIndex = 0; // Use fallback material if possible
+    if (fields & RFIELD_TRANSFORM)
+        memcpy(&s->initialTransformBuffer.mapped[f][slot], &c->transform, sizeof(mat4));
+    if (fields & RFIELD_ANIM)
+        s->angularVelocityBuffer.mapped[f][slot] = c->angular_velocity;
+    if (fields & RFIELD_MESH_MAT) {
+        uint32_t* ent = (uint32_t*)s->culling.entityMapped[f];
+        ent[slot * 2]     = c->mesh_index;
+        ent[slot * 2 + 1] = c->material_index;
+    }
+    if ((fields & RFIELD_LIGHT) && c->light_index != ANO_RENDER_NO_LIGHT) {
+        LightData* L = &s->lightBuffer.mapped[f][c->light_index];
+        L->color[0]      = c->light.color[0];
+        L->color[1]      = c->light.color[1];
+        L->color[2]      = c->light.color[2];
+        L->intensity     = c->light.intensity;
+        L->range         = c->light.range;
+        L->innerConeCos  = c->light.innerConeCos;
+        L->outerConeCos  = c->light.outerConeCos;
+        L->type          = (uint32_t)c->light.type;
+        L->transformIndex = slot; // world pos/dir derived from this slot's live transform
+        L->enabled       = 1u;
+    }
+}
 
-            // Defer deletion
-            deferred_delete_resource(state, RESOURCE_TYPE_GEOMETRY_MESH, originalMeshIndex);
-            
-            phase = 1;
-        } else if (phase == 1) {
-            printf("--- TEST: Uploading new mesh to reused memory ---\n");
-            
-            // Upload a simple triangle
-            const Vertex triVertices[] = {
-                {{ 0.0f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.5f, 0.0f}},
-                {{ 0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
-                {{-0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}}
-            };
-            const uint32_t triIndices[] = { 0, 1, 2 };
+static bool pendingReserve(RendererState* s, uint32_t need)
+{
+    if (need <= s->pendingCapacity) return true;
+    uint32_t newcap = s->pendingCapacity ? s->pendingCapacity : 64u;
+    while (newcap < need) newcap *= 2u;
+    PendingRenderCommand* p = mi_heap_realloc(s->renderHeap, s->pending,
+                                              (size_t)newcap * sizeof(PendingRenderCommand));
+    if (!p) return false;
+    s->pending = p;
+    s->pendingCapacity = newcap;
+    return true;
+}
 
-            uint32_t newMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
-                                                       ctx->device,
-                                                       ctx->queueFamilyIndices.transferFamily,
-                                                       ctx->transferQueue,
-                                                       triVertices, 3, triIndices, 3);
-            
-            printf("--- TEST: New mesh assigned index %u (Expected %u) ---\n", newMeshIdx, originalMeshIndex);
-            
-            // Assign to entity
-            state->entities[0].meshIndex = newMeshIdx;
-            
-            phase = 2; // Done
-            //glfwSetWindowShouldClose(window, GLFW_TRUE);
+// Recreates one set of per-frame host-visible buffers at `newBytes`, preserving
+// the leading `copyBytes` of each (0 == discard: the buffer is GPU-regenerated
+// every frame, so its old contents are worthless). The old VkBuffer handles are
+// destroyed; their arena memory is NOT reclaimed (the GPU allocator is a bump
+// arena — see gpu_alloc.h), but geometric growth bounds the waste to ~the final
+// size and a teardown reset reclaims it. Writes the new handle/allocation back
+// into bufs[]/allocs[]; the caller re-derives typed mapped pointers from allocs.
+// in:  bufs/allocs [MAX_FRAMES_IN_FLIGHT], usage, newBytes (>0), copyBytes (<= old size)
+// out: true on success; false leaves already-grown frames valid but the set partial
+static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
+                          GpuAllocation allocs[MAX_FRAMES_IN_FLIGHT],
+                          VkBufferUsageFlags usage,
+                          VkDeviceSize newBytes, VkDeviceSize copyBytes)
+{
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bi = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = newBytes, .usage = usage, .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        VkBuffer nb = VK_NULL_HANDLE;
+        if (vkCreateBuffer(ctx.device, &bi, NULL, &nb) != VK_SUCCESS)
+            return false;
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(ctx.device, nb, &mr);
+        GpuAllocation na = gpu_alloc(&gpuAllocator, mr,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (na.memory == VK_NULL_HANDLE) { vkDestroyBuffer(ctx.device, nb, NULL); return false; }
+        vkBindBufferMemory(ctx.device, nb, na.memory, na.offset);
+        if (copyBytes && allocs[i].mapped && na.mapped)
+            memcpy(na.mapped, allocs[i].mapped, (size_t)copyBytes);
+        vkDestroyBuffer(ctx.device, bufs[i], NULL); // handle only; arena keeps the memory
+        bufs[i] = nb;
+        allocs[i] = na;
+    }
+    return true;
+}
+
+// Ensures the slot-indexed GPU buffers can hold at least `required` slots, growing
+// them (and the slot table's ceiling) if not. No-op when already large enough.
+//
+// Growth recreates every entity-scaled buffer larger and re-points all descriptor
+// sets at the new handles. Both are only legal while no in-flight frame references
+// the old buffers/descriptors, so a full vkDeviceWaitIdle precedes the work. Growth
+// fires only when a spawn crosses a chunk boundary (rare), so the stall is fine.
+//
+// Persistent slot data (initialTransform, angularVelocity, entity mesh/material) is
+// copied forward; transform / compactedIndices / indirect are rewritten by the
+// per-frame compute passes, so they are resized without a copy.
+//
+// in:  state, required (slot count needed), frameIndex (frame being recorded)
+// out: true if capacity >= required afterward; false on OOM (caller drops the spawn)
+static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t frameIndex)
+{
+    uint32_t oldCap = state->slots.slotCapacity;
+    if (required <= oldCap) return true;
+
+    uint32_t newCap = oldCap ? oldCap * 2u : ENTITY_GROWTH_CHUNK;
+    if (newCap < required) newCap = required;
+    newCap = ((newCap + ENTITY_GROWTH_CHUNK - 1u) / ENTITY_GROWTH_CHUNK) * ENTITY_GROWTH_CHUNK;
+    if (newCap < required) { // round-up overflow
+        printf("Fatal: entity capacity request %u exceeds addressable range.\n", required);
+        return false;
+    }
+
+    vkDeviceWaitIdle(ctx.device);
+
+    VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+        ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+    const VkBufferUsageFlags ssbo = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    bool ok =
+        // persistent slot data: preserve the old span
+        growBufferSet(state->initialTransformBuffer.buffer, state->initialTransformBuffer.allocs, ssbo,
+                      (VkDeviceSize)sizeof(mat4) * newCap, (VkDeviceSize)sizeof(mat4) * oldCap) &&
+        growBufferSet(state->angularVelocityBuffer.buffer, state->angularVelocityBuffer.allocs, ssbo,
+                      (VkDeviceSize)sizeof(Vector4) * newCap, (VkDeviceSize)sizeof(Vector4) * oldCap) &&
+        growBufferSet(state->culling.entityBuffer, state->culling.entityAllocs, ssbo,
+                      (VkDeviceSize)sizeof(uint32_t) * 2 * newCap, (VkDeviceSize)sizeof(uint32_t) * 2 * oldCap) &&
+        // GPU-regenerated each frame: resize only, no copy
+        growBufferSet(state->transformBuffer.buffer, state->transformBuffer.allocs, ssbo,
+                      (VkDeviceSize)sizeof(mat4) * newCap, 0) &&
+        growBufferSet(state->culling.compactedEntityIndicesBuffer, state->culling.compactedEntityIndicesAllocs, ssbo,
+                      (VkDeviceSize)sizeof(uint32_t) * newCap * PIPELINE_TYPE_COUNT, 0) &&
+        growBufferSet(state->indirectBuffer.buffer, state->indirectBuffer.allocs,
+                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      cmdStride * newCap * PIPELINE_TYPE_COUNT, 0);
+    if (!ok) {
+        printf("Fatal: entity capacity growth %u -> %u failed (GPU out of memory?).\n", oldCap, newCap);
+        return false;
+    }
+
+    // Re-derive typed mapped pointers + capacities for the new buffers.
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        state->initialTransformBuffer.mapped[i]          = (mat4*)state->initialTransformBuffer.allocs[i].mapped;
+        state->angularVelocityBuffer.mapped[i]           = (Vector4*)state->angularVelocityBuffer.allocs[i].mapped;
+        state->culling.entityMapped[i]                   = state->culling.entityAllocs[i].mapped;
+        state->transformBuffer.mapped[i]                 = (mat4*)state->transformBuffer.allocs[i].mapped;
+        state->culling.compactedEntityIndicesMapped[i]   = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
+        state->indirectBuffer.mapped[i]                  = (VkDrawMeshTasksIndirectCommandEXT*)state->indirectBuffer.allocs[i].mapped;
+    }
+    state->initialTransformBuffer.capacity = newCap;
+    state->angularVelocityBuffer.capacity  = newCap;
+    state->transformBuffer.capacity         = newCap;
+    state->indirectBuffer.capacity          = newCap;
+    state->culling.maxEntities              = newCap;
+    render_slots_set_capacity(&state->slots, newCap);
+
+    // updateCullingBuffers already wrote this frame's CullUBO with the OLD
+    // maxEntities; the compacted-index partition stride (cull.comp) and the
+    // draw-time base offset both key off it, so realign it to newCap now or the
+    // growth frame reads pipeline-type partitions at the wrong stride.
+    state->culling.ubo.mapped[frameIndex]->maxEntities = newCap;
+
+    // Re-point every descriptor at the new handles/ranges. Safe only because the
+    // device is idle. Before the descriptor sets exist (init-time growth) this is
+    // skipped; the init updateUboDescriptorSets call then binds the final buffers.
+    if (state->frames[0].globalSet != VK_NULL_HANDLE)
+        updateUboDescriptorSets(&ctx, state);
+
+    printf("Entity capacity grown: %u -> %u slots.\n", oldCap, newCap);
+    return true;
+}
+
+static void render_apply_commands(RendererState* state, uint32_t frameIndex)
+{
+    // 1. Ingest: assign/retire slots once, queue each command for per-frame apply.
+    RenderCommand cmd;
+    while (ano_render_next_command(&state->bridge, &cmd)) {
+        if (cmd.kind == RCMD_CREATE) {
+            // Grow if no recycled hole is available and the high-water is at the ceiling.
+            if (state->slots.freeCount == 0u && state->slots.slotHighWater >= state->slots.slotCapacity &&
+                !ensureEntityCapacity(state, state->slots.slotHighWater + 1u, frameIndex))
+                continue; // growth failed: drop the spawn
+            if (render_slots_alloc(&state->slots, cmd.render_id) == ANO_RENDER_SLOT_UNMAPPED)
+                continue; // unexpected: drop rather than corrupt
+        } else if (cmd.kind == RCMD_BULK_CREATE && cmd.batch) {
+            // alloc_range needs a contiguous run from the high-water mark.
+            if (!ensureEntityCapacity(state, state->slots.slotHighWater + cmd.batch->count, frameIndex))
+                continue; // growth failed: drop the batch
+            render_slots_alloc_range(&state->slots, cmd.batch->render_ids, cmd.batch->count);
+        }
+        if (!pendingReserve(state, state->pendingCount + 1u))
+            continue;
+        state->pending[state->pendingCount++] = (PendingRenderCommand){
+            .cmd = cmd, .pendingFrameMask = (1u << MAX_FRAMES_IN_FLIGHT) - 1u,
+        };
+    }
+
+    // 2. Apply commands flagged for this frame; compact the list; retire a
+    //    DESTROY's slot once its dead-mark has reached every frame in flight.
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < state->pendingCount; i++) {
+        PendingRenderCommand pc = state->pending[i];
+        if (pc.pendingFrameMask & (1u << frameIndex)) {
+            if (pc.cmd.kind == RCMD_BULK_CREATE && pc.cmd.batch) {
+                const RenderCreateBatch* b = pc.cmd.batch;
+                uint32_t* ent = (uint32_t*)state->culling.entityMapped[frameIndex];
+                for (uint32_t e = 0; e < b->count; e++) {
+                    uint32_t slot = render_slots_resolve(&state->slots, b->render_ids[e]);
+                    if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
+                    memcpy(&state->initialTransformBuffer.mapped[frameIndex][slot], &b->transforms[e], sizeof(mat4));
+                    state->angularVelocityBuffer.mapped[frameIndex][slot] = b->anim[e];
+                    ent[slot * 2]     = b->mesh[e];
+                    ent[slot * 2 + 1] = b->material[e];
+                }
+            } else {
+                uint32_t slot = render_slots_resolve(&state->slots, pc.cmd.render_id);
+                if (slot != ANO_RENDER_SLOT_UNMAPPED)
+                    applyCommandToFrame(state, &pc.cmd, slot, frameIndex);
+            }
+            pc.pendingFrameMask &= ~(1u << frameIndex);
+        }
+        if (pc.pendingFrameMask != 0u) {
+            state->pending[w++] = pc;                                   // keep: more frames to go
+        } else if (pc.cmd.kind == RCMD_DESTROY) {
+            render_slots_retire(&state->slots, pc.cmd.render_id, state->globalFrame);
         }
     }
+    state->pendingCount = w;
+
+    // 3. Free + report slots whose referencing frames have all retired.
+    uint32_t retired[64];
+    uint32_t n;
+    do {
+        n = render_slots_collect_retired(&state->slots, state->globalFrame, retired, 64u);
+        for (uint32_t i = 0; i < n; i++) {
+            RenderEvent ev = { .kind = REVENT_SLOT_RETIRED, .render_id = retired[i] };
+            (void)ano_render_emit_event(&state->bridge, &ev);
+        }
+    } while (n == 64u);
+}
+
+#include "anoptic_time.h"
+
+// ---------------------------------------------------------------------------
+// Render-thread lifecycle (VK_BACKEND_INTEROP.md: the render master is its own
+// thread). This thread owns ALL Vulkan AND all GLFW: GLFW requires every window
+// and event call to issue from a single thread, so device init, the frame loop,
+// glfwPollEvents, swapchain recreation, and teardown all live here. The main
+// (logic/ECS) thread is the sole render-command PRODUCER and touches no GLFW or
+// Vulkan. (Portability note: GLFW additionally pins window/event handling to the
+// process main thread on macOS; the consistent-single-thread split below is
+// correct on Linux/X11/Wayland and is revisited when macOS support lands.)
+//
+// Coordination is two lock-free atomics (engine policy: no mutexes outside the
+// pre-existing Vulkan internals):
+//   g_renderPhase      render -> main : BOOT -> READY (bridge live) | FAILED
+//   g_windowWantsClose render -> main : the user asked to close the window
+//   g_renderShouldStop main  -> render: leave the loop, then tear down
+// Shutdown is ordered so the producer always quiesces BEFORE the bridge dies:
+// render flags windowWantsClose but keeps consuming; main stops producing, sets
+// shouldStop, then joins; only after the loop exits does render run unInitVulkan.
+// ---------------------------------------------------------------------------
+enum { RENDER_PHASE_BOOT = 0, RENDER_PHASE_READY = 1, RENDER_PHASE_FAILED = 2 };
+static atomic_int  g_renderPhase      = RENDER_PHASE_BOOT;
+static atomic_bool g_windowWantsClose = false;
+static atomic_bool g_renderShouldStop = false;
+
+// Producer endpoint. Valid only once anoRenderIsReady() (the bridge is created in
+// initVulkan and destroyed in unInitVulkan).
+AnoRenderBridge* anoRenderBridge(void) { return &rendererState.bridge; }
+bool anoRenderIsReady(void)            { return atomic_load(&g_renderPhase) == RENDER_PHASE_READY; }
+bool anoRenderInitFailed(void)         { return atomic_load(&g_renderPhase) == RENDER_PHASE_FAILED; }
+bool anoRenderWindowWantsClose(void)   { return atomic_load(&g_windowWantsClose); }
+void anoRenderRequestStop(void)        { atomic_store(&g_renderShouldStop, true); }
+
+// render_id 0's original geometry index, for the stand-in producer. Safe to read
+// after READY: the render thread does not mutate entities[] after init.
+uint32_t anoRenderEntity0Mesh(void) {
+    return rendererState.entities ? rendererState.entities[0].meshIndex : NO_MESH_INDEX;
+}
+
+// ano_thread_create entry point: the whole render master. Returns NULL.
+void* anoRenderThreadMain(void* arg) {
+    (void)arg;
+    if (!initVulkan()) {
+        printf("Vulkan initialization failed.\n");
+        atomic_store(&g_renderPhase, RENDER_PHASE_FAILED);
+        return NULL;
+    }
+    atomic_store(&g_renderPhase, RENDER_PHASE_READY);
+
+    while (!atomic_load(&g_renderShouldStop)) {
+        glfwPollEvents();
+        if (anoShouldClose())
+            atomic_store(&g_windowWantsClose, true);
+        drawFrame();
+    }
+
+    unInitVulkan();
+    return NULL;
 }
 
 void drawFrame() 
@@ -500,7 +817,9 @@ void drawFrame()
 		return;
 	}
 
-    testAssetUnloadReload(&ctx, &rendererState);
+    // Discrete ECS->render transitions arrive via the bridge from the logic
+    // thread; they are drained in render_apply_commands (below). No producer runs
+    // on this thread anymore.
 
     if (rendererState.frames[rendererState.frameIndex].frameSubmitted == true)
     {
@@ -532,6 +851,9 @@ void drawFrame()
 
 	updateTransformBuffer(&ctx, &rendererState, rendererState.frameIndex);
 	updateCullingBuffers(&ctx, &rendererState, rendererState.frameIndex);
+
+	// Ingest discrete ECS->render state transitions for this frame slot.
+	render_apply_commands(&rendererState, rendererState.frameIndex);
 
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
 	recordCommandBuffer(imageIndex);
@@ -592,6 +914,7 @@ void drawFrame()
 	{
 		rendererState.frameIndex = 0;
 	}
+	rendererState.globalFrame += 1; // monotonic; gates slot-quarantine retirement
 }
 
 //Init and cleanup functions
@@ -752,7 +1075,11 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
 
 bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
-    VkDeviceSize bufferSize = sizeof(VkDrawMeshTasksIndirectCommandEXT) * maxDraws * PIPELINE_TYPE_COUNT;
+    // Size for the larger of the two command formats so one allocation serves both
+    // paths: VkDrawMeshTasksIndirectCommandEXT (12 B) or VkDrawIndexedIndirectCommand (20 B).
+    VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+        ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+    VkDeviceSize bufferSize = cmdStride * maxDraws * PIPELINE_TYPE_COUNT;
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
@@ -1018,14 +1345,18 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-    pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
-    pfnVkCmdDrawMeshTasksIndirectEXT = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectEXT");
-    pfnVkCmdDrawMeshTasksIndirectCountEXT = (PFN_vkCmdDrawMeshTasksIndirectCountEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectCountEXT");
+    // Mesh-shader entry points only exist on the mesh path. The fallback path draws
+    // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
+    if (ctx.deviceCapabilities.meshShader) {
+        pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
+        pfnVkCmdDrawMeshTasksIndirectEXT = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectEXT");
+        pfnVkCmdDrawMeshTasksIndirectCountEXT = (PFN_vkCmdDrawMeshTasksIndirectCountEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectCountEXT");
 
-    if (!pfnVkCmdDrawMeshTasksEXT || !pfnVkCmdDrawMeshTasksIndirectEXT || !pfnVkCmdDrawMeshTasksIndirectCountEXT) {
-        fprintf(stderr, "Failed to load mesh shader extension function pointers!\n");
-        unInitVulkan();
-        return false;
+        if (!pfnVkCmdDrawMeshTasksEXT || !pfnVkCmdDrawMeshTasksIndirectEXT || !pfnVkCmdDrawMeshTasksIndirectCountEXT) {
+            fprintf(stderr, "Failed to load mesh shader extension function pointers!\n");
+            unInitVulkan();
+            return false;
+        }
     }
 
 	gpuAllocator.device = ctx.device;
@@ -1052,9 +1383,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
-
-
-
 
 	initSwapChain(&ctx, window, getChosenPresentMode(), VK_NULL_HANDLE, &rendererState); // Initialize a swap chain
 	if (rendererState.swapChain == NULL)
@@ -1121,21 +1449,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-
-	/*if(!createTextureImage(&ctx, &rendererState.entities[0], "texture.jpg", false))
-	{
-		printf("Quitting init: texture read failure!\n");
-		unInitVulkan();
-		return false;
-	}
-
-	if(!createTextureImageView(&ctx, &rendererState.entities[0]))
-	{
-		printf("Quitting init: texture image view failure!\n");
-		unInitVulkan();
-		return false;
-	}*/
-
 	if(!createTextureSampler(&ctx, &rendererState))
 	{
 		printf("Quitting init: texture sampler failure!\n");
@@ -1152,13 +1465,15 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	rendererState.entityCount = 0;
 
-	// In a real application, maxEntities would be dynamic or configured.
-	uint32_t maxEntities = 10000;
+	// Slot-indexed buffers start at INITIAL_ENTITY_CAPACITY and grow on demand
+	// (ensureEntityCapacity); material/light are distinct-element palettes on their
+	// own capacity axis. maxEntities is the starting slot count, no longer a ceiling.
+	uint32_t maxEntities = INITIAL_ENTITY_CAPACITY;
 	if (!createTransformBuffer(&ctx, &rendererState.transformBuffer, maxEntities) ||
 	    !createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities) ||
 	    !createAngularVelocityBuffer(&ctx, &rendererState, maxEntities) ||
-	    !createMaterialBuffer(&ctx, &rendererState, maxEntities) ||
-	    !createLightBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createMaterialBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
+	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createCullingBuffers(&ctx, &rendererState, maxEntities))
 	{
@@ -1283,55 +1598,92 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		addLightEntity(l, xform);
 	}
 
-	for (int frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++) {
-		float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
-		for (int i = 0; i < rendererState.entityCount; i++) {
-			bool isLight  = (uint32_t)i >= firstLightEntity;
-			bool isCandle = !isLight && (uint32_t)i >= vikingRoomEntityCount;
-			bool orbit    = isCandle || (uint32_t)i == warmLightEntity;
-
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[0] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[1] = orbit ? 0.5f : (isLight ? 0.0f : 1.0f);
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[2] = 0.0f;
-			rendererState.angularVelocityBuffer.mapped[frame][i].v[3] = orbit ? 1.0f : 0.0f; // orbit flag
-
-			memcpy(&rendererState.transformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
-			memcpy(&rendererState.initialTransformBuffer.mapped[frame][i], &rendererState.entities[i].transform, sizeof(mat4));
-
-			if (!isLight && i < 3) {
-			    rendererState.transformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
-			    rendererState.initialTransformBuffer.mapped[frame][i][3][0] += moveOffsets[i];
-			}
-		}
-	}
-	/*if (!createVertexBuffer(&ctx, vertices, 8, &rendererState.entities[0]))
+	// ECS <-> render bridge: render-owned slot authority + command/event rings
+	// (VK_BACKEND_INTEROP.md). The whole init scene is now published as ONE
+	// RCMD_BULK_CREATE — the same command path a runtime mass-spawn takes — instead
+	// of writing the per-slot GPU buffers directly here. render_id == entity index
+	// because init is append-only, so render_slots_alloc_range hands back a
+	// contiguous identity slot range; this is the seam the logic-side ECS will own
+	// once entities[] is retired.
+	rendererState.renderHeap = mi_heap_new();
+	if (!rendererState.renderHeap ||
+	    !render_slots_init(&rendererState.slots, rendererState.renderHeap, maxEntities, MAX_FRAMES_IN_FLIGHT) ||
+	    !ano_render_bridge_init(&rendererState.bridge, rendererState.renderHeap, 4096, 1024))
 	{
-		printf("Quitting init: vertex buffer creation failure!\n");
+		printf("Quitting init: render bridge / slot authority failure!\n");
+		unInitVulkan();
+		return false;
+	}
+	rendererState.globalFrame = 0;
+
+	// Build the initial-state batch from the CPU scene record. The base pose folds
+	// in the legacy spawn nudge (first three meshes) and the continuous-motion
+	// vocabulary (spin for meshes, orbit for the candle + warm light); these reach
+	// the GPU once as initialTransform / animation params and are never restreamed.
+	// The live transform is intentionally NOT written — update.comp derives it from
+	// initialTransform every frame. Lights keep their photometric LightData in the
+	// light palette (addLightEntity); the batch only carries their renderable
+	// projection (mesh == NO_MESH_INDEX, so the cull pass skips them).
+	uint32_t batchCount = rendererState.entityCount;
+	uint32_t *batchIds      = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
+	mat4     *batchXforms   = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(mat4));
+	Vector4  *batchAnim     = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(Vector4));
+	uint32_t *batchMesh     = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
+	uint32_t *batchMaterial = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
+	if (!batchIds || !batchXforms || !batchAnim || !batchMesh || !batchMaterial)
+	{
+		printf("Quitting init: bulk-create batch allocation failure!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	// Fill the vertex buffer
-	if (!stagingTransfer(&ctx, vertices, rendererState.entities[0].vertex, sizeof(vertices)))
+	float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
+	for (uint32_t i = 0; i < batchCount; i++) {
+		bool isLight  = i >= firstLightEntity;
+		bool isCandle = !isLight && i >= vikingRoomEntityCount;
+		bool orbit    = isCandle || i == warmLightEntity;
+
+		batchIds[i]      = i;
+		batchMesh[i]     = rendererState.entities[i].meshIndex;
+		batchMaterial[i] = rendererState.entities[i].materialIndex;
+
+		batchAnim[i].v[0] = 0.0f;
+		batchAnim[i].v[1] = orbit ? 0.5f : (isLight ? 0.0f : 1.0f);
+		batchAnim[i].v[2] = 0.0f;
+		batchAnim[i].v[3] = orbit ? 1.0f : 0.0f; // orbit flag
+
+		memcpy(&batchXforms[i], &rendererState.entities[i].transform, sizeof(mat4));
+		if (!isLight && i < 3)
+			batchXforms[i][3][0] += moveOffsets[i];
+	}
+
+	RenderCreateBatch initBatch = {
+		.count      = batchCount,
+		.render_ids = batchIds,
+		.transforms = batchXforms,
+		.anim       = batchAnim,
+		.mesh       = batchMesh,
+		.material   = batchMaterial,
+	};
+	RenderCommand bulk = { .kind = RCMD_BULK_CREATE, .batch = &initBatch };
+	if (!ano_render_submit(&rendererState.bridge, &bulk))
 	{
-		printf("Quitting init: staging buffer population failure!\n");
+		printf("Quitting init: failed to submit bulk-create command!\n");
 		unInitVulkan();
 		return false;
 	}
 
-	if (!createIndexBuffer(&ctx, vertexIndices, 12, &rendererState.entities[0]))
-	{
-		printf("Quitting init: vertex buffer creation failure!\n");
-		unInitVulkan();
-		return false;
-	}
+	// Drain synchronously so every frame-in-flight is seeded before the first draw:
+	// the first call allocates the slot range and applies frame 0, then the frame
+	// mask spreads the identical per-slot writes across the remaining copies.
+	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; f++)
+		render_apply_commands(&rendererState, f);
 
-	if (!stagingTransfer(&ctx, vertexIndices, rendererState.entities[0].index, sizeof(vertexIndices)))
-	{
-		printf("Quitting init: staging buffer population failure!\n");
-		unInitVulkan();
-		return false;
-	}*/
+	mi_free(batchIds);
+	mi_free(batchXforms);
+	mi_free(batchAnim);
+	mi_free(batchMesh);
+	mi_free(batchMaterial);
 
 	if (!createUniformBuffers(&ctx, &rendererState))
 	{
