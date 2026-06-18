@@ -27,10 +27,10 @@ struct MeshData {
     uint meshletOffset;
     uint uniqueVerticesOffset;
     uint trianglesOffset;
-    uint vertexOffset;
-    uint padding1;
-    uint padding2;
-    uint padding3;
+    uint vertexOffset;       // byte offset into the vertex mega-buffer
+    uint classicIndexCount;  // fallback: VkDrawIndexedIndirectCommand.indexCount
+    uint classicFirstIndex;  // fallback: firstIndex (u32 index units)
+    uint boundsOffset;       // byte offset of per-meshlet bounds block; unused here, consumed by flat.mesh cone cull
 };
 
 layout(set = 0, binding = 3) readonly buffer MeshSSBO {
@@ -41,14 +41,18 @@ layout(set = 0, binding = 4) readonly buffer MeshBoundsSSBO {
     vec4 meshBounds[];
 };
 
-struct VkDrawMeshTasksIndirectCommandEXT {
-    uint groupCountX;
-    uint groupCountY;
-    uint groupCountZ;
-};
+// Selects the indirect command format written below. The mesh path identifies the
+// entity via the compacted-index buffer + gl_DrawID. The fallback path instead packs
+// the draw ordinal into firstInstance (read as gl_InstanceIndex), since Metal/MoltenVK
+// has no DrawIndex builtin to translate gl_DrawID in a vertex shader.
+layout(constant_id = 1) const bool useMeshShader = true;
 
+// Raw u32 view of the indirect buffer so one shader writes either command format:
+//   mesh path     -> VkDrawMeshTasksIndirectCommandEXT (3 u32: groupCountX/Y/Z)
+//   fallback path -> VkDrawIndexedIndirectCommand      (5 u32: indexCount, instanceCount,
+//                                                       firstIndex, vertexOffset, firstInstance)
 layout(set = 0, binding = 5) buffer IndirectBuffer {
-    VkDrawMeshTasksIndirectCommandEXT draws[];
+    uint indirectData[];
 };
 
 layout(set = 0, binding = 6) buffer DrawCount {
@@ -158,14 +162,28 @@ void main() {
 
     if (isVisible(bounds.xyz, bounds.w, model)) {
         uint writeIdx = atomicAdd(drawCounts[pipelineType], 1);
-        
+
         // Compact draws by pipeline type
         uint destIdx = pipelineType * maxEntities + writeIdx;
-        draws[destIdx].groupCountX = mData.meshletCount;
-        draws[destIdx].groupCountY = 1;
-        draws[destIdx].groupCountZ = 1;
-        
-        // Save the original entity index
+
+        if (useMeshShader) {
+            uint b = destIdx * 3u;
+            indirectData[b + 0u] = mData.meshletCount; // groupCountX = one workgroup per meshlet
+            indirectData[b + 1u] = 1u;
+            indirectData[b + 2u] = 1u;
+        } else {
+            // One indexed draw covers the whole mesh; the hardware index/vertex fetch
+            // performs the expansion the mesh shader did in software.
+            uint b = destIdx * 5u;
+            indirectData[b + 0u] = mData.classicIndexCount;  // indexCount
+            indirectData[b + 1u] = 1u;                       // instanceCount
+            indirectData[b + 2u] = mData.classicFirstIndex;  // firstIndex
+            indirectData[b + 3u] = mData.vertexOffset / 32u; // vertexOffset (Vertex = 32 B) -> gl_VertexIndex base
+            indirectData[b + 4u] = writeIdx;                 // firstInstance = draw ordinal; flat.vert reads it as gl_InstanceIndex (no DrawIndex builtin on Metal)
+        }
+
+        // Save the original entity index. flat.mesh reads it via gl_DrawID; flat.vert
+        // via gl_InstanceIndex (= firstInstance above). Both resolve to this slot.
         entityIndices[destIdx] = idx;
     }
 }

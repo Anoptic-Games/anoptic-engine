@@ -41,6 +41,10 @@ typedef struct RenderPassDef
     VkFormat                depthFormat;
     VkAttachmentLoadOp      colorLoadOp;
     VkAttachmentLoadOp      depthLoadOp;
+    // STORE when a later pass must read this pass's depth (e.g. opaque -> transmission).
+    // DONT_CARE discards it: fine on immediate-mode GPUs that leave depth in memory, but
+    // on a tile-based renderer (Apple/MoltenVK) the next pass's LOAD then gets garbage.
+    VkAttachmentStoreOp     depthStoreOp;
     VkClearValue            colorClear;
     VkClearValue            depthClear;
     VkResolveModeFlagBits   resolveMode;

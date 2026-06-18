@@ -8,37 +8,78 @@ The `src/` directory is the root directory of the game engine's source code.
 Other subdirectories within ``src/`` are for the various submodules
 
 ## Directory Structure
-TODO: Crystalize
 
-The directory structure for `src/` might look something like this:
+Each module follows the platform-abstraction convention (see the root `CLAUDE.md`):
+a public interface lives in `include/anoptic_<mod>.h` (exposing only `ano_*()`
+declarations and platform-agnostic types), while `src/<mod>/` holds the
+implementation — a common `<mod>.c` plus, where needed, per-platform files
+(`<mod>_linux.c` / `<mod>_win64.c` / `<mod>_macos.c`) selected by the module's
+`CMakeLists.txt`. Callers only ever include the public header and call `ano_*()`.
+
+The current layout:
 
 ```
 src/
-├── vulkan_backend/       # Graphics rendering code
-├── core/           # Core data management like ECS and memory management
-├── audio/          # Audio processing code
-├── physics/        # Physics simulation code
-├── input/          # Input handling code
-├── scripting/      # Game scripting interfaces
-└── utils/          # General utility and helper functions
+├── engine/         # Entry point (main.c): spawns the render thread, runs the logic/ECS master loop
+├── ecs/            # Entity Component System: generational handles, chunked sparse-set component stores
+├── render_bridge/  # Logic <-> render boundary: lock-free SPSC command/event rings
+├── vulkan_backend/ # GPU-driven Vulkan renderer (render master thread); owns GPU slots + all GLFW
+├── render/         # Asset-facing render support: glTF loader (gltf/), text/font stack (text/)
+├── mesh/           # meshoptimizer wrapper (meshlet decomposition at upload time)
+├── memory/         # Aligned allocation + mimalloc integration (per-platform)
+├── threads/        # Thread / mutex / condvar / atomics abstraction over pthreads + Win32
+├── time/           # High-resolution monotonic timing and OS-scheduled sleeps
+├── strings/        # Owned string type experiments and scoped-heap tests
+├── logging/        # Async queue-based logger
+└── filesystem/     # Path and file I/O abstraction (per-platform)
 ```
 
 ## Purpose of Each Subdirectory
-TODO: Crystalize
 
-- `vulkan_backend/`: This directory contains the code for rendering graphics, processing shaders, handling textures, and any other tasks related to graphics.
+- `engine/`: The process entry point. `main.c` is the logic/ECS master thread: it
+  spawns the render world on its own thread (`anoRenderThreadMain`), waits for it to
+  initialize, then acts as the sole producer of render commands over the bridge.
 
-- `core/`: This directory contains the core functionality of the engine, including entity-component-system (ECS) management, memory management, and other central systems of the engine.
+- `ecs/` (`anoptic_ecs.h`): The authoritative simulation world. Entities are
+  generational `(index, generation)` handles; components live in chunked sparse-set
+  stores with swap-and-pop removal. Structural mutation is deferred and flushed at a
+  tick boundary. Knows nothing about Vulkan or GPU slots.
 
-- `audio/`: This directory contains the code for playing audio, processing audio files, and handling any other audio-related tasks.
+- `render_bridge/` (`anoptic_render_bridge.h`): The one-way-each-direction boundary
+  between the logic and render worlds. Two bounded lock-free SPSC rings carry
+  `RenderCommand`s (logic -> render) and `RenderEvent`s (render -> logic). Also defines
+  the logic-side `DisplayState` projection and the command/event protocol.
 
-- `physics/`: This directory contains the code for the physics engine, including collision detection, physics simulation, and any other physics-related tasks.
+- `vulkan_backend/` (`anoptic_vulkan.h`): The GPU-driven, meshlet-based renderer, run
+  entirely on the render master thread. It is the sole authority over GPU memory and
+  the physical slot space (private `render_slots.h`: logical `render_id` -> GPU slot,
+  stable slots with holes, frame-gated reuse), drains the bridge, and grows the
+  slot-indexed GPU buffers on demand. Owns all GLFW (window + event pump).
 
-- `input/`: This directory contains the code for handling user input, such as keyboard, mouse, or game controller input.
+- `render/`: Higher-level render support that feeds the backend — the glTF model
+  loader (`gltf/`) and the FreeType/SDF text stack (`text/`).
 
-- `scripting/`: This directory contains the interfaces for the game's scripting system, which allows game developers to script game behavior using a scripting language.
+- `mesh/` (`ano_meshoptimizer.h`): Wrapper over meshoptimizer; decomposes uploaded
+  geometry into meshlets and bounds for the GPU geometry pool.
 
-- `utils/`: This directory contains any utility or helper functions that are used throughout the engine, such as math functions, data structures, or debugging tools.
+- `memory/` (`anoptic_memory.h`, `anoptic_memalign.h`): Aligned allocation primitives
+  and the mimalloc integration that backs the engine's arenas and thread-local heaps.
+
+- `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition
+  variables, spinlocks, barriers, and TLS over pthreads / Win32.
+
+- `time/` (`anoptic_time.h`): Emulator-grade monotonic timestamps and precise
+  sleep/busy-wait.
+
+- `strings/` (`anoptic_strings.h`): Owned-string-type work and scoped-heap experiments.
+
+- `logging/` (`anoptic_logging.h`): Asynchronous, queue-based logger (hot-path enqueue,
+  cold-path flush).
+
+- `filesystem/` (`anoptic_filesystem.h`): Path handling and file I/O, per platform.
+
+Modules that are still aspirational (audio, physics, input, scripting) will appear here
+as they are built; see `docs/notes.md` for the architecture and build sequence.
 
 
 ## Usage

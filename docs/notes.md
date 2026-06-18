@@ -94,7 +94,16 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 
 **No PBR.** The engine does not target photorealism. PBR's per-material cost (roughness maps, metalness maps, environment probes, BRDF LUTs, image-based lighting) optimizes for making 50 objects look photorealistic. This engine optimizes for making a million objects look good. Non-PBR rendering (flat shading, stylized lighting, older visual aesthetics) keeps the material pipeline thin and the per-fragment cost low, freeing GPU budget for entity count.
 
-**Vulkan directly.** The renderer uses the Vulkan API without an abstraction layer. This is deliberate: the engine needs direct control over memory allocation, synchronization, and compute dispatch. The current renderer is a basic rasterization pipeline — functional but rough, largely tutorial-derived, and in need of cleanup rather than replacement.
+**Vulkan directly.** The renderer uses the Vulkan API without an abstraction layer. This is deliberate: the engine needs direct control over memory allocation, synchronization, and compute dispatch. The renderer is now GPU-driven and meshlet-based (see below), a substantial advance over the early tutorial-derived rasterizer.
+
+**GPU-driven meshlet rendering, with a compatibility fallback.** The frame is built on the GPU: a compute pass animates entity transforms, a compute culling pass frustum-tests every entity and writes an indirect draw list, and geometry is drawn from a shared vertex + meshlet mega-buffer. Meshes are decomposed into meshlets (via the `ano_meshoptimizer` wrapper) at upload time.
+
+Because `VK_EXT_mesh_shader` is unavailable on a large slice of still-current hardware (pre-2019 discrete GPUs, older integrated graphics, software rasterizers), the renderer carries **two interchangeable geometry paths selected automatically at device-creation time**:
+
+- **Mesh path** (preferred): the cull pass emits `VkDrawMeshTasksIndirectCommandEXT`s and a mesh shader (`flat.mesh`) expands meshlets on the GPU.
+- **Fallback path**: on devices without the extension, the cull pass emits `VkDrawIndexedIndirectCommand`s and a vertex shader (`flat.vert`) renders the same geometry via classic indexed indirect draws. A meshlet is just an indexed primitive cluster, so the hardware index/vertex fetch performs the expansion the mesh shader did in software. Each mesh stores a plain u32 index region alongside its meshlet metadata for this purpose.
+
+The two paths differ only in the geometry stage and the indirect command format. Resource handling, the geometry pool, the compute culling/animation passes, materials, punctual lighting, and the fragment shaders are shared verbatim. The active path is keyed off `DeviceCapabilities.meshShader`; `ANO_FORCE_NO_MESH_SHADER=1` forces the fallback for testing. Trade-off: the fallback retains per-entity frustum culling but drops per-meshlet cone culling. Full design and phasing live in `PLANS_COMPATIBILITY.md`.
 
 **Future direction: selective raymarching (SDF).** The long-term rendering vision is a hybrid approach: rasterization for UI, HUD, and conventional geometry; raymarching via signed distance fields for the space environment. SDFs are procedural (asteroids defined by math, not meshes), composable (smooth union/subtraction for constructive geometry), and provide natural LOD (fewer march steps at distance). This maps directly onto the scoped resolution hierarchy. However, rasterization is the immediate path — raymarching is a later-stage addition once the simulation infrastructure is operational.
 
@@ -102,7 +111,15 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 
 ### What Exists (in code)
 
-**Vulkan renderer (basic, functional):**
+**Vulkan renderer (GPU-driven, meshlet-based):**
+
+> The bullets below were written for the original tutorial-derived rasterizer. The
+> renderer has since moved to a GPU-driven, meshlet-based pipeline (compute animation +
+> compute culling + indirect draws over a shared mega-buffer) with a dual mesh-shader /
+> vertex-shader geometry path — see the Rendering Philosophy section above and
+> `PLANS_COMPATIBILITY.md`. This list is retained as a record of the foundational pieces,
+> most of which still exist.
+
 - Instance creation, physical/logical device selection, swap chain, image views
 - Graphics pipeline with vertex/fragment shaders
 - Vertex and index buffer management
@@ -114,6 +131,65 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 - glTF model loading (viking_room test asset)
 - Multi-monitor support, configurable present mode
 - Window management via GLFW
+
+**ECS ↔ render bridge — the two parallel worlds (June 2026):**
+
+The first real slice of the simulation/render split now exists in code. The engine runs
+the authoritative simulation and the non-authoritative renderer as **two parallel worlds
+on separate threads**, joined by two bounded lock-free SPSC rings. This is the first
+production deployment of the lock-free concurrency principle (§2) outside the logger —
+and, unlike the logger, it is genuinely lock-free today (the SPSC ring is acquire/release
+on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache
+lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and
+`docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
+
+- **ECS module** (`anoptic_ecs.h`, `src/ecs/`): entities are generational
+  `(index, generation)` handles; components live in chunked sparse-set stores with
+  swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and
+  flushed at a tick boundary, so iteration is stable. The store allocates from a
+  caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
+
+- **The bridge** (`anoptic_render_bridge.h`, `src/render_bridge/`): one ring carries
+  `RenderCommand`s (logic → render), the other `RenderEvent`s (render → logic). The
+  logic master is the sole command producer (it emits after the parallel update stage
+  settles, so ordering is total); the render master is the sole event producer. The
+  command protocol is `CREATE / UPDATE / DESTROY / BULK_CREATE`, with an `UPDATE`
+  carrying a field-bit mask so one message can fold several discrete changes — the
+  literal expression of the "≤1 message per entity per tick" invariant.
+
+- **Render-side slot authority** (`src/vulkan_backend/render_slots.h`): the renderer is
+  the *sole* authority over GPU memory and the physical slot space. The logic world
+  names renderables by a stable logical `render_id`; the renderer privately maps
+  `render_id → GPU slot`. Slots are **stable and may contain holes** — the cull pass
+  already compacts visible work, so a dead slot costs one skipped compute invocation and
+  zero draw cost. This deleted the entire defragmentation/remap machinery the early
+  drafts assumed. Slot reuse is **frame-gated**: a `DESTROY` quarantines the slot until
+  all frames in flight retire, then a `REVENT_SLOT_RETIRED` lets the ECS recycle the id.
+
+- **Sparse/continuous split**: only *discrete* transitions cross the bridge (spawn,
+  despawn, teleport, mesh/material swap, light change). *Continuous*, GPU-parameterized
+  motion (orbit/spin via the update compute pass) is sent once as parameters and never
+  restreamed, so animated entities cost zero per-frame bridge traffic. A teleport writes
+  the `initialTransform` buffer (the base pose), never the live `transform` buffer, which
+  the GPU animation pass clobbers each frame.
+
+- **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an
+  initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps —
+  dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers
+  larger and re-points the descriptor sets; the shader and descriptor *layouts* never
+  change. Because the GPU allocator is a bump arena (no per-allocation free), growth is
+  reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth
+  bounds the waste to ~the final size. Material and light palettes scale on their own
+  axis (distinct-element-keyed, not per-entity).
+
+- **The thread split**: `main.c` is the logic/ECS master and the sole command producer;
+  it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan
+  *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation,
+  teardown), drains the command ring each frame, and applies each transition across all
+  frames in flight. Coordination is three atomics — no mutex — with shutdown ordered so
+  the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real
+  two-stage tick and `DisplayState` graphics-extract that will replace the stand-in
+  producer currently living in `main.c`.
 
 **Memory system (foundational):**
 - mimalloc as global allocator with override
@@ -152,8 +228,11 @@ Details of the scoped resolution algorithms are currently in the architect's hea
 ### What Exists (in the architect's head, not yet materialized)
 
 - Complete arena hierarchy (process > level > frame > scratch > pool)
-- Lock-free MPSC queue design for the logger and event bus
-- ECS architecture and component storage layout
+- Lock-free MPSC queue design for the logger and event bus (the SPSC bridge ring is the
+  first lock-free primitive actually shipped — see the ECS↔render bridge above)
+- ~~ECS architecture and component storage layout~~ — now in code (generational handles +
+  chunked sparse-set stores); the two-stage parallel tick and graphics-extract are still
+  to be built
 - Event bus for inter-system communication
 - Scoped resolution algorithms for multi-scale simulation
 - The simulation game itself (star systems, worlds, populations, economies, fleets)

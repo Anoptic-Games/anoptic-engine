@@ -94,6 +94,8 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/ecs)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 
 # Renderer (default on).
 if(NOT ANOPTIC_HEADLESS)
@@ -117,7 +119,7 @@ if(Vulkan_FOUND)
     if(Vulkan_GLSLC_EXECUTABLE)
         set(SHADER_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
         set(SPV_OUTPUTS "")
-        foreach(shader IN ITEMS flat.mesh flat.frag transmission.frag cull.comp update.comp)
+        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp)
             add_custom_command(
                     OUTPUT  ${SHADER_DIR}/${shader}.spv
                     COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${SHADER_DIR}/${shader} -o ${SHADER_DIR}/${shader}.spv
