@@ -132,6 +132,65 @@ The two paths differ only in the geometry stage and the indirect command format.
 - Multi-monitor support, configurable present mode
 - Window management via GLFW
 
+**ECS ↔ render bridge — the two parallel worlds (June 2026):**
+
+The first real slice of the simulation/render split now exists in code. The engine runs
+the authoritative simulation and the non-authoritative renderer as **two parallel worlds
+on separate threads**, joined by two bounded lock-free SPSC rings. This is the first
+production deployment of the lock-free concurrency principle (§2) outside the logger —
+and, unlike the logger, it is genuinely lock-free today (the SPSC ring is acquire/release
+on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache
+lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and
+`docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
+
+- **ECS module** (`anoptic_ecs.h`, `src/ecs/`): entities are generational
+  `(index, generation)` handles; components live in chunked sparse-set stores with
+  swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and
+  flushed at a tick boundary, so iteration is stable. The store allocates from a
+  caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
+
+- **The bridge** (`anoptic_render_bridge.h`, `src/render_bridge/`): one ring carries
+  `RenderCommand`s (logic → render), the other `RenderEvent`s (render → logic). The
+  logic master is the sole command producer (it emits after the parallel update stage
+  settles, so ordering is total); the render master is the sole event producer. The
+  command protocol is `CREATE / UPDATE / DESTROY / BULK_CREATE`, with an `UPDATE`
+  carrying a field-bit mask so one message can fold several discrete changes — the
+  literal expression of the "≤1 message per entity per tick" invariant.
+
+- **Render-side slot authority** (`src/vulkan_backend/render_slots.h`): the renderer is
+  the *sole* authority over GPU memory and the physical slot space. The logic world
+  names renderables by a stable logical `render_id`; the renderer privately maps
+  `render_id → GPU slot`. Slots are **stable and may contain holes** — the cull pass
+  already compacts visible work, so a dead slot costs one skipped compute invocation and
+  zero draw cost. This deleted the entire defragmentation/remap machinery the early
+  drafts assumed. Slot reuse is **frame-gated**: a `DESTROY` quarantines the slot until
+  all frames in flight retire, then a `REVENT_SLOT_RETIRED` lets the ECS recycle the id.
+
+- **Sparse/continuous split**: only *discrete* transitions cross the bridge (spawn,
+  despawn, teleport, mesh/material swap, light change). *Continuous*, GPU-parameterized
+  motion (orbit/spin via the update compute pass) is sent once as parameters and never
+  restreamed, so animated entities cost zero per-frame bridge traffic. A teleport writes
+  the `initialTransform` buffer (the base pose), never the live `transform` buffer, which
+  the GPU animation pass clobbers each frame.
+
+- **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an
+  initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps —
+  dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers
+  larger and re-points the descriptor sets; the shader and descriptor *layouts* never
+  change. Because the GPU allocator is a bump arena (no per-allocation free), growth is
+  reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth
+  bounds the waste to ~the final size. Material and light palettes scale on their own
+  axis (distinct-element-keyed, not per-entity).
+
+- **The thread split**: `main.c` is the logic/ECS master and the sole command producer;
+  it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan
+  *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation,
+  teardown), drains the command ring each frame, and applies each transition across all
+  frames in flight. Coordination is three atomics — no mutex — with shutdown ordered so
+  the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real
+  two-stage tick and `DisplayState` graphics-extract that will replace the stand-in
+  producer currently living in `main.c`.
+
 **Memory system (foundational):**
 - mimalloc as global allocator with override
 - `LOCALHEAPATTR` macro for scoped heap teardown
@@ -169,8 +228,11 @@ The two paths differ only in the geometry stage and the indirect command format.
 ### What Exists (in the architect's head, not yet materialized)
 
 - Complete arena hierarchy (process > level > frame > scratch > pool)
-- Lock-free MPSC queue design for the logger and event bus
-- ECS architecture and component storage layout
+- Lock-free MPSC queue design for the logger and event bus (the SPSC bridge ring is the
+  first lock-free primitive actually shipped — see the ECS↔render bridge above)
+- ~~ECS architecture and component storage layout~~ — now in code (generational handles +
+  chunked sparse-set stores); the two-stage parallel tick and graphics-extract are still
+  to be built
 - Event bus for inter-system communication
 - Scoped resolution algorithms for multi-scale simulation
 - The simulation game itself (star systems, worlds, populations, economies, fleets)
