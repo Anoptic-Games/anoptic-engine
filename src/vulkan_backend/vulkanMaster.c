@@ -750,62 +750,30 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 #include "anoptic_time.h"
 
 // ---------------------------------------------------------------------------
-// Render-thread lifecycle (VK_BACKEND_INTEROP.md: the render master is its own
-// thread). This thread owns ALL Vulkan AND all GLFW: GLFW requires every window
-// and event call to issue from a single thread, so device init, the frame loop,
-// glfwPollEvents, swapchain recreation, and teardown all live here. The main
-// (logic/ECS) thread is the sole render-command PRODUCER and touches no GLFW or
-// Vulkan. (Portability note: GLFW additionally pins window/event handling to the
-// process main thread on macOS; the consistent-single-thread split below is
-// correct on Linux/X11/Wayland and is revisited when macOS support lands.)
+// Render world ownership. GLFW pins all window and event handling to the process
+// main thread (a hard requirement on macOS/Cocoa: glfwInit, glfwCreateWindow,
+// glfwPollEvents and surface creation must issue from the thread that runs
+// main()). So the render world — all of Vulkan AND GLFW: init, the frame loop,
+// glfwPollEvents, swapchain recreation, teardown — runs directly on the main
+// thread (see main()). The logic/ECS master runs on its OWN thread now and is the
+// sole render-command PRODUCER, coordinating only through the lock-free bridge
+// (engine policy: no mutexes outside the pre-existing Vulkan internals).
 //
-// Coordination is two lock-free atomics (engine policy: no mutexes outside the
-// pre-existing Vulkan internals):
-//   g_renderPhase      render -> main : BOOT -> READY (bridge live) | FAILED
-//   g_windowWantsClose render -> main : the user asked to close the window
-//   g_renderShouldStop main  -> render: leave the loop, then tear down
-// Shutdown is ordered so the producer always quiesces BEFORE the bridge dies:
-// render flags windowWantsClose but keeps consuming; main stops producing, sets
-// shouldStop, then joins; only after the loop exits does render run unInitVulkan.
+// Init is synchronous: main() calls initVulkan() (which creates the bridge)
+// BEFORE spawning the logic thread, so no readiness handshake is needed. Shutdown
+// is ordered so the producer always quiesces BEFORE the bridge dies: the render
+// loop exits on window close, main stops the logic thread and joins it, and only
+// then runs unInitVulkan() to destroy the bridge.
 // ---------------------------------------------------------------------------
-enum { RENDER_PHASE_BOOT = 0, RENDER_PHASE_READY = 1, RENDER_PHASE_FAILED = 2 };
-static atomic_int  g_renderPhase      = RENDER_PHASE_BOOT;
-static atomic_bool g_windowWantsClose = false;
-static atomic_bool g_renderShouldStop = false;
 
-// Producer endpoint. Valid only once anoRenderIsReady() (the bridge is created in
-// initVulkan and destroyed in unInitVulkan).
+// Producer endpoint. Valid once initVulkan() has returned (the bridge is created
+// there and destroyed in unInitVulkan).
 AnoRenderBridge* anoRenderBridge(void) { return &rendererState.bridge; }
-bool anoRenderIsReady(void)            { return atomic_load(&g_renderPhase) == RENDER_PHASE_READY; }
-bool anoRenderInitFailed(void)         { return atomic_load(&g_renderPhase) == RENDER_PHASE_FAILED; }
-bool anoRenderWindowWantsClose(void)   { return atomic_load(&g_windowWantsClose); }
-void anoRenderRequestStop(void)        { atomic_store(&g_renderShouldStop, true); }
 
 // render_id 0's original geometry index, for the stand-in producer. Safe to read
-// after READY: the render thread does not mutate entities[] after init.
+// after init: the render loop does not mutate entities[] after init.
 uint32_t anoRenderEntity0Mesh(void) {
     return rendererState.entities ? rendererState.entities[0].meshIndex : NO_MESH_INDEX;
-}
-
-// ano_thread_create entry point: the whole render master. Returns NULL.
-void* anoRenderThreadMain(void* arg) {
-    (void)arg;
-    if (!initVulkan()) {
-        printf("Vulkan initialization failed.\n");
-        atomic_store(&g_renderPhase, RENDER_PHASE_FAILED);
-        return NULL;
-    }
-    atomic_store(&g_renderPhase, RENDER_PHASE_READY);
-
-    while (!atomic_load(&g_renderShouldStop)) {
-        glfwPollEvents();
-        if (anoShouldClose())
-            atomic_store(&g_windowWantsClose, true);
-        drawFrame();
-    }
-
-    unInitVulkan();
-    return NULL;
 }
 
 void drawFrame() 
