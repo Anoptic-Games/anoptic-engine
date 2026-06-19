@@ -43,32 +43,17 @@ void drawFrame(); // Move to includes
 // Returns whether the program has been requested to exit
 bool anoShouldClose();
 
-// --- Render master thread (the render world runs on its own thread) ----------
-// The logic/ECS master thread (main) spawns anoRenderThreadMain via
-// ano_thread_create; that thread owns all Vulkan + GLFW (init, frame loop,
-// teardown). The logic thread is the sole command producer and coordinates
-// purely through these accessors (lock-free; no shared mutex).
+// --- Render world / logic producer ------------------------------------------
+// GLFW pins window + event handling to the process main thread (mandatory on
+// macOS), so the render world (all Vulkan + GLFW: initVulkan, the frame loop,
+// unInitVulkan) runs directly on the main thread — see main(). The logic/ECS
+// master runs on its own thread as the sole command producer and coordinates
+// purely through the lock-free bridge below (no shared mutex).
 
-// ano_thread_create entry point: runs initVulkan + the frame loop + unInitVulkan.
-void* anoRenderThreadMain(void* arg);
-
-// true once init has completed and the bridge is live; false while still booting.
-bool anoRenderIsReady(void);
-
-// true if initVulkan failed and the render thread is exiting.
-bool anoRenderInitFailed(void);
-
-// true once the user has requested the window be closed.
-bool anoRenderWindowWantsClose(void);
-
-// Ask the render thread to leave its frame loop and tear down. Call only after
-// the producer has stopped submitting (so no push races bridge destruction).
-void anoRenderRequestStop(void);
-
-// Producer endpoint for submitting RenderCommands. Valid only after anoRenderIsReady().
+// Producer endpoint for submitting RenderCommands. Valid once initVulkan() has returned.
 AnoRenderBridge* anoRenderBridge(void);
 
-// render_id 0's original geometry index (stand-in producer helper). Read after ready.
+// render_id 0's original geometry index (stand-in producer helper). Read after init.
 uint32_t anoRenderEntity0Mesh(void);
 
 void deferred_delete_resource(RendererState* state, DeletionResourceType type, uint32_t handle);

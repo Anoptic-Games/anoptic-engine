@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <string.h>
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
@@ -79,6 +80,49 @@ void measureFrameTime()
 
 
 
+#ifndef HEADLESS_BUILD
+// Logic/ECS master: the sole render-command producer. Runs on its own thread
+// while the render world owns the main thread. main() sets g_logicShouldStop on
+// window close, then joins, guaranteeing the producer quiesces before the bridge
+// is destroyed in unInitVulkan().
+static atomic_bool g_logicShouldStop = false;
+
+void* anoLogicThreadMain(void* arg)
+{
+	(void)arg;
+	// Stand-in producer: until the real DisplayState graphics-extract exists, drive
+	// one discrete transition across the bridge on a timer — toggle render_id 0's
+	// mesh between its original geometry and the fallback cube. Proves the producer
+	// -> SPSC ring -> render-consumer path across the thread boundary.
+	AnoRenderBridge* bridge = anoRenderBridge();
+	uint32_t originalMesh   = anoRenderEntity0Mesh();
+	bool showingFallback    = false;
+	uint64_t lastSwap       = ano_timestamp_us();
+
+	while (!atomic_load(&g_logicShouldStop))
+	{
+		uint64_t now = ano_timestamp_us();
+		if (now - lastSwap > 1000000) // 1 s
+		{
+			lastSwap = now;
+			showingFallback = !showingFallback;
+			RenderCommand cmd = {
+				.kind           = RCMD_UPDATE,
+				.render_id      = 0,
+				.fields         = RFIELD_MESH_MAT,
+				.mesh_index     = showingFallback ? FALLBACK_MESH_INDEX : originalMesh,
+				.material_index = 0,
+				.light_index    = ANO_RENDER_NO_LIGHT,
+			};
+			if (!ano_render_submit(bridge, &cmd))
+				printf("Producer: command ring full; swap dropped.\n");
+		}
+		ano_sleep(2000); // ~2 ms logic tick (stand-in pacing)
+	}
+	return NULL;
+}
+#endif // !HEADLESS_BUILD
+
 // Main function
 #include "anoptic_strings.h"
 #include "anoptic_logging.h"
@@ -140,61 +184,39 @@ int main()
 	#endif
 
 #ifndef HEADLESS_BUILD
-	// The render world runs on its own thread (it owns all Vulkan + GLFW). This
-	// main thread is the logic/ECS master and the sole render-command producer.
-	anothread_t renderThread;
-	if (ano_thread_create(&renderThread, NULL, anoRenderThreadMain, NULL) != 0)
+	// GLFW pins window + event handling to the main thread (mandatory on macOS), so
+	// the render world (all Vulkan + GLFW) runs HERE on the main thread. initVulkan
+	// creates the bridge synchronously before the producer starts, so there is no
+	// readiness handshake.
+	if (!initVulkan())
 	{
-	    printf("Failed to spawn render thread.\n");
+	    printf("Vulkan initialization failed.\n");
 	    return -1;
 	}
 
-	// Block until the render thread finishes init (bridge live) or fails.
-	while (!anoRenderIsReady())
+	// Logic/ECS master spun onto its own thread as the sole render-command producer.
+	anothread_t logicThread;
+	if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
 	{
-	    if (anoRenderInitFailed())
-	    {
-	        ano_thread_join(renderThread, NULL);
-	        return -1;
-	    }
-	    ano_sleep(1000); // 1 ms
+	    printf("Failed to spawn logic thread.\n");
+	    unInitVulkan();
+	    return -1;
 	}
 
-	// --- Logic master / ECS producer (stand-in) -----------------------------
-	// Until the real DisplayState graphics-extract exists, drive one discrete
-	// transition across the bridge on a timer: toggle render_id 0's mesh between
-	// its original geometry and the fallback cube. This proves the producer ->
-	// SPSC ring -> render-consumer path across the thread boundary.
-	AnoRenderBridge* bridge = anoRenderBridge();
-	uint32_t originalMesh   = anoRenderEntity0Mesh();
-	bool showingFallback    = false;
-	uint64_t lastSwap       = ano_timestamp_us();
-
-	while (!anoRenderWindowWantsClose())
+	// Render loop (main thread): pump window events, then draw. The logic thread
+	// feeds discrete ECS->render transitions across the bridge concurrently.
+	while (!anoShouldClose())
 	{
-	    uint64_t now = ano_timestamp_us();
-	    if (now - lastSwap > 1000000) // 1 s
-	    {
-	        lastSwap = now;
-	        showingFallback = !showingFallback;
-	        RenderCommand cmd = {
-	            .kind           = RCMD_UPDATE,
-	            .render_id      = 0,
-	            .fields         = RFIELD_MESH_MAT,
-	            .mesh_index     = showingFallback ? FALLBACK_MESH_INDEX : originalMesh,
-	            .material_index = 0,
-	            .light_index    = ANO_RENDER_NO_LIGHT,
-	        };
-	        if (!ano_render_submit(bridge, &cmd))
-	            printf("Producer: command ring full; swap dropped.\n");
-	    }
-	    ano_sleep(2000); // ~2 ms logic tick (stand-in pacing)
+	    glfwPollEvents();
+	    drawFrame();
 	}
 
-	// Window closed: we have stopped producing (loop exited), so it is now safe to
-	// tell the render thread to tear down — no push can race bridge destruction.
-	anoRenderRequestStop();
-	ano_thread_join(renderThread, NULL);
+	// Window closed: stop the producer FIRST and join it, so no submit can race the
+	// bridge destruction that unInitVulkan() performs.
+	atomic_store(&g_logicShouldStop, true);
+	ano_thread_join(logicThread, NULL);
+
+	unInitVulkan();
 #else
 	// Headless engine: no renderer. Console / server entry point.
 	printf("Anoptic Engine — headless console mode.\n");
