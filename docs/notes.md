@@ -261,6 +261,10 @@ Owned string type: `{char* ptr, uint32_t len, uint32_t capacity}` with `LOCALHEA
 
 The core idea: align the concurrency model to the hardware coherency unit. The x86 cache coherency protocol (MESI/MESIF) already enforces exclusive ownership at the cache-line level (64 bytes). Instead of per-item atomic operations (classic M&S), make the cache line the unit of ownership transfer.
 
+**Step 6 -- Resource Management**
+
+Following the basic instructions laid out in Game Engine Architecture.
+
 Design sketch:
 ```
 [ stripe 0 ]  [ stripe 1 ]  [ stripe 2 ]  [ stripe 3 ]  ...
