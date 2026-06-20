@@ -640,6 +640,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
 	uint32_t uniqueQueueFamilies[4] = {indices->graphicsFamily, indices->presentFamily, indices->computeFamily, indices->transferFamily};
 	uint32_t queueCount = 0;
+	// Function-scoped so its address stays valid until vkCreateDevice; every queue
+	// shares priority 1.0. A block-local would dangle once each loop iteration's
+	// scope exits, leaving pQueuePriorities pointing at dead stack (stack-use-after-scope).
+	const float queuePriority = 1.0f;
 	
 	for (uint32_t i = 0; i < 4; i++)
 	{
@@ -659,7 +663,6 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 			queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 			queueCreateInfo.queueFamilyIndex = uniqueQueueFamilies[i];
 			queueCreateInfo.queueCount = 1;
-			float queuePriority = 1.0f;
 			queueCreateInfo.pQueuePriorities = &queuePriority;
 			queueCreateInfos[queueCount] = queueCreateInfo;
 			queueCount++;
