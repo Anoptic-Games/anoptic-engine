@@ -36,9 +36,11 @@ src/
 
 ## Purpose of Each Subdirectory
 
-- `engine/`: The process entry point. `main.c` is the logic/ECS master thread: it
-  spawns the render world on its own thread (`anoRenderThreadMain`), waits for it to
-  initialize, then acts as the sole producer of render commands over the bridge.
+- `engine/`: The process entry point. `main.c` runs the render world (all Vulkan +
+  GLFW) directly on the main thread — GLFW pins window/event handling to the process
+  main thread, mandatory on macOS. It calls `initVulkan`, spawns the logic/ECS master
+  (`anoLogicThreadMain`) as the sole producer of render commands over the bridge, then
+  drives the frame loop (`glfwPollEvents` + `drawFrame`) until the window closes.
 
 - `ecs/` (`anoptic_ecs.h`): The authoritative simulation world. Entities are
   generational `(index, generation)` handles; components live in chunked sparse-set
