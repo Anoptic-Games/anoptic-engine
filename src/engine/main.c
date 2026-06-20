@@ -13,6 +13,7 @@
 #include <string.h>
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
+#include "anoptic_filesystem.h"
 
 #ifndef HEADLESS_BUILD
 // Renderer interface + Vulkan/GLFW — only compiled into the graphical engine.
@@ -129,6 +130,15 @@ void* anoLogicThreadMain(void* arg)
 int main()
 {
     mi_version();
+
+    // Resolve assets relative to the executable, not the launch directory, so the
+    // binary runs from any working directory. Shaders already use PROJECT_ROOT;
+    // only the CWD-relative asset loads (glTF, textures) needed this. Interim shim
+    // until the Resource Manager owns asset paths.
+    if (!ano_fs_chdir_gamepath())
+        printf("Warning: could not set the working directory to the executable's; "
+               "assets will load relative to the current working directory.\n");
+
 	#ifdef DEBUG_BUILD
 
     mi_option_enable(mi_option_show_errors);

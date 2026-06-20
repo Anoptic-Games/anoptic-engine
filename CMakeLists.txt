@@ -153,6 +153,8 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
     else()
         target_link_libraries(anopticengine PRIVATE anoptic_core)
     endif()
+    # Platform filesystem helpers (executable-dir resolution) compiled into the engine.
+    add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 endif()
 
 # CTest integration
