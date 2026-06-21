@@ -22,11 +22,12 @@
 #include "vulkan_backend/components.h"
 #include "vulkan_backend/geometry.h"
 #include "vulkan_backend/render_slots.h"
-#include <anoptic_render_bridge.h>
+#include "render_bridge/render_bridge.h" // private transport; completes AnoRenderBridge + protocol
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
-#define FALLBACK_MESH_INDEX 0
+// FALLBACK_MESH_INDEX is the public renderer contract (anoptic_render.h), pulled
+// in transitively via render_bridge.h above.
 #define FALLBACK_TEXTURE_INDEX 0
 
 // Sentinel values for optional entity components.
