@@ -135,6 +135,7 @@ layout(location = 0) out vec3 fragNormal[];
 layout(location = 1) out vec2 fragTexCoord[];
 layout(location = 2) flat out uint outMaterialIndex[];
 layout(location = 3) out vec3 fragWorldPos[];
+layout(location = 4) flat out uint outEntityIndex[]; // slot index -> per-entity instance channel
 
 uint getLocalIndex(uint baseByteOffset, uint triangleOffset, uint t, uint vertexInTriangle) {
     uint byteOffset = baseByteOffset + triangleOffset + t * 3 + vertexInTriangle;
@@ -262,6 +263,7 @@ void main() {
         fragTexCoord[i] = texCoord;
         outMaterialIndex[i] = materialIndex;
         fragWorldPos[i] = worldPos.xyz;
+        outEntityIndex[i] = entityIndex;
     }
 
     // Load triangles (strided loop to handle arbitrary primitive count up to 126)

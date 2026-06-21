@@ -115,7 +115,28 @@ typedef enum RenderFieldBits
     RFIELD_MESH_MAT  = 1 << 1, // mesh and/or material index
     RFIELD_ANIM      = 1 << 2, // GPU animation parameters (establishes/changes continuous motion)
     RFIELD_LIGHT     = 1 << 3, // light photometric parameters
+    RFIELD_USERDATA  = 1 << 4, // packed per-entity instance channel (tint/flags/scalars)
 } RenderFieldBits;
+
+// Open-ended per-renderable instance channel: one packed integer lane plus one
+// full-precision lane, interpreted by the fragment shader as the game sees fit.
+// This is the single general per-entity attribute slot — tint, flags, scalars,
+// small indices — that exists so adding the next per-instance attribute never
+// re-widens the bridge contract at six lockstep sites again.
+//
+// Convention (v1; the game owns the CPU pack <-> shader unpack, both in its layer):
+//   packed[0] : RGBA8 tint               (GLSL unpackUnorm4x8)
+//   packed[1] : flag bits                 (bit 0 = tint enabled; the rest reserved)
+//   packed[2] : reserved (e.g. two fp16 scalars / two u16 texture-layer indices)
+//   packed[3] : reserved
+//   params    : reserved full-precision scalars (e.g. anim phase, build progress)
+// All-zero is the inert default: flags clear -> the renderer ignores the slot, so
+// fresh/recycled slots render exactly as before until a game explicitly opts in.
+typedef struct AnoInstanceData
+{
+    uint32_t packed[4];
+    Vector4  params;
+} AnoInstanceData; // 32 bytes; matches std430 { uvec4 packed; vec4 params; }
 
 // Initial-state batch referenced by RCMD_BULK_CREATE. The producer hands ownership
 // of the arrays (arena-allocated, length `count`) to the render master, which
@@ -144,6 +165,7 @@ typedef struct RenderCommand
     uint32_t          material_index;   // CREATE, or UPDATE | RFIELD_MESH_MAT
     uint32_t          light_index;      // ANO_RENDER_NO_LIGHT if not a light
     RenderLightParams light;            // CREATE (if light) or UPDATE | RFIELD_LIGHT
+    AnoInstanceData   instance_data;    // CREATE, or UPDATE | RFIELD_USERDATA (zero == inert)
 
     const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
 } RenderCommand;
