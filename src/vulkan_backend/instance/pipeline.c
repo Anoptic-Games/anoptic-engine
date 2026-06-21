@@ -427,6 +427,76 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(updateShaderCode.data);
     vkDestroyShaderModule(ctx->device, updateShaderModule, NULL);
 
+    // Compute Scatter Pipeline (streamed transforms, Path B)
+    VkDescriptorSetLayoutBinding scatterBindings[3] = {};
+    for (int b = 0; b < 3; ++b) {
+        scatterBindings[b].binding = (uint32_t)b;
+        scatterBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        scatterBindings[b].descriptorCount = 1;
+        scatterBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    // 0: StreamSlots, 1: StreamTransforms, 2: TransformSSBO (written)
+
+    VkDescriptorSetLayoutCreateInfo scatterLayoutInfo = {};
+    scatterLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    scatterLayoutInfo.bindingCount = 3;
+    scatterLayoutInfo.pBindings = scatterBindings;
+
+    if (vkCreateDescriptorSetLayout(ctx->device, &scatterLayoutInfo, NULL, &state->scatterSetLayout) != VK_SUCCESS)
+    {
+        printf("Failed to create scatter descriptor set layout!\n");
+        return false;
+    }
+
+    VkPushConstantRange scatterPcRange = {};
+    scatterPcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    scatterPcRange.offset = 0;
+    scatterPcRange.size = sizeof(uint32_t); // streamCount
+
+    VkPipelineLayoutCreateInfo scatterPipelineLayoutInfo = {};
+    scatterPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    scatterPipelineLayoutInfo.setLayoutCount = 1;
+    scatterPipelineLayoutInfo.pSetLayouts = &state->scatterSetLayout;
+    scatterPipelineLayoutInfo.pushConstantRangeCount = 1;
+    scatterPipelineLayoutInfo.pPushConstantRanges = &scatterPcRange;
+
+    if (vkCreatePipelineLayout(ctx->device, &scatterPipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].layout) != VK_SUCCESS)
+    {
+        printf("Failed to create compute scatter pipeline layout!\n");
+        return false;
+    }
+
+    state->prototypes[PIPELINE_COMPUTE_SCATTER].type = PIPELINE_COMPUTE_SCATTER;
+    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_SCATTER].supportedFeatures = PBR_FEATURE_NONE;
+
+    struct Buffer scatterShaderCode;
+    char scatterShaderPath[256];
+    snprintf(scatterShaderPath, sizeof(scatterShaderPath), "%s/resources/shaders/scatter.comp.spv", PROJECT_ROOT);
+    if (!loadFile(scatterShaderPath, &scatterShaderCode)) return false;
+
+    VkShaderModule scatterShaderModule = createShaderModule(ctx->device, &scatterShaderCode);
+
+    VkComputePipelineCreateInfo scatterPipelineInfo = {};
+    scatterPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    scatterPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_SCATTER].layout;
+    scatterPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    scatterPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    scatterPipelineInfo.stage.module = scatterShaderModule;
+    scatterPipelineInfo.stage.pName = "main";
+
+    VkPipelineCacheCreateInfo scatterCacheInfo = {};
+    scatterCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(ctx->device, &scatterCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].cache);
+
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_SCATTER].cache, 1, &scatterPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations[0].pipeline) != VK_SUCCESS) return false;
+
+    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(scatterShaderCode.data);
+    vkDestroyShaderModule(ctx->device, scatterShaderModule, NULL);
+
     // Compute Culling Pipeline
     VkPipelineCacheCreateInfo compCacheInfo = {};
     compCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -507,6 +577,12 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyDescriptorSetLayout(ctx->device, state->updateSetLayout, NULL);
         state->updateSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (state->scatterSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(ctx->device, state->scatterSetLayout, NULL);
+        state->scatterSetLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts

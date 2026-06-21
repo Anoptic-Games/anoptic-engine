@@ -1354,13 +1354,13 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 20; // SSBO/frame: 9 global (bindings 1-9) + 8 cull (bindings 1-8) + 3 update (sync w/ set layouts)
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 23; // SSBO/frame: 9 global (1-9) + 8 cull (1-8) + 3 update + 3 scatter
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 2;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 4; // safe margin
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 5; // 4 sets/frame (global, cull, update, scatter) + margin
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1470,6 +1470,25 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].updateSet = updateSetsTemp[i];
+
+    VkDescriptorSetLayout scatterLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        scatterLayouts[i] = rendererState.scatterSetLayout;
+    }
+    VkDescriptorSetAllocateInfo scatterAllocInfo = {};
+    scatterAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    scatterAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    scatterAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    scatterAllocInfo.pSetLayouts = scatterLayouts;
+
+    VkDescriptorSet scatterSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &scatterAllocInfo, scatterSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate scatter descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].scatterSet = scatterSetsTemp[i];
 
 	return true;
 }
@@ -1704,6 +1723,33 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         updateWrites[3].pBufferInfo = &initialTransformInfo;
 
         vkUpdateDescriptorSets(ctx->device, 4, updateWrites, 0, NULL);
+
+        // Scatter set (streamed transforms): 0 stream slots, 1 stream transforms,
+        // 2 the live transform buffer it scatters into (re-pointed here on grow).
+        VkDescriptorBufferInfo streamSlotInfo = {};
+        streamSlotInfo.buffer = rendererState.transformStream.slotBuffer[i];
+        streamSlotInfo.offset = 0;
+        streamSlotInfo.range = sizeof(uint32_t) * rendererState.transformStream.capacity;
+
+        VkDescriptorBufferInfo streamXformInfo = {};
+        streamXformInfo.buffer = rendererState.transformStream.xformBuffer[i];
+        streamXformInfo.offset = 0;
+        streamXformInfo.range = sizeof(mat4) * rendererState.transformStream.capacity;
+
+        VkWriteDescriptorSet scatterWrites[3] = {};
+        for (int j = 0; j < 3; ++j) {
+            scatterWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            scatterWrites[j].dstSet = rendererState.frames[i].scatterSet;
+            scatterWrites[j].dstBinding = (uint32_t)j;
+            scatterWrites[j].dstArrayElement = 0;
+            scatterWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            scatterWrites[j].descriptorCount = 1;
+        }
+        scatterWrites[0].pBufferInfo = &streamSlotInfo;
+        scatterWrites[1].pBufferInfo = &streamXformInfo;
+        scatterWrites[2].pBufferInfo = &ssboInfo; // same TransformSSBO update writes
+
+        vkUpdateDescriptorSets(ctx->device, 3, scatterWrites, 0, NULL);
 	}
 }
 
@@ -1988,6 +2034,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.motionBuffer.buffer[i], NULL);
 		if(rendererState.instanceDataBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.instanceDataBuffer.buffer[i], NULL);
+		if(rendererState.transformStream.slotBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.transformStream.slotBuffer[i], NULL);
+		if(rendererState.transformStream.xformBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.transformStream.xformBuffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
 		if(rendererState.lightBuffer.buffer[i])

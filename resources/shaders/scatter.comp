@@ -1,0 +1,32 @@
+#version 450
+
+// Streamed-transform scatter pass (Path B, docs/artifacts/STREAMED_TRANSFORMS.md).
+// Runs after update.comp and before cull: overwrites each ANO_MOTION_STREAMED slot
+// with its CPU-supplied transform for this tick. update.comp has already written the
+// base pose into those slots (they read as static there), so a streamed entity absent
+// from this tick's batch keeps its base pose rather than stale data. O(streamCount):
+// one mat4 store per entry, dense coalesced reads, scattered writes keyed by slot.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer StreamSlots {
+    uint slots[];
+};
+
+layout(set = 0, binding = 1) readonly buffer StreamTransforms {
+    mat4 xforms[];
+};
+
+layout(set = 0, binding = 2) buffer TransformSSBO {
+    mat4 transforms[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint streamCount;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.streamCount) return;
+    transforms[slots[i]] = xforms[i];
+}

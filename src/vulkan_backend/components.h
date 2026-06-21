@@ -20,6 +20,7 @@ typedef enum PipelineType
     PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
+    PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass (Path B)
     // --- Skeletons: enum slots reserved so the per-type buffers (indirect/drawCount/
     // compacted indices) and the prototype table size for them, but no pipeline is
     // created and no g_framePasses entry drives them yet. See render_bridge.h notes

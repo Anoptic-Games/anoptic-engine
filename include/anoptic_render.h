@@ -66,6 +66,11 @@ AnoRenderBridge *anoRenderBridge(void);
 // render_id 0's original geometry index (stand-in producer helper). Read after init.
 uint32_t anoRenderEntity0Mesh(void);
 
+// Copies render_id's seeded base pose into `out` (stand-in stream-producer helper, so a
+// streamed transform stays in the same world space as the normal path). Read after init.
+// Returns false (out untouched) if render_id is unmapped.
+bool anoRenderEntityBaseTransform(uint32_t render_id, mat4 out);
+
 // ---------------------------------------------------------------------------
 // Command protocol: logic -> render
 // ---------------------------------------------------------------------------
@@ -111,6 +116,7 @@ typedef enum AnoMotionType
     ANO_MOTION_ORBIT,      // constant-rate revolution about a world axis    (R * base)
     ANO_MOTION_LINEAR,     // constant-velocity translation from the base pose
     ANO_MOTION_KEPLER,     // closed-form elliptical orbit; base-pose origin is the focus
+    ANO_MOTION_STREAMED,   // CPU-driven; transform arrives per-tick via RCMD_STREAM_TRANSFORMS
 } AnoMotionType;
 
 // Per-renderable motion parameters. 48 bytes; matches std430
@@ -138,6 +144,7 @@ typedef enum RenderCommandKind
     RCMD_UPDATE,       // discrete change(s) to an existing renderable (see `fields`)
     RCMD_DESTROY,      // remove a renderable (render_id only)
     RCMD_BULK_CREATE,  // contiguous batch of new renderables (mass spawn); see `batch`
+    RCMD_STREAM_TRANSFORMS, // per-tick CPU transforms for ANO_MOTION_STREAMED slots; see `stream`
 } RenderCommandKind;
 
 // Which payload fields a CREATE/UPDATE carries. A single UPDATE may set several
@@ -184,6 +191,17 @@ typedef struct RenderCreateBatch
     const uint32_t *material;    // [count] material palette indices
 } RenderCreateBatch;
 
+// Per-tick transform snapshot for CPU-driven (ANO_MOTION_STREAMED) renderables,
+// referenced by RCMD_STREAM_TRANSFORMS. Parallel arrays, length `count`; the render
+// master resolves each render_id to its slot and scatters the matrix into the live
+// transform buffer for the current frame only (ephemeral — re-sent every tick).
+typedef struct RenderStreamBatch
+{
+    uint32_t        count;
+    const uint32_t *render_ids;  // [count] logical names of streamed renderables
+    const mat4     *transforms;  // [count] live world transforms for this tick
+} RenderStreamBatch;
+
 // POD, fixed-size, copied by value through the ring. ~fat (holds a mat4) but
 // CREATE needs it; UPDATE only reads the fields flagged in `fields`.
 typedef struct RenderCommand
@@ -201,6 +219,7 @@ typedef struct RenderCommand
     AnoInstanceData   instance_data;    // CREATE, or UPDATE | RFIELD_USERDATA (zero == inert)
 
     const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
+    const RenderStreamBatch *stream;    // RCMD_STREAM_TRANSFORMS only
 } RenderCommand;
 
 // Enqueue one command. false if the command ring is full (caller decides: drop,

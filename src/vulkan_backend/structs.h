@@ -181,6 +181,32 @@ typedef struct InstanceDataBuffer
     uint32_t         count;
 } InstanceDataBuffer;
 
+// Streamed-transform lane (Path B, docs/artifacts/STREAMED_TRANSFORMS.md). Two SoA
+// staging buffers on their OWN capacity axis (the streamed set is a minority, not the
+// entity axis): per-tick render slots + their CPU transforms, scattered into the live
+// transform buffer by scatter.comp. Per-frame, host-visible, ephemeral (overwritten
+// each tick). count[f] is the number of valid entries staged for frame f.
+typedef struct TransformStreamBuffer
+{
+    VkBuffer      slotBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation slotAllocs[MAX_FRAMES_IN_FLIGHT];
+    uint32_t*     slotMapped[MAX_FRAMES_IN_FLIGHT];   // [capacity] target render slots
+    VkBuffer      xformBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation xformAllocs[MAX_FRAMES_IN_FLIGHT];
+    mat4*         xformMapped[MAX_FRAMES_IN_FLIGHT];   // [capacity] CPU transforms
+    uint32_t      capacity;                            // STREAM_CAPACITY; not grown in v1
+    uint32_t      count[MAX_FRAMES_IN_FLIGHT];         // entries staged for each frame
+    // Latest streamed snapshot (CPU, render-heap, last-wins). Re-staged into the
+    // current frame's buffer EVERY frame so a held transform survives frames that
+    // drain no batch: the render loop outruns the producer, and update.comp rewrites
+    // each ANO_MOTION_STREAMED slot to its base every frame, so a "current-frame-only"
+    // stage would flash the slot back to base on the (many) ticks with no fresh batch.
+    // snapCount == 0 means nothing is currently streamed (scatter skipped).
+    uint32_t*     snapIds;                              // [capacity] render_ids, unresolved
+    mat4*         snapXforms;                           // [capacity] CPU transforms
+    uint32_t      snapCount;                            // entries in the latest snapshot
+} TransformStreamBuffer;
+
 typedef struct MaterialData
 {
     // Feature flags identifying which features are active in this material
@@ -513,6 +539,7 @@ typedef struct PerFrameResources
     VkDescriptorSet     globalSet;
     VkDescriptorSet     cullSet;
     VkDescriptorSet     updateSet;
+    VkDescriptorSet     scatterSet;
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -561,6 +588,7 @@ typedef struct RendererState
     TransformBuffer         initialTransformBuffer;
     MotionBuffer            motionBuffer;
     InstanceDataBuffer      instanceDataBuffer;
+    TransformStreamBuffer   transformStream;
     MaterialBuffer          materialBuffer;
     LightBuffer             lightBuffer;
     IndirectDrawBuffer      indirectBuffer;
@@ -571,6 +599,7 @@ typedef struct RendererState
     BonePalettePool         bonePalette;    // visible-compacted bone matrices (PIPELINE_SKINNED)
 
     VkDescriptorSetLayout   updateSetLayout;
+    VkDescriptorSetLayout   scatterSetLayout;
 
     // Fallback resources
     VkImage                 fallbackImage;

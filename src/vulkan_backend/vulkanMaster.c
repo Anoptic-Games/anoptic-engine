@@ -34,6 +34,7 @@ GpuAllocator textureAllocator;
 #define INITIAL_ENTITY_CAPACITY 10000u
 #define ENTITY_GROWTH_CHUNK      8192u
 #define PALETTE_CAPACITY        10000u
+#define STREAM_CAPACITY         16384u  // streamed-transform lane; separate axis, not grown in v1
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
@@ -145,7 +146,13 @@ static const RenderPassDef g_framePasses[] = {
         .prototype  = PIPELINE_COMPUTE_UPDATE,
         .dispatchX  = 0,
     },
-    // 1. GPU culling
+    // 1. Streamed-transform scatter (overwrites ANO_MOTION_STREAMED slots with CPU data)
+    {
+        .type       = PASS_COMPUTE,
+        .prototype  = PIPELINE_COMPUTE_SCATTER,
+        .dispatchX  = 0,  // computed from streamCount at runtime
+    },
+    // 2. GPU culling
     {
         .type       = PASS_COMPUTE,
         .prototype  = PIPELINE_COMPUTE_CULL,
@@ -221,6 +228,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 
         if (pass->type == PASS_COMPUTE) {
             if (entityCount > 0) {
+                uint32_t streamCount = rendererState.transformStream.count[rendererState.frameIndex];
+                if (pass->prototype == PIPELINE_COMPUTE_SCATTER && streamCount == 0)
+                    continue; // nothing streamed this frame: skip the scatter pass entirely
+
                 if (pass->prototype == PIPELINE_COMPUTE_CULL) {
                     // Zero the entire indirect buffer (sized for the larger command format)
                     // so unwritten slots decode as no-op draws on either path, plus the draw count.
@@ -242,27 +253,32 @@ void recordCommandBuffer(uint32_t imageIndex)
 
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
                 
-                VkDescriptorSet set = pass->prototype == PIPELINE_COMPUTE_UPDATE ? 
-                    rendererState.frames[rendererState.frameIndex].updateSet : 
-                    rendererState.frames[rendererState.frameIndex].cullSet;
-                    
+                VkDescriptorSet set =
+                    pass->prototype == PIPELINE_COMPUTE_UPDATE  ? rendererState.frames[rendererState.frameIndex].updateSet :
+                    pass->prototype == PIPELINE_COMPUTE_SCATTER ? rendererState.frames[rendererState.frameIndex].scatterSet :
+                                                                  rendererState.frames[rendererState.frameIndex].cullSet;
+
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                     rendererState.prototypes[pass->prototype].layout, 0, 1, &set, 0, NULL);
-                    
+
                 if (pass->prototype == PIPELINE_COMPUTE_UPDATE) {
                     vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &entityCount);
+                } else if (pass->prototype == PIPELINE_COMPUTE_SCATTER) {
+                    vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &streamCount);
                 }
-                
-                // If dispatchX is 0, we compute it from entityCount
-                uint32_t dispatchX = pass->dispatchX == 0 ? (entityCount + 255) / 256 : pass->dispatchX;
+
+                // dispatchX from the pass's work item count (streamed entries for scatter, else entities).
+                uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
+                uint32_t dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
                 vkCmdDispatch(cmd, dispatchX, 1, 1);
 
                 VkMemoryBarrier memoryBarrier = {};
                 memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
                 memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                
-                if (pass->prototype == PIPELINE_COMPUTE_UPDATE) {
-                    memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+                if (pass->prototype == PIPELINE_COMPUTE_UPDATE || pass->prototype == PIPELINE_COMPUTE_SCATTER) {
+                    // update -> scatter is a WAW on streamed slots (scatter must win); both -> cull is a read.
+                    memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 } else {
@@ -694,11 +710,61 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
     return true;
 }
 
+// Records one tick's streamed transforms as the current snapshot (CPU, last-wins,
+// clamped to STREAM_CAPACITY). Stored UNRESOLVED — render_id, not slot — so every
+// frame re-resolves it against the live slot map (stage_stream_frame), dropping ids
+// that retire after this batch. Per-frame staging then holds this snapshot until a
+// newer batch replaces it: a streamed transform persists across ticks with no fresh
+// batch rather than flashing back to its update.comp base.
+// in:  state, batch b (count, render_ids, transforms)
+// out: transformStream.{snapIds, snapXforms, snapCount} replaced
+static void record_stream_snapshot(RendererState* state, const RenderStreamBatch* b)
+{
+    const uint32_t cap = state->transformStream.capacity;
+    uint32_t n = b->count;
+    if (n > cap) {
+        printf("Stream batch (%u) exceeds STREAM_CAPACITY (%u); extra entries dropped.\n", b->count, cap);
+        n = cap;
+    }
+    memcpy(state->transformStream.snapIds, b->render_ids, (size_t)n * sizeof(uint32_t));
+    memcpy(state->transformStream.snapXforms, b->transforms, (size_t)n * sizeof(mat4));
+    state->transformStream.snapCount = n;
+}
+
+// Resolves the current snapshot into this frame's scatter lane: render_id -> slot
+// (retired/unknown ids dropped), transforms copied 1:1, count set for the dispatch.
+// Runs EVERY frame — the lane is re-applied each tick because update.comp rewrites
+// every ANO_MOTION_STREAMED slot to base, so a held transform must be re-scattered to
+// survive. snapCount == 0 yields count 0 and the scatter pass self-skips.
+// in:  state, frameIndex
+// out: slotMapped[frameIndex], xformMapped[frameIndex], count[frameIndex] written
+static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
+{
+    uint32_t* slots  = state->transformStream.slotMapped[frameIndex];
+    mat4*     xforms = state->transformStream.xformMapped[frameIndex];
+    const uint32_t snap = state->transformStream.snapCount;
+    uint32_t n = 0;
+    for (uint32_t e = 0; e < snap; e++) {
+        uint32_t slot = render_slots_resolve(&state->slots, state->transformStream.snapIds[e]);
+        if (slot == ANO_RENDER_SLOT_UNMAPPED) continue; // retired/unknown id: drop this entry
+        slots[n] = slot;
+        memcpy(&xforms[n], &state->transformStream.snapXforms[e], sizeof(mat4));
+        n++;
+    }
+    state->transformStream.count[frameIndex] = n;
+}
+
 static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 {
     // 1. Ingest: assign/retire slots once, queue each command for per-frame apply.
+    //    Stream batches replace the held snapshot (last-wins) here; the actual
+    //    per-frame staging happens once at the end, against the settled slot map.
     RenderCommand cmd;
     while (ano_render_next_command(&state->bridge, &cmd)) {
+        if (cmd.kind == RCMD_STREAM_TRANSFORMS) {
+            if (cmd.stream) record_stream_snapshot(state, cmd.stream);
+            continue; // never enters the per-frame `pending` propagation
+        }
         if (cmd.kind == RCMD_CREATE) {
             // Grow if no recycled hole is available and the high-water is at the ceiling.
             if (state->slots.freeCount == 0u && state->slots.slotHighWater >= state->slots.slotCapacity &&
@@ -764,6 +830,11 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             (void)ano_render_emit_event(&state->bridge, &ev);
         }
     } while (n == 64u);
+
+    // 4. Stage the held streamed snapshot into this frame against the now-settled slot
+    //    map. Runs unconditionally (snapCount == 0 -> count 0 -> scatter self-skips), so
+    //    a streamed transform holds across ticks with no fresh batch instead of flashing.
+    stage_stream_frame(state, frameIndex);
 }
 
 #include "anoptic_time.h"
@@ -795,7 +866,21 @@ uint32_t anoRenderEntity0Mesh(void) {
     return rendererState.entities ? rendererState.entities[0].meshIndex : NO_MESH_INDEX;
 }
 
-void drawFrame() 
+// Copies render_id's seeded base pose — the initialTransform update.comp derives the
+// live transform from, with the scene's nudge already folded in — into `out`. Stand-in
+// stream-producer helper so a fabricated stream stays in the same world space as the
+// normal path (a bare identity would teleport/mirror the entity). Valid after init; the
+// seeded base is not mutated for static entities. Returns false (out untouched) if the
+// id is unmapped.
+// in:  render_id; out: mat4 out
+bool anoRenderEntityBaseTransform(uint32_t render_id, mat4 out) {
+    uint32_t slot = render_slots_resolve(&rendererState.slots, render_id);
+    if (slot == ANO_RENDER_SLOT_UNMAPPED) return false;
+    memcpy(out, &rendererState.initialTransformBuffer.mapped[0][slot], sizeof(mat4));
+    return true;
+}
+
+void drawFrame()
 {
 	if (rendererState.framebufferResized)
 	{
@@ -1065,6 +1150,57 @@ bool createInstanceDataBuffer(VulkanContext* ctx, RendererState* state, uint32_t
 
         state->instanceDataBuffer.mapped[i] = (AnoInstanceData*)state->instanceDataBuffer.allocs[i].mapped;
         memset(state->instanceDataBuffer.mapped[i], 0, (size_t)bufferSize);
+    }
+    return true;
+}
+
+// Creates one host-visible storage buffer per frame and writes its handle/alloc/mapped
+// pointer back through the out params. Helper for the streamed-transform lane.
+static bool createMappedSsboSet(VulkanContext* ctx, VkDeviceSize bytes,
+                                VkBuffer outBufs[MAX_FRAMES_IN_FLIGHT],
+                                GpuAllocation outAllocs[MAX_FRAMES_IN_FLIGHT],
+                                void* outMapped[MAX_FRAMES_IN_FLIGHT]) {
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bi = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = bytes, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+        if (vkCreateBuffer(ctx->device, &bi, NULL, &outBufs[i]) != VK_SUCCESS) return false;
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(ctx->device, outBufs[i], &mr);
+        outAllocs[i] = gpu_alloc(&gpuAllocator, mr, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (outAllocs[i].memory == VK_NULL_HANDLE) { vkDestroyBuffer(ctx->device, outBufs[i], NULL); return false; }
+        vkBindBufferMemory(ctx->device, outBufs[i], outAllocs[i].memory, outAllocs[i].offset);
+        outMapped[i] = outAllocs[i].mapped;
+    }
+    return true;
+}
+
+// Streamed-transform staging lane (Path B). Two parallel per-frame SoA buffers on the
+// stream capacity axis: target slots + their CPU transforms, read by scatter.comp.
+// in:  ctx, state, capacity (STREAM_CAPACITY)
+// out: true on success; false on buffer/alloc failure
+bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capacity) {
+    state->transformStream.capacity = capacity;
+    for (int f = 0; f < MAX_FRAMES_IN_FLIGHT; f++) state->transformStream.count[f] = 0;
+    // CPU snapshot arrays are allocated from renderHeap after it exists (see initVulkan);
+    // snapCount==0 keeps stage_stream_frame a no-op until then.
+    state->transformStream.snapIds = NULL;
+    state->transformStream.snapXforms = NULL;
+    state->transformStream.snapCount = 0;
+
+    if (!createMappedSsboSet(ctx, (VkDeviceSize)sizeof(uint32_t) * capacity,
+                             state->transformStream.slotBuffer, state->transformStream.slotAllocs,
+                             (void**)state->transformStream.slotMapped)) {
+        printf("Failed to create stream slot buffer!\n");
+        return false;
+    }
+    if (!createMappedSsboSet(ctx, (VkDeviceSize)sizeof(mat4) * capacity,
+                             state->transformStream.xformBuffer, state->transformStream.xformAllocs,
+                             (void**)state->transformStream.xformMapped)) {
+        printf("Failed to create stream transform buffer!\n");
+        return false;
     }
     return true;
 }
@@ -1501,6 +1637,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities) ||
 	    !createMotionBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createInstanceDataBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createStreamBuffers(&ctx, &rendererState, STREAM_CAPACITY) ||
 	    !createMaterialBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
@@ -1643,6 +1780,20 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
+
+	// Stream snapshot arrays now that renderHeap exists. Render-thread-only (the
+	// producer touches only the SPSC ring), so the render heap is the right owner;
+	// freed wholesale on mi_heap_destroy at teardown.
+	rendererState.transformStream.snapIds =
+	    mi_heap_malloc(rendererState.renderHeap, (size_t)STREAM_CAPACITY * sizeof(uint32_t));
+	rendererState.transformStream.snapXforms =
+	    mi_heap_malloc(rendererState.renderHeap, (size_t)STREAM_CAPACITY * sizeof(mat4));
+	if (!rendererState.transformStream.snapIds || !rendererState.transformStream.snapXforms)
+	{
+		printf("Quitting init: stream snapshot allocation failure!\n");
+		unInitVulkan();
+		return false;
+	}
 	rendererState.globalFrame = 0;
 
 	// Build the initial-state batch from the CPU scene record. The base pose folds
@@ -1686,6 +1837,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 			md.type = ANO_MOTION_SPIN;
 			md.p0.v[1] = 1.0f;
 		}
+		// STAND-IN (Path B): the first two renderables are CPU-streamed (see
+		// stream_stand_in); update.comp leaves them at base and scatter overwrites them.
+		if (i < 2) { md = (AnoMotionDescriptor){0}; md.type = ANO_MOTION_STREAMED; }
 		batchMotion[i] = md;
 
 		memcpy(&batchXforms[i], &rendererState.entities[i].transform, sizeof(mat4));
