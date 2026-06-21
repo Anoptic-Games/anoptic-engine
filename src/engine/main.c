@@ -13,23 +13,17 @@
 #include <string.h>
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
+#include "anoptic_filesystem.h"
 
 #ifndef HEADLESS_BUILD
-// Renderer interface + Vulkan/GLFW — only compiled into the graphical engine.
-#include "engine/main.h" // This works
+// Renderer contract + GLFW — only compiled into the graphical engine.
+#include <anoptic_render.h>
 #include <vulkan/vulkan.h>
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #endif
-
-// Structs
-VulkanSettings vulkanSettings =
-{ //!TODO change this dynamically via vulkanSettings.h interface
-	.preferredDevice = "",
-	.preferredMode = 1
-};
 #endif // !HEADLESS_BUILD
 
 // Variables
@@ -124,45 +118,25 @@ void* anoLogicThreadMain(void* arg)
 #endif // !HEADLESS_BUILD
 
 // Main function
-#include "anoptic_strings.h"
 #include "anoptic_logging.h"
 int main()
 {
     mi_version();
+
+    // Resolve assets relative to the executable, not the launch directory, so the
+    // binary runs from any working directory. Shaders already use PROJECT_ROOT;
+    // only the CWD-relative asset loads (glTF, textures) needed this. Interim shim
+    // until the Resource Manager owns asset paths.
+    if (!ano_fs_chdir_gamepath())
+        printf("Warning: could not set the working directory to the executable's; "
+               "assets will load relative to the current working directory.\n");
+
 	#ifdef DEBUG_BUILD
 
     mi_option_enable(mi_option_show_errors);
     mi_option_enable(mi_option_show_stats);
     mi_option_enable(mi_option_verbose);
-    mi_option_set(mi_option_reserve_huge_os_pages, 4);
-
-    // Try to allocate 4 GB of HUGE pages.
-    int gigaMallocStatus = mi_reserve_huge_os_pages_at(4, 0, 10000);
-    printf("Huge Page Status: %d\n", gigaMallocStatus);
 	printf("Running in debug mode!\n");
-
-
-
-    autoStringTest();
-
-
-
-    int ladcount = 128;
-    int *theboys = mi_malloc(ladcount * sizeof(int));
-    for (int i = 0; i < ladcount; i++) {
-        theboys[i] = i + 1;
-    }
-
-    printf("Printing mi_malloc'd heap contents");
-    for (int i = 0; i < ladcount; i++) {
-        printf("Lad %d contents: %d\n", i, theboys[i]);
-    }
-
-    mi_free(theboys);
-
-    // huge malloc
-    //uint64_t *hugeBox = mi_malloc(1000000000 * sizeof(uint64_t));   // This fucks up the heap
-    //mi_free(hugeBox);
 
     ano_log_init();
     for(int i = 0; i < 172; i++) {

@@ -20,8 +20,7 @@ The current layout:
 
 ```
 src/
-├── engine/         # Entry point (main.c): spawns the render thread, runs the logic/ECS master loop
-├── ecs/            # Entity Component System: generational handles, chunked sparse-set component stores
+├── engine/         # Entry point (main.c): runs the render world on the main thread, spawns the logic master
 ├── render_bridge/  # Logic <-> render boundary: lock-free SPSC command/event rings
 ├── vulkan_backend/ # GPU-driven Vulkan renderer (render master thread); owns GPU slots + all GLFW
 ├── render/         # Asset-facing render support: glTF loader (gltf/), text/font stack (text/)
@@ -42,17 +41,14 @@ src/
   (`anoLogicThreadMain`) as the sole producer of render commands over the bridge, then
   drives the frame loop (`glfwPollEvents` + `drawFrame`) until the window closes.
 
-- `ecs/` (`anoptic_ecs.h`): The authoritative simulation world. Entities are
-  generational `(index, generation)` handles; components live in chunked sparse-set
-  stores with swap-and-pop removal. Structural mutation is deferred and flushed at a
-  tick boundary. Knows nothing about Vulkan or GPU slots.
+- `render_bridge/` (private `render_bridge.h`; public command protocol in
+  `include/anoptic_render.h`): The one-way-each-direction boundary between the logic and
+  render worlds. Two bounded lock-free SPSC rings carry `RenderCommand`s (logic -> render)
+  and `RenderEvent`s (render -> logic). Also defines the logic-side `DisplayState`
+  projection and the command/event protocol. (The logic-side ECS that will produce these
+  was removed pending a proper rebuild; see `docs/notes.md`.)
 
-- `render_bridge/` (`anoptic_render_bridge.h`): The one-way-each-direction boundary
-  between the logic and render worlds. Two bounded lock-free SPSC rings carry
-  `RenderCommand`s (logic -> render) and `RenderEvent`s (render -> logic). Also defines
-  the logic-side `DisplayState` projection and the command/event protocol.
-
-- `vulkan_backend/` (`anoptic_vulkan.h`): The GPU-driven, meshlet-based renderer, run
+- `vulkan_backend/` (renderer contract in `include/anoptic_render.h`): The GPU-driven, meshlet-based renderer, run
   entirely on the render master thread. It is the sole authority over GPU memory and
   the physical slot space (private `render_slots.h`: logical `render_id` -> GPU slot,
   stable slots with holes, frame-gated reuse), drains the bridge, and grows the

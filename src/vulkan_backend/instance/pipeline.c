@@ -250,8 +250,30 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 
 bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 {
-	state->bindlessTextures.maxTextures = 4096;
+	// Bindless upper bound. A combined image sampler counts against both the sampler and the
+	// sampled-image update-after-bind limits, per stage and per set; clamp the 4096 target to
+	// the smallest of the four. Apple/MoltenVK caps these at 1024, so an unclamped 4096 trips
+	// VUID-VkPipelineLayoutCreateInfo-descriptorType-03022 / -pSetLayouts-03036.
+	VkPhysicalDeviceDescriptorIndexingProperties indexingProps = {};
+	indexingProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES;
+
+	VkPhysicalDeviceProperties2 deviceProps2 = {};
+	deviceProps2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	deviceProps2.pNext = &indexingProps;
+	vkGetPhysicalDeviceProperties2(ctx->physicalDevice, &deviceProps2);
+
+	uint32_t uabLimit = indexingProps.maxPerStageDescriptorUpdateAfterBindSamplers;
+	if (indexingProps.maxPerStageDescriptorUpdateAfterBindSampledImages < uabLimit)
+		uabLimit = indexingProps.maxPerStageDescriptorUpdateAfterBindSampledImages;
+	if (indexingProps.maxDescriptorSetUpdateAfterBindSamplers < uabLimit)
+		uabLimit = indexingProps.maxDescriptorSetUpdateAfterBindSamplers;
+	if (indexingProps.maxDescriptorSetUpdateAfterBindSampledImages < uabLimit)
+		uabLimit = indexingProps.maxDescriptorSetUpdateAfterBindSampledImages;
+
+	state->bindlessTextures.maxTextures = uabLimit < 4096u ? uabLimit : 4096u;
 	state->bindlessTextures.textureCount = 0;
+	printf("Bindless texture array: maxTextures = %u (device update-after-bind limit %u)\n",
+		state->bindlessTextures.maxTextures, uabLimit);
 
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
 	samplerLayoutBinding.binding = 0;

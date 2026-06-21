@@ -9,6 +9,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <anoptic_render.h> // public engine<->renderer contract (lifecycle + command protocol)
+
 #include "vulkan_backend/structs.h"
 
 #include "vulkan_backend/instance/instanceInit.h"
@@ -30,31 +32,16 @@ extern RendererState rendererState;
 
 extern uint32_t g_ValidationErrors;
 
-// Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
-bool initVulkan(); // Move to includes
-
-// A celebration
-void unInitVulkan(); // Move to includes
-
-// Draws a single frame
-
-void drawFrame(); // Move to includes
-
-// Returns whether the program has been requested to exit
-bool anoShouldClose();
-
 // --- Render world / logic producer ------------------------------------------
-// GLFW pins window + event handling to the process main thread (mandatory on
-// macOS), so the render world (all Vulkan + GLFW: initVulkan, the frame loop,
-// unInitVulkan) runs directly on the main thread — see main(). The logic/ECS
-// master runs on its own thread as the sole command producer and coordinates
-// purely through the lock-free bridge below (no shared mutex).
-
-// Producer endpoint for submitting RenderCommands. Valid once initVulkan() has returned.
-AnoRenderBridge* anoRenderBridge(void);
-
-// render_id 0's original geometry index (stand-in producer helper). Read after init.
-uint32_t anoRenderEntity0Mesh(void);
+// The public engine<->renderer contract — initVulkan / unInitVulkan ("a celebration") /
+// drawFrame / anoShouldClose, the opaque AnoRenderBridge, anoRenderBridge(),
+// anoRenderEntity0Mesh() and ano_render_submit() — is declared in <anoptic_render.h>
+// (included above), and defined here in vulkanMaster.c.
+// GLFW pins window + event handling to the process main thread (mandatory on macOS),
+// so the render world (all Vulkan + GLFW: initVulkan, the frame loop, unInitVulkan)
+// runs directly on the main thread — see main(). The logic/ECS master runs on its own
+// thread as the sole command producer and coordinates purely through the lock-free
+// bridge (no shared mutex).
 
 void deferred_delete_resource(RendererState* state, DeletionResourceType type, uint32_t handle);
 void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t frameIndex);

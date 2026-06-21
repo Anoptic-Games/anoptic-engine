@@ -91,6 +91,12 @@ void unInitVulkan() // A celebration
 	{
 		cleanupMonitors(vulkanGarbage.monitors);
 	}
+
+	#ifdef DEBUG_BUILD
+	// Validation summary: g_ValidationErrors counts every WARNING+ message routed to
+	// debugCallback over the run. 0 == validation-clean; nonzero is a regression to chase.
+	printf("Validation messages (warning+) this run: %u\n", g_ValidationErrors);
+	#endif
 }
 
 bool anoShouldClose()
