@@ -244,6 +244,30 @@ lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic 
 **Step 1 -- High-performance logger:**
 Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly -- no dependency on a generic lock-free library. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
 
+Current state (mutex version, audited June 2026). The concurrency half is correct; the output half is absent.
+- The mutex-guarded enqueue (`enqueue_log_string`) is race-free and the bounds check at logging_core.c:56 has no overflow: the accepted case writes its terminating NUL at worst index `LOG_BUFFER_MAX-1`. Verified under TSan.
+- `tail_index` is `_Atomic` but only ever touched under `log_buffer_mtx` -- redundant today, kept as the breadcrumb for the lock-free version.
+- Output is entirely stubbed. All three `write_to_log_file` calls are commented out (logging_core.c:59, 128, 177); `output_file_path` is never assigned; `ano_log_output_dir` is declared in the public header but never defined (first caller = link error). So enqueued DEBUG/INFO/WARN/ERROR never reach any sink -- `write_all_buffered` formats the batch, discards it, and resets the index. Only immediate mode (FATAL, `_now`) prints, to stdout for <=WARN and stderr for >WARN.
+- `ano_log_immediate` calls `write_all_buffered()` unconditionally ("TODO: Remove this", logging_core.c:180), so an immediate message also wipes the pending enqueue buffer, and the immediate line prints before any buffered lines it implicitly drops.
+- No timestamp exists anywhere. The "preserve order via timestamps" goal is unbuilt; ordering today is an accident of the mutex (FIFO). The prefix is only `LEVEL file:line:`.
+- Buffer-full drops the message (returns -1 + stderr note) -- it does not write immediate as the message string claims.
+- Latent: `ano_log_init` calls `ano_log_fatal` if the buffer mutex fails to init (logging_core.c:187), and the immediate path then locks that just-failed mutex -- UB on the error path.
+
+Rewrite recommendations.
+- Stamp every record with a monotonic timestamp (`ano_timestamp_raw`/`_us`) in its slot/commit header. Once enqueue is lock-free the FIFO-by-mutex property is gone, so the timestamp is the only thing that can reconstruct cross-thread order at flush time.
+- MPSC hot path: reserve with `fetch_add` on the tail, write the payload, publish with a per-slot commit marker stored release; the flusher walks forward and stops at the first uncommitted slot (Quill/NanoLog). Records are variable-length, so either a fixed-size POD slot ring `{ts, level, file, line, msg[]}` or a byte ring of length-prefixed records with a commit sequence -- decide before writing the consumer.
+- Wire the sink: implement `ano_log_output_dir` (set `output_file_path`, open the file once and hold the `FILE*` rather than fopen-append per write), enable the write in the flush path, implement `ano_log_interval` + the flusher thread it implies.
+- Separate immediate from flush: immediate must not silently reset the enqueue buffer. If ordering across the two paths matters, flush buffered first then emit immediate, or merge by timestamp.
+- Make the full-buffer policy explicit and counted (drop vs block vs immediate-write vs grow), with a dropped-message counter rather than a silent -1.
+- Fix the init error path so it does not log through a mutex/buffer that is not yet live.
+
+Test plan (what the rewrite must make verifiable). The current test only asserts that enqueue returns 0; it cannot see content, order, or flush, because nothing is emitted. Once a sink exists, the test should flush to a temp file and read it back to check:
+- Verifiable output: level, `file:line`, and message body survive a round-trip through enqueue -> flush -> file.
+- Accumulation: N enqueues accumulate and a single flush emits all N, in order.
+- Immediate is immediate: an immediate/FATAL message reaches its stream before any flush, with defined ordering against buffered records.
+- Multi-thread: P producers insert concurrently; every message is eventually flushed (count + per-record integrity, no torn or interleaved bytes), clean under TSan; measure hot-path cost per enqueue (target sub-microsecond) and assert a loose ceiling.
+- Boundaries: empty message; a max-length message at `LOG_MESSAGE_MAX` with truncation handled; a record landing exactly at `LOG_BUFFER_MAX` (high end); the chosen full-buffer behavior; an empty flush (low end).
+
 **Step 2 -- Dependency update:**
 Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Quick audit for API changes. Fold mimalloc finalization into this -- the integration is already done, this is just a version bump and validation that `mi_heap_new` / `mi_heap_destroy` / `mi_heap_zalloc_aligned` still behave. Confirm hugepage support still works on current version. Validate scoped heap teardown (`LOCALHEAPATTR`). Ensure global override (`mimalloc-override.h`) is clean. Low risk, low effort.
 
