@@ -149,7 +149,17 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	lightLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	lightLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[9] = {
+	// Open-ended per-entity instance channel (tint/flags/scalars). Fragment reads
+	// the packed tint/flags now; geometry stage is included so a future per-slot
+	// scalar (e.g. anim phase) needs no layout change.
+	VkDescriptorSetLayoutBinding instanceDataLayoutBinding = {};
+	instanceDataLayoutBinding.binding = 9;
+	instanceDataLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	instanceDataLayoutBinding.descriptorCount = 1;
+	instanceDataLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
+	instanceDataLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[10] = {
 		uboLayoutBinding,
 		ssboLayoutBinding,
 		materialLayoutBinding,
@@ -158,12 +168,13 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		indexBufferLayoutBinding,
 		meshDataLayoutBinding,
 		compactedEntityIndicesLayoutBinding,
-		lightLayoutBinding
+		lightLayoutBinding,
+		instanceDataLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 9;
+	layoutInfo.bindingCount = 10;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)

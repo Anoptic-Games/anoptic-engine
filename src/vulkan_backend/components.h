@@ -20,6 +20,12 @@ typedef enum PipelineType
     PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
+    // --- Skeletons: enum slots reserved so the per-type buffers (indirect/drawCount/
+    // compacted indices) and the prototype table size for them, but no pipeline is
+    // created and no g_framePasses entry drives them yet. See render_bridge.h notes
+    // and resources/shaders/{decal,skinned,pose}.* for the planned shape.
+    PIPELINE_DECAL,             // (skeleton) projected / UV-overlay decal draw stream
+    PIPELINE_SKINNED,           // (skeleton) skinned-mesh draw stream (own vertex stage + bone palette)
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
 } PipelineType;
 

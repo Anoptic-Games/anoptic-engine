@@ -520,7 +520,7 @@ static void applyCommandToFrame(RendererState* s, const RenderCommand* c, uint32
     }
 
     uint32_t fields = (c->kind == RCMD_CREATE)
-        ? (RFIELD_TRANSFORM | RFIELD_MESH_MAT | RFIELD_ANIM |
+        ? (RFIELD_TRANSFORM | RFIELD_MESH_MAT | RFIELD_ANIM | RFIELD_USERDATA |
            (c->light_index != ANO_RENDER_NO_LIGHT ? RFIELD_LIGHT : 0u))
         : c->fields;
 
@@ -528,6 +528,8 @@ static void applyCommandToFrame(RendererState* s, const RenderCommand* c, uint32
         memcpy(&s->initialTransformBuffer.mapped[f][slot], &c->transform, sizeof(mat4));
     if (fields & RFIELD_ANIM)
         s->angularVelocityBuffer.mapped[f][slot] = c->angular_velocity;
+    if (fields & RFIELD_USERDATA)
+        s->instanceDataBuffer.mapped[f][slot] = c->instance_data;
     if (fields & RFIELD_MESH_MAT) {
         uint32_t* ent = (uint32_t*)s->culling.entityMapped[f];
         ent[slot * 2]     = c->mesh_index;
@@ -606,9 +608,9 @@ static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
 // the old buffers/descriptors, so a full vkDeviceWaitIdle precedes the work. Growth
 // fires only when a spawn crosses a chunk boundary (rare), so the stall is fine.
 //
-// Persistent slot data (initialTransform, angularVelocity, entity mesh/material) is
-// copied forward; transform / compactedIndices / indirect are rewritten by the
-// per-frame compute passes, so they are resized without a copy.
+// Persistent slot data (initialTransform, angularVelocity, instanceData, entity
+// mesh/material) is copied forward; transform / compactedIndices / indirect are
+// rewritten by the per-frame compute passes, so they are resized without a copy.
 //
 // in:  state, required (slot count needed), frameIndex (frame being recorded)
 // out: true if capacity >= required afterward; false on OOM (caller drops the spawn)
@@ -637,6 +639,8 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
                       (VkDeviceSize)sizeof(mat4) * newCap, (VkDeviceSize)sizeof(mat4) * oldCap) &&
         growBufferSet(state->angularVelocityBuffer.buffer, state->angularVelocityBuffer.allocs, ssbo,
                       (VkDeviceSize)sizeof(Vector4) * newCap, (VkDeviceSize)sizeof(Vector4) * oldCap) &&
+        growBufferSet(state->instanceDataBuffer.buffer, state->instanceDataBuffer.allocs, ssbo,
+                      (VkDeviceSize)sizeof(AnoInstanceData) * newCap, (VkDeviceSize)sizeof(AnoInstanceData) * oldCap) &&
         growBufferSet(state->culling.entityBuffer, state->culling.entityAllocs, ssbo,
                       (VkDeviceSize)sizeof(uint32_t) * 2 * newCap, (VkDeviceSize)sizeof(uint32_t) * 2 * oldCap) &&
         // GPU-regenerated each frame: resize only, no copy
@@ -656,6 +660,11 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->initialTransformBuffer.mapped[i]          = (mat4*)state->initialTransformBuffer.allocs[i].mapped;
         state->angularVelocityBuffer.mapped[i]           = (Vector4*)state->angularVelocityBuffer.allocs[i].mapped;
+        state->instanceDataBuffer.mapped[i]              = (AnoInstanceData*)state->instanceDataBuffer.allocs[i].mapped;
+        // growBufferSet preserves [0, oldCap); the new tail is uninitialized, so zero
+        // it to keep fresh slots inert (flags clear) before any CREATE writes them.
+        memset(&state->instanceDataBuffer.mapped[i][oldCap], 0,
+               (size_t)(newCap - oldCap) * sizeof(AnoInstanceData));
         state->culling.entityMapped[i]                   = state->culling.entityAllocs[i].mapped;
         state->transformBuffer.mapped[i]                 = (mat4*)state->transformBuffer.allocs[i].mapped;
         state->culling.compactedEntityIndicesMapped[i]   = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
@@ -663,6 +672,7 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
     }
     state->initialTransformBuffer.capacity = newCap;
     state->angularVelocityBuffer.capacity  = newCap;
+    state->instanceDataBuffer.capacity      = newCap;
     state->transformBuffer.capacity         = newCap;
     state->indirectBuffer.capacity          = newCap;
     state->culling.maxEntities              = newCap;
@@ -723,6 +733,9 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                     if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
                     memcpy(&state->initialTransformBuffer.mapped[frameIndex][slot], &b->transforms[e], sizeof(mat4));
                     state->angularVelocityBuffer.mapped[frameIndex][slot] = b->anim[e];
+                    // Batch carries no instance data; clear it so a recycled slot drops
+                    // the previous occupant's tint/flags and renders inert.
+                    state->instanceDataBuffer.mapped[frameIndex][slot] = (AnoInstanceData){0};
                     ent[slot * 2]     = b->mesh[e];
                     ent[slot * 2 + 1] = b->material[e];
                 }
@@ -1011,6 +1024,45 @@ bool createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint3
         vkBindBufferMemory(ctx->device, state->angularVelocityBuffer.buffer[i], state->angularVelocityBuffer.allocs[i].memory, state->angularVelocityBuffer.allocs[i].offset);
         
         state->angularVelocityBuffer.mapped[i] = (Vector4*)state->angularVelocityBuffer.allocs[i].mapped;
+    }
+    return true;
+}
+
+// Slot-indexed per-entity instance channel (tint/flags/scalars). Same lifecycle as
+// the angular-velocity buffer; the mapping is zeroed so every slot starts inert
+// (flags clear -> the fragment shader ignores it) until a CREATE/UPDATE writes it.
+// in:  ctx, state, maxEntities (initial slot count)
+// out: true on success; false on buffer/alloc failure
+bool createInstanceDataBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
+    state->instanceDataBuffer.capacity = maxEntities;
+    state->instanceDataBuffer.count = 0;
+
+    VkDeviceSize bufferSize = sizeof(AnoInstanceData) * maxEntities;
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->instanceDataBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create instance data buffer!\n");
+            return false;
+        }
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(ctx->device, state->instanceDataBuffer.buffer[i], &memRequirements);
+
+        state->instanceDataBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->instanceDataBuffer.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->instanceDataBuffer.buffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, state->instanceDataBuffer.buffer[i], state->instanceDataBuffer.allocs[i].memory, state->instanceDataBuffer.allocs[i].offset);
+
+        state->instanceDataBuffer.mapped[i] = (AnoInstanceData*)state->instanceDataBuffer.allocs[i].mapped;
+        memset(state->instanceDataBuffer.mapped[i], 0, (size_t)bufferSize);
     }
     return true;
 }
@@ -1446,6 +1498,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if (!createTransformBuffer(&ctx, &rendererState.transformBuffer, maxEntities) ||
 	    !createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities) ||
 	    !createAngularVelocityBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createInstanceDataBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createMaterialBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||

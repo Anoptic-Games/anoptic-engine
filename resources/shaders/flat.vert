@@ -51,6 +51,7 @@ layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) flat out uint outMaterialIndex;
 layout(location = 3) out vec3 fragWorldPos;
+layout(location = 4) flat out uint outEntityIndex; // slot index -> per-entity instance channel
 
 void main() {
     // Same entity lookup as flat.mesh, but Metal/MoltenVK has no DrawIndex builtin so
@@ -74,4 +75,5 @@ void main() {
     fragTexCoord     = texCoord;
     outMaterialIndex = entity.materialIndex;
     fragWorldPos     = worldPos.xyz;
+    outEntityIndex   = entityIndex;
 }

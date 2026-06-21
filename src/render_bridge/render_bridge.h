@@ -73,6 +73,7 @@ typedef enum RenderDirtyBits
     RENDER_DIRTY_ANIM     = 1 << 3, // animation parameters changed -> RFIELD_ANIM
     RENDER_DIRTY_LIGHT    = 1 << 4, // light parameters changed     -> RFIELD_LIGHT
     RENDER_DIRTY_DESTROY  = 1 << 5, // renderable should be removed  -> RCMD_DESTROY
+    RENDER_DIRTY_USERDATA = 1 << 6, // instance channel changed     -> RFIELD_USERDATA
 } RenderDirtyBits;
 
 // Minimal render-relevant projection of an entity, stored as an ECS component.
@@ -87,6 +88,7 @@ typedef struct DisplayState
     uint32_t mesh_index;         // geometry pool index, or ANO_RENDER_NO_MESH
     uint32_t material_index;     // material palette index
     uint32_t light_index;        // ANO_RENDER_NO_LIGHT if not a light
+    AnoInstanceData instance_data; // packed per-entity channel (tint/flags/scalars); zero == inert
     uint32_t dirty;              // RenderDirtyBits accumulated this tick
 } DisplayState;
 

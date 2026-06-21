@@ -163,9 +163,21 @@ typedef struct AngularVelocityBuffer
     VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
     Vector4*        mapped[MAX_FRAMES_IN_FLIGHT];  // xyz = axis * speed, w = unused
-    uint32_t        capacity;   
-    uint32_t        count;      
+    uint32_t        capacity;
+    uint32_t        count;
 } AngularVelocityBuffer;
+
+// Persistent, slot-indexed, copy-forward-on-grow — same lifecycle class as
+// initialTransform/angularVelocity. Carries the open-ended per-entity instance
+// channel (AnoInstanceData) read by the fragment stage; zero is the inert default.
+typedef struct InstanceDataBuffer
+{
+    VkBuffer         buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation    allocs[MAX_FRAMES_IN_FLIGHT];
+    AnoInstanceData* mapped[MAX_FRAMES_IN_FLIGHT];  // packed[0]=tint, packed[1]=flags, ...
+    uint32_t         capacity;
+    uint32_t         count;
+} InstanceDataBuffer;
 
 typedef struct MaterialData
 {
@@ -318,6 +330,65 @@ typedef struct LightBuffer
     uint32_t        capacity;   // max lights
     uint32_t        count;      // current light count
 } LightBuffer;
+
+// ===========================================================================
+// SKELETONS — data shapes only. None of the structs below are allocated, bound,
+// or drawn yet; they document the planned decal and skinned-mesh subsystems so
+// the architecture is fixed before the implementation lands. Activating a pass:
+//   1. create its PipelinePrototype in pipeline.c (mirror PIPELINE_FLAT / the
+//      compute passes),  2. add its shaders to the CMake shader manifest,
+//   3. add a draw entry to g_framePasses (decal/skinned) or a dispatch (pose).
+// ===========================================================================
+
+// Decals are NOT a per-entity attribute: ownership is inverted. A decal is an
+// element of one global, budget-bounded pool that anchors BACK to its host by
+// render slot, so the million entities with none pay nothing. The pool recycles
+// (ring/LRU): "unbounded over time" becomes a fixed allocation with eviction.
+// The decal pass reads transforms[anchorSlot] to ride a moving host.
+typedef struct DecalRecord
+{
+    mat4     localTransform;   // placement in the host slot's local space (projection box)
+    uint32_t anchorSlot;       // host render slot; transforms[anchorSlot] gives live world pose
+    uint32_t textureLayer;     // index into the decal texture array (scorch/blood/crack/...)
+    float    fade;             // 0..1 lifetime fade; drives LRU eviction when it expires
+    uint32_t flags;            // projection vs UV-overlay, blend mode, etc.
+} DecalRecord; // 80 bytes
+
+typedef struct DecalPool
+{
+    VkBuffer      buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation allocs[MAX_FRAMES_IN_FLIGHT];
+    DecalRecord*  mapped[MAX_FRAMES_IN_FLIGHT];
+    uint32_t      capacity;    // global decal budget (hard cap; recycling, never grow-per-entity)
+    uint32_t      count;       // live decals
+    uint32_t      recycleHead; // ring cursor for eviction of the oldest record
+} DecalPool;
+
+// Skinned-mesh state. Looping clips ARE continuous GPU-parameterized motion: send
+// {rigId, clip(s), startPhase} once and the pose pre-pass derives the bone palette
+// from global time every frame — only discrete clip transitions cross the bridge.
+// Sparse: only skinned slots carry this, keyed by slot, never widening the rigid path.
+typedef struct SkinInstanceState
+{
+    uint32_t rigId;            // index into the (static) rig asset table: skeleton + inverse-bind
+    uint32_t clipA;            // active clip
+    uint32_t clipB;            // cross-fade target (== clipA when not blending)
+    float    blendStart;       // global-time stamp the A->B cross-fade began
+    float    blendDuration;    // cross-fade length; 0 == no blend
+    float    clipStartPhase;   // global-time stamp clipA started (loop phase origin)
+} SkinInstanceState;
+
+// Per-instance bone matrices, sized to the VISIBLE skinned set and compacted by the
+// cull pass (like compactedEntityIndices), GPU-regenerated each frame by the pose
+// pre-pass — an off-screen skinned instance costs zero palette memory. Variable
+// width (boneCount per instance) lives here, never in the per-slot hot buffers.
+typedef struct BonePalettePool
+{
+    VkBuffer      buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation allocs[MAX_FRAMES_IN_FLIGHT];
+    mat4*         mapped[MAX_FRAMES_IN_FLIGHT]; // skinning matrices, packed per visible instance
+    uint32_t      matrixCapacity;              // total bone-matrix slots across the visible set
+} BonePalettePool;
 
 typedef struct BindlessTextureArray
 {
@@ -487,11 +558,16 @@ typedef struct RendererState
     TransformBuffer         transformBuffer;
     TransformBuffer         initialTransformBuffer;
     AngularVelocityBuffer   angularVelocityBuffer;
+    InstanceDataBuffer      instanceDataBuffer;
     MaterialBuffer          materialBuffer;
     LightBuffer             lightBuffer;
     IndirectDrawBuffer      indirectBuffer;
     BindlessTextureArray    bindlessTextures;
-    
+
+    // Skeletons (see structs above): declared, not yet allocated/bound/drawn.
+    DecalPool               decalPool;      // global anchored decal pool (PIPELINE_DECAL)
+    BonePalettePool         bonePalette;    // visible-compacted bone matrices (PIPELINE_SKINNED)
+
     VkDescriptorSetLayout   updateSetLayout;
 
     // Fallback resources
