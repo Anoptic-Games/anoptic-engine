@@ -158,17 +158,19 @@ typedef struct TransformBuffer
     uint32_t        count;      // current entity count
 } TransformBuffer;
 
-typedef struct AngularVelocityBuffer
+// Per-slot GPU motion descriptors (type + params) consumed by update.comp to derive
+// the live transform from global time. Persistent, slot-indexed, copy-forward.
+typedef struct MotionBuffer
 {
-    VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
-    Vector4*        mapped[MAX_FRAMES_IN_FLIGHT];  // xyz = axis * speed, w = unused
-    uint32_t        capacity;
-    uint32_t        count;
-} AngularVelocityBuffer;
+    VkBuffer             buffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation        allocs[MAX_FRAMES_IN_FLIGHT];
+    AnoMotionDescriptor* mapped[MAX_FRAMES_IN_FLIGHT];  // 48 B/slot; AnoMotionType + p0/p1
+    uint32_t             capacity;
+    uint32_t             count;
+} MotionBuffer;
 
 // Persistent, slot-indexed, copy-forward-on-grow — same lifecycle class as
-// initialTransform/angularVelocity. Carries the open-ended per-entity instance
+// initialTransform/motion. Carries the open-ended per-entity instance
 // channel (AnoInstanceData) read by the fragment stage; zero is the inert default.
 typedef struct InstanceDataBuffer
 {
@@ -557,7 +559,7 @@ typedef struct RendererState
 
     TransformBuffer         transformBuffer;
     TransformBuffer         initialTransformBuffer;
-    AngularVelocityBuffer   angularVelocityBuffer;
+    MotionBuffer            motionBuffer;
     InstanceDataBuffer      instanceDataBuffer;
     MaterialBuffer          materialBuffer;
     LightBuffer             lightBuffer;

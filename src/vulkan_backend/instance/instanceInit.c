@@ -1677,10 +1677,10 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         vkUpdateDescriptorSets(ctx->device, 9, cullWrites, 0, NULL);
 
         // Update Compute Descriptor Sets
-        VkDescriptorBufferInfo angularVelInfo = {};
-        angularVelInfo.buffer = rendererState.angularVelocityBuffer.buffer[i];
-        angularVelInfo.offset = 0;
-        angularVelInfo.range = sizeof(Vector4) * rendererState.angularVelocityBuffer.capacity;
+        VkDescriptorBufferInfo motionInfo = {};
+        motionInfo.buffer = rendererState.motionBuffer.buffer[i];
+        motionInfo.offset = 0;
+        motionInfo.range = sizeof(AnoMotionDescriptor) * rendererState.motionBuffer.capacity;
 
         VkDescriptorBufferInfo initialTransformInfo = {};
         initialTransformInfo.buffer = rendererState.initialTransformBuffer.buffer[i];
@@ -1700,7 +1700,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 
         updateWrites[0].pBufferInfo = &bufferInfo; // GlobalUBO
         updateWrites[1].pBufferInfo = &ssboInfo;   // TransformSSBO
-        updateWrites[2].pBufferInfo = &angularVelInfo;
+        updateWrites[2].pBufferInfo = &motionInfo; // MotionSSBO
         updateWrites[3].pBufferInfo = &initialTransformInfo;
 
         vkUpdateDescriptorSets(ctx->device, 4, updateWrites, 0, NULL);
@@ -1984,8 +1984,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
 		if(rendererState.initialTransformBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.initialTransformBuffer.buffer[i], NULL);
-		if(rendererState.angularVelocityBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.angularVelocityBuffer.buffer[i], NULL);
+		if(rendererState.motionBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.motionBuffer.buffer[i], NULL);
 		if(rendererState.instanceDataBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.instanceDataBuffer.buffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])

@@ -78,13 +78,13 @@ typedef enum RenderDirtyBits
 
 // Minimal render-relevant projection of an entity, stored as an ECS component.
 // NOT a full mirror of the render world — just enough to detect discrete
-// transitions and name the renderable. Continuous motion is captured as
-// `angular_velocity` (sent once via RFIELD_ANIM), never as per-tick transforms.
+// transitions and name the renderable. Continuous motion is captured as `motion`
+// (sent once via RFIELD_ANIM), never as per-tick transforms.
 typedef struct DisplayState
 {
     uint32_t render_id;          // stable logical name while renderable
     mat4     transform;          // base pose; payload for SPAWN / TELEPORT
-    Vector4  angular_velocity;   // xyz = axis*speed, w = orbit flag
+    AnoMotionDescriptor motion;  // GPU motion descriptor (type + params); ANO_MOTION_STATIC for none
     uint32_t mesh_index;         // geometry pool index, or ANO_RENDER_NO_MESH
     uint32_t material_index;     // material palette index
     uint32_t light_index;        // ANO_RENDER_NO_LIGHT if not a light

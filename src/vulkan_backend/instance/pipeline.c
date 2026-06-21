@@ -354,7 +354,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     updateBindings[1].descriptorCount = 1;
     updateBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    // 2: AngularVelocitySSBO
+    // 2: MotionSSBO
     updateBindings[2].binding = 2;
     updateBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     updateBindings[2].descriptorCount = 1;

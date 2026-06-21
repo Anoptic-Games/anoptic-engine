@@ -103,6 +103,17 @@ layout(set = 0, binding = 8) readonly buffer LightSSBO {
     LightData lights[];
 } lightBuf;
 
+// Open-ended per-entity instance channel (matches flat.frag). packed[0] = RGBA8
+// tint, packed[1] = flags (bit 0 enables tint), packed[2..3]/params reserved.
+const uint INST_FLAG_TINT = 1u;
+struct InstanceData {
+    uvec4 packed;
+    vec4  params;
+};
+layout(set = 0, binding = 9) readonly buffer InstanceSSBO {
+    InstanceData instances[];
+} instanceBuf;
+
 // glTF range-based attenuation: inverse-square with a smooth window cutoff.
 // range <= 0 means unbounded (pure inverse-square).
 float getRangeAttenuation(float range, float dist) {
@@ -126,6 +137,7 @@ layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragTexCoord;
 layout(location = 2) flat in uint inMaterialIndex;
 layout(location = 3) in vec3 fragWorldPos;
+layout(location = 4) flat in uint inEntityIndex;
 
 layout(location = 0) out vec4 outColor;
 
@@ -170,7 +182,14 @@ void main() {
     if (mat.baseColorTexture != 0xFFFFFFFF) {
         baseColor *= texture(textures[nonuniformEXT(mat.baseColorTexture)], fragTexCoord);
     }
-    
+
+    // Per-entity instance channel: modulate base color by the packed tint when the
+    // slot opts in. Inert for unopted (zero) slots.
+    InstanceData inst = instanceBuf.instances[inEntityIndex];
+    if ((inst.packed.y & INST_FLAG_TINT) != 0u) {
+        baseColor *= unpackUnorm4x8(inst.packed.x);
+    }
+
     // Resolve transmission factor
     float transmission = mat.transmissionFactor;
     if (mat.transmissionTexture != 0xFFFFFFFF) {
