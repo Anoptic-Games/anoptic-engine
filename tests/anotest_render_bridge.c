@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_render_bridge.h:
+/* Coverage for the render_bridge transport (private src/render_bridge/render_bridge.h;
+ * the public command protocol it builds on is include/anoptic_render.h):
  *  - single-threaded SPSC ring: FIFO order, full/empty edges, index wraparound;
  *  - concurrent bidirectional stress (TSan target): a producer thread feeds
  *    commands, a consumer thread drains them and echoes events, the main thread
@@ -14,7 +15,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <mimalloc.h>
-#include "anoptic_render_bridge.h"
+#include "render_bridge/render_bridge.h" // private transport: SPSC ring + bridge + endpoints
 #include "anoptic_threads.h"
 
 // The false-sharing avoidance must be real, not aspirational.
