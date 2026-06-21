@@ -3,6 +3,19 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+
+/// TODO: This has all got to GO. 
+
+/*
+
+We move everything actually called by main() to anoptic_render.h (and ONLY those called by main).
+Absolutely 0 inline function definitions.
+Function signatures and types they use only.
+Everything implementation-related goes in the appropriate src/ section.
+
+*/
+
+
 /**
  * @file anoptic_render_bridge.h
  * @brief The logic<->render boundary: command/event protocol, the SPSC rings
