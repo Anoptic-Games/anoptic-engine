@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Logic<->render bridge: ring storage allocation/teardown. The hot-path push/pop
- * are inlined in anoptic_render_bridge.h; only the (cold) init/destroy live here.
- * Platform-agnostic and GPU-free — part of anoptic_core. Design of record:
+/* Logic<->render bridge: ring storage allocation/teardown, plus the producer
+ * endpoint (ano_render_submit). The hot-path push/pop and the in-src endpoints
+ * stay inlined in the private render_bridge.h; only the cold init/destroy and the
+ * public (non-inline) submit live here. Platform-agnostic and GPU-free — part of
+ * anoptic_core. Public contract: include/anoptic_render.h. Design of record:
  * docs/artifacts/VK_BACKEND_INTEROP.md. */
 
-#include "anoptic_render_bridge.h"
+#include "render_bridge.h"
 
 #include <stdint.h>
 
@@ -72,4 +74,12 @@ void ano_render_bridge_destroy(AnoRenderBridge *bridge)
     if (!bridge) return;
     ano_spsc_destroy(&bridge->commands);
     ano_spsc_destroy(&bridge->events);
+}
+
+// Public producer endpoint (anoptic_render.h). Non-inline by design: the engine
+// entry point reaches it through the opaque handle without seeing the ring; the
+// in-src consumer/event endpoints stay inlined in render_bridge.h.
+bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd)
+{
+    return ano_spsc_push(&bridge->commands, cmd);
 }

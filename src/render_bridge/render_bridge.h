@@ -3,26 +3,19 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-
-/// TODO: This has all got to GO. 
-
-/*
-
-We move everything actually called by main() to anoptic_render.h (and ONLY those called by main).
-Absolutely 0 inline function definitions.
-Function signatures and types they use only.
-Everything implementation-related goes in the appropriate src/ section.
-
-*/
-
-
 /**
- * @file anoptic_render_bridge.h
- * @brief The logic<->render boundary: command/event protocol, the SPSC rings
- *        that carry them, and the logic-side render-projection component.
+ * @file render_bridge.h (private to src/)
+ * @brief The logic<->render transport: the SPSC rings that carry the protocol,
+ *        the bridge struct that completes the opaque AnoRenderBridge handle, the
+ *        render->logic event protocol, and the logic-side render-projection
+ *        component. Implementation detail of the render_bridge module; consumed
+ *        only within src/ (render_bridge itself + the vulkan_backend that drains
+ *        commands and emits events). Never include from include/.
  *
- * Design of record: docs/artifacts/VK_BACKEND_INTEROP.md (render side) and
- * docs/artifacts/ECS.md S4-S5 (logic side).
+ * The PUBLIC contract — the command protocol the producer builds, the opaque
+ * AnoRenderBridge, ano_render_submit, and the renderer lifecycle — is
+ * include/anoptic_render.h. Design of record: docs/artifacts/VK_BACKEND_INTEROP.md
+ * (render side) and docs/artifacts/ECS.md S4-S5 (logic side).
  *
  * Two parallel worlds, one-way streams each direction:
  *   logic master  --RenderCommand-->  render master   (commands ring)
@@ -34,14 +27,13 @@ Everything implementation-related goes in the appropriate src/ section.
  * ordering is total); the render master is the sole event producer.
  *
  * Renderables are named by a stable logical `render_id` assigned by the ECS. The
- * render world privately maps render_id -> physical GPU slot; this header never
- * exposes GPU slots. Continuous, GPU-parameterized motion (orbit/spin) is sent
- * ONCE as animation parameters and never streamed; only discrete transitions
- * cross the bridge.
+ * render world privately maps render_id -> physical GPU slot; this never exposes
+ * GPU slots. Continuous, GPU-parameterized motion (orbit/spin) is sent ONCE as
+ * animation parameters and never streamed; only discrete transitions cross.
  */
 
-#ifndef ANOPTIC_RENDER_BRIDGE_H
-#define ANOPTIC_RENDER_BRIDGE_H
+#ifndef ANO_RENDER_BRIDGE_INTERNAL_H
+#define ANO_RENDER_BRIDGE_INTERNAL_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -49,92 +41,7 @@ Everything implementation-related goes in the appropriate src/ section.
 #include <stdatomic.h>
 #include <mimalloc.h>
 #include <anoptic_math.h>
-
-// Absent-attribute sentinels, shared by logic and render. A renderable with
-// ANO_RENDER_NO_MESH carries no geometry (the cull pass skips it — e.g. a pure
-// light); ANO_RENDER_NO_LIGHT marks a renderable that drives no light.
-#define ANO_RENDER_NO_MESH  0xFFFFFFFFu
-#define ANO_RENDER_NO_LIGHT 0xFFFFFFFFu
-
-// ---------------------------------------------------------------------------
-// Light parameters (transport form)
-// ---------------------------------------------------------------------------
-
-// glTF KHR_lights_punctual model. This is the clean transport struct: photometric
-// parameters only. World position/direction are NOT here — the render world
-// derives them from the driving renderable's live transform, so animated lights
-// need no per-frame light traffic. (The renderer translates this into its private
-// std430 GPU LightData, which adds the resolved transform/slot link.)
-typedef enum RenderLightType
-{
-    RENDER_LIGHT_DIRECTIONAL = 0,
-    RENDER_LIGHT_POINT       = 1,
-    RENDER_LIGHT_SPOT        = 2,
-} RenderLightType;
-
-typedef struct RenderLightParams
-{
-    float           color[3];     // linear RGB, normalized (intensity carries magnitude)
-    float           intensity;    // candela-like (point/spot) or lux-like (directional)
-    float           range;        // attenuation cutoff; <= 0 == unbounded (ignored for directional)
-    float           innerConeCos; // spot inner cone half-angle cosine
-    float           outerConeCos; // spot outer cone half-angle cosine
-    RenderLightType type;
-} RenderLightParams;
-
-// ---------------------------------------------------------------------------
-// Commands: logic -> render
-// ---------------------------------------------------------------------------
-
-typedef enum RenderCommandKind
-{
-    RCMD_CREATE,       // new renderable; carries full initial state
-    RCMD_UPDATE,       // discrete change(s) to an existing renderable (see `fields`)
-    RCMD_DESTROY,      // remove a renderable (render_id only)
-    RCMD_BULK_CREATE,  // contiguous batch of new renderables (mass spawn); see `batch`
-} RenderCommandKind;
-
-// Which payload fields a CREATE/UPDATE carries. A single UPDATE may set several
-// bits: that is the "<=1 message per entity per tick" invariant made literal.
-typedef enum RenderFieldBits
-{
-    RFIELD_TRANSFORM = 1 << 0, // teleport: rewrite the BASE pose (initialTransform), never the GPU-output transform
-    RFIELD_MESH_MAT  = 1 << 1, // mesh and/or material index
-    RFIELD_ANIM      = 1 << 2, // GPU animation parameters (establishes/changes continuous motion)
-    RFIELD_LIGHT     = 1 << 3, // light photometric parameters
-} RenderFieldBits;
-
-// Initial-state batch referenced by RCMD_BULK_CREATE. The producer hands ownership
-// of `transforms`/`anim`/`mesh`/`material`/`render_ids` (arena-allocated, length
-// `count`) to the render master, which block-writes a contiguous slot range and
-// releases the batch when consumed.
-typedef struct RenderCreateBatch
-{
-    uint32_t        count;
-    const uint32_t *render_ids;  // [count] logical names
-    const mat4     *transforms;  // [count] base poses
-    const Vector4  *anim;        // [count] animation params (xyz = axis*speed, w = orbit flag)
-    const uint32_t *mesh;        // [count] geometry pool indices (ANO_RENDER_NO_MESH allowed)
-    const uint32_t *material;    // [count] material palette indices
-} RenderCreateBatch;
-
-// POD, fixed-size, copied by value through the ring. ~fat (holds a mat4) but
-// CREATE needs it; UPDATE only reads the fields flagged in `fields`.
-typedef struct RenderCommand
-{
-    RenderCommandKind kind;
-    uint32_t          render_id;        // logical name; valid for CREATE/UPDATE/DESTROY
-    uint32_t          fields;           // RenderFieldBits, for CREATE/UPDATE
-
-    mat4              transform;        // base pose (CREATE, or UPDATE | RFIELD_TRANSFORM)
-    Vector4           angular_velocity; // anim params (CREATE, or UPDATE | RFIELD_ANIM)
-    uint32_t          mesh_index;       // CREATE, or UPDATE | RFIELD_MESH_MAT
-    uint32_t          material_index;   // CREATE, or UPDATE | RFIELD_MESH_MAT
-    uint32_t          light_index;      // ANO_RENDER_NO_LIGHT if not a light
-    RenderLightParams light;            // CREATE (if light) or UPDATE | RFIELD_LIGHT
-
-    const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
-} RenderCommand;
+#include <anoptic_render.h> // command protocol + opaque AnoRenderBridge + ano_render_submit
 
 // ---------------------------------------------------------------------------
 // Events: render -> logic
@@ -256,11 +163,12 @@ static inline bool ano_spsc_pop(AnoSpscRing *ring, void *out)
 // The bridge
 // ---------------------------------------------------------------------------
 
-typedef struct AnoRenderBridge
+// Completes the opaque AnoRenderBridge declared in anoptic_render.h.
+struct AnoRenderBridge
 {
     AnoSpscRing commands; // logic -> render (RenderCommand)
     AnoSpscRing events;   // render -> logic (RenderEvent)
-} AnoRenderBridge;
+};
 
 // in:  bridge, heap, cmd_capacity_pow2, evt_capacity_pow2
 // out: true on success; false on allocation failure
@@ -270,13 +178,8 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
 
 void ano_render_bridge_destroy(AnoRenderBridge *bridge);
 
-// --- Logic master endpoint (produces commands, consumes events) ---
-
-// Enqueue one command. false if the command ring is full.
-static inline bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd)
-{
-    return ano_spsc_push(&bridge->commands, cmd);
-}
+// --- Logic master endpoint (consumes events) ---
+// ano_render_submit (produces commands) is the one public endpoint -> anoptic_render.h.
 
 // Dequeue one event into `out`. false if no event pending.
 static inline bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out)
@@ -298,4 +201,4 @@ static inline bool ano_render_emit_event(AnoRenderBridge *bridge, const RenderEv
     return ano_spsc_push(&bridge->events, evt);
 }
 
-#endif // ANOPTIC_RENDER_BRIDGE_H
+#endif // ANO_RENDER_BRIDGE_INTERNAL_H

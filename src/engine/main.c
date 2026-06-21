@@ -16,21 +16,14 @@
 #include "anoptic_filesystem.h"
 
 #ifndef HEADLESS_BUILD
-// Renderer interface + Vulkan/GLFW — only compiled into the graphical engine.
-#include "engine/main.h" // This works
+// Renderer contract + GLFW — only compiled into the graphical engine.
+#include <anoptic_render.h>
 #include <vulkan/vulkan.h>
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #endif
-
-// Structs
-VulkanSettings vulkanSettings =
-{ //!TODO change this dynamically via vulkanSettings.h interface
-	.preferredDevice = "",
-	.preferredMode = 1
-};
 #endif // !HEADLESS_BUILD
 
 // Variables
