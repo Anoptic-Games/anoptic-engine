@@ -99,6 +99,39 @@ typedef struct RenderLightParams
     RenderLightType type;
 } RenderLightParams;
 
+// Continuous, GPU-derived motion. The producer establishes a motion ONCE (via
+// RFIELD_ANIM) and the GPU update pass derives the live transform from global time
+// every frame, so a steady trajectory costs zero per-tick bridge traffic; only a
+// discrete change of trajectory re-sends. Arbitrary CPU/physics/pathfinding-driven
+// motion has no closed form and does NOT belong here — it takes the streamed path.
+typedef enum AnoMotionType
+{
+    ANO_MOTION_STATIC = 0, // no motion; live transform == base pose
+    ANO_MOTION_SPIN,       // constant-rate rotation in the body's local frame (base * R)
+    ANO_MOTION_ORBIT,      // constant-rate revolution about a world axis    (R * base)
+    ANO_MOTION_LINEAR,     // constant-velocity translation from the base pose
+    ANO_MOTION_KEPLER,     // closed-form elliptical orbit; base-pose origin is the focus
+} AnoMotionType;
+
+// Per-renderable motion parameters. 48 bytes; matches std430
+// { uint type; uint flags; float epoch; float pad; vec4 p0; vec4 p1; }. `epoch` is
+// the global-time stamp the motion was established (t0); the GPU evaluates at
+// (time - epoch), so re-basing a trajectory is one RFIELD_ANIM command. The eight
+// p0/p1 floats hold every type's params inline — Kepler needs no side pool:
+//   SPIN / ORBIT : p0.xyz = axis * angular_speed (rad/s)
+//   LINEAR       : p0.xyz = velocity (units/s)
+//   KEPLER       : p0 = (semiMajorAxis, eccentricity, inclination, longAscendingNode)
+//                  p1 = (argPeriapsis, meanAnomalyAtEpoch, meanMotion, _) [rad]
+typedef struct AnoMotionDescriptor
+{
+    uint32_t type;   // AnoMotionType
+    uint32_t flags;  // reserved
+    float    epoch;  // t0: global-time stamp the motion was established
+    float    _pad;   // aligns p0 to a 16-byte boundary
+    Vector4  p0;
+    Vector4  p1;
+} AnoMotionDescriptor; // 48 bytes
+
 typedef enum RenderCommandKind
 {
     RCMD_CREATE,       // new renderable; carries full initial state
@@ -146,7 +179,7 @@ typedef struct RenderCreateBatch
     uint32_t        count;
     const uint32_t *render_ids;  // [count] logical names
     const mat4     *transforms;  // [count] base poses
-    const Vector4  *anim;        // [count] animation params (xyz = axis*speed, w = orbit flag)
+    const AnoMotionDescriptor *motion; // [count] GPU motion descriptors (ANO_MOTION_STATIC for none)
     const uint32_t *mesh;        // [count] geometry pool indices (ANO_RENDER_NO_MESH allowed)
     const uint32_t *material;    // [count] material palette indices
 } RenderCreateBatch;
@@ -160,7 +193,7 @@ typedef struct RenderCommand
     uint32_t          fields;           // RenderFieldBits, for CREATE/UPDATE
 
     mat4              transform;        // base pose (CREATE, or UPDATE | RFIELD_TRANSFORM)
-    Vector4           angular_velocity; // anim params (CREATE, or UPDATE | RFIELD_ANIM)
+    AnoMotionDescriptor motion;         // GPU motion params (CREATE, or UPDATE | RFIELD_ANIM)
     uint32_t          mesh_index;       // CREATE, or UPDATE | RFIELD_MESH_MAT
     uint32_t          material_index;   // CREATE, or UPDATE | RFIELD_MESH_MAT
     uint32_t          light_index;      // ANO_RENDER_NO_LIGHT if not a light

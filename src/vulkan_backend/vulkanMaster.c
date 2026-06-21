@@ -527,7 +527,7 @@ static void applyCommandToFrame(RendererState* s, const RenderCommand* c, uint32
     if (fields & RFIELD_TRANSFORM)
         memcpy(&s->initialTransformBuffer.mapped[f][slot], &c->transform, sizeof(mat4));
     if (fields & RFIELD_ANIM)
-        s->angularVelocityBuffer.mapped[f][slot] = c->angular_velocity;
+        s->motionBuffer.mapped[f][slot] = c->motion;
     if (fields & RFIELD_USERDATA)
         s->instanceDataBuffer.mapped[f][slot] = c->instance_data;
     if (fields & RFIELD_MESH_MAT) {
@@ -608,9 +608,9 @@ static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
 // the old buffers/descriptors, so a full vkDeviceWaitIdle precedes the work. Growth
 // fires only when a spawn crosses a chunk boundary (rare), so the stall is fine.
 //
-// Persistent slot data (initialTransform, angularVelocity, instanceData, entity
-// mesh/material) is copied forward; transform / compactedIndices / indirect are
-// rewritten by the per-frame compute passes, so they are resized without a copy.
+// Persistent slot data (initialTransform, motion, instanceData, entity mesh/material)
+// is copied forward; transform / compactedIndices / indirect are rewritten by the
+// per-frame compute passes, so they are resized without a copy.
 //
 // in:  state, required (slot count needed), frameIndex (frame being recorded)
 // out: true if capacity >= required afterward; false on OOM (caller drops the spawn)
@@ -637,8 +637,8 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
         // persistent slot data: preserve the old span
         growBufferSet(state->initialTransformBuffer.buffer, state->initialTransformBuffer.allocs, ssbo,
                       (VkDeviceSize)sizeof(mat4) * newCap, (VkDeviceSize)sizeof(mat4) * oldCap) &&
-        growBufferSet(state->angularVelocityBuffer.buffer, state->angularVelocityBuffer.allocs, ssbo,
-                      (VkDeviceSize)sizeof(Vector4) * newCap, (VkDeviceSize)sizeof(Vector4) * oldCap) &&
+        growBufferSet(state->motionBuffer.buffer, state->motionBuffer.allocs, ssbo,
+                      (VkDeviceSize)sizeof(AnoMotionDescriptor) * newCap, (VkDeviceSize)sizeof(AnoMotionDescriptor) * oldCap) &&
         growBufferSet(state->instanceDataBuffer.buffer, state->instanceDataBuffer.allocs, ssbo,
                       (VkDeviceSize)sizeof(AnoInstanceData) * newCap, (VkDeviceSize)sizeof(AnoInstanceData) * oldCap) &&
         growBufferSet(state->culling.entityBuffer, state->culling.entityAllocs, ssbo,
@@ -659,7 +659,7 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
     // Re-derive typed mapped pointers + capacities for the new buffers.
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->initialTransformBuffer.mapped[i]          = (mat4*)state->initialTransformBuffer.allocs[i].mapped;
-        state->angularVelocityBuffer.mapped[i]           = (Vector4*)state->angularVelocityBuffer.allocs[i].mapped;
+        state->motionBuffer.mapped[i]                    = (AnoMotionDescriptor*)state->motionBuffer.allocs[i].mapped;
         state->instanceDataBuffer.mapped[i]              = (AnoInstanceData*)state->instanceDataBuffer.allocs[i].mapped;
         // growBufferSet preserves [0, oldCap); the new tail is uninitialized, so zero
         // it to keep fresh slots inert (flags clear) before any CREATE writes them.
@@ -671,7 +671,7 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
         state->indirectBuffer.mapped[i]                  = (VkDrawMeshTasksIndirectCommandEXT*)state->indirectBuffer.allocs[i].mapped;
     }
     state->initialTransformBuffer.capacity = newCap;
-    state->angularVelocityBuffer.capacity  = newCap;
+    state->motionBuffer.capacity            = newCap;
     state->instanceDataBuffer.capacity      = newCap;
     state->transformBuffer.capacity         = newCap;
     state->indirectBuffer.capacity          = newCap;
@@ -732,7 +732,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                     uint32_t slot = render_slots_resolve(&state->slots, b->render_ids[e]);
                     if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
                     memcpy(&state->initialTransformBuffer.mapped[frameIndex][slot], &b->transforms[e], sizeof(mat4));
-                    state->angularVelocityBuffer.mapped[frameIndex][slot] = b->anim[e];
+                    state->motionBuffer.mapped[frameIndex][slot] = b->motion[e];
                     // Batch carries no instance data; clear it so a recycled slot drops
                     // the previous occupant's tint/flags and renders inert.
                     state->instanceDataBuffer.mapped[frameIndex][slot] = (AnoInstanceData){0};
@@ -996,34 +996,36 @@ static uint32_t addLightEntity(LightData light, mat4 transform) {
     return entIdx;
 }
 
-bool createAngularVelocityBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
-    state->angularVelocityBuffer.capacity = maxEntities;
-    state->angularVelocityBuffer.count = 0;
-    
-    VkDeviceSize bufferSize = sizeof(Vector4) * maxEntities;
-    
+bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
+    state->motionBuffer.capacity = maxEntities;
+    state->motionBuffer.count = 0;
+
+    VkDeviceSize bufferSize = sizeof(AnoMotionDescriptor) * maxEntities;
+
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         VkBufferCreateInfo bufferInfo = {};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = bufferSize;
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        
-        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->angularVelocityBuffer.buffer[i]) != VK_SUCCESS) {
-            printf("Failed to create angular velocity buffer!\n");
-        }
-        
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(ctx->device, state->angularVelocityBuffer.buffer[i], &memRequirements);
-        
-        state->angularVelocityBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (state->angularVelocityBuffer.allocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->angularVelocityBuffer.buffer[i], NULL);
+
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->motionBuffer.buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create motion buffer!\n");
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->angularVelocityBuffer.buffer[i], state->angularVelocityBuffer.allocs[i].memory, state->angularVelocityBuffer.allocs[i].offset);
-        
-        state->angularVelocityBuffer.mapped[i] = (Vector4*)state->angularVelocityBuffer.allocs[i].mapped;
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(ctx->device, state->motionBuffer.buffer[i], &memRequirements);
+
+        state->motionBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (state->motionBuffer.allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->motionBuffer.buffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, state->motionBuffer.buffer[i], state->motionBuffer.allocs[i].memory, state->motionBuffer.allocs[i].offset);
+
+        state->motionBuffer.mapped[i] = (AnoMotionDescriptor*)state->motionBuffer.allocs[i].mapped;
+        memset(state->motionBuffer.mapped[i], 0, (size_t)bufferSize); // type 0 == ANO_MOTION_STATIC
     }
     return true;
 }
@@ -1497,7 +1499,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	uint32_t maxEntities = INITIAL_ENTITY_CAPACITY;
 	if (!createTransformBuffer(&ctx, &rendererState.transformBuffer, maxEntities) ||
 	    !createTransformBuffer(&ctx, &rendererState.initialTransformBuffer, maxEntities) ||
-	    !createAngularVelocityBuffer(&ctx, &rendererState, maxEntities) ||
+	    !createMotionBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createInstanceDataBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createMaterialBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
@@ -1654,10 +1656,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	uint32_t batchCount = rendererState.entityCount;
 	uint32_t *batchIds      = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
 	mat4     *batchXforms   = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(mat4));
-	Vector4  *batchAnim     = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(Vector4));
+	AnoMotionDescriptor *batchMotion = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(AnoMotionDescriptor));
 	uint32_t *batchMesh     = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
 	uint32_t *batchMaterial = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
-	if (!batchIds || !batchXforms || !batchAnim || !batchMesh || !batchMaterial)
+	if (!batchIds || !batchXforms || !batchMotion || !batchMesh || !batchMaterial)
 	{
 		printf("Quitting init: bulk-create batch allocation failure!\n");
 		unInitVulkan();
@@ -1674,10 +1676,17 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		batchMesh[i]     = rendererState.entities[i].meshIndex;
 		batchMaterial[i] = rendererState.entities[i].materialIndex;
 
-		batchAnim[i].v[0] = 0.0f;
-		batchAnim[i].v[1] = orbit ? 0.5f : (isLight ? 0.0f : 1.0f);
-		batchAnim[i].v[2] = 0.0f;
-		batchAnim[i].v[3] = orbit ? 1.0f : 0.0f; // orbit flag
+		// Preserve prior behavior: orbiters revolve about world +Y at 0.5 rad/s,
+		// other non-lights spin in place about local +Y at 1.0 rad/s, lights static.
+		AnoMotionDescriptor md = {0}; // ANO_MOTION_STATIC
+		if (orbit) {
+			md.type = ANO_MOTION_ORBIT;
+			md.p0.v[1] = 0.5f;
+		} else if (!isLight) {
+			md.type = ANO_MOTION_SPIN;
+			md.p0.v[1] = 1.0f;
+		}
+		batchMotion[i] = md;
 
 		memcpy(&batchXforms[i], &rendererState.entities[i].transform, sizeof(mat4));
 		if (!isLight && i < 3)
@@ -1688,7 +1697,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		.count      = batchCount,
 		.render_ids = batchIds,
 		.transforms = batchXforms,
-		.anim       = batchAnim,
+		.motion     = batchMotion,
 		.mesh       = batchMesh,
 		.material   = batchMaterial,
 	};
@@ -1708,7 +1717,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	mi_free(batchIds);
 	mi_free(batchXforms);
-	mi_free(batchAnim);
+	mi_free(batchMotion);
 	mi_free(batchMesh);
 	mi_free(batchMaterial);
 
