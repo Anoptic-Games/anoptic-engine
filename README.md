@@ -29,6 +29,9 @@ Acquire a copy of the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), version 
 
 > macOS note: `build.sh` uses Homebrew LLVM (`brew install llvm`), since Apple Clang rejects C23.
 
+For editor integration the engine uses `clangd` (shipped with the LLVM toolchain above).
+See [Editor Setup](#editor-setup).
+
 ### Building
 
 Both `build.sh` (Linux/macOS) and `build.bat` (Windows) take a single numeric argument
@@ -72,6 +75,30 @@ Additional guidance:
 
 Once Mingw-w64 is installed with `clang` working on your system, run `build.bat <arg>`
 from the repository root using the same argument table above.
+
+### Editor / LSP Setup
+
+The engine uses `clangd` as its language server. 
+
+Install `clangd`.
+
+> Fresh-clone note: there is no `build/` until you build (it is gitignored), 
+> So you need to have built the engine once before `clangd` resolves anything.
+
+On VSCode, install the [clangd extension](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd).
+
+`.vscode/settings.json`:
+```json
+{
+  "clangd.path": "/opt/homebrew/opt/llvm/bin/clangd",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/Debug",
+    "--background-index",
+    "--clang-tidy"
+  ],
+  "C_Cpp.intelliSenseEngine": "disabled"
+}
+```
 
 ### Tests
 
