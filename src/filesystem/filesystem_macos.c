@@ -1,17 +1,20 @@
-/* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
+/* SPDX-FileCopyrightText: 2026 Anoptic Game Engine Authors
  *
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include "anoptic_filesystem.h"
 
-#include <unistd.h>   // readlink, chdir
-#include <string.h>   // strlen, memcpy
-#include <limits.h>   // PATH_MAX
+#include <mach-o/dyld.h>   // _NSGetExecutablePath
+#include <unistd.h>        // chdir
+#include <stdlib.h>        // realpath
+#include <string.h>        // strlen, memcpy
+#include <limits.h>        // PATH_MAX
 #include <mimalloc.h>
 
 // Output: directory of the running executable (no file name); 
-// pathString is mi_malloc'd for the caller to free. {0, NULL} on failure.
+// pathString is
+// mi_malloc'd for the caller to free. {0, NULL} on failure.
 //
 // The split is hand-rolled rather than dirname(): this is a thread-safe public API,
 // and dirname() is not portably reentrant -- macOS returns a pointer to a static
@@ -22,14 +25,17 @@ filepath ano_fs_gamepath()
     filepath result = { .length = 0, .pathString = NULL };
 
     char raw[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", raw, sizeof(raw) - 1);
-    if (n <= 0)
-        return result;
-    raw[n] = '\0'; // readlink does not NUL-terminate
+    uint32_t size = sizeof(raw);
+    if (_NSGetExecutablePath(raw, &size) != 0)
+        return result; // PATH_MAX too small for the executable path
+
+    char resolved[PATH_MAX];
+    if (realpath(raw, resolved) == NULL)
+        return result; // could not canonicalize (symlinks, '.', '..')
 
     // Trim to the containing directory: drop everything after the last '/'.
-    size_t len = (size_t)n;
-    while (len > 0 && raw[len - 1] != '/')
+    size_t len = strlen(resolved);
+    while (len > 0 && resolved[len - 1] != '/')
         len--;
     if (len > 1)
         len--; // drop the trailing slash, but keep "/" for the filesystem root
@@ -37,7 +43,7 @@ filepath ano_fs_gamepath()
     result.pathString = mi_malloc(len + 1);
     if (result.pathString == NULL)
         return result;
-    memcpy(result.pathString, raw, len);
+    memcpy(result.pathString, resolved, len);
     result.pathString[len] = '\0';
     result.length = (uint16_t)len;
     return result;

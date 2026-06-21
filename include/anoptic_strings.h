@@ -7,9 +7,7 @@
 #define ANOPTICENGINE_ANOPTIC_STRINGS_H
 
 // Anoptic String API
-
-
-int autoStringTest();
+// Not yet implemented -- the sections below are the planned surface.
 
 // UTF-8 Support
 

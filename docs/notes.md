@@ -132,6 +132,65 @@ The two paths differ only in the geometry stage and the indirect command format.
 - Multi-monitor support, configurable present mode
 - Window management via GLFW
 
+**ECS ↔ render bridge — the two parallel worlds (June 2026):**
+
+The first real slice of the simulation/render split now exists in code. The engine runs
+the authoritative simulation and the non-authoritative renderer as **two parallel worlds
+on separate threads**, joined by two bounded lock-free SPSC rings. This is the first
+production deployment of the lock-free concurrency principle (§2) outside the logger —
+and, unlike the logger, it is genuinely lock-free today (the SPSC ring is acquire/release
+on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache
+lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and
+`docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
+
+- **ECS module** (`anoptic_ecs.h`, `src/ecs/`): entities are generational
+  `(index, generation)` handles; components live in chunked sparse-set stores with
+  swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and
+  flushed at a tick boundary, so iteration is stable. The store allocates from a
+  caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
+
+- **The bridge** (`anoptic_render_bridge.h`, `src/render_bridge/`): one ring carries
+  `RenderCommand`s (logic → render), the other `RenderEvent`s (render → logic). The
+  logic master is the sole command producer (it emits after the parallel update stage
+  settles, so ordering is total); the render master is the sole event producer. The
+  command protocol is `CREATE / UPDATE / DESTROY / BULK_CREATE`, with an `UPDATE`
+  carrying a field-bit mask so one message can fold several discrete changes — the
+  literal expression of the "≤1 message per entity per tick" invariant.
+
+- **Render-side slot authority** (`src/vulkan_backend/render_slots.h`): the renderer is
+  the *sole* authority over GPU memory and the physical slot space. The logic world
+  names renderables by a stable logical `render_id`; the renderer privately maps
+  `render_id → GPU slot`. Slots are **stable and may contain holes** — the cull pass
+  already compacts visible work, so a dead slot costs one skipped compute invocation and
+  zero draw cost. This deleted the entire defragmentation/remap machinery the early
+  drafts assumed. Slot reuse is **frame-gated**: a `DESTROY` quarantines the slot until
+  all frames in flight retire, then a `REVENT_SLOT_RETIRED` lets the ECS recycle the id.
+
+- **Sparse/continuous split**: only *discrete* transitions cross the bridge (spawn,
+  despawn, teleport, mesh/material swap, light change). *Continuous*, GPU-parameterized
+  motion (orbit/spin via the update compute pass) is sent once as parameters and never
+  restreamed, so animated entities cost zero per-frame bridge traffic. A teleport writes
+  the `initialTransform` buffer (the base pose), never the live `transform` buffer, which
+  the GPU animation pass clobbers each frame.
+
+- **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an
+  initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps —
+  dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers
+  larger and re-points the descriptor sets; the shader and descriptor *layouts* never
+  change. Because the GPU allocator is a bump arena (no per-allocation free), growth is
+  reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth
+  bounds the waste to ~the final size. Material and light palettes scale on their own
+  axis (distinct-element-keyed, not per-entity).
+
+- **The thread split**: `main.c` is the logic/ECS master and the sole command producer;
+  it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan
+  *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation,
+  teardown), drains the command ring each frame, and applies each transition across all
+  frames in flight. Coordination is three atomics — no mutex — with shutdown ordered so
+  the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real
+  two-stage tick and `DisplayState` graphics-extract that will replace the stand-in
+  producer currently living in `main.c`.
+
 **Memory system (foundational):**
 - mimalloc as global allocator with override
 - `LOCALHEAPATTR` macro for scoped heap teardown
@@ -169,8 +228,11 @@ The two paths differ only in the geometry stage and the indirect command format.
 ### What Exists (in the architect's head, not yet materialized)
 
 - Complete arena hierarchy (process > level > frame > scratch > pool)
-- Lock-free MPSC queue design for the logger and event bus
-- ECS architecture and component storage layout
+- Lock-free MPSC queue design for the logger and event bus (the SPSC bridge ring is the
+  first lock-free primitive actually shipped — see the ECS↔render bridge above)
+- ~~ECS architecture and component storage layout~~ — now in code (generational handles +
+  chunked sparse-set stores); the two-stage parallel tick and graphics-extract are still
+  to be built
 - Event bus for inter-system communication
 - Scoped resolution algorithms for multi-scale simulation
 - The simulation game itself (star systems, worlds, populations, economies, fleets)
@@ -181,6 +243,30 @@ The two paths differ only in the geometry stage and the indirect command format.
 
 **Step 1 -- High-performance logger:**
 Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly -- no dependency on a generic lock-free library. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
+
+Current state (mutex version, audited June 2026). The concurrency half is correct; the output half is absent.
+- The mutex-guarded enqueue (`enqueue_log_string`) is race-free and the bounds check at logging_core.c:56 has no overflow: the accepted case writes its terminating NUL at worst index `LOG_BUFFER_MAX-1`. Verified under TSan.
+- `tail_index` is `_Atomic` but only ever touched under `log_buffer_mtx` -- redundant today, kept as the breadcrumb for the lock-free version.
+- Output is entirely stubbed. All three `write_to_log_file` calls are commented out (logging_core.c:59, 128, 177); `output_file_path` is never assigned; `ano_log_output_dir` is declared in the public header but never defined (first caller = link error). So enqueued DEBUG/INFO/WARN/ERROR never reach any sink -- `write_all_buffered` formats the batch, discards it, and resets the index. Only immediate mode (FATAL, `_now`) prints, to stdout for <=WARN and stderr for >WARN.
+- `ano_log_immediate` calls `write_all_buffered()` unconditionally ("TODO: Remove this", logging_core.c:180), so an immediate message also wipes the pending enqueue buffer, and the immediate line prints before any buffered lines it implicitly drops.
+- No timestamp exists anywhere. The "preserve order via timestamps" goal is unbuilt; ordering today is an accident of the mutex (FIFO). The prefix is only `LEVEL file:line:`.
+- Buffer-full drops the message (returns -1 + stderr note) -- it does not write immediate as the message string claims.
+- Latent: `ano_log_init` calls `ano_log_fatal` if the buffer mutex fails to init (logging_core.c:187), and the immediate path then locks that just-failed mutex -- UB on the error path.
+
+Rewrite recommendations.
+- Stamp every record with a monotonic timestamp (`ano_timestamp_raw`/`_us`) in its slot/commit header. Once enqueue is lock-free the FIFO-by-mutex property is gone, so the timestamp is the only thing that can reconstruct cross-thread order at flush time.
+- MPSC hot path: reserve with `fetch_add` on the tail, write the payload, publish with a per-slot commit marker stored release; the flusher walks forward and stops at the first uncommitted slot (Quill/NanoLog). Records are variable-length, so either a fixed-size POD slot ring `{ts, level, file, line, msg[]}` or a byte ring of length-prefixed records with a commit sequence -- decide before writing the consumer.
+- Wire the sink: implement `ano_log_output_dir` (set `output_file_path`, open the file once and hold the `FILE*` rather than fopen-append per write), enable the write in the flush path, implement `ano_log_interval` + the flusher thread it implies.
+- Separate immediate from flush: immediate must not silently reset the enqueue buffer. If ordering across the two paths matters, flush buffered first then emit immediate, or merge by timestamp.
+- Make the full-buffer policy explicit and counted (drop vs block vs immediate-write vs grow), with a dropped-message counter rather than a silent -1.
+- Fix the init error path so it does not log through a mutex/buffer that is not yet live.
+
+Test plan (what the rewrite must make verifiable). The current test only asserts that enqueue returns 0; it cannot see content, order, or flush, because nothing is emitted. Once a sink exists, the test should flush to a temp file and read it back to check:
+- Verifiable output: level, `file:line`, and message body survive a round-trip through enqueue -> flush -> file.
+- Accumulation: N enqueues accumulate and a single flush emits all N, in order.
+- Immediate is immediate: an immediate/FATAL message reaches its stream before any flush, with defined ordering against buffered records.
+- Multi-thread: P producers insert concurrently; every message is eventually flushed (count + per-record integrity, no torn or interleaved bytes), clean under TSan; measure hot-path cost per enqueue (target sub-microsecond) and assert a loose ceiling.
+- Boundaries: empty message; a max-length message at `LOG_MESSAGE_MAX` with truncation handled; a record landing exactly at `LOG_BUFFER_MAX` (high end); the chosen full-buffer behavior; an empty flush (low end).
 
 **Step 2 -- Dependency update:**
 Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Quick audit for API changes. Fold mimalloc finalization into this -- the integration is already done, this is just a version bump and validation that `mi_heap_new` / `mi_heap_destroy` / `mi_heap_zalloc_aligned` still behave. Confirm hugepage support still works on current version. Validate scoped heap teardown (`LOCALHEAPATTR`). Ensure global override (`mimalloc-override.h`) is clean. Low risk, low effort.
@@ -198,6 +284,10 @@ Owned string type: `{char* ptr, uint32_t len, uint32_t capacity}` with `LOCALHEA
 *Phase B: Cache-line-striped lock-free structures (experimental/novel).*
 
 The core idea: align the concurrency model to the hardware coherency unit. The x86 cache coherency protocol (MESI/MESIF) already enforces exclusive ownership at the cache-line level (64 bytes). Instead of per-item atomic operations (classic M&S), make the cache line the unit of ownership transfer.
+
+**Step 6 -- Resource Management**
+
+Following the basic instructions laid out in Game Engine Architecture.
 
 Design sketch:
 ```
