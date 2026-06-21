@@ -21,10 +21,13 @@
 #include "vulkan_backend/vertex/vertex.h"
 #include "vulkan_backend/components.h"
 #include "vulkan_backend/geometry.h"
+#include "vulkan_backend/render_slots.h"
+#include "render_bridge/render_bridge.h" // private transport; completes AnoRenderBridge + protocol
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
-#define FALLBACK_MESH_INDEX 0
+// FALLBACK_MESH_INDEX is the public renderer contract (anoptic_render.h), pulled
+// in transitively via render_bridge.h above.
 #define FALLBACK_TEXTURE_INDEX 0
 
 // Sentinel values for optional entity components.
@@ -403,6 +406,15 @@ typedef struct CullingBuffers {
     uint32_t                maxEntities;
 } CullingBuffers;
 
+// A command buffered until it has been applied to every frame-in-flight copy of
+// the mapped GPU buffers. pendingFrameMask starts at (1<<MAX_FRAMES_IN_FLIGHT)-1
+// and clears one bit per frame the command is applied to.
+typedef struct PendingRenderCommand
+{
+    RenderCommand cmd;
+    uint32_t      pendingFrameMask;
+} PendingRenderCommand;
+
 typedef struct PerFrameResources
 {
     // Synchronization
@@ -490,6 +502,17 @@ typedef struct RendererState
 
     // Culling system
     CullingBuffers          culling;
+
+    // ECS <-> render bridge (VK_BACKEND_INTEROP.md). The render master owns the
+    // slot authority and consumes discrete state-transition commands; per-entity
+    // GPU layout is keyed off render_slots, never the logic-side entity index.
+    mi_heap_t              *renderHeap;     // backs slot table + bridge rings + pending list
+    RenderSlotTable         slots;          // logical render_id -> stable GPU slot
+    AnoRenderBridge         bridge;         // logic->render commands, render->logic events
+    uint64_t                globalFrame;    // monotonic frame counter for slot quarantine
+    PendingRenderCommand   *pending;        // commands still propagating across frames in flight
+    uint32_t                pendingCount;
+    uint32_t                pendingCapacity;
 } RendererState;
 
 

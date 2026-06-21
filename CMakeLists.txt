@@ -21,6 +21,10 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
+# Emit compile_commands.json so language servers (clangd) get the real per-file
+# include paths, -std=c23, and defines instead of falling back to bare defaults.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)
 option(ANOPTIC_HEADLESS "Build without the Vulkan renderer" OFF)
 set(ANOPTIC_SANITIZE "" CACHE STRING "Sanitizer for test builds: asan, tsan, or empty")
@@ -94,6 +98,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 
 # Renderer (default on).
 if(NOT ANOPTIC_HEADLESS)
@@ -151,6 +156,8 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
     else()
         target_link_libraries(anopticengine PRIVATE anoptic_core)
     endif()
+    # Platform filesystem helpers (executable-dir resolution) compiled into the engine.
+    add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 endif()
 
 # CTest integration

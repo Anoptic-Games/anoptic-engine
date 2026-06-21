@@ -176,7 +176,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 
 uint32_t g_ValidationErrors = 0;
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Used in validation layer activation, the entire setup is currently borked and relies on external overrides
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Validation messenger callback: prints VALIDATION/PERFORMANCE messages, counts WARNING+ into g_ValidationErrors (GENERAL is dropped)
 	VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType,
 	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -217,7 +217,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create
 	createInfo->pfnUserCallback = debugCallback;
 }
 
-void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) // As before, entire validator creation chain needs revisiting
+void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) // Installs the standalone steady-state messenger; instance create/destroy is covered separately via VkInstanceCreateInfo.pNext
 {
 	#ifndef DEBUG_BUILD
 	return;
@@ -473,6 +473,15 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 	}
 	if (!meshShaderFeatures.meshShader) {
 		fprintf(stderr, "Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.\n");
+		// The vertex fallback packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
+		// (read as gl_InstanceIndex); a nonzero firstInstance in an indirect draw requires
+		// drawIndirectFirstInstance. A device with neither mesh shaders nor this feature would
+		// mis-draw, so reject it here instead of failing silently. The mesh path needs neither.
+		if (!features2.features.drawIndirectFirstInstance) {
+			fprintf(stderr, "Device also lacks drawIndirectFirstInstance: the vertex fallback path "
+			                "cannot draw correctly. Device not suitable.\n");
+			return false;
+		}
 	}
 
 	return physicalRequirements && queueRequirements && extensionsSupported;
@@ -640,6 +649,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
 	uint32_t uniqueQueueFamilies[4] = {indices->graphicsFamily, indices->presentFamily, indices->computeFamily, indices->transferFamily};
 	uint32_t queueCount = 0;
+	// Function-scoped so its address stays valid until vkCreateDevice; every queue
+	// shares priority 1.0. A block-local would dangle once each loop iteration's
+	// scope exits, leaving pQueuePriorities pointing at dead stack (stack-use-after-scope).
+	const float queuePriority = 1.0f;
 	
 	for (uint32_t i = 0; i < 4; i++)
 	{
@@ -659,7 +672,6 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 			queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 			queueCreateInfo.queueFamilyIndex = uniqueQueueFamilies[i];
 			queueCreateInfo.queueCount = 1;
-			float queuePriority = 1.0f;
 			queueCreateInfo.pQueuePriorities = &queuePriority;
 			queueCreateInfos[queueCount] = queueCreateInfo;
 			queueCount++;

@@ -12,29 +12,10 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
-
-
-// Variable types
-
-typedef float mat4[4][4];
+#include <anoptic_math.h>   // canonical mat4 / Vector2 / Vector3 / Vector4
 
 
 // Structs
-
-typedef struct Vector2
-{
-	float v[2];
-} Vector2;
-
-typedef struct Vector4
-{
-	float v[4];
-} Vector4;
-
-typedef struct Vector3
-{
-	float v[3];
-} Vector3;
 
 typedef struct Vertex
 {

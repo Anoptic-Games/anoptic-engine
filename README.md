@@ -12,9 +12,10 @@ git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 
 ### Runtime Features
 
-- **ECS**: Easily create and manage large numbers of entities with dynamic properties and behaviors.
+- **ECS**: Generational entity handles over chunked sparse-set component stores, built to manage large numbers of entities with dynamic properties and behaviors.
+- **Parallel logic/render worlds**: The simulation (logic/ECS master thread) and the renderer (its own thread) run as two parallel worlds joined by lock-free single-producer/single-consumer rings. The logic side streams only *discrete* state transitions; continuous, GPU-parameterized motion is sent once and never restreamed. See [Architecture](#architecture).
 - **Events**: Enable interactions between different systems via a generalized event bus.
-- **Vulkan Renderer**: GPU-driven Vulkan backend. Meshlet rendering via `VK_EXT_mesh_shader` on modern hardware, with an automatic vertex-shader fallback for devices that lack the extension (see [Rendering Compatibility](#rendering-compatibility)).
+- **Vulkan Renderer**: GPU-driven Vulkan backend, run on a dedicated render thread that owns all GPU resources and the renderable slot space. Meshlet rendering via `VK_EXT_mesh_shader` on modern hardware, with an automatic vertex-shader fallback for devices that lack the extension (see [Rendering Compatibility](#rendering-compatibility)). Per-entity GPU buffers grow dynamically, so entity count is not capped by a fixed ceiling.
 - **Custom Allocators**: Uses mimalloc for a fast global allocator implementation, as well as several special-purpose local allocators.
 - **Platform Compatibility**: Built and tested for full feature parity on both Linux and Windows.
 - **Networking**: Built-in networking support for p2p or authoritative server.
@@ -27,6 +28,9 @@ The engine is C23 and is compiled exclusively with Clang; other toolchains are n
 Acquire a copy of the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), version 1.3.2 or later.
 
 > macOS note: `build.sh` uses Homebrew LLVM (`brew install llvm`), since Apple Clang rejects C23.
+
+For editor integration the engine uses `clangd` (shipped with the LLVM toolchain above).
+See [Editor Setup](#editor-setup).
 
 ### Building
 
@@ -72,6 +76,30 @@ Additional guidance:
 Once Mingw-w64 is installed with `clang` working on your system, run `build.bat <arg>`
 from the repository root using the same argument table above.
 
+### Editor / LSP Setup
+
+The engine uses `clangd` as its language server. 
+
+Install `clangd`.
+
+> Fresh-clone note: there is no `build/` until you build (it is gitignored), 
+> So you need to have built the engine once before `clangd` resolves anything.
+
+On VSCode, install the [clangd extension](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd).
+
+`.vscode/settings.json`:
+```json
+{
+  "clangd.path": "/opt/homebrew/opt/llvm/bin/clangd",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/Debug",
+    "--background-index",
+    "--clang-tidy"
+  ],
+  "C_Cpp.intelliSenseEngine": "disabled"
+}
+```
+
 ### Tests
 
 `./build.sh 3` builds and runs the full suite via CTest. The suite covers the platform
@@ -112,6 +140,30 @@ ANO_FORCE_NO_MESH_SHADER=1 ./build/Debug/anopticengine
 
 The startup log prints which path is active, e.g. `Enabling 3 device extensions (mesh
 shader: yes)`. See `PLANS_COMPATIBILITY.md` for the full design.
+
+### Architecture
+
+The engine runs the simulation and the renderer as **two parallel worlds on
+separate threads**, connected by two bounded lock-free SPSC rings:
+
+- **Logic / ECS master** (the `main` thread): the authoritative world. Holds entities
+  (generational handles) and components (chunked sparse-set stores), and is the *sole
+  producer* of render commands.
+- **Render master** (its own thread): a non-authoritative view that owns all Vulkan
+  state, all GLFW windowing, and the physical GPU slot space. It is the *sole consumer*
+  of commands and the *sole producer* of events (e.g. slot-retirement notifications).
+
+The logic world names each renderable by a stable logical `render_id`; the renderer
+privately maps `render_id -> GPU slot`, so it can place and grow GPU data without the
+logic world ever seeing a slot. Only **discrete** transitions cross the bridge (spawn,
+despawn, teleport, mesh/material swap, light change). **Continuous** GPU-parameterized
+motion (orbit/spin) is sent once as parameters and animated entirely on the GPU, so it
+costs zero per-frame bridge traffic. Per-entity GPU buffers grow on demand in
+chunk-aligned steps, dropping any fixed entity ceiling.
+
+The full design lives in `docs/artifacts/ECS.md` (logic side) and
+`docs/artifacts/VK_BACKEND_INTEROP.md` (render side); `docs/notes.md` has the broader
+architecture and build sequence.
 
 ### More
 

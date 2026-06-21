@@ -18,8 +18,35 @@ target_link_libraries(anotest_meshoptimizer PRIVATE anoptic_core m)
 add_test(NAME anoptic_meshoptimizer COMMAND anotest_meshoptimizer)
 set_tests_properties(anoptic_meshoptimizer PROPERTIES TIMEOUT 10 LABELS "unit;mesh")
 
+# Testing for ``anoptic_memory.h`` (mimalloc heaps, aligned/scoped alloc, huge pages)
+add_executable(anotest_memory anotest_memory.c)
+target_link_libraries(anotest_memory PRIVATE anoptic_core)
+add_test(NAME anoptic_memory COMMAND anotest_memory)
+set_tests_properties(anoptic_memory PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
+# Easter egg: the original allocator experiment, preserved verbatim (see the file banner). 
+# Built so it cannot rot, but DISABLED in ctest
+# -- run ./anotest_chariots by hand. -w
+add_executable(anotest_chariots anotest_chariots.c)
+target_link_libraries(anotest_chariots PRIVATE anoptic_core)
+target_compile_options(anotest_chariots PRIVATE -w)
+add_test(NAME anoptic_chariots COMMAND anotest_chariots)
+set_tests_properties(anoptic_chariots PROPERTIES DISABLED TRUE LABELS "optional;easteregg")
+
+# Testing for the render_bridge transport (SPSC rings; concurrency)
+add_executable(anotest_render_bridge anotest_render_bridge.c)
+target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
+add_test(NAME anoptic_render_bridge COMMAND anotest_render_bridge)
+set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
+    # Render-side slot authority: pure logic, links anoptic_render but needs no GPU device.
+    add_executable(anotest_render_slots anotest_render_slots.c)
+    target_link_libraries(anotest_render_slots PRIVATE anoptic_render)
+    add_test(NAME anoptic_render_slots COMMAND anotest_render_slots)
+    set_tests_properties(anoptic_render_slots PROPERTIES TIMEOUT 10 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
