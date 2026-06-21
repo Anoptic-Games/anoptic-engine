@@ -57,7 +57,7 @@ Note: run from build/<cfg>/ — asset paths are CWD-relative and `build.sh` copi
   update-after-bind sampler/sampled-image limits (a combined image sampler counts against both). Both
   tests are green; the run logs `maxTextures = 1024 (device update-after-bind limit 1024)`.
 
-  ## Commit 2: VERIFICATION
+  ## Commit 2: COMPLETED
   Verify ordering. Platform-specific setup may be needed, in which case we should inline the ifdef for now, and make a note that the platform-agnostic pattern in src/ should be followed in a later refactor.
 
   SPSC ring ordering — VERIFIED CORRECT, no change needed. The inlined push/pop in
@@ -90,7 +90,13 @@ Note: run from build/<cfg>/ — asset paths are CWD-relative and `build.sh` copi
   master when the real DisplayState graphics-extract lands.
 
   ## Commit 3:
+  Purge anoptic_ecs.h and anoptic_render_bridge.h as they're illegal include/ entries. 
+  All functions anoptic_render_bridge.h actually surfaces to be used by main() (if any), should be cleanly designed signatures in anoptic_render.h. Everything else needs to be moved to and linked inside src/ as an implementation detail. 
+
+  anoptic_ecs.h seems to be entirely garbage so we can probably get rid of it and its tests.
+
+  ## Commit 4:
   List and systematically work through every validation error that comes up.
 
-  ## Commit 4: 
+  ## Commit 5: 
   Ask user merge to main via PR, once parity across all platforms is achieved. So resolve any merge conflicts ahead of time.

@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+
+/// TODO: This is all BAD and needs to be totally excised.
+
+
 /**
  * @file anoptic_ecs.h
  * @brief Logic-side Entity Component System: generational entities, chunked

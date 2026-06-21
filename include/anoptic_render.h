@@ -3,10 +3,19 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+/*
+This is where the renderer contract is declared:
+- Function Signatures
+- Constants
+- Types used as inputs or outputs by those functions
+
+It is the bridge betwixt engine <===> renderer.
+*/
+
 // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
 //bool initVulkan(); // Move to includes
 
-// A celebration
+// A celebration // ???
 //void unInitVulkan(); // Move to includes
 
 // Draws a single frame
