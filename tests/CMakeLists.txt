@@ -24,6 +24,21 @@ target_link_libraries(anotest_ecs PRIVATE anoptic_core)
 add_test(NAME anoptic_ecs COMMAND anotest_ecs)
 set_tests_properties(anoptic_ecs PROPERTIES TIMEOUT 10 LABELS "unit;ecs")
 
+# Testing for ``anoptic_memory.h`` (mimalloc heaps, aligned/scoped alloc, huge pages)
+add_executable(anotest_memory anotest_memory.c)
+target_link_libraries(anotest_memory PRIVATE anoptic_core)
+add_test(NAME anoptic_memory COMMAND anotest_memory)
+set_tests_properties(anoptic_memory PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
+# Easter egg: the original allocator experiment, preserved verbatim (see the file banner). 
+# Built so it cannot rot, but DISABLED in ctest
+# -- run ./anotest_chariots by hand. -w
+add_executable(anotest_chariots anotest_chariots.c)
+target_link_libraries(anotest_chariots PRIVATE anoptic_core)
+target_compile_options(anotest_chariots PRIVATE -w)
+add_test(NAME anoptic_chariots COMMAND anotest_chariots)
+set_tests_properties(anoptic_chariots PROPERTIES DISABLED TRUE LABELS "optional;easteregg")
+
 # Testing for ``anoptic_render_bridge.h`` (SPSC rings; concurrency)
 add_executable(anotest_render_bridge anotest_render_bridge.c)
 target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
