@@ -1540,12 +1540,12 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
 
 		VkDescriptorBufferInfo lightInfo = {};
-		lightInfo.buffer = rendererState.lightBuffer.buffer[i];
+		lightInfo.buffer = rendererState.lightBuffer.device;        // ×1 device-local (SlotUpload)
 		lightInfo.offset = 0;
 		lightInfo.range = sizeof(LightData) * rendererState.lightBuffer.capacity;
 
 		VkDescriptorBufferInfo instanceDataInfo = {};
-		instanceDataInfo.buffer = rendererState.instanceDataBuffer.buffer[i];
+		instanceDataInfo.buffer = rendererState.instanceDataBuffer.device;  // ×1 device-local (SlotUpload)
 		instanceDataInfo.offset = 0;
 		instanceDataInfo.range = sizeof(AnoInstanceData) * rendererState.instanceDataBuffer.capacity;
 
@@ -1576,7 +1576,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[2].pBufferInfo = &materialInfo;
 
 		VkDescriptorBufferInfo entityInfo = {};
-		entityInfo.buffer = rendererState.culling.entityBuffer[i];
+		entityInfo.buffer = rendererState.culling.entity.device;   // ×1 device-local (SlotUpload)
 		entityInfo.offset = 0;
 		entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
 
@@ -1699,12 +1699,12 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 
         // Update Compute Descriptor Sets
         VkDescriptorBufferInfo motionInfo = {};
-        motionInfo.buffer = rendererState.motionBuffer.buffer[i];
+        motionInfo.buffer = rendererState.motionBuffer.device;     // ×1 device-local (SlotUpload)
         motionInfo.offset = 0;
         motionInfo.range = sizeof(AnoMotionDescriptor) * rendererState.motionBuffer.capacity;
 
         VkDescriptorBufferInfo initialTransformInfo = {};
-        initialTransformInfo.buffer = rendererState.initialTransformBuffer.buffer[i];
+        initialTransformInfo.buffer = rendererState.initialTransformBuffer.device; // ×1 device-local (SlotUpload)
         initialTransformInfo.offset = 0;
         initialTransformInfo.range = sizeof(mat4) * rendererState.initialTransformBuffer.capacity;
 
@@ -2032,22 +2032,15 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	{
 		if(rendererState.transformBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
-		if(rendererState.initialTransformBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.initialTransformBuffer.buffer[i], NULL);
-		if(rendererState.motionBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.motionBuffer.buffer[i], NULL);
-		if(rendererState.instanceDataBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.instanceDataBuffer.buffer[i], NULL);
+		// initialTransform/motion/instanceData are SlotUploads now (destroyed below).
 		if(rendererState.transformStream.slotBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformStream.slotBuffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
-		if(rendererState.lightBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.lightBuffer.buffer[i], NULL);
+		// lightBuffer is a SlotUpload now (destroyed below).
 		if(rendererState.indirectBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.indirectBuffer.buffer[i], NULL);
-		if(rendererState.culling.entityBuffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.culling.entityBuffer[i], NULL);
+		// culling.entity is a SlotUpload now (destroyed below).
 		if(rendererState.culling.meshDataBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.meshDataBuffer[i], NULL);
 		if(rendererState.culling.meshBoundsBuffer[i])
@@ -2058,6 +2051,21 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.culling.compactedEntityIndicesBuffer[i], NULL);
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
+	}
+
+	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
+	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the
+	// gpu allocator; here we destroy the VkBuffer handles and free the region arrays.)
+	{
+		SlotUpload* ups[5] = { &rendererState.initialTransformBuffer, &rendererState.motionBuffer,
+			&rendererState.instanceDataBuffer, &rendererState.lightBuffer, &rendererState.culling.entity };
+		for (uint32_t u = 0; u < 5; u++) {
+			if (ups[u]->device) vkDestroyBuffer(ctx->device, ups[u]->device, NULL);
+			for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+				if (ups[u]->staging[i]) vkDestroyBuffer(ctx->device, ups[u]->staging[i], NULL);
+				if (ups[u]->regions[i]) free(ups[u]->regions[i]);
+			}
+		}
 	}
 
 	// Single (non-per-frame) streamed-transform ring.

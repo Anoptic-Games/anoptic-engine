@@ -243,6 +243,30 @@ typedef struct TransformStreamBuffer
     uint32_t      stagedGen[MAX_FRAMES_IN_FLIGHT];
 } TransformStreamBuffer;
 
+// Per-slot GPU data whose AUTHORITATIVE copy is a single DEVICE_LOCAL buffer the GPU reads
+// every frame (no triplication, no host-visible hot reads), fed by sparse CPU writes through
+// a per-frame host-visible DELTA staging ring. render_apply_commands packs frame f's changed
+// elements into staging[f] + a parallel copy-region list; recordCommandBuffer uploads
+// staging[f] -> device with one vkCmdCopyBuffer, barrier-ordered after prior frames' shader
+// reads (single graphics queue, cross-submission) and before this frame's reads. ONE upload
+// suffices: the device buffer is shared by every frame in flight. Growth copies the live span
+// old->new device-side under vkDeviceWaitIdle. See docs/artifacts/DEVICE_LOCAL_SLOTS.md.
+typedef struct SlotUpload
+{
+    VkBuffer        device;                            // ×1 DEVICE_LOCAL authoritative (GPU reads this)
+    GpuAllocation   deviceAlloc;
+    uint32_t        capacity;                          // device elements
+    uint32_t        count;                             // live element count (light palette; 0/unused when slot-indexed)
+    uint32_t        stride;                            // bytes per element
+
+    VkBuffer        staging[MAX_FRAMES_IN_FLIGHT];     // host-visible delta source, per frame
+    GpuAllocation   stagingAllocs[MAX_FRAMES_IN_FLIGHT];
+    void*           stagingMapped[MAX_FRAMES_IN_FLIGHT];
+    VkBufferCopy*   regions[MAX_FRAMES_IN_FLIGHT];     // [stagingCap] dst regions queued this frame
+    uint32_t        staged[MAX_FRAMES_IN_FLIGHT];      // entries queued for frame f (reset after flush)
+    uint32_t        stagingCap;                        // entries per staging buffer (grows on demand)
+} SlotUpload;
+
 typedef struct MaterialData
 {
     // Feature flags identifying which features are active in this material
@@ -508,10 +532,8 @@ typedef struct DeletionQueue {
 typedef struct CullingBuffers {
     CullUboBuffer           ubo;
 
-    // Per-entity culling input
-    VkBuffer                entityBuffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation           entityAllocs[MAX_FRAMES_IN_FLIGHT];
-    void*                   entityMapped[MAX_FRAMES_IN_FLIGHT];
+    // Per-slot mesh/material (meshIndex, materialIndex); ×1 device-local + delta staging.
+    SlotUpload              entity;
 
     // Mesh draw parameters (firstIndex, indexCount, vertexOffset per mesh)
     VkBuffer                meshDataBuffer[MAX_FRAMES_IN_FLIGHT];
@@ -540,15 +562,6 @@ typedef struct CullingBuffers {
     // Capacity tracking
     uint32_t                maxEntities;
 } CullingBuffers;
-
-// A command buffered until it has been applied to every frame-in-flight copy of
-// the mapped GPU buffers. pendingFrameMask starts at (1<<MAX_FRAMES_IN_FLIGHT)-1
-// and clears one bit per frame the command is applied to.
-typedef struct PendingRenderCommand
-{
-    RenderCommand cmd;
-    uint32_t      pendingFrameMask;
-} PendingRenderCommand;
 
 typedef struct PerFrameResources
 {
@@ -620,13 +633,13 @@ typedef struct RendererState
     GeometryPool            globalGeometryPool;
     RenderPrimitives        primitives;
 
-    TransformBuffer         transformBuffer;
-    TransformBuffer         initialTransformBuffer;
-    MotionBuffer            motionBuffer;
-    InstanceDataBuffer      instanceDataBuffer;
+    TransformBuffer         transformBuffer;        // ×3 DEVICE_LOCAL, GPU-regenerated each frame
+    SlotUpload              initialTransformBuffer; // ×1 device-local + delta staging
+    SlotUpload              motionBuffer;           // ×1 device-local + delta staging
+    SlotUpload              instanceDataBuffer;     // ×1 device-local + delta staging
     TransformStreamBuffer   transformStream;
     MaterialBuffer          materialBuffer;
-    LightBuffer             lightBuffer;
+    SlotUpload              lightBuffer;            // ×1 device-local + delta staging (palette)
     IndirectDrawBuffer      indirectBuffer;
     BindlessTextureArray    bindlessTextures;
 
@@ -649,13 +662,10 @@ typedef struct RendererState
     // ECS <-> render bridge (VK_BACKEND_INTEROP.md). The render master owns the
     // slot authority and consumes discrete state-transition commands; per-entity
     // GPU layout is keyed off render_slots, never the logic-side entity index.
-    mi_heap_t              *renderHeap;     // backs slot table + bridge rings + pending list
+    mi_heap_t              *renderHeap;     // backs slot table + bridge rings
     RenderSlotTable         slots;          // logical render_id -> stable GPU slot
     AnoRenderBridge         bridge;         // logic->render commands, render->logic events
     uint64_t                globalFrame;    // monotonic frame counter for slot quarantine
-    PendingRenderCommand   *pending;        // commands still propagating across frames in flight
-    uint32_t                pendingCount;
-    uint32_t                pendingCapacity;
 } RendererState;
 
 

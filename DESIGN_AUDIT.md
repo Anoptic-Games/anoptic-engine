@@ -240,7 +240,7 @@ or (b) add an archetype/table option for designated hot groups while keeping spa
 sparse/optional components. Both are defensible; silently discovering the scatter after twenty
 systems are written is not.
 
-### 3.3 Mass state-change and mass-despawn are O(n) messages against a 4096 ring (root-ish)
+### 3.3 Mass state-change and mass-despawn are O(n) messages against a 4096 ring (root-ish) - ADDRESSED
 
 The command protocol has `RCMD_BULK_CREATE` (one message spawns a contiguous batch,
 `anoptic_render_bridge.h:81`) but no bulk update and no bulk destroy. So:
@@ -343,7 +343,7 @@ single-threaded seam is a per-tick floor. Moving to MPSC would reintroduce the o
 the design deliberately avoided. Root trade-off worth stating explicitly; mitigate with a
 dirty-list rather than a full scan, and keep extract's per-item work minimal.
 
-### 4.3 Per-slot GPU data is triplicated and lives in host-visible memory (root scaling) - NEXT
+### 4.3 Per-slot GPU data is triplicated and lives in host-visible memory (root scaling) - HERE
 
 Two compounding costs at scale:
 
@@ -365,7 +365,7 @@ scalable design keeps authoritative per-slot data device-local and updates via a
 that is a meaningful change to the apply path and is cheaper to design before everything assumes
 persistently-mapped CPU writes.
 
-### 4.4 The indirect/compacted buffers are sized ×7 pipeline types, ~5 of them dead (concrete waste)
+### 4.4 The indirect/compacted buffers are sized ×7 pipeline types, ~5 of them dead (concrete waste) - NEXT
 
 `destIdx = pipelineType * maxEntities + writeIdx` (`cull.comp:167`) partitions the indirect and
 compacted-index buffers by `PIPELINE_TYPE_COUNT` = 7. But the enum includes the two *compute*
