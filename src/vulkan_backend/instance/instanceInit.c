@@ -1537,7 +1537,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
 		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
 		compactedEntityIndicesInfo.offset = 0;
-		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count();
 
 		VkDescriptorBufferInfo lightInfo = {};
 		lightInfo.buffer = rendererState.lightBuffer.device;        // ×1 device-local (SlotUpload)
@@ -1657,17 +1657,17 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT;
+        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count();
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
-        countInfo.range = sizeof(uint32_t) * PIPELINE_TYPE_COUNT;
+        countInfo.range = sizeof(uint32_t) * ano_draw_pipeline_count();
 
         VkDescriptorBufferInfo compactedEntityIndicesCullInfo = {};
         compactedEntityIndicesCullInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
         compactedEntityIndicesCullInfo.offset = 0;
-        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count();
 
         VkDescriptorBufferInfo materialCullInfo = {};
         materialCullInfo.buffer = rendererState.materialBuffer.buffer[i];

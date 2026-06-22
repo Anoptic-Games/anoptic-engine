@@ -12,6 +12,11 @@ layout(set = 0, binding = 0) uniform CullUBO {
     vec4  frustumPlanes[6];
     uint  entityCount;
     uint  maxEntities;
+    uint  _pad0;
+    uint  _pad1;
+    // PipelineType -> draw partition; ANO_NO_DRAW_SLOT (0xFFFFFFFF) means the type never draws.
+    // Packed uvec4[4]: index t as drawSlotOf[t >> 2][t & 3]. Built CPU-side from ano_draw_*.
+    uvec4 drawSlotOf[4];
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -157,14 +162,20 @@ void main() {
     vec4 bounds = meshBounds[entity.meshIndex];
     MeshData mData = meshDrawData[entity.meshIndex];
     
-    // Look up material and pipeline type
+    // Look up material and pipeline type, then map it to its compacted draw partition.
+    // Types that never draw (compute passes, unimplemented skeletons) map to the sentinel
+    // and emit nothing — partitions exist only for drawing pipeline types (see ano_draw_*).
     uint pipelineType = materials[entity.materialIndex].pipelineType;
+    uint slot = drawSlotOf[pipelineType >> 2u][pipelineType & 3u];
+    if (slot == 0xFFFFFFFFu) {
+        return;
+    }
 
     if (isVisible(bounds.xyz, bounds.w, model)) {
-        uint writeIdx = atomicAdd(drawCounts[pipelineType], 1);
+        uint writeIdx = atomicAdd(drawCounts[slot], 1);
 
-        // Compact draws by pipeline type
-        uint destIdx = pipelineType * maxEntities + writeIdx;
+        // Compact draws by partition (draw slot), not by raw pipeline-type enum value
+        uint destIdx = slot * maxEntities + writeIdx;
 
         if (useMeshShader) {
             uint b = destIdx * 3u;

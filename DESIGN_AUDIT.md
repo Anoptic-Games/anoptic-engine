@@ -343,7 +343,7 @@ single-threaded seam is a per-tick floor. Moving to MPSC would reintroduce the o
 the design deliberately avoided. Root trade-off worth stating explicitly; mitigate with a
 dirty-list rather than a full scan, and keep extract's per-item work minimal.
 
-### 4.3 Per-slot GPU data is triplicated and lives in host-visible memory (root scaling) - HERE
+### 4.3 Per-slot GPU data is triplicated and lives in host-visible memory (root scaling) - ADDRESSED
 
 Two compounding costs at scale:
 
@@ -365,7 +365,7 @@ scalable design keeps authoritative per-slot data device-local and updates via a
 that is a meaningful change to the apply path and is cheaper to design before everything assumes
 persistently-mapped CPU writes.
 
-### 4.4 The indirect/compacted buffers are sized ×7 pipeline types, ~5 of them dead (concrete waste) - NEXT
+### 4.4 The indirect/compacted buffers are sized ×7 pipeline types, ~5 of them dead (concrete waste) - HERE
 
 `destIdx = pipelineType * maxEntities + writeIdx` (`cull.comp:167`) partitions the indirect and
 compacted-index buffers by `PIPELINE_TYPE_COUNT` = 7. But the enum includes the two *compute*
@@ -376,7 +376,7 @@ written. So ~71% of the indirect+compacted memory — which is over half the per
 of permanently-idle VRAM. Fix is mechanical: size partitions by an array of *drawing* pipeline
 types (2 today), not the full enum count. Pure win, no architectural change.
 
-### 4.5 The render-side dispatch bound is the monotonic peak; it never shrinks (root for churn / LOD)
+### 4.5 The render-side dispatch bound is the monotonic peak; it never shrinks (root for churn / LOD) - NEXT
 
 `updateCullingBuffers` sets `entityCount = slots.slotHighWater` (`vulkanMaster.c:437`) and the cull
 and update passes dispatch over `[0, slotHighWater)` every frame, holes included (dead slots

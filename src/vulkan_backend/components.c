@@ -9,6 +9,33 @@
 #include <stdio.h>
 #include <string.h>
 
+// Render config: the pipeline types that emit draws, in partition (draw-slot) order. This —
+// not PIPELINE_TYPE_COUNT — sizes the indirect / drawCount / compacted-index buffers and the
+// cull UBO draw-slot map. See components.h for the rationale.
+const PipelineType ano_draw_pipelines[] = {
+    PIPELINE_FLAT,          // slot 0: opaque flat-shaded geometry
+    PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission
+};
+
+// The cull UBO map (CullUBO.drawSlotOf) is indexed by a material's raw PipelineType, so it
+// must span the whole enum; it is stored as uvec4[4] in cull.comp, hence the 16-slot bound.
+_Static_assert(PIPELINE_TYPE_COUNT <= 16, "drawSlotOf map (CullUBO/cull.comp) holds 16 entries");
+
+// out: number of draw partitions (drawing pipeline types). Single source of truth for sizing.
+uint32_t ano_draw_pipeline_count(void) {
+    return (uint32_t)(sizeof(ano_draw_pipelines) / sizeof(ano_draw_pipelines[0]));
+}
+
+// in:  type — any PipelineType
+// out: its compacted draw-partition index, or ANO_NO_DRAW_SLOT if the type never draws
+//      (compute passes, unimplemented skeletons). Linear scan over the tiny draw list.
+uint32_t ano_draw_slot_of(PipelineType type) {
+    for (uint32_t i = 0; i < ano_draw_pipeline_count(); ++i) {
+        if (ano_draw_pipelines[i] == type) return i;
+    }
+    return ANO_NO_DRAW_SLOT;
+}
+
 void ano_vk_register_mesh(RenderPrimitives* primitives, MeshData data) {
     if (primitives->meshCount >= primitives->meshCapacity) {
         uint32_t newCapacity = primitives->meshCapacity == 0 ? 8 : primitives->meshCapacity * 2;
