@@ -67,7 +67,7 @@ and ECS-slot arrays all grow. The ceilings above are the ones still standing.
 
 What game-logic attributes and graphics elements the data structures can represent.
 
-### 2.1 The renderable attribute set is closed at five fields (root)
+### 2.1 The renderable attribute set is closed at five fields (root) - ADDRESSED
 
 A renderable is `DisplayState` on the logic side (`anoptic_render_bridge.h:162`) and `EntityInfo`
 `{meshIndex, materialIndex}` (8 bytes) on the GPU (`cull.comp:5`). Everything a renderable can
@@ -104,7 +104,7 @@ carried by a new `RFIELD_USERDATA` bit, interpreted by the fragment shader as th
 (packed tint + flags + two scalars). One binding, one field, one growth entry buys an open-ended
 per-entity channel and ends the per-feature lockstep edits.
 
-### 2.2 Continuous motion is spin-or-orbit only; everything else is O(moving)/tick (root)
+### 2.2 Continuous motion is spin-or-orbit only; everything else is O(moving)/tick (root) - ADDRESSED
 
 `update.comp` (the entire GPU animation vocabulary) does exactly one thing: rotate about a
 fixed axis at constant speed, pre-multiplied (orbit) or post-multiplied (spin) with the initial
@@ -136,7 +136,7 @@ needed: either a compute integrator fed by per-slot velocity/accel (keeps it GPU
 explicit, batched, device-local transform-streaming path that accepts O(moving) but pays it
 efficiently (see §3.4, §4.4). This is a root design choice, not a shader tweak.
 
-### 2.3 Vertex format is fixed at position/normal/texCoord (root for some genres)
+### 2.3 Vertex format is fixed at position/normal/texCoord (root for some genres) - ADDRESSED
 
 `Vertex` is `{Vector3 position; Vector3 normal; Vector2 texCoord}` = 32 bytes (`vertex.h:20`),
 duplicated as `PackedVertex` in `flat.mesh`, `flat.vert`, and the `vertexOffset/32u` stride math
@@ -343,7 +343,7 @@ single-threaded seam is a per-tick floor. Moving to MPSC would reintroduce the o
 the design deliberately avoided. Root trade-off worth stating explicitly; mitigate with a
 dirty-list rather than a full scan, and keep extract's per-item work minimal.
 
-### 4.3 Per-slot GPU data is triplicated and lives in host-visible memory (root scaling)
+### 4.3 Per-slot GPU data is triplicated and lives in host-visible memory (root scaling) - NEXT
 
 Two compounding costs at scale:
 
