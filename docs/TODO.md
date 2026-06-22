@@ -1,102 +1,59 @@
 # TODO
 
-## P0 — macOS: GLFW must run on the main thread — DONE
+The macOS Vulkan bring-up epic is done and merged to `main` (PR #62). This file is reset
+to the engine build sequence from `docs/notes.md` ("What Needs to Be Built", bottom-up
+dependency order). Terse here; the full spec, current-state audits, and rationale live in
+notes.md. Current branch: `feature-string-redux` (Step 4).
 
-The renderer ran on a spawned thread (commit 21c5f1d) that owned GLFW. On macOS this aborted in
-Cocoa during window creation, before Vulkan device selection: AppKit forbids window and menu-bar
-setup off the main thread. Worse, even past that abort the surface (CAMetalLayer) was created on the
-render thread, so it was never wired to the visible NSView — the window showed no draw surface at all.
+## Step 1 -- High-performance logger
+Standalone module. Lock-free MPSC enqueue (`fetch_add` + per-slot commit marker),
+timestamped records, flusher thread via `anoptic_threads`. Wire the sink
+(`ano_log_output_dir`, `ano_log_interval`) and test file output. The mutex version exists
+and is concurrency-correct, but output is entirely stubbed -- see the audit, rewrite plan,
+and test plan in notes.md Step 1. First module to exercise arenas + atomics + threads
+together; instruments everything after.
 
-Fixed by adopting client-engine `9edaea8` ("render lives on main thread, everything else gets child
-threads"): the whole render world — `initVulkan`, `glfwPollEvents`, `drawFrame`, `unInitVulkan`, and
-crucially `createSurface` — now runs on the main thread (`main()`), so the CAMetalLayer attaches on
-the thread that owns the window. The logic/ECS master (`anoLogicThreadMain`) is spun to a child thread
-as the sole bridge producer. `initVulkan` runs synchronously before the producer starts, so the old
-readiness handshake (`g_renderPhase`/`anoRenderIsReady`) and the `anoRenderThreadMain` entry point are
-gone. Not `#ifdef`-gated: render-on-main is correct on every platform, mandatory only on macOS.
+## Step 2 -- Dependency update
+Bump GLFW, stb, jsmn, mimalloc submodules to latest stable; audit API changes. Revalidate
+mimalloc heaps (`mi_heap_new`/`_destroy`/`_zalloc_aligned`), hugepages, `LOCALHEAPATTR`
+teardown, and the `mimalloc-override.h` global override. Low risk, low effort.
 
-This supersedes the earlier window-ownership-split attempt (`anoRenderCreateWindow`/`PollWindow`/
-`DestroyWindow`, idempotent window creation, `_Atomic framebufferResized`) — those were reverted.
+## Step 3 -- Windows high-resolution timing
+Bring `ano_sleep` on Windows to Linux parity: `timeBeginPeriod(1)` + `WaitableTimer` (or
+`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`, Win10 1803+) for the coarse wait, then spin tail
+(`ano_busywait`) for the sub-millisecond remainder. Today's `Sleep()` jitter (15.6ms)
+makes a deterministic tick length impossible.
 
-Kept on top of `9edaea8`: the bindless sampler clamp (pipeline.c, below).
+## Step 4 -- ano_strings  (current branch)
+Owned string type `{char* ptr, uint32_t len, uint32_t capacity}` with `LOCALHEAPATTR`-style
+scoped cleanup; allocations through a heap parameter so strings live in any arena;
+copy-on-slice. ~150 lines. UTF-8 deferred (byte-transparent in storage; validation/iteration
+layered on later when the text renderer needs it). The signatures already exist on the
+`feature-strings` branch -- notes.md flags it as the Step 4 spec to recover from.
 
-Verified on Apple M1 / MoltenVK with `ANO_FORCE_NO_MESH_SHADER=1` and validation forced on: the run
-clears the Cocoa abort, completes `initVulkan` (device selected, both glTF assets parsed, textures
-uploaded, "Instance creation complete!"), zero validation errors, and the main-thread render loop
-sustains ~20-44% CPU in `drawFrame`. Visible-pixels confirmation by the user is the remaining gate.
-Note: run from build/<cfg>/ — asset paths are CWD-relative and `build.sh` copies assets into the build dir.
+## Step 5 -- Lock-free collections
+Phase A: classic Michael & Scott queue + bounded MPMC ring (Vyukov-style), tested and
+benchmarked as baselines. Phase B (experimental): cache-line-striped structures -- make the
+64-byte coherency unit the unit of ownership transfer (claim a stripe via `fetch_add`, fill
+with plain stores, publish via release commit flag; no per-item CAS). Open problems + design
+in notes.md.
 
-## macOS bring-up verification (P0 unblocked)
+## Step 6 -- Resource management
+Per Game Engine Architecture. (notes.md also lists a parallel "additional data structures as
+needed": build structures alongside the features that use them, not speculatively; `stb_ds`
+is an acceptable prototyping stopgap.)
 
-- DONE. Device selection picks the MoltenVK GPU and takes the vertex fallback: the run logs
-  `DeviceCount: 1`, `Enabling 3 device extensions (mesh shader: no)`.
-- H2: no `firstInstance` validation error was observed on M1 / MoltenVK across a full render loop
-  with validation on (MoltenVK reports `drawIndirectFirstInstance`). The latent gap remains: still
-  require `drawIndirectFirstInstance` in `isDeviceSuitable` when the mesh path is absent, or drop the
-  `firstInstance` trick, so a device lacking it fails suitability instead of mis-drawing. (Commit 3.)
-- TODO. Confirm the render-bridge SPSC ring uses acquire/release ordering on submit/drain, not
-  relaxed (correctness on weakly ordered ARM / Apple Silicon). (Commit 2.)
+## Step 7 -- Renderer rewrite
+Full Vulkan rewrite as a proper subsystem: scratch arenas, the real logger, the event bus.
+v1 scope -- one render pass, one pipeline, geometry on screen, event-bus-driven. No PBR,
+rasterization only. `stb_image` retained for textures.
 
-  As such, 
+## Step 8 -- Event bus + input
+Global, thread-agnostic event bus (possibly two: monotonic per-item for ordered events like
+input, cache-line-striped for high-throughput bulk events). GLFW callbacks enqueue input;
+the game loop dequeues. Clean producer/consumer boundary; also serves future physics.
 
-  ## Commit 1: COMPLETED
-  Get the window visibly working on MacOS. The Viking Room should be visibly rendered to the user, ask for user confirmation.
-
-  DONE — user confirmed the Viking Room renders visibly on Apple M1 / MoltenVK. The engine builds
-  Release, completes init validation-clean, and the main-thread render loop sustains drawFrame.
-  Also landed on top: the CWD trap fix (resurrected the dead `src/filesystem` module; `ano_fs_gamepath`
-  resolves the executable directory on all three platforms, manual thread-safe split, no dirname();
-  `ano_fs_chdir_gamepath()` called at startup so assets resolve from any launch directory).
-
-  Prerequisite — DONE. The bindless texture array was hardcoded to 4096 at pipeline.c:253 and never
-  clamped to device limits. Apple M1 / MoltenVK caps update-after-bind samplers at 1024, so
-  `vkCreatePipelineLayout` violated VUID-VkPipelineLayoutCreateInfo-descriptorType-03022 and
-  -pSetLayouts-03036 — the cause of the two failing tests (`anotest_vk_compliance_layers`,
-  `anotest_vk_sync`). Fixed: `ano_vk_init_material_layouts` queries
-  `VkPhysicalDeviceDescriptorIndexingProperties` and clamps `maxTextures` to the min of the relevant
-  update-after-bind sampler/sampled-image limits (a combined image sampler counts against both). Both
-  tests are green; the run logs `maxTextures = 1024 (device update-after-bind limit 1024)`.
-
-  ## Commit 2: COMPLETED
-  Verify ordering. Platform-specific setup may be needed, in which case we should inline the ifdef for now, and make a note that the platform-agnostic pattern in src/ should be followed in a later refactor.
-
-  SPSC ring ordering — VERIFIED CORRECT, no change needed. The inlined push/pop in
-  anoptic_render_bridge.h follow the canonical Lamport/Vyukov discipline:
-   - push (producer): loads its own `tail` relaxed (sole writer), loads the consumer's `head` acquire,
-     writes the payload, publishes `tail` with release.
-   - pop (consumer): loads its own `head` relaxed (sole writer), loads the producer's `tail` acquire,
-     reads the payload, publishes `head` with release.
-  The two relaxed loads are self-owned-cursor reads — the intended optimization, not a gap. Every
-  cross-thread edge is acquire/release, giving two synchronizes-with relations, both present:
-   1. payload visibility: producer slot-writes -> release(tail) -> acquire(tail) -> consumer reads.
-   2. no-overwrite: consumer slot-reads -> release(head) -> acquire(head) -> producer overwrite (one
-      lap later). On arm64 these lower to stlr/ldar — the correct barriers for Apple Silicon.
-  No ifdef was needed: stdatomic acquire/release is portable, so there is no platform-specific
-  ordering setup to inline. Empirically sealed: anotest_render_bridge (producer + consumer + main,
-  100k items through capacity-16 wrapping rings; checks FIFO order, payload tearing, event order)
-  passes clean under TSan on arm64 — full suite 11/11, 0 races (build.sh 5, 2026-06-20).
-
-  Resize-path GLFW concurrency — RESOLVED by the P0 render-on-main inversion; NOT a live issue. All
-  three `recreateSwapChain` call sites are inside `drawFrame` (vulkanMaster.c:784/804/868), which runs
-  on the main thread — the same thread as `glfwPollEvents` (main.c:220). The logic thread never touches
-  GLFW. The earlier worry assumed a separate render thread calling
-  `glfwGetFramebufferSize`/`glfwWaitEvents` concurrently with the event pump; that thread no longer
-  exists, so the two are serialized on one thread. Stale concern, struck.
-
-  Loose end (out of Commit 2 scope, noted): the events ring (render -> logic, emitted at
-  vulkanMaster.c:745) has no consumer yet — `ano_render_poll_event` is never called outside the test,
-  so events accumulate to capacity, then emit returns false and they are dropped. Not an ordering bug
-  (the SPSC contract holds); an unfinished consumer. Wire REVENT_SLOT_RETIRED drain into the logic
-  master when the real DisplayState graphics-extract lands.
-
-  ## Commit 3:
-  Purge anoptic_ecs.h and anoptic_render_bridge.h as they're illegal include/ entries. 
-  All functions anoptic_render_bridge.h actually surfaces to be used by main() (if any), should be cleanly designed signatures in anoptic_render.h. Everything else needs to be moved to and linked inside src/ as an implementation detail. 
-
-  anoptic_ecs.h seems to be entirely garbage so we can probably get rid of it and its tests.
-
-  ## Commit 4:
-  List and systematically work through every validation error that comes up.
-
-  ## Commit 5: 
-  Ask user merge to main via PR, once parity across all platforms is achieved. So resolve any merge conflicts ahead of time.
+## Step 9 -- Main game loop + first visual output
+Integration milestone (v0.1): input moves the camera, the event bus carries it, simulation
+updates transforms, the renderer draws, all allocated from frame arenas and all logged. A
+sphere on screen through the full pipeline -- proof every layer works together.
