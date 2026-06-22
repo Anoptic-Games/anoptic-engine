@@ -144,7 +144,7 @@ typedef enum RenderCommandKind
     RCMD_UPDATE,       // discrete change(s) to an existing renderable (see `fields`)
     RCMD_DESTROY,      // remove a renderable (render_id only)
     RCMD_BULK_CREATE,  // contiguous batch of new renderables (mass spawn); see `batch`
-    RCMD_STREAM_TRANSFORMS, // per-tick CPU transforms for ANO_MOTION_STREAMED slots; see `stream`
+    RCMD_STREAM_TRANSFORMS, // publishes one streamed-transform ring slice; carries {stream_seq, stream_count}, see ano_render_stream_begin
 } RenderCommandKind;
 
 // Which payload fields a CREATE/UPDATE carries. A single UPDATE may set several
@@ -191,16 +191,23 @@ typedef struct RenderCreateBatch
     const uint32_t *material;    // [count] material palette indices
 } RenderCreateBatch;
 
-// Per-tick transform snapshot for CPU-driven (ANO_MOTION_STREAMED) renderables,
-// referenced by RCMD_STREAM_TRANSFORMS. Parallel arrays, length `count`; the render
-// master resolves each render_id to its slot and scatters the matrix into the live
-// transform buffer for the current frame only (ephemeral — re-sent every tick).
-typedef struct RenderStreamBatch
+// Zero-copy producer write-region for the streamed-transform lane (Path B v2). Rather
+// than copy a per-tick batch through the command ring, the producer reserves the next
+// free GPU ring slice (ano_render_stream_begin), writes its render_ids + live world
+// transforms straight into the mapped arrays, and publishes one tiny control command
+// (ano_render_stream_commit -> RCMD_STREAM_TRANSFORMS). The scatter pass reads the slice
+// in place via a dynamic descriptor offset — the matrices are never copied render-side,
+// and the render master holds the last published slice so a tick with no new batch keeps
+// its pose. `ids` and `xforms` are parallel, length up to `capacity`; `token` is opaque
+// (carries the slice identity back to commit). Valid only between a successful begin and
+// its commit, single-producer (the logic/ECS thread that owns the bridge).
+typedef struct AnoStreamRegion
 {
-    uint32_t        count;
-    const uint32_t *render_ids;  // [count] logical names of streamed renderables
-    const mat4     *transforms;  // [count] live world transforms for this tick
-} RenderStreamBatch;
+    uint32_t *ids;       // [capacity] destination for streamed render_ids
+    mat4     *xforms;    // [capacity] destination for live world transforms (initialTransform space)
+    uint32_t  capacity;  // entries this slice holds (STREAM_CAPACITY)
+    uint64_t  token;     // opaque slice identity; pass back to ano_render_stream_commit
+} AnoStreamRegion;
 
 // POD, fixed-size, copied by value through the ring. ~fat (holds a mat4) but
 // CREATE needs it; UPDATE only reads the fields flagged in `fields`.
@@ -219,12 +226,24 @@ typedef struct RenderCommand
     AnoInstanceData   instance_data;    // CREATE, or UPDATE | RFIELD_USERDATA (zero == inert)
 
     const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
-    const RenderStreamBatch *stream;    // RCMD_STREAM_TRANSFORMS only
+    uint64_t          stream_seq;       // RCMD_STREAM_TRANSFORMS: published ring-slice token
+    uint32_t          stream_count;     // RCMD_STREAM_TRANSFORMS: entries in the slice
 } RenderCommand;
 
 // Enqueue one command. false if the command ring is full (caller decides: drop,
 // spin, or grow upstream). Producer-side endpoint; the consuming/event endpoints
 // are internal to src/render_bridge/.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd);
+
+// Streamed-transform lane (ANO_MOTION_STREAMED), zero-copy producer endpoint. `begin`
+// reserves the next free ring slice and points `out` at its mapped id/transform arrays,
+// returning false if every slice is still in flight on the GPU — the caller drops the
+// tick, and since the render side holds the last published slice, a dropped tick simply
+// repeats it. The producer fills out->ids[0..count) and out->xforms[0..count) (count <=
+// out->capacity), then `commit` publishes via one bridge command. `commit` returns false
+// if the command ring is full (the slice is left unpublished and reclaimed normally).
+// Single-producer only (the thread that owns the bridge); valid after init.
+bool ano_render_stream_begin(AnoStreamRegion *out);
+bool ano_render_stream_commit(const AnoStreamRegion *region, uint32_t count);
 
 #endif // ANOPTIC_RENDER_H

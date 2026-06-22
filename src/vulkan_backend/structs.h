@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 #include "gpu_alloc.h"
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <string.h>
 
 
@@ -186,25 +187,60 @@ typedef struct InstanceDataBuffer
 // entity axis): per-tick render slots + their CPU transforms, scattered into the live
 // transform buffer by scatter.comp. Per-frame, host-visible, ephemeral (overwritten
 // each tick). count[f] is the number of valid entries staged for frame f.
+// Sentinel slot for a streamed entry whose render_id failed to resolve (retired/unknown);
+// scatter.comp skips it. The xform ring is producer-laid-out and cannot be compacted, so
+// dropped entries stay in place with this slot and are no-ops on the GPU.
+#define STREAM_SLOT_SKIP 0xFFFFFFFFu
+
+// Streamed-transform lane (Path B v2 — zero-copy mapped ring). The producer writes its
+// render_ids + live transforms straight into a free ring slice and publishes one tiny
+// {seq,count} command; scatter reads the slice IN PLACE via a dynamic descriptor offset,
+// so the mat4 payload is never copied render-side. Slice lifetime is a lock-free SPSC
+// handshake: the producer reserves the next slice only when the consumer's per-frame
+// fence has reclaimed the seq that last used it. The render side holds the latest
+// published slice (hold-last-value) and re-resolves render_id -> slot into slotMapped
+// only when a new publish or a slot retirement bumps resolveGen.
 typedef struct TransformStreamBuffer
 {
+    // Resolved target slots, render-written per frame (scatter binding 0). Unresolved
+    // render_ids become STREAM_SLOT_SKIP.
     VkBuffer      slotBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation slotAllocs[MAX_FRAMES_IN_FLIGHT];
-    uint32_t*     slotMapped[MAX_FRAMES_IN_FLIGHT];   // [capacity] target render slots
-    VkBuffer      xformBuffer[MAX_FRAMES_IN_FLIGHT];
-    GpuAllocation xformAllocs[MAX_FRAMES_IN_FLIGHT];
-    mat4*         xformMapped[MAX_FRAMES_IN_FLIGHT];   // [capacity] CPU transforms
-    uint32_t      capacity;                            // STREAM_CAPACITY; not grown in v1
-    uint32_t      count[MAX_FRAMES_IN_FLIGHT];         // entries staged for each frame
-    // Latest streamed snapshot (CPU, render-heap, last-wins). Re-staged into the
-    // current frame's buffer EVERY frame so a held transform survives frames that
-    // drain no batch: the render loop outruns the producer, and update.comp rewrites
-    // each ANO_MOTION_STREAMED slot to its base every frame, so a "current-frame-only"
-    // stage would flash the slot back to base on the (many) ticks with no fresh batch.
-    // snapCount == 0 means nothing is currently streamed (scatter skipped).
-    uint32_t*     snapIds;                              // [capacity] render_ids, unresolved
-    mat4*         snapXforms;                           // [capacity] CPU transforms
-    uint32_t      snapCount;                            // entries in the latest snapshot
+    uint32_t*     slotMapped[MAX_FRAMES_IN_FLIGHT];   // [capacity] resolved render slots
+
+    // Producer-written transform ring (scatter binding 1, STORAGE_BUFFER_DYNAMIC): one
+    // device buffer of `ringSlices` slices, each `capacity` mat4s; scatter binds the
+    // published slice by dynamic offset.
+    VkBuffer      xformRing;
+    GpuAllocation xformRingAlloc;
+    mat4*         xformRingMapped;                     // [ringSlices * capacity]
+
+    // Producer-written render_id ring, parallel to xformRing (CPU-only, render-heap; the
+    // render side resolves it into slotMapped — no descriptor).
+    uint32_t*     idRing;                              // [ringSlices * capacity]
+
+    uint32_t      capacity;                            // STREAM_CAPACITY: entries per slice
+    uint32_t      ringSlices;                          // R = MAX_FRAMES_IN_FLIGHT + 2
+    VkDeviceSize  sliceStride;                         // capacity * sizeof(mat4): xform dynamic-offset unit
+
+    uint32_t      count[MAX_FRAMES_IN_FLIGHT];         // scatter dispatch count per frame
+    uint32_t      dynOffset[MAX_FRAMES_IN_FLIGHT];     // xformRing dynamic offset (bytes) per frame
+
+    // Lock-free SPSC lifetime control. produceSeq is producer-private (monotonic publish
+    // count; slice = (seq-1) % ringSlices). reclaimSeq is consumer-published: all seqs
+    // <= reclaimSeq are GPU-done (advanced off the per-frame fence), so the producer may
+    // overwrite their slices. curSeq/curCount are the latest published slice the render
+    // holds; frameSeq[f] is the seq frame f last submitted (drives reclaim).
+    uint64_t          produceSeq;                      // producer thread only
+    _Atomic uint64_t  reclaimSeq;                      // consumer -> producer
+    uint64_t          curSeq;                          // render side: latest published seq (0 = none)
+    uint32_t          curCount;                        // render side: entries in curSeq's slice
+    uint64_t          frameSeq[MAX_FRAMES_IN_FLIGHT];  // seq each in-flight frame submitted
+
+    // Resolve gen-tracking: bumped on a new publish or any slot retirement; a frame
+    // re-resolves idRing -> slotMapped only when its stagedGen lags.
+    uint32_t      resolveGen;
+    uint32_t      stagedGen[MAX_FRAMES_IN_FLIGHT];
 } TransformStreamBuffer;
 
 typedef struct MaterialData

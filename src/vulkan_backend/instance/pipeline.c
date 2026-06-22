@@ -435,7 +435,9 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
         scatterBindings[b].descriptorCount = 1;
         scatterBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
-    // 0: StreamSlots, 1: StreamTransforms, 2: TransformSSBO (written)
+    // 0: StreamSlots (per-frame), 1: StreamTransforms (xform ring, dynamic offset selects
+    // the published slice), 2: TransformSSBO (written).
+    scatterBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 
     VkDescriptorSetLayoutCreateInfo scatterLayoutInfo = {};
     scatterLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
