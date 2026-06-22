@@ -270,9 +270,9 @@ void recordCommandBuffer(uint32_t imageIndex)
                     VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
                         ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
                     vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
-                        cmdStride * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT, 0);
+                        cmdStride * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count(), 0);
                     vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
-                        sizeof(uint32_t) * PIPELINE_TYPE_COUNT, 0);
+                        sizeof(uint32_t) * ano_draw_pipeline_count(), 0);
 
                     // Add a barrier to make sure the fill completes before the compute shader writes to it
                     VkMemoryBarrier fillBarrier = {};
@@ -393,19 +393,21 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     rendererState.prototypes[pass->prototype].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
 
-                uint32_t pipelineType = pass->prototype;
-                uint32_t baseOffset = pipelineType * rendererState.culling.maxEntities;
+                // Compacted draws live in this prototype's partition (draw slot), matching
+                // the slot cull.comp wrote them into — not the raw PipelineType enum value.
+                uint32_t slot = ano_draw_slot_of(pass->prototype);
+                uint32_t baseOffset = slot * rendererState.culling.maxEntities;
                 bool useMesh = ctx.deviceCapabilities.meshShader;
                 VkShaderStageFlags pcStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, pcStage, 0, sizeof(uint32_t), &baseOffset);
 
                 VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
                 VkBuffer drawCountBuf = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
-                VkDeviceSize countOffset = (VkDeviceSize)pipelineType * sizeof(uint32_t);
+                VkDeviceSize countOffset = (VkDeviceSize)slot * sizeof(uint32_t);
                 uint32_t maxDraws = rendererState.indirectBuffer.capacity;
 
                 if (useMesh) {
-                    VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * maxDraws * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                    VkDeviceSize indirectOffset = (VkDeviceSize)slot * maxDraws * sizeof(VkDrawMeshTasksIndirectCommandEXT);
                     if (ctx.deviceCapabilities.drawIndirectCount) {
                         pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset,
                             drawCountBuf, countOffset, maxDraws, sizeof(VkDrawMeshTasksIndirectCommandEXT));
@@ -417,7 +419,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                     // Fallback: classic indexed indirect over the shared geometry index buffer.
                     // The cull pass wrote mesh-local firstIndex/indexCount + per-mesh vertexOffset.
                     vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                    VkDeviceSize indirectOffset = (VkDeviceSize)pipelineType * maxDraws * sizeof(VkDrawIndexedIndirectCommand);
+                    VkDeviceSize indirectOffset = (VkDeviceSize)slot * maxDraws * sizeof(VkDrawIndexedIndirectCommand);
                     if (ctx.deviceCapabilities.drawIndirectCount) {
                         vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset,
                             drawCountBuf, countOffset, maxDraws, sizeof(VkDrawIndexedIndirectCommand));
@@ -514,6 +516,11 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
 
     ubo->entityCount = entityCount;
     ubo->maxEntities = state->culling.maxEntities;
+
+    // Publish the PipelineType -> draw-slot map cull.comp compacts by. Frame-invariant, but
+    // rewritten here so each frame's UBO (incl. a freshly grown one) is always populated.
+    for (uint32_t t = 0; t < 16u; ++t)
+        ubo->drawSlotOf[t] = (t < PIPELINE_TYPE_COUNT) ? ano_draw_slot_of((PipelineType)t) : ANO_NO_DRAW_SLOT;
 
     // The EntitySSBO (mesh/material per slot) is seeded once at init and mutated
     // sparsely through the command bridge (render_apply_commands) — no per-frame
@@ -834,10 +841,10 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
         growBufferSet(state->transformBuffer.buffer, state->transformBuffer.allocs, ssbo, devProps,
                       (VkDeviceSize)sizeof(mat4) * newCap, 0) &&
         growBufferSet(state->culling.compactedEntityIndicesBuffer, state->culling.compactedEntityIndicesAllocs, ssbo, devProps,
-                      (VkDeviceSize)sizeof(uint32_t) * newCap * PIPELINE_TYPE_COUNT, 0) &&
+                      (VkDeviceSize)sizeof(uint32_t) * newCap * ano_draw_pipeline_count(), 0) &&
         growBufferSet(state->indirectBuffer.buffer, state->indirectBuffer.allocs,
                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, devProps,
-                      cmdStride * newCap * PIPELINE_TYPE_COUNT, 0);
+                      cmdStride * newCap * ano_draw_pipeline_count(), 0);
     if (!ok) {
         printf("Fatal: entity capacity growth %u -> %u failed (GPU out of memory?).\n", oldCap, newCap);
         return false;
@@ -1518,7 +1525,7 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
     // paths: VkDrawMeshTasksIndirectCommandEXT (12 B) or VkDrawIndexedIndirectCommand (20 B).
     VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
         ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
-    VkDeviceSize bufferSize = cmdStride * maxDraws * PIPELINE_TYPE_COUNT;
+    VkDeviceSize bufferSize = cmdStride * maxDraws * ano_draw_pipeline_count();
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
@@ -1557,8 +1564,8 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
-    VkDeviceSize drawCountSize = sizeof(uint32_t) * PIPELINE_TYPE_COUNT;
-    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * PIPELINE_TYPE_COUNT;
+    VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_pipeline_count();
+    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_pipeline_count();
     VkDeviceSize uboSize = sizeof(CullUBO);
     
     // Per-slot mesh/material (meshIndex, materialIndex): ×1 device-local + delta staging,

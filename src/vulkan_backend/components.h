@@ -30,6 +30,21 @@ typedef enum PipelineType
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
 } PipelineType;
 
+// Draw partitions (render config). cull.comp compacts visible draws into per-pipeline
+// partitions of the indirect / drawCount / compacted-index buffers, indexed by draw slot.
+// Only pipeline types that actually emit draws get a partition: the COMPUTE_* passes never
+// draw and PARTICLE / SDF_COMPOSITE / UI / DECAL / SKINNED are unimplemented skeletons, so
+// sizing by PIPELINE_TYPE_COUNT would reserve — and vkCmdFillBuffer-zero every frame — most
+// of the per-slot GPU footprint as permanently-idle VRAM (the dominant cost at a million
+// entities). This list is the single source of truth: order defines the slot index, length
+// defines the partition count the buffers and the cull UBO map size to. To add a drawing
+// pipeline, append it here and give it a g_framePasses entry; nothing else resizes by hand.
+#define ANO_NO_DRAW_SLOT 0xFFFFFFFFu
+
+extern const PipelineType ano_draw_pipelines[]; // drawing pipeline types, in slot order
+uint32_t ano_draw_pipeline_count(void);         // partition count = number of drawing types
+uint32_t ano_draw_slot_of(PipelineType type);   // enum -> partition index, ANO_NO_DRAW_SLOT if it never draws
+
 typedef enum PassType
 {
     PASS_COMPUTE,       // compute dispatch (culling, SDF evaluation, etc.)

@@ -495,6 +495,11 @@ typedef struct CullUBO
     uint32_t entityCount;
     uint32_t maxEntities;
     uint32_t padding[2];
+    // PipelineType -> draw-partition index (ANO_NO_DRAW_SLOT if it never draws). cull.comp
+    // compacts visible draws by slot rather than by raw enum value, so the indirect/drawCount/
+    // compacted buffers hold only the drawing partitions. Indexed by material pipelineType, so
+    // it spans the enum; padded to 16 (uvec4[4] in cull.comp). std140: uint32_t[16] == uvec4[4].
+    uint32_t drawSlotOf[16];
 } CullUBO;
 
 typedef struct CullUboBuffer
