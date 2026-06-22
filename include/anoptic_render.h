@@ -144,6 +144,8 @@ typedef enum RenderCommandKind
     RCMD_UPDATE,       // discrete change(s) to an existing renderable (see `fields`)
     RCMD_DESTROY,      // remove a renderable (render_id only)
     RCMD_BULK_CREATE,  // contiguous batch of new renderables (mass spawn); see `batch`
+    RCMD_BULK_UPDATE,  // one shared field mask applied across a render_id array; see `update`
+    RCMD_BULK_DESTROY, // mass despawn of a render_id array; see `destroy`
     RCMD_STREAM_TRANSFORMS, // publishes one streamed-transform ring slice; carries {stream_seq, stream_count}, see ano_render_stream_begin
 } RenderCommandKind;
 
@@ -191,6 +193,34 @@ typedef struct RenderCreateBatch
     const uint32_t *material;    // [count] material palette indices
 } RenderCreateBatch;
 
+// Mass field change (RCMD_BULK_UPDATE): ONE shared `fields` mask applied across a
+// render_id array, with parallel value arrays — only the flagged fields' arrays are read
+// (the rest may be NULL). This is the mass-event analogue of a single RFIELD_* UPDATE:
+// a battle re-skinning thousands of ships (RFIELD_MESH_MAT) or a solar flare flipping
+// 100k colonists' state (RFIELD_USERDATA) becomes O(1) ring messages. RFIELD_LIGHT is not
+// bulk (lights are few). Submit via ano_render_submit_bulk_update, which copies the batch
+// — the caller's arrays need only live until that call returns.
+typedef struct RenderUpdateBatch
+{
+    uint32_t        count;
+    uint32_t        fields;       // RenderFieldBits shared by every entry; only these arrays are consumed
+    const uint32_t *render_ids;   // [count] targets (unresolved ids are skipped)
+    const mat4     *transforms;   // [count] if fields & RFIELD_TRANSFORM (teleport: rewrites base pose)
+    const AnoMotionDescriptor *motion;        // [count] if fields & RFIELD_ANIM
+    const uint32_t *mesh;         // [count] if fields & RFIELD_MESH_MAT
+    const uint32_t *material;     // [count] if fields & RFIELD_MESH_MAT
+    const AnoInstanceData *instance_data;     // [count] if fields & RFIELD_USERDATA
+} RenderUpdateBatch;
+
+// Mass despawn (RCMD_BULK_DESTROY): a render_id array retired in one ring message.
+// Symmetric with RCMD_BULK_CREATE; submit via ano_render_submit_bulk_destroy, which
+// copies the array — the caller's array need only live until that call returns.
+typedef struct RenderDestroyBatch
+{
+    uint32_t        count;
+    const uint32_t *render_ids;  // [count] logical names to retire (unresolved ids are skipped)
+} RenderDestroyBatch;
+
 // Zero-copy producer write-region for the streamed-transform lane (Path B v2). Rather
 // than copy a per-tick batch through the command ring, the producer reserves the next
 // free GPU ring slice (ano_render_stream_begin), writes its render_ids + live world
@@ -226,14 +256,30 @@ typedef struct RenderCommand
     AnoInstanceData   instance_data;    // CREATE, or UPDATE | RFIELD_USERDATA (zero == inert)
 
     const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
+    const RenderUpdateBatch *update;    // RCMD_BULK_UPDATE only
+    const RenderDestroyBatch *destroy;  // RCMD_BULK_DESTROY only
+    bool              bulk_owned;       // render side frees the batch block after consumption (set by the bulk submit helpers)
     uint64_t          stream_seq;       // RCMD_STREAM_TRANSFORMS: published ring-slice token
     uint32_t          stream_count;     // RCMD_STREAM_TRANSFORMS: entries in the slice
 } RenderCommand;
 
-// Enqueue one command. false if the command ring is full (caller decides: drop,
-// spin, or grow upstream). Producer-side endpoint; the consuming/event endpoints
-// are internal to src/render_bridge/.
+// Enqueue one command. Returns false ONLY when the command ring is full.
+//
+// Overflow policy (the contract, not "caller decides"): false means BACKPRESSURE, not
+// loss — the producer must retain the command and retry on a later tick; it must NOT
+// drop it (a dropped DESTROY strands a slot; a dropped CREATE is an invisible entity).
+// The lock-free SPSC ring cannot be grown live, and spinning here would couple logic to
+// render, so retry is the policy. Mass events MUST use the bulk commands below so a
+// single tick is O(1) ring messages and never approaches the ceiling in the first place.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd);
+
+// Bulk producer endpoints. Each copies the batch into one render-owned block (released
+// render-side after the change has reached every frame in flight), so the caller's arrays
+// need only live until the call returns. Same backpressure contract as ano_render_submit:
+// false == ring full, retry (the copy is released and nothing is enqueued); never drops.
+// A zero count is a no-op (returns true).
+bool ano_render_submit_bulk_update(AnoRenderBridge *bridge, const RenderUpdateBatch *batch);
+bool ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *render_ids, uint32_t count);
 
 // Streamed-transform lane (ANO_MOTION_STREAMED), zero-copy producer endpoint. `begin`
 // reserves the next free ring slice and points `out` at its mapped id/transform arrays,

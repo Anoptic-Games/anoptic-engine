@@ -745,6 +745,18 @@ static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
     ts->dynOffset[frameIndex] = (uint32_t)((VkDeviceSize)slice * ts->sliceStride);
 }
 
+// Releases a bulk command's render-owned batch block (the single mi-heap allocation the
+// bulk submit helpers pack the struct + arrays into). No-op for non-owned commands (e.g.
+// init's renderHeap-resident BULK_CREATE). Render-thread only.
+static void free_owned_bulk(const RenderCommand* c)
+{
+    if (!c->bulk_owned) return;
+    void* blk = c->kind == RCMD_BULK_UPDATE  ? (void*)c->update
+              : c->kind == RCMD_BULK_DESTROY ? (void*)c->destroy
+              :                                (void*)c->batch;
+    if (blk) mi_free(blk);
+}
+
 static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 {
     // 1. Ingest: assign/retire slots once, queue each command for per-frame apply.
@@ -774,8 +786,10 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 continue; // growth failed: drop the batch
             render_slots_alloc_range(&state->slots, cmd.batch->render_ids, cmd.batch->count);
         }
-        if (!pendingReserve(state, state->pendingCount + 1u))
+        if (!pendingReserve(state, state->pendingCount + 1u)) {
+            free_owned_bulk(&cmd); // dropped (OOM): release the copy so it doesn't leak
             continue;
+        }
         state->pending[state->pendingCount++] = (PendingRenderCommand){
             .cmd = cmd, .pendingFrameMask = (1u << MAX_FRAMES_IN_FLIGHT) - 1u,
         };
@@ -801,6 +815,35 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                     ent[slot * 2]     = b->mesh[e];
                     ent[slot * 2 + 1] = b->material[e];
                 }
+            } else if (pc.cmd.kind == RCMD_BULK_UPDATE && pc.cmd.update) {
+                // Apply the shared field mask to each resolvable target (unresolved ids
+                // dropped). Mirrors applyCommandToFrame's fields, sourced from the arrays.
+                const RenderUpdateBatch* u = pc.cmd.update;
+                uint32_t* ent = (uint32_t*)state->culling.entityMapped[frameIndex];
+                for (uint32_t e = 0; e < u->count; e++) {
+                    uint32_t slot = render_slots_resolve(&state->slots, u->render_ids[e]);
+                    if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
+                    if (u->fields & RFIELD_TRANSFORM)
+                        memcpy(&state->initialTransformBuffer.mapped[frameIndex][slot], &u->transforms[e], sizeof(mat4));
+                    if (u->fields & RFIELD_ANIM)
+                        state->motionBuffer.mapped[frameIndex][slot] = u->motion[e];
+                    if (u->fields & RFIELD_USERDATA)
+                        state->instanceDataBuffer.mapped[frameIndex][slot] = u->instance_data[e];
+                    if (u->fields & RFIELD_MESH_MAT) {
+                        ent[slot * 2]     = u->mesh[e];
+                        ent[slot * 2 + 1] = u->material[e];
+                    }
+                }
+            } else if (pc.cmd.kind == RCMD_BULK_DESTROY && pc.cmd.destroy) {
+                // Dead-mark each resolvable slot; the cull pass skips it. Slot retirement
+                // happens once the mask clears (below), symmetric with single DESTROY.
+                const RenderDestroyBatch* d = pc.cmd.destroy;
+                uint32_t* ent = (uint32_t*)state->culling.entityMapped[frameIndex];
+                for (uint32_t e = 0; e < d->count; e++) {
+                    uint32_t slot = render_slots_resolve(&state->slots, d->render_ids[e]);
+                    if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
+                    ent[slot * 2] = NO_MESH_INDEX;
+                }
             } else {
                 uint32_t slot = render_slots_resolve(&state->slots, pc.cmd.render_id);
                 if (slot != ANO_RENDER_SLOT_UNMAPPED)
@@ -810,8 +853,19 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
         }
         if (pc.pendingFrameMask != 0u) {
             state->pending[w++] = pc;                                   // keep: more frames to go
-        } else if (pc.cmd.kind == RCMD_DESTROY) {
-            render_slots_retire(&state->slots, pc.cmd.render_id, state->globalFrame);
+        } else {
+            // Fully applied across every frame in flight: retire despawned slots, then
+            // release any render-owned batch copy made by the bulk submit helpers.
+            if (pc.cmd.kind == RCMD_DESTROY) {
+                render_slots_retire(&state->slots, pc.cmd.render_id, state->globalFrame);
+            } else if (pc.cmd.kind == RCMD_BULK_DESTROY && pc.cmd.destroy) {
+                for (uint32_t e = 0; e < pc.cmd.destroy->count; e++) {
+                    uint32_t rid = pc.cmd.destroy->render_ids[e];
+                    if (render_slots_resolve(&state->slots, rid) != ANO_RENDER_SLOT_UNMAPPED)
+                        render_slots_retire(&state->slots, rid, state->globalFrame);
+                }
+            }
+            free_owned_bulk(&pc.cmd);
         }
     }
     state->pendingCount = w;
@@ -917,6 +971,67 @@ bool ano_render_stream_commit(const AnoStreamRegion* region, uint32_t count) {
     if (!ano_render_submit(&rendererState.bridge, &cmd))
         return false;
     ts->produceSeq = region->token;
+    return true;
+}
+
+// Producer endpoint — mass field change. Packs the batch + every flagged field array into
+// ONE render-owned block (mi heap, freed render-side after the change reaches all frames),
+// so the caller's arrays need only live until this returns. Backpressure: ring full ->
+// free the copy and return false (retry next tick), never drop.
+// in:  bridge, batch (count, shared fields mask, parallel arrays); out: true on enqueue
+bool ano_render_submit_bulk_update(AnoRenderBridge* bridge, const RenderUpdateBatch* batch) {
+    if (!batch || batch->count == 0) return true;
+    uint32_t count = batch->count, fields = batch->fields;
+    size_t bytes = sizeof(RenderUpdateBatch) + (size_t)count * sizeof(uint32_t); // struct + ids
+    if (fields & RFIELD_TRANSFORM) bytes += (size_t)count * sizeof(mat4);
+    if (fields & RFIELD_ANIM)      bytes += (size_t)count * sizeof(AnoMotionDescriptor);
+    if (fields & RFIELD_MESH_MAT)  bytes += (size_t)count * sizeof(uint32_t) * 2u;
+    if (fields & RFIELD_USERDATA)  bytes += (size_t)count * sizeof(AnoInstanceData);
+    char* blk = mi_malloc(bytes);
+    if (!blk) return false;
+    RenderUpdateBatch* b = (RenderUpdateBatch*)blk;
+    *b = (RenderUpdateBatch){ .count = count, .fields = fields };
+    char* cur = blk + sizeof(RenderUpdateBatch);
+    b->render_ids = (uint32_t*)cur;
+    memcpy(cur, batch->render_ids, (size_t)count * sizeof(uint32_t)); cur += (size_t)count * sizeof(uint32_t);
+    if (fields & RFIELD_TRANSFORM) {
+        b->transforms = (mat4*)cur;
+        memcpy(cur, batch->transforms, (size_t)count * sizeof(mat4)); cur += (size_t)count * sizeof(mat4);
+    }
+    if (fields & RFIELD_ANIM) {
+        b->motion = (AnoMotionDescriptor*)cur;
+        memcpy(cur, batch->motion, (size_t)count * sizeof(AnoMotionDescriptor)); cur += (size_t)count * sizeof(AnoMotionDescriptor);
+    }
+    if (fields & RFIELD_MESH_MAT) {
+        b->mesh = (uint32_t*)cur;
+        memcpy(cur, batch->mesh, (size_t)count * sizeof(uint32_t)); cur += (size_t)count * sizeof(uint32_t);
+        b->material = (uint32_t*)cur;
+        memcpy(cur, batch->material, (size_t)count * sizeof(uint32_t)); cur += (size_t)count * sizeof(uint32_t);
+    }
+    if (fields & RFIELD_USERDATA) {
+        b->instance_data = (AnoInstanceData*)cur;
+        memcpy(cur, batch->instance_data, (size_t)count * sizeof(AnoInstanceData)); cur += (size_t)count * sizeof(AnoInstanceData);
+    }
+    RenderCommand cmd = { .kind = RCMD_BULK_UPDATE, .update = b, .bulk_owned = true };
+    if (!ano_render_submit(bridge, &cmd)) { mi_free(blk); return false; }
+    return true;
+}
+
+// Producer endpoint — mass despawn. Copies the render_id array into one render-owned block
+// (freed render-side after the dead-mark reaches all frames). Same backpressure contract.
+// in:  bridge, render_ids, count; out: true on enqueue
+bool ano_render_submit_bulk_destroy(AnoRenderBridge* bridge, const uint32_t* render_ids, uint32_t count) {
+    if (count == 0) return true;
+    size_t bytes = sizeof(RenderDestroyBatch) + (size_t)count * sizeof(uint32_t);
+    char* blk = mi_malloc(bytes);
+    if (!blk) return false;
+    RenderDestroyBatch* b = (RenderDestroyBatch*)blk;
+    uint32_t* ids = (uint32_t*)(blk + sizeof(RenderDestroyBatch));
+    memcpy(ids, render_ids, (size_t)count * sizeof(uint32_t));
+    b->count = count;
+    b->render_ids = ids;
+    RenderCommand cmd = { .kind = RCMD_BULK_DESTROY, .destroy = b, .bulk_owned = true };
+    if (!ano_render_submit(bridge, &cmd)) { mi_free(blk); return false; }
     return true;
 }
 

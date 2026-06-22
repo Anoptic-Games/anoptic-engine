@@ -114,6 +114,15 @@ void* anoLogicThreadMain(void* arg)
 		anoRenderEntityBaseTransform(e, streamBase[e]); // overwrites on success
 	}
 
+	// STAND-IN (3.3): exercise the bulk commands. Toggle a tint on render_ids {2,3,4} via
+	// one RCMD_BULK_UPDATE every ~2 s (the mass-state-change case), then a one-shot
+	// mass-despawn of {3,4} at ~8 s. Both retry on a full ring (backpressure, never drop);
+	// after the despawn the tint update's {3,4} resolve to nothing and are skipped.
+	uint64_t startTime     = ano_timestamp_us();
+	uint64_t lastTint      = startTime;
+	bool     tintOn        = false;
+	bool     bulkDestroyed = false;
+
 	while (!atomic_load(&g_logicShouldStop))
 	{
 		uint64_t now = ano_timestamp_us();
@@ -140,18 +149,38 @@ void* anoLogicThreadMain(void* arg)
 
 		if (now - lastSwap > 1000000) // 1 s
 		{
-			lastSwap = now;
-			showingFallback = !showingFallback;
+			bool next = !showingFallback;
 			RenderCommand cmd = {
 				.kind           = RCMD_UPDATE,
 				.render_id      = 0,
 				.fields         = RFIELD_MESH_MAT,
-				.mesh_index     = showingFallback ? FALLBACK_MESH_INDEX : originalMesh,
+				.mesh_index     = next ? FALLBACK_MESH_INDEX : originalMesh,
 				.material_index = 0,
 				.light_index    = ANO_RENDER_NO_LIGHT,
 			};
-			if (!ano_render_submit(bridge, &cmd))
-				printf("Producer: command ring full; swap dropped.\n");
+			// Backpressure: advance only on a successful enqueue; a full ring means retry
+			// next tick, never drop (policy — see ano_render_submit).
+			if (ano_render_submit(bridge, &cmd)) { showingFallback = next; lastSwap = now; }
+		}
+
+		if (now - lastTint > 2000000) // ~2 s: bulk-toggle a tint on render_ids {2,3,4}
+		{
+			uint32_t ids[3] = { 2u, 3u, 4u };
+			AnoInstanceData inst[3] = {0};
+			if (!tintOn)
+				for (int k = 0; k < 3; k++) { inst[k].packed[0] = 0xFFFF8040u; inst[k].packed[1] = 1u; } // bluish tint + enable bit
+			RenderUpdateBatch ub = {
+				.count = 3, .fields = RFIELD_USERDATA, .render_ids = ids, .instance_data = inst,
+			};
+			if (ano_render_submit_bulk_update(bridge, &ub)) { tintOn = !tintOn; lastTint = now; }
+			// else: ring full; retry next tick (backpressure)
+		}
+
+		if (!bulkDestroyed && now - startTime > 8000000) // one-shot mass-despawn of {3,4}
+		{
+			uint32_t ids[2] = { 3u, 4u };
+			if (ano_render_submit_bulk_destroy(bridge, ids, 2)) bulkDestroyed = true;
+			// else: ring full; retry next tick
 		}
 		ano_sleep(2000); // ~2 ms logic tick (stand-in pacing)
 	}
