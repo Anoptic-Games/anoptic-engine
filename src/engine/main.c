@@ -93,20 +93,16 @@ void* anoLogicThreadMain(void* arg)
 	bool showingFallback    = false;
 	uint64_t lastSwap       = ano_timestamp_us();
 
-	// STAND-IN (Path B): stream a vertical bob onto render_ids 0,1 (typed
-	// ANO_MOTION_STREAMED at spawn) so the GPU scatter lane runs on real hardware.
-	// Each entity bobs around its real seeded base pose — a streamed transform is a full
-	// world matrix in the same space as initialTransform, so fabricating a bare identity
-	// would teleport and mirror them (swap their X-separated spawn spots). The consumer
-	// holds this snapshot and re-scatters it every frame, so it bobs smoothly instead of
-	// flashing on the ticks the fast render loop drains no batch. A small ring of
-	// self-owned blocks avoids reusing a batch the render thread is still consuming.
+	// STAND-IN (Path B v2): stream a vertical bob onto render_ids 0,1 (typed
+	// ANO_MOTION_STREAMED at spawn) so the GPU scatter lane runs on real hardware. Each
+	// entity bobs around its real seeded base pose — a streamed transform is a full world
+	// matrix in the same space as initialTransform, so fabricating a bare identity would
+	// teleport and mirror them. Zero-copy path: reserve the next ring slice, write the
+	// transforms straight into mapped GPU memory, and publish. begin returns false only
+	// when every slice is still in flight (the render side then holds the last slice).
 	// Remove when the real graphics-extract drives the lane.
-	typedef struct { RenderStreamBatch batch; uint32_t ids[2]; mat4 xforms[2]; } StreamBlock;
-	static StreamBlock streamPool[8];
-	uint32_t streamCursor   = 0;
-	float    streamPhase    = 0.0f;
-	uint64_t lastStream     = ano_timestamp_us();
+	float    streamPhase = 0.0f;
+	uint64_t lastStream  = ano_timestamp_us();
 
 	// Seeded base poses for the two streamed entities, fetched once (stable after init);
 	// identity fallback keeps the fabricated matrix valid if an id fails to resolve.
@@ -129,20 +125,17 @@ void* anoLogicThreadMain(void* arg)
 			float tri = streamPhase < 1.0f ? streamPhase : 2.0f - streamPhase; // 0..1..0, no libm
 			float bob = tri - 0.5f;
 
-			StreamBlock* blk = &streamPool[streamCursor];
-			streamCursor = (streamCursor + 1u) % 8u;
-			for (uint32_t e = 0; e < 2; e++) {
-				blk->ids[e] = e;
-				memcpy(&blk->xforms[e], &streamBase[e], sizeof(mat4)); // real base pose...
-				blk->xforms[e][3][1] += bob;                           // ...bobbed in Y
+			AnoStreamRegion reg;
+			if (ano_render_stream_begin(&reg) && reg.capacity >= 2) {
+				for (uint32_t e = 0; e < 2; e++) {
+					reg.ids[e] = e;
+					memcpy(&reg.xforms[e], &streamBase[e], sizeof(mat4)); // real base pose...
+					reg.xforms[e][3][1] += bob;                           // ...bobbed in Y
+				}
+				if (!ano_render_stream_commit(&reg, 2))
+					printf("Producer: stream control ring full; tick dropped.\n");
 			}
-			blk->batch.count      = 2;
-			blk->batch.render_ids = blk->ids;
-			blk->batch.transforms = blk->xforms;
-
-			RenderCommand scmd = { .kind = RCMD_STREAM_TRANSFORMS, .stream = &blk->batch };
-			if (!ano_render_submit(bridge, &scmd))
-				printf("Producer: stream ring full; tick dropped.\n");
+			// else: no free slice this tick; the render side holds the last published one.
 		}
 
 		if (now - lastSwap > 1000000) // 1 s

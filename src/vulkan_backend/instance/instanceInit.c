@@ -1350,15 +1350,17 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
-	VkDescriptorPoolSize poolSize[2] = {};
+	VkDescriptorPoolSize poolSize[3] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 23; // SSBO/frame: 9 global (1-9) + 8 cull (1-8) + 3 update + 3 scatter
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 22; // SSBO/frame: 9 global (1-9) + 8 cull (1-8) + 3 update + 2 scatter (0,2)
+	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = 2;
+	poolInfo.poolSizeCount = 3;
 	poolInfo.pPoolSizes = poolSize;
 	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 5; // 4 sets/frame (global, cull, update, scatter) + margin
 
@@ -1724,17 +1726,18 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 
         vkUpdateDescriptorSets(ctx->device, 4, updateWrites, 0, NULL);
 
-        // Scatter set (streamed transforms): 0 stream slots, 1 stream transforms,
-        // 2 the live transform buffer it scatters into (re-pointed here on grow).
+        // Scatter set (streamed transforms): 0 resolved slots (per-frame), 1 the xform
+        // ring (DYNAMIC — range is one slice; recordCommandBuffer selects the published
+        // slice by dynamic offset), 2 the live transform buffer it scatters into.
         VkDescriptorBufferInfo streamSlotInfo = {};
         streamSlotInfo.buffer = rendererState.transformStream.slotBuffer[i];
         streamSlotInfo.offset = 0;
         streamSlotInfo.range = sizeof(uint32_t) * rendererState.transformStream.capacity;
 
         VkDescriptorBufferInfo streamXformInfo = {};
-        streamXformInfo.buffer = rendererState.transformStream.xformBuffer[i];
-        streamXformInfo.offset = 0;
-        streamXformInfo.range = sizeof(mat4) * rendererState.transformStream.capacity;
+        streamXformInfo.buffer = rendererState.transformStream.xformRing;
+        streamXformInfo.offset = 0;                                       // dynamic offset added at bind
+        streamXformInfo.range = rendererState.transformStream.sliceStride; // one slice
 
         VkWriteDescriptorSet scatterWrites[3] = {};
         for (int j = 0; j < 3; ++j) {
@@ -1745,6 +1748,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
             scatterWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             scatterWrites[j].descriptorCount = 1;
         }
+        scatterWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
         scatterWrites[0].pBufferInfo = &streamSlotInfo;
         scatterWrites[1].pBufferInfo = &streamXformInfo;
         scatterWrites[2].pBufferInfo = &ssboInfo; // same TransformSSBO update writes
@@ -2036,8 +2040,6 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.instanceDataBuffer.buffer[i], NULL);
 		if(rendererState.transformStream.slotBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformStream.slotBuffer[i], NULL);
-		if(rendererState.transformStream.xformBuffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.transformStream.xformBuffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
 		if(rendererState.lightBuffer.buffer[i])
@@ -2057,6 +2059,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
 	}
+
+	// Single (non-per-frame) streamed-transform ring.
+	if(rendererState.transformStream.xformRing)
+		vkDestroyBuffer(ctx->device, rendererState.transformStream.xformRing, NULL);
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{

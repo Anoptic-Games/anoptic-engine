@@ -258,8 +258,13 @@ void recordCommandBuffer(uint32_t imageIndex)
                     pass->prototype == PIPELINE_COMPUTE_SCATTER ? rendererState.frames[rendererState.frameIndex].scatterSet :
                                                                   rendererState.frames[rendererState.frameIndex].cullSet;
 
+                // Scatter binding 1 (xform ring) is STORAGE_BUFFER_DYNAMIC: bind the
+                // published slice by per-frame dynamic offset; other passes have none.
+                uint32_t dynCount = pass->prototype == PIPELINE_COMPUTE_SCATTER ? 1u : 0u;
+                const uint32_t* dynOff = pass->prototype == PIPELINE_COMPUTE_SCATTER
+                    ? &rendererState.transformStream.dynOffset[rendererState.frameIndex] : NULL;
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    rendererState.prototypes[pass->prototype].layout, 0, 1, &set, 0, NULL);
+                    rendererState.prototypes[pass->prototype].layout, 0, 1, &set, dynCount, dynOff);
 
                 if (pass->prototype == PIPELINE_COMPUTE_UPDATE) {
                     vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &entityCount);
@@ -710,48 +715,34 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
     return true;
 }
 
-// Records one tick's streamed transforms as the current snapshot (CPU, last-wins,
-// clamped to STREAM_CAPACITY). Stored UNRESOLVED — render_id, not slot — so every
-// frame re-resolves it against the live slot map (stage_stream_frame), dropping ids
-// that retire after this batch. Per-frame staging then holds this snapshot until a
-// newer batch replaces it: a streamed transform persists across ticks with no fresh
-// batch rather than flashing back to its update.comp base.
-// in:  state, batch b (count, render_ids, transforms)
-// out: transformStream.{snapIds, snapXforms, snapCount} replaced
-static void record_stream_snapshot(RendererState* state, const RenderStreamBatch* b)
-{
-    const uint32_t cap = state->transformStream.capacity;
-    uint32_t n = b->count;
-    if (n > cap) {
-        printf("Stream batch (%u) exceeds STREAM_CAPACITY (%u); extra entries dropped.\n", b->count, cap);
-        n = cap;
-    }
-    memcpy(state->transformStream.snapIds, b->render_ids, (size_t)n * sizeof(uint32_t));
-    memcpy(state->transformStream.snapXforms, b->transforms, (size_t)n * sizeof(mat4));
-    state->transformStream.snapCount = n;
-}
-
-// Resolves the current snapshot into this frame's scatter lane: render_id -> slot
-// (retired/unknown ids dropped), transforms copied 1:1, count set for the dispatch.
-// Runs EVERY frame — the lane is re-applied each tick because update.comp rewrites
-// every ANO_MOTION_STREAMED slot to base, so a held transform must be re-scattered to
-// survive. snapCount == 0 yields count 0 and the scatter pass self-skips.
+// Stages the held streamed slice into this frame's scatter lane. The transform payload is
+// NOT copied — scatter reads the producer-written ring slice directly via dynamic offset;
+// only the cheap render_id -> slot resolve lands in slotMapped, and only when resolveGen
+// moved (a new publish or a slot retirement). Otherwise the prior resolution, count,
+// dynamic offset and frameSeq still hold, so a frame with no fresh publish re-binds the
+// same slice for free (hold-last-value). curCount == 0 yields count 0 and scatter
+// self-skips. frameSeq[frameIndex] records the seq this frame submits, for the reclaim.
 // in:  state, frameIndex
-// out: slotMapped[frameIndex], xformMapped[frameIndex], count[frameIndex] written
+// out: slotMapped[frameIndex], count[frameIndex], dynOffset[frameIndex], frameSeq[frameIndex]
 static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
 {
-    uint32_t* slots  = state->transformStream.slotMapped[frameIndex];
-    mat4*     xforms = state->transformStream.xformMapped[frameIndex];
-    const uint32_t snap = state->transformStream.snapCount;
-    uint32_t n = 0;
-    for (uint32_t e = 0; e < snap; e++) {
-        uint32_t slot = render_slots_resolve(&state->slots, state->transformStream.snapIds[e]);
-        if (slot == ANO_RENDER_SLOT_UNMAPPED) continue; // retired/unknown id: drop this entry
-        slots[n] = slot;
-        memcpy(&xforms[n], &state->transformStream.snapXforms[e], sizeof(mat4));
-        n++;
+    TransformStreamBuffer* ts = &state->transformStream;
+    if (ts->stagedGen[frameIndex] == ts->resolveGen)
+        return; // slot/count/offset/seq for this frame already current
+    ts->stagedGen[frameIndex] = ts->resolveGen;
+    ts->frameSeq[frameIndex]  = ts->curSeq;
+
+    if (ts->curCount == 0) { ts->count[frameIndex] = 0; return; }
+
+    uint32_t slice = (uint32_t)((ts->curSeq - 1u) % ts->ringSlices);
+    const uint32_t* ids = ts->idRing + (size_t)slice * ts->capacity;
+    uint32_t* slots = ts->slotMapped[frameIndex];
+    for (uint32_t i = 0; i < ts->curCount; i++) {
+        uint32_t slot = render_slots_resolve(&state->slots, ids[i]);
+        slots[i] = (slot == ANO_RENDER_SLOT_UNMAPPED) ? STREAM_SLOT_SKIP : slot;
     }
-    state->transformStream.count[frameIndex] = n;
+    ts->count[frameIndex]     = ts->curCount;
+    ts->dynOffset[frameIndex] = (uint32_t)((VkDeviceSize)slice * ts->sliceStride);
 }
 
 static void render_apply_commands(RendererState* state, uint32_t frameIndex)
@@ -762,7 +753,12 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
     RenderCommand cmd;
     while (ano_render_next_command(&state->bridge, &cmd)) {
         if (cmd.kind == RCMD_STREAM_TRANSFORMS) {
-            if (cmd.stream) record_stream_snapshot(state, cmd.stream);
+            // Adopt the published slice as the held snapshot; bump resolveGen so every
+            // frame re-resolves it. The mapped writes preceded the producer's submit, so
+            // the slice contents are visible after this drain's acquire.
+            state->transformStream.curSeq   = cmd.stream_seq;
+            state->transformStream.curCount = cmd.stream_count;
+            state->transformStream.resolveGen++;
             continue; // never enters the per-frame `pending` propagation
         }
         if (cmd.kind == RCMD_CREATE) {
@@ -823,17 +819,22 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
     // 3. Free + report slots whose referencing frames have all retired.
     uint32_t retired[64];
     uint32_t n;
+    bool anyRetired = false;
     do {
         n = render_slots_collect_retired(&state->slots, state->globalFrame, retired, 64u);
+        if (n) anyRetired = true;
         for (uint32_t i = 0; i < n; i++) {
             RenderEvent ev = { .kind = REVENT_SLOT_RETIRED, .render_id = retired[i] };
             (void)ano_render_emit_event(&state->bridge, &ev);
         }
     } while (n == 64u);
+    if (anyRetired)
+        state->transformStream.resolveGen++; // a freed/recycled slot invalidates cached resolves
 
-    // 4. Stage the held streamed snapshot into this frame against the now-settled slot
-    //    map. Runs unconditionally (snapCount == 0 -> count 0 -> scatter self-skips), so
-    //    a streamed transform holds across ticks with no fresh batch instead of flashing.
+    // 4. Stage the held streamed slice into this frame against the now-settled slot map.
+    //    Re-resolves only on a resolveGen bump (new publish or retirement); otherwise it
+    //    re-binds the same slice for free, so a streamed pose holds across ticks with no
+    //    fresh batch instead of flashing.
     stage_stream_frame(state, frameIndex);
 }
 
@@ -880,6 +881,45 @@ bool anoRenderEntityBaseTransform(uint32_t render_id, mat4 out) {
     return true;
 }
 
+// Producer endpoint — reserve the next free transform-ring slice. Returns false (out
+// untouched) when that slice is still in flight on the GPU (reclaimSeq has not caught
+// up): the caller drops the tick and the render side holds the last published slice.
+// Single-producer; does NOT advance produceSeq (commit does), so repeated begins without
+// a commit return the same slice.
+// in:  out (AnoStreamRegion*); out: filled on success; false if no free slice
+bool ano_render_stream_begin(AnoStreamRegion* out) {
+    TransformStreamBuffer* ts = &rendererState.transformStream;
+    uint64_t seq = ts->produceSeq + 1u;
+    if (seq > ts->ringSlices) {
+        uint64_t prior = seq - ts->ringSlices; // seq that last used this slice
+        if (atomic_load_explicit(&ts->reclaimSeq, memory_order_acquire) < prior)
+            return false; // slice not yet GPU-reclaimed
+    }
+    uint32_t slice = (uint32_t)((seq - 1u) % ts->ringSlices);
+    out->ids      = ts->idRing + (size_t)slice * ts->capacity;
+    out->xforms   = ts->xformRingMapped + (size_t)slice * ts->capacity;
+    out->capacity = ts->capacity;
+    out->token    = seq;
+    return true;
+}
+
+// Producer endpoint — publish a filled region as one {seq,count} control command. The
+// region's mapped writes precede this submit's release, so the render consumer sees them
+// after its acquire and the queue submit makes them GPU-visible (coherent memory).
+// Advances produceSeq only on a successful enqueue. false if the command ring is full
+// (slice left unpublished; it is reclaimed normally on the next cycle).
+// in:  region, count (clamped to capacity); out: true on enqueue
+bool ano_render_stream_commit(const AnoStreamRegion* region, uint32_t count) {
+    TransformStreamBuffer* ts = &rendererState.transformStream;
+    if (count > ts->capacity) count = ts->capacity;
+    RenderCommand cmd = { .kind = RCMD_STREAM_TRANSFORMS,
+                          .stream_seq = region->token, .stream_count = count };
+    if (!ano_render_submit(&rendererState.bridge, &cmd))
+        return false;
+    ts->produceSeq = region->token;
+    return true;
+}
+
 void drawFrame()
 {
 	if (rendererState.framebufferResized)
@@ -896,6 +936,17 @@ void drawFrame()
     if (rendererState.frames[rendererState.frameIndex].frameSubmitted == true)
     {
         vkWaitForFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence), VK_TRUE, UINT64_MAX);
+
+        // Reclaim streamed-transform ring slices the GPU is finished reading. Hold-last-
+        // value means several in-flight frames can share one seq (one slice), so this
+        // slot completing does NOT free its slice — a sibling may still read it. The safe
+        // bound is the OLDEST still-in-flight frame's seq: after we wait slot frameIndex,
+        // that is slot (frameIndex+1) % N (the next to be reused). Everything strictly
+        // below its seq is unreferenced.
+        uint32_t oldest = (rendererState.frameIndex + 1u) % MAX_FRAMES_IN_FLIGHT;
+        uint64_t qmin = rendererState.transformStream.frameSeq[oldest];
+        atomic_store_explicit(&rendererState.transformStream.reclaimSeq,
+                              qmin ? qmin - 1u : 0u, memory_order_release);
     }
 
     // Process any deferred deletions that were waiting for this frame's previous commands to finish
@@ -1177,31 +1228,60 @@ static bool createMappedSsboSet(VulkanContext* ctx, VkDeviceSize bytes,
     return true;
 }
 
-// Streamed-transform staging lane (Path B). Two parallel per-frame SoA buffers on the
-// stream capacity axis: target slots + their CPU transforms, read by scatter.comp.
+// Streamed-transform lane (Path B v2 — zero-copy mapped ring). Per-frame resolved-slot
+// buffers (render-written, scatter binding 0) plus ONE producer-written transform ring
+// of ringSlices slices (scatter binding 1 via dynamic offset). The parallel render_id
+// ring (idRing) is CPU-only and allocated from renderHeap in initVulkan once it exists.
 // in:  ctx, state, capacity (STREAM_CAPACITY)
 // out: true on success; false on buffer/alloc failure
 bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capacity) {
-    state->transformStream.capacity = capacity;
-    for (int f = 0; f < MAX_FRAMES_IN_FLIGHT; f++) state->transformStream.count[f] = 0;
-    // CPU snapshot arrays are allocated from renderHeap after it exists (see initVulkan);
-    // snapCount==0 keeps stage_stream_frame a no-op until then.
-    state->transformStream.snapIds = NULL;
-    state->transformStream.snapXforms = NULL;
-    state->transformStream.snapCount = 0;
+    TransformStreamBuffer* ts = &state->transformStream;
+    ts->capacity    = capacity;
+    ts->ringSlices  = (uint32_t)MAX_FRAMES_IN_FLIGHT + 2u;   // headroom over frames in flight
+    ts->sliceStride = (VkDeviceSize)capacity * sizeof(mat4); // 16-byte aligned; dynamic-offset unit
+    ts->produceSeq  = 0;
+    atomic_store_explicit(&ts->reclaimSeq, 0, memory_order_relaxed);
+    ts->curSeq      = 0;
+    ts->curCount    = 0;
+    ts->resolveGen  = 1;                                     // != stagedGen[*] (0) -> first stage runs
+    ts->idRing      = NULL;                                  // render-heap; set in initVulkan
+    for (int f = 0; f < MAX_FRAMES_IN_FLIGHT; f++) {
+        ts->count[f]     = 0;
+        ts->dynOffset[f] = 0;
+        ts->frameSeq[f]  = 0;
+        ts->stagedGen[f] = 0;
+    }
 
+    // Per-frame resolved-slot buffers (binding 0).
     if (!createMappedSsboSet(ctx, (VkDeviceSize)sizeof(uint32_t) * capacity,
-                             state->transformStream.slotBuffer, state->transformStream.slotAllocs,
-                             (void**)state->transformStream.slotMapped)) {
+                             ts->slotBuffer, ts->slotAllocs, (void**)ts->slotMapped)) {
         printf("Failed to create stream slot buffer!\n");
         return false;
     }
-    if (!createMappedSsboSet(ctx, (VkDeviceSize)sizeof(mat4) * capacity,
-                             state->transformStream.xformBuffer, state->transformStream.xformAllocs,
-                             (void**)state->transformStream.xformMapped)) {
-        printf("Failed to create stream transform buffer!\n");
+
+    // Single producer-written transform ring: ringSlices slices of `capacity` mat4s.
+    VkBufferCreateInfo bufferInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size  = (VkDeviceSize)ts->ringSlices * ts->sliceStride,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &ts->xformRing) != VK_SUCCESS) {
+        printf("Failed to create stream transform ring!\n");
         return false;
     }
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(ctx->device, ts->xformRing, &memReq);
+    ts->xformRingAlloc = gpu_alloc(&gpuAllocator, memReq,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (ts->xformRingAlloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(ctx->device, ts->xformRing, NULL);
+        ts->xformRing = VK_NULL_HANDLE;
+        printf("Failed to allocate stream transform ring!\n");
+        return false;
+    }
+    vkBindBufferMemory(ctx->device, ts->xformRing, ts->xformRingAlloc.memory, ts->xformRingAlloc.offset);
+    ts->xformRingMapped = (mat4*)ts->xformRingAlloc.mapped;
     return true;
 }
 
@@ -1781,16 +1861,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Stream snapshot arrays now that renderHeap exists. Render-thread-only (the
-	// producer touches only the SPSC ring), so the render heap is the right owner;
-	// freed wholesale on mi_heap_destroy at teardown.
-	rendererState.transformStream.snapIds =
-	    mi_heap_malloc(rendererState.renderHeap, (size_t)STREAM_CAPACITY * sizeof(uint32_t));
-	rendererState.transformStream.snapXforms =
-	    mi_heap_malloc(rendererState.renderHeap, (size_t)STREAM_CAPACITY * sizeof(mat4));
-	if (!rendererState.transformStream.snapIds || !rendererState.transformStream.snapXforms)
+	// Stream render_id ring now that renderHeap exists: CPU-only, parallel to xformRing,
+	// producer-written and render-resolved. Freed wholesale on mi_heap_destroy at teardown.
+	rendererState.transformStream.idRing = mi_heap_malloc(rendererState.renderHeap,
+	    (size_t)rendererState.transformStream.ringSlices * STREAM_CAPACITY * sizeof(uint32_t));
+	if (!rendererState.transformStream.idRing)
 	{
-		printf("Quitting init: stream snapshot allocation failure!\n");
+		printf("Quitting init: stream id ring allocation failure!\n");
 		unInitVulkan();
 		return false;
 	}
