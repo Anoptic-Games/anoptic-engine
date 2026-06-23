@@ -1951,7 +1951,13 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+        // Range MUST use the same max command stride createIndirectDrawBuffer allocated with: the
+        // vertex fallback writes VkDrawIndexedIndirectCommand (20B) > mesh's VkDrawMeshTasksIndirectCommandEXT
+        // (12B). A mesh-stride range under-covers the buffer, leaving the high (shadow) partitions outside
+        // the descriptor — the cull's OOB writes are dropped and the fallback casts no shadows.
+        VkDeviceSize indirectCmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+            ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+        indirectInfo.range = indirectCmdStride * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
