@@ -60,11 +60,11 @@
 // Built incrementally: directional first (this increment), then spot, then point cubes — bump
 // the spot/point counts to add them once the directional path is hardware-verified.
 #define ANO_SHADOW_DIR_COUNT     1u    // directional casters (one ortho map each)
-#define ANO_SHADOW_SPOT_COUNT    0u    // spot casters (one perspective map each)
-#define ANO_SHADOW_POINT_COUNT   0u    // point casters (6 cube-face maps each)
+#define ANO_SHADOW_SPOT_COUNT    1u    // spot casters (one perspective map each)
+#define ANO_SHADOW_POINT_COUNT   4u    // point casters (6 cube-face maps each)
 #define ANO_SHADOW_CUBE_FACES    6u
-#define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // currently 1 (DIR=1, SPOT=POINT=0)
-#define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = currently 3
+#define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // currently 26 (DIR=1, SPOT=1, POINT=4)
+#define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = currently 28
 #define ANO_SHADOW_DIM           1024u                  // per-layer shadow map resolution
 #define ANO_SHADOW_DEPTH_FORMAT  VK_FORMAT_D32_SFLOAT   // sampled as a depth-compare (sampler2DArrayShadow)
 #define ANO_SHADOW_ORTHO_EXTENT  8.0f                   // half-size of the directional ortho world box (covers the demo scene)
@@ -809,6 +809,10 @@ typedef struct RendererState
     VkBuffer                shadowLightInfoBuffer;
     GpuAllocation           shadowLightInfoAlloc;
     void*                   shadowLightInfoMapped;
+    // Running shadow-frustum allocator, advanced by addLightEntity as casters register at init.
+    // shadowTypeUsed indexed by LightType (0 dir / 1 point / 2 spot); bounds each type to its budget.
+    uint32_t                shadowFrustumNext;
+    uint32_t                shadowTypeUsed[3];
 
     // Fallback resources
     VkImage                 fallbackImage;

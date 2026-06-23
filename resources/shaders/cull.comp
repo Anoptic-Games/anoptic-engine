@@ -142,7 +142,7 @@ layout(set = 0, binding = 8) readonly buffer MaterialSSBO {
 // Shadow frustums (audit 4.7): GPU-built by shadowsetup.comp. Tested here exactly like the camera
 // frustums; survivors are written into partitions [ANO_VIEW_COUNT, ANO_FRUSTUM_COUNT). Must match
 // structs.h. CullView = viewProj + 6 planes; this pass uses only the planes.
-#define ANO_SHADOW_FRUSTUM_COUNT 1u
+#define ANO_SHADOW_FRUSTUM_COUNT 26u  // must match structs.h (DIR=1 + SPOT=1 + POINT=4*6)
 layout(set = 0, binding = 9) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
 
 // World-space bounding sphere vs one view's 6 frustum planes. The sphere (worldCenter,

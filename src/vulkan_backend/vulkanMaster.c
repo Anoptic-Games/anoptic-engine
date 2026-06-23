@@ -1678,6 +1678,27 @@ static uint32_t addLightEntity(LightData light, mat4 transform) {
     // Stage into frame 0's light delta; init's one-shot flush uploads it to the device buffer
     // (shared by all frames in flight). Called during scene setup, before the first draw.
     slot_upload_stage(&rendererState.lightBuffer, 0, lightIdx, &light);
+
+    // Register a shadow caster for this light, within its type's budget (ANO_SHADOW_*_COUNT). Point
+    // lights claim 6 contiguous cube-face frustums, dir/spot one each. The frustum block lays out
+    // cfg[base..] and the light's info points at it; shadowsetup builds each, the fragment samples.
+    uint32_t budget = light.type == LIGHT_TYPE_DIRECTIONAL ? ANO_SHADOW_DIR_COUNT
+                    : light.type == LIGHT_TYPE_POINT       ? ANO_SHADOW_POINT_COUNT
+                                                           : ANO_SHADOW_SPOT_COUNT;
+    uint32_t blockSize = light.type == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u;
+    if (rendererState.shadowTypeUsed[light.type] < budget &&
+        rendererState.shadowFrustumNext + blockSize <= ANO_SHADOW_FRUSTUM_COUNT) {
+        uint32_t base = rendererState.shadowFrustumNext;
+        ShadowFrustumConfig* cfg = (ShadowFrustumConfig*)rendererState.shadowFrustumConfigMapped;
+        ShadowLightInfo* info = (ShadowLightInfo*)rendererState.shadowLightInfoMapped;
+        for (uint32_t f = 0; f < blockSize; f++)
+            cfg[base + f] = (ShadowFrustumConfig){ .lightIndex = lightIdx, .lightType = light.type,
+                .faceIndex = (light.type == LIGHT_TYPE_POINT ? f : 0u), .pad = 0u };
+        info[lightIdx] = (ShadowLightInfo){ .castsShadow = 1u, .baseFrustum = base,
+            .frustumCount = blockSize, .pad = 0u };
+        rendererState.shadowFrustumNext += blockSize;
+        rendererState.shadowTypeUsed[light.type] += 1u;
+    }
     return entIdx;
 }
 
@@ -1959,15 +1980,16 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     state->shadowFrustumConfigAlloc = cfgAlloc; state->shadowFrustumConfigMapped = cfgAlloc.mapped;
     state->shadowLightInfoAlloc = infoAlloc;   state->shadowLightInfoMapped = infoAlloc.mapped;
 
-    // Frustum 0 = directional light 0's ortho map.
-    ShadowFrustumConfig* cfg = (ShadowFrustumConfig*)state->shadowFrustumConfigMapped;
-    cfg[0] = (ShadowFrustumConfig){ .lightIndex = 0u, .lightType = LIGHT_TYPE_DIRECTIONAL, .faceIndex = 0u, .pad = 0u };
-
-    // Per-light: only light 0 casts this increment; the rest are unshadowed.
+    // Config starts empty: addLightEntity registers each caster (per-type budget) as the scene rig
+    // is built, advancing state->shadowFrustumNext. Frustums never claimed by a caster stay zeroed,
+    // which shadowsetup reads as light 0's directional map — harmless, since no light's info points
+    // at them. info[] starts all-non-casting; the rig sets the casters' baseFrustum/frustumCount.
+    memset(state->shadowFrustumConfigMapped, 0, (size_t)cfgSize);
     ShadowLightInfo* info = (ShadowLightInfo*)state->shadowLightInfoMapped;
     for (uint32_t l = 0; l < state->lightBuffer.capacity; l++)
         info[l] = (ShadowLightInfo){ .castsShadow = 0u, .baseFrustum = 0u, .frustumCount = 0u, .pad = 0u };
-    info[0] = (ShadowLightInfo){ .castsShadow = 1u, .baseFrustum = 0u, .frustumCount = 1u, .pad = 0u };
+    state->shadowFrustumNext = 0u;
+    state->shadowTypeUsed[0] = state->shadowTypeUsed[1] = state->shadowTypeUsed[2] = 0u;
 
     return true;
 }
