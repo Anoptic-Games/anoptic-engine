@@ -2084,13 +2084,17 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
     };
     
+    // Winding matches the glTF convention (CCW front under frontFace=CCW + the Y-flip projection),
+    // so the fallback cube agrees with loaded meshes and needs no per-instance mirror. (The original
+    // order was the reverse, which left the ground box's top face back-facing — see
+    // docs/math_conventions.md, winding.) Per triangle (a,b,c) -> (a,c,b).
     const uint32_t cubeIndices[] = {
-        0, 1, 2, 2, 3, 0, // front
-        1, 5, 6, 6, 2, 1, // right
-        5, 4, 7, 7, 6, 5, // back
-        4, 0, 3, 3, 7, 4, // left
-        3, 2, 6, 6, 7, 3, // top
-        4, 5, 1, 1, 0, 4  // bottom
+        0, 2, 1, 2, 0, 3, // front
+        1, 6, 5, 6, 1, 2, // right
+        5, 7, 4, 7, 5, 6, // back
+        4, 3, 0, 3, 4, 7, // left
+        3, 6, 2, 6, 3, 7, // top
+        4, 1, 5, 1, 4, 0  // bottom
     };
 
     uint32_t fallbackMeshIdx = geometry_pool_upload(&state->globalGeometryPool, &stagingAllocator,
@@ -2390,8 +2394,12 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// viking room's opaque material (guaranteed to draw + cast). Forced static in the motion loop.
 	uint32_t groundEntity = rendererState.entityCount;
 	{
+        // Thin ground box, all-positive scale. The fallback cube's winding now matches glTF, so its
+        // top face is front-facing under frontFace=CCW (no mirror needed), and the constant (1,1,1)
+        // vertex normal resolves to ~+Y here under the inverse-transpose normal matrix (the thin Y
+        // axis dominates), so the top lights and receives shadow correctly. See docs/math_conventions.md.
         mat4 g = {{15.0f, 0,      0,     0},
-                  {0,    -0.05f,  0,     0},
+                  {0,     0.05f,  0,     0},
                   {0,     0,      15.0f, 0},
                   {0,    -0.6f,   0,     1}};
 		rendererState.entityCount += 1;
