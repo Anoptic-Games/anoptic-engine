@@ -6,7 +6,7 @@
 #include "logging/logging_core.h"
 
 #include <anoptic_threads.h>
-#include <anoptic_memalign.h>
+#include <anoptic_memory.h>
 #include <stdio.h>
 
 
@@ -128,7 +128,6 @@ int write_all_buffered() {
     // write_to_log_file(fileMsg, output_file_path);
 
     return 0;
-
 }
 
 /* Public */
@@ -214,8 +213,4 @@ int ano_log_cleanup() {
     ano_aligned_free(log_buffer.data);
 
     return 0; // Cleanup Success
-}
-
-void ano_log_interval(uint32_t ms)  {
-
 }

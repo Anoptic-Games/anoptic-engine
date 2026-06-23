@@ -46,30 +46,30 @@ double findAverage(const uint64_t arr[], uint32_t n) {
 // TODO: Move this somewhere more sane
 void measureFrameTime()
 {
-	static uint64_t frameTimes[200] = {};
-	static uint32_t timeIndex = 0;
+    static uint64_t frameTimes[200] = {};
+    static uint32_t timeIndex = 0;
 
-	uint64_t currentTime = ano_timestamp_us();
-	if (timeIndex > 0) {
-		frameTimes[timeIndex - 1] = currentTime - frameTimes[timeIndex - 1];
-	}
+    uint64_t currentTime = ano_timestamp_us();
+    if (timeIndex > 0) {
+        frameTimes[timeIndex - 1] = currentTime - frameTimes[timeIndex - 1];
+    }
 
-	if (timeIndex == 199) {
-		frameTimes[timeIndex] = currentTime - frameTimes[timeIndex];
+    if (timeIndex == 199) {
+        frameTimes[timeIndex] = currentTime - frameTimes[timeIndex];
 
-		// Print the frame times
-		for (int i = 0; i < 200; i++) {
+        // Print the frame times
+        for (int i = 0; i < 200; i++) {
             // TODO: uhh errrm
-			printf("Frame %d: %llu\n", i, frameTimes[i]);
-		}
-		
-		printf("Average frametime: %f\n", findAverage(frameTimes, 199)/1000);
-		
-		timeIndex = 0;
-	} else {
-		frameTimes[timeIndex] = currentTime;
-		timeIndex++;
-	}
+            printf("Frame %d: %llu\n", i, frameTimes[i]);
+        }
+        
+        printf("Average frametime: %f\n", findAverage(frameTimes, 199)/1000);
+        
+        timeIndex = 0;
+    } else {
+        frameTimes[timeIndex] = currentTime;
+        timeIndex++;
+    }
 }
 
 
@@ -83,37 +83,37 @@ static atomic_bool g_logicShouldStop = false;
 
 void* anoLogicThreadMain(void* arg)
 {
-	(void)arg;
-	// Stand-in producer: until the real DisplayState graphics-extract exists, drive
-	// one discrete transition across the bridge on a timer — toggle render_id 0's
-	// mesh between its original geometry and the fallback cube. Proves the producer
-	// -> SPSC ring -> render-consumer path across the thread boundary.
-	AnoRenderBridge* bridge = anoRenderBridge();
-	uint32_t originalMesh   = anoRenderEntity0Mesh();
-	bool showingFallback    = false;
-	uint64_t lastSwap       = ano_timestamp_us();
+    (void)arg;
+    // Stand-in producer: until the real DisplayState graphics-extract exists, drive
+    // one discrete transition across the bridge on a timer — toggle render_id 0's
+    // mesh between its original geometry and the fallback cube. Proves the producer
+    // -> SPSC ring -> render-consumer path across the thread boundary.
+    AnoRenderBridge* bridge = anoRenderBridge();
+    uint32_t originalMesh   = anoRenderEntity0Mesh();
+    bool showingFallback    = false;
+    uint64_t lastSwap       = ano_timestamp_us();
 
-	while (!atomic_load(&g_logicShouldStop))
-	{
-		uint64_t now = ano_timestamp_us();
-		if (now - lastSwap > 1000000) // 1 s
-		{
-			lastSwap = now;
-			showingFallback = !showingFallback;
-			RenderCommand cmd = {
-				.kind           = RCMD_UPDATE,
-				.render_id      = 0,
-				.fields         = RFIELD_MESH_MAT,
-				.mesh_index     = showingFallback ? FALLBACK_MESH_INDEX : originalMesh,
-				.material_index = 0,
-				.light_index    = ANO_RENDER_NO_LIGHT,
-			};
-			if (!ano_render_submit(bridge, &cmd))
-				printf("Producer: command ring full; swap dropped.\n");
-		}
-		ano_sleep(2000); // ~2 ms logic tick (stand-in pacing)
-	}
-	return NULL;
+    while (!atomic_load(&g_logicShouldStop))
+    {
+        uint64_t now = ano_timestamp_us();
+        if (now - lastSwap > 1000000) // 1 s
+        {
+            lastSwap = now;
+            showingFallback = !showingFallback;
+            RenderCommand cmd = {
+                .kind           = RCMD_UPDATE,
+                .render_id      = 0,
+                .fields         = RFIELD_MESH_MAT,
+                .mesh_index     = showingFallback ? FALLBACK_MESH_INDEX : originalMesh,
+                .material_index = 0,
+                .light_index    = ANO_RENDER_NO_LIGHT,
+            };
+            if (!ano_render_submit(bridge, &cmd))
+                printf("Producer: command ring full; swap dropped.\n");
+        }
+        ano_sleep(2000); // ~2 ms logic tick (stand-in pacing)
+    }
+    return NULL;
 }
 #endif // !HEADLESS_BUILD
 
@@ -131,12 +131,12 @@ int main()
         printf("Warning: could not set the working directory to the executable's; "
                "assets will load relative to the current working directory.\n");
 
-	#ifdef DEBUG_BUILD
+    #ifdef DEBUG_BUILD
 
     mi_option_enable(mi_option_show_errors);
     mi_option_enable(mi_option_show_stats);
     mi_option_enable(mi_option_verbose);
-	printf("Running in debug mode!\n");
+    printf("Running in debug mode!\n");
 
     ano_log_init();
     for(int i = 0; i < 172; i++) {
@@ -155,50 +155,50 @@ int main()
 
     ano_log_cleanup();
 
-	#endif
+    #endif
 
 #ifndef HEADLESS_BUILD
-	// GLFW pins window + event handling to the main thread (mandatory on macOS), so
-	// the render world (all Vulkan + GLFW) runs HERE on the main thread. initVulkan
-	// creates the bridge synchronously before the producer starts, so there is no
-	// readiness handshake.
-	if (!initVulkan())
-	{
-	    printf("Vulkan initialization failed.\n");
-	    return -1;
-	}
+    // GLFW pins window + event handling to the main thread (mandatory on macOS), so
+    // the render world (all Vulkan + GLFW) runs HERE on the main thread. initVulkan
+    // creates the bridge synchronously before the producer starts, so there is no
+    // readiness handshake.
+    if (!initVulkan())
+    {
+        printf("Vulkan initialization failed.\n");
+        return -1;
+    }
 
-	// Logic/ECS master spun onto its own thread as the sole render-command producer.
-	anothread_t logicThread;
-	if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
-	{
-	    printf("Failed to spawn logic thread.\n");
-	    unInitVulkan();
-	    return -1;
-	}
+    // Logic/ECS master spun onto its own thread as the sole render-command producer.
+    anothread_t logicThread;
+    if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
+    {
+        printf("Failed to spawn logic thread.\n");
+        unInitVulkan();
+        return -1;
+    }
 
-	// Render loop (main thread): pump window events, then draw. The logic thread
-	// feeds discrete ECS->render transitions across the bridge concurrently.
-	while (!anoShouldClose())
-	{
-	    glfwPollEvents();
-	    drawFrame();
-	}
+    // Render loop (main thread): pump window events, then draw. The logic thread
+    // feeds discrete ECS->render transitions across the bridge concurrently.
+    while (!anoShouldClose())
+    {
+        glfwPollEvents();
+        drawFrame();
+    }
 
-	// Window closed: stop the producer FIRST and join it, so no submit can race the
-	// bridge destruction that unInitVulkan() performs.
-	atomic_store(&g_logicShouldStop, true);
-	ano_thread_join(logicThread, NULL);
+    // Window closed: stop the producer FIRST and join it, so no submit can race the
+    // bridge destruction that unInitVulkan() performs.
+    atomic_store(&g_logicShouldStop, true);
+    ano_thread_join(logicThread, NULL);
 
-	unInitVulkan();
+    unInitVulkan();
 #else
-	// Headless engine: no renderer. Console / server entry point.
-	printf("Anoptic Engine — headless console mode.\n");
+    // Headless engine: no renderer. Console / server entry point.
+    printf("Anoptic Engine — headless console mode.\n");
     while (true) {
         printf("Waiting...\n");
         ano_sleep(3 * 1000000);
     };
-	// TODO: simulation / server loop goes here.
+    // TODO: simulation / server loop goes here.
 #endif
 
     return 0;

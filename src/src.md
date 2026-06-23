@@ -60,8 +60,9 @@ src/
 - `mesh/` (`ano_meshoptimizer.h`): Wrapper over meshoptimizer; decomposes uploaded
   geometry into meshlets and bounds for the GPU geometry pool.
 
-- `memory/` (`anoptic_memory.h`, `anoptic_memalign.h`): Aligned allocation primitives
-  and the mimalloc integration that backs the engine's arenas and thread-local heaps.
+- `memory/` (`anoptic_memory.h`): Aligned allocation primitives, the hardware
+  interference constants (`ANO_CACHE_LINE` / `ANO_THREAD_LINE`), and the mimalloc
+  integration that backs the engine's arenas and thread-local heaps.
 
 - `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition
   variables, spinlocks, barriers, and TLS over pthreads / Win32.

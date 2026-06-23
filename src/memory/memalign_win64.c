@@ -5,7 +5,7 @@
 
 #ifdef _WIN64
 
-#include "anoptic_memalign.h"
+#include <anoptic_memory.h>
 #include <mimalloc.h>
 
 // Windows-specific implementation of aligned_malloc as defined in the ano_memory API.

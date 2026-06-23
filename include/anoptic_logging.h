@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+// The logger follows a singleton pattern (one per program).
+
 #ifndef ANOPTICENGINE_ANOPTIC_LOGGING_H
 #define ANOPTICENGINE_ANOPTIC_LOGGING_H
 
@@ -11,6 +13,7 @@
 #define LOG_PREFIX_MAX 256
 #define LOG_MESSAGE_MAX 4096
 #define LOG_BUFFER_MAX 8192
+// This number--------^ can probably be bigger if we move the ring to heap.
 
 typedef enum {
     LOG_DEBUG,
@@ -21,16 +24,17 @@ typedef enum {
 } log_types_t;
 static const char *log_strings[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
 
-int ano_log_enqueue(log_types_t log_type, const char* fileName, int lineNumber, const char* printFormat, ...);
+// The usual method, enqueues a log item to the buffer.
+int ano_log_enqueue(log_types_t log_type, const char* sourceFile, int lineNumber, const char* printFormat, ...);
 
-void ano_log_immediate(log_types_t log_type, const char* fileName, int lineNumber, const char* printFormat, ...);
+// Should report the event immediately.
+void ano_log_immediate(log_types_t log_type, const char* sourceFile, int lineNumber, const char* printFormat, ...);
 
-int ano_log_init();
+int ano_log_init();     // Build up, singleton initialization.
 
-int ano_log_cleanup();
+int ano_log_cleanup();  // Teardown, most likely at program exit.
 
-void ano_log_interval(uint32_t ms);
-
+// Should probably use a filepath type from anoptic_logging.h
 int ano_log_output_dir(const char* directoryPath);
 
 
