@@ -114,6 +114,15 @@ float sampleShadowPCF(uint layer, vec3 worldPos, float nDotL) {
     return sum / 9.0;
 }
 
+// Point-light cube face for direction d = fragWorldPos - lightPos. 0..5 = +X,-X,+Y,-Y,+Z,-Z; MUST
+// match shadowsetup.comp's cubeFaceBasis so layer baseFrustum+face reprojects the fragment in-range.
+uint cubeFaceIndex(vec3 d) {
+    vec3 a = abs(d);
+    if (a.x >= a.y && a.x >= a.z) return d.x >= 0.0 ? 0u : 1u;
+    if (a.y >= a.z)               return d.y >= 0.0 ? 2u : 3u;
+    return d.z >= 0.0 ? 4u : 5u;
+}
+
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
 } materialBuf;
@@ -302,12 +311,16 @@ void main() {
             continue;
         }
 
-        // Shadowing: a casting light attenuates radiance by its shadow map. Directional only this
-        // increment (spot/point land later); other casters fall through fully lit.
+        // Shadowing: a casting light attenuates radiance by its shadow map. Directional/spot sample
+        // their single frustum at baseFrustum; point lights pick one of 6 cube faces by dominant axis.
         float shadowFactor = 1.0;
         ShadowLightInfo si = shadowInfoBuf.info[i];
-        if (si.castsShadow != 0u && light.type == LIGHT_TYPE_DIRECTIONAL) {
-            shadowFactor = sampleShadowPCF(si.baseFrustum, fragWorldPos, max(dot(N, L), 0.0));
+        if (si.castsShadow != 0u && si.frustumCount > 0u) {
+            float nDotL = max(dot(N, L), 0.0);
+            if (light.type == LIGHT_TYPE_POINT)
+                shadowFactor = sampleShadowPCF(si.baseFrustum + cubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
+            else
+                shadowFactor = sampleShadowPCF(si.baseFrustum, fragWorldPos, nDotL);
         }
 
         vec3 radiance = light.color * light.intensity * attenuation * shadowFactor;
