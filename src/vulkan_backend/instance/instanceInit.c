@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
+#include <math.h>
 #include <mimalloc.h>
 #include <mimalloc-override.h>
 
@@ -947,23 +948,22 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     state->views = NULL;
     state->viewCount = 0;
 
-    // Destroy depth image views
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+    // Destroy per-view depth views + images
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        if (state->frames[i].depthView != VK_NULL_HANDLE)
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
         {
-            vkDestroyImageView(ctx->device, state->frames[i].depthView, NULL);
-            state->frames[i].depthView = VK_NULL_HANDLE;
-        }
-    }
-
-    // Destroy depth images
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
-    {
-        if (state->frames[i].depthImage != VK_NULL_HANDLE)
-        {
-            vkDestroyImage(ctx->device, state->frames[i].depthImage, NULL);
-            state->frames[i].depthImage = VK_NULL_HANDLE;
+            ViewResources* vr = &state->frames[i].views[v];
+            if (vr->depthView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->depthView, NULL);
+                vr->depthView = VK_NULL_HANDLE;
+            }
+            if (vr->depthImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->depthImage, NULL);
+                vr->depthImage = VK_NULL_HANDLE;
+            }
         }
     }
 
@@ -988,20 +988,24 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
         state->colorView = VK_NULL_HANDLE;
     }
 
-    // Destroy per-frame HDR resolve targets (memory backed by swapchainAllocator, reset below)
+    // Destroy per-view HDR resolve targets (memory backed by swapchainAllocator, reset below)
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        if (state->frames[i].hdrColorView != VK_NULL_HANDLE)
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
         {
-            vkDestroyImageView(ctx->device, state->frames[i].hdrColorView, NULL);
-            state->frames[i].hdrColorView = VK_NULL_HANDLE;
+            ViewResources* vr = &state->frames[i].views[v];
+            if (vr->hdrColorView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->hdrColorView, NULL);
+                vr->hdrColorView = VK_NULL_HANDLE;
+            }
+            if (vr->hdrColorImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->hdrColorImage, NULL);
+                vr->hdrColorImage = VK_NULL_HANDLE;
+            }
+            vr->hdrColorAlloc.memory = VK_NULL_HANDLE;
         }
-        if (state->frames[i].hdrColorImage != VK_NULL_HANDLE)
-        {
-            vkDestroyImage(ctx->device, state->frames[i].hdrColorImage, NULL);
-            state->frames[i].hdrColorImage = VK_NULL_HANDLE;
-        }
-        state->frames[i].hdrColorAlloc.memory = VK_NULL_HANDLE;
     }
 
     // Do NOT destroy the swapchain here because recreateSwapChain needs oldSwapChain
@@ -1069,14 +1073,14 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	createColorResources(ctx);
 
 	createDepthResources(ctx, &rendererState);
-	if (rendererState.frames[0].depthView == NULL)
+	if (rendererState.frames[0].views[0].depthView == NULL)
 	{
 		printf("Depth resources re-creation error, exiting!\n");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
 
-	// The per-frame HDR resolve views were recreated above; rebind the tonemap sets to them.
+	// The per-view HDR resolve views were recreated above; rebind the tonemap sets to them.
 	updateTonemapDescriptorSets(ctx, &rendererState);
 
 	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
@@ -1175,17 +1179,21 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 { // Central to init, specific to perspective uniforms (world translation, rotation and projection)
 	VkDeviceSize bufferSize = sizeof(GlobalUBO);
 
+	// One camera UBO per view per frame: each view has its own view/proj/froxel params.
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		GpuAllocation alloc;
-		if (!createDataBuffer(ctx, &gpuAllocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			 &(rendererState.frames[i].uniformBuffer), &alloc)) 
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
-			printf("Failed to create uniform buffer!");
-			return false;
+			GpuAllocation alloc;
+			if (!createDataBuffer(ctx, &gpuAllocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				 &(rendererState.frames[i].views[v].uniformBuffer), &alloc))
+			{
+				printf("Failed to create uniform buffer!");
+				return false;
+			}
+
+			rendererState.frames[i].views[v].uniformMapped = alloc.mapped;
 		}
-		
-		rendererState.frames[i].uniformMapped = alloc.mapped;
 	}
 
 	return true;
@@ -1219,42 +1227,63 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 
 	float deltaTime = (time - oldTime) / 1000000.0f;
 	float elapsedTime = (time - startTime) / 1000000.0f;
-	
-	state->uboData.time = elapsedTime;
-	state->uboData.deltaTime = deltaTime;
-	state->uboData.frameCount = frameCount++;
 
-	float eye[] = {0.0f, 0.9f, 3.5f};  // Move camera up and back
-	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
-	float up[] = {0.0f, 1.0f, 0.0f};  // World is unflipped
+	float center[] = {0.0f, 0.15f, 0.0f}; // both cameras look at the scene origin
+	float up[]     = {0.0f, 1.0f, 0.0f};  // world is unflipped
 
-	lookAt(state->uboData.view, eye, center, up);
-
-	// Publish the camera world position so the fragment stage doesn't have to
-	// recover it via a per-fragment inverse(view).
-	state->uboData.cameraPos[0] = eye[0];
-	state->uboData.cameraPos[1] = eye[1];
-	state->uboData.cameraPos[2] = eye[2];
-	state->uboData.cameraPos[3] = 1.0f;
-
-	float fov = 45.0f; // Field of View in degrees
+	// Shared projection params. Both views render at full resolution (the inset is composited
+	// smaller), so they share the screen extent and froxel grid; only the camera differs.
+	float fov = 45.0f; // degrees
 	float aspect = (float)state->imageExtent.width / (float)state->imageExtent.height;
 	float near = 0.1f;
 	float far = 100.0f;
-	perspective(state->uboData.proj, fov, aspect, near, far);
 
-	// Clustered-forward froxel params: near/far + screen size (the light-cull pass and the
-	// fragment shader reconstruct froxels from these), and the fixed grid dimensions.
-	state->uboData.cameraNear = near;
-	state->uboData.cameraFar = far;
-	state->uboData.screenWidth = (float)state->imageExtent.width;
-	state->uboData.screenHeight = (float)state->imageExtent.height;
-	state->uboData.clusterDimX = ANO_CLUSTER_X;
-	state->uboData.clusterDimY = ANO_CLUSTER_Y;
-	state->uboData.clusterDimZ = ANO_CLUSTER_Z;
-	state->uboData.maxLightsPerCluster = ANO_CLUSTER_MAX_LIGHTS;
+	// Build each view's camera (audit 4.8). View 0 is the main camera; view 1 is an orbiting
+	// "second feed" composited as a picture-in-picture inset, proving the multi-view path.
+	for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+	{
+		GlobalUBO* u = &state->uboData[v];
+		u->time = elapsedTime;
+		u->deltaTime = deltaTime;
+		u->frameCount = frameCount;
 
-	memcpy(state->frames[state->frameIndex].uniformMapped, &(state->uboData), sizeof(GlobalUBO));
+		float eye[3];
+		if (v == 0) {
+			eye[0] = 0.0f; eye[1] = 0.9f; eye[2] = 3.5f;   // main: up and back
+		} else {
+			// Inset: orbit the scene at a higher angle so the feed is obviously live + distinct.
+			float a = elapsedTime * 0.5f;
+			float r = 4.0f;
+			eye[0] = r * sinf(a);
+			eye[1] = 2.5f;
+			eye[2] = r * cosf(a);
+		}
+
+		lookAt(u->view, eye, center, up);
+
+		// Publish the camera world position so the fragment stage doesn't have to
+		// recover it via a per-fragment inverse(view).
+		u->cameraPos[0] = eye[0];
+		u->cameraPos[1] = eye[1];
+		u->cameraPos[2] = eye[2];
+		u->cameraPos[3] = 1.0f;
+
+		perspective(u->proj, fov, aspect, near, far);
+
+		// Clustered-forward froxel params: near/far + screen size (the light-cull pass and the
+		// fragment shader reconstruct froxels from these), and the fixed grid dimensions.
+		u->cameraNear = near;
+		u->cameraFar = far;
+		u->screenWidth = (float)state->imageExtent.width;
+		u->screenHeight = (float)state->imageExtent.height;
+		u->clusterDimX = ANO_CLUSTER_X;
+		u->clusterDimY = ANO_CLUSTER_Y;
+		u->clusterDimZ = ANO_CLUSTER_Z;
+		u->maxLightsPerCluster = ANO_CLUSTER_MAX_LIGHTS;
+
+		memcpy(state->frames[state->frameIndex].views[v].uniformMapped, u, sizeof(GlobalUBO));
+	}
+	frameCount++;
 
 	oldTime = time;
 
@@ -1338,26 +1367,29 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 	}
 	state->depthFormat = depthFormat;
 
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+	// One depth target per view per frame: each view's frustum has its own visibility/depth.
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width, 
-			state->imageExtent.height, 1, ctx->msaaSamples, state->depthFormat, 
-			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
-						 &state->frames[i].depthImage, &state->frames[i].depthAlloc, false))
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
-			printf("Failed to create depth resource for frame %d!\n", i);
-			return false;
-		}
+			ViewResources* vr = &state->frames[i].views[v];
+			if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width,
+				state->imageExtent.height, 1, ctx->msaaSamples, state->depthFormat,
+				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+							 &vr->depthImage, &vr->depthAlloc, false))
+			{
+				printf("Failed to create depth resource for frame %d view %u!\n", i, v);
+				return false;
+			}
 
-		state->frames[i].depthView = createImageView(ctx->device, 
-																	  state->frames[i].depthImage, 
-																	  depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+			vr->depthView = createImageView(ctx->device, vr->depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
-		if(!transitionImageLayout(ctx, VK_NULL_HANDLE, state->frames[i].depthImage, depthFormat, 
-								  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
-		{
-			printf("Failed to transition depth buffer layout for frame %d!\n", i);
-			return false;
+			if(!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthImage, depthFormat,
+									  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
+			{
+				printf("Failed to transition depth buffer layout for frame %d view %u!\n", i, v);
+				return false;
+			}
 		}
 	}
 	return true;
@@ -1380,39 +1412,50 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 		printf("Failed to transition color image layout!\n");
 	}
 
-	// Per-frame single-sample HDR resolve target: resolve destination (COLOR_ATTACHMENT) for
-	// the MSAA HDR pass, and tonemap source (SAMPLED). Not transient — the tonemap pass reads
-	// it back. Seeded to SHADER_READ_ONLY; recordCommandBuffer re-transitions it per frame.
+	// Single-sample HDR resolve target, one per view per frame: resolve destination
+	// (COLOR_ATTACHMENT) for that view's MSAA HDR pass, and composite source (SAMPLED). Not
+	// transient — the composite reads it back. Seeded to SHADER_READ_ONLY; recordCommandBuffer
+	// re-transitions per frame. The shared MSAA color above is reused across views sequentially.
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
-			1, VK_SAMPLE_COUNT_1_BIT, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.frames[i].hdrColorImage, &rendererState.frames[i].hdrColorAlloc, false);
-		rendererState.frames[i].hdrColorView = createImageView(ctx->device, rendererState.frames[i].hdrColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.frames[i].hdrColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
-			printf("Failed to transition HDR resolve image layout!\n");
+			ViewResources* vr = &rendererState.frames[i].views[v];
+			createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+				1, VK_SAMPLE_COUNT_1_BIT, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+						VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->hdrColorImage, &vr->hdrColorAlloc, false);
+			vr->hdrColorView = createImageView(ctx->device, vr->hdrColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hdrColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
+			{
+				printf("Failed to transition HDR resolve image layout!\n");
+			}
 		}
 	}
 }
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
+	// Per-view sets (global, light-cull, tonemap) scale by ANO_VIEW_COUNT; the view-independent
+	// sets (cull, update, scatter) are one per frame. Counts below are per frame, times margin.
+	//   UBO/frame:     global(1) + light-cull(1) per view, + cull(1) + update(1) shared
+	//   SSBO/frame:    global(11: bindings 1-11) + light-cull(4) per view, + cull(8)+update(3)+scatter(2) shared
+	//   SAMPLER/frame: tonemap(1) per view
+	//   sets/frame:    (global+light-cull+tonemap) per view + cull+update+scatter shared
 	VkDescriptorPoolSize poolSize[4] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 4;  // UBO/frame: global + cull + update + light-cull (binding 0 each)
+	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u);
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 32; // SSBO/frame: 11 global (1-11) + 8 cull + 3 update + 2 scatter (0,2) + 4 light-cull = 28, +margin
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (15u * ANO_VIEW_COUNT + 16u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // tonemap set: hdr resolve sampler
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 1u); // tonemap: one hdr sampler per view
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 4;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 8; // global, cull, update, scatter, light-cull, tonemap (6) + margin
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 4u);
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1465,8 +1508,12 @@ bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state)
 
 bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 { // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
-	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	// Global, light-cull and tonemap sets are per view per frame (each binds that view's
+	// camera UBO / froxel lists / HDR target); cull, update and scatter are one per frame.
+	enum { PERVIEW_SETS = MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT };
+
+	VkDescriptorSetLayout layouts[PERVIEW_SETS];
+	for (int i = 0; i < PERVIEW_SETS; ++i)
 	{
 		layouts[i] = rendererState.globalSetLayout;
 	}
@@ -1474,16 +1521,18 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.pNext = NULL;
 	allocInfo.descriptorPool = rendererState.globalDescriptorPool;
-	allocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+	allocInfo.descriptorSetCount = (uint32_t)PERVIEW_SETS;
 	allocInfo.pSetLayouts = layouts;
 
-		VkDescriptorSet globalSetsTemp[MAX_FRAMES_IN_FLIGHT];
+		VkDescriptorSet globalSetsTemp[PERVIEW_SETS];
 	if (vkAllocateDescriptorSets(ctx->device, &allocInfo, globalSetsTemp) != VK_SUCCESS)
 	{
         printf("Failed to allocate global descriptor sets!\n");
 		return false;
 	}
-	for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].globalSet = globalSetsTemp[i];
+	for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++)
+		for(uint32_t v=0; v<ANO_VIEW_COUNT; v++)
+			rendererState.frames[i].views[v].globalSet = globalSetsTemp[i*ANO_VIEW_COUNT + v];
 
     VkDescriptorSetLayout cullLayouts[MAX_FRAMES_IN_FLIGHT];
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
@@ -1542,46 +1591,51 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].scatterSet = scatterSetsTemp[i];
 
-    VkDescriptorSetLayout lightcullLayouts[MAX_FRAMES_IN_FLIGHT];
-    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    VkDescriptorSetLayout lightcullLayouts[PERVIEW_SETS];
+    for (int i = 0; i < PERVIEW_SETS; ++i)
     {
         lightcullLayouts[i] = rendererState.lightcullSetLayout;
     }
     VkDescriptorSetAllocateInfo lightcullAllocInfo = {};
     lightcullAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     lightcullAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
-    lightcullAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    lightcullAllocInfo.descriptorSetCount = (uint32_t)PERVIEW_SETS;
     lightcullAllocInfo.pSetLayouts = lightcullLayouts;
 
-    VkDescriptorSet lightcullSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    VkDescriptorSet lightcullSetsTemp[PERVIEW_SETS];
     if (vkAllocateDescriptorSets(ctx->device, &lightcullAllocInfo, lightcullSetsTemp) != VK_SUCCESS)
     {
         printf("Failed to allocate light-cull descriptor sets!\n");
         return false;
     }
-    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].lightcullSet = lightcullSetsTemp[i];
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++)
+        for(uint32_t v=0; v<ANO_VIEW_COUNT; v++)
+            rendererState.frames[i].views[v].lightcullSet = lightcullSetsTemp[i*ANO_VIEW_COUNT + v];
 
-    // Tonemap set (one per frame): samples that frame's HDR resolve target. The image view
-    // is (re)bound by updateTonemapDescriptorSets, which also runs after a swapchain resize
-    // since the per-frame hdrColorView handles change there.
-    VkDescriptorSetLayout tonemapLayouts[MAX_FRAMES_IN_FLIGHT];
-    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    // Tonemap set (one per view per frame): samples that view's HDR resolve target. The image
+    // view is (re)bound by updateTonemapDescriptorSets, which also runs after a swapchain resize
+    // since the per-view hdrColorView handles change there.
+    VkDescriptorSetLayout tonemapLayouts[PERVIEW_SETS];
+    for (int i = 0; i < PERVIEW_SETS; ++i)
     {
         tonemapLayouts[i] = rendererState.tonemapSetLayout;
     }
     VkDescriptorSetAllocateInfo tonemapAllocInfo = {};
     tonemapAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     tonemapAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
-    tonemapAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    tonemapAllocInfo.descriptorSetCount = (uint32_t)PERVIEW_SETS;
     tonemapAllocInfo.pSetLayouts = tonemapLayouts;
 
-    VkDescriptorSet tonemapSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    VkDescriptorSet tonemapSetsTemp[PERVIEW_SETS];
     if (vkAllocateDescriptorSets(ctx->device, &tonemapAllocInfo, tonemapSetsTemp) != VK_SUCCESS)
     {
         printf("Failed to allocate tonemap descriptor sets!\n");
         return false;
     }
-    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].tonemapSet = tonemapSetsTemp[i];
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) {
+        for(uint32_t v=0; v<ANO_VIEW_COUNT; v++)
+            rendererState.frames[i].views[v].tonemapSet = tonemapSetsTemp[i*ANO_VIEW_COUNT + v];
+    }
 
 	return true;
 }
@@ -1591,47 +1645,52 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 // cluster buffers are fixed-size and not extent-dependent, so this runs once at init only.
 void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
+    // Per view per frame: each view's froxel lists + camera UBO. transforms/lights are shared.
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        VkDescriptorBufferInfo countInfo = { state->frames[i].clusterLightCountBuffer, 0, VK_WHOLE_SIZE };
-        VkDescriptorBufferInfo indexInfo = { state->frames[i].clusterLightIndexBuffer, 0, VK_WHOLE_SIZE };
-        VkDescriptorBufferInfo uboInfo   = { state->frames[i].uniformBuffer, 0, VK_WHOLE_SIZE };
-        VkDescriptorBufferInfo xformInfo = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
-        VkDescriptorBufferInfo lightInfo = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            ViewResources* vr = &state->frames[i].views[v];
+            VkDescriptorBufferInfo countInfo = { vr->clusterLightCountBuffer, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo indexInfo = { vr->clusterLightIndexBuffer, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo uboInfo   = { vr->uniformBuffer, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo xformInfo = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo lightInfo = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
 
-        VkWriteDescriptorSet writes[7] = {};
-        // Global set: 10 = cluster light count, 11 = cluster light index (fragment-read).
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = state->frames[i].globalSet;
-        writes[0].dstBinding = 10;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].pBufferInfo = &countInfo;
-        writes[1] = writes[0];
-        writes[1].dstBinding = 11;
-        writes[1].pBufferInfo = &indexInfo;
-        // Light-cull set: 0 UBO, 1 transforms, 2 lights, 3 count(out), 4 index(out).
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = state->frames[i].lightcullSet;
-        writes[2].dstBinding = 0;
-        writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[2].pBufferInfo = &uboInfo;
-        writes[3] = writes[2];
-        writes[3].dstBinding = 1;
-        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[3].pBufferInfo = &xformInfo;
-        writes[4] = writes[3];
-        writes[4].dstBinding = 2;
-        writes[4].pBufferInfo = &lightInfo;
-        writes[5] = writes[3];
-        writes[5].dstBinding = 3;
-        writes[5].pBufferInfo = &countInfo;
-        writes[6] = writes[3];
-        writes[6].dstBinding = 4;
-        writes[6].pBufferInfo = &indexInfo;
+            VkWriteDescriptorSet writes[7] = {};
+            // Global set: 10 = cluster light count, 11 = cluster light index (fragment-read).
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = vr->globalSet;
+            writes[0].dstBinding = 10;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[0].pBufferInfo = &countInfo;
+            writes[1] = writes[0];
+            writes[1].dstBinding = 11;
+            writes[1].pBufferInfo = &indexInfo;
+            // Light-cull set: 0 UBO, 1 transforms, 2 lights, 3 count(out), 4 index(out).
+            writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[2].dstSet = vr->lightcullSet;
+            writes[2].dstBinding = 0;
+            writes[2].descriptorCount = 1;
+            writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[2].pBufferInfo = &uboInfo;
+            writes[3] = writes[2];
+            writes[3].dstBinding = 1;
+            writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[3].pBufferInfo = &xformInfo;
+            writes[4] = writes[3];
+            writes[4].dstBinding = 2;
+            writes[4].pBufferInfo = &lightInfo;
+            writes[5] = writes[3];
+            writes[5].dstBinding = 3;
+            writes[5].pBufferInfo = &countInfo;
+            writes[6] = writes[3];
+            writes[6].dstBinding = 4;
+            writes[6].pBufferInfo = &indexInfo;
 
-        vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
+            vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
+        }
     }
 }
 
@@ -1640,21 +1699,26 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
 // per-frame hdrColorView handles are destroyed and recreated.
 void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
+    // Per view per frame: the composite samples each view's HDR resolve into its destination rect.
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        VkDescriptorImageInfo imageInfo = {};
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = state->frames[i].hdrColorView;
-        imageInfo.sampler = state->textureSampler;
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            ViewResources* vr = &state->frames[i].views[v];
+            VkDescriptorImageInfo imageInfo = {};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = vr->hdrColorView;
+            imageInfo.sampler = state->textureSampler;
 
-        VkWriteDescriptorSet write = {};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = state->frames[i].tonemapSet;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imageInfo;
-        vkUpdateDescriptorSets(ctx->device, 1, &write, 0, NULL);
+            VkWriteDescriptorSet write = {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = vr->tonemapSet;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &imageInfo;
+            vkUpdateDescriptorSets(ctx->device, 1, &write, 0, NULL);
+        }
     }
 }
 
@@ -1667,7 +1731,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		VkDescriptorBufferInfo bufferInfo = {};
-		bufferInfo.buffer = rendererState.frames[i].uniformBuffer;
+		bufferInfo.buffer = rendererState.frames[i].views[0].uniformBuffer; // rebound per view below; view 0 for the shared compute sets
 		bufferInfo.offset = 0;
 		bufferInfo.range = sizeof(GlobalUBO);
 
@@ -1700,7 +1764,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
 		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
 		compactedEntityIndicesInfo.offset = 0;
-		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count();
+		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
 
 		VkDescriptorBufferInfo lightInfo = {};
 		lightInfo.buffer = rendererState.lightBuffer.device;        // ×1 device-local (SlotUpload)
@@ -1715,7 +1779,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkWriteDescriptorSet descriptorWrites[10] = {};
 
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[0].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[0].dstBinding = 0;   // Corresponds to binding in shader.
 		descriptorWrites[0].dstArrayElement = 0;
 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1723,7 +1787,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[0].pBufferInfo = &bufferInfo;
 
 		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[1].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[1].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[1].dstBinding = 1;
 		descriptorWrites[1].dstArrayElement = 0;
 		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1731,7 +1795,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[1].pBufferInfo = &ssboInfo;
 
 		descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[2].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[2].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[2].dstBinding = 2;
 		descriptorWrites[2].dstArrayElement = 0;
 		descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1744,7 +1808,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
 
 		descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[3].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[3].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[3].dstBinding = 3;
 		descriptorWrites[3].dstArrayElement = 0;
 		descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1752,7 +1816,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[3].pBufferInfo = &entityInfo;
 
 		descriptorWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[4].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[4].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[4].dstBinding = 4;
 		descriptorWrites[4].dstArrayElement = 0;
 		descriptorWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1760,7 +1824,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[4].pBufferInfo = &vertexBufferInfo;
 
 		descriptorWrites[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[5].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[5].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[5].dstBinding = 5;
 		descriptorWrites[5].dstArrayElement = 0;
 		descriptorWrites[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1768,7 +1832,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[5].pBufferInfo = &indexBufferInfo;
 
 		descriptorWrites[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[6].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[6].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[6].dstBinding = 6;
 		descriptorWrites[6].dstArrayElement = 0;
 		descriptorWrites[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1776,7 +1840,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[6].pBufferInfo = &globalMeshInfo;
 
 		descriptorWrites[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[7].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[7].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[7].dstBinding = 7;
 		descriptorWrites[7].dstArrayElement = 0;
 		descriptorWrites[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1784,7 +1848,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[7].pBufferInfo = &compactedEntityIndicesInfo;
 
 		descriptorWrites[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[8].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[8].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[8].dstBinding = 8;
 		descriptorWrites[8].dstArrayElement = 0;
 		descriptorWrites[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1792,14 +1856,25 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[8].pBufferInfo = &lightInfo;
 
 		descriptorWrites[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[9].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[9].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[9].dstBinding = 9;
 		descriptorWrites[9].dstArrayElement = 0;
 		descriptorWrites[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		descriptorWrites[9].descriptorCount = 1;
 		descriptorWrites[9].pBufferInfo = &instanceDataInfo;
 
-		vkUpdateDescriptorSets(ctx->device, 10, descriptorWrites, 0, NULL);
+		// Global set is per view (audit 4.8): bindings 1-9 are shared scene SSBOs (same buffer
+		// for every view); binding 0 rebinds to each view's camera UBO. Bindings 10/11 (cluster
+		// lists) are written separately by updateClusterDescriptorSets.
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+		{
+			bufferInfo.buffer = rendererState.frames[i].views[v].uniformBuffer;
+			for (int k = 0; k < 10; k++) descriptorWrites[k].dstSet = rendererState.frames[i].views[v].globalSet;
+			vkUpdateDescriptorSets(ctx->device, 10, descriptorWrites, 0, NULL);
+		}
+		// Shared compute sets below that need a GlobalUBO use view 0 (time/deltaTime are
+		// view-independent): restore bufferInfo after the per-view writes left it at the last view.
+		bufferInfo.buffer = rendererState.frames[i].views[0].uniformBuffer;
 
         // Update cull sets
         VkDescriptorBufferInfo cullUboInfo = {};
@@ -1820,17 +1895,17 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count();
+        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
-        countInfo.range = sizeof(uint32_t) * ano_draw_pipeline_count();
+        countInfo.range = sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
 
         VkDescriptorBufferInfo compactedEntityIndicesCullInfo = {};
         compactedEntityIndicesCullInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
         compactedEntityIndicesCullInfo.offset = 0;
-        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count();
+        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
 
         VkDescriptorBufferInfo materialCullInfo = {};
         materialCullInfo.buffer = rendererState.materialBuffer.buffer[i];
@@ -2214,10 +2289,12 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.culling.compactedEntityIndicesBuffer[i], NULL);
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
-		if(rendererState.frames[i].clusterLightCountBuffer)
-			vkDestroyBuffer(ctx->device, rendererState.frames[i].clusterLightCountBuffer, NULL);
-		if(rendererState.frames[i].clusterLightIndexBuffer)
-			vkDestroyBuffer(ctx->device, rendererState.frames[i].clusterLightIndexBuffer, NULL);
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+			if(rendererState.frames[i].views[v].clusterLightCountBuffer)
+				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightCountBuffer, NULL);
+			if(rendererState.frames[i].views[v].clusterLightIndexBuffer)
+				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightIndexBuffer, NULL);
+		}
 	}
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
@@ -2241,9 +2318,12 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if(rendererState.frames[i].uniformBuffer)
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
-			vkDestroyBuffer(ctx->device, rendererState.frames[i].uniformBuffer, NULL);
+			if(rendererState.frames[i].views[v].uniformBuffer)
+			{
+				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].uniformBuffer, NULL);
+			}
 		}
 	}
 
