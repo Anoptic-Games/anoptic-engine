@@ -161,7 +161,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	depthStencil.maxDepthBounds = 1.0f;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkFormat colorFormat = state->imageFormat;
+	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT; // geometry renders into the HDR target, not the swapchain
 	VkFormat depthFormat = state->depthFormat;
 
 	VkPipelineRenderingCreateInfo renderingInfo = {};

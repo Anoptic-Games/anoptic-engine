@@ -67,7 +67,25 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint frameCount;
     uint lightCount;
     vec4 cameraPos;
+    float cameraNear;
+    float cameraFar;
+    float screenWidth;
+    float screenHeight;
+    uint clusterDimX;
+    uint clusterDimY;
+    uint clusterDimZ;
+    uint maxLightsPerCluster;
 } global;
+
+// Clustered-forward froxel light lists (see flat.frag / LIGHTING_SCALE.md). Transparent
+// fragments bin into their froxel exactly like opaque ones, so transmission needs no separate
+// light path.
+layout(set = 0, binding = 10) readonly buffer ClusterCountSSBO {
+    uint clusterLightCount[];
+} clusterCountBuf;
+layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
+    uint clusterLightIndices[];
+} clusterIndexBuf;
 
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
@@ -233,9 +251,20 @@ void main() {
     vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion * (1.0 - transmission);
     vec3 transmissive = baseColor.rgb * transmissionTint * transmission;
     
-    // Accumulate every active light from the scene light buffer.
+    // Clustered forward: accumulate only this fragment's froxel lights (see flat.frag).
     vec3 accumulatedDirect = vec3(0.0);
-    for (uint i = 0u; i < global.lightCount; i++) {
+    uint tileX = uint(clamp(gl_FragCoord.x / global.screenWidth, 0.0, 0.99999) * float(global.clusterDimX));
+    uint tileY = uint(clamp(gl_FragCoord.y / global.screenHeight, 0.0, 0.99999) * float(global.clusterDimY));
+    float viewZ = (global.view * vec4(fragWorldPos, 1.0)).z;
+    float zDist = max(-viewZ, global.cameraNear);
+    float zSliceF = log(zDist / global.cameraNear) / log(global.cameraFar / global.cameraNear);
+    uint slice = uint(clamp(zSliceF, 0.0, 0.99999) * float(global.clusterDimZ));
+    uint clusterIdx = (slice * global.clusterDimY + tileY) * global.clusterDimX + tileX;
+    uint lightListBase = clusterIdx * global.maxLightsPerCluster;
+    uint clusterCount = clusterCountBuf.clusterLightCount[clusterIdx];
+
+    for (uint c = 0u; c < clusterCount; c++) {
+        uint i = clusterIndexBuf.clusterLightIndices[lightListBase + c];
         LightData light = lightBuf.lights[i];
         if (light.enabled == 0u) {
             continue;
