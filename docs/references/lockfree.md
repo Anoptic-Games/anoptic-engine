@@ -12,9 +12,9 @@ Brief notes from Michael L. Scott and Trevor Brown, *Shared-Memory Synchronizati
 - Lock-free: some thread is guaranteed to complete in a bounded number of steps. Livelock-free; an individual thread may starve.
 - Obstruction-free: a thread completes in bounded steps if no other thread takes steps meanwhile. Weakest; admits livelock.
 
-Treiber's stack and the M&S queue are both lock-free, not wait-free (p. 47). Most wait-free algorithms use helping: a thread "gets a stalled peer out of the way" so it can proceed (p. 48). This is the fast-path/slow-path machinery behind WFqueue/wCQ. A telling small example (p. 48): an increment-only counter is wait-free with a single FAI, but only lock-free if FAI is emulated with a CAS loop — the primitive choice decides the progress class.
+Treiber's stack and the M&S queue are both lock-free (p. 47). Most wait-free algorithms use helping: a thread "gets a stalled peer out of the way" so it can proceed (p. 48). This is the fast-path/slow-path machinery behind WFqueue/wCQ. A telling small example (p. 48): an increment-only counter is wait-free with a single FAI, but only lock-free if FAI is emulated with a CAS loop — the primitive choice decides the progress class.
 
-The consensus hierarchy (Herlihy, p. 51): primitives are ranked by how many threads they can get to agree wait-free. TAS, swap, FAA, FAI have consensus number 2, they cannot solve wait-free consensus for three or more threads. CAS and LL/SC are universal (consensus number ∞). This is the formal reason FAA alone cannot build arbitrary structures (a stack needs CAS's conditionality), and why a bounded ring that must conditionally refuse-on-full reaches for CAS, not bare FAA.
+The consensus hierarchy (Herlihy, p. 51): primitives are ranked by how many threads they can get to agree wait-free. TAS, swap, FAA, FAI have consensus number 2, they cannot solve wait-free consensus for three or more threads. CAS and LL/SC are universal (consensus number ∞). This is the formal reason FAA alone cannot build arbitrary structures (a stack needs CAS's conditionality), and why a bounded ring that must conditionally refuse-on-full reaches for CAS.
 
 ### 2. FAA vs CAS, from the source (§2.3.2, p. 33; footnote p. 48)
 
@@ -42,7 +42,7 @@ The book covers one possible resolution explicitly (p. 149): Morrison & Afek 201
 
 ### 5. Dual data structures — condition synchronization without losing nonblocking progress (§8.8, p. 179)
 
-A nonblocking operation must be total (defined on any state), so a dequeue on empty returns ⊥. But often a thread genuinely needs to wait for a precondition — an empty queue to fill, or a full bounded queue to drain (the book lists "a full bounded container" explicitly, p. 179). The naive answer, spin `repeat v := remove() until v ≠ ⊥`, wastes cycles and — worse — lets the scheduler, not the data structure, pick who gets the next datum (p. 179).
+A nonblocking operation must be total (defined on any state), so a dequeue on empty returns ⊥. But often a thread genuinely needs to wait for a precondition — an empty queue to fill, or a full bounded queue to drain (the book lists "a full bounded container" explicitly, p. 179). The naive answer, spin `repeat v := remove() until v ≠ ⊥`, wastes cycles and — worse — lets the scheduler pick who gets the next datum (p. 179).
 
 A dual data structure holds reservations alongside data: an operation that finds its precondition unmet inserts a reservation, and a later operation fulfills it, all linearizable and nonblocking, with any spinning confined to a single reservation slot (p. 179). Scherer & Scott built dual versions of the Treiber stack and M&S queue; Izraelevitz & Scott (2017) did the LCRQ. Java 6's Executor replaced Java 5's lock-based task pools with dualstacks/dualqueues for a 2–10× thread-dispatch throughput gain (p. 180). This is the principled frame for both of the logger's "what happens at the boundary" questions.
 
@@ -51,8 +51,8 @@ A dual data structure holds reservations alongside data: an operation that finds
 - Ticket lock (p. 67): FAA a ticket, spin on `now_serving`. Fair and constant-space, but every waiter polls the one `now_serving` line, so contention traffic is O(threads).
 - MCS lock (p. 69): each waiter spins on its own `qnode` flag (a local cache line); the holder signals exactly its successor. Constant remote-access cost to pass the lock, FIFO, scalable — the canonical "local spinning" structure. Joins the queue wait-free via swap.
 - Which to use (p. 78): for single-digit thread counts, a TAS-with-backoff or ticket lock is fine; reach for a queued lock (MCS/CLH) only when contention is a real bottleneck.
-- The preemption tax (p. 78 table; §7.5.2): every fair/queued lock rates poorly on preemption tolerance. A descheduled lock-holder — or a descheduled thread in the middle of the wait queue — stalls its successors. Switching from a plain mutex to MCS does not fix this; it is inherent to lock-based mutual exclusion under preemption.
-- Locality-conscious / cohort locks (p. 80): pass a lock to a nearby core when possible to keep the protected cache lines local; NUMA-aware. Background for the job system, not the logger.
+- The preemption tax (p. 78 table; §7.5.2): every fair/queued lock rates poorly on preemption tolerance. A descheduled lock-holder — or a descheduled thread in the middle of the wait queue — stalls its successors. It is inherent to lock-based mutual exclusion under preemption.
+- Locality-conscious / cohort locks (p. 80): pass a lock to a nearby core when possible to keep the protected cache lines local; NUMA-aware. Background for the job system.
 
 ### 7. Combining and elimination (§5.4, p. 100; §8.9, p. 180)
 
@@ -138,17 +138,17 @@ The wait-free row is why FAA underlies the wait-free queue results: a bare FAA i
 
 ---
 
-### 3. The contention truth — FAA avoids *wasted* traffic, not traffic
+### 3. The contention truth — FAA avoids *wasted* traffic
 
-FAA is not magic and the most common misconception is that it sidesteps cache-coherency cost. It does not. The cache line holding the counter still has exactly one owner at a time under MESI; it still ping-pongs between cores, one acquisition per `fetch_add`. A single hot FAA counter is still a serialization point and still a scalability bottleneck.
+The most common misconception is that it sidesteps cache-coherency cost. It does not. The cache line holding the counter still has exactly one owner at a time under MESI; it still ping-pongs between cores, one acquisition per `fetch_add`. A single hot FAA counter is still a serialization point and still a scalability bottleneck.
 
 The precise statement: FAA does *useful work on every line acquisition* (the core that owns the line completes its increment and leaves with a ticket), whereas a CAS loop *wastes line acquisitions* (a core acquires the line, reads, computes, tries to write, finds it stale, fails, and must acquire it again). FAA converts the unavoidable serialization into linear, productive serialization; CAS turns it into superlinear waste.
 
-This is the direct motivation for the engine's cache-line-stripe idea (`notes.md` Step 5 Phase B). If one FAA = one unavoidable line bounce, then the way to scale is to make each bounce carry more payload: claim a 64-byte stripe with one FAA, fill it with N plain (non-atomic) stores, publish the whole stripe with one release. The per-item coherency cost falls to ~1/N. Striping does not beat the coherency protocol; it amortizes against it. Same move as a sharded/striped counter (`LongAdder`-style) for the pure-counting case: when one FAA line is too hot, split it into per-core lines and sum on read.
+This is the direct motivation for the engine's cache-line-stripe idea (`notes.md` Step 5 Phase B). If one FAA = one unavoidable line bounce, then the way to scale is to make each bounce carry more payload: claim a 64-byte stripe with one FAA, fill it with N plain (non-atomic) stores, publish the whole stripe with one release. The per-item coherency cost falls to ~1/N. Striping amortizes against the coherency protocol. Same move as a sharded/striped counter (`LongAdder`-style) for the pure-counting case: when one FAA line is too hot, split it into per-core lines and sum on read.
 
 ---
 
-### 4. What FAA is for, and what it is not
+### 4. What FAA is for
 
 Use FAA (or another unconditional RMW) on the hot path when the operation is "take the next slot / the next ticket / set this bit":
 
@@ -189,7 +189,7 @@ Two practitioner notes. LCRQ needs a 128-bit CAS (`cmpxchg16b` on x86) to swap a
 
 ### 6. The empty-cell subtlety (and the dead-producer case)
 
-FAA-reserve introduces a hazard CAS-swing does not: a thread can FAA a cell index and then stall — or die — before depositing its value, leaving a reserved-but-empty cell in the middle of the ring. A naive consumer that walks forward and stops at the first unfilled cell then wedges behind it forever, unable to distinguish a slow producer from a dead one. This is the "gap problem" `notes.md` flags.
+FAA-reserve introduces a hazard: a thread can FAA a cell index and then stall — or die — before depositing its value, leaving a reserved-but-empty cell in the middle of the ring. A naive consumer that walks forward and stops at the first unfilled cell then wedges behind it forever, unable to distinguish a slow producer from a dead one. This is the "gap problem" `notes.md` flags.
 
 LCRQ/SCQ solve it with **cycle numbers** (a generation tag per cell): the dequeuer reaching a cell that holds an older cycle than expected can mark it unsafe and advance past it. The record in that cell is lost, but the queue keeps flowing — no wedge. That correction is load-bearing for any ring whose producers can stall on real work between reserve and commit — the event bus (Step 8). The logger (`docs/logger.md` §7) deliberately does *not* carry cycle numbers: its reserve→publish window holds no syscall, lock, or allocation — only a bounded copy and one release store — so a producer cannot block there, only be preempted, and that self-heals within a scheduler quantum. A genuinely dead producer would wedge the drain, but death in a window with nothing that can block is not a real failure mode, so the cheaper deterministic gap-stop (stop at the first uncommitted entry, resume next pass) suffices. Both designs still lose a record whose producer died before publishing it; neither async design can save it.
 
@@ -197,10 +197,10 @@ LCRQ/SCQ solve it with **cycle numbers** (a generation tag per cell): the dequeu
 
 ### 7. Mapping onto Anoptic
 
-- `notes.md` Step 1 / §2 — "reserve with `fetch_add` on the tail, publish with a per-slot commit marker." That instinct is the FAA-ring family, but the settled logger refines it differently from SCQ: it reserves a *variable* run of cache lines, so the reserve is a CAS-of-`need` (which can refuse-on-full) rather than a bare FAA-of-1, and it publishes a whole entry with one commit word rather than a per-slot sequence. It needs no cycle numbers (§6) — the deterministic gap-stop suffices. The logger is where the discipline (relaxed-or-CAS reserve + release publish + acquire drain) is first exercised.
-- The logger (`docs/logger.md`) — per-thread SPSC lanes need no shared FAA at all (each lane has one producer; the index is uncontended), but the logger chose the single shared ring anyway: claim order gives global order for free and it is one allocation, and a logger's contention on the one hot `tail` (a CAS, not even an FAA) is rare and bounded. The two trade contention-freedom against strict global order — lanes win only where contention actually dominates (the event bus, below).
-- The event bus (Step 8) — this is where a shared, ordered, high-throughput MPSC/MPMC actually pays, and therefore where SCQ/wCQ belong. Spend the FAA-queue complexity budget here, not on the log stream.
-- The cache-line-stripe structure (Step 5 Phase B) — §3 above is its justification: one FAA per stripe, N plain stores inside, one release publish; amortize the unavoidable line bounce over N items. The architect's novel structure is an FAA-batching design in the LCRQ/CRQ cell lineage, generalized to the coherency unit. The logger is the natural first exercise of this shape: each record reserves a run of cache lines, fills it with plain stores, and publishes with one release store — the stripe idea with a variable run length and a CAS (not FAA) reserve.
+- `notes.md` Step 1 / §2 — "reserve with `fetch_add` on the tail, publish with a per-slot commit marker." That instinct is the FAA-ring family, but the settled logger refines it differently from SCQ: it reserves a *variable* run of cache lines, so the reserve is a CAS-of-`need` (which can refuse-on-full), and it publishes a whole entry with one commit word. It needs no cycle numbers (§6) — the deterministic gap-stop suffices. The logger is where the discipline (relaxed-or-CAS reserve + release publish + acquire drain) is first exercised.
+- The logger (`docs/logger.md`) — per-thread SPSC lanes need no shared FAA at all (each lane has one producer; the index is uncontended), but the logger chose the single shared ring anyway: claim order gives global order for free and it is one allocation, and a logger's contention on the one hot `tail` (a CAS) is rare and bounded. The two trade contention-freedom against strict global order — lanes win only where contention actually dominates (the event bus, below).
+- The event bus (Step 8) — this is where a shared, ordered, high-throughput MPSC/MPMC actually pays, and therefore where SCQ/wCQ belong. Spend the FAA-queue complexity budget here.
+- The cache-line-stripe structure (Step 5 Phase B) — §3 above is its justification: one FAA per stripe, N plain stores inside, one release publish; amortize the unavoidable line bounce over N items. The architect's novel structure is an FAA-batching design in the LCRQ/CRQ cell lineage, generalized to the coherency unit. The logger is the natural first exercise of this shape: each record reserves a run of cache lines, fills it with plain stores, and publishes with one release store — the stripe idea with a variable run length and a CAS reserve.
 - Ticket allocation — entity IDs and generational-handle indices (`anoptic_ecs`) are FAA ticket dispensers; the same primitive, the easy case (allocation only, no dequeue, no gap).
 
 ---
@@ -210,8 +210,8 @@ LCRQ/SCQ solve it with **cycle numbers** (a generation tag per cell): the dequeu
 ```c
 #include <stdatomic.h>
 
-// Pure index/ticket allocation: relaxed is enough — you need atomicity and uniqueness,
-// not ordering against other memory. Ordering is established separately at publication.
+// Pure index/ticket allocation: relaxed is enough — you need atomicity and uniqueness.
+// Ordering is established separately at publication.
 uint64_t ticket = atomic_fetch_add_explicit(&counter, 1, memory_order_relaxed);
 
 // Ring reserve + publish (SCQ-style single-cell shape; the logger reserves a variable run with CAS — docs/logger.md §5):
@@ -231,7 +231,7 @@ atomic_store_explicit(&now_serving, t + 1, memory_order_release);
 
 Memory-order discipline: the FAA that allocates an index can be `relaxed` — it carries no data, only a unique number. Visibility of the payload you write into the claimed slot is a *separate* contract, carried by a release store at publication and an acquire load at consumption (exactly the logger's `tail`/`commit` release and the consumer's acquire). Do not conflate "the index is unique" (FAA) with "the data is visible" (release/acquire); they are orthogonal and both required.
 
-A single hot FAA line is still a bottleneck (§3). If profiling shows the counter line bouncing, the fix is structural — stripe it (per-core counters summed on read) or batch it (one FAA per stripe of N items) — not a different memory order.
+A single hot FAA line is still a bottleneck (§3). If profiling shows the counter line bouncing, the fix is structural — stripe it (per-core counters summed on read) or batch it (one FAA per stripe of N items).
 
 ---
 
@@ -260,8 +260,8 @@ Suggested order: it is the dependency order. Each builds on the last; read M&S f
 5. Yang & Mellor-Crummey, "A Wait-free Queue as Fast as Fetch-and-Add," PPoPP 2016. WFqueue — the title is the thesis. FAA-cored, wait-free via Kogan-Petrank helping, with a segmented linked list. Read for: how the wait-free machinery stays off the common path. PDF: https://chaoran.me/assets/pdf/wfq-ppopp16.pdf
 6. Nikolaev, "A Scalable, Portable, and Memory-Efficient Lock-Free FIFO Queue," DISC 2019. SCQ — the one to actually implement for the event bus. Read for: the index-indirection that drops LCRQ's double-width CAS down to single-word CAS, ABA-safety without external reclamation, and the cycle-number skip that defeats the empty-cell wedge. PDF: https://rusnikola.github.io/files/ringpaper-disc.pdf · arXiv: https://arxiv.org/abs/1908.04511
 7. Nikolaev & Ravindran, "wCQ: A Fast Wait-Free Queue with Bounded Memory Usage," SPAA 2022. SCQ made wait-free with bounded memory. Read for: the bounded-memory wait-free construction if hard progress guarantees ever matter (real-time tick). arXiv: https://arxiv.org/abs/2201.02179
-8. Romanov & Koval, "The State-of-the-Art LCRQ Concurrent Queue Algorithm Does NOT Require CAS2," PPoPP 2023. LPRQ. Updates §5 of this doc: the "LCRQ needs 128-bit CAS" claim is true of the original 2013 design but no longer of the lineage — LPRQ matches LCRQ using only single-word CAS + FAA. So portability is no longer SCQ's exclusive advantage; pick between SCQ and LPRQ on benchmark, not on CAS2 availability. DOI: https://doi.org/10.1145/3572848.3577485
-9. Michael, "Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects," IEEE TPDS 2004. Not an FAA paper — the reclamation problem that node-based queues (M&S, WFqueue) carry and that array/ring designs (Vyukov, SCQ) sidestep. Read it to understand *why* the field drifted to rings. PDF (mirror): https://www.cs.otago.ac.nz/cosc440/readings/hazard-pointers.pdf
+8. Romanov & Koval, "The State-of-the-Art LCRQ Concurrent Queue Algorithm Does NOT Require CAS2," PPoPP 2023. LPRQ. Updates §5 of this doc: the "LCRQ needs 128-bit CAS" claim is true of the original 2013 design but no longer of the lineage — LPRQ matches LCRQ using only single-word CAS + FAA. So portability is no longer SCQ's exclusive advantage; pick between SCQ and LPRQ on benchmark. DOI: https://doi.org/10.1145/3572848.3577485
+9. Michael, "Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects," IEEE TPDS 2004. The reclamation problem that node-based queues (M&S, WFqueue) carry and that array/ring designs (Vyukov, SCQ) sidestep. Read it to understand *why* the field drifted to rings. PDF (mirror): https://www.cs.otago.ac.nz/cosc440/readings/hazard-pointers.pdf
 
 ### Reference implementations — read the code
 
@@ -274,7 +274,7 @@ FAA queues in C (closest to what we will write):
 
 Production bounded rings (how shipping systems actually use FAA / ticketing):
 
-- facebook/folly `MPMCQueue.h` — a production ticket-based bounded MPMC: an atomic-increment ticket dispenser (FAA), not a CAS loop, exactly the §2 argument in shipping form. Its `ProducerConsumerQueue.h` is the SPSC analog of our render-bridge ring. https://github.com/facebook/folly/blob/main/folly/MPMCQueue.h
+- facebook/folly `MPMCQueue.h` — a production ticket-based bounded MPMC: an atomic-increment ticket dispenser (FAA), exactly the §2 argument in shipping form. Its `ProducerConsumerQueue.h` is the SPSC analog of our render-bridge ring. https://github.com/facebook/folly/blob/main/folly/MPMCQueue.h
 - DPDK `rte_ring` — the canonical high-throughput bounded ring in networking; prod/cons head-tail couples, reserve-then-commit. The design our slot-reserve mirrors at scale. https://github.com/DPDK/dpdk/blob/main/lib/ring/rte_ring.h · guide: https://doc.dpdk.org/guides/prog_guide/ring_lib.html
 - crossbeam-rs `ArrayQueue` (Rust) — a clean, heavily-commented Vyukov bounded-MPMC port; the most readable version of paper 2's algorithm. Note the documented "not strictly lock-free" caveat — the empty-cell hazard, in production. https://github.com/crossbeam-rs/crossbeam/blob/master/crossbeam-queue/src/array_queue.rs
 - couchbase/phosphor `mpmc_bounded_queue.h` and grivet/mpsc-queue — compact C/C++ ports of Vyukov's bounded MPMC and intrusive MPSC if you want them standalone. https://github.com/grivet/mpsc-queue
@@ -285,7 +285,7 @@ Teaching repos:
 
 Logger designs (ties back to docs/logger.md — the lanes-vs-single-ring decision, and prior art to revisit for the ECS event streams and other live-system queues):
 
-- choll/xtr — the closest single prior art to `docs/logger.md`: delegate all formatting and I/O to one background thread, minimize call-site work, deferred-format over a bounded ring. It diverges exactly where we did — per-sink SPSC lanes (the Quill side of the §2 decision), not one MPSC ring — and rests on two C++ tricks that do not port to C: a per-call-site function pointer the compiler generates from the argument types (so a no-arg log is "one pointer to the ring"), and fmtlib. Its one borrowable idea is the double-mapped "magic" ring buffer (`mirrored_memory_mapping`: map the buffer twice back-to-back so a wrapping variable-length record is contiguous, deleting spill/reassembly) — SPSC-coupled, so revisit it alongside the lanes question for the ECS/event streams. ~2 ns no-arg, C++20 + fmtlib, Linux/x86-leaning (TSC, optional io_uring). https://github.com/choll/xtr
+- choll/xtr — the closest single prior art to `docs/logger.md`: delegate all formatting and I/O to one background thread, minimize call-site work, deferred-format over a bounded ring. It diverges exactly where we did — per-sink SPSC lanes (the Quill side of the §2 decision) — and rests on two C++ tricks that do not port to C: a per-call-site function pointer the compiler generates from the argument types (so a no-arg log is "one pointer to the ring"), and fmtlib. Its one borrowable idea is the double-mapped "magic" ring buffer (`mirrored_memory_mapping`: map the buffer twice back-to-back so a wrapping variable-length record is contiguous, deleting spill/reassembly) — SPSC-coupled, so revisit it alongside the lanes question for the ECS/event streams. ~2 ns no-arg, C++20 + fmtlib, Linux/x86-leaning (TSC, optional io_uring). https://github.com/choll/xtr
 - odygrd/quill — the per-thread SPSC lanes + single backend thread architecture, in production C++; the canonical realization of the lanes model the logger considered and rejected (§2) in favour of a single MPSC ring (order + simplicity over contention-freedom). Read `quill/core/` for the lane and the backend drain — the "lanes are an MPSC decomposed into wait-free SPSC" claim, shipping, and the design to reach for if a live system ever does need per-producer contention-freedom. https://github.com/odygrd/quill
 - PlatformLab/NanoLog — Stanford's deferred-format logger: capture format-string id + raw args on the hot path, format on the consumer. This is the model `docs/logger.md` §5/§6 adopts — the buffered producer captures and the flusher formats; the C realization serializes args by walking `fmt` (no `va_list` survives the call) and re-emits per conversion on the backend. https://github.com/PlatformLab/NanoLog
-- cameron314/concurrentqueue (moodycamel) — a widely-used C++ MPMC built from per-producer sub-queues: the lanes idea generalized to a queue. The logger chose a single ring instead (it wants global order and one allocation), but per-producer sharding is the production answer when contention and throughput dominate — i.e. the ECS event bus, not the log stream. https://github.com/cameron314/concurrentqueue
+- cameron314/concurrentqueue (moodycamel) — a widely-used C++ MPMC built from per-producer sub-queues: the lanes idea generalized to a queue. The logger chose a single ring instead (it wants global order and one allocation), but per-producer sharding is the production answer when contention and throughput dominate — i.e. the ECS event bus. https://github.com/cameron314/concurrentqueue

@@ -78,7 +78,7 @@ Task is the amplification stage — optional; Mesh is required.
           └──▶ miss ──▶ Miss
 
  Callable — invoked on demand by Ray Gen / Closest-Hit / Miss
-            (a subroutine, not part of the hit/miss chain)
+            (a subroutine)
 </pre>
 
 ---
