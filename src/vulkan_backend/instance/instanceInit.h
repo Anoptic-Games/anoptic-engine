@@ -96,6 +96,9 @@ void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state);
 // Binds the clustered-forward froxel buffers (global set 10/11 + light-cull set); init-only
 void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state);
 
+// Binds the dynamic shadow sets (shadowsetup compute set + shadow geom/sampling set 2); init-only
+void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state);
+
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 

@@ -206,7 +206,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[9] = {};
+    VkDescriptorSetLayoutBinding bindings[10] = {};
 
     // 0: CullUBO
     bindings[0].binding = 0;
@@ -262,9 +262,15 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     bindings[8].descriptorCount = 1;
     bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    // 9: ShadowFrustumSSBO (audit 4.7): GPU-built shadow frustums the cull tests against.
+    bindings[9].binding = 9;
+    bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[9].descriptorCount = 1;
+    bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 9;
+    layoutInfo.bindingCount = 10;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
@@ -272,6 +278,48 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
         printf("Failed to create cull descriptor set layout!\n");
         return false;
     }
+
+    // --- Dynamic shadow set layouts (audit 4.7), created here so the FLAT/TRANSMISSION pipeline
+    // layouts (set 2) and the shadowsetup compute pipeline can reference them. ---
+
+    // shadowsetup compute set: 0 config (in), 1 transforms (in), 2 lights (in), 3 frustums (out).
+    VkDescriptorSetLayoutBinding setupBindings[4] = {};
+    for (uint32_t b = 0; b < 4; ++b) {
+        setupBindings[b].binding = b;
+        setupBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        setupBindings[b].descriptorCount = 1;
+        setupBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo setupInfo = {};
+    setupInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    setupInfo.bindingCount = 4;
+    setupInfo.pBindings = setupBindings;
+    if (vkCreateDescriptorSetLayout(ctx->device, &setupInfo, NULL, &state->shadowSetupSetLayout) != VK_SUCCESS)
+        return false;
+
+    // shadow geometry/sampling set (set 2): 0 shadow frustum viewProjs (geometry depth pass +
+    // fragment sampling), 1 shadow atlas array (fragment), 2 per-light shadow info (fragment).
+    VkShaderStageFlags geomStage = ctx->deviceCapabilities.meshShader
+        ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+    VkDescriptorSetLayoutBinding geomBindings[3] = {};
+    geomBindings[0].binding = 0;
+    geomBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    geomBindings[0].descriptorCount = 1;
+    geomBindings[0].stageFlags = geomStage | VK_SHADER_STAGE_FRAGMENT_BIT;
+    geomBindings[1].binding = 1;
+    geomBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    geomBindings[1].descriptorCount = 1;
+    geomBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    geomBindings[2].binding = 2;
+    geomBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    geomBindings[2].descriptorCount = 1;
+    geomBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo geomInfo = {};
+    geomInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    geomInfo.bindingCount = 3;
+    geomInfo.pBindings = geomBindings;
+    if (vkCreateDescriptorSetLayout(ctx->device, &geomInfo, NULL, &state->shadowGeomSetLayout) != VK_SUCCESS)
+        return false;
 
     return true;
 }
@@ -629,6 +677,44 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(lightcullShaderCode.data);
     vkDestroyShaderModule(ctx->device, lightcullShaderModule, NULL);
 
+    // Compute Shadow-setup Pipeline (audit 4.7): builds each shadow frustum's light-space viewProj
+    // + planes from the light's live transform. Set layout created in ano_vk_init_cull_layout.
+    VkPipelineLayoutCreateInfo shadowSetupLayoutInfo = {};
+    shadowSetupLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    shadowSetupLayoutInfo.setLayoutCount = 1;
+    shadowSetupLayoutInfo.pSetLayouts = &state->shadowSetupSetLayout;
+    if (vkCreatePipelineLayout(ctx->device, &shadowSetupLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].layout) != VK_SUCCESS)
+        return false;
+
+    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].type = PIPELINE_COMPUTE_SHADOWSETUP;
+    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].supportedFeatures = PBR_FEATURE_NONE;
+
+    struct Buffer shadowSetupCode;
+    char shadowSetupPath[256];
+    snprintf(shadowSetupPath, sizeof(shadowSetupPath), "%s/resources/shaders/shadowsetup.comp.spv", PROJECT_ROOT);
+    if (!loadFile(shadowSetupPath, &shadowSetupCode)) return false;
+    VkShaderModule shadowSetupModule = createShaderModule(ctx->device, &shadowSetupCode);
+
+    VkComputePipelineCreateInfo shadowSetupPipelineInfo = {};
+    shadowSetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    shadowSetupPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].layout;
+    shadowSetupPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shadowSetupPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shadowSetupPipelineInfo.stage.module = shadowSetupModule;
+    shadowSetupPipelineInfo.stage.pName = "main";
+
+    VkPipelineCacheCreateInfo shadowSetupCacheInfo = {};
+    shadowSetupCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(ctx->device, &shadowSetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache);
+
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache, 1, &shadowSetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
+    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(shadowSetupCode.data);
+    vkDestroyShaderModule(ctx->device, shadowSetupModule, NULL);
+
 	return true;
 }
 
@@ -773,6 +859,137 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
+// Dynamic shadow depth pipeline (audit 4.7). Reuses the FLAT geometry stage (flat.mesh/flat.vert)
+// with the shadowPass specialization constant set, so the depth render projects by a shadow
+// frustum's viewProj into the single-sample shadow atlas. No color attachment; depth bias on to
+// suppress acne. Reuses the FLAT pipeline layout (sets 0/1/2 + the 2-uint push). Also creates the
+// depth-compare sampler the fragment shaders PCF with. Must run after ano_vk_init_pipelines.
+// in:  ctx, state (prototypes[PIPELINE_FLAT].layout must exist)
+// out: true on success; populates state->shadow{Pipeline,Cache,Sampler}
+bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
+{
+	// PCF depth-compare sampler: linear filtering does the 2x2 bilinear comparison per tap.
+	VkSamplerCreateInfo samplerInfo = {};
+	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	samplerInfo.magFilter = VK_FILTER_LINEAR;
+	samplerInfo.minFilter = VK_FILTER_LINEAR;
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	samplerInfo.compareEnable = VK_TRUE;
+	samplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL; // frag depth <= occluder -> lit
+	samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+	samplerInfo.maxLod = 1.0f;
+	if (vkCreateSampler(ctx->device, &samplerInfo, NULL, &state->shadowSampler) != VK_SUCCESS)
+		return false;
+
+	VkPipelineCacheCreateInfo cacheInfo = {};
+	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->shadowCache);
+
+	bool useMesh = ctx->deviceCapabilities.meshShader;
+	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+
+	struct Buffer geomCode, fragCode;
+	char path[256];
+	snprintf(path, sizeof(path), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
+	if (!loadFile(path, &geomCode)) return false;
+	snprintf(path, sizeof(path), "%s/resources/shaders/shadow_depth.frag.spv", PROJECT_ROOT);
+	if (!loadFile(path, &fragCode)) return false;
+	VkShaderModule geomModule = createShaderModule(ctx->device, &geomCode);
+	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+
+	// shadowPass = true (constant_id 0 in flat.mesh / flat.vert).
+	VkBool32 shadowPassTrue = VK_TRUE;
+	VkSpecializationMapEntry specEntry = { .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
+	VkSpecializationInfo specInfo = { .mapEntryCount = 1, .pMapEntries = &specEntry, .dataSize = sizeof(VkBool32), .pData = &shadowPassTrue };
+
+	VkPipelineShaderStageCreateInfo stages[2] = {};
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = geometryStage;
+	stages[0].module = geomModule;
+	stages[0].pName = "main";
+	stages[0].pSpecializationInfo = &specInfo;
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fragModule;
+	stages[1].pName = "main";
+
+	VkPipelineViewportStateCreateInfo viewportState = {};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+
+	VkPipelineRasterizationStateCreateInfo rasterizer = {};
+	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizer.cullMode = VK_CULL_MODE_NONE;       // demo geometry is double-sided
+	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizer.lineWidth = 1.0f;
+	rasterizer.depthBiasEnable = VK_TRUE;          // suppress shadow acne
+	rasterizer.depthBiasConstantFactor = 1.5f;
+	rasterizer.depthBiasSlopeFactor = 2.5f;
+
+	VkPipelineMultisampleStateCreateInfo multisampling = {};
+	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // shadow atlas is single-sample
+
+	VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.depthTestEnable = VK_TRUE;
+	depthStencil.depthWriteEnable = VK_TRUE;
+	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+	depthStencil.maxDepthBounds = 1.0f;
+
+	VkPipelineColorBlendStateCreateInfo colorBlending = {};
+	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlending.attachmentCount = 0; // depth only
+
+	VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkPipelineDynamicStateCreateInfo dynamicState = {};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount = 2;
+	dynamicState.pDynamicStates = dynamicStates;
+
+	VkPipelineVertexInputStateCreateInfo vertexInput = {};
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	VkFormat depthFormat = ANO_SHADOW_DEPTH_FORMAT;
+	VkPipelineRenderingCreateInfo renderingInfo = {};
+	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	renderingInfo.colorAttachmentCount = 0;
+	renderingInfo.depthAttachmentFormat = depthFormat;
+
+	VkGraphicsPipelineCreateInfo pipelineInfo = {};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.pNext = &renderingInfo;
+	pipelineInfo.stageCount = 2;
+	pipelineInfo.pStages = stages;
+	pipelineInfo.pVertexInputState = useMesh ? NULL : &vertexInput;
+	pipelineInfo.pInputAssemblyState = useMesh ? NULL : &inputAssembly;
+	pipelineInfo.pViewportState = &viewportState;
+	pipelineInfo.pRasterizationState = &rasterizer;
+	pipelineInfo.pMultisampleState = &multisampling;
+	pipelineInfo.pDepthStencilState = &depthStencil;
+	pipelineInfo.pColorBlendState = &colorBlending;
+	pipelineInfo.pDynamicState = &dynamicState;
+	pipelineInfo.layout = state->prototypes[PIPELINE_FLAT].layout; // reuse flat's sets 0/1/2 + push
+	pipelineInfo.renderPass = VK_NULL_HANDLE;
+
+	VkResult r = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &pipelineInfo, NULL, &state->shadowPipeline);
+
+	ano_aligned_free(geomCode.data);
+	ano_aligned_free(fragCode.data);
+	vkDestroyShaderModule(ctx->device, geomModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragModule, NULL);
+
+	if (r != VK_SUCCESS) { printf("Failed to create shadow depth pipeline!\n"); return false; }
+	return true;
+}
+
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	// Tonemap pass (standalone)
@@ -795,6 +1012,34 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 	{
 		vkDestroyPipelineCache(ctx->device, state->tonemapCache, NULL);
 		state->tonemapCache = VK_NULL_HANDLE;
+	}
+
+	// Shadow depth pass (standalone): pipeline + cache + sampler + the two shadow set layouts.
+	// (The shadowsetup compute prototype is freed by the generic prototype loop below.)
+	if (state->shadowPipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(ctx->device, state->shadowPipeline, NULL);
+		state->shadowPipeline = VK_NULL_HANDLE;
+	}
+	if (state->shadowCache != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineCache(ctx->device, state->shadowCache, NULL);
+		state->shadowCache = VK_NULL_HANDLE;
+	}
+	if (state->shadowSampler != VK_NULL_HANDLE)
+	{
+		vkDestroySampler(ctx->device, state->shadowSampler, NULL);
+		state->shadowSampler = VK_NULL_HANDLE;
+	}
+	if (state->shadowGeomSetLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(ctx->device, state->shadowGeomSetLayout, NULL);
+		state->shadowGeomSetLayout = VK_NULL_HANDLE;
+	}
+	if (state->shadowSetupSetLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(ctx->device, state->shadowSetupSetLayout, NULL);
+		state->shadowSetupSetLayout = VK_NULL_HANDLE;
 	}
 
 	// Global layout

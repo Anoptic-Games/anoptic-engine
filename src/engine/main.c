@@ -176,7 +176,7 @@ void* anoLogicThreadMain(void* arg)
 			// else: ring full; retry next tick (backpressure)
 		}
 
-		if (!bulkDestroyed && now - startTime > 8000000) // one-shot mass-despawn of {3,4}
+		if (!bulkDestroyed && now - startTime > 16000000) // one-shot mass-despawn of {3,4}
 		{
 			uint32_t ids[2] = { 3u, 4u };
 			if (ano_render_submit_bulk_destroy(bridge, ids, 2)) bulkDestroyed = true;

@@ -20,15 +20,20 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// 2. Setup layout
+	// Push: transformBaseOffset + shadowFrustumIndex (the latter used only by the depth-pass
+	// shadow variant; the camera variant leaves it unread).
 	VkPushConstantRange pushConstantRange = {};
 	pushConstantRange.stageFlags = geometryStage;
 	pushConstantRange.offset = 0;
-	pushConstantRange.size = sizeof(uint32_t);
+	pushConstantRange.size = 2u * sizeof(uint32_t);
 
+	// Set 2 = dynamic shadows (audit 4.7): the geometry stage reads a shadow frustum's viewProj
+	// in the depth pass; the fragment stage samples the shadow atlas. Same layout for the depth
+	// pipeline (which reuses this one), so all three sets are always present.
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 2;
-	VkDescriptorSetLayout setLayouts[2] = {state->globalSetLayout, proto->descriptorLayout};
+	pipelineLayoutInfo.setLayoutCount = 3;
+	VkDescriptorSetLayout setLayouts[3] = {state->globalSetLayout, proto->descriptorLayout, state->shadowGeomSetLayout};
 	pipelineLayoutInfo.pSetLayouts = setLayouts;
 	pipelineLayoutInfo.pushConstantRangeCount = 1;
 	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;

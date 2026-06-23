@@ -45,7 +45,15 @@ layout(set = 0, binding = 7) readonly buffer CompactedEntityIndices {
 
 layout(push_constant) uniform PushConstants {
     uint transformBaseOffset;
+    uint shadowFrustumIndex; // depth pass only: which shadow frustum's viewProj to project by
 } pc;
+
+// Depth-only shadow pass selector: when true, project by a light's shadow frustum (set 2) into
+// the shadow atlas instead of the camera. The fragment stage is the trivial depth-only shader.
+layout(constant_id = 0) const bool shadowPass = false;
+
+struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; } shadowBuf;
 
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec2 fragTexCoord;
@@ -70,7 +78,8 @@ void main() {
     mat4 model = transformBuf.transforms[entityIndex];
     vec4 worldPos = model * vec4(position, 1.0);
 
-    gl_Position      = global.proj * global.view * worldPos;
+    gl_Position      = shadowPass ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
+                                  : (global.proj * global.view * worldPos);
     fragNormal       = mat3(model) * normal;
     fragTexCoord     = texCoord;
     outMaterialIndex = entity.materialIndex;

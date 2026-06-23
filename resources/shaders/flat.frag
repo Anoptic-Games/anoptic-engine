@@ -87,6 +87,33 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
+// --- Dynamic shadows (set 2): GPU-built shadow frustum viewProjs + the depth atlas array + the
+// per-light shadow placement. A light that casts projects fragWorldPos into its shadow map and
+// PCF-compares against stored occluder depth. (audit 4.7) ---
+struct ShadowCullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
+layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { ShadowCullView shadowFrustums[]; } shadowFrustumBuf;
+layout(set = 2, binding = 1) uniform sampler2DArrayShadow shadowAtlas;
+layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
+
+// PCF directional shadow: project into the light map, compare with a slope-scaled bias. Returns
+// 1.0 lit .. 0.0 fully shadowed. Outside the map / beyond far = lit (no false self-shadowing).
+float sampleShadowPCF(uint layer, vec3 worldPos, float nDotL) {
+    vec4 lc = shadowFrustumBuf.shadowFrustums[layer].viewProj * vec4(worldPos, 1.0);
+    vec3 proj = lc.xyz / lc.w;
+    if (proj.z > 1.0 || proj.z < 0.0) return 1.0;
+    vec2 uv = proj.xy * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;
+    float bias = max(0.0015 * (1.0 - nDotL), 0.0004);
+    float ref = proj.z - bias;
+    vec2 texel = 1.0 / vec2(textureSize(shadowAtlas, 0).xy);
+    float sum = 0.0;
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx)
+            sum += texture(shadowAtlas, vec4(uv + vec2(dx, dy) * texel, float(layer), ref));
+    return sum / 9.0;
+}
+
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
 } materialBuf;
@@ -275,7 +302,15 @@ void main() {
             continue;
         }
 
-        vec3 radiance = light.color * light.intensity * attenuation;
+        // Shadowing: a casting light attenuates radiance by its shadow map. Directional only this
+        // increment (spot/point land later); other casters fall through fully lit.
+        float shadowFactor = 1.0;
+        ShadowLightInfo si = shadowInfoBuf.info[i];
+        if (si.castsShadow != 0u && light.type == LIGHT_TYPE_DIRECTIONAL) {
+            shadowFactor = sampleShadowPCF(si.baseFrustum, fragWorldPos, max(dot(N, L), 0.0));
+        }
+
+        vec3 radiance = light.color * light.intensity * attenuation * shadowFactor;
         accumulatedDirect += calculatePBR(baseColor.rgb, metallic, roughness, N, V, L) * radiance;
     }
 
