@@ -27,6 +27,7 @@ typedef enum PipelineType
     // and resources/shaders/{decal,skinned,pose}.* for the planned shape.
     PIPELINE_DECAL,             // (skeleton) projected / UV-overlay decal draw stream
     PIPELINE_SKINNED,           // (skeleton) skinned-mesh draw stream (own vertex stage + bone palette)
+    PIPELINE_COMPUTE_LIGHTCULL, // clustered-forward froxel light assignment (compute, never draws)
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
 } PipelineType;
 

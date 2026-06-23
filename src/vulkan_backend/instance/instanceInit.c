@@ -982,12 +982,28 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     }
 
     // Destroy color image view
-    if (state->colorView) 
+    if (state->colorView)
     {
         vkDestroyImageView(ctx->device, state->colorView, NULL);
         state->colorView = VK_NULL_HANDLE;
     }
-    
+
+    // Destroy per-frame HDR resolve targets (memory backed by swapchainAllocator, reset below)
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        if (state->frames[i].hdrColorView != VK_NULL_HANDLE)
+        {
+            vkDestroyImageView(ctx->device, state->frames[i].hdrColorView, NULL);
+            state->frames[i].hdrColorView = VK_NULL_HANDLE;
+        }
+        if (state->frames[i].hdrColorImage != VK_NULL_HANDLE)
+        {
+            vkDestroyImage(ctx->device, state->frames[i].hdrColorImage, NULL);
+            state->frames[i].hdrColorImage = VK_NULL_HANDLE;
+        }
+        state->frames[i].hdrColorAlloc.memory = VK_NULL_HANDLE;
+    }
+
     // Do NOT destroy the swapchain here because recreateSwapChain needs oldSwapChain
     if (state->images != NULL) {
         free(state->images);
@@ -1059,6 +1075,9 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 		cleanupVulkan(ctx);
 		exit(1);
 	}
+
+	// The per-frame HDR resolve views were recreated above; rebind the tonemap sets to them.
+	updateTonemapDescriptorSets(ctx, &rendererState);
 
 	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
@@ -1223,7 +1242,18 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 	float near = 0.1f;
 	float far = 100.0f;
 	perspective(state->uboData.proj, fov, aspect, near, far);
-	
+
+	// Clustered-forward froxel params: near/far + screen size (the light-cull pass and the
+	// fragment shader reconstruct froxels from these), and the fixed grid dimensions.
+	state->uboData.cameraNear = near;
+	state->uboData.cameraFar = far;
+	state->uboData.screenWidth = (float)state->imageExtent.width;
+	state->uboData.screenHeight = (float)state->imageExtent.height;
+	state->uboData.clusterDimX = ANO_CLUSTER_X;
+	state->uboData.clusterDimY = ANO_CLUSTER_Y;
+	state->uboData.clusterDimZ = ANO_CLUSTER_Z;
+	state->uboData.maxLightsPerCluster = ANO_CLUSTER_MAX_LIGHTS;
+
 	memcpy(state->frames[state->frameIndex].uniformMapped, &(state->uboData), sizeof(GlobalUBO));
 
 	oldTime = time;
@@ -1335,34 +1365,54 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 
 void createColorResources(VulkanContext* ctx) //TODO: This probably should be generalized later?
 {
-	VkFormat colorFormat = rendererState.imageFormat;
+	// Geometry renders into an HDR float MSAA target (was the swapchain LDR format), so
+	// many-light dynamic range is preserved; a fullscreen tonemap pass encodes to the
+	// swapchain afterwards. The MSAA target stays transient (resolved, never stored).
+	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT;
 
 	createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
 		1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageAlloc, false);
 	rendererState.colorView = createImageView(ctx->device, rendererState.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-	
+
 	if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
 	{
 		printf("Failed to transition color image layout!\n");
+	}
+
+	// Per-frame single-sample HDR resolve target: resolve destination (COLOR_ATTACHMENT) for
+	// the MSAA HDR pass, and tonemap source (SAMPLED). Not transient — the tonemap pass reads
+	// it back. Seeded to SHADER_READ_ONLY; recordCommandBuffer re-transitions it per frame.
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+			1, VK_SAMPLE_COUNT_1_BIT, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.frames[i].hdrColorImage, &rendererState.frames[i].hdrColorAlloc, false);
+		rendererState.frames[i].hdrColorView = createImageView(ctx->device, rendererState.frames[i].hdrColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.frames[i].hdrColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
+		{
+			printf("Failed to transition HDR resolve image layout!\n");
+		}
 	}
 }
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
-	VkDescriptorPoolSize poolSize[3] = {};
+	VkDescriptorPoolSize poolSize[4] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
+	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 4;  // UBO/frame: global + cull + update + light-cull (binding 0 each)
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 22; // SSBO/frame: 9 global (1-9) + 8 cull (1-8) + 3 update + 2 scatter (0,2)
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 32; // SSBO/frame: 11 global (1-11) + 8 cull + 3 update + 2 scatter (0,2) + 4 light-cull = 28, +margin
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
+	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // tonemap set: hdr resolve sampler
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = 3;
+	poolInfo.poolSizeCount = 4;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 5; // 4 sets/frame (global, cull, update, scatter) + margin
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 8; // global, cull, update, scatter, light-cull, tonemap (6) + margin
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1492,7 +1542,120 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].scatterSet = scatterSetsTemp[i];
 
+    VkDescriptorSetLayout lightcullLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        lightcullLayouts[i] = rendererState.lightcullSetLayout;
+    }
+    VkDescriptorSetAllocateInfo lightcullAllocInfo = {};
+    lightcullAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    lightcullAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    lightcullAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    lightcullAllocInfo.pSetLayouts = lightcullLayouts;
+
+    VkDescriptorSet lightcullSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &lightcullAllocInfo, lightcullSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate light-cull descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].lightcullSet = lightcullSetsTemp[i];
+
+    // Tonemap set (one per frame): samples that frame's HDR resolve target. The image view
+    // is (re)bound by updateTonemapDescriptorSets, which also runs after a swapchain resize
+    // since the per-frame hdrColorView handles change there.
+    VkDescriptorSetLayout tonemapLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        tonemapLayouts[i] = rendererState.tonemapSetLayout;
+    }
+    VkDescriptorSetAllocateInfo tonemapAllocInfo = {};
+    tonemapAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    tonemapAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    tonemapAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    tonemapAllocInfo.pSetLayouts = tonemapLayouts;
+
+    VkDescriptorSet tonemapSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &tonemapAllocInfo, tonemapSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate tonemap descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].tonemapSet = tonemapSetsTemp[i];
+
 	return true;
+}
+
+// Binds the clustered-forward froxel buffers: global set bindings 10/11 (fragment reads) and
+// the light-cull compute set bindings 0-4 (in: UBO/transforms/lights, out: count/index). The
+// cluster buffers are fixed-size and not extent-dependent, so this runs once at init only.
+void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkDescriptorBufferInfo countInfo = { state->frames[i].clusterLightCountBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo indexInfo = { state->frames[i].clusterLightIndexBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo uboInfo   = { state->frames[i].uniformBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo xformInfo = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo lightInfo = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
+
+        VkWriteDescriptorSet writes[7] = {};
+        // Global set: 10 = cluster light count, 11 = cluster light index (fragment-read).
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = state->frames[i].globalSet;
+        writes[0].dstBinding = 10;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].pBufferInfo = &countInfo;
+        writes[1] = writes[0];
+        writes[1].dstBinding = 11;
+        writes[1].pBufferInfo = &indexInfo;
+        // Light-cull set: 0 UBO, 1 transforms, 2 lights, 3 count(out), 4 index(out).
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = state->frames[i].lightcullSet;
+        writes[2].dstBinding = 0;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[2].pBufferInfo = &uboInfo;
+        writes[3] = writes[2];
+        writes[3].dstBinding = 1;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[3].pBufferInfo = &xformInfo;
+        writes[4] = writes[3];
+        writes[4].dstBinding = 2;
+        writes[4].pBufferInfo = &lightInfo;
+        writes[5] = writes[3];
+        writes[5].dstBinding = 3;
+        writes[5].pBufferInfo = &countInfo;
+        writes[6] = writes[3];
+        writes[6].dstBinding = 4;
+        writes[6].pBufferInfo = &indexInfo;
+
+        vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
+    }
+}
+
+// Points each frame's tonemap set at its current HDR resolve view. Separate from
+// updateUboDescriptorSets because it must also run after a swapchain resize, where the
+// per-frame hdrColorView handles are destroyed and recreated.
+void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkDescriptorImageInfo imageInfo = {};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.imageView = state->frames[i].hdrColorView;
+        imageInfo.sampler = state->textureSampler;
+
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = state->frames[i].tonemapSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imageInfo;
+        vkUpdateDescriptorSets(ctx->device, 1, &write, 0, NULL);
+    }
 }
 
 
@@ -2051,6 +2214,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.culling.compactedEntityIndicesBuffer[i], NULL);
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
+		if(rendererState.frames[i].clusterLightCountBuffer)
+			vkDestroyBuffer(ctx->device, rendererState.frames[i].clusterLightCountBuffer, NULL);
+		if(rendererState.frames[i].clusterLightIndexBuffer)
+			vkDestroyBuffer(ctx->device, rendererState.frames[i].clusterLightIndexBuffer, NULL);
 	}
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging

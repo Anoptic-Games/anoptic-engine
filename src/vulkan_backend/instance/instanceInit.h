@@ -90,6 +90,12 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state);
 // Updates UBO descriptor sets to point to their corresponding uniform buffers
 void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state);
 
+// (Re)binds each frame's tonemap set to its HDR resolve view; rerun after a swapchain resize
+void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state);
+
+// Binds the clustered-forward froxel buffers (global set 10/11 + light-cull set); init-only
+void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state);
+
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 

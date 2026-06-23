@@ -34,6 +34,17 @@ typedef struct GlobalUBO
 	uint32_t frameCount;
 	uint32_t lightCount;   // number of active lights in the light SSBO (set 0, binding 8)
 	float cameraPos[4];    // world-space camera position (xyz; w unused), avoids per-fragment inverse(view)
+	// Clustered-forward froxel grid (see LIGHTING_SCALE.md). near/far + screen size map a
+	// fragment to its froxel; the light-cull pass and the fragment shader must agree on these.
+	// Two std140 16-byte rows; keep this tail in sync with every GlobalUBO GLSL mirror.
+	float cameraNear;          // row: 160
+	float cameraFar;           //      164
+	float screenWidth;         //      168
+	float screenHeight;        //      172
+	uint32_t clusterDimX;      // row: 176
+	uint32_t clusterDimY;      //      180
+	uint32_t clusterDimZ;      //      184
+	uint32_t maxLightsPerCluster; //   188  (== ANO_CLUSTER_MAX_LIGHTS)
 } GlobalUBO;
 
 

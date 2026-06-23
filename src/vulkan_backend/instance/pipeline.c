@@ -159,7 +159,23 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	instanceDataLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
 	instanceDataLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[10] = {
+	// 10/11: clustered-forward froxel light lists. Fragment-only: the fragment maps to its
+	// froxel and loops [offset, offset+count) of the index list (see flat.frag / LIGHTING_SCALE.md).
+	VkDescriptorSetLayoutBinding clusterCountLayoutBinding = {};
+	clusterCountLayoutBinding.binding = 10;
+	clusterCountLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	clusterCountLayoutBinding.descriptorCount = 1;
+	clusterCountLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	clusterCountLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding clusterIndexLayoutBinding = {};
+	clusterIndexLayoutBinding.binding = 11;
+	clusterIndexLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	clusterIndexLayoutBinding.descriptorCount = 1;
+	clusterIndexLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	clusterIndexLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[12] = {
 		uboLayoutBinding,
 		ssboLayoutBinding,
 		materialLayoutBinding,
@@ -169,12 +185,14 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		meshDataLayoutBinding,
 		compactedEntityIndicesLayoutBinding,
 		lightLayoutBinding,
-		instanceDataLayoutBinding
+		instanceDataLayoutBinding,
+		clusterCountLayoutBinding,
+		clusterIndexLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 10;
+	layoutInfo.bindingCount = 12;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -557,11 +575,228 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(compShaderCode.data);
     vkDestroyShaderModule(ctx->device, compShaderModule, NULL);
 
+    // Compute Light-cull Pipeline (clustered-forward froxel light assignment).
+    // 0: GlobalUBO (in)  1: TransformSSBO (in, light world pos)  2: LightSSBO (in)
+    // 3: clusterLightCount (out)  4: clusterLightIndices (out)
+    VkDescriptorSetLayoutBinding lightcullBindings[5] = {};
+    for (uint32_t b = 0; b < 5; ++b) {
+        lightcullBindings[b].binding = b;
+        lightcullBindings[b].descriptorType = (b == 0)
+            ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        lightcullBindings[b].descriptorCount = 1;
+        lightcullBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo lightcullLayoutInfo = {};
+    lightcullLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    lightcullLayoutInfo.bindingCount = 5;
+    lightcullLayoutInfo.pBindings = lightcullBindings;
+    if (vkCreateDescriptorSetLayout(ctx->device, &lightcullLayoutInfo, NULL, &state->lightcullSetLayout) != VK_SUCCESS)
+        return false;
+
+    VkPipelineLayoutCreateInfo lightcullPipelineLayoutInfo = {};
+    lightcullPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    lightcullPipelineLayoutInfo.setLayoutCount = 1;
+    lightcullPipelineLayoutInfo.pSetLayouts = &state->lightcullSetLayout;
+    if (vkCreatePipelineLayout(ctx->device, &lightcullPipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].layout) != VK_SUCCESS)
+        return false;
+
+    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].type = PIPELINE_COMPUTE_LIGHTCULL;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].supportedFeatures = PBR_FEATURE_NONE;
+
+    struct Buffer lightcullShaderCode;
+    char lightcullShaderPath[256];
+    snprintf(lightcullShaderPath, sizeof(lightcullShaderPath), "%s/resources/shaders/lightcull.comp.spv", PROJECT_ROOT);
+    if (!loadFile(lightcullShaderPath, &lightcullShaderCode)) return false;
+    VkShaderModule lightcullShaderModule = createShaderModule(ctx->device, &lightcullShaderCode);
+
+    VkComputePipelineCreateInfo lightcullPipelineInfo = {};
+    lightcullPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    lightcullPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].layout;
+    lightcullPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    lightcullPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    lightcullPipelineInfo.stage.module = lightcullShaderModule;
+    lightcullPipelineInfo.stage.pName = "main";
+
+    VkPipelineCacheCreateInfo lightcullCacheInfo = {};
+    lightcullCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(ctx->device, &lightcullCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache);
+
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache, 1, &lightcullPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline) != VK_SUCCESS) return false;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(lightcullShaderCode.data);
+    vkDestroyShaderModule(ctx->device, lightcullShaderModule, NULL);
+
+	return true;
+}
+
+// Bespoke fullscreen tonemap pass: encodes the HDR resolve target to the swapchain. Not a
+// PipelineType prototype (no cull/compaction, no g_framePasses entry) — standalone state on
+// RendererState. Vertex stage is a vertex-bufferless fullscreen triangle (gl_VertexIndex);
+// fragment samples set 0 binding 0 (the per-frame hdrColorView) and writes the swapchain.
+// in:  ctx, state (imageFormat = swapchain target format must be set)
+// out: true on success; populates state->tonemap{SetLayout,Layout,Cache,Pipeline}
+bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
+{
+	// Set layout: one combined image sampler (the HDR resolve), fragment-only.
+	VkDescriptorSetLayoutBinding samplerBinding = {};
+	samplerBinding.binding = 0;
+	samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	samplerBinding.descriptorCount = 1;
+	samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutCreateInfo setLayoutInfo = {};
+	setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	setLayoutInfo.bindingCount = 1;
+	setLayoutInfo.pBindings = &samplerBinding;
+	if (vkCreateDescriptorSetLayout(ctx->device, &setLayoutInfo, NULL, &state->tonemapSetLayout) != VK_SUCCESS)
+	{
+		printf("Failed to create tonemap descriptor set layout!\n");
+		return false;
+	}
+
+	VkPipelineLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	layoutInfo.setLayoutCount = 1;
+	layoutInfo.pSetLayouts = &state->tonemapSetLayout;
+	if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->tonemapLayout) != VK_SUCCESS)
+	{
+		printf("Failed to create tonemap pipeline layout!\n");
+		return false;
+	}
+
+	VkPipelineCacheCreateInfo cacheInfo = {};
+	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->tonemapCache);
+
+	struct Buffer vertCode, fragCode;
+	char path[256];
+	snprintf(path, sizeof(path), "%s/resources/shaders/tonemap.vert.spv", PROJECT_ROOT);
+	if (!loadFile(path, &vertCode)) return false;
+	snprintf(path, sizeof(path), "%s/resources/shaders/tonemap.frag.spv", PROJECT_ROOT);
+	if (!loadFile(path, &fragCode)) return false;
+	VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
+	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+
+	VkPipelineShaderStageCreateInfo stages[2] = {};
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	stages[0].module = vertModule;
+	stages[0].pName = "main";
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fragModule;
+	stages[1].pName = "main";
+
+	// No vertex buffers: the vertex shader synthesizes a fullscreen triangle from gl_VertexIndex.
+	VkPipelineVertexInputStateCreateInfo vertexInput = {};
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	VkPipelineViewportStateCreateInfo viewportState = {};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+
+	VkPipelineRasterizationStateCreateInfo rasterizer = {};
+	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizer.cullMode = VK_CULL_MODE_NONE;
+	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizer.lineWidth = 1.0f;
+
+	// Tonemap writes the single-sample swapchain directly: no MSAA, no resolve.
+	VkPipelineMultisampleStateCreateInfo multisampling = {};
+	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkPipelineColorBlendAttachmentState blendAttachment = {};
+	blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	blendAttachment.blendEnable = VK_FALSE;
+
+	VkPipelineColorBlendStateCreateInfo colorBlending = {};
+	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlending.attachmentCount = 1;
+	colorBlending.pAttachments = &blendAttachment;
+
+	VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.depthTestEnable = VK_FALSE;
+	depthStencil.depthWriteEnable = VK_FALSE;
+
+	VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkPipelineDynamicStateCreateInfo dynamicState = {};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount = 2;
+	dynamicState.pDynamicStates = dynamicStates;
+
+	// Tonemap targets the swapchain LDR format (no depth attachment).
+	VkFormat colorFormat = state->imageFormat;
+	VkPipelineRenderingCreateInfo renderingInfo = {};
+	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	renderingInfo.colorAttachmentCount = 1;
+	renderingInfo.pColorAttachmentFormats = &colorFormat;
+
+	VkGraphicsPipelineCreateInfo pipelineInfo = {};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.pNext = &renderingInfo;
+	pipelineInfo.stageCount = 2;
+	pipelineInfo.pStages = stages;
+	pipelineInfo.pVertexInputState = &vertexInput;
+	pipelineInfo.pInputAssemblyState = &inputAssembly;
+	pipelineInfo.pViewportState = &viewportState;
+	pipelineInfo.pRasterizationState = &rasterizer;
+	pipelineInfo.pMultisampleState = &multisampling;
+	pipelineInfo.pDepthStencilState = &depthStencil;
+	pipelineInfo.pColorBlendState = &colorBlending;
+	pipelineInfo.pDynamicState = &dynamicState;
+	pipelineInfo.layout = state->tonemapLayout;
+	pipelineInfo.renderPass = VK_NULL_HANDLE;
+
+	VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo, NULL, &state->tonemapPipeline);
+
+	ano_aligned_free(vertCode.data);
+	ano_aligned_free(fragCode.data);
+	vkDestroyShaderModule(ctx->device, vertModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragModule, NULL);
+
+	if (r != VK_SUCCESS)
+	{
+		printf("Failed to create tonemap pipeline!\n");
+		return false;
+	}
 	return true;
 }
 
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 {
+	// Tonemap pass (standalone)
+	if (state->tonemapPipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(ctx->device, state->tonemapPipeline, NULL);
+		state->tonemapPipeline = VK_NULL_HANDLE;
+	}
+	if (state->tonemapLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(ctx->device, state->tonemapLayout, NULL);
+		state->tonemapLayout = VK_NULL_HANDLE;
+	}
+	if (state->tonemapSetLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(ctx->device, state->tonemapSetLayout, NULL);
+		state->tonemapSetLayout = VK_NULL_HANDLE;
+	}
+	if (state->tonemapCache != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineCache(ctx->device, state->tonemapCache, NULL);
+		state->tonemapCache = VK_NULL_HANDLE;
+	}
+
 	// Global layout
 	if (state->globalSetLayout != VK_NULL_HANDLE)
 	{
@@ -585,6 +820,12 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyDescriptorSetLayout(ctx->device, state->scatterSetLayout, NULL);
         state->scatterSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (state->lightcullSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(ctx->device, state->lightcullSetLayout, NULL);
+        state->lightcullSetLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts

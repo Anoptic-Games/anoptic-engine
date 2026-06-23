@@ -159,6 +159,12 @@ static const RenderPassDef g_framePasses[] = {
         .prototype  = PIPELINE_COMPUTE_CULL,
         .dispatchX  = 0,  // computed from entityCount at runtime
     },
+    // 3. Clustered-forward light assignment (froxel light lists for the fragment passes)
+    {
+        .type       = PASS_COMPUTE,
+        .prototype  = PIPELINE_COMPUTE_LIGHTCULL,
+        .dispatchX  = 0,  // computed from cluster count at runtime
+    },
     // 2. Opaque geometry
     {
         .type                   = PASS_GRAPHICS,
@@ -221,6 +227,29 @@ void recordCommandBuffer(uint32_t imageIndex)
 		0, NULL,
 		1, &swapChainBarrier
 	);
+
+    // Move this frame's HDR resolve target to COLOR_ATTACHMENT for the geometry passes to
+    // resolve into. oldLayout UNDEFINED: the opaque pass clears + the resolve overwrites the
+    // whole render area, so prior contents are not needed. Per-frame image, so no cross-frame
+    // read hazard (its fence was waited at the top of drawFrame).
+    {
+        VkImageMemoryBarrier hdrToColor = {};
+        hdrToColor.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        hdrToColor.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        hdrToColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        hdrToColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hdrToColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hdrToColor.image = rendererState.frames[rendererState.frameIndex].hdrColorImage;
+        hdrToColor.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        hdrToColor.subresourceRange.baseMipLevel = 0;
+        hdrToColor.subresourceRange.levelCount = 1;
+        hdrToColor.subresourceRange.baseArrayLayer = 0;
+        hdrToColor.subresourceRange.layerCount = 1;
+        hdrToColor.srcAccessMask = 0;
+        hdrToColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, NULL, 0, NULL, 1, &hdrToColor);
+    }
 
     // Upload this frame's staged per-slot deltas into the DEVICE_LOCAL authoritative buffers
     // before any pass reads them. One vkCmdCopyBuffer per buffer, bracketed by a single
@@ -286,9 +315,10 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
                 
                 VkDescriptorSet set =
-                    pass->prototype == PIPELINE_COMPUTE_UPDATE  ? rendererState.frames[rendererState.frameIndex].updateSet :
-                    pass->prototype == PIPELINE_COMPUTE_SCATTER ? rendererState.frames[rendererState.frameIndex].scatterSet :
-                                                                  rendererState.frames[rendererState.frameIndex].cullSet;
+                    pass->prototype == PIPELINE_COMPUTE_UPDATE    ? rendererState.frames[rendererState.frameIndex].updateSet :
+                    pass->prototype == PIPELINE_COMPUTE_SCATTER   ? rendererState.frames[rendererState.frameIndex].scatterSet :
+                    pass->prototype == PIPELINE_COMPUTE_LIGHTCULL ? rendererState.frames[rendererState.frameIndex].lightcullSet :
+                                                                    rendererState.frames[rendererState.frameIndex].cullSet;
 
                 // Scatter binding 1 (xform ring) is STORAGE_BUFFER_DYNAMIC: bind the
                 // published slice by per-frame dynamic offset; other passes have none.
@@ -304,9 +334,16 @@ void recordCommandBuffer(uint32_t imageIndex)
                     vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &streamCount);
                 }
 
-                // dispatchX from the pass's work item count (streamed entries for scatter, else entities).
-                uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
-                uint32_t dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
+                // dispatchX from the pass's work item count. Light-cull is one invocation per
+                // froxel (local_size 64); the others are per work item (local_size 256: streamed
+                // entries for scatter, else entities).
+                uint32_t dispatchX;
+                if (pass->prototype == PIPELINE_COMPUTE_LIGHTCULL) {
+                    dispatchX = (ANO_CLUSTER_COUNT + 63u) / 64u;
+                } else {
+                    uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
+                    dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
+                }
                 vkCmdDispatch(cmd, dispatchX, 1, 1);
 
                 VkMemoryBarrier memoryBarrier = {};
@@ -317,6 +354,11 @@ void recordCommandBuffer(uint32_t imageIndex)
                     // update -> scatter is a WAW on streamed slots (scatter must win); both -> cull is a read.
                     memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+                } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTCULL) {
+                    // Light-cull writes the froxel light lists; the fragment passes read them.
+                    memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                         0, 1, &memoryBarrier, 0, NULL, 0, NULL);
                 } else {
                     // The cull pass feeds the indirect commands (DRAW_INDIRECT) and the
@@ -339,7 +381,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             colorAttachment.imageView = rendererState.colorView; // MSAA color
             colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colorAttachment.resolveMode = pass->resolveMode;
-            colorAttachment.resolveImageView = rendererState.views[imageIndex];
+            colorAttachment.resolveImageView = rendererState.frames[rendererState.frameIndex].hdrColorView; // resolve into the HDR target; tonemap encodes to swapchain
             colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             colorAttachment.loadOp = pass->colorLoadOp;
             colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -432,6 +474,62 @@ void recordCommandBuffer(uint32_t imageIndex)
             
             vkCmdEndRendering(cmd);
         }
+    }
+
+    // --- Tonemap: encode the HDR resolve into the swapchain ---
+    // The geometry passes resolved into hdrColorImage; flip it to SHADER_READ for the sample,
+    // then a fullscreen triangle tonemaps it onto the swapchain (already COLOR_ATTACHMENT from
+    // the top barrier). The present barrier below then takes the swapchain to PRESENT.
+    {
+        VkImageMemoryBarrier hdrToRead = {};
+        hdrToRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        hdrToRead.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        hdrToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        hdrToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hdrToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hdrToRead.image = rendererState.frames[rendererState.frameIndex].hdrColorImage;
+        hdrToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        hdrToRead.subresourceRange.baseMipLevel = 0;
+        hdrToRead.subresourceRange.levelCount = 1;
+        hdrToRead.subresourceRange.baseArrayLayer = 0;
+        hdrToRead.subresourceRange.layerCount = 1;
+        hdrToRead.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        hdrToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &hdrToRead);
+
+        VkRenderingAttachmentInfo tmColor = {};
+        tmColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        tmColor.imageView = rendererState.views[imageIndex];
+        tmColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        tmColor.resolveMode = VK_RESOLVE_MODE_NONE;
+        tmColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // tonemap writes every pixel
+        tmColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingInfo tmInfo = {};
+        tmInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        tmInfo.renderArea.offset = (VkOffset2D){0, 0};
+        tmInfo.renderArea.extent = rendererState.imageExtent;
+        tmInfo.layerCount = 1;
+        tmInfo.colorAttachmentCount = 1;
+        tmInfo.pColorAttachments = &tmColor;
+
+        vkCmdBeginRendering(cmd, &tmInfo);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.tonemapPipeline);
+
+        VkViewport tmViewport = {};
+        tmViewport.width = (float)rendererState.imageExtent.width;
+        tmViewport.height = (float)rendererState.imageExtent.height;
+        tmViewport.minDepth = 0.0f;
+        tmViewport.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd, 0, 1, &tmViewport);
+        VkRect2D tmScissor = { .offset = {0, 0}, .extent = rendererState.imageExtent };
+        vkCmdSetScissor(cmd, 0, 1, &tmScissor);
+
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.tonemapLayout,
+            0, 1, &rendererState.frames[rendererState.frameIndex].tonemapSet, 0, NULL);
+        vkCmdDraw(cmd, 3, 1, 0, 0); // fullscreen triangle
+        vkCmdEndRendering(cmd);
     }
 
 	// Transition swapchain image to present
@@ -1566,6 +1664,39 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
     return true;
 }
 
+// Clustered-forward froxel light lists. Fixed size (ANO_CLUSTER_COUNT froxels), independent of
+// entity/light count, so these are a one-time DEVICE_LOCAL allocation off the growth path. Per
+// frame: the light-cull compute writes them and the same frame's fragment passes read them.
+// in:  ctx, state
+// out: true on success; populates frames[i].clusterLight{Count,Index}Buffer/Alloc
+bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
+    VkDeviceSize countSize = (VkDeviceSize)sizeof(uint32_t) * ANO_CLUSTER_COUNT;
+    VkDeviceSize indexSize = (VkDeviceSize)sizeof(uint32_t) * ANO_CLUSTER_COUNT * ANO_CLUSTER_MAX_LIGHTS;
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkMemoryRequirements memReqs;
+
+        info.size = countSize;
+        if (vkCreateBuffer(ctx->device, &info, NULL, &state->frames[i].clusterLightCountBuffer) != VK_SUCCESS) return false;
+        vkGetBufferMemoryRequirements(ctx->device, state->frames[i].clusterLightCountBuffer, &memReqs);
+        state->frames[i].clusterLightCountAlloc = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (state->frames[i].clusterLightCountAlloc.memory == VK_NULL_HANDLE) return false;
+        vkBindBufferMemory(ctx->device, state->frames[i].clusterLightCountBuffer, state->frames[i].clusterLightCountAlloc.memory, state->frames[i].clusterLightCountAlloc.offset);
+
+        info.size = indexSize;
+        if (vkCreateBuffer(ctx->device, &info, NULL, &state->frames[i].clusterLightIndexBuffer) != VK_SUCCESS) return false;
+        vkGetBufferMemoryRequirements(ctx->device, state->frames[i].clusterLightIndexBuffer, &memReqs);
+        state->frames[i].clusterLightIndexAlloc = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (state->frames[i].clusterLightIndexAlloc.memory == VK_NULL_HANDLE) return false;
+        vkBindBufferMemory(ctx->device, state->frames[i].clusterLightIndexBuffer, state->frames[i].clusterLightIndexAlloc.memory, state->frames[i].clusterLightIndexAlloc.offset);
+    }
+    return true;
+}
+
 bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->culling.maxEntities = maxEntities;
     uint32_t maxMeshes = 1024;
@@ -1895,6 +2026,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	if (!ano_vk_init_tonemap(&ctx, &rendererState))
+	{
+		printf("Quitting init: tonemap pipeline failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
 	if(!createTextureSampler(&ctx, &rendererState))
 	{
 		printf("Quitting init: texture sampler failure!\n");
@@ -1924,7 +2062,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createMaterialBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
-	    !createCullingBuffers(&ctx, &rendererState, maxEntities))
+	    !createCullingBuffers(&ctx, &rendererState, maxEntities) ||
+	    !createClusterBuffers(&ctx, &rendererState))
 	{
 		printf("Quitting init: buffer creation failure!\n");
 		unInitVulkan();
@@ -2194,6 +2333,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 
 	updateUboDescriptorSets(&ctx, &rendererState);
+	updateTonemapDescriptorSets(&ctx, &rendererState);
+	updateClusterDescriptorSets(&ctx, &rendererState);
 
 
 	if (!createCommandBuffer(&ctx, &rendererState))

@@ -27,6 +27,21 @@
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
+// HDR linear render target. The geometry passes render into this float format (MSAA),
+// resolve to a single-sample HDR image, and a fullscreen tonemap pass encodes to the
+// swapchain. R16G16B16A16_SFLOAT is in Vulkan's mandatory color-attachment + sampled +
+// blend set, so it needs no runtime format-support query. See LIGHTING_SCALE.md.
+#define ANO_HDR_COLOR_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+
+// Clustered-forward froxel grid. Fixed dimensions (independent of entity/light count), so the
+// cluster buffers are a fixed allocation, not on the entity growth path. ANO_CLUSTER_MAX_LIGHTS
+// caps lights per froxel; overflow drops extras (logged-in-design; see LIGHTING_SCALE.md).
+#define ANO_CLUSTER_X            16u
+#define ANO_CLUSTER_Y            9u
+#define ANO_CLUSTER_Z            24u
+#define ANO_CLUSTER_COUNT        (ANO_CLUSTER_X * ANO_CLUSTER_Y * ANO_CLUSTER_Z) // 3456
+#define ANO_CLUSTER_MAX_LIGHTS   128u
+
 // FALLBACK_MESH_INDEX is the public renderer contract (anoptic_render.h), pulled
 // in transitively via render_bridge.h above.
 #define FALLBACK_TEXTURE_INDEX 0
@@ -589,11 +604,29 @@ typedef struct PerFrameResources
     GpuAllocation       depthAlloc;
     VkImageView         depthView;
 
+    // HDR resolve target: the MSAA HDR color resolves here (single-sample), then the
+    // tonemap pass samples it to write the swapchain. Per-frame so an in-flight frame's
+    // tonemap read never races the next frame's resolve write.
+    VkImage             hdrColorImage;
+    GpuAllocation       hdrColorAlloc;
+    VkImageView         hdrColorView;
+
+    // Clustered-forward froxel light lists (device-local, written by the light-cull pass,
+    // read by the fragment shader). Per-frame to avoid a cross-frame write/read race. Fixed
+    // size: clusterLightCount = uint per froxel; clusterLightIndices = ANO_CLUSTER_MAX_LIGHTS
+    // per froxel (offset implicit = clusterIdx * ANO_CLUSTER_MAX_LIGHTS).
+    VkBuffer            clusterLightCountBuffer;
+    GpuAllocation       clusterLightCountAlloc;
+    VkBuffer            clusterLightIndexBuffer;
+    GpuAllocation       clusterLightIndexAlloc;
+
     // Descriptor sets
     VkDescriptorSet     globalSet;
     VkDescriptorSet     cullSet;
     VkDescriptorSet     updateSet;
     VkDescriptorSet     scatterSet;
+    VkDescriptorSet     lightcullSet;   // light-cull compute pass inputs/outputs
+    VkDescriptorSet     tonemapSet;     // set 0 of the tonemap pass: samples hdrColorView
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -634,6 +667,13 @@ typedef struct RendererState
     VkDescriptorPool        globalDescriptorPool;
     VkDescriptorSetLayout   globalSetLayout;        // Set 0
 
+    // Tonemap pass (bespoke fullscreen HDR->swapchain encode). Standalone, not a
+    // PipelineType prototype: it does not go through cull/compaction or g_framePasses.
+    VkPipeline              tonemapPipeline;
+    VkPipelineLayout        tonemapLayout;
+    VkDescriptorSetLayout   tonemapSetLayout;       // 1 combined-image-sampler (hdrColorView)
+    VkPipelineCache         tonemapCache;
+
     // Geometry
     GeometryPool            globalGeometryPool;
     RenderPrimitives        primitives;
@@ -654,6 +694,7 @@ typedef struct RendererState
 
     VkDescriptorSetLayout   updateSetLayout;
     VkDescriptorSetLayout   scatterSetLayout;
+    VkDescriptorSetLayout   lightcullSetLayout; // clustered-forward light assignment pass
 
     // Fallback resources
     VkImage                 fallbackImage;

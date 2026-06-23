@@ -28,6 +28,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state);
+bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state); // fullscreen HDR->swapchain encode
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state);
 
 #endif
