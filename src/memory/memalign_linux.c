@@ -5,7 +5,7 @@
 
 #ifdef __linux__
 
-#include "anoptic_memalign.h"
+#include <anoptic_memory.h>
 #include <mimalloc.h>
 
 // Linux-specific implementation of aligned_malloc as defined in the ano_memory API.

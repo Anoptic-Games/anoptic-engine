@@ -40,12 +40,12 @@ typedef pthread_rwlockattr_t anothread_rwlockattr_t;
 #if defined(__APPLE__)
 // macOS libpthread has no pthread_barrier_t/attr; define per glibc's shape (C23 atomics).
 typedef struct {
-	unsigned int count;       // required arrivals, set at init
-	atomic_uint  arrived;     // arrivals in the current round
-	atomic_uint  generation;  // phase counter; enables barrier reuse
+    unsigned int count;       // required arrivals, set at init
+    atomic_uint  arrived;     // arrivals in the current round
+    atomic_uint  generation;  // phase counter; enables barrier reuse
 } pthread_barrier_t;
 typedef struct {
-	int pshared;
+    int pshared;
 } pthread_barrierattr_t;
 #endif
 typedef pthread_barrier_t anothread_barrier_t;

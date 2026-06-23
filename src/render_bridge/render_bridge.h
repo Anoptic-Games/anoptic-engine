@@ -40,6 +40,7 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <mimalloc.h>
+#include <anoptic_memory.h> // ANO_CACHE_LINE / ANO_THREAD_LINE
 #include <anoptic_math.h>
 #include <anoptic_render.h> // command protocol + opaque AnoRenderBridge + ano_render_submit
 
@@ -94,30 +95,29 @@ typedef struct DisplayState
 // Bounded SPSC ring
 // ---------------------------------------------------------------------------
 
-// Hardware cache-line size assumed for false-sharing avoidance (x86-64 / arm64).
-#define ANO_CACHE_LINE 64
-
 // Single-producer/single-consumer bounded ring over fixed-size POD elements.
 // Lock-free, wait-free on both ends; capacity is a power of two so index
 // wrap is a mask. The producer owns `tail`, the consumer owns `head`; each reads
 // the other's index with acquire and publishes its own with release.
 //
-// tail (producer) and head (consumer) sit on separate cache lines: the producer's
-// frequent tail-store must not invalidate the line the consumer spins on for head
-// (and vice versa), or the ring degrades into a cache-line ping-pong. Because a
-// member carries _Alignas(64), the whole struct aligns to 64 — so an embedding
-// struct (AnoRenderBridge) inherits 64-byte alignment automatically on the stack
-// or in static storage. A HEAP-allocated owner must request 64-byte alignment
-// (e.g. mi_heap_malloc_aligned) for the separation to hold.
+// tail (producer) and head (consumer) sit on separate ANO_THREAD_LINE regions: the
+// producer's frequent tail-store must not invalidate the line the consumer spins on
+// for head (and vice versa), or the ring degrades into a cache-line ping-pong.
+// ANO_THREAD_LINE (anoptic_memory.h) is the false-sharing isolation distance — 128,
+// wide enough to clear x86's adjacent-line prefetch pair and Apple Silicon's 128-byte
+// line. Because a member carries _Alignas(ANO_THREAD_LINE), the whole struct inherits
+// that alignment — so an embedding struct (AnoRenderBridge) gets it automatically on
+// the stack or in static storage. A HEAP-allocated owner must request ANO_THREAD_LINE
+// alignment (e.g. mi_heap_malloc_aligned) for the separation to hold.
 //
 // This is the minimal purpose-built ring the bridge needs now; it should migrate
 // to anoptic_collections.h when the generic lock-free collections land (notes.md
 // Step 5).
 typedef struct AnoSpscRing
 {
-    _Alignas(ANO_CACHE_LINE) _Atomic uint32_t tail; // producer-owned cursor: next index to write
-    _Alignas(ANO_CACHE_LINE) _Atomic uint32_t head; // consumer-owned cursor: next index to read
-    _Alignas(ANO_CACHE_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
+    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t tail; // producer-owned cursor: next index to write
+    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t head; // consumer-owned cursor: next index to read
+    _Alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
     uint32_t                          stride;       // element size in bytes
     uint8_t                          *buffer;       // capacity * stride bytes
 } AnoSpscRing;

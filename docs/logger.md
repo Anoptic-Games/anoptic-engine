@@ -31,8 +31,9 @@ The nearest prior art is xtr: one background thread, a bounded ring, batched I/O
 ## 3. The ring
 
 ```c
-// The reservation grain is the cache line. ANO_CACHE_LINE is the hardware constant
-// (64 today; 128 on Apple Silicon and adjacent-line-prefetch Zen — tracked separately).
+// The reservation grain is the cache line. ANO_CACHE_LINE (anoptic_memory.h) is the true
+// coherency line — 64 on x86-64, 128 on Apple Silicon — and sets packing density. The hot
+// cursors below pad to ANO_THREAD_LINE (128), the false-sharing isolation distance.
 #define ANO_CL           ANO_CACHE_LINE
 #define ANO_LOG_HDR      16                          // head-line header: the 16-byte marker, below
 #define ANO_LOG_MSG_MAX  4096                        // formatted-line cap; an entry is at most
@@ -69,8 +70,8 @@ typedef union {
 _Static_assert(sizeof(log_word_t) == 8, "commit word is 8 bytes");
 
 typedef struct {
-    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t tail;  // producer reserve cursor, in cache lines (the hot line)
-    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t head;  // consumer drain cursor, in cache lines (release)
+    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t tail;  // producer reserve cursor, in cache lines (the hot line)
+    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t head;  // consumer drain cursor, in cache lines (release)
     uint64_t          mask;                           // N-1; N = capacity in cache lines, power of two
     char             *buf;                            // N*ANO_CL bytes, cache-line aligned
     _Atomic uint64_t  dropped;                        // DROP_NEWEST drop count; surfaced as a notice
@@ -82,9 +83,10 @@ The record carries no call-site references and no format string — `level`, `fi
 Invariants:
 
 - Addressing: counter `c` maps to physical line `c & mask`. `tail`/`head` are monotonic 64-bit counters; `tail − head` is the live (reserved-or-undrained) line count, bounded by `tail − head ≤ N`.
-- Commit / visibility: `tag` is the single publish gate. The producer fills `timestamp` and the text with plain stores, then publishes `tag = {len,level,flags}` with one release store; the consumer acquire-loads `tag` and, seeing it nonzero, reads the now-visible `timestamp` and text (§12). `0` is the free/uncommitted sentinel: the buffer starts zeroed, the consumer zeroes every drained line (§6), and `ANO_LOG_COMMITTED` is always set on publish, so a committed `tag` is nonzero even when `len == 0`. So the test is `tag == 0` (stop) vs `tag != 0` (committed); a reserved-but-uncommitted head line reads exactly `0`. 64-bit, so no ABA.
+- Commit / visibility: `tag` is the single publish gate. The producer fills `timestamp` and the text with plain stores, then publishes `tag = {len,level,flags}` with one release store; the consumer acquire-loads `tag` and, seeing it nonzero, reads the now-visible `timestamp` and text (§12). `0` is the free/uncommitted sentinel: the buffer starts zeroed, the consumer zeroes every drained line (§6), and `ANO_LOG_COMMITTED` is always set on publish, so a committed `tag` is nonzero even when `len == 0`. A reserved-but-uncommitted head line reads exactly `0`, so a `tag == 0` read stops the drain at a gap. The sentinel alone is not a sufficient stop: when the ring is exactly full (`tail − head == N`) with every entry committed, `[head, tail)` covers all `N` lines and contains no zero line, so the consumer also bounds its walk by a `tail` snapshot (next invariant). 64-bit, so no ABA.
 - Length integrity: `len` is carried inside `tag` and published by that one release store, so it commits in the same atomic event as the gate. The consumer reads `len` only from a nonzero `tag`, so it always reads the exact value the producer committed, and `need` always lands on the next record's head line. The body is plain bytes that affect only one message's text; the structure the reader walks lives entirely in the atomic `tail`/`head`/`tag` words. The invariant this rests on: the length must be published by the same store as the commit flag. Widening the body past what the publish word can carry (moving `len` out of `tag`) reintroduces torn lengths and would require a separate structural backstop; keep `len` in the word.
 - Full-detection: the producer reads `head` (acquire) and refuses a reservation that makes `(pos + need) − head > N`.
+- Drain bound: the consumer snapshots `tail` once per pass and drains `[head, tail)`, stopping early at the first `tag == 0`. The bound is load-bearing only at exact fullness, where no free zero line exists; below capacity the line at `tail` is a drained-and-zeroed free line (`tag == 0`), so the sentinel stops the walk there on its own. Without the bound, an exactly-full all-committed ring has no zero to stop at, so the walk re-reads the buffer forever — the flusher wedges and never releases `head`. This mirrors the SPSC bridge ring, which bounds its consumer by the producer `tail` and carries no content sentinel (`src/render_bridge/render_bridge.h`). The snapshot can be `relaxed`: it is a count bound only, and each record's data visibility still rides its own `tag` acquire.
 - Reuse-safety: the same acquire `head` read orders the producer's writes after the consumer's reads on the previous lap, and after its drain-zeroing — so a producer always reserves over an all-zero run disjoint from `[head, tail)`, and only its own release of `tag` makes the head line nonzero.
 
 Entry span is `ceil((ANO_LOG_HDR + len) / ANO_CL)` — `1` for a short line (head line = 16-byte marker + first 48 text bytes), more for a long one, no per-line header on continuation lines. `tag` is the only synchronized word; everything else rides its release/acquire as plain memory (§12).
@@ -107,7 +109,8 @@ Entry span is `ceil((ANO_LOG_HDR + len) / ANO_CL)` — `1` for a short line (hea
 
  invariant : tail - head <= N           free lines : N - (tail - head)
  each entry occupies  ceil((16 + len) / 64)  cache lines, never split into fixed slots
- drained and free lines are all-zero; "tag word == 0" is the single free/uncommitted marker
+ drained and free lines are all-zero; the consumer stops at "tag == 0" OR at h == tail
+   (the tail bound is the only stop when the ring is exactly full and has no zero line)
 ```
 
 ### 4.2 One entry — the commit word lives on the head line
@@ -166,7 +169,11 @@ Entry span is `ceil((ANO_LOG_HDR + len) / ANO_CL)` — `1` for a short line (hea
 
 ```
  h = head ;  h0 = head
- +-> t = load( tag@(h & (N-1)), ACQUIRE )
+ tcap = load( tail, RELAXED )                  -- reserved frontier; bounds this pass (a count only)
+ +-> h == tcap ? --yes--> STOP                 (caught up to tail; the ONLY stop when the ring is
+ |        no                                     exactly full, where [head,tail) has no zero line)
+ |        v
+ |   t = load( tag@(h & (N-1)), ACQUIRE )
  |        |
  |        +-- t == 0 ? --yes--> STOP            (free/uncommitted = the gap; resume here next pass)
  |        no
@@ -292,13 +299,18 @@ static void *flusher_main(void *unused) {
 `drain_and_emit` walks the ring in claim order, stops at the first uncommitted entry, zeroes the whole drained range, and frees it with one `head` store:
 
 ```c
-uint64_t h0 = g_ring.head;                          // consumer-private until the release store
-uint64_t h  = h0;
+uint64_t h0  = g_ring.head;                         // consumer-private until the release store
+uint64_t h   = h0;
+uint64_t cap = atomic_load_explicit(&g_ring.tail, memory_order_relaxed); // reserved frontier;
+                                                    //   relaxed: a count bound, data rides each tag
 for (;;) {
+    if (h == cap)
+        break;                                       // caught up to tail → stop; the ONLY stop when
+                                                     //   the ring is exactly full (no zero line, §3)
     log_marker_t *m = (log_marker_t *)(g_ring.buf + (h & g_ring.mask) * ANO_CL);
     log_word_t v = { .w = atomic_load_explicit(&m->tag, memory_order_acquire) };
     if (v.w == 0)
-        break;                                       // tag == 0 (gap/empty) → stop in order
+        break;                                       // tag == 0 (gap) → stop in order, resume next pass
     uint64_t need = (ANO_LOG_HDR + v.len + ANO_CL - 1) / ANO_CL;
     const char *line = gather_if_seam((char *)m + ANO_LOG_HDR, v.len, scratch, &g_ring); // ≤2 memcpys (§8)
     emit_record(v.level, m->timestamp, line, v.len);    // wall-time prefix + verbatim text bytes
@@ -314,14 +326,14 @@ atomic_store_explicit(&g_ring.head, h, memory_order_release); // frees [h0, h); 
 // then: one ano_fs_write of the whole batch; append a drop notice if g_ring.dropped advanced.
 ```
 
-- Order: claim order is a single global serialization, so the batch is already ordered. A producer that reserved but has not published stops the walk; the flusher resumes there next pass (§7).
+- Order: claim order is a single global serialization, so the batch is already ordered. The pass drains `[head, tail)` — the `tail` snapshot is the upper bound, and the only thing that ends the pass when the ring is exactly full and carries no zero line (§3). A producer that reserved but has not published stops the walk early at its zero `tag`; the flusher resumes there next pass (§7).
 - Zeroing: after the walk the consumer zeroes the drained range `[h0, h)` — one `memset`, two at the seam — restoring the all-zero free state before the `head` release frees the lines. Whole-line zeroing is branchless and lowers to wide stores / `dc zva` on ARM, keeping "all-zero line = free" as one invariant. The `memset` is plain; the `head` release publishes it.
 - Batch: `emit_record` does no parsing. The text is the final message; the flusher only prepends the wall-clock time (and routes by `level`), appending `"<wall-time> <text>"` into a reusable consumer-owned buffer (grown geometrically). A seam-straddling record is gathered into contiguous scratch first (§8). This is the only formatting the consumer does, and it is uniform per record — no `fmt` walk, no dictionary lookup.
 - One write: `ano_fs_write(g_log.sink, batch, len)`, one syscall. No fsync here. Echo to console if configured (`>WARN` to stderr, else stdout), routed by `level`.
 - Drop notice: if `g_ring.dropped` advanced, append a `WARN logger: N messages dropped` line.
 - High-watermark assist: if `tail − head` crosses ~75% of `N`, shorten the next sleep. A full event (§10) also bumps `flush_request` — full is "write now."
 
-Cadence is `ano_sleep(interval_us)` between passes; `ano_log_flush` bumps `flush_request` and spins until `flush_done` catches up (the caller never reads the ring, preserving single-consumer). A `pthread_cond_timedwait` wakeup is a later upgrade.
+Cadence is `ano_sleep(interval_us)` between passes; the public `ano_log_interval(ms)` stores `interval_us = ms * 1000`, since `ano_sleep` takes microseconds (`anoptic_time.h`). `ano_log_flush` bumps `flush_request` and spins until `flush_done` catches up (the caller never reads the ring, preserving single-consumer). A `pthread_cond_timedwait` wakeup is a later upgrade.
 
 ---
 
@@ -347,7 +359,7 @@ A double-mapped "magic" buffer (map the pages twice back-to-back so a wrapping w
 
 The producer formats the complete line; the consumer copies bytes.
 
-- `format_line(out, cap, level, file, line, fmt, ap, &flags)` composes the whole record on the producer's stack: the severity name and `file:line` prefix, then the user message via one `vsnprintf(out + p, cap - p, fmt, ap)`. It returns the byte length (clamped to `cap`), setting `ANO_LOG_TRUNCATED` if the message was clamped. The wall-clock time is the one field left out — it is cheap, uniform, and locale-bound, so the flusher prepends it from the raw timestamp at emit (§6, §11). `fmt` must be a string literal; enforce with `__attribute__((format(printf, 4, 5)))` plus `-Wformat-nonliteral -Werror`, which gives full compile-time argument checking against the conversions.
+- `format_line(out, cap, level, file, line, fmt, ap, &flags)` composes the whole record on the producer's stack: the severity name and `file:line` prefix, then the user message via one `vsnprintf(out + p, cap - p, fmt, ap)`. It returns the byte length actually written — at most `cap − 1`, since `vsnprintf` always NUL-terminates within `cap`; the ring stores those `len` raw bytes and needs no terminator — and sets `ANO_LOG_TRUNCATED` when `vsnprintf` reports a would-be length `≥ cap`. With `cap = ANO_LOG_MSG_MAX = 4096`, `len ≤ 4095` and the entry is `≤ ceil((16 + 4095) / 64) = 65` lines. The wall-clock time is the one field left out — it is cheap, uniform, and locale-bound, so the flusher prepends it from the raw timestamp at emit (§6, §11). `fmt` must be a string literal at the call site; enforce with `__attribute__((format(printf, 4, 5)))` plus `-Wformat-nonliteral -Werror`, which gives full compile-time argument checking against the conversions. The attribute checks callers, but `format_line` then forwards its non-literal `fmt` parameter into `vsnprintf`, which trips `-Wformat-nonliteral` inside `logging_core.c` itself; wrap that one call in a local `#pragma clang diagnostic ignored "-Wformat-nonliteral"` so the call-site enforcement stays on everywhere else.
 - Every conversion `printf` supports is handled by `vsnprintf` directly. A `%s` is formatted into the line at the call, so the record holds only bytes; once a record is in the ring, its text is final.
 - The cost (~90ns for a typical line) is producer-local and lands before the `tail` reservation (§5), so it never enlarges the critical section or touches a contended line. On sparse logger traffic that cost disappears into the gaps between calls. The case where it would matter — a producer formatting often enough to saturate a thread — belongs to `anoptic_profiler.h`, which defers formatting behind a binary schema.
 
@@ -368,11 +380,11 @@ The deferred alternative captures the raw arguments and formats them later, on t
 
 ## 11. Sink, timestamps, lifecycle, interface
 
-Sink. A minimal append-only handle in `anoptic_filesystem` (opaque `ano_file`; `ano_fs_open_append` / `_write` / `_sync` / `_close`). POSIX `open(O_WRONLY|O_CREAT|O_APPEND,0644)` on Linux and macOS; Windows `CreateFileW(FILE_APPEND_DATA)` + `WriteFile`, UTF-8→UTF-16 at the boundary. One handle per process, one batched `write` per interval, fsync only on cleanup / `ano_log_flush` / a FATAL write. `ano_log_output_dir(dir)` opens `dir/anoptic_<utc>.log`; with no sink, records still drain to console.
+Sink. A minimal append-only handle in `anoptic_filesystem` (opaque `ano_file`; `ano_fs_open_append` / `_write` / `_sync` / `_close`). This API does not exist yet — `anoptic_filesystem.h` today exposes only `ano_fs_gamepath` / `_userpath` / `_chdir_gamepath` and the `filepath` struct — so the append-handle layer is net-new and a hard prerequisite: the flusher cannot write until it lands (it gates Step 3, §13). POSIX `open(O_WRONLY|O_CREAT|O_APPEND,0644)` on Linux and macOS; Windows `CreateFileW(FILE_APPEND_DATA)` + `WriteFile`, UTF-8→UTF-16 at the boundary. One handle per process, one batched `write` per interval (loop on short writes), fsync only on cleanup / `ano_log_flush` / a FATAL write. `ano_log_output_dir(dir)` opens `dir/anoptic_<utc>.log`; with no sink, records still drain to console.
 
-Timestamps. `ano_timestamp_raw()` (monotonic ns) stamped per record at capture — the platform clock behind the abstraction (x86 `rdtsc`; Apple Silicon `CNTVCT_EL0` / `mach_absolute_time`). Claim order gives file order, so the timestamp is display only, and the producer leaves it raw in the marker for the flusher to render. Convert with an init-time anchor: `wall = anchor_unix_ns + (ts − anchor_raw_ns)` — no per-record syscall, no drift.
+Timestamps. `ano_timestamp_raw()` (monotonic ns) stamped per record at capture — the platform clock behind the abstraction (`clock_gettime(CLOCK_MONOTONIC)` on Linux; `mach_absolute_time` / `CNTVCT_EL0` on Apple Silicon). Claim order gives file order, so the timestamp is display only, and the producer leaves it raw in the marker for the flusher to render. Convert with an init-time anchor captured once: `anchor_raw_ns = ano_timestamp_raw()` and `anchor_unix_ns = ano_timestamp_unix() * 1000000000ULL` — `ano_timestamp_unix()` returns whole **seconds** (`time(NULL)`), so the ×10⁹ is required. Then `wall = anchor_unix_ns + (ts − anchor_raw_ns)`: the second is fixed at the anchor, sub-second precision rides the monotonic delta — no per-record syscall, no drift.
 
-Lifecycle. `ano_log_init`: "initialized" false (immediate path stderr-only); `mi_heap_new`; allocate the ring (cache-line aligned, power-of-two line count, zeroed); `tail = head = 0`; set defaults; capture the timestamp anchor; open the default sink if a directory was set; `running = 1`; spawn the flusher; "initialized" true. Any earlier failure rolls back without logging through half-built state. `ano_log_cleanup`: `running = 0`; join the flusher (final drain); sync + close the sink; `mi_heap_destroy`.
+Lifecycle. `ano_log_init`: "initialized" false (immediate path stderr-only); allocate the ring with `ano_aligned_malloc(N * ANO_CL, ANO_CACHE_LINE)` and zero it (power-of-two line count); `tail = head = 0`; set defaults; capture the timestamp anchor; open the default sink if a directory was set; `running = 1`; spawn the flusher; "initialized" true. (One cache-line-aligned allocation reused in place — no per-logger `mi_heap` is warranted; `ano_aligned_malloc` is the existing abstraction the current logger already uses.) Any earlier failure rolls back without logging through half-built state. `ano_log_cleanup`: `running = 0`; join the flusher (final drain); sync + close the sink; `ano_aligned_free` the ring.
 
 Public interface (`include/anoptic_logging.h`):
 
@@ -419,9 +431,9 @@ Files: `include/anoptic_logging.h` (public contract), `src/logging/logging_core.
 
 The producer is lock-free in steady state: it formats on its own stack, loads `tail`, CASes it forward (retrying only against another concurrent reservation), copies the text, and does one release store of `tag`. The full-ring path is bounded steps to a syscall (§10). Neither waits on the consumer.
 
-`tag` is the only synchronized word. The producer writes `timestamp` and the text with plain stores, then release-stores `tag`; the consumer acquire-loads `tag` and, seeing it nonzero, reads the now-visible payload. The release/acquire pair is the publish: it pins the plain writes before the `tag` store and the plain reads after the `tag` load. Without it, `-O2` may reorder those accesses and a weakly-ordered core may see a committed `tag` ahead of its payload. The pair compiles to plain `mov` on x86 (TSO) and to one `stlr` / one `ldar` on ARM.
+For record payload, `tag` is the single synchronizing word (`head` separately carries the reuse happens-before, below). The producer writes `timestamp` and the text with plain stores, then release-stores `tag`; the consumer acquire-loads `tag` and, seeing it nonzero, reads the now-visible payload. The release/acquire pair is the publish: it pins the plain writes before the `tag` store and the plain reads after the `tag` load. Without it, `-O2` may reorder those accesses and a weakly-ordered core may see a committed `tag` ahead of its payload. The pair compiles to plain `mov` on x86 (TSO) and to one `stlr` / one `ldar` on ARM.
 
-The consumer is a background thread, so the only place it waits — at an unpublished slot (§7) — costs nothing on the hot path. Its drain-zeroing is plain memory, published by the single `head` release. The ring is one allocation reused in place, so there is no memory to reclaim and no ABA on the 64-bit counters.
+The consumer is a background thread, so the only place it waits — at an unpublished slot (§7) — costs nothing on the hot path. Its per-pass `tail` snapshot is a `relaxed` count bound, not a synchronization point: it caps the walk at exact fullness (§3), while record payload still rides each `tag` acquire. Its drain-zeroing is plain memory, published by the single `head` release. The ring is one allocation reused in place, so there is no memory to reclaim and no ABA on the 64-bit counters.
 
 The bounded loss case. A producer that reserves and then permanently dies before its `tag` release leaves a `0` slot the consumer can never pass; records committed logically after it are stranded behind the gap until the ring fills and new logs route to the immediate path (§10). The loss is one gap wide — everything before it (lower claim order) drains normally — because the records live in one shared order. The trigger is a thread dying mid-window while the process keeps running; a fault that takes the process down routes FATAL synchronously through the immediate path, and a preempted producer (§7) recovers within a quantum.
 
@@ -432,8 +444,8 @@ The bounded loss case. A producer that reserves and then permanently dies before
 Build order, each step independently testable:
 
 1. Ring buffer + seam-aware text copy (§8). Test: a line whose text crosses the buffer end writes and reads back byte-identical; one that fits takes the single-copy path.
-2. Ring + `format_line`. `logging_ring.h`: reserve/drain inlines; `format_line` in core. Single-thread: enqueue N, drain N, assert order and that each drained line is byte-identical to a direct `snprintf` of the same call; a multi-line record reassembles exactly; drive the ring full and assert the policy fires.
-3. Lifecycle + flusher. `ano_log_init`/`cleanup`, spawn/join, timestamp anchor, batched `ano_fs_write`.
+2. Ring + `format_line`. `logging_ring.h`: reserve/drain inlines; `format_line` in core. Single-thread: enqueue N, drain N, assert order and that each drained line is byte-identical to a direct `snprintf` of the same call; a multi-line record reassembles exactly; drive the ring full and assert the policy fires; fill to exactly full with every entry committed and assert one drain pass emits them all and terminates (the §3 `tail` bound — without it this step hangs).
+3. Lifecycle + flusher. `ano_log_init`/`cleanup`, spawn/join, timestamp anchor, batched `ano_fs_write`. Prerequisite: the append-handle sink (`ano_fs_open_append` / `_write` / `_sync` / `_close`, §11) must land first — it is not in `anoptic_filesystem.h` yet.
 4. Round-trip. Enqueue → flush → read back: level, `file:line`, body survive; N enqueues emit N ordered lines.
 5. Immediate/FATAL. No buffer wipe, sync write, guarded init path.
 6. Sink, level gate, policy, `ano_log_flush`/`ano_log_dropped`.
@@ -444,9 +456,9 @@ Test plan:
 
 - Round-trip: level, `file:line`, body survive enqueue → flush → file, byte-identical to a direct `snprintf` of the same call.
 - Formatting: every conversion (plus width, precision, `%*d`, `%s`) the call site uses lands byte-identical to `snprintf`, since `format_line` delegates to `vsnprintf`; a `%s` whose backing buffer is overwritten after the call still logs its value, because it was formatted before return; an over-long line is clamped at `ANO_LOG_MSG_MAX` and flagged `ANO_LOG_TRUNCATED`.
-- Head/tail: drive `tail − head` to exactly `N` and assert the next reservation reports full; assert the single `head` store frees the whole drained range. Sentinel: reserve but withhold commit (leave `tag` 0) and assert the consumer reads `0` and stops; assert every drained line is all-zero before reuse.
+- Head/tail: drive `tail − head` to exactly `N` and assert the next reservation reports full; assert the single `head` store frees the whole drained range. Exact-full drain: fill to exactly `N` with **every** entry committed (no gap), run one drain pass, and assert it emits exactly those records and terminates — this is the case the `tail` bound exists for (§3); a sentinel-only consumer wedges in an infinite re-read here. Sentinel: reserve but withhold commit (leave `tag` 0) and assert the consumer reads `0` and stops; assert every drained line is all-zero before reuse.
 - Seam: a line straddling the buffer end round-trips byte-identical; the head line, `tag`, and timestamp are never split.
-- Multi-thread: P producers reserve concurrently; every non-dropped record is flushed; per-record integrity; claim order is file order; clean under TSan.
+- Multi-thread: P producers reserve concurrently; every non-dropped record is flushed; per-record integrity; clean under TSan. Claim order is file order only for records that traversed the ring — IMMEDIATE-on-full (§10) writes out of band and can land ahead of still-buffered records — so assert in-order file output on a run sized not to hit the full path, or restrict the order check to ring-flushed records.
 - Full policy: under IMMEDIATE every refused record still appears and `flush_request` advanced; under DROP_NEWEST `ano_log_dropped` counts the rejects exactly and a drop notice appears.
 - Boundaries: empty message; a message at `ANO_LOG_MSG_MAX`; a reservation landing exactly at capacity; an empty flush.
 - Immediate is immediate: a FATAL reaches its stream before any flush.
@@ -459,7 +471,7 @@ TSan gates every concurrency test (the `tsan-runner` agent). The lifetime/order 
 
 - Marker layout (§3). 16-byte marker = atomic `tag` + plain `timestamp`; `tag` carries `len`/`level`/`flags` with `ANO_LOG_COMMITTED` set on publish so the word is nonzero when committed; the word is punned via `log_word_t` only on thread-local copies. The message, severity name, and `file:line` are baked into the text by the producer, so the marker holds no call-site references.
 - Wrap: split copy at the seam (§8). The magic buffer is deferred to the event-bus ring.
-- `ANO_CACHE_LINE` as the reservation grain: make it platform-specific (64 vs 128) in a shared hardware-constants header — it sets packing density and head-line layout.
+- Cache-line constants (decided, in `anoptic_memory.h`): `ANO_CACHE_LINE` is the true coherency line (64 on x86-64 / 128 on Apple Silicon) and sets the reservation grain `ANO_CL` and packing density; `ANO_THREAD_LINE` (128 everywhere) is the false-sharing isolation distance and is what `tail`/`head` pad to — 128 clears both Apple Silicon's 128-byte line and x86's adjacent-line-prefetch buddy pair. The split mirrors C++17's constructive/destructive interference sizes. `render_bridge.h`'s private `ANO_CACHE_LINE 64` was removed in favor of these, and its SPSC cursors now pad to `ANO_THREAD_LINE`.
 - Eager vs deferred formatting (decided): the logger formats eagerly (§9). The deferred path — call-site dictionary, two-pass argument codec, offline formatting of `(site id, timestamp, arg blob)`, and the fixed-schema `ANO_PROBE(site, u32, u64)` tracer — belongs to `anoptic_profiler.h`. Reopen only if the logger ever needs out-of-process reconstruction, which is a telemetry concern.
 - Mutex fallback: keep behind a compile flag or delete once the ring is proven under TSan.
 - Header name: keep `anoptic_logging.h` or rename to `anoptic_logger.h`. Mechanical.
