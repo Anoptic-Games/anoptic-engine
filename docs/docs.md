@@ -39,18 +39,8 @@ int pthread_barrier_wait(pthread_barrier_t *barrier);
 // ...
 ```
 
-Live in the tree:
-[`include/anoptic_time.h`](../include/anoptic_time.h) + `src/time/{time.c, time_linux.c, time_win64.c}`, and [`include/anoptic_threads.h`](../include/anoptic_threads.h) + `src/threads/{threads.c, threads_macos.c, threads_macos.h}`.
-
 ### Idiomatic vs not
 
-❌ **Not anoptic** — an implementation prototype bleeding into the public header
+❌ **Not anoptic** — an implementation bleeding into the public header
 
-✅ **Anoptic** — the contract stays `ano_*`
-
-
-## Reference notes
-
-- [references/game-engine-architecture.md](references/game-engine-architecture.md) —
-  Jason Gregory's *Game Engine Architecture* (3rd ed.) distilled and cross-referenced
-  against Anoptic's design, by chapter, with action items.
+✅ **Anoptic** — the header signature stays `ano_xxxxx()`
