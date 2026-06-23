@@ -134,62 +134,19 @@ The two paths differ only in the geometry stage and the indirect command format.
 
 **ECS ↔ render bridge — the two parallel worlds (June 2026):**
 
-The first real slice of the simulation/render split now exists in code. The engine runs
-the authoritative simulation and the non-authoritative renderer as **two parallel worlds
-on separate threads**, joined by two bounded lock-free SPSC rings. This is the first
-production deployment of the lock-free concurrency principle (§2) outside the logger —
-and, unlike the logger, it is genuinely lock-free today (the SPSC ring is acquire/release
-on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache
-lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and
-`docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
+The first real slice of the simulation/render split now exists in code. The engine runs the authoritative simulation and the non-authoritative renderer as **two parallel worlds on separate threads**, joined by two bounded lock-free SPSC rings. This is the first production deployment of the lock-free concurrency principle (§2) outside the logger — and, unlike the logger, it is genuinely lock-free today (the SPSC ring is acquire/release on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and `docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
 
-- **ECS module** (`anoptic_ecs.h`, `src/ecs/`): entities are generational
-  `(index, generation)` handles; components live in chunked sparse-set stores with
-  swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and
-  flushed at a tick boundary, so iteration is stable. The store allocates from a
-  caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
+- **ECS module** (`anoptic_ecs.h`, `src/ecs/`): entities are generational `(index, generation)` handles; components live in chunked sparse-set stores with swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and flushed at a tick boundary, so iteration is stable. The store allocates from a caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
 
-- **The bridge** (`anoptic_render_bridge.h`, `src/render_bridge/`): one ring carries
-  `RenderCommand`s (logic → render), the other `RenderEvent`s (render → logic). The
-  logic master is the sole command producer (it emits after the parallel update stage
-  settles, so ordering is total); the render master is the sole event producer. The
-  command protocol is `CREATE / UPDATE / DESTROY / BULK_CREATE`, with an `UPDATE`
-  carrying a field-bit mask so one message can fold several discrete changes — the
-  literal expression of the "≤1 message per entity per tick" invariant.
+- **The bridge** (`anoptic_render_bridge.h`, `src/render_bridge/`): one ring carries `RenderCommand`s (logic → render), the other `RenderEvent`s (render → logic). The logic master is the sole command producer (it emits after the parallel update stage settles, so ordering is total); the render master is the sole event producer. The command protocol is `CREATE / UPDATE / DESTROY / BULK_CREATE`, with an `UPDATE` carrying a field-bit mask so one message can fold several discrete changes — the literal expression of the "≤1 message per entity per tick" invariant.
 
-- **Render-side slot authority** (`src/vulkan_backend/render_slots.h`): the renderer is
-  the *sole* authority over GPU memory and the physical slot space. The logic world
-  names renderables by a stable logical `render_id`; the renderer privately maps
-  `render_id → GPU slot`. Slots are **stable and may contain holes** — the cull pass
-  already compacts visible work, so a dead slot costs one skipped compute invocation and
-  zero draw cost. This deleted the entire defragmentation/remap machinery the early
-  drafts assumed. Slot reuse is **frame-gated**: a `DESTROY` quarantines the slot until
-  all frames in flight retire, then a `REVENT_SLOT_RETIRED` lets the ECS recycle the id.
+- **Render-side slot authority** (`src/vulkan_backend/render_slots.h`): the renderer is the *sole* authority over GPU memory and the physical slot space. The logic world names renderables by a stable logical `render_id`; the renderer privately maps `render_id → GPU slot`. Slots are **stable and may contain holes** — the cull pass already compacts visible work, so a dead slot costs one skipped compute invocation and zero draw cost. This deleted the entire defragmentation/remap machinery the early drafts assumed. Slot reuse is **frame-gated**: a `DESTROY` quarantines the slot until all frames in flight retire, then a `REVENT_SLOT_RETIRED` lets the ECS recycle the id.
 
-- **Sparse/continuous split**: only *discrete* transitions cross the bridge (spawn,
-  despawn, teleport, mesh/material swap, light change). *Continuous*, GPU-parameterized
-  motion (orbit/spin via the update compute pass) is sent once as parameters and never
-  restreamed, so animated entities cost zero per-frame bridge traffic. A teleport writes
-  the `initialTransform` buffer (the base pose), never the live `transform` buffer, which
-  the GPU animation pass clobbers each frame.
+- **Sparse/continuous split**: only *discrete* transitions cross the bridge (spawn, despawn, teleport, mesh/material swap, light change). *Continuous*, GPU-parameterized motion (orbit/spin via the update compute pass) is sent once as parameters and never restreamed, so animated entities cost zero per-frame bridge traffic. A teleport writes the `initialTransform` buffer (the base pose), never the live `transform` buffer, which the GPU animation pass clobbers each frame.
 
-- **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an
-  initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps —
-  dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers
-  larger and re-points the descriptor sets; the shader and descriptor *layouts* never
-  change. Because the GPU allocator is a bump arena (no per-allocation free), growth is
-  reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth
-  bounds the waste to ~the final size. Material and light palettes scale on their own
-  axis (distinct-element-keyed, not per-entity).
+- **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps — dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers larger and re-points the descriptor sets; the shader and descriptor *layouts* never change. Because the GPU allocator is a bump arena (no per-allocation free), growth is reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth bounds the waste to ~the final size. Material and light palettes scale on their own axis (distinct-element-keyed, not per-entity).
 
-- **The thread split**: `main.c` is the logic/ECS master and the sole command producer;
-  it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan
-  *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation,
-  teardown), drains the command ring each frame, and applies each transition across all
-  frames in flight. Coordination is three atomics — no mutex — with shutdown ordered so
-  the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real
-  two-stage tick and `DisplayState` graphics-extract that will replace the stand-in
-  producer currently living in `main.c`.
+- **The thread split**: `main.c` is the logic/ECS master and the sole command producer; it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation, teardown), drains the command ring each frame, and applies each transition across all frames in flight. Coordination is three atomics — no mutex — with shutdown ordered so the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real two-stage tick and `DisplayState` graphics-extract that will replace the stand-in producer currently living in `main.c`.
 
 **Memory system (foundational):**
 - mimalloc as global allocator with override
@@ -228,11 +185,8 @@ lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic 
 ### What Exists (in the architect's head, not yet materialized)
 
 - Complete arena hierarchy (process > level > frame > scratch > pool)
-- Lock-free MPSC queue design for the logger and event bus (the SPSC bridge ring is the
-  first lock-free primitive actually shipped — see the ECS↔render bridge above)
-- ~~ECS architecture and component storage layout~~ — now in code (generational handles +
-  chunked sparse-set stores); the two-stage parallel tick and graphics-extract are still
-  to be built
+- Lock-free MPSC queue design for the logger and event bus (the SPSC bridge ring is the first lock-free primitive actually shipped — see the ECS↔render bridge above)
+- ~~ECS architecture and component storage layout~~ — now in code (generational handles + chunked sparse-set stores); the two-stage parallel tick and graphics-extract are still to be built
 - Event bus for inter-system communication
 - Scoped resolution algorithms for multi-scale simulation
 - The simulation game itself (star systems, worlds, populations, economies, fleets)
@@ -241,8 +195,7 @@ lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic 
 
 ### What Needs to Be Built (bottom-up, in dependency order)
 
-**Step 1 -- High-performance logger:**
-Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly -- no dependency on a generic lock-free library. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
+**Step 1 -- High-performance logger:** Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly -- no dependency on a generic lock-free library. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
 
 Current state (mutex version, audited June 2026). The concurrency half is correct; the output half is absent.
 - The mutex-guarded enqueue (`enqueue_log_string`) is race-free and the bounds check at logging_core.c:56 has no overflow: the accepted case writes its terminating NUL at worst index `LOG_BUFFER_MAX-1`. Verified under TSan.
@@ -268,14 +221,11 @@ Test plan (what the rewrite must make verifiable). The current test only asserts
 - Multi-thread: P producers insert concurrently; every message is eventually flushed (count + per-record integrity, no torn or interleaved bytes), clean under TSan; measure hot-path cost per enqueue (target sub-microsecond) and assert a loose ceiling.
 - Boundaries: empty message; a max-length message at `LOG_MESSAGE_MAX` with truncation handled; a record landing exactly at `LOG_BUFFER_MAX` (high end); the chosen full-buffer behavior; an empty flush (low end).
 
-**Step 2 -- Dependency update:**
-Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Quick audit for API changes. Fold mimalloc finalization into this -- the integration is already done, this is just a version bump and validation that `mi_heap_new` / `mi_heap_destroy` / `mi_heap_zalloc_aligned` still behave. Confirm hugepage support still works on current version. Validate scoped heap teardown (`LOCALHEAPATTR`). Ensure global override (`mimalloc-override.h`) is clean. Low risk, low effort.
+**Step 2 -- Dependency update:** Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Quick audit for API changes. Fold mimalloc finalization into this -- the integration is already done, this is just a version bump and validation that `mi_heap_new` / `mi_heap_destroy` / `mi_heap_zalloc_aligned` still behave. Confirm hugepage support still works on current version. Validate scoped heap teardown (`LOCALHEAPATTR`). Ensure global override (`mimalloc-override.h`) is clean. Low risk, low effort.
 
-**Step 3 -- Windows high-resolution timing:**
-The Linux timing module (`clock_nanosleep` + `CLOCK_MONOTONIC`) delivers sub-microsecond precision. The Windows side falls back to `Sleep()` which has millisecond granularity at best (15.6ms default timer resolution). Bring `ano_sleep` on Windows up to parity: `timeBeginPeriod(1)` to set the scheduler to 1ms resolution, `WaitableTimer` or `Sleep(1)` for the coarse wait, then spinloop (`ano_busywait`) for the final sub-millisecond remainder. This is the emulator-grade pattern used by Yuzu/Ryujinx for frame-perfect timing. Also consider `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` (Windows 10 1803+) for native sub-millisecond OS sleeps without the spin tail. The tick needs to be deterministic-length; a 15.6ms sleep jitter on Windows makes that impossible.
+**Step 3 -- Windows high-resolution timing:** The Linux timing module (`clock_nanosleep` + `CLOCK_MONOTONIC`) delivers sub-microsecond precision. The Windows side falls back to `Sleep()` which has millisecond granularity at best (15.6ms default timer resolution). Bring `ano_sleep` on Windows up to parity: `timeBeginPeriod(1)` to set the scheduler to 1ms resolution, `WaitableTimer` or `Sleep(1)` for the coarse wait, then spinloop (`ano_busywait`) for the final sub-millisecond remainder. This is the emulator-grade pattern used by Yuzu/Ryujinx for frame-perfect timing. Also consider `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` (Windows 10 1803+) for native sub-millisecond OS sleeps without the spin tail. The tick needs to be deterministic-length; a 15.6ms sleep jitter on Windows makes that impossible.
 
-**Step 4 -- ano_strings:**
-Owned string type: `{char* ptr, uint32_t len, uint32_t capacity}` with `LOCALHEAPATTR`-style scoped cleanup. Allocations go through a heap parameter so strings can live in any arena. Copy-on-slice. ~150 lines. UTF-8 support deferred -- UTF-8 is byte-transparent in storage, so the string type doesn't need to know about it. UTF-8 validation/iteration added later as a layer on top, only when the text renderer demands it.
+**Step 4 -- ano_strings:** Owned string type: `{char* ptr, uint32_t len, uint32_t capacity}` with `LOCALHEAPATTR`-style scoped cleanup. Allocations go through a heap parameter so strings can live in any arena. Copy-on-slice. ~150 lines. UTF-8 support deferred -- UTF-8 is byte-transparent in storage, so the string type doesn't need to know about it. UTF-8 validation/iteration added later as a layer on top, only when the text renderer demands it.
 
 **Step 5 -- Lock-free collections:**
 
@@ -314,58 +264,35 @@ If this works and benchmarks well, it's worth a paper (DISC or PPoPP). Classic i
 
 Target structures: ring buffers, queues, heaps. These serve the event bus, job system, and inter-system communication.
 
-**Step 6 -- Additional data structures (as needed):**
-Build structures in tandem with the features that operate on them, not speculatively. stb_ds is acceptable as a stopgap for prototyping (e.g., hash maps during renderer work) without long-term commitment.
+**Step 6 -- Additional data structures (as needed):** Build structures in tandem with the features that operate on them, not speculatively. stb_ds is acceptable as a stopgap for prototyping (e.g., hash maps during renderer work) without long-term commitment.
 
-**Step 7 -- Renderer rewrite:**
-Full rewrite of the Vulkan renderer. The current implementation is tutorial-derived with poor system design. The rewrite builds the renderer as a proper subsystem: allocates from scratch arenas, logs through the real logger, communicates through the event bus. Scope for v1: one render pass, one pipeline, geometry on screen, driven by the event bus. No PBR. Rasterization only for now. stb_image retained for texture loading.
+**Step 7 -- Renderer rewrite:** Full rewrite of the Vulkan renderer. The current implementation is tutorial-derived with poor system design. The rewrite builds the renderer as a proper subsystem: allocates from scratch arenas, logs through the real logger, communicates through the event bus. Scope for v1: one render pass, one pipeline, geometry on screen, driven by the event bus. No PBR. Rasterization only for now. stb_image retained for texture loading.
 
-**Step 8 -- Event bus + input:**
-Global, thread-agnostic event bus. Possibly two buses: one monotonic per-item (classic lock-free, for ordered events like input), one with lock-free cache-line stripes (for high-throughput bulk events like physics/simulation updates). GLFW callbacks enqueue input events; game loop dequeues. Clean producer/consumer boundary. This infrastructure also serves future physics integration.
+**Step 8 -- Event bus + input:** Global, thread-agnostic event bus. Possibly two buses: one monotonic per-item (classic lock-free, for ordered events like input), one with lock-free cache-line stripes (for high-throughput bulk events like physics/simulation updates). GLFW callbacks enqueue input events; game loop dequeues. Clean producer/consumer boundary. This infrastructure also serves future physics integration.
 
-**Step 9 -- Main game loop + first visual output:**
-The integration milestone. Input moves camera, event bus carries input, simulation updates transforms, renderer draws the frame, all allocated from frame arenas, all logged. A sphere on screen through the full pipeline. This is v0.1: proof that every layer works together. Everything after is building the actual game on trusted infrastructure.
+**Step 9 -- Main game loop + first visual output:** The integration milestone. Input moves camera, event bus carries input, simulation updates transforms, renderer draws the frame, all allocated from frame arenas, all logged. A sphere on screen through the full pipeline. This is v0.1: proof that every layer works together. Everything after is building the actual game on trusted infrastructure.
 
 ### Branch Archaeology (surveyed June 2026)
 
 Work is fractured across 16 remote branches. Survey results:
 
-**Dead branches (fully merged into main, 0 commits ahead — safe to delete):**
-`ctest-config`, `feature-filepath`, `feature-logging`, `feature-memory`,
-`feature_threading`, `fix-clang-usage`, `fix-vertex-deps`, `git-status-fix`,
-`logging`, `platform-cleanup`, `time-time2`
+**Dead branches (fully merged into main, 0 commits ahead — safe to delete):** `ctest-config`, `feature-filepath`, `feature-logging`, `feature-memory`, `feature_threading`, `fix-clang-usage`, `fix-vertex-deps`, `git-status-fix`, `logging`, `platform-cleanup`, `time-time2`
 
-**`implementation-platformlayer-time` (6 ahead, superseded):**
-Main's time module is a strict improvement of this branch's version (atomic
-frequency caching, error returns). Same unsolved Windows Sleep() granularity.
-Nothing to recover. Notable design decision in commit 264e2a4: "timespans
-removed (they'll be an ECS singleton)." Also contains an alternative
-src/platform/{linux,windows}/ directory layout that main abandoned.
+**`implementation-platformlayer-time` (6 ahead, superseded):** Main's time module is a strict improvement of this branch's version (atomic frequency caching, error returns). Same unsolved Windows Sleep() granularity. Nothing to recover. Notable design decision in commit 264e2a4: "timespans removed (they'll be an ECS singleton)." Also contains an alternative src/platform/{linux,windows}/ directory layout that main abandoned.
 
-**`feature-strings` (5 ahead) -- RECOVER: this is the Step 4 spec.**
-Contains a fully designed (stub-implemented) string API in include/ano_strings.h:
+**`feature-strings` (5 ahead) -- RECOVER: this is the Step 4 spec.** Contains a fully designed (stub-implemented) string API in include/ano_strings.h:
 - `anostr_t {char* buffer, size_t len}` string type
 - UTF-8 codepoint handles, validation, iteration
 - UTF-16 <-> UTF-8 conversion (needed for Windows paths)
 - Byte slices and UTF slices
-- Managed slice macros (statement expressions + scoped cleanup attr):
-  ANOSTR_STACK_BYTESLICE, ANOSTR_HEAP_BYTESLICE with CLEANUPATTR
-The function signatures for Step 4 already exist, written by the architect
-in 2024. Implementations are stubs returning 0.
+- Managed slice macros (statement expressions + scoped cleanup attr): ANOSTR_STACK_BYTESLICE, ANOSTR_HEAP_BYTESLICE with CLEANUPATTR The function signatures for Step 4 already exist, written by the architect in 2024. Implementations are stubs returning 0.
 
-**`feature-render-text` (27 ahead) -- PRESERVE as reference for Step 7+.**
-The unicode rabbit hole, materialized. A complete text rendering stack:
+**`feature-render-text` (27 ahead) -- PRESERVE as reference for Step 7+.** The unicode rabbit hole, materialized. A complete text rendering stack:
 - FreeType integration
 - Glyph atlas generation (stb_image_write), upload to VRAM
-- SDF font rendering (final commit: "Switched to SDF font rendering")
-Predates main's renderer restructure; heavy merge conflicts guaranteed.
-Salvage material for the renderer rewrite's text/UI pass, not a merge candidate.
-Contains feature-render-vertex's 7 commits (MSAA, mipmapping, structurally
-agnostic glTF loading, render asset sharing) in its history.
+- SDF font rendering (final commit: "Switched to SDF font rendering") Predates main's renderer restructure; heavy merge conflicts guaranteed. Salvage material for the renderer rewrite's text/UI pass, not a merge candidate. Contains feature-render-vertex's 7 commits (MSAA, mipmapping, structurally agnostic glTF loading, render asset sharing) in its history.
 
-**`fixes-render-text` (2 unique commits):** VRAM leak mitigation + text debug
-overflow fix, diverged from feature-render-text after PR #41. Note when
-salvaging the text stack.
+**`fixes-render-text` (2 unique commits):** VRAM leak mitigation + text debug overflow fix, diverged from feature-render-text after PR #41. Note when salvaging the text stack.
 
 ### Known Technical Debt
 
