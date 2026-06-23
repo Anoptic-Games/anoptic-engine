@@ -365,7 +365,7 @@ scalable design keeps authoritative per-slot data device-local and updates via a
 that is a meaningful change to the apply path and is cheaper to design before everything assumes
 persistently-mapped CPU writes.
 
-### 4.4 The indirect/compacted buffers are sized ×7 pipeline types, ~5 of them dead (concrete waste) - HERE
+### 4.4 The indirect/compacted buffers are sized ×7 pipeline types, ~5 of them dead (concrete waste) - ADDRESSED
 
 `destIdx = pipelineType * maxEntities + writeIdx` (`cull.comp:167`) partitions the indirect and
 compacted-index buffers by `PIPELINE_TYPE_COUNT` = 7. But the enum includes the two *compute*
@@ -376,7 +376,7 @@ written. So ~71% of the indirect+compacted memory — which is over half the per
 of permanently-idle VRAM. Fix is mechanical: size partitions by an array of *drawing* pipeline
 types (2 today), not the full enum count. Pure win, no architectural change.
 
-### 4.5 The render-side dispatch bound is the monotonic peak; it never shrinks (root for churn / LOD) - NEXT
+### 4.5 The render-side dispatch bound is the monotonic peak; it never shrinks (root for churn / LOD) - ADDRESSED, needs LOD
 
 `updateCullingBuffers` sets `entityCount = slots.slotHighWater` (`vulkanMaster.c:437`) and the cull
 and update passes dispatch over `[0, slotHighWater)` every frame, holes included (dead slots
@@ -413,7 +413,7 @@ better than one global growing buffer).
   components, data-defined content) needs a reflection + scripting layer the foundation does not
   hint at. Extensible, large; the runtime-registration hook is the seam to build on.
 
-### 4.7 Lighting does not scale; no shadows; no transparency ordering (root renderer architecture)
+### 4.7 Lighting does not scale; no shadows; no transparency ordering (root renderer architecture) - HERE
 
 - Many lights. `flat.frag:198` loops *every* active light for *every* fragment, with no culling,
   no clustering, no tiling, no deferred path. Storage allows 10000 lights but the per-fragment
@@ -432,7 +432,7 @@ better than one global growing buffer).
   will show order artifacts. `PARTICLE` is declared but unimplemented, so there is no particle
   system at all yet.
 
-### 4.8 Single view per frame (root for several features)
+### 4.8 Single view per frame (root for several features) - NEXT
 
 `CullUBO` holds one `viewProj` and one frustum-plane set (`structs.h:331`); the whole GPU-driven
 frame assumes one camera. No multi-view: no split-screen, no 3D minimap/inset, no security-camera

@@ -1047,8 +1047,16 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             (void)ano_render_emit_event(&state->bridge, &ev);
         }
     } while (n == 64u);
-    if (anyRetired)
+    if (anyRetired) {
         state->transformStream.resolveGen++; // a freed/recycled slot invalidates cached resolves
+
+        // Reclaim the per-frame compute-dispatch bound: if this frame's retirements left a
+        // trailing run of free slots at the top, drop slotHighWater past them so cull/update
+        // stop dispatching over dead tail slots. Only fires when the free-list just changed
+        // (alloc never lowers the high-water). No live slot moves; no VRAM is returned (the
+        // buffers stay grown — see SLOT_RECLAIM.md for the deferred per-region VRAM path).
+        render_slots_compact(&state->slots);
+    }
 
     // Stage the held streamed slice into this frame against the now-settled slot map.
     // Re-resolves only on a resolveGen bump (new publish or retirement); otherwise it
