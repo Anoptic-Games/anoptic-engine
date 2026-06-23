@@ -252,6 +252,12 @@ void main() {
 
     uint ti = gl_LocalInvocationID.x;
 
+    // model + normal matrix are per-entity (loop-invariant): compute once, reuse across the
+    // strided vertex loop. Inverse-transpose is correct under non-uniform / negative / sheared
+    // scale; equals mat3(model) for rotation + uniform scale. docs/math_conventions.md.
+    mat4 model = transformBuf.transforms[entityIndex];
+    mat3 normalMatrix = transpose(inverse(mat3(model)));
+
     // Load vertices (strided loop to handle arbitrary vertex count)
     for (uint i = ti; i < vertexCount; i += 64) {
         uint vertexIdx = indexBuf.data[uniqueVertOffsetUint + vertexOffset + i];
@@ -262,13 +268,12 @@ void main() {
         vec3 normal   = vec3(v.nx, v.ny, v.nz);
         vec2 texCoord = vec2(v.u, v.v);
 
-        mat4 model = transformBuf.transforms[entityIndex];
         vec4 worldPos = model * vec4(position, 1.0);
         gl_MeshVerticesEXT[i].gl_Position = shadowPass
             ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
             : (global.proj * global.view * worldPos);
 
-        fragNormal[i] = mat3(model) * normal;
+        fragNormal[i] = normalMatrix * normal;
         fragTexCoord[i] = texCoord;
         outMaterialIndex[i] = materialIndex;
         fragWorldPos[i] = worldPos.xyz;

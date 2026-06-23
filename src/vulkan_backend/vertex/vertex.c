@@ -186,10 +186,14 @@ void perspective(float matrix[4][4], float fovDegrees, float aspect, float near,
 
     matrix[0][0] = 1.0f / (aspect * tanHalfFov);
     matrix[1][1] = -1.0f / tanHalfFov; // Y flip for Vulkan!
-	matrix[2][2] = (far + near) / (near - far);
 
+	// Vulkan clip depth is [0,1] (ZO), not OpenGL's [-1,1]. RH, view looks down -Z.
+	// ndc.z = (m22*z_view + m32) / (-z_view) maps z_view=-near -> 0, z_view=-far -> 1.
+	// The old (far+near)/(near-far) form was OpenGL [-1,1]: under the [0,1] viewport it
+	// over-clipped the near range and halved depth precision. See docs/math_conventions.md.
+	matrix[2][2] = far / (near - far);
     matrix[2][3] = -1.0f;
-	matrix[3][2] = (2 * far * near) / (near - far);
+	matrix[3][2] = (far * near) / (near - far);
 	matrix[3][3] = 0.0f;
 
 }
@@ -237,11 +241,13 @@ void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj)
     planes[3].v[2] = viewProj[2][3] - viewProj[2][1];
     planes[3].v[3] = viewProj[3][3] - viewProj[3][1];
 
-    // Near
-    planes[4].v[0] = viewProj[0][3] + viewProj[0][2];
-    planes[4].v[1] = viewProj[1][3] + viewProj[1][2];
-    planes[4].v[2] = viewProj[2][3] + viewProj[2][2];
-    planes[4].v[3] = viewProj[3][3] + viewProj[3][2];
+    // Near. Vulkan [0,1] depth: the near plane is clip.z >= 0, i.e. ROW 2 alone — NOT
+    // row3 + row2 (which is the OpenGL [-1,1] near). Matched to perspective()'s ZO form;
+    // mismatching it leaves a loose near plane that under-culls behind the camera.
+    planes[4].v[0] = viewProj[0][2];
+    planes[4].v[1] = viewProj[1][2];
+    planes[4].v[2] = viewProj[2][2];
+    planes[4].v[3] = viewProj[3][2];
 
     // Far
     planes[5].v[0] = viewProj[0][3] - viewProj[0][2];

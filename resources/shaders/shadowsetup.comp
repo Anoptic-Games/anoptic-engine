@@ -69,7 +69,7 @@ void extractPlanes(mat4 m, out vec4 planes[6]) {
     planes[1] = t[3] - t[0]; // right
     planes[2] = t[3] + t[1]; // bottom
     planes[3] = t[3] - t[1]; // top
-    planes[4] = t[3] + t[2]; // near
+    planes[4] = t[2];        // near (Vulkan [0,1]: clip.z >= 0 is row2 alone, not row3+row2)
     planes[5] = t[3] - t[2]; // far
     for (int i = 0; i < 6; ++i) {
         float len = length(planes[i].xyz);

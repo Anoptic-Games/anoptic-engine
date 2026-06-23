@@ -80,7 +80,9 @@ void main() {
 
     gl_Position      = shadowPass ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
                                   : (global.proj * global.view * worldPos);
-    fragNormal       = mat3(model) * normal;
+    // Inverse-transpose normal matrix: correct under non-uniform / negative / sheared scale.
+    // Equals mat3(model) for rotation + uniform scale (the common case). docs/math_conventions.md.
+    fragNormal       = transpose(inverse(mat3(model))) * normal;
     fragTexCoord     = texCoord;
     outMaterialIndex = entity.materialIndex;
     fragWorldPos     = worldPos.xyz;
