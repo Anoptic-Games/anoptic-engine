@@ -204,7 +204,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 {
 	VkCommandBufferBeginInfo beginInfo = {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	beginInfo.flags = 0; // Optional
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // re-recorded every frame, submitted once
 	beginInfo.pInheritanceInfo = NULL;// Optional
 	
 	VkCommandBuffer cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
@@ -258,17 +258,22 @@ void recordCommandBuffer(uint32_t imageIndex)
         bool any = false;
         for (int u = 0; u < 5; u++) if (ups[u]->staged[fi]) { any = true; break; }
         if (any) {
+            // These buffers are only ever read by the shader stages below: compute (update/cull/
+            // lightcull), the geometry stage (entity buffer), and fragment (instance data + lights).
+            // So both the WAR (pre) and the visibility (post) scopes are exactly that stage set, not
+            // ALL_COMMANDS. The pre barrier's first scope still reaches prior submissions on this
+            // single queue, so earlier frames' shader reads finish before the copy overwrites.
+            VkPipelineStageFlags shaderStages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                | (ctx.deviceCapabilities.meshShader ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+                | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             VkMemoryBarrier pre = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                 .srcAccessMask = VK_ACCESS_SHADER_READ_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            vkCmdPipelineBarrier(cmd, shaderStages, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 1, &pre, 0, NULL, 0, NULL);
             for (int u = 0; u < 5; u++) slot_upload_flush(cmd, ups[u], fi);
-            VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
-                ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
             VkMemoryBarrier post = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                 .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, shaderStages,
                 0, 1, &post, 0, NULL, 0, NULL);
         }
     }
