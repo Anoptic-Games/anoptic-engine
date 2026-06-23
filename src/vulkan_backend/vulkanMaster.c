@@ -153,7 +153,14 @@ static const RenderPassDef g_framePasses[] = {
         .prototype  = PIPELINE_COMPUTE_SCATTER,
         .dispatchX  = 0,  // computed from streamCount at runtime
     },
-    // 2. GPU culling
+    // 2. Shadow-frustum setup: build each shadow map's light-space viewProj + planes from the
+    //    light's live transform. Shared (not per view); must precede cull (which tests them).
+    {
+        .type       = PASS_COMPUTE,
+        .prototype  = PIPELINE_COMPUTE_SHADOWSETUP,
+        .dispatchX  = 0,  // computed from shadow-frustum count at runtime
+    },
+    // 3. GPU culling (camera + shadow frustums, single pass)
     {
         .type       = PASS_COMPUTE,
         .prototype  = PIPELINE_COMPUTE_CULL,
@@ -285,9 +292,9 @@ void recordCommandBuffer(uint32_t imageIndex)
                 VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
                     ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
                 vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
-                    cmdStride * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_VIEW_COUNT, 0);
+                    cmdStride * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0);
                 vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
-                    sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_VIEW_COUNT, 0);
+                    sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0);
 
                 VkMemoryBarrier fillBarrier = {};
                 fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -300,9 +307,10 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
 
             VkDescriptorSet set =
-                pass->prototype == PIPELINE_COMPUTE_UPDATE  ? rendererState.frames[rendererState.frameIndex].updateSet :
-                pass->prototype == PIPELINE_COMPUTE_SCATTER ? rendererState.frames[rendererState.frameIndex].scatterSet :
-                                                              rendererState.frames[rendererState.frameIndex].cullSet;
+                pass->prototype == PIPELINE_COMPUTE_UPDATE      ? rendererState.frames[rendererState.frameIndex].updateSet :
+                pass->prototype == PIPELINE_COMPUTE_SCATTER     ? rendererState.frames[rendererState.frameIndex].scatterSet :
+                pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP ? rendererState.frames[rendererState.frameIndex].shadow.setupSet :
+                                                                  rendererState.frames[rendererState.frameIndex].cullSet;
 
             // Scatter binding 1 (xform ring) is STORAGE_BUFFER_DYNAMIC: bind the
             // published slice by per-frame dynamic offset; other passes have none.
@@ -318,14 +326,28 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &streamCount);
             }
 
-            uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
-            uint32_t dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
+            uint32_t dispatchX;
+            if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
+                dispatchX = (ANO_SHADOW_FRUSTUM_COUNT + 63u) / 64u; // one invocation per shadow frustum
+            } else {
+                uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
+                dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
+            }
             vkCmdDispatch(cmd, dispatchX, 1, 1);
 
             VkMemoryBarrier memoryBarrier = {};
             memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            if (pass->prototype == PIPELINE_COMPUTE_UPDATE || pass->prototype == PIPELINE_COMPUTE_SCATTER) {
+            if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
+                // Shadow frustums feed the cull (compute), the depth render (mesh/vertex), and the
+                // fragment sampler — make the writes visible to all three.
+                VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
+                    ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+                memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+            } else if (pass->prototype == PIPELINE_COMPUTE_UPDATE || pass->prototype == PIPELINE_COMPUTE_SCATTER) {
                 // update -> scatter is a WAW on streamed slots (scatter must win); both -> cull is a read.
                 memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -342,9 +364,110 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
     }
 
+    uint32_t drawSlotCount = ano_draw_pipeline_count();
+
+    // === Shadow depth render: each shadow frustum's opaque casters into its atlas layer ===
+    // Reads the cull's shadow partition (opaque draw slot only); writes depth into one array layer;
+    // leaves the layer in SHADER_READ for the camera fragment passes to PCF-sample below.
+    if (entityCount > 0) {
+        ShadowResources* sh = &rendererState.frames[rendererState.frameIndex].shadow;
+        uint32_t opaqueSlot = ano_draw_slot_of(PIPELINE_FLAT);
+        bool useMeshS = ctx.deviceCapabilities.meshShader;
+        uint32_t maxDrawsS = rendererState.indirectBuffer.capacity;
+        VkShaderStageFlags pcStageS = useMeshS ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+
+        for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+            // This atlas layer -> DEPTH_ATTACHMENT (UNDEFINED: cleared + fully written this frame).
+            VkImageMemoryBarrier toDepth = {};
+            toDepth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toDepth.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            toDepth.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            toDepth.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toDepth.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toDepth.image = sh->atlasImage;
+            toDepth.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, s, 1 };
+            toDepth.srcAccessMask = 0;
+            toDepth.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                0, 0, NULL, 0, NULL, 1, &toDepth);
+
+            VkClearValue clearD = {}; clearD.depthStencil.depth = 1.0f;
+            VkRenderingAttachmentInfo depthAtt = {};
+            depthAtt.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            depthAtt.imageView = sh->layerView[s];
+            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAtt.resolveMode = VK_RESOLVE_MODE_NONE;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthAtt.clearValue = clearD;
+
+            VkRenderingInfo ri = {};
+            ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            ri.renderArea.offset = (VkOffset2D){0, 0};
+            ri.renderArea.extent = (VkExtent2D){ ANO_SHADOW_DIM, ANO_SHADOW_DIM };
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 0;
+            ri.pDepthAttachment = &depthAtt;
+            vkCmdBeginRendering(cmd, &ri);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowPipeline);
+            VkViewport vp = { 0.0f, 0.0f, (float)ANO_SHADOW_DIM, (float)ANO_SHADOW_DIM, 0.0f, 1.0f };
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            VkRect2D sc = { .offset = {0, 0}, .extent = { ANO_SHADOW_DIM, ANO_SHADOW_DIM } };
+            vkCmdSetScissor(cmd, 0, 1, &sc);
+
+            // Shadow pipeline reuses the FLAT layout (sets 0/1/2). Set 0 = view 0's global set
+            // (shared transforms/compacted); set 2 = the shadow set (viewProjs). Bindless (set 1)
+            // is unused by the depth shaders but bound for layout compatibility.
+            VkPipelineLayout flatLayout = rendererState.prototypes[PIPELINE_FLAT].layout;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flatLayout, 0, 1,
+                &rendererState.frames[rendererState.frameIndex].views[0].globalSet, 0, NULL);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flatLayout, 1, 1,
+                &rendererState.bindlessTextures.set, 0, NULL);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flatLayout, 2, 1,
+                &sh->geomSet, 0, NULL);
+
+            uint32_t partition = (ANO_VIEW_COUNT + s) * drawSlotCount + opaqueSlot;
+            uint32_t pcVals[2] = { partition * rendererState.culling.maxEntities, s }; // baseOffset, shadowFrustumIndex
+            vkCmdPushConstants(cmd, flatLayout, pcStageS, 0, sizeof(pcVals), pcVals);
+
+            VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
+            VkBuffer drawCountBuf = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
+            VkDeviceSize countOffset = (VkDeviceSize)partition * sizeof(uint32_t);
+            if (useMeshS) {
+                VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDrawsS * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                if (ctx.deviceCapabilities.drawIndirectCount)
+                    pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset, drawCountBuf, countOffset, maxDrawsS, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                else
+                    pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset, entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+            } else {
+                vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDrawsS * sizeof(VkDrawIndexedIndirectCommand);
+                if (ctx.deviceCapabilities.drawIndirectCount)
+                    vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset, drawCountBuf, countOffset, maxDrawsS, sizeof(VkDrawIndexedIndirectCommand));
+                else
+                    vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset, entityCount, sizeof(VkDrawIndexedIndirectCommand));
+            }
+            vkCmdEndRendering(cmd);
+
+            // This atlas layer -> SHADER_READ for the camera fragment passes' PCF sampling.
+            VkImageMemoryBarrier toRead = {};
+            toRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toRead.image = sh->atlasImage;
+            toRead.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, s, 1 };
+            toRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, NULL, 0, NULL, 1, &toRead);
+        }
+    }
+
     // === Per view: light-cull (this view's froxel lists) then geometry into this view's
     // HDR target + depth, reading this view's cull partition. ===
-    uint32_t drawSlotCount = ano_draw_pipeline_count();
     for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
         ViewResources* vr = &rendererState.frames[rendererState.frameIndex].views[v];
 
@@ -463,6 +586,10 @@ void recordCommandBuffer(uint32_t imageIndex)
             // This view's global set selects its camera UBO + froxel light lists.
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 rendererState.prototypes[pass->prototype].layout, 0, 1, &vr->globalSet, 0, NULL);
+            // Set 2: shadow frustums + atlas + per-light info (fragment PCF-samples shadows).
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                rendererState.prototypes[pass->prototype].layout, 2, 1,
+                &rendererState.frames[rendererState.frameIndex].shadow.geomSet, 0, NULL);
 
             if (entityCount > 0) {
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -994,10 +1121,10 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
         growBufferSet(state->transformBuffer.buffer, state->transformBuffer.allocs, ssbo, devProps,
                       (VkDeviceSize)sizeof(mat4) * newCap, 0) &&
         growBufferSet(state->culling.compactedEntityIndicesBuffer, state->culling.compactedEntityIndicesAllocs, ssbo, devProps,
-                      (VkDeviceSize)sizeof(uint32_t) * newCap * ano_draw_pipeline_count() * ANO_VIEW_COUNT, 0) &&
+                      (VkDeviceSize)sizeof(uint32_t) * newCap * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0) &&
         growBufferSet(state->indirectBuffer.buffer, state->indirectBuffer.allocs,
                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, devProps,
-                      cmdStride * newCap * ano_draw_pipeline_count() * ANO_VIEW_COUNT, 0);
+                      cmdStride * newCap * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0);
     if (!ok) {
         printf("Fatal: entity capacity growth %u -> %u failed (GPU out of memory?).\n", oldCap, newCap);
         return false;
@@ -1686,9 +1813,9 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
     // paths: VkDrawMeshTasksIndirectCommandEXT (12 B) or VkDrawIndexedIndirectCommand (20 B).
     VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
         ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
-    // Partitioned by (view, draw slot): ANO_VIEW_COUNT * ano_draw_pipeline_count() partitions,
+    // Partitioned by (frustum, draw slot): ANO_FRUSTUM_COUNT * ano_draw_pipeline_count() partitions,
     // each holding up to maxDraws commands. cull.comp writes (view*drawSlotCount + slot).
-    VkDeviceSize bufferSize = cmdStride * maxDraws * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
+    VkDeviceSize bufferSize = cmdStride * maxDraws * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
@@ -1758,14 +1885,96 @@ bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
     return true;
 }
 
+// Dynamic shadow resources (audit 4.7). Per frame: the GPU-written shadow frustum buffer and the
+// D32 depth atlas array (one layer per shadow frustum) with per-layer render views + a single
+// array sample view. Static (once): the CPU shadow config (which light/face per frustum) and the
+// per-light shadow info, both host-visible, filled here for the demo's directional caster (light 0).
+// in:  ctx, state (lightBuffer.capacity known)
+// out: true on success; populates frames[].shadow.* and state->shadow{FrustumConfig,LightInfo}*
+bool createShadowResources(VulkanContext* ctx, RendererState* state) {
+    VkDeviceSize frustumSize = (VkDeviceSize)sizeof(CullView) * ANO_SHADOW_FRUSTUM_COUNT;
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        ShadowResources* sh = &state->frames[i].shadow;
+
+        // GPU-written shadow frustum buffer (viewProj + planes per frustum).
+        VkBufferCreateInfo binfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = frustumSize, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
+        if (vkCreateBuffer(ctx->device, &binfo, NULL, &sh->frustumBuffer) != VK_SUCCESS) return false;
+        VkMemoryRequirements bmr; vkGetBufferMemoryRequirements(ctx->device, sh->frustumBuffer, &bmr);
+        sh->frustumAlloc = gpu_alloc(&gpuAllocator, bmr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (sh->frustumAlloc.memory == VK_NULL_HANDLE) return false;
+        vkBindBufferMemory(ctx->device, sh->frustumBuffer, sh->frustumAlloc.memory, sh->frustumAlloc.offset);
+
+        // Depth atlas: D32 2D array, ANO_SHADOW_FRUSTUM_COUNT layers, single-sample, sampled + rendered.
+        VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        iinfo.imageType = VK_IMAGE_TYPE_2D;
+        iinfo.format = ANO_SHADOW_DEPTH_FORMAT;
+        iinfo.extent = (VkExtent3D){ ANO_SHADOW_DIM, ANO_SHADOW_DIM, 1 };
+        iinfo.mipLevels = 1;
+        iinfo.arrayLayers = ANO_SHADOW_FRUSTUM_COUNT;
+        iinfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        iinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        iinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        iinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        iinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(ctx->device, &iinfo, NULL, &sh->atlasImage) != VK_SUCCESS) return false;
+        VkMemoryRequirements imr; vkGetImageMemoryRequirements(ctx->device, sh->atlasImage, &imr);
+        sh->atlasAlloc = gpu_alloc(&gpuAllocator, imr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (sh->atlasAlloc.memory == VK_NULL_HANDLE) return false;
+        vkBindImageMemory(ctx->device, sh->atlasImage, sh->atlasAlloc.memory, sh->atlasAlloc.offset);
+
+        // Array sample view (all layers) + per-layer render views.
+        VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        vinfo.image = sh->atlasImage;
+        vinfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        vinfo.format = ANO_SHADOW_DEPTH_FORMAT;
+        vinfo.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, ANO_SHADOW_FRUSTUM_COUNT };
+        if (vkCreateImageView(ctx->device, &vinfo, NULL, &sh->arrayView) != VK_SUCCESS) return false;
+
+        for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+            VkImageViewCreateInfo lv = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            lv.image = sh->atlasImage;
+            lv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            lv.format = ANO_SHADOW_DEPTH_FORMAT;
+            lv.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, s, 1 };
+            if (vkCreateImageView(ctx->device, &lv, NULL, &sh->layerView[s]) != VK_SUCCESS) return false;
+        }
+        // Layout handled per-frame in recordCommandBuffer (UNDEFINED->DEPTH->SHADER_READ).
+    }
+
+    // Static CPU config (once), host-visible. Demo rig: light 0 is the directional caster.
+    GpuAllocation cfgAlloc, infoAlloc;
+    VkDeviceSize cfgSize = (VkDeviceSize)sizeof(ShadowFrustumConfig) * ANO_SHADOW_FRUSTUM_COUNT;
+    VkDeviceSize infoSize = (VkDeviceSize)sizeof(ShadowLightInfo) * state->lightBuffer.capacity;
+    if (!createDataBuffer(ctx, &gpuAllocator, cfgSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &state->shadowFrustumConfigBuffer, &cfgAlloc)) return false;
+    if (!createDataBuffer(ctx, &gpuAllocator, infoSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &state->shadowLightInfoBuffer, &infoAlloc)) return false;
+    state->shadowFrustumConfigAlloc = cfgAlloc; state->shadowFrustumConfigMapped = cfgAlloc.mapped;
+    state->shadowLightInfoAlloc = infoAlloc;   state->shadowLightInfoMapped = infoAlloc.mapped;
+
+    // Frustum 0 = directional light 0's ortho map.
+    ShadowFrustumConfig* cfg = (ShadowFrustumConfig*)state->shadowFrustumConfigMapped;
+    cfg[0] = (ShadowFrustumConfig){ .lightIndex = 0u, .lightType = LIGHT_TYPE_DIRECTIONAL, .faceIndex = 0u, .pad = 0u };
+
+    // Per-light: only light 0 casts this increment; the rest are unshadowed.
+    ShadowLightInfo* info = (ShadowLightInfo*)state->shadowLightInfoMapped;
+    for (uint32_t l = 0; l < state->lightBuffer.capacity; l++)
+        info[l] = (ShadowLightInfo){ .castsShadow = 0u, .baseFrustum = 0u, .frustumCount = 0u, .pad = 0u };
+    info[0] = (ShadowLightInfo){ .castsShadow = 1u, .baseFrustum = 0u, .frustumCount = 1u, .pad = 0u };
+
+    return true;
+}
+
 bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->culling.maxEntities = maxEntities;
     uint32_t maxMeshes = 1024;
     
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
-    VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
-    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
+    VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
     VkDeviceSize uboSize = sizeof(CullUBO);
     
     // Per-slot mesh/material (meshIndex, materialIndex): ×1 device-local + delta staging,
@@ -2094,6 +2303,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Depth-only shadow pipeline + compare sampler (reuses the flat pipeline layout, so after pipelines).
+	if (!ano_vk_init_shadow(&ctx, &rendererState))
+	{
+		printf("Quitting init: shadow pipeline failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
 	if(!createTextureSampler(&ctx, &rendererState))
 	{
 		printf("Quitting init: texture sampler failure!\n");
@@ -2124,7 +2341,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createCullingBuffers(&ctx, &rendererState, maxEntities) ||
-	    !createClusterBuffers(&ctx, &rendererState))
+	    !createClusterBuffers(&ctx, &rendererState) ||
+	    !createShadowResources(&ctx, &rendererState))
 	{
 		printf("Quitting init: buffer creation failure!\n");
 		unInitVulkan();
@@ -2166,6 +2384,38 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	};
 	candleTransform[3][0] = 2.0f; // Orbit radius of 5 units on X
 	instantiate_model(candleHolderAsset, candleTransform);
+
+	// Ground plane (audit 4.7): a wide thin slab — the fallback cube scaled flat — placed below
+	// the scene so the directional shadow is visible regardless of light orientation. Reuses the
+	// viking room's opaque material (guaranteed to draw + cast). Forced static in the motion loop.
+	uint32_t groundEntity = rendererState.entityCount;
+	{
+        mat4 g = {{15.0f, 0,      0,     0},
+                  {0,    -0.05f,  0,     0},
+                  {0,     0,      15.0f, 0},
+                  {0,    -0.6f,   0,     1}};
+		rendererState.entityCount += 1;
+		rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
+		rendererState.entities[groundEntity].meshIndex = FALLBACK_MESH_INDEX;
+		rendererState.entities[groundEntity].materialIndex = rendererState.entities[0].materialIndex;
+		rendererState.entities[groundEntity].lightIndex = ANO_RENDER_NO_LIGHT;
+		memcpy(&rendererState.entities[groundEntity].transform, g, sizeof(mat4));
+	}
+
+	// Sun marker (debug, audit 4.7): a small cube at the directional light's source direction
+	// (lightDir * 6, lightDir = normalized (0.5,1,0.3) — the vector shadowsetup derives as
+	// -lightForward). Shadows must extend AWAY from it: an in-render check for the light's
+	// orientation, since the renderer has no other directional-light gizmo.
+	uint32_t sunMarkerEntity = rendererState.entityCount;
+	{
+		mat4 m = {{0.2f,0,0,0},{0,0.2f,0,0},{0,0,0.2f,0},{2.59f,5.18f,1.55f,1}};
+		rendererState.entityCount += 1;
+		rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
+		rendererState.entities[sunMarkerEntity].meshIndex = FALLBACK_MESH_INDEX;
+		rendererState.entities[sunMarkerEntity].materialIndex = rendererState.entities[0].materialIndex;
+		rendererState.entities[sunMarkerEntity].lightIndex = ANO_RENDER_NO_LIGHT;
+		memcpy(&rendererState.entities[sunMarkerEntity].transform, m, sizeof(mat4));
+	}
 
 	// -------------------------------------------------------------
 	// Scene lights (generalized light format, replacing the values
@@ -2320,6 +2570,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		// STAND-IN (Path B): the first two renderables are CPU-streamed (see
 		// stream_stand_in); update.comp leaves them at base and scatter overwrites them.
 		if (i < 2) { md = (AnoMotionDescriptor){0}; md.type = ANO_MOTION_STREAMED; }
+		if (i == groundEntity || i == sunMarkerEntity) md = (AnoMotionDescriptor){0}; // ground + sun marker are static
 		batchMotion[i] = md;
 
 		// Fold the legacy spawn nudge into entities[] so it stays the authoritative host-side
@@ -2396,6 +2647,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	updateUboDescriptorSets(&ctx, &rendererState);
 	updateTonemapDescriptorSets(&ctx, &rendererState);
 	updateClusterDescriptorSets(&ctx, &rendererState);
+	updateShadowDescriptorSets(&ctx, &rendererState);
 
 
 	if (!createCommandBuffer(&ctx, &rendererState))

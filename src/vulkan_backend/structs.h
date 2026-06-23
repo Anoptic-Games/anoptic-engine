@@ -51,6 +51,24 @@
 // shadow pass); every per-view buffer/target/set array and the CullUBO frustum array size to it.
 #define ANO_VIEW_COUNT           2u
 
+// Dynamic shadow pass (audit 4.7 follow-on, built on the 4.8 multi-frustum cull). Each shadow map
+// is one more frustum to cull against: a directional ortho map, a spot perspective map, and 6
+// perspective faces per point light. All shadow maps are layers of one D32 2D array — point lights
+// pick a face by the dominant axis of (frag - light) in the fragment (no samplerCube). The cull
+// frustum set is the camera views followed by the shadow frustums. Sized to the demo's light rig;
+// a dynamic "any light casts" registry is a follow-on.
+// Built incrementally: directional first (this increment), then spot, then point cubes — bump
+// the spot/point counts to add them once the directional path is hardware-verified.
+#define ANO_SHADOW_DIR_COUNT     1u    // directional casters (one ortho map each)
+#define ANO_SHADOW_SPOT_COUNT    0u    // spot casters (one perspective map each)
+#define ANO_SHADOW_POINT_COUNT   0u    // point casters (6 cube-face maps each)
+#define ANO_SHADOW_CUBE_FACES    6u
+#define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // 26
+#define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = 28
+#define ANO_SHADOW_DIM           1024u                  // per-layer shadow map resolution
+#define ANO_SHADOW_DEPTH_FORMAT  VK_FORMAT_D32_SFLOAT   // sampled as a depth-compare (sampler2DArrayShadow)
+#define ANO_SHADOW_ORTHO_EXTENT  8.0f                   // half-size of the directional ortho world box (covers the demo scene)
+
 // FALLBACK_MESH_INDEX is the public renderer contract (anoptic_render.h), pulled
 // in transitively via render_bridge.h above.
 #define FALLBACK_TEXTURE_INDEX 0
@@ -536,6 +554,43 @@ typedef struct CullUBO
     uint32_t drawSlotOf[16];
 } CullUBO;
 
+// --- Dynamic shadows (audit 4.7 follow-on, on the 4.8 multi-frustum cull) -------------------
+// Shadow frustums reuse CullView (viewProj + 6 planes): shadowsetup.comp writes them from each
+// light's live GPU transform, cull.comp tests entities against the planes, and the depth render +
+// fragment sampler use the viewProj. They occupy cull partitions [ANO_VIEW_COUNT, ANO_FRUSTUM_COUNT).
+
+// CPU-authored, one per shadow frustum: which light + cube face it renders. Drives shadowsetup.comp's
+// projection choice (ortho / perspective / cube face). std430: 4 x u32 = 16 B.
+typedef struct ShadowFrustumConfig {
+    uint32_t lightIndex;   // index into the light buffer
+    uint32_t lightType;    // LightType
+    uint32_t faceIndex;    // cube face [0,6) for point lights; 0 otherwise
+    uint32_t pad;
+} ShadowFrustumConfig;
+
+// CPU-authored, indexed by light index: where this light's shadow frustums (= array layers) live,
+// so the fragment shader knows whether/where to sample. std430: 4 x u32 = 16 B.
+typedef struct ShadowLightInfo {
+    uint32_t castsShadow;  // 0 = no shadow (skip sampling)
+    uint32_t baseFrustum;  // first shadow-frustum index / array layer for this light
+    uint32_t frustumCount; // 1 (dir/spot) or 6 (point)
+    uint32_t pad;
+} ShadowLightInfo;
+
+// Per-frame shadow state: the GPU-written frustum buffer and the depth atlas array. The atlas is a
+// D32 2D array (one layer per shadow frustum); layerView[] are per-layer render targets, arrayView
+// is the single sampled view (depth-compare via shadowSampler in the fragment shader).
+typedef struct ShadowResources {
+    VkBuffer        frustumBuffer;   // CullView[ANO_SHADOW_FRUSTUM_COUNT], written by shadowsetup.comp
+    GpuAllocation   frustumAlloc;
+    VkImage         atlasImage;      // D32 2D array, ANO_SHADOW_FRUSTUM_COUNT layers
+    GpuAllocation   atlasAlloc;
+    VkImageView     arrayView;       // sample view (2D array, depth aspect)
+    VkImageView     layerView[ANO_SHADOW_FRUSTUM_COUNT]; // per-layer depth render targets
+    VkDescriptorSet setupSet;        // shadowsetup.comp inputs/outputs
+    VkDescriptorSet geomSet;         // depth render (shadow.mesh / shadow.vert)
+} ShadowResources;
+
 typedef struct CullUboBuffer
 {
     VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
@@ -659,6 +714,9 @@ typedef struct PerFrameResources
     // Per-view resources (camera UBO, depth, HDR target, froxel lists, descriptor sets).
     ViewResources       views[ANO_VIEW_COUNT];
 
+    // Dynamic shadow state: GPU-written shadow frustums + the depth atlas array (audit 4.7).
+    ShadowResources     shadow;
+
     // View-independent descriptor sets: a single cull dispatch tests all views at once, and
     // update/scatter operate on the shared transform pool — none of these are per-view.
     VkDescriptorSet     cullSet;
@@ -733,6 +791,24 @@ typedef struct RendererState
     VkDescriptorSetLayout   updateSetLayout;
     VkDescriptorSetLayout   scatterSetLayout;
     VkDescriptorSetLayout   lightcullSetLayout; // clustered-forward light assignment pass
+    VkDescriptorSetLayout   shadowSetupSetLayout; // shadowsetup compute pass (per-shadow-frustum viewProj build)
+
+    // Dynamic shadow pass (audit 4.7). Depth-only render into the shadow atlas array. Standalone
+    // pipeline (not a PipelineType): reuses the cull-compacted draw lists but writes depth only.
+    VkPipeline              shadowPipeline;
+    VkPipelineLayout        shadowLayout;
+    VkDescriptorSetLayout   shadowGeomSetLayout; // depth render: shadow frustums + transforms + compacted indices + geometry
+    VkPipelineCache         shadowCache;
+    VkSampler               shadowSampler;       // depth-compare sampler (PCF) for sampler2DArrayShadow
+
+    // CPU-authored shadow config: per-frustum (which light/face) + per-light (where its maps live).
+    // Static (filled once at init), host-visible. The light-info buffer is indexed by light index.
+    VkBuffer                shadowFrustumConfigBuffer;
+    GpuAllocation           shadowFrustumConfigAlloc;
+    void*                   shadowFrustumConfigMapped;
+    VkBuffer                shadowLightInfoBuffer;
+    GpuAllocation           shadowLightInfoAlloc;
+    void*                   shadowLightInfoMapped;
 
     // Fallback resources
     VkImage                 fallbackImage;

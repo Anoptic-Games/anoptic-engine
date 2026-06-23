@@ -432,7 +432,7 @@ better than one global growing buffer).
   will show order artifacts. `PARTICLE` is declared but unimplemented, so there is no particle
   system at all yet.
 
-### 4.8 Single view per frame (root for several features)
+### 4.8 Single view per frame (root for several features) - ADDRESSED, API deferred
 
 `CullUBO` holds one `viewProj` and one frustum-plane set (`structs.h:331`); the whole GPU-driven
 frame assumes one camera. No multi-view: no split-screen, no 3D minimap/inset, no security-camera

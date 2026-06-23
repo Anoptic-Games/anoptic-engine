@@ -1,0 +1,110 @@
+#version 450
+
+// Per-shadow-frustum light-space view-projection + frustum-plane build (audit 4.7 shadows).
+// One invocation per shadow frustum: reads the frustum's config (which light + cube face) and the
+// light's live GPU transform, builds the light-space viewProj, and extracts its 6 frustum planes.
+// Output feeds the cull pass (planes), the depth render (viewProj), and the fragment sampler
+// (viewProj) — all from one GPU-derived source, so no CPU readback of GPU-animated light positions.
+
+layout(local_size_x = 64) in;
+
+// Must match the structs.h constants.
+#define ANO_SHADOW_FRUSTUM_COUNT 1u
+#define ANO_SHADOW_ORTHO_EXTENT  8.0
+#define LIGHT_TYPE_DIRECTIONAL 0u
+#define LIGHT_TYPE_POINT       1u
+#define LIGHT_TYPE_SPOT        2u
+
+struct ShadowFrustumConfig { uint lightIndex; uint lightType; uint faceIndex; uint pad; };
+
+struct LightData {
+    vec3  color; float intensity;
+    float range; float innerConeCos; float outerConeCos; uint type;
+    uint  transformIndex; uint enabled; uint pad0; uint pad1;
+};
+
+// CullView: viewProj + 6 planes (matches structs.h CullView / cull.comp's shadow read).
+struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+
+layout(set = 0, binding = 0) readonly buffer ShadowConfigSSBO { ShadowFrustumConfig configs[]; };
+layout(set = 0, binding = 1) readonly buffer TransformSSBO   { mat4 transforms[]; };
+layout(set = 0, binding = 2) readonly buffer LightSSBO       { LightData lights[]; };
+layout(set = 0, binding = 3) writeonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
+
+// Right-handed lookAt, column-major (projects worldPos via M*worldPos), matching flat.vert's
+// effective proj*view convention so the extracted planes agree with the CPU camera planes.
+mat4 lookAtRH(vec3 eye, vec3 center, vec3 up) {
+    vec3 f = normalize(center - eye);
+    vec3 s = normalize(cross(f, up));
+    vec3 u = cross(s, f);
+    mat4 m = mat4(1.0);
+    m[0][0] = s.x; m[1][0] = s.y; m[2][0] = s.z;
+    m[0][1] = u.x; m[1][1] = u.y; m[2][1] = u.z;
+    m[0][2] = -f.x; m[1][2] = -f.y; m[2][2] = -f.z;
+    m[3][0] = -dot(s, eye); m[3][1] = -dot(u, eye); m[3][2] = dot(f, eye);
+    return m;
+}
+
+// Orthographic, right-handed, Vulkan depth [0,1] (glm orthoRH_ZO).
+mat4 orthoRH_ZO(float l, float r, float b, float t, float n, float f) {
+    mat4 m = mat4(0.0);
+    m[0][0] = 2.0 / (r - l);
+    m[1][1] = 2.0 / (t - b);
+    m[2][2] = -1.0 / (f - n);
+    m[3][0] = -(r + l) / (r - l);
+    m[3][1] = -(t + b) / (t - b);
+    m[3][2] = -n / (f - n);
+    m[3][3] = 1.0;
+    return m;
+}
+
+// Gribb-Hartmann: the 6 frustum planes are the ROWS of the clip matrix (row3 +/- row{0,1,2}),
+// in world space. In column-major GLSL, row i of m is column i of transpose(m); extracting the
+// columns of m directly (m[3] +/- m[i]) would yield the TRANSPOSED frustum, which mismatches the
+// rendered/sampled viewProj and wrongly culls off-center casters. Transposing first matches the
+// CPU extractFrustumPlanes convention, so cull tests shadow + camera frustums identically.
+void extractPlanes(mat4 m, out vec4 planes[6]) {
+    mat4 t = transpose(m);
+    planes[0] = t[3] + t[0]; // left
+    planes[1] = t[3] - t[0]; // right
+    planes[2] = t[3] + t[1]; // bottom
+    planes[3] = t[3] - t[1]; // top
+    planes[4] = t[3] + t[2]; // near
+    planes[5] = t[3] - t[2]; // far
+    for (int i = 0; i < 6; ++i) {
+        float len = length(planes[i].xyz);
+        if (len > 0.0) planes[i] /= len;
+    }
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= ANO_SHADOW_FRUSTUM_COUNT) return;
+
+    ShadowFrustumConfig cfg = configs[i];
+    LightData L = lights[cfg.lightIndex];
+    mat4 lx = transforms[L.transformIndex];
+    vec3 lightPos = lx[3].xyz;
+    vec3 lightForward = normalize(-lx[2].xyz); // entity local -Z is the travel direction
+
+    mat4 viewProj;
+    if (cfg.lightType == LIGHT_TYPE_DIRECTIONAL) {
+        // Look along the light's travel direction at the scene origin from far back.
+        vec3 toLight = -lightForward;                  // surface -> light
+        vec3 up = abs(toLight.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        float dist = 20.0;
+        vec3 eye = toLight * dist;
+        mat4 view = lookAtRH(eye, vec3(0.0), up);
+        float e = ANO_SHADOW_ORTHO_EXTENT;
+        mat4 proj = orthoRH_ZO(-e, e, -e, e, 0.05, dist + e * 2.0);
+        viewProj = proj * view;
+    } else {
+        // Spot / point branches land in later increments; identity = no shadow contribution.
+        viewProj = mat4(1.0);
+    }
+
+    shadowFrustums[i].viewProj = viewProj;
+    vec4 planes[6];
+    extractPlanes(viewProj, planes);
+    for (int p = 0; p < 6; ++p) shadowFrustums[i].frustumPlanes[p] = planes[p];
+}

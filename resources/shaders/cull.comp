@@ -139,6 +139,12 @@ layout(set = 0, binding = 8) readonly buffer MaterialSSBO {
     MaterialData materials[];
 };
 
+// Shadow frustums (audit 4.7): GPU-built by shadowsetup.comp. Tested here exactly like the camera
+// frustums; survivors are written into partitions [ANO_VIEW_COUNT, ANO_FRUSTUM_COUNT). Must match
+// structs.h. CullView = viewProj + 6 planes; this pass uses only the planes.
+#define ANO_SHADOW_FRUSTUM_COUNT 1u
+layout(set = 0, binding = 9) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
+
 // World-space bounding sphere vs one view's 6 frustum planes. The sphere (worldCenter,
 // worldRadius) is computed once per entity by the caller and reused across all views.
 bool isVisibleIn(uint view, vec4 worldCenter, float worldRadius) {
@@ -148,6 +154,35 @@ bool isVisibleIn(uint view, vec4 worldCenter, float worldRadius) {
         }
     }
     return true;
+}
+
+bool isVisibleInShadow(uint s, vec4 worldCenter, float worldRadius) {
+    for (int i = 0; i < 6; i++) {
+        if (dot(shadowFrustums[s].frustumPlanes[i], worldCenter) < -worldRadius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Append one compacted draw for entity idx into partition partIdx (= frustum*drawSlotCount + slot).
+void emitDraw(uint partIdx, uint idx, MeshData mData) {
+    uint writeIdx = atomicAdd(drawCounts[partIdx], 1);
+    uint destIdx = partIdx * maxEntities + writeIdx;
+    if (useMeshShader) {
+        uint b = destIdx * 3u;
+        indirectData[b + 0u] = mData.meshletCount; // groupCountX = one workgroup per meshlet
+        indirectData[b + 1u] = 1u;
+        indirectData[b + 2u] = 1u;
+    } else {
+        uint b = destIdx * 5u;
+        indirectData[b + 0u] = mData.classicIndexCount;  // indexCount
+        indirectData[b + 1u] = 1u;                       // instanceCount
+        indirectData[b + 2u] = mData.classicFirstIndex;  // firstIndex
+        indirectData[b + 3u] = mData.vertexOffset / 32u; // vertexOffset -> gl_VertexIndex base
+        indirectData[b + 4u] = writeIdx;                 // firstInstance = draw ordinal (gl_InstanceIndex)
+    }
+    entityIndices[destIdx] = idx;
 }
 
 void main() {
@@ -182,37 +217,21 @@ void main() {
     float maxScale = max(max(length(model[0].xyz), length(model[1].xyz)), length(model[2].xyz));
     float worldRadius = bounds.w * maxScale;
 
-    // Single-pass multi-frustum: one read of this entity, one test per view, one write per view
-    // it survives. Each view owns partition (view*drawSlotCount + slot) of every output buffer.
+    // Single-pass multi-frustum: read this entity once, test it against every camera frustum and
+    // every shadow frustum, append one compacted draw per frustum it survives. Camera frustums own
+    // partitions [0, ANO_VIEW_COUNT); shadow frustums own [ANO_VIEW_COUNT, ANO_FRUSTUM_COUNT).
     for (uint view = 0u; view < viewCount; ++view) {
-        if (!isVisibleIn(view, worldCenter, worldRadius)) {
-            continue;
+        if (isVisibleIn(view, worldCenter, worldRadius)) {
+            emitDraw(view * drawSlotCount + slot, idx, mData);
         }
-
-        uint partIdx = view * drawSlotCount + slot;
-        uint writeIdx = atomicAdd(drawCounts[partIdx], 1);
-
-        // Compact draws by (view, draw slot), not by raw pipeline-type enum value.
-        uint destIdx = partIdx * maxEntities + writeIdx;
-
-        if (useMeshShader) {
-            uint b = destIdx * 3u;
-            indirectData[b + 0u] = mData.meshletCount; // groupCountX = one workgroup per meshlet
-            indirectData[b + 1u] = 1u;
-            indirectData[b + 2u] = 1u;
-        } else {
-            // One indexed draw covers the whole mesh; the hardware index/vertex fetch
-            // performs the expansion the mesh shader did in software.
-            uint b = destIdx * 5u;
-            indirectData[b + 0u] = mData.classicIndexCount;  // indexCount
-            indirectData[b + 1u] = 1u;                       // instanceCount
-            indirectData[b + 2u] = mData.classicFirstIndex;  // firstIndex
-            indirectData[b + 3u] = mData.vertexOffset / 32u; // vertexOffset (Vertex = 32 B) -> gl_VertexIndex base
-            indirectData[b + 4u] = writeIdx;                 // firstInstance = draw ordinal; flat.vert reads it as gl_InstanceIndex (no DrawIndex builtin on Metal)
+    }
+    // Shadow frustums: every drawable caster (opaque AND transparent) writes into the opaque
+    // shadow partition (draw slot 0), so the single depth render casts solid shadows for all
+    // geometry — e.g. the glass candle holder, which is a TRANSMISSION draw. Alpha-aware shadows
+    // are a later refinement; for now transparent geometry casts a solid shadow.
+    for (uint s = 0u; s < ANO_SHADOW_FRUSTUM_COUNT; ++s) {
+        if (isVisibleInShadow(s, worldCenter, worldRadius)) {
+            emitDraw((ANO_VIEW_COUNT + s) * drawSlotCount + 0u, idx, mData);
         }
-
-        // Save the original entity index. flat.mesh reads it via gl_DrawID; flat.vert
-        // via gl_InstanceIndex (= firstInstance above). Both resolve to this slot.
-        entityIndices[destIdx] = idx;
     }
 }

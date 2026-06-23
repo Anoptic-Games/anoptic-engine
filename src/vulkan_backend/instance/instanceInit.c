@@ -1444,18 +1444,20 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	VkDescriptorPoolSize poolSize[4] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u);
+	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
+	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (15u * ANO_VIEW_COUNT + 16u);
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (15u * ANO_VIEW_COUNT + 16u + 7u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 1u); // tonemap: one hdr sampler per view
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 2u); // tonemap (per view) + shadow atlas
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 4;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 4u);
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 6u);
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1637,6 +1639,19 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
             rendererState.frames[i].views[v].tonemapSet = tonemapSetsTemp[i*ANO_VIEW_COUNT + v];
     }
 
+    // Shadow sets (audit 4.7): one shadowsetup set + one shadow geom/sampling set per frame.
+    VkDescriptorSetLayout setupLayouts[MAX_FRAMES_IN_FLIGHT], geomLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { setupLayouts[i] = rendererState.shadowSetupSetLayout; geomLayouts[i] = rendererState.shadowGeomSetLayout; }
+    VkDescriptorSetAllocateInfo setupAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = MAX_FRAMES_IN_FLIGHT, .pSetLayouts = setupLayouts };
+    VkDescriptorSet setupTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &setupAlloc, setupTemp) != VK_SUCCESS) { printf("Failed to allocate shadowsetup sets!\n"); return false; }
+    VkDescriptorSetAllocateInfo geomAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = MAX_FRAMES_IN_FLIGHT, .pSetLayouts = geomLayouts };
+    VkDescriptorSet geomTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &geomAlloc, geomTemp) != VK_SUCCESS) { printf("Failed to allocate shadow geom sets!\n"); return false; }
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { rendererState.frames[i].shadow.setupSet = setupTemp[i]; rendererState.frames[i].shadow.geomSet = geomTemp[i]; }
+
 	return true;
 }
 
@@ -1697,6 +1712,47 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
 // Points each frame's tonemap set at its current HDR resolve view. Separate from
 // updateUboDescriptorSets because it must also run after a swapchain resize, where the
 // per-frame hdrColorView handles are destroyed and recreated.
+// Binds the dynamic shadow sets (audit 4.7), per frame: the shadowsetup compute set (config +
+// transforms + lights in, frustums out) and the shadow geom/sampling set (frustum viewProjs, the
+// depth atlas array sampler, per-light info). Cluster buffers / config are fixed, so init-only.
+void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        ShadowResources* sh = &state->frames[i].shadow;
+        VkDescriptorBufferInfo cfgI  = { state->shadowFrustumConfigBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo xfI   = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo ltI   = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo frI   = { sh->frustumBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo infoI = { state->shadowLightInfoBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorImageInfo  atI   = { state->shadowSampler, sh->arrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+        VkWriteDescriptorSet w[7] = {};
+        // shadowsetup set (0 config, 1 transforms, 2 lights, 3 frustums-out) — all storage.
+        for (int j = 0; j < 4; ++j) {
+            w[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[j].dstSet = sh->setupSet;
+            w[j].dstBinding = (uint32_t)j;
+            w[j].descriptorCount = 1;
+            w[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        }
+        w[0].pBufferInfo = &cfgI; w[1].pBufferInfo = &xfI; w[2].pBufferInfo = &ltI; w[3].pBufferInfo = &frI;
+
+        // shadow geom/sampling set (0 frustum viewProjs, 1 atlas array sampler, 2 per-light info).
+        w[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[4].dstSet = sh->geomSet; w[4].dstBinding = 0; w[4].descriptorCount = 1;
+        w[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[4].pBufferInfo = &frI;
+        w[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[5].dstSet = sh->geomSet; w[5].dstBinding = 1; w[5].descriptorCount = 1;
+        w[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[5].pImageInfo = &atI;
+        w[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[6].dstSet = sh->geomSet; w[6].dstBinding = 2; w[6].descriptorCount = 1;
+        w[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[6].pBufferInfo = &infoI;
+
+        vkUpdateDescriptorSets(ctx->device, 7, w, 0, NULL);
+    }
+}
+
 void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
     // Per view per frame: the composite samples each view's HDR resolve into its destination rect.
@@ -1764,7 +1820,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
 		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
 		compactedEntityIndicesInfo.offset = 0;
-		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
+		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
 
 		VkDescriptorBufferInfo lightInfo = {};
 		lightInfo.buffer = rendererState.lightBuffer.device;        // ×1 device-local (SlotUpload)
@@ -1895,25 +1951,31 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
+        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
-        countInfo.range = sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
+        countInfo.range = sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
 
         VkDescriptorBufferInfo compactedEntityIndicesCullInfo = {};
         compactedEntityIndicesCullInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
         compactedEntityIndicesCullInfo.offset = 0;
-        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_VIEW_COUNT;
+        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
 
         VkDescriptorBufferInfo materialCullInfo = {};
         materialCullInfo.buffer = rendererState.materialBuffer.buffer[i];
         materialCullInfo.offset = 0;
         materialCullInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
 
-        VkWriteDescriptorSet cullWrites[9] = {};
-        for(int j=0; j<9; ++j) {
+        // Binding 9: the GPU-built shadow frustums (audit 4.7), per frame.
+        VkDescriptorBufferInfo shadowFrustumCullInfo = {};
+        shadowFrustumCullInfo.buffer = rendererState.frames[i].shadow.frustumBuffer;
+        shadowFrustumCullInfo.offset = 0;
+        shadowFrustumCullInfo.range = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet cullWrites[10] = {};
+        for(int j=0; j<10; ++j) {
             cullWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             cullWrites[j].dstSet = rendererState.frames[i].cullSet;
             cullWrites[j].dstBinding = j;
@@ -1932,8 +1994,9 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullWrites[6].pBufferInfo = &countInfo;
         cullWrites[7].pBufferInfo = &compactedEntityIndicesCullInfo;
         cullWrites[8].pBufferInfo = &materialCullInfo;
+        cullWrites[9].pBufferInfo = &shadowFrustumCullInfo;
 
-        vkUpdateDescriptorSets(ctx->device, 9, cullWrites, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 10, cullWrites, 0, NULL);
 
         // Update Compute Descriptor Sets
         VkDescriptorBufferInfo motionInfo = {};
@@ -2295,7 +2358,17 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			if(rendererState.frames[i].views[v].clusterLightIndexBuffer)
 				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightIndexBuffer, NULL);
 		}
+		// Dynamic shadow resources (audit 4.7): per-frame frustum buffer + depth atlas + views.
+		ShadowResources* sh = &rendererState.frames[i].shadow;
+		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
+		if (sh->arrayView) vkDestroyImageView(ctx->device, sh->arrayView, NULL);
+		for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
+			if (sh->layerView[s]) vkDestroyImageView(ctx->device, sh->layerView[s], NULL);
+		if (sh->atlasImage) vkDestroyImage(ctx->device, sh->atlasImage, NULL);
 	}
+	// Static shadow config/info buffers (once).
+	if (rendererState.shadowFrustumConfigBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowFrustumConfigBuffer, NULL);
+	if (rendererState.shadowLightInfoBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowLightInfoBuffer, NULL);
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
 	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the

@@ -23,12 +23,14 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	VkPushConstantRange pushConstantRange = {};
 	pushConstantRange.stageFlags = geometryStage;
 	pushConstantRange.offset = 0;
-	pushConstantRange.size = sizeof(uint32_t);
+	pushConstantRange.size = 2u * sizeof(uint32_t); // transformBaseOffset + shadowFrustumIndex
 
+	// Set 2 = dynamic shadows (audit 4.7): fragment samples the shadow atlas (transparent geometry
+	// receives shadows too). Matches flat's layout.
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 2;
-	VkDescriptorSetLayout setLayouts[2] = {state->globalSetLayout, proto->descriptorLayout};
+	pipelineLayoutInfo.setLayoutCount = 3;
+	VkDescriptorSetLayout setLayouts[3] = {state->globalSetLayout, proto->descriptorLayout, state->shadowGeomSetLayout};
 	pipelineLayoutInfo.pSetLayouts = setLayouts;
 	pipelineLayoutInfo.pushConstantRangeCount = 1;
 	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
