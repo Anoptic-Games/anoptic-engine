@@ -12,7 +12,7 @@ The ambition is ludicrous-scale simulation at interactive framerates. The engine
 
 The engine is written in C23, compiled exclusively with Clang 17+. The C23 standard was in beta when development began (2022-2023); compiler coverage is now mature.
 
-C was chosen deliberately over C++ for control, simplicity, and ABI stability. Where C lacks modern conveniences (ownership, scoped cleanup, type-safe generics), the engine uses targeted compiler extensions and C23 features rather than switching languages. The philosophy is: know exactly what the machine does, control it explicitly, and use the smallest possible abstraction to make that control ergonomic.
+C was chosen deliberately over C++ for control, simplicity, and ABI stability. Where C lacks modern conveniences (ownership, scoped cleanup, type-safe generics), the engine uses targeted compiler extensions and C23 features. The philosophy is: know exactly what the machine does, control it explicitly, and use the smallest possible abstraction to make that control ergonomic.
 
 ## Core Architectural Principles
 
@@ -22,7 +22,7 @@ The central insight, arrived at independently and later confirmed by the academi
 
 **Most allocations in a game frame are scope-shaped.** They are born together, used together, and should die together. Per-object malloc/free is the wrong granularity -- it fragments memory, pollutes the cache, and forces the programmer to track individual lifetimes.
 
-Instead: allocate from a **scoped heap** (a mimalloc local heap), and destroy the entire heap when the scope exits. Setup and teardown cost is O(regions), not O(objects). A gigabyte of frame-scratch data dies in microseconds because `mi_heap_destroy` hands pages back without iterating contents.
+Instead: allocate from a **scoped heap** (a mimalloc local heap), and destroy the entire heap when the scope exits. Setup and teardown cost is O(regions). A gigabyte of frame-scratch data dies in microseconds because `mi_heap_destroy` hands pages back without iterating contents.
 
 The mechanism in C is `__attribute__((cleanup))`:
 
@@ -33,7 +33,7 @@ The mechanism in C is `__attribute__((cleanup))`:
 mi_heap_t *frameHeap LOCALHEAPATTR = mi_heap_new();
 ```
 
-This is not a hack -- it's the same mechanism used by systemd (`_cleanup_`), GLib (`g_autoptr`), and the Linux kernel. Given the Clang-only policy, it's fully supported and well-defined.
+It's the same mechanism used by systemd (`_cleanup_`), GLib (`g_autoptr`), and the Linux kernel. Given the Clang-only policy, it's fully supported and well-defined.
 
 **The memory hierarchy for the engine (planned):**
 - **Process arena**: the OS is the outermost garbage collector. `exit()` is a region free.
@@ -53,7 +53,7 @@ No garbage collector. The OS reclaims during unavoidable context switches; every
 
 ### 2. Lock-Free Concurrency
 
-Influenced directly by Michael L. Scott's work (Michael & Scott queues, hazard pointers) and his lecture series. The goal is not merely "fast locks" but **progress guarantees**: obstruction-free, lock-free, or wait-free primitives that never block a thread on another thread's scheduling.
+Influenced directly by Michael L. Scott's work (Michael & Scott queues, hazard pointers) and his lecture series. The goal is **progress guarantees**: obstruction-free, lock-free, or wait-free primitives that never block a thread on another thread's scheduling.
 
 **Why this matters for the engine:**
 - The ECS tick loop must distribute work across all cores without serializing on a mutex.
@@ -75,7 +75,7 @@ The subtle problem in the lock-free version is the **gap problem**: reservations
 
 The engine uses ECS (Entity Component System) architecture: entities are IDs, components are contiguous arrays of plain data, systems iterate over component arrays in tight loops. This is DOD orthodoxy and it's correct for bulk simulation -- iterating a million asteroid positions is a sequential memory scan that the prefetcher and SIMD can accelerate.
 
-But the architect has a soft spot for functional programming and "things being correct and sorting themselves out." The resolution is that **arenas are secretly the FP memory model with the GC removed**. Immutable-ish data allocated into a scoped region, processed, results copied out, region dropped. That's a functional transformation with deterministic cleanup. The engine doesn't need to be purely functional; it needs the *properties* of functional code (referential transparency within a scope, no surprise mutation, predictable resource lifetimes) achieved through structural discipline rather than language enforcement.
+But the architect has a soft spot for functional programming and "things being correct and sorting themselves out." The resolution is that **arenas are secretly the FP memory model with the GC removed**. Immutable-ish data allocated into a scoped region, processed, results copied out, region dropped. That's a functional transformation with deterministic cleanup. It needs the *properties* of functional code (referential transparency within a scope, no surprise mutation, predictable resource lifetimes) achieved through structural discipline.
 
 ### 4. Scoped Resolution (Simulation LOD)
 
@@ -86,15 +86,15 @@ A thousand star systems cannot all be simulated at full fidelity every tick. The
 - **Distant systems**: statistical simulation. Trends and events, evaluated infrequently.
 - **Unobserved systems**: catch-up simulation on access. When the player jumps to a system that's been asleep for 10,000 ticks, fast-forward its state deterministically.
 
-This is not novel in concept (Stellaris, Dwarf Fortress, and others do variants), but the engine's memory architecture is designed to support it natively: each resolution level is a different arena with different data layouts and tick rates. Promoting a system from coarse to full-fidelity is an arena allocation + state expansion; demoting it is a state compression + arena free.
+The engine's memory architecture is designed to support it natively: each resolution level is a different arena with different data layouts and tick rates. Promoting a system from coarse to full-fidelity is an arena allocation + state expansion; demoting it is a state compression + arena free.
 
-Details of the scoped resolution algorithms are currently in the architect's head, not in code. Materializing them is a priority once the base ECS and arena system are operational.
+Details of the scoped resolution algorithms are currently in the architect's head. Materializing them is a priority once the base ECS and arena system are operational.
 
 ### 5. Rendering Philosophy
 
-**No PBR.** The engine does not target photorealism. PBR's per-material cost (roughness maps, metalness maps, environment probes, BRDF LUTs, image-based lighting) optimizes for making 50 objects look photorealistic. This engine optimizes for making a million objects look good. Non-PBR rendering (flat shading, stylized lighting, older visual aesthetics) keeps the material pipeline thin and the per-fragment cost low, freeing GPU budget for entity count.
+**No PBR.** PBR's per-material cost (roughness maps, metalness maps, environment probes, BRDF LUTs, image-based lighting) optimizes for making 50 objects look photorealistic. This engine optimizes for making a million objects look good. Non-PBR rendering (flat shading, stylized lighting, older visual aesthetics) keeps the material pipeline thin and the per-fragment cost low, freeing GPU budget for entity count.
 
-**Vulkan directly.** The renderer uses the Vulkan API without an abstraction layer. This is deliberate: the engine needs direct control over memory allocation, synchronization, and compute dispatch. The renderer is now GPU-driven and meshlet-based (see below), a substantial advance over the early tutorial-derived rasterizer.
+**Vulkan directly.** The renderer uses the Vulkan API. This is deliberate: the engine needs direct control over memory allocation, synchronization, and compute dispatch. The renderer is now GPU-driven and meshlet-based (see below), a substantial advance over the early tutorial-derived rasterizer.
 
 **GPU-driven meshlet rendering, with a compatibility fallback.** The frame is built on the GPU: a compute pass animates entity transforms, a compute culling pass frustum-tests every entity and writes an indirect draw list, and geometry is drawn from a shared vertex + meshlet mega-buffer. Meshes are decomposed into meshlets (via the `ano_meshoptimizer` wrapper) at upload time.
 
@@ -105,7 +105,7 @@ Because `VK_EXT_mesh_shader` is unavailable on a large slice of still-current ha
 
 The two paths differ only in the geometry stage and the indirect command format. Resource handling, the geometry pool, the compute culling/animation passes, materials, punctual lighting, and the fragment shaders are shared verbatim. The active path is keyed off `DeviceCapabilities.meshShader`; `ANO_FORCE_NO_MESH_SHADER=1` forces the fallback for testing. Trade-off: the fallback retains per-entity frustum culling but drops per-meshlet cone culling. Full design and phasing live in `PLANS_COMPATIBILITY.md`.
 
-**Future direction: selective raymarching (SDF).** The long-term rendering vision is a hybrid approach: rasterization for UI, HUD, and conventional geometry; raymarching via signed distance fields for the space environment. SDFs are procedural (asteroids defined by math, not meshes), composable (smooth union/subtraction for constructive geometry), and provide natural LOD (fewer march steps at distance). This maps directly onto the scoped resolution hierarchy. However, rasterization is the immediate path — raymarching is a later-stage addition once the simulation infrastructure is operational.
+**Future direction: selective raymarching (SDF).** The long-term rendering vision is a hybrid approach: rasterization for UI, HUD, and conventional geometry; raymarching via signed distance fields for the space environment. SDFs are procedural (asteroids defined by math), composable (smooth union/subtraction for constructive geometry), and provide natural LOD (fewer march steps at distance). This maps directly onto the scoped resolution hierarchy. However, rasterization is the immediate path — raymarching is a later-stage addition once the simulation infrastructure is operational.
 
 ## Current State (June 2026)
 
@@ -134,7 +134,7 @@ The two paths differ only in the geometry stage and the indirect command format.
 
 **ECS ↔ render bridge — the two parallel worlds (June 2026):**
 
-The first real slice of the simulation/render split now exists in code. The engine runs the authoritative simulation and the non-authoritative renderer as **two parallel worlds on separate threads**, joined by two bounded lock-free SPSC rings. This is the first production deployment of the lock-free concurrency principle (§2) outside the logger — and, unlike the logger, it is genuinely lock-free today (the SPSC ring is acquire/release on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and `docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
+The first real slice of the simulation/render split now exists in code. The engine runs the authoritative simulation and the non-authoritative renderer as **two parallel worlds on separate threads**, joined by two bounded lock-free SPSC rings. This is the first production deployment of the lock-free concurrency principle (§2) outside the logger — and it is genuinely lock-free today (the SPSC ring is acquire/release on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and `docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
 
 - **ECS module** (`anoptic_ecs.h`, `src/ecs/`): entities are generational `(index, generation)` handles; components live in chunked sparse-set stores with swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and flushed at a tick boundary, so iteration is stable. The store allocates from a caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
 
@@ -142,11 +142,11 @@ The first real slice of the simulation/render split now exists in code. The engi
 
 - **Render-side slot authority** (`src/vulkan_backend/render_slots.h`): the renderer is the *sole* authority over GPU memory and the physical slot space. The logic world names renderables by a stable logical `render_id`; the renderer privately maps `render_id → GPU slot`. Slots are **stable and may contain holes** — the cull pass already compacts visible work, so a dead slot costs one skipped compute invocation and zero draw cost. This deleted the entire defragmentation/remap machinery the early drafts assumed. Slot reuse is **frame-gated**: a `DESTROY` quarantines the slot until all frames in flight retire, then a `REVENT_SLOT_RETIRED` lets the ECS recycle the id.
 
-- **Sparse/continuous split**: only *discrete* transitions cross the bridge (spawn, despawn, teleport, mesh/material swap, light change). *Continuous*, GPU-parameterized motion (orbit/spin via the update compute pass) is sent once as parameters and never restreamed, so animated entities cost zero per-frame bridge traffic. A teleport writes the `initialTransform` buffer (the base pose), never the live `transform` buffer, which the GPU animation pass clobbers each frame.
+- **Sparse/continuous split**: only *discrete* transitions cross the bridge (spawn, despawn, teleport, mesh/material swap, light change). *Continuous*, GPU-parameterized motion (orbit/spin via the update compute pass) is sent once as parameters and never restreamed, so animated entities cost zero per-frame bridge traffic. A teleport writes the `initialTransform` buffer (the base pose).
 
-- **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps — dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers larger and re-points the descriptor sets; the shader and descriptor *layouts* never change. Because the GPU allocator is a bump arena (no per-allocation free), growth is reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth bounds the waste to ~the final size. Material and light palettes scale on their own axis (distinct-element-keyed, not per-entity).
+- **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps — dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers larger and re-points the descriptor sets; the shader and descriptor *layouts* never change. Because the GPU allocator is a bump arena (no per-allocation free), growth is reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth bounds the waste to ~the final size. Material and light palettes scale on their own axis (distinct-element-keyed).
 
-- **The thread split**: `main.c` is the logic/ECS master and the sole command producer; it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation, teardown), drains the command ring each frame, and applies each transition across all frames in flight. Coordination is three atomics — no mutex — with shutdown ordered so the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real two-stage tick and `DisplayState` graphics-extract that will replace the stand-in producer currently living in `main.c`.
+- **The thread split**: `main.c` is the logic/ECS master and the sole command producer; it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation, teardown), drains the command ring each frame, and applies each transition across all frames in flight. Coordination is three atomics, with shutdown ordered so the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real two-stage tick and `DisplayState` graphics-extract that will replace the stand-in producer currently living in `main.c`.
 
 **Memory system (foundational):**
 - mimalloc as global allocator with override
@@ -166,9 +166,9 @@ The first real slice of the simulation/render split now exists in code. The engi
 **High-resolution timing module (`anoptic_time.h`):**
 - Emulator-grade precision timestamps sourced from the highest-resolution monotonic clocks available on each platform: `CLOCK_MONOTONIC` on Linux, `QueryPerformanceCounter` / `QueryPerformanceFrequency` on Windows
 - Windows implementation uses overflow-safe QPC-to-nanosecond conversion: splits counter into seconds and sub-seconds before scaling, avoiding uint64_t overflow on long-running machines. Same technique used by Yuzu/Ryujinx emulator timing code.
-- `cached_performance_frequency` is `_Atomic` for thread-safe lazy initialization without a mutex
+- `cached_performance_frequency` is `_Atomic` for thread-safe lazy initialization
 - `ano_busywait`: tight spinloop on the monotonic clock for sub-microsecond waits where OS sleep granularity is too coarse, with `MAX_BUSYWAIT_NS` safety cap
-- `ano_sleep` (Linux): `clock_nanosleep` with `CLOCK_MONOTONIC` and `EINTR` retry loop — not `nanosleep`, which can use `CLOCK_REALTIME` under the hood on some kernels
+- `ano_sleep` (Linux): `clock_nanosleep` with `CLOCK_MONOTONIC` and `EINTR` retry loop
 - `ano_sleep` (Windows): currently falls back to `Sleep()` (millisecond granularity, 15.6ms default). Upgrade to emulator-grade precision is Step 3 in the build sequence.
 - Separate NTP timestamp stub for future network time synchronization
 - Full API: `ano_timestamp_raw` (ns), `ano_timestamp_us`, `ano_timestamp_ms`, `ano_timestamp_unix` (UTC), `ano_busywait` (spinlock), `ano_sleep` (OS-scheduled)
@@ -195,7 +195,7 @@ The first real slice of the simulation/render split now exists in code. The engi
 
 ### What Needs to Be Built (bottom-up, in dependency order)
 
-**Step 1 -- High-performance logger:** Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly -- no dependency on a generic lock-free library. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
+**Step 1 -- High-performance logger:** Standalone module. Lock-free MPSC enqueue using fetch_add + commit-header pattern, inlined directly. Flusher thread via `anoptic_threads`. Wire up `ano_log_output_dir`, implement `ano_log_interval`, test file output. This is the first module that exercises arenas + atomics + threads together, and provides instrumentation for everything after.
 
 Current state (mutex version, audited June 2026). The concurrency half is correct; the output half is absent.
 - The mutex-guarded enqueue (`enqueue_log_string`) is race-free and the bounds check at logging_core.c:56 has no overflow: the accepted case writes its terminating NUL at worst index `LOG_BUFFER_MAX-1`. Verified under TSan.
@@ -209,9 +209,9 @@ Current state (mutex version, audited June 2026). The concurrency half is correc
 Rewrite recommendations.
 - Stamp every record with a monotonic timestamp (`ano_timestamp_raw`/`_us`) in its slot/commit header. Once enqueue is lock-free the FIFO-by-mutex property is gone, so the timestamp is the only thing that can reconstruct cross-thread order at flush time.
 - MPSC hot path: reserve with `fetch_add` on the tail, write the payload, publish with a per-slot commit marker stored release; the flusher walks forward and stops at the first uncommitted slot (Quill/NanoLog). Records are variable-length, so either a fixed-size POD slot ring `{ts, level, file, line, msg[]}` or a byte ring of length-prefixed records with a commit sequence -- decide before writing the consumer.
-- Wire the sink: implement `ano_log_output_dir` (set `output_file_path`, open the file once and hold the `FILE*` rather than fopen-append per write), enable the write in the flush path, implement `ano_log_interval` + the flusher thread it implies.
+- Wire the sink: implement `ano_log_output_dir` (set `output_file_path`, open the file once and hold the `FILE*`), enable the write in the flush path, implement `ano_log_interval` + the flusher thread it implies.
 - Separate immediate from flush: immediate must not silently reset the enqueue buffer. If ordering across the two paths matters, flush buffered first then emit immediate, or merge by timestamp.
-- Make the full-buffer policy explicit and counted (drop vs block vs immediate-write vs grow), with a dropped-message counter rather than a silent -1.
+- Make the full-buffer policy explicit and counted (drop vs block vs immediate-write vs grow), with a dropped-message counter.
 - Fix the init error path so it does not log through a mutex/buffer that is not yet live.
 
 Test plan (what the rewrite must make verifiable). The current test only asserts that enqueue returns 0; it cannot see content, order, or flush, because nothing is emitted. Once a sink exists, the test should flush to a temp file and read it back to check:
@@ -252,7 +252,7 @@ Design sketch:
 
 A producer claims a stripe (fetch_add on head index), fills it with plain stores, publishes via release-store on a commit flag. A consumer walks stripes in order via acquire-loads on commit flags. No per-item CAS. The only cross-core cache traffic is the intentional ownership transfer. Thread-local heaps (mimalloc) guarantee that even the allocator doesn't cause false sharing.
 
-This gets batched throughput (amortizing sync cost over N items per stripe) with lock-free progress guarantees (a stalled producer leaves an uncommitted stripe, doesn't block anyone). The 90s papers didn't consider this because they reasoned about abstract shared-memory models, not cache controllers. On a 16-core Ryzen where cache-line bouncing is the dominant cost, aligning the algorithm to the coherency unit is the natural move.
+This gets batched throughput (amortizing sync cost over N items per stripe) with lock-free progress guarantees (a stalled producer leaves an uncommitted stripe, doesn't block anyone). The 90s papers didn't consider this because they reasoned about abstract shared-memory models. On a 16-core Ryzen where cache-line bouncing is the dominant cost, aligning the algorithm to the coherency unit is the natural move.
 
 Open problems:
 - Gap handling at stripe granularity (out-of-order publication)
@@ -264,7 +264,7 @@ If this works and benchmarks well, it's worth a paper (DISC or PPoPP). Classic i
 
 Target structures: ring buffers, queues, heaps. These serve the event bus, job system, and inter-system communication.
 
-**Step 6 -- Additional data structures (as needed):** Build structures in tandem with the features that operate on them, not speculatively. stb_ds is acceptable as a stopgap for prototyping (e.g., hash maps during renderer work) without long-term commitment.
+**Step 6 -- Additional data structures (as needed):** Build structures in tandem with the features that operate on them. stb_ds is acceptable as a stopgap for prototyping (e.g., hash maps during renderer work) without long-term commitment.
 
 **Step 7 -- Renderer rewrite:** Full rewrite of the Vulkan renderer. The current implementation is tutorial-derived with poor system design. The rewrite builds the renderer as a proper subsystem: allocates from scratch arenas, logs through the real logger, communicates through the event bus. Scope for v1: one render pass, one pipeline, geometry on screen, driven by the event bus. No PBR. Rasterization only for now. stb_image retained for texture loading.
 
@@ -290,7 +290,7 @@ Work is fractured across 16 remote branches. Survey results:
 **`feature-render-text` (27 ahead) -- PRESERVE as reference for Step 7+.** The unicode rabbit hole, materialized. A complete text rendering stack:
 - FreeType integration
 - Glyph atlas generation (stb_image_write), upload to VRAM
-- SDF font rendering (final commit: "Switched to SDF font rendering") Predates main's renderer restructure; heavy merge conflicts guaranteed. Salvage material for the renderer rewrite's text/UI pass, not a merge candidate. Contains feature-render-vertex's 7 commits (MSAA, mipmapping, structurally agnostic glTF loading, render asset sharing) in its history.
+- SDF font rendering (final commit: "Switched to SDF font rendering") Predates main's renderer restructure; heavy merge conflicts guaranteed. Salvage material for the renderer rewrite's text/UI pass. Contains feature-render-vertex's 7 commits (MSAA, mipmapping, structurally agnostic glTF loading, render asset sharing) in its history.
 
 **`fixes-render-text` (2 unique commits):** VRAM leak mitigation + text debug overflow fix, diverged from feature-render-text after PR #41. Note when salvaging the text stack.
 

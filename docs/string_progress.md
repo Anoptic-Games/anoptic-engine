@@ -9,7 +9,7 @@ Composited from: `.claude/fable_stringtheory.md` (the design conversation), `doc
 ## 0. Status snapshot
 
 - Step 4 is the live branch (`feature-string-redux`). The string module sits in `src/strings/` with `include/anoptic_strings.h` as its contract (currently a stub on `main`); `src/strings/` is described as "owned-string-type work and scoped-heap experiments" (the `mem_chariot` tests in `ano_strings.c`).
-- The 2024 spec survives on the `feature-strings` branch as `include/ano_strings.h`. It is reviewed below and flagged as "load-bearing": recover it at Step 4, do not merge it (it predates the `anoptic_core` split and is ~45 commits behind). House rule: archive-tag, never plain-delete.
+- The 2024 spec survives on the `feature-strings` branch as `include/ano_strings.h`. It is reviewed below and flagged as "load-bearing": recover it at Step 4 (it predates the `anoptic_core` split and is ~45 commits behind). House rule: archive-tag, never plain-delete.
 - The byte half unblocks the engine; the meaning half (codepoints, graphemes, normalization) stays deferred until a glyph shaper forces it.
 
 ---
@@ -19,7 +19,7 @@ Composited from: `.claude/fable_stringtheory.md` (the design conversation), `doc
 The string question blocked the whole engine, and correctly so. Three framings, all the same fact:
 
 - A string is the purest instance of *dynamically-sized bytes with unknown lifetime* — the universal container problem. Rust states it in its type system: `String` is `Vec<u8>` plus an invariant. Solve owned-growable-sliceable bytes and you have solved the dynamic array, which is the substrate under hash maps, queues, ECS columns, serialization buffers, log lines, asset paths, network packets. In most languages the string and the vector literally share an allocator policy, a growth policy, and an ownership story. Get the ownership story wrong in the string and it metastasizes into every API that touches text — which is every API.
-- The string question and the allocator question are the same question at two granularities: memory itself is one big byte-string (the von Neumann machine is "an arbitrary amount of bytes under a grand series of transformations"). String ownership was undefinable before byte ownership — arenas, `mi_heap_t` — existed. That dependency is the field's actual dependency graph, not a personal hang-up. The infrastructure exists now, so Step 4 is no longer blocked.
+- The string question and the allocator question are the same question at two granularities: memory itself is one big byte-string (the von Neumann machine is "an arbitrary amount of bytes under a grand series of transformations"). String ownership was undefinable before byte ownership — arenas, `mi_heap_t` — existed. That dependency is the field's actual dependency graph. The infrastructure exists now, so Step 4 is no longer blocked.
 - Strings are two hard problems stacked: **bytes** (allocation, lifetime) and **meaning** (codepoints, graphemes, normalization). The engine needs only the bytes half to unblock.
 
 The historical record carries a body count, all of it evidence that string decisions are where allocation, encoding, ownership, and ergonomics collide first: NUL termination was a one-byte economy in 1972 that became "the most expensive one-byte mistake" (Kamp) — half a century of buffer overflows; Java, Windows, and JavaScript pay a permanent UTF-16 tax for encoding too early; the largest schism in the most popular language's history, Python 2→3, was a fight about what a string is.
@@ -43,13 +43,13 @@ The payoff of the fat pointer: O(1) length, no NUL-termination dependency, subst
 
 ### Rust, and the load-bearing insight
 
-`String` is `Vec<u8>` plus an invariant: bytes are validated as UTF-8 once, at construction; slicing panics off char boundaries; everything downstream trusts without re-checking. The value was never in the codegen ("nothing crazy in the assembly") — it is in *where validation happens*: once at the boundary, versus everywhere. This is the same conclusion as the notes' "UTF-8 is byte-transparent in storage, defer the rest": byte-transparent storage, validation as a separable layer on top.
+`String` is `Vec<u8>` plus an invariant: bytes are validated as UTF-8 once, at construction; slicing panics off char boundaries; everything downstream trusts without re-checking. The value was never in the codegen ("nothing crazy in the assembly") — it is in *where validation happens*: once at the boundary. This is the same conclusion as the notes' "UTF-8 is byte-transparent in storage, defer the rest": byte-transparent storage, validation as a separable layer on top.
 
 ### Five families of "who owns the callee's effects"
 
 Every paradigm on the tour is one answer to a single question — who owns the effects of a callee, allocation being the easiest effect to point at.
 
-1. **Ownership transfer** — C++ RAII + move, Rust move + `Drop`. The callee constructs, the value moves, the cleanup obligation moves with it. C++ guaranteed copy elision means return-by-value compiles to the caller passing a hidden out-pointer (`sret`) and the callee constructing into the caller's frame — RVO is the calling convention, not an optimization. Rust tracks the same obligation statically; the borrow checker proves no one kept a pointer.
+1. **Ownership transfer** — C++ RAII + move, Rust move + `Drop`. The callee constructs, the value moves, the cleanup obligation moves with it. C++ guaranteed copy elision means return-by-value compiles to the caller passing a hidden out-pointer (`sret`) and the callee constructing into the caller's frame — RVO is the calling convention. Rust tracks the same obligation statically; the borrow checker proves no one kept a pointer.
 2. **Region polymorphism** — Tofte–Talpin, MLKit, Cyclone, `bumpalo`. Functions are parameterized over the region they allocate into; the caller picks it; `letregion` frees wholesale at scope exit. The academically exact answer to "bind a heap item to the caller's scope." Anoptic's `mi_heap_t*` parameter plan is this, verbatim, minus the compiler proof.
 3. **Scoped effect tokens** — Haskell's ST monad: `runST :: (forall s. ST s a) -> a`. Real mutation inside, provably pure outside; the rank-2 `forall s` makes the scope name unutterable beyond the block, so nothing mutable escapes. The type-theoretic ideal of "nothing within pollutes what is without."
 4. **Convention and context** — Zig (every allocating function takes an `Allocator`; `defer deinit()` is manual RAII; the stdlib refuses to allocate any other way, so the convention is load-bearing); Odin/Jai (implicit `context.allocator` / `temp_allocator` = dynamically scoped regions the caller rebinds for a scope). C analog: a thread-local arena stack.
@@ -96,13 +96,13 @@ Four lineages reached "allocations are scope-shaped, the region is the unit, the
 
 - Production region **trees** ship everywhere: `talloc` (Samba), APR pools (Apache), Postgres `MemoryContext`s — region hierarchies in production for decades.
 - Region **inference** (automatic Tofte–Talpin) has exactly one serious implementation, MLKit, and it needed a backup tracing GC for the cases inference kept a region alive pathologically long. The lexical `cleanup`-attribute version is the practical compromise the industry standardized on without naming it.
-- SIMD pays in strings at **validation and scanning**, not copying — `memcpy` is already the hand-tuned dispatched-at-load AVX routine, so a SIMD `strncpy` re-derives it. Lemire-style table-lookup UTF-8 validation does multiple GB/s and is what simdjson rides on. Point the assembly itch at `utfstrcheck`, not the copy.
+- SIMD pays in strings at **validation and scanning** — `memcpy` is already the hand-tuned dispatched-at-load AVX routine, so a SIMD `strncpy` re-derives it. Lemire-style table-lookup UTF-8 validation does multiple GB/s and is what simdjson rides on. Point the assembly itch at `utfstrcheck`.
 
 ### The canon audit (taste calibration)
 
 - **Sedgewick** — flat-memory cost model is dead. On a machine where a cache miss costs ~200 instructions the constants invert the asymptotics: open-addressing Swiss tables, in-memory B-trees, pdqsort-class hybrids, and radix sort (back from the dead for fixed-width keys — exactly entity IDs) beat the textbook verdicts. Keep the ideas, trust none of the data-structure verdicts.
-- **Yourdon & Constantine** — decompose-by-control-flow is what data-oriented design exists to repudiate; the coupling/cohesion vocabulary survives (data coupling vs common coupling is "nothing pollutes what is without" in a 1975 haircut). Information hiding is Parnas, not Yourdon — the one 1972 idea that aged perfectly.
-- **Bentley, *Programming Pearls*** — the **method** (estimation, invariant-driven derivation) is the durable layer, and it doubles as the human–AI interface: header invariants are specs and prompts. The cautionary tale: his loop-invariant-derived binary search shipped `(lo + hi) / 2` overflow in the JDK for years (Bloch, "nearly all binary searches are broken"). The proof was right; the machine integers were not in the proof. The deepest single lesson for this engine: **invariants must be stated in the machine's arithmetic, not the mathematician's integers.**
+- **Yourdon & Constantine** — decompose-by-control-flow is what data-oriented design exists to repudiate; the coupling/cohesion vocabulary survives (data coupling vs common coupling is "nothing pollutes what is without" in a 1975 haircut). Information hiding is Parnas — the one 1972 idea that aged perfectly.
+- **Bentley, *Programming Pearls*** — the **method** (estimation, invariant-driven derivation) is the durable layer, and it doubles as the human–AI interface: header invariants are specs and prompts. The cautionary tale: his loop-invariant-derived binary search shipped `(lo + hi) / 2` overflow in the JDK for years (Bloch, "nearly all binary searches are broken"). The proof was right; the machine integers were not in the proof. The deepest single lesson for this engine: **invariants must be stated in the machine's arithmetic.**
 - **Knuth** — math immortal, MIX/MMIX model a period piece (it will not tell you the memory mountain dominates everything).
 
 ### Game Engine Architecture §6.4 (Gregory) — the practitioner's column
@@ -110,9 +110,9 @@ Four lineages reached "allocations are scope-shaped, the region is the unit, the
 The empirical case and a parallel identity type:
 
 - Strings are expensive: `strcmp` is O(n), `strcpy` copies and maybe allocates; Gregory profiled a game where `strcmp`/`strcpy` were the **top two most expensive functions**.
-- Always pass by reference, never by value; know whether a string class **owns** its buffer or references memory it doesn't, and whether it is copy-on-write.
+- Always pass by reference; know whether a string class **owns** its buffer or references memory it doesn't, and whether it is copy-on-write.
 - **Hashed string ids** ("string id" / Unreal `FName`): hash a string to an int, compare as fast ints, keep originals in a global table for debug. Interning = hash + add to table, done once and cached. Naughty Dog uses compile-time hashing (`"foo"_sid`) so ids are `switch` labels, and moved from 32-bit to **64-bit** hashes to kill collisions. C23 `constexpr` gives us this without C++ UDLs.
-- UTF-8 everywhere on 8-bit `char` (ASCII-backward-compatible, byte-granular, high bit flags multibyte). Define your own string type rather than depend on `wchar_t` (platform-dependent size). This confirms the Step 4 owned-string + length + UTF-8-transparency design precisely.
+- UTF-8 everywhere on 8-bit `char` (ASCII-backward-compatible, byte-granular, high bit flags multibyte). Define your own string type. This confirms the Step 4 owned-string + length + UTF-8-transparency design precisely.
 
 ---
 
@@ -131,11 +131,11 @@ What held up:
 
 What was broken:
 - `ANOSTR_HEAP_BYTESLICE` is a deterministic use-after-free: the cleanup-attributed `_heap_mem` is declared *inside* the statement expression, so cleanup fires at its closing `})` — the buffer is freed before the surrounding expression hands back an `anostr_t` pointing at it.
-- `ANOSTR_STACK_BYTESLICE` has the sibling lifetime hole (GCC frees `alloca` space at the statement-expression's end, not the enclosing function) and a third mundane bug: it never `memcpy`s the source, so the slice is uninitialized stack garbage (the UTFSLICE variants remembered the copy).
+- `ANOSTR_STACK_BYTESLICE` has the sibling lifetime hole (GCC frees `alloca` space at the statement-expression's end) and a third mundane bug: it never `memcpy`s the source, so the slice is uninitialized stack garbage (the UTFSLICE variants remembered the copy).
 - `wchar_t` is 32-bit on Linux, 16-bit on Windows — the one function whose entire reason to exist is Windows paths means something different per platform. Use `char16_t`.
 - `int` lengths cap at 2 GiB and sign-mix against `size_t`. Use `size_t`/`ptrdiff_t`.
 
-The deep gap: one type plays both **owner** (some `anostr_t`s own their buffer, implied by `anostr_cleanup`) and **view** (others don't, implied by an unmanaged-slice return), with no way to tell them apart at a call site — the classic C string-library failure mode. The fix the macros could never reach in 2024 was not a string-library trick; it was the arena infrastructure that did not exist yet. The correct cleanup shape was already in the header: attach the attribute at the *caller's* declaration, never inside the macro —
+The deep gap: one type plays both **owner** (some `anostr_t`s own their buffer, implied by `anostr_cleanup`) and **view** (others don't, implied by an unmanaged-slice return), with no way to tell them apart at a call site — the classic C string-library failure mode. The fix the macros could never reach in 2024 was the arena infrastructure that did not exist yet. The correct cleanup shape was already in the header: attach the attribute at the *caller's* declaration —
 
 ```c
 anostr_t s CLEANUPATTR(anostr_cleanup) = anostr_heap_slice(...);  // works
@@ -147,7 +147,7 @@ anostr_t s CLEANUPATTR(anostr_cleanup) = anostr_heap_slice(...);  // works
 { char* ptr; uint32_t len; uint32_t capacity; }
 ```
 
-`LOCALHEAPATTR`-style scoped cleanup; allocations through a **heap parameter** so strings live in any arena; copy-on-slice; ~150 lines. UTF-8 deferred (byte-transparent in storage; validation/iteration layered on later when the text renderer demands it). This is 2026-you having already fixed 2024-you's owner/view ambiguity: lifetimes become a property of the *region*, not the struct. It is exactly Gregory's "owns-its-memory, carries its length" design, and the region-parameter family (§2.2) hand-encoded in C: pass `mi_heap_t*` first, return plain values pointing into it, lifetimes O(1) per scope instead of O(n) per value, "move semantics" reduced to copying 16 bytes of `{ptr, len}`.
+`LOCALHEAPATTR`-style scoped cleanup; allocations through a **heap parameter** so strings live in any arena; copy-on-slice; ~150 lines. UTF-8 deferred (byte-transparent in storage; validation/iteration layered on later when the text renderer demands it). This is 2026-you having already fixed 2024-you's owner/view ambiguity: lifetimes become a property of the *region*. It is exactly Gregory's "owns-its-memory, carries its length" design, and the region-parameter family (§2.2) hand-encoded in C: pass `mi_heap_t*` first, return plain values pointing into it, lifetimes O(1) per scope, "move semantics" reduced to copying 16 bytes of `{ptr, len}`.
 
 ### 5.3 Design C — German-string value + ambient region + `keep` (leading candidate)
 
@@ -189,7 +189,7 @@ Composed with engine-owned regions and one ceremony:
 
 Load-bearing facts:
 - **Immutability** is what makes the prefix never lie, copies safe, and the FP alignment real. Construction-time mutation goes through a builder `{ptr, len, cap, heap}` in scratch, then `freeze()` → `anostr_t`.
-- The **ambient frame arena** is legitimate here precisely because a game engine owns the loop — the ambient lifetime is the tick, not action-at-a-distance. Destroy and recreate the frame heap each tick so a stale frame pointer hits freed pages (loud), and ASan-poison the region in debug.
+- The **ambient frame arena** is legitimate here precisely because a game engine owns the loop — the ambient lifetime is the tick. Destroy and recreate the frame heap each tick so a stale frame pointer hits freed pages (loud), and ASan-poison the region in debug.
 - `anostr_keep` is the entire remaining lifetime API surface — the one place a human (or a reviewer, or the model) must think. Its exact feel is the open design question.
 - Prior art exists for each piece (sds, Lua interning, Umbra) but **the combination** — German value + engine-owned ambient regions + scoped `keep` — is unclaimed territory.
 
@@ -208,7 +208,7 @@ Converts use-after-free from UB into a checked error at the cost of one indirect
 
 ### 5.5 The parallel identity type — hashed string ids
 
-Independent of the byte string: a 64-bit compile-time hash (`_sid`) for ECS entity-type names, event types, resource GUIDs, and config keys. One primitive unifying four subsystems (Gregory, §4). Interns once, compares as ints, recovers originals from a debug table. Adopt early; it is not the universal string type, it is the identity subset.
+Independent of the byte string: a 64-bit compile-time hash (`_sid`) for ECS entity-type names, event types, resource GUIDs, and config keys. One primitive unifying four subsystems (Gregory, §4). Interns once, compares as ints, recovers originals from a debug table. Adopt early; it is the identity subset.
 
 ### The C-expressible toolkit and the enforcement ceiling
 
@@ -226,9 +226,9 @@ Independent of the byte string: a 64-bit compile-time hash (`_sid`) for ECS enti
 | arena parameter      | the arena            | heap teardown     | ASan/loud crash  | native  ◄──  |
 | handles + generation | table slot's gen     | explicit          | CHECKED, always  | native  ◄──  |
 
-Everything above the Zig line needs a type system C lacks. Everything from Zig down is fully expressible in C23 + Clang, and **Zig adds zero soundness** over C here. The honest positioning: C cannot make the wrong program *not compile*, but it can make the wrong program *impossible* for short strings (Design C inline case — no lifetime exists), *crash-on-contact in debug* for frame strings (Design C ambient arena), and a *checked error* for handles (Design D) — with ergonomics that match or beat Zig's, because the engine owns the loop. The dream survives; it ships with a debugger instead of a theorem.
+Everything above the Zig line needs a type system C lacks. Everything from Zig down is fully expressible in C23 + Clang, and **Zig adds zero soundness** over C here. The honest positioning: C cannot make the wrong program *not compile*, but it can make the wrong program *impossible* for short strings (Design C inline case — no lifetime exists), *crash-on-contact in debug* for frame strings (Design C ambient arena), and a *checked error* for handles (Design D) — with ergonomics that match or beat Zig's, because the engine owns the loop. The dream survives; it ships with a debugger.
 
-The architect's philosophy, named: **region-polymorphic imperative programming over columnar (SoA) data, with value semantics at routine boundaries** — Tofte–Talpin's regions chosen manually, the ST monad's boundary held by discipline instead of rank-2 types, Zig's allocator-passing as the calling convention, SoA inside the regions. The Pearls-style header invariant ("returned string is valid for the lifetime of `heap`") does the job Rust's `'a` does, by review instead of by proof.
+The architect's philosophy, named: **region-polymorphic imperative programming over columnar (SoA) data, with value semantics at routine boundaries** — Tofte–Talpin's regions chosen manually, the ST monad's boundary held by discipline, Zig's allocator-passing as the calling convention, SoA inside the regions. The Pearls-style header invariant ("returned string is valid for the lifetime of `heap`") does the job Rust's `'a` does, by review.
 
 ---
 
@@ -237,14 +237,14 @@ The architect's philosophy, named: **region-polymorphic imperative programming o
 Ordered. Earlier items unblock later ones.
 
 1. **Draft `anoptic_strings.h` signatures** (house rule: signatures are the architect's). Two layers: (a) the 16-byte value type plus `compare`/`slice`/`iterate`; (b) region functions taking `mi_heap_t*` first and returning values. Every function carries a Pearls-style invariant stated in machine arithmetic — "result valid for lifetime of `heap`", explicit overflow bounds, `size_t`/`ptrdiff_t` lengths (never `int`).
-2. **Decide ambient-arena mechanics** — thread-local frame-heap API (push/pop/current), destroy-and-recreate-per-tick policy, ASan poisoning in debug. This is engine infrastructure, not strings-specific: it also serves glTF/JSON scratch parsing. Builds on the existing `LOCALHEAPATTR` + mimalloc teardown.
+2. **Decide ambient-arena mechanics** — thread-local frame-heap API (push/pop/current), destroy-and-recreate-per-tick policy, ASan poisoning in debug. This is engine infrastructure: it also serves glTF/JSON scratch parsing. Builds on the existing `LOCALHEAPATTR` + mimalloc teardown.
 3. **Spec the `keep` ceremony precisely** — name, copy semantics, and behavior on inline strings (answer: identity — they are values, nothing to copy). This is the whole remaining lifetime surface; get it right and the rest is "just having strings."
 4. **Builder type** for construction-time mutation: `{ptr, len, cap, heap}` in scratch, then `freeze()` → `anostr_t`. Immutability of the frozen value is load-bearing for the prefix fast path.
-5. **Recover, don't merge, `feature-strings`** — lift `ano_strings.h` and the test scaffold onto a fresh branch off current `main`, implement against them, then archive-tag the old branch (never plain-delete). Carry the corrected `CLEANUPATTR`-at-caller pattern, not the broken macros.
+5. **Recover, don't merge, `feature-strings`** — lift `ano_strings.h` and the test scaffold onto a fresh branch off current `main`, implement against them, then archive-tag the old branch (never plain-delete). Carry the corrected `CLEANUPATTR`-at-caller pattern.
 6. **Decide the short-string cutoff and the long-string layout** — confirm 16-byte value, ≤12-byte inline, 4-byte prefix; settle endianness of the prefix for `compare`.
-7. **Adopt hashed string ids (`_sid`) as a separate primitive** — 64-bit, C23 compile-time hashable, `switch`-able. Lands the ECS/event/resource/config identity type early; do not conflate it with the byte string.
+7. **Adopt hashed string ids (`_sid`) as a separate primitive** — 64-bit, C23 compile-time hashable, `switch`-able. Lands the ECS/event/resource/config identity type early.
 8. **Tests first** (lifetime semantics are headless-testable; the CTest + ASan/TSan baseline is green): round-trip slice/keep/cleanup lifetimes; a use-after-frame that must crash loudly under the destroy-per-tick policy; a German-string `compare` microbenchmark vs naive `memcmp` to validate the in-register prefix path on the target Ryzen.
-9. **Defer explicitly** (loud, not silent): the UTF meaning layer (lift the `utfhandle` iterator + validation signatures from `feature-strings` when the text renderer forces it), `char16_t` UTF-16↔UTF-8 conversion (when Windows paths arrive), the interning table (until the asset pipeline demands it). SIMD work, if any, targets validation/scanning — never the copy.
+9. **Defer explicitly** (loud): the UTF meaning layer (lift the `utfhandle` iterator + validation signatures from `feature-strings` when the text renderer forces it), `char16_t` UTF-16↔UTF-8 conversion (when Windows paths arrive), the interning table (until the asset pipeline demands it). SIMD work, if any, targets validation/scanning.
 
 ### Open questions
 
