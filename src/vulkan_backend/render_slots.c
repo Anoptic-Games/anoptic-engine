@@ -12,6 +12,7 @@
 #include "vulkan_backend/render_slots.h"
 
 #include <string.h>
+#include <stdlib.h>   // qsort, for the trailing-run peel in render_slots_compact
 
 // Geometric growth of a plain element array. Leaves *arr/*cap untouched on OOM.
 static bool ensure_cap(mi_heap_t *heap, void **arr, uint32_t *cap, uint32_t need, size_t elem)
@@ -140,4 +141,29 @@ uint32_t render_slots_collect_retired(RenderSlotTable *t, uint64_t currentFrame,
         *q = t->quarantine[--t->quarantineCount];             // swap-and-pop; recheck this index
     }
     return out_n;
+}
+
+// Ascending compare for the free-slot sort below. Subtraction would overflow on uint32_t.
+static int cmp_u32_asc(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return (x > y) - (x < y);
+}
+
+uint32_t render_slots_compact(RenderSlotTable *t)
+{
+    if (!t || t->freeCount == 0u) return 0u;
+
+    // Sort ascending so the trailing contiguous free run is a suffix; the non-trailing
+    // holes (below some live slot) remain as a still-valid, still-sorted prefix.
+    qsort(t->freeSlots, t->freeCount, sizeof(uint32_t), cmp_u32_asc);
+
+    uint32_t before = t->slotHighWater;
+    // Peel each top slot that is free. The freeCount>0 guard makes the highWater==0
+    // epoch-reset terminus safe (no freeSlots[-1], no slotHighWater-1 underflow read).
+    while (t->freeCount > 0u && t->freeSlots[t->freeCount - 1u] == t->slotHighWater - 1u) {
+        t->freeCount--;
+        t->slotHighWater--;
+    }
+    return before - t->slotHighWater;
 }

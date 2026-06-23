@@ -108,4 +108,14 @@ void render_slots_retire(RenderSlotTable *table, uint32_t render_id, uint64_t cu
 uint32_t render_slots_collect_retired(RenderSlotTable *table, uint64_t currentFrame,
                                        uint32_t *out_render_ids, uint32_t max);
 
+// Lowers slotHighWater past any trailing run of free slots, shrinking the cull/animation
+// dispatch bound (entityCount) without VRAM change. Only slots already on the free-list are
+// peeled — those are quarantine-expired (no in-flight reader) and unmapped — so NO live slot
+// moves and slot indices stay stable (consistent with the no-defrag design). Fragmentation
+// below a live slot is left in place; a contiguous bulk despawn at the top is reclaimed
+// wholesale. Reaches slotHighWater == 0 when every slot is free (epoch reset). Costs an
+// O(freeCount log freeCount) sort, so call it only when the free-list just changed.
+// out: number of slots reclaimed from the dispatch bound (0 if the top slot is live).
+uint32_t render_slots_compact(RenderSlotTable *table);
+
 #endif // ANO_RENDER_SLOTS_H
