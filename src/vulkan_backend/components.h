@@ -57,6 +57,10 @@ typedef struct RenderPassDef
     PassType            type;
     PipelineType        prototype;              // which pipeline prototype to bind
     uint32_t            implementationIndex;    // which variant (opaque, transparent, etc.)
+    // Recorded once per view (audit 4.8) vs once per frame. Per-view passes (light-cull, the
+    // geometry passes) run inside the view loop binding that view's sets/targets; view-independent
+    // passes (update, scatter, cull) run once before it. cull is single-pass multi-frustum.
+    bool                perView;
 
     // Graphics-only:
     uint32_t                colorAttachmentCount;

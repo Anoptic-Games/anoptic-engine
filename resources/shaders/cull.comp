@@ -7,13 +7,21 @@ struct EntityInfo {
     uint materialIndex;
 };
 
+// Must match ANO_VIEW_COUNT (structs.h). One frustum per render view; this dispatch tests every
+// entity against all of them (single-pass multi-frustum) and writes a per-view partition.
+#define ANO_VIEW_COUNT 2u
+
+struct CullView {
+    mat4 viewProj;        // unused here (frustum is pre-extracted CPU-side), kept for std140 layout
+    vec4 frustumPlanes[6];
+};
+
 layout(set = 0, binding = 0) uniform CullUBO {
-    mat4  viewProj;
-    vec4  frustumPlanes[6];
+    CullView views[ANO_VIEW_COUNT];
+    uint  viewCount;      // active views (<= ANO_VIEW_COUNT)
     uint  entityCount;
-    uint  maxEntities;
-    uint  _pad0;
-    uint  _pad1;
+    uint  maxEntities;    // per-partition capacity
+    uint  drawSlotCount;  // drawing-partition count; partition = view*drawSlotCount + slot
     // PipelineType -> draw partition; ANO_NO_DRAW_SLOT (0xFFFFFFFF) means the type never draws.
     // Packed uvec4[4]: index t as drawSlotOf[t >> 2][t & 3]. Built CPU-side from ano_draw_*.
     uvec4 drawSlotOf[4];
@@ -131,13 +139,11 @@ layout(set = 0, binding = 8) readonly buffer MaterialSSBO {
     MaterialData materials[];
 };
 
-bool isVisible(vec3 center, float radius, mat4 model) {
-    vec4 worldCenter = model * vec4(center, 1.0);
-    float maxScale = max(max(length(model[0].xyz), length(model[1].xyz)), length(model[2].xyz));
-    float worldRadius = radius * maxScale;
-
+// World-space bounding sphere vs one view's 6 frustum planes. The sphere (worldCenter,
+// worldRadius) is computed once per entity by the caller and reused across all views.
+bool isVisibleIn(uint view, vec4 worldCenter, float worldRadius) {
     for (int i = 0; i < 6; i++) {
-        if (dot(frustumPlanes[i], worldCenter) < -worldRadius) {
+        if (dot(views[view].frustumPlanes[i], worldCenter) < -worldRadius) {
             return false;
         }
     }
@@ -171,11 +177,23 @@ void main() {
         return;
     }
 
-    if (isVisible(bounds.xyz, bounds.w, model)) {
-        uint writeIdx = atomicAdd(drawCounts[slot], 1);
+    // World bounding sphere: computed once, tested against every view's frustum below.
+    vec4 worldCenter = model * vec4(bounds.xyz, 1.0);
+    float maxScale = max(max(length(model[0].xyz), length(model[1].xyz)), length(model[2].xyz));
+    float worldRadius = bounds.w * maxScale;
 
-        // Compact draws by partition (draw slot), not by raw pipeline-type enum value
-        uint destIdx = slot * maxEntities + writeIdx;
+    // Single-pass multi-frustum: one read of this entity, one test per view, one write per view
+    // it survives. Each view owns partition (view*drawSlotCount + slot) of every output buffer.
+    for (uint view = 0u; view < viewCount; ++view) {
+        if (!isVisibleIn(view, worldCenter, worldRadius)) {
+            continue;
+        }
+
+        uint partIdx = view * drawSlotCount + slot;
+        uint writeIdx = atomicAdd(drawCounts[partIdx], 1);
+
+        // Compact draws by (view, draw slot), not by raw pipeline-type enum value.
+        uint destIdx = partIdx * maxEntities + writeIdx;
 
         if (useMeshShader) {
             uint b = destIdx * 3u;

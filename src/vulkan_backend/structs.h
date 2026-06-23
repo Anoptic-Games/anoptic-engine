@@ -42,6 +42,15 @@
 #define ANO_CLUSTER_COUNT        (ANO_CLUSTER_X * ANO_CLUSTER_Y * ANO_CLUSTER_Z) // 3456
 #define ANO_CLUSTER_MAX_LIGHTS   128u
 
+// Render views per frame (audit 4.8). A view is "one frustum to cull against": a camera, a
+// shadow map, a reflection/portal, an inset feed. The cull pass tests every entity against all
+// ANO_VIEW_COUNT frustums in one dispatch (single-pass multi-frustum) and writes a per-view
+// partition of the indirect/draw-count/compacted buffers; each view owns its own depth + HDR
+// target + froxel light lists + camera UBO + descriptor sets. View 0 is the main swapchain view;
+// the rest composite on top (here: a picture-in-picture inset). Bump this to add views (e.g. a
+// shadow pass); every per-view buffer/target/set array and the CullUBO frustum array size to it.
+#define ANO_VIEW_COUNT           2u
+
 // FALLBACK_MESH_INDEX is the public renderer contract (anoptic_render.h), pulled
 // in transitively via render_bridge.h above.
 #define FALLBACK_TEXTURE_INDEX 0
@@ -503,13 +512,23 @@ typedef struct BindlessTextureArray
     VkSampler               defaultSampler; // shared linear/repeat sampler
 } BindlessTextureArray;
 
+// One frustum to cull against. std140: mat4 (64) + vec4[6] (96) = 160, 16-aligned, so an
+// array of these packs with no padding between elements (matches cull.comp's CullView[]).
+typedef struct CullView
+{
+    mat4    viewProj;
+    Vector4 frustumPlanes[6];
+} CullView;
+
 typedef struct CullUBO
 {
-    mat4 viewProj;
-    Vector4 frustumPlanes[6];
-    uint32_t entityCount;
-    uint32_t maxEntities;
-    uint32_t padding[2];
+    // Per-view frustums. cull.comp loops v in [0, viewCount) and writes survivors of views[v]
+    // into partition (v * drawSlotCount + slot) of the indirect/drawCount/compacted buffers.
+    CullView views[ANO_VIEW_COUNT];
+    uint32_t viewCount;     // active views this frame (<= ANO_VIEW_COUNT)
+    uint32_t entityCount;   // active entity slots in [0, slotHighWater)
+    uint32_t maxEntities;   // per-partition capacity (== indirectBuffer.capacity)
+    uint32_t drawSlotCount; // drawing-partition count (ano_draw_pipeline_count()); partition stride per view
     // PipelineType -> draw-partition index (ANO_NO_DRAW_SLOT if it never draws). cull.comp
     // compacts visible draws by slot rather than by raw enum value, so the indirect/drawCount/
     // compacted buffers hold only the drawing partitions. Indexed by material pipelineType, so
@@ -583,6 +602,49 @@ typedef struct CullingBuffers {
     uint32_t                maxEntities;
 } CullingBuffers;
 
+// Everything a single render view owns within a frame-in-flight (audit 4.8). One per view per
+// frame; view 0 is the main camera, the rest are auxiliary (inset/shadow/reflection). All sized
+// to the swapchain extent: an auxiliary view renders full-res into its own HDR target and the
+// composite samples it into its destination rectangle.
+typedef struct ViewResources
+{
+    // Per-view camera UBO (view/proj/cameraPos/near/far/cluster params). cull.comp reads it
+    // (via the mapped copy) to derive this view's frustum; the geometry/lighting shaders read
+    // it through globalSet. Distinct per view so each frustum and froxel grid is independent.
+    VkBuffer            uniformBuffer;
+    GpuAllocation       uniformAlloc;
+    void*               uniformMapped;
+
+    // Depth attachment (MSAA). Per view: each frustum has its own visibility/depth.
+    VkImage             depthImage;
+    GpuAllocation       depthAlloc;
+    VkImageView         depthView;
+
+    // HDR resolve target: this view's MSAA HDR color resolves here (single-sample), then the
+    // composite/tonemap pass samples it to write the swapchain. Per view (the composite reads
+    // each view's image) and per frame (an in-flight frame's read never races the next resolve).
+    VkImage             hdrColorImage;
+    GpuAllocation       hdrColorAlloc;
+    VkImageView         hdrColorView;
+
+    // Clustered-forward froxel light lists for this view (device-local, written by this view's
+    // light-cull dispatch, read by its fragment passes). Per view: each frustum bins lights
+    // differently. Fixed size: clusterLightCount = uint per froxel; clusterLightIndices =
+    // ANO_CLUSTER_MAX_LIGHTS per froxel (offset implicit = clusterIdx * ANO_CLUSTER_MAX_LIGHTS).
+    VkBuffer            clusterLightCountBuffer;
+    GpuAllocation       clusterLightCountAlloc;
+    VkBuffer            clusterLightIndexBuffer;
+    GpuAllocation       clusterLightIndexAlloc;
+
+    // Per-view descriptor sets. globalSet binds this view's uniform + cluster lists (+ shared
+    // SSBOs) for the geometry/fragment passes; lightcullSet binds this view's uniform + cluster
+    // outputs for its light-cull dispatch; tonemapSet samples this view's hdrColorView in the
+    // composite. The shaders are view-agnostic — binding the per-view set selects the view.
+    VkDescriptorSet     globalSet;
+    VkDescriptorSet     lightcullSet;
+    VkDescriptorSet     tonemapSet;
+} ViewResources;
+
 typedef struct PerFrameResources
 {
     // Synchronization
@@ -594,39 +656,14 @@ typedef struct PerFrameResources
     // Command recording
     VkCommandBuffer     commandBuffer;
 
-    // Global UBO (view/proj)
-    VkBuffer            uniformBuffer;
-    GpuAllocation       uniformAlloc;
-    void*               uniformMapped;
+    // Per-view resources (camera UBO, depth, HDR target, froxel lists, descriptor sets).
+    ViewResources       views[ANO_VIEW_COUNT];
 
-    // Depth attachment
-    VkImage             depthImage;
-    GpuAllocation       depthAlloc;
-    VkImageView         depthView;
-
-    // HDR resolve target: the MSAA HDR color resolves here (single-sample), then the
-    // tonemap pass samples it to write the swapchain. Per-frame so an in-flight frame's
-    // tonemap read never races the next frame's resolve write.
-    VkImage             hdrColorImage;
-    GpuAllocation       hdrColorAlloc;
-    VkImageView         hdrColorView;
-
-    // Clustered-forward froxel light lists (device-local, written by the light-cull pass,
-    // read by the fragment shader). Per-frame to avoid a cross-frame write/read race. Fixed
-    // size: clusterLightCount = uint per froxel; clusterLightIndices = ANO_CLUSTER_MAX_LIGHTS
-    // per froxel (offset implicit = clusterIdx * ANO_CLUSTER_MAX_LIGHTS).
-    VkBuffer            clusterLightCountBuffer;
-    GpuAllocation       clusterLightCountAlloc;
-    VkBuffer            clusterLightIndexBuffer;
-    GpuAllocation       clusterLightIndexAlloc;
-
-    // Descriptor sets
-    VkDescriptorSet     globalSet;
+    // View-independent descriptor sets: a single cull dispatch tests all views at once, and
+    // update/scatter operate on the shared transform pool — none of these are per-view.
     VkDescriptorSet     cullSet;
     VkDescriptorSet     updateSet;
     VkDescriptorSet     scatterSet;
-    VkDescriptorSet     lightcullSet;   // light-cull compute pass inputs/outputs
-    VkDescriptorSet     tonemapSet;     // set 0 of the tonemap pass: samples hdrColorView
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -653,8 +690,9 @@ typedef struct RendererState
     // Command pool
     VkCommandPool           commandPool;
 
-    // Render data
-    GlobalUBO               uboData;
+    // Render data. Per-view CPU scratch: updateUniformBuffer builds each view's camera here,
+    // then memcpys it into that view's mapped uniform buffer.
+    GlobalUBO               uboData[ANO_VIEW_COUNT];
     VkSampler               textureSampler;
     RenderEntity*           entities;
     uint32_t                entityCount;
