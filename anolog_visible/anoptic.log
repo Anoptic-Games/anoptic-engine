@@ -1,0 +1,15 @@
+03:33:52 INFO  anotest_logging.c:562:  === Anoptic logger showcase: this file is left on disk for you to read ===
+03:33:52 DEBUG anotest_logging.c:563:  a debug line (present only in a DEBUG build)
+03:33:52 INFO  anotest_logging.c:564:  formatted: int=42 str=hello hex=0xff float=3.142
+03:33:52 WARN  anotest_logging.c:565:  a warning about something
+03:33:52 ERROR anotest_logging.c:566:  an error with 3 codes
+03:33:52 INFO  anotest_logging.c:567:  a multi-line
+message that spans
+three physical lines
+03:33:52 INFO  anotest_logging.c:568:  byte-transparent UTF-8: cafe ☕ 日本語
+03:33:52 FATAL anotest_logging.c:569:  a FATAL routed through the immediate path
+03:33:52 INFO  anotest_logging.c:571:  counted line 1 of 5
+03:33:52 INFO  anotest_logging.c:571:  counted line 2 of 5
+03:33:52 INFO  anotest_logging.c:571:  counted line 3 of 5
+03:33:52 INFO  anotest_logging.c:571:  counted line 4 of 5
+03:33:52 INFO  anotest_logging.c:571:  counted line 5 of 5

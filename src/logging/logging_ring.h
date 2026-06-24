@@ -7,8 +7,9 @@
 // (DPDK rte_ring family). One shared bounded ring carries finished text from many producers to one
 // active consumer. The producer formats off-ring, reserves a run of cache lines by bumping `tail`,
 // copies the line in, and publishes with one release store of `tag`. The consumer walks claim order,
-// emits, zeroes the drained range, and frees it with one `head` store. Only `tag` is synchronized.
-// Timestamp and text ride its release/acquire as plain memory.
+// emits, and frees the range with one `head` store. A slot is live iff its tag is committed and carries
+// the current lap (`cycle`), so reuse needs no zeroing. Only `tag` is synchronized. Timestamp and text
+// ride its release/acquire as plain memory.
 // Design: docs/logger.md. Migrates to anoptic_collections.h at the lock-free port.
 
 #ifndef ANOPTICENGINE_LOGGING_RING_H
@@ -49,8 +50,8 @@ typedef union {
         uint16_t len;       // stored text bytes, span = ceil((16 + len) / ANO_CL)
         uint8_t  level;     // log_types_t copy, so the flusher routes by severity without the text
         uint8_t  flags;     // ANO_LOG_COMMITTED, the commit marker
-        uint32_t _rsvd;     // not idle padding: defines the high 32 bits so the whole 64-bit `w` is
-                            //   determinate. Reserved for a future ABA/cycle counter on the publish gate.
+        uint32_t cycle;     // lap number (pos >> shift) so a stale prior-lap tag is told from this lap's.
+                            //   Lets the drainer reclaim by cycle check instead of zeroing each slot.
     };
     uint64_t w;
 } log_word_t;
@@ -60,8 +61,13 @@ typedef struct {
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t tail;    // producer reserve cursor, in cache lines
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t head;    // consumer drain cursor, in cache lines
     uint64_t    mask;   // N-1 where N = capacity in cache lines, pow2
+    uint32_t    shift;  // log2(N), so cycle = pos >> shift (the lap a monotonic pos belongs to)
     char        *buf;   // N*ANO_CL bytes, cache-line aligned
 } log_ring_t;
+
+// The lap a monotonic line position belongs to, low 32 bits. A committed tag carries its own lap; the
+// drainer compares against this so a reclaimed slot's old tag never reads as live without being zeroed.
+static inline uint32_t log_cycle(const log_ring_t *r, uint64_t pos) { return (uint32_t)(pos >> r->shift); }
 
 
 // --- pure helpers over a ring, no globals, all the structural arithmetic lives here ---
