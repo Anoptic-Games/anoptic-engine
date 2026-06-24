@@ -8,7 +8,7 @@
  * @brief Platform-agnostic linear-algebra value types shared engine-wide.
  *
  * Canonical definitions shared by render, ECS, and the logic<->render bridge.
- * Storage is row-major float arrays — POD, trivially copyable, std430-compatible.
+ * Storage is row-major float arrays, POD, trivially copyable, std430-compatible.
  *
  * Math operations (multiply, perspective, lookAt, ...) still live in render's
  * vertex.h. Move them here once a non-render caller needs them.
@@ -17,7 +17,7 @@
 #ifndef ANOPTIC_MATH_H
 #define ANOPTIC_MATH_H
 
-// Row-major 4x4 matrix — decays to float(*)[4] as an arg, inline (64 bytes) as a member.
+// Row-major 4x4 matrix decaying to float(*)[4] as an arg, inline (64 bytes) as a member.
 typedef float mat4[4][4];
 
 typedef struct Vector2

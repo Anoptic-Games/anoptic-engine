@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Darwin timing — counterpart of Linux CLOCK_MONOTONIC and Windows QPC.
+// Darwin timing, counterpart of Linux CLOCK_MONOTONIC and Windows QPC.
 // mach_absolute_time() reads the hardware timebase counter (no syscall).
 // Convert to nanoseconds via the mach_timebase_info() numer/denom ratio.
-// Apple Silicon ticks at 24 MHz, so raw ticks are NOT nanoseconds — apply the ratio.
+// Apple Silicon ticks at 24 MHz, so raw ticks are NOT nanoseconds without the ratio applied.
 // The ratio is cached atomically and the conversion is overflow-safe.
 // macOS libc has no clock_nanosleep, so ano_sleep uses nanosleep.
 
@@ -22,7 +22,7 @@
 
 /* Precision Timestamps */
 
-// Cache the timebase frequency in ticks/second — acquired once.
+// Cache the timebase frequency in ticks/second, acquired once.
 // ticks/sec = 1e9 * denom / numer.
 static _Atomic uint64_t cachedTimebaseFreq = 0;
 
@@ -140,7 +140,7 @@ int ano_busywait(uint64_t ns) {
 }
 
 // Use OS time facilities for high-res sleep that DOES give up thread execution.
-// macOS has no clock_nanosleep — nanosleep sleeps a relative interval.
+// macOS has no clock_nanosleep so nanosleep sleeps a relative interval.
 // On interruption it returns -1/EINTR with the unslept remainder in `remaining`.
 int ano_sleep(uint64_t us) {
 

@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Private to threads_macos.c.
-// macOS libpthread declares no spinlock/barrier primitives — we supply them on Darwin.
+// macOS libpthread declares no spinlock/barrier primitives, so we supply them on Darwin.
 // NOT a public interface — never include from outside src/threads.
 
 #ifndef ANOPTIC_THREADS_MACOS_H

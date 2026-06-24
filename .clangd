@@ -6,8 +6,12 @@
 # bare defaults (no includes, wrong C standard) and reports a storm of false
 # "file not found" / "unknown type name" errors.
 #
-# The database lives in build/Debug (Debug so the #ifdef DEBUG_BUILD code is the
-# active branch in the editor). Regenerate it any time CMakeLists / sources move:
-#     ./build.sh 2
+# The database lives in build/Tests: a Debug build (so the #ifdef DEBUG_BUILD
+# branch is active in the editor) configured with -DANOPTIC_TESTS=ON, so it is a
+# strict superset of build/Debug -- every engine TU PLUS the tests/ TUs. Pointing
+# at build/Debug instead left test files (anotest_*.c) out of the database, so
+# clangd fell back to default flags (no -std=gnu23) and flagged C23 bool, etc.
+# Regenerate any time CMakeLists / sources move:
+#     ./build.sh 3
 CompileFlags:
-  CompilationDatabase: build/Debug
+  CompilationDatabase: build/Tests

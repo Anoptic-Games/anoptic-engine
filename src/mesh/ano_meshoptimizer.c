@@ -278,7 +278,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
                           size_t max_vertices, size_t max_triangles) {
     size_t meshlet_count = 0;
     
-    // Clamp params to scratchpad bounds — prevents uint8_t index overflow
+    // Clamp params to scratchpad bounds preventing uint8_t index overflow
     if (max_vertices > 256) max_vertices = 256;
     if (max_triangles > 256) max_triangles = 256;
     
@@ -299,7 +299,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
         int32_t a_idx = -1, b_idx = -1, c_idx = -1;
         uint32_t added_vertices = 0;
         
-        // Linear scan for vertex reuse — cache-friendly, SIMD-amenable
+        // Cache-friendly SIMD-amenable linear scan for vertex reuse
         for (uint32_t j = 0; j < num_current_vertices; ++j) {
             if (current_meshlet_vertices[j] == a) a_idx = (int32_t)j;
             if (current_meshlet_vertices[j] == b) b_idx = (int32_t)j;
@@ -310,7 +310,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
         if (b_idx == -1 && a != b) added_vertices++;
         if (c_idx == -1 && c != a && c != b) added_vertices++;
         
-        // Limits exceeded — commit current meshlet and reset
+        // Commit current meshlet and reset when limits exceeded
         if (num_current_vertices + added_vertices > max_vertices || num_current_triangles >= max_triangles) {
             if (num_current_triangles > 0) {
                 meshlets[meshlet_count].vertex_offset = vertex_offset;
@@ -332,7 +332,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
             a_idx = -1; b_idx = -1; c_idx = -1;
         }
         
-        // Add new vertices and assign indices — map sentinels immediately to avoid duplicate insertion
+        // Add new vertices and assign indices mapping sentinels immediately to avoid duplicate insertion
         if (a_idx == -1) {
             a_idx = (int32_t)num_current_vertices;
             current_meshlet_vertices[num_current_vertices++] = a;
@@ -435,7 +435,7 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
     float rad_sq = max_dist_sq * 0.25f;
     bounds.radius = sqrtf(rad_sq);
 
-    // Refine — grow the sphere to enclose any outside point
+    // Refine by growing the sphere to enclose any outside point
     for (size_t i = 0; i < triangle_count * 3; ++i) {
         uint32_t global_idx = meshlet_vertices[meshlet_triangles[i]];
         const float* pos = (const float*)((const char*)vertex_positions + global_idx * vertex_positions_stride);
@@ -479,12 +479,12 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
         
         float len = sqrtf(dot_product(normal, normal));
         if (len > 1e-6f) {
-            // Accumulate unnormalized — weights avg_normal by triangle area
+            // Accumulate unnormalized to weight avg_normal by triangle area
             avg_normal[0] += normal[0];
             avg_normal[1] += normal[1];
             avg_normal[2] += normal[2];
             
-            // Normalize for the list — used for the angle deviation cutoff
+            // Normalize for the list feeding the angle deviation cutoff
             triangle_normals[valid_normals][0] = normal[0] / len;
             triangle_normals[valid_normals][1] = normal[1] / len;
             triangle_normals[valid_normals][2] = normal[2] / len;
@@ -508,7 +508,7 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
             if (d < min_dot) min_dot = d;
         }
 
-        // Epsilon for safety, cap to max spread — backface culling invalid if < 0
+        // Epsilon for safety capped to max spread since backface culling invalid if < 0
         bounds.cone_cutoff = min_dot - 0.05f; 
         if (bounds.cone_cutoff < -1.0f) bounds.cone_cutoff = -1.0f;
         

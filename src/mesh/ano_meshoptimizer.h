@@ -28,14 +28,14 @@ typedef struct {
 size_t ano_build_meshlets_bound(size_t index_count, size_t max_vertices, size_t max_triangles);
 
 /**
- * Optimizes the index buffer for vertex cache efficiency — this clusters triangles spatially for linear packing.
+ * Optimizes the index buffer for vertex cache efficiency by clustering triangles spatially for linear packing.
  *
  * destination must hold index_count elements.
  */
 void ano_optimize_vertex_cache(uint32_t* destination, const uint32_t* indices, size_t index_count, size_t vertex_count);
 
 /**
- * Builds meshlets via linear packing — indices should be optimized via ano_optimize_vertex_cache first.
+ * Builds meshlets via linear packing over indices that should be optimized via ano_optimize_vertex_cache first.
  *
  * meshlets: holds worst-case meshlets (ano_build_meshlets_bound).
  * meshlet_vertices: unrolled unique vertices for all meshlets (max_meshlets * max_vertices).
@@ -48,7 +48,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
                           size_t max_vertices, size_t max_triangles);
 
 /**
- * Computes a meshlet's bounds — Ritter's algorithm for the sphere, average + max deviation for the cone.
+ * Computes a meshlet's bounds via Ritter's algorithm for the sphere with average + max deviation for the cone.
  */
 ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vertices, const uint8_t* meshlet_triangles, 
                                                     size_t triangle_count, const float* vertex_positions, 
