@@ -23,6 +23,10 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint  clusterDimY;
     uint  clusterDimZ;
     uint  maxLightsPerCluster;
+    uint  lightingMode;   // AnoLightingMode (RADIANCE_CASCADES.md); unused here, kept in std140 sync
+    uint  debugView;
+    uint  pad0;
+    uint  pad1;
 } g;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {

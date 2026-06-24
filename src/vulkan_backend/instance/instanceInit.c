@@ -55,6 +55,21 @@ static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 	rendererState.framebufferResized = true;
 }
 
+// L cycles the lighting mode: shadow maps -> hybrid (RC point + shadow-mapped dir/spot) ->
+// radiance cascades. Edge-triggered on press so one keystroke advances one mode. The setter just
+// updates the render state; updateCullingBuffers publishes it into the GlobalUBO. See AnoLightingMode
+// and docs/artifacts/RADIANCE_CASCADES.md. Runs on the main (render) thread alongside the frame loop.
+static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+	(void)window; (void)scancode; (void)mods;
+	if (key == GLFW_KEY_L && action == GLFW_PRESS) {
+		AnoLightingMode next = (AnoLightingMode)(((uint32_t)ano_render_get_lighting_mode() + 1u) % (uint32_t)ANO_LIGHTING_MODE_COUNT);
+		ano_render_set_lighting_mode(next);
+		static const char* const names[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RADIANCE_CASCADES" };
+		printf("Lighting mode: %s\n", names[next]);
+	}
+}
+
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
 {
 	if (!glfwInit())
@@ -96,6 +111,7 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	
 	glfwSetWindowUserPointer(window, &rendererState);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+	glfwSetKeyCallback(window, keyCallback); // L cycles the lighting mode (RADIANCE_CASCADES.md)
 
 	return window;
 }

@@ -45,6 +45,12 @@ typedef struct GlobalUBO
 	uint32_t clusterDimY;      //      180
 	uint32_t clusterDimZ;      //      184
 	uint32_t maxLightsPerCluster; //   188  (== ANO_CLUSTER_MAX_LIGHTS)
+	// Lighting/RC control row (RADIANCE_CASCADES.md). std140 16-byte row at offset 192; mirror
+	// in the GlobalUBO declarations that read it (flat.frag, transmission.frag, lightcull.comp).
+	uint32_t lightingMode;     // row: 192  (AnoLightingMode)
+	uint32_t debugView;        //      196  (RC debug visualization; 0 = off)
+	uint32_t pad0;             //      200
+	uint32_t pad1;             //      204
 } GlobalUBO;
 
 
