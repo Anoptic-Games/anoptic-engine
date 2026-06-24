@@ -181,14 +181,17 @@ static int test_level_gate(void)
 }
 
 // Flood far past ring capacity with no intervening flush. The ring fills, then a producer that hits
-// full flushes the buffered batch to make room and keeps buffering. Nothing is lost.
+// full flushes the buffered batch to make room and keeps buffering. Nothing is lost. The count is
+// sized to overrun the ring at any ANO_LOG_RING_BYTES in the experiment range (a 2 MiB ring is 16384
+// lines), so the full path is exercised regardless of the configured ring size.
+#define FULL_FLOOD 50000
 static int test_full_ring(void)
 {
     g_fail = 0;
     reset_output();
 
     int flushed = 0;
-    for (int i = 0; i < 5000; i++)
+    for (int i = 0; i < FULL_FLOOD; i++)
         if (ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "flood %d", i) == 1)
             flushed++;
     ano_log_flush();
@@ -197,7 +200,7 @@ static int test_full_ring(void)
     char *c = slurp(LOG_PATH, NULL);
     CHECK(c != NULL, "full: file readable");
     if (c) {
-        CHECK(count_lines(c) == 5000, "full: every record survives a full ring");
+        CHECK(count_lines(c) == FULL_FLOOD, "full: every record survives a full ring");
         free(c);
     }
     return g_fail;

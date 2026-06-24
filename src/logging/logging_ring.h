@@ -43,16 +43,14 @@ _Static_assert(ANO_LOG_HDR <= ANO_CACHE_LINE, "marker fits in one cache line");
 // atomic op. The shared word is always accessed atomically. Reading a union member you did not write
 // is defined in C (C99 6.5.2.3, carried through C23).
 typedef union {
-    // Order is irrelevant to packing here: 2+1+1+4 already tiles 8 bytes with every field naturally
-    // aligned, zero padding (the _Static_assert below proves it). It is chosen so `len` is the low 16
-    // bits of `w`. smallest->biggest would also be 8 bytes -- nothing to save.
+    // Order is irrelevant to packing: 2+1+1+4 already tiles 8 bytes with zero padding (the
+    // _Static_assert below proves it). It is chosen so `len` is the low 16 bits of `w`.
     struct {
         uint16_t len;       // stored text bytes, span = ceil((16 + len) / ANO_CL)
         uint8_t  level;     // log_types_t copy, so the flusher routes by severity without the text
         uint8_t  flags;     // ANO_LOG_COMMITTED, the commit marker
         uint32_t _rsvd;     // not idle padding: defines the high 32 bits so the whole 64-bit `w` is
-                            //   determinate when assembled via these members; reserved for a future
-                            //   ABA/cycle counter on the publish gate
+                            //   determinate. Reserved for a future ABA/cycle counter on the publish gate.
     };
     uint64_t w;
 } log_word_t;
