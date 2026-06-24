@@ -554,19 +554,19 @@ void recordCommandBuffer(uint32_t imageIndex)
         VkMemoryBarrier rcMem = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT };
 
-        // Trace: one dispatch per level over its (256,256,P_c) image. Levels write distinct images, so
-        // no barrier between them; one barrier after makes all raw intervals visible to the merge.
+        // Trace seeds only the outermost cascade (its near interval + sky far-cap) over its
+        // (256,256,P_top) image; the reprojecting merge re-marches every inner level. Barrier after
+        // makes the seed visible to the first merge.
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTracePipeline);
-        for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) {
-            uint32_t probes = ANO_RC_C0_PROBES >> c;
-            vkCmdPushConstants(cmd, rendererState.rcTraceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &c);
-            vkCmdDispatch(cmd, ANO_RC_CASCADE_XY / 4u, ANO_RC_CASCADE_XY / 4u, (probes + 3u) / 4u);
-        }
+        uint32_t topCascade = ANO_RC_CASCADE_COUNT - 1u;
+        uint32_t topProbes = ANO_RC_C0_PROBES >> topCascade;
+        vkCmdPushConstants(cmd, rendererState.rcTraceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &topCascade);
+        vkCmdDispatch(cmd, ANO_RC_CASCADE_XY / 4u, ANO_RC_CASCADE_XY / 4u, (topProbes + 3u) / 4u);
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 1, &rcMem, 0, NULL, 0, NULL);
 
-        // Merge top-down: child c composites over the (already-merged) parent c+1, so a barrier follows
-        // every dispatch.
+        // Merge top-down: child c reprojects its near interval and composites over the (already-merged)
+        // parent c+1, so a barrier follows every dispatch.
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcMergePipeline);
         for (int c = (int)ANO_RC_CASCADE_COUNT - 2; c >= 0; c--) {
             uint32_t cu = (uint32_t)c;

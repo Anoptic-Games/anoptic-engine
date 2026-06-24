@@ -1,11 +1,13 @@
 #version 450
 
-// Radiance cascades M4 — per-cascade interval trace (RADIANCE_CASCADES.md §6/§7).
-// One dispatch per cascade level c (push.cascade). One invocation per (probe, direction) texel of
-// cascade c: march only that level's radial interval [t_c, t_{c+1}] through the scene voxel volume,
-// producing the raw radiance interval R = [radiance, T] (T = transmittance through the segment).
-// rc_merge.comp later composites these top-down. Cascade c packs a P^3 probe grid (P = 64>>c) and an
-// O*O octahedral direction map (O = 4<<c) into a (P*O, P*O, P) image; P*O = 256 is invariant.
+// Radiance cascades M4 — cascade interval trace (RADIANCE_CASCADES.md §6/§7).
+// Generic over a cascade level c (push.cascade); since the bilinear-fix merge (rc_merge.comp)
+// reprojects and re-marches every inner level's near interval itself, the host now dispatches this
+// only for the outermost cascade — seeding its radial interval [t_c, t_{c+1}] plus the sky far-cap.
+// One invocation per (probe, direction) texel: march that interval through the scene voxel volume,
+// producing the radiance interval R = [radiance, T] (T = transmittance through the segment). Cascade c
+// packs a P^3 probe grid (P = 64>>c) and an O*O octahedral direction map (O = 4<<c) into a
+// (P*O, P*O, P) image; P*O = 256 is invariant.
 
 #define RC_H         8.0   // clipmap half-extent (ANO_RC_CLIP_HALF_EXTENT)
 #define RC_VOX       128.0 // scene voxel resolution
