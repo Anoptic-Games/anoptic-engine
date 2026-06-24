@@ -75,19 +75,19 @@ void measureFrameTime()
 
 
 #ifndef HEADLESS_BUILD
-// Logic/ECS master: the sole render-command producer. Runs on its own thread
-// while the render world owns the main thread. main() sets g_logicShouldStop on
-// window close, then joins, guaranteeing the producer quiesces before the bridge
-// is destroyed in unInitVulkan().
+// Logic/ECS master: the sole render-command producer.
+// Runs on its own thread while the render world owns the main thread.
+// main() sets g_logicShouldStop on window close, then joins — the producer
+// quiesces before unInitVulkan() destroys the bridge.
 static atomic_bool g_logicShouldStop = false;
 
 void* anoLogicThreadMain(void* arg)
 {
     (void)arg;
-    // Stand-in producer: until the real DisplayState graphics-extract exists, drive
-    // one discrete transition across the bridge on a timer — toggle render_id 0's
-    // mesh between its original geometry and the fallback cube. Proves the producer
-    // -> SPSC ring -> render-consumer path across the thread boundary.
+    // Stand-in producer until the real DisplayState graphics-extract exists.
+    // Drives one discrete transition on a timer — toggles render_id 0's mesh
+    // between its original geometry and the fallback cube.
+    // Proves the producer -> SPSC ring -> render-consumer path across threads.
     AnoRenderBridge* bridge = anoRenderBridge();
     uint32_t originalMesh   = anoRenderEntity0Mesh();
     bool showingFallback    = false;
@@ -123,10 +123,10 @@ int main()
 {
     mi_version();
 
-    // Resolve assets relative to the executable, not the launch directory, so the
-    // binary runs from any working directory. Shaders already use PROJECT_ROOT;
-    // only the CWD-relative asset loads (glTF, textures) needed this. Interim shim
-    // until the Resource Manager owns asset paths.
+    // Resolve assets relative to the executable, not the launch directory.
+    // Shaders already use PROJECT_ROOT — only the CWD-relative asset loads
+    // (glTF, textures) needed this.
+    // Interim shim until the Resource Manager owns asset paths.
     if (!ano_fs_chdir_gamepath())
         printf("Warning: could not set the working directory to the executable's; "
                "assets will load relative to the current working directory.\n");
@@ -158,10 +158,10 @@ int main()
     #endif
 
 #ifndef HEADLESS_BUILD
-    // GLFW pins window + event handling to the main thread (mandatory on macOS), so
-    // the render world (all Vulkan + GLFW) runs HERE on the main thread. initVulkan
-    // creates the bridge synchronously before the producer starts, so there is no
-    // readiness handshake.
+    // GLFW pins window + event handling to the main thread (mandatory on macOS).
+    // The render world (all Vulkan + GLFW) runs HERE on the main thread.
+    // initVulkan creates the bridge synchronously before the producer starts —
+    // no readiness handshake.
     if (!initVulkan())
     {
         printf("Vulkan initialization failed.\n");
@@ -177,16 +177,16 @@ int main()
         return -1;
     }
 
-    // Render loop (main thread): pump window events, then draw. The logic thread
-    // feeds discrete ECS->render transitions across the bridge concurrently.
+    // Render loop (main thread): pump window events, then draw.
+    // The logic thread feeds discrete ECS->render transitions concurrently.
     while (!anoShouldClose())
     {
         glfwPollEvents();
         drawFrame();
     }
 
-    // Window closed: stop the producer FIRST and join it, so no submit can race the
-    // bridge destruction that unInitVulkan() performs.
+    // Window closed: stop the producer FIRST and join it.
+    // No submit can then race the bridge destruction in unInitVulkan().
     atomic_store(&g_logicShouldStop, true);
     ano_thread_join(logicThread, NULL);
 

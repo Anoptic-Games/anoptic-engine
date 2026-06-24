@@ -23,13 +23,13 @@
  *
  * Both directions are strictly single-producer/single-consumer, so the rings are
  * bounded SPSC (acquire/release on head/tail, no CAS). The logic master is the
- * sole command producer (it emits AFTER the parallel update stage settles, so
- * ordering is total); the render master is the sole event producer.
+ * sole command producer — it emits AFTER the parallel update stage settles, so
+ * ordering is total. The render master is the sole event producer.
  *
  * Renderables are named by a stable logical `render_id` assigned by the ECS. The
- * render world privately maps render_id -> physical GPU slot; this never exposes
+ * render world privately maps render_id -> physical GPU slot and never exposes
  * GPU slots. Continuous, GPU-parameterized motion (orbit/spin) is sent ONCE as
- * animation parameters and never streamed; only discrete transitions cross.
+ * animation parameters and never streamed — only discrete transitions cross.
  */
 
 #ifndef ANO_RENDER_BRIDGE_INTERNAL_H
@@ -64,8 +64,8 @@ typedef struct RenderEvent
 // Logic-side render-projection component (ECS.md S4)
 // ---------------------------------------------------------------------------
 
-// Dirty bits accumulated by systems during the parallel update stage; consumed by
-// the single-threaded graphics-extract pass that emits commands.
+// Dirty bits accumulated by systems during the parallel update stage.
+// Consumed by the single-threaded graphics-extract pass that emits commands.
 typedef enum RenderDirtyBits
 {
     RENDER_DIRTY_SPAWN    = 1 << 0, // first time renderable        -> RCMD_CREATE
@@ -78,8 +78,9 @@ typedef enum RenderDirtyBits
 
 // Minimal render-relevant projection of an entity, stored as an ECS component.
 // NOT a full mirror of the render world — just enough to detect discrete
-// transitions and name the renderable. Continuous motion is captured as
-// `angular_velocity` (sent once via RFIELD_ANIM), never as per-tick transforms.
+// transitions and name the renderable.
+// Continuous motion lives in `angular_velocity` (sent once via RFIELD_ANIM),
+// never as per-tick transforms.
 typedef struct DisplayState
 {
     uint32_t render_id;          // stable logical name while renderable
@@ -96,23 +97,23 @@ typedef struct DisplayState
 // ---------------------------------------------------------------------------
 
 // Single-producer/single-consumer bounded ring over fixed-size POD elements.
-// Lock-free, wait-free on both ends; capacity is a power of two so index
-// wrap is a mask. The producer owns `tail`, the consumer owns `head`; each reads
-// the other's index with acquire and publishes its own with release.
+// Lock-free and wait-free on both ends — capacity is a power of two so index
+// wrap is a mask. The producer owns `tail`, the consumer owns `head`.
+// Each reads the other's index with acquire and publishes its own with release.
 //
-// tail (producer) and head (consumer) sit on separate ANO_THREAD_LINE regions: the
-// producer's frequent tail-store must not invalidate the line the consumer spins on
-// for head (and vice versa), or the ring degrades into a cache-line ping-pong.
-// ANO_THREAD_LINE (anoptic_memory.h) is the false-sharing isolation distance — 128,
-// wide enough to clear x86's adjacent-line prefetch pair and Apple Silicon's 128-byte
-// line. Because a member carries _Alignas(ANO_THREAD_LINE), the whole struct inherits
-// that alignment — so an embedding struct (AnoRenderBridge) gets it automatically on
-// the stack or in static storage. A HEAP-allocated owner must request ANO_THREAD_LINE
+// tail (producer) and head (consumer) sit on separate ANO_THREAD_LINE regions.
+// The producer's frequent tail-store must not invalidate the line the consumer
+// spins on for head (and vice versa), or the ring ping-pongs cache lines.
+// ANO_THREAD_LINE (anoptic_memory.h) is the false-sharing isolation distance —
+// 128, wide enough to clear x86's adjacent-line prefetch pair and Apple Silicon's
+// 128-byte line. A member carries _Alignas(ANO_THREAD_LINE), so the whole struct
+// inherits that alignment — an embedding struct (AnoRenderBridge) gets it for free
+// on the stack or in static storage. A HEAP owner must request ANO_THREAD_LINE
 // alignment (e.g. mi_heap_malloc_aligned) for the separation to hold.
 //
-// This is the minimal purpose-built ring the bridge needs now; it should migrate
-// to anoptic_collections.h when the generic lock-free collections land (notes.md
-// Step 5).
+// Minimal purpose-built ring the bridge needs now.
+// Migrate to anoptic_collections.h when the generic lock-free collections land
+// (notes.md Step 5).
 typedef struct AnoSpscRing
 {
     _Alignas(ANO_THREAD_LINE) _Atomic uint32_t tail; // producer-owned cursor: next index to write

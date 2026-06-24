@@ -16,14 +16,9 @@
 #include <errno.h>         // errno, EINTR
 #include <mimalloc.h>
 
-// Output: directory of the running executable (no file name); 
-// pathString is
-// mi_malloc'd for the caller to free. {0, NULL} on failure.
-//
-// The split is hand-rolled rather than dirname(): this is a thread-safe public API,
-// and dirname() is not portably reentrant -- macOS returns a pointer to a static
-// buffer (dirname_r is the safe form, but it is BSD-only and absent from glibc), so
-// a manual scan is the only formulation that is uniformly thread-safe across POSIX.
+// Output: directory of the running executable, no file name.
+// pathString is mi_malloc'd for the caller to free. {0, NULL} on failure.
+// The split is hand-rolled because dirname() is not portably reentrant.
 filepath ano_fs_gamepath()
 {
     filepath result = { .length = 0, .pathString = NULL };
@@ -42,7 +37,7 @@ filepath ano_fs_gamepath()
     while (len > 0 && resolved[len - 1] != '/')
         len--;
     if (len > 1)
-        len--; // drop the trailing slash, but keep "/" for the filesystem root
+        len--; // drop the trailing slash -- but keep "/" for the root
 
     result.pathString = mi_malloc(len + 1);
     if (result.pathString == NULL)
@@ -53,8 +48,8 @@ filepath ano_fs_gamepath()
     return result;
 }
 
-// Output: true on success. Sets the working directory to ano_fs_gamepath() so
-// CWD-relative asset loads resolve regardless of where the binary was launched from.
+// Output: true on success. Sets CWD to ano_fs_gamepath() so relative asset loads
+// resolve regardless of launch directory.
 bool ano_fs_chdir_gamepath(void)
 {
     filepath dir = ano_fs_gamepath();
@@ -91,7 +86,7 @@ ano_file *ano_fs_open_append(const char *path)
     return file;
 }
 
-// Output: 0 once all bytes are written; -1 on error. Loops past partial writes and EINTR.
+// Output: 0 once all bytes are written, -1 on error. Loops past partial writes and EINTR.
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
     if (file == NULL || (data == NULL && length != 0))
@@ -103,7 +98,7 @@ int ano_fs_write(ano_file *file, const void *data, size_t length)
         ssize_t written = write(file->fd, cursor, remaining);
         if (written < 0) {
             if (errno == EINTR)
-                continue; // interrupted before any byte moved; retry
+                continue; // interrupted before any byte moved -- retry
             return -1;
         }
         cursor += written;

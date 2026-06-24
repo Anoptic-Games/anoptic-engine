@@ -23,34 +23,32 @@ typedef struct {
 } ano_meshlet_bounds_gpu_t;
 
 /**
- * Returns the maximum number of meshlets that could be generated for a given index count.
+ * Returns the max meshlets generable for a given index count.
  */
 size_t ano_build_meshlets_bound(size_t index_count, size_t max_vertices, size_t max_triangles);
 
 /**
- * Optimizes the index buffer for vertex cache efficiency, which inherently clusters triangles 
- * spatially/topologically for linear packing.
- * 
- * destination must contain enough space for index_count elements.
+ * Optimizes the index buffer for vertex cache efficiency — this clusters triangles spatially for linear packing.
+ *
+ * destination must hold index_count elements.
  */
 void ano_optimize_vertex_cache(uint32_t* destination, const uint32_t* indices, size_t index_count, size_t vertex_count);
 
 /**
- * Builds meshlets via linear packing. The indices must ideally be optimized via ano_optimize_vertex_cache first.
- * 
- * meshlets: must contain enough space for worst-case meshlets (ano_build_meshlets_bound).
- * meshlet_vertices: array to hold the unrolled unique vertices for all meshlets (max_meshlets * max_vertices).
- * meshlet_triangles: array to hold the unrolled local triangle indices (max_meshlets * max_triangles * 3).
- * 
- * Returns the number of meshlets generated.
+ * Builds meshlets via linear packing — indices should be optimized via ano_optimize_vertex_cache first.
+ *
+ * meshlets: holds worst-case meshlets (ano_build_meshlets_bound).
+ * meshlet_vertices: unrolled unique vertices for all meshlets (max_meshlets * max_vertices).
+ * meshlet_triangles: unrolled local triangle indices (max_meshlets * max_triangles * 3).
+ *
+ * Returns the meshlet count.
  */
 size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, uint8_t* meshlet_triangles, 
                           const uint32_t* indices, size_t index_count, 
                           size_t max_vertices, size_t max_triangles);
 
 /**
- * Computes the bounds for a specific meshlet using Ritter's bounding sphere algorithm for the sphere 
- * and average + max deviation for the cone.
+ * Computes a meshlet's bounds — Ritter's algorithm for the sphere, average + max deviation for the cone.
  */
 ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vertices, const uint8_t* meshlet_triangles, 
                                                     size_t triangle_count, const float* vertex_positions, 

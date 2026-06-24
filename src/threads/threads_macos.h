@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private to threads_macos.c. macOS libpthread declares no spinlock/barrier
-// primitives; these are the POSIX functions we supply ourselves on Darwin.
+// Private to threads_macos.c.
+// macOS libpthread declares no spinlock/barrier primitives — we supply them on Darwin.
 // NOT a public interface — never include from outside src/threads.
 
 #ifndef ANOPTIC_THREADS_MACOS_H

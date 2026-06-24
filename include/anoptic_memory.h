@@ -46,30 +46,23 @@ void ano_heap_release(mi_heap_t **in);
 #define ano_salloc(bytes) alloca((size_t)bytes)
 
 /**
- * @brief Allocates a block of @p size bytes of memory aligned to a @p alignment boundary.
+ * @brief Allocates @p size bytes aligned to a @p alignment boundary.
  *
- * This function provides a platform-agnostic interface for aligned memory allocation.
+ * @param size      Block size in bytes.
+ * @param alignment Block alignment — must be a power of 2.
  *
- * @param size      The size of the memory block to allocate, in bytes.
- * @param alignment The alignment of the memory block that is to be allocated.
- *                  This must be an integer power of 2.
+ * @return Pointer to the block, or NULL on failure.
  *
- * @return A pointer to the first byte of the allocated memory block, or NULL if the
- *         allocation fails.
- *
- * @note The function will return NULL if @p size or @p alignment is 0.
+ * @note Returns NULL if @p size or @p alignment is 0.
  */
 void* ano_aligned_malloc(size_t size, size_t alignment);
 
 /**
- * @brief Frees an aligned block of memory.
+ * @brief Frees an aligned block.
  *
- * This function provides a platform-agnostic interface for freeing aligned memory blocks.
+ * @param ptr Block to free.
  *
- * @param ptr Pointer to the memory block that needs to be freed.
- *
- * @note It's undefined behavior to free a memory block that wasn't previously
- *       allocated with ano_aligned_malloc or equivalent.
+ * @note Undefined behavior to free a block not from ano_aligned_malloc.
  */
 void ano_aligned_free(void* ptr);
 

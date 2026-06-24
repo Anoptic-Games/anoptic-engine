@@ -17,14 +17,13 @@ typedef struct {
     char* pathString; // Managed by user.
 } filepath; // User is expected to manage the lifetime of this struct.
 
-// Game Executable Directory Path 
+// Game Executable Directory Path
 // - Directory the executable is in.
 // - Assets, binaries, expansions.
-// - Thread-safe: computed fresh per call with no shared state 
-// - (the implementation avoids non-reentrant dirname()), may be called from any thread.
+// - Thread-safe -- computed fresh per call, no shared state, no dirname().
 // Input: none.
-// Output: filepath whose pathString is heap for the caller to free;
-//      {length 0, pathString NULL} if the path could not be resolved.
+// Output: filepath whose pathString is heap for the caller to free.
+//      {0, NULL} if the path could not be resolved.
 filepath ano_fs_gamepath();
 
 
@@ -34,8 +33,8 @@ filepath ano_fs_gamepath();
 // - Settings
 // - Log Files
 // Input: none.
-// Output: filepath whose pathString is heap for the caller to free;
-//      {length 0, pathString NULL} if the path could not be resolved.
+// Output: filepath whose pathString is heap for the caller to free.
+//      {0, NULL} if the path could not be resolved.
 filepath ano_fs_userpath();
 
 // Change Working Directory to Game Executable
@@ -44,13 +43,12 @@ filepath ano_fs_userpath();
 bool ano_fs_chdir_gamepath(void);
 
 
-// Append-only file sink. Opaque handle: the platform struct (a POSIX fd, a Win32 HANDLE)
-// lives in the per-OS source, so callers never see the underlying descriptor. One handle is
-// meant to be opened once and written many times -- the logger's batched flush is the first user.
+// Append-only file sink. Opaque handle -- the platform struct (a POSIX fd, a Win32 HANDLE)
+// lives in the per-OS source, so callers never see the descriptor. Open once, write many.
+// The logger's batched flush is the first user.
 typedef struct ano_file ano_file;
 
-// Open (creating if absent) `path` for appending. Concurrent appends from one process do not
-// interleave (O_APPEND / FILE_APPEND_DATA).
+// Open `path` for appending, creating if absent. Concurrent appends do not interleave.
 // Input: NUL-terminated path. Output: handle, or NULL on failure.
 ano_file *ano_fs_open_append(const char *path);
 
@@ -58,12 +56,12 @@ ano_file *ano_fs_open_append(const char *path);
 // Input: open handle, buffer, byte count. Output: 0 on success, -1 on error.
 int ano_fs_write(ano_file *file, const void *data, size_t length);
 
-// Flush this handle's buffered data to the storage device (fsync / FlushFileBuffers).
+// Flush this handle's buffered data to the device (fsync / FlushFileBuffers).
 // Input: open handle. Output: 0 on success, -1 on error.
 int ano_fs_sync(ano_file *file);
 
-// Close the handle and free it. Does not sync first -- call ano_fs_sync if durability is needed.
-// Input: open handle. Output: 0 on success, -1 on error (the handle is freed regardless).
+// Close the handle and free it. Does not sync first -- call ano_fs_sync for durability.
+// Input: open handle. Output: 0 on success, -1 on error -- the handle is freed regardless.
 int ano_fs_close(ano_file *file);
 
 #endif //ANOPTICENGINE_ANOPTIC_FILEPATH_H
