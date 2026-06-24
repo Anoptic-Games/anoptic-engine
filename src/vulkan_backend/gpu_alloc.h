@@ -42,5 +42,6 @@ extern GpuAllocator gpuAllocator;
 extern GpuAllocator swapchainAllocator;
 extern GpuAllocator stagingAllocator;
 extern GpuAllocator textureAllocator;
+extern GpuAllocator rcAllocator;       // radiance-cascade volumes (RADIANCE_CASCADES.md); resettable on resolution change
 
 #endif

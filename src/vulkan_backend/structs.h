@@ -69,6 +69,13 @@
 #define ANO_SHADOW_DEPTH_FORMAT  VK_FORMAT_D32_SFLOAT   // sampled as a depth-compare (sampler2DArrayShadow)
 #define ANO_SHADOW_ORTHO_EXTENT  8.0f                   // half-size of the directional ortho world box (covers the demo scene)
 
+// Radiance cascades (RADIANCE_CASCADES.md). Bounded camera-following clipmap; M1 stands up the 3D
+// storage-image resource class with the scene voxel volume + a placeholder write pass. 16 m / 64^3
+// cascade-0 is the confirmed validation target; the scene voxel grid is finer (128^3) so geometry
+// detail outresolves the probe grid. RGBA16F is a mandatory storage-image format (no support query).
+#define ANO_RC_VOXEL_DIM     128u
+#define ANO_RC_VOXEL_FORMAT  VK_FORMAT_R16G16B16A16_SFLOAT
+
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
 // each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)
 // and the per-frame query-pool sizing (instanceInit). Insert RC boundaries here as those passes land.
@@ -76,6 +83,7 @@ enum {
     ANO_TS_FRAME_BEGIN = 0, // top of the command buffer
     ANO_TS_AFTER_UPLOAD,    // delta staging copies done
     ANO_TS_AFTER_COMPUTE,   // update/scatter/cull done
+    ANO_TS_AFTER_RC,        // radiance-cascade passes done (voxelize/trace/merge; M1: probe write)
     ANO_TS_AFTER_SHADOW,    // shadow depth render done
     ANO_TS_AFTER_LIGHTING,  // per-view light-cull + geometry done
     ANO_TS_AFTER_COMPOSITE, // tonemap composite done
@@ -859,6 +867,16 @@ typedef struct RendererState
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.
     float                   timestampPeriodNs;  // ns per timestamp tick (limits.timestampPeriod)
     uint32_t                timestampValidBits;  // graphics-queue timestampValidBits (0 = unsupported)
+
+    // Radiance cascades (RADIANCE_CASCADES.md, M1). Shared ×1 (not per-frame, not per-view): the
+    // volumes are produced + consumed within a frame behind barriers, fence-serialized per slot.
+    // M1 is the scene voxel volume + a placeholder compute that imageStores into it, proving the
+    // 3D STORAGE_IMAGE + GENERAL-layout path. rcProbeSet is a single set (the image is ×1 shared).
+    VkImage                 rcSceneVoxel;       // VK_IMAGE_TYPE_3D, ANO_RC_VOXEL_DIM^3, RGBA16F
+    GpuAllocation           rcSceneVoxelAlloc;
+    VkImageView             rcSceneVoxelView;   // VK_IMAGE_VIEW_TYPE_3D
+    VkDescriptorSetLayout   rcProbeSetLayout;   // 1 binding: STORAGE_IMAGE (the voxel volume)
+    VkDescriptorSet         rcProbeSet;
 } RendererState;
 
 

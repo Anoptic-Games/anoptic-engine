@@ -1457,7 +1457,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	//   SSBO/frame:    global(11: bindings 1-11) + light-cull(4) per view, + cull(8)+update(3)+scatter(2) shared
 	//   SAMPLER/frame: tonemap(1) per view
 	//   sets/frame:    (global+light-cull+tonemap) per view + cull+update+scatter shared
-	VkDescriptorPoolSize poolSize[4] = {};
+	VkDescriptorPoolSize poolSize[5] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u);
 	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
@@ -1468,12 +1468,17 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 2u); // tonemap (per view) + shadow atlas
+	// Radiance cascades (RADIANCE_CASCADES.md): storage images for the ×1 shared volumes (M1: the
+	// scene voxel; headroom for the cascade ping-pong / irradiance / history added in M2-M4).
+	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSize[4].descriptorCount = 16u;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = 4;
+	poolInfo.poolSizeCount = 5;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 6u);
+	// + 4 non-per-frame RC sets (×1 shared volumes): M1 allocates 1 (rcProbeSet), M2-M4 the rest.
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 6u) + 4u;
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -2423,6 +2428,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.shadowFrustumConfigBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowFrustumConfigBuffer, NULL);
 	if (rendererState.shadowLightInfoBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowLightInfoBuffer, NULL);
 
+	// Radiance-cascade resources (×1 shared; backing memory freed with rcAllocator below).
+	if (rendererState.rcSceneVoxelView) vkDestroyImageView(ctx->device, rendererState.rcSceneVoxelView, NULL);
+	if (rendererState.rcSceneVoxel) vkDestroyImage(ctx->device, rendererState.rcSceneVoxel, NULL);
+
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
 	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the
 	// gpu allocator; here we destroy the VkBuffer handles and free the region arrays.)
@@ -2501,6 +2510,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		gpu_alloc_destroy(&swapchainAllocator);
 		gpu_alloc_destroy(&stagingAllocator);
 		gpu_alloc_destroy(&textureAllocator);
+		gpu_alloc_destroy(&rcAllocator);
 
 		vkDestroyDevice(ctx->device, NULL);
 	}
