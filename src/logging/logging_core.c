@@ -19,6 +19,7 @@
 #include <anoptic_time.h>
 
 #include <mimalloc.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -28,11 +29,15 @@
 
 /* Internal state. Only the ring is producer-shared, the rest is cold. */
 
-static const char  *logStrings[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
+// Level names padded to a fixed 5, so the producer emits the prefix with one constant-length copy and
+// no strlen or pad loop. Index by log_types_t; out-of-range falls back to "?????".
+static const char   logPad[5][8] = {"DEBUG", "INFO ", "WARN ", "ERROR", "FATAL"};
 
 static log_ring_t   g_ring;         // the shared MPSC ring (producers: tail, consumer: head)
-static atomic_bool  g_initialized;  // every entry checks this lock-free
-static atomic_int   g_minLevel;     // runtime severity gate, one relaxed load on enqueue
+static atomic_bool  g_initialized;  // immediate-path liveness (cold path only)
+// Severity gate AND liveness in one relaxed load on enqueue: INT_MAX until init opens the gate to
+// LOG_DEBUG, and cleanup closes it back to INT_MAX, so a not-live logger gates every enqueue.
+static atomic_int   g_minLevel = INT_MAX;
 
 static anothread_mutex_t g_drainMtx;   // gates the single consumer: one drainer at a time
 static anothread_mutex_t g_outFileMtx; // guards the output file handle's lifecycle and writes
@@ -79,28 +84,99 @@ static inline char *put_u32(char *p, uint32_t v)
     return p;
 }
 
+static const char digLo[] = "0123456789abcdef";
+static const char digUp[] = "0123456789ABCDEF";
+
+// Unsigned v in base (8/10/16) via digits, into [p,end). NULL if it would overrun.
+static char *put_base(char *p, char *end, unsigned long long v, unsigned base, const char *digits)
+{
+    char tmp[24];
+    int  i = 0;
+    do { tmp[i++] = digits[v % base]; v /= base; } while (v);
+    if (p + i > end) return NULL;
+    while (i) *p++ = tmp[--i];
+    return p;
+}
+
+// Hand-rolled formatter for the flagless, width-less, precision-less common conversions
+// (d i u x X o c s, with l/ll/z/t/h length mods). Returns bytes written, or -1 to fall back to vsnprintf
+// for anything else (flags, width, precision, floats, %p, unknown, or an overrun). Matches printf
+// byte-for-byte for what it accepts, so the byte-identical formatting tests pass on the fast path too.
+static int fast_format(char *out, int cap, const char *fmt, va_list ap)
+{
+    char *p = out, *end = out + cap;
+    const char *f = fmt;
+    while (*f) {
+        if (*f != '%') {                                   // literal run: one memcpy to the next %
+            const char *s = f;
+            do { ++f; } while (*f && *f != '%');
+            size_t n = (size_t)(f - s);
+            if (p + n > end) return -1;
+            memcpy(p, s, n); p += n;
+            continue;
+        }
+        char c = *++f;
+        if (c == '%') { if (p >= end) return -1; *p++ = '%'; ++f; continue; }
+        int lng = 0;                                       // 0 int, 1 long, 2 long long
+        while (c == 'l') { ++lng; c = *++f; }
+        if (c == 'z' || c == 't') { lng = sizeof(size_t) == sizeof(long long) ? 2 : 1; c = *++f; }
+        else while (c == 'h') c = *++f;                    // sub-int args promote to int anyway
+        switch (c) {
+        case 'd': case 'i': {
+            long long v = lng >= 2 ? va_arg(ap, long long)
+                        : lng == 1 ? va_arg(ap, long) : (long long)va_arg(ap, int);
+            if (v < 0) { if (p >= end) return -1; *p++ = '-'; }
+            unsigned long long m = v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v;
+            p = put_base(p, end, m, 10, digLo);
+            break;
+        }
+        case 'u': case 'x': case 'X': case 'o': {
+            unsigned long long v = lng >= 2 ? va_arg(ap, unsigned long long)
+                                 : lng == 1 ? va_arg(ap, unsigned long)
+                                            : (unsigned long long)va_arg(ap, unsigned int);
+            unsigned base = c == 'o' ? 8u : c == 'u' ? 10u : 16u;
+            p = put_base(p, end, v, base, c == 'X' ? digUp : digLo);
+            break;
+        }
+        case 'c': { int ch = va_arg(ap, int); if (p >= end) return -1; *p++ = (char)ch; break; }
+        case 's': {
+            const char *s = va_arg(ap, const char *);
+            if (s == NULL) s = "(null)";
+            while (*s) { if (p >= end) return -1; *p++ = *s++; }
+            break;
+        }
+        default: return -1;                                // flag/width/precision/float/%p/unknown
+        }
+        if (p == NULL) return -1;                          // put_base overran
+        ++f;                                               // past the conversion char
+    }
+    return (int)(p - out);
+}
+
 // Compose "<LEVEL> <file>:<line>:  <message>" into out, no time prefix, no newline. The flusher adds
 // the time at emit. Returns the byte length clamped to cap-1 so an over-long line never overruns the
-// entry. The fixed-shape prefix is hand-rolled (no snprintf); only the user fmt takes vsnprintf.
-// format(printf, 6, 0) marks this a printf forwarder so the vsnprintf below passes -Wformat-nonliteral.
+// entry. The fixed-shape prefix is hand-rolled; the message goes through fast_format, falling back to
+// vsnprintf for the conversions it does not handle. format(printf, 6, 0) marks this a printf forwarder
+// so the vsnprintf below passes -Wformat-nonliteral.
 __attribute__((format(printf, 6, 0)))
 static int format_line(char *out, int cap, log_types_t level,
                        const char *file, int line, const char *fmt, va_list ap)
 {
-    const char *name = (level >= LOG_DEBUG && level <= LOG_FATAL) ? logStrings[level] : "?????";
-    char  *p  = out;
-    size_t nl = strlen(name);
-    memcpy(p, name, nl); p += nl;
-    while (nl < 5) { *p++ = ' '; nl++; }    // left-justify the level to 5
+    char *p = out;
+    memcpy(p, (unsigned)level <= LOG_FATAL ? logPad[level] : "?????", 5);  // fixed 5, no strlen/pad
+    p += 5;
     *p++ = ' ';
-    size_t fl = strlen(file);
-    if (fl > 256) fl = 256;                 // clamp so a freak file name can't crowd out the message
+    size_t fl = strnlen(file, 256);         // bounded scan: a freak file name can't crowd out the message
     memcpy(p, file, fl); p += fl;
     *p++ = ':';
     p = put_u32(p, (uint32_t)(line < 0 ? 0 : line));
     *p++ = ':'; *p++ = ' '; *p++ = ' ';
     int head = (int)(p - out);              // bounded <= 5+1+256+1+10+3, far under cap
-    int body = vsnprintf(out + head, (size_t)(cap - head), fmt, ap);   // forwarded under the attribute
+    va_list apc; va_copy(apc, ap);
+    int body = fast_format(out + head, cap - head, fmt, ap);            // common conversions, no libc
+    if (body < 0)                                                       // flags/width/float/overrun:
+        body = vsnprintf(out + head, (size_t)(cap - head), fmt, apc);   //   fall back, forwarded
+    va_end(apc);
     if (body < 0) body = 0;
     int total = head + body;
     return total < cap ? total : cap - 1;   // clamp: never overrun the entry
@@ -218,6 +294,15 @@ static uint64_t drain_and_emit(void)
     uint64_t cap = atomic_load_explicit(&g_ring.tail, memory_order_relaxed); // reserved frontier, a count bound
     size_t   blen = 0;
 
+    // One wall-clock read for the whole pass: records share the drain second, civil-time conversion
+    // memoized per second. The producer no longer stamps per record (§11); claim order is the real order.
+    uint64_t passSec = wall_second(ano_timestamp_raw());
+    if (!g_drainHMSValid || passSec != g_drainSec) {
+        render_hms(g_drainHMS, passSec);
+        g_drainSec = passSec;
+        g_drainHMSValid = true;
+    }
+
     for (;;) {  // bounded walk, not a spin: stops at the tail bound or the first uncommitted gap
         if (h == cap)
             break;  // caught up to tail, the only stop at exact fullness
@@ -228,12 +313,6 @@ static uint64_t drain_and_emit(void)
         uint64_t need = log_span(v.len);
         const char *line = log_gather(&g_ring, h, v.len, g_scratch);   // <= 2 memcpys (§8)
 
-        uint64_t sec = wall_second(m->timestamp);
-        if (!g_drainHMSValid || sec != g_drainSec) {   // civil-time conversion once per second, not per record
-            render_hms(g_drainHMS, sec);
-            g_drainSec = sec;
-            g_drainHMSValid = true;
-        }
         memcpy(g_batch + blen, g_drainHMS, 8); blen += 8;
         g_batch[blen++] = ' ';
         memcpy(g_batch + blen, line, v.len); blen += v.len;
@@ -278,10 +357,8 @@ static void *drainer_main(void *arg)
 
 int ano_log_enqueue(log_types_t level, const char *file, int line, const char *fmt, ...)
 {
-    if (!atomic_load_explicit(&g_initialized, memory_order_relaxed))
-        return 0;
     if ((int)level < atomic_load_explicit(&g_minLevel, memory_order_relaxed))
-        return 0;   // runtime level gate, one relaxed load
+        return 0;   // one relaxed load gates both severity and liveness (INT_MAX until init)
 
     char blob[ANO_LOG_MSG_MAX]; // the final line, formatted on this thread, off-ring
     va_list ap; va_start(ap, fmt);
@@ -289,7 +366,6 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
                         level, file, line, fmt, ap);
     va_end(ap);
     uint16_t len  = (uint16_t)n;
-    uint64_t ts   = ano_timestamp_raw();
     uint64_t need = log_span(len);
 
     // No log_entry_t: an "entry" is a marker (tag + timestamp) plus inline text, laid straight into the
@@ -311,7 +387,7 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
             waited = true;
             if (hd != lastHead) { lastHead = hd; stall = 0; }
             else if (++stall > FULL_STALL_LIMIT) {
-                emit_one(level, ts, blob, len, false, false);
+                emit_one(level, ano_timestamp_raw(), blob, len, false, false);   // cold escape: stamp now
                 return 1;
             }
             ano_busywait(128);  // brief, off the consumer's cache line between rechecks
@@ -325,8 +401,7 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
     }
 
     log_marker_t *m = log_marker_at(&g_ring, pos);
-    m->timestamp = ts;  // plain store, ordered by the release below
-    log_write_body(&g_ring, pos, blob, len);    // <= 2 memcpys (§8)
+    log_write_body(&g_ring, pos, blob, len);    // <= 2 memcpys (§8); timestamp stamped at drain (§11)
     log_word_t v = { .len = len, .level = (uint8_t)level, .flags = ANO_LOG_COMMITTED,
                      .cycle = log_cycle(&g_ring, pos) };
     atomic_store_explicit(&m->tag, v.w, memory_order_release);  // publish: one gate, whole record
@@ -408,8 +483,6 @@ int ano_log_init(void)
         return -1;
     }
     g_drainHMSValid = false;
-
-    atomic_store_explicit(&g_minLevel, LOG_DEBUG, memory_order_relaxed);
     g_outFile = NULL;
 
     g_anchorRaw    = ano_timestamp_raw();
@@ -435,6 +508,9 @@ int ano_log_init(void)
         ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
         return -1;
     }
+
+    // Open the gate last: enqueues are admitted (and liveness reads true) only now everything is up.
+    atomic_store_explicit(&g_minLevel, LOG_DEBUG, memory_order_relaxed);
     return 0;
 }
 
@@ -444,6 +520,7 @@ int ano_log_cleanup(void)
         return 0;
 
     atomic_store_explicit(&g_initialized, false, memory_order_release);
+    atomic_store_explicit(&g_minLevel, INT_MAX, memory_order_relaxed);   // close the gate: enqueues now no-op
 
     // Stop the owned consumer before tearing down the ring it reads.
     atomic_store_explicit(&g_drainRun, false, memory_order_relaxed);
