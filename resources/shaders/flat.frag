@@ -78,7 +78,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint maxLightsPerCluster;
     uint lightingMode;   // AnoLightingMode (RADIANCE_CASCADES.md); gates shadow sampling below
     uint debugView;      // RC debug visualization selector (0 = off)
-    uint pad0;
+    float giStrength;    // RC GI ambient gain (runtime-tunable)
     uint pad1;
 } global;
 
@@ -95,6 +95,9 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
 layout(set = 0, binding = 12) uniform sampler3D rcVoxelAlbedo;  // a = opacity, rgb = albedo
 layout(set = 0, binding = 13) uniform sampler3D rcIrradiance;   // gathered irradiance (RADIANCE_CASCADES.md M3b)
 const float ANO_RC_CLIP_HALF = 8.0; // matches ANO_RC_CLIP_HALF_EXTENT + voxelize.frag
+// GI ambient gain is global.giStrength (runtime-tunable, [/] keys). The cascade-0 gather is a
+// full-sphere probe irradiance (not cosine-weighted to the surface normal), so a Lambertian surface
+// receives only ~half of it; the gain compensates and makes the indirect term read against direct.
 vec3 anoRcUv(vec3 w) { return (w + vec3(ANO_RC_CLIP_HALF)) / (2.0 * ANO_RC_CLIP_HALF); }
 
 // --- Dynamic shadows (set 2): GPU-built shadow frustum viewProjs + the depth atlas array + the
@@ -371,7 +374,7 @@ void main() {
     // flat constant), else the legacy constant ambient. Honors the L-key A/B toggle.
     vec3 ambient;
     if (global.lightingMode != ANO_LIGHTING_SHADOWMAP)
-        ambient = texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb * baseColor.rgb * occlusion;
+        ambient = texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb * global.giStrength * baseColor.rgb * occlusion;
     else
         ambient = vec3(0.05) * baseColor.rgb * occlusion;
     vec3 finalColor = ambient + accumulatedDirect;

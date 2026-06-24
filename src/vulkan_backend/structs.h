@@ -78,6 +78,7 @@
 #define ANO_RC_VOXEL_FORMAT     VK_FORMAT_R16G16B16A16_SFLOAT
 #define ANO_RC_CLIP_HALF_EXTENT 8.0f   // half-size of the static origin-centred clipmap (16 m cube); matches voxelize.frag
 #define ANO_RC_VOXEL_AXES       3u     // voxelization passes: one ortho projection per dominant axis
+#define ANO_RC_GI_STRENGTH_DEFAULT 3.0f // initial GI ambient gain (runtime-tunable; see RADIANCE_CASCADES.md R13)
 
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
 // each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)
@@ -865,6 +866,7 @@ typedef struct RendererState
     // from the render thread (L-key callback / ano_render_set_lighting_mode).
     uint32_t                lightingMode;   // AnoLightingMode; default ANO_LIGHTING_SHADOWMAP (0)
     uint32_t                debugView;      // RC debug visualization selector (0 = off)
+    float                   giStrength;     // RC GI ambient gain (runtime-tunable; init to ANO_RC_GI_STRENGTH_DEFAULT)
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.

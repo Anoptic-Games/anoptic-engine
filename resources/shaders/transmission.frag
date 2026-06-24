@@ -77,7 +77,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint maxLightsPerCluster;
     uint lightingMode;   // AnoLightingMode (RADIANCE_CASCADES.md); gates shadow sampling below
     uint debugView;      // RC debug visualization selector (0 = off)
-    uint pad0;
+    float giStrength;    // RC GI ambient gain (runtime-tunable)
     uint pad1;
 } global;
 
@@ -315,7 +315,7 @@ void main() {
     
     // Ambient & transmissive color contributions (evaluated once)
     vec3 ambient = (global.lightingMode != ANO_LIGHTING_SHADOWMAP
-                    ? texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb
+                    ? texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb * global.giStrength
                     : vec3(0.05)) * baseColor.rgb * occlusion * (1.0 - transmission);
     vec3 transmissive = baseColor.rgb * transmissionTint * transmission;
     
