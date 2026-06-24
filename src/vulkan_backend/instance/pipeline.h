@@ -31,6 +31,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state); // fullscreen HDR->swapchain encode
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state);  // depth-only shadow pipeline + compare sampler
 bool ano_vk_init_rc_voxelize(VulkanContext* ctx, RendererState* state); // radiance-cascade voxelize pipeline (RADIANCE_CASCADES.md M2)
+bool ano_vk_init_rc_trace(VulkanContext* ctx, RendererState* state);    // radiance-cascade cascade-0 trace pipeline (RADIANCE_CASCADES.md M3b)
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state);
 
 #endif

@@ -18,7 +18,7 @@ if [ -z "$glslc" ]; then
 fi
 
 echo "Using glslc: $glslc"
-for shader in flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp scatter.comp lightcull.comp shadowsetup.comp shadow_depth.frag tonemap.vert tonemap.frag voxelize.frag; do
+for shader in flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp scatter.comp lightcull.comp shadowsetup.comp shadow_depth.frag tonemap.vert tonemap.frag voxelize.frag rc_trace.comp; do
     echo "  $shader -> $shader.spv"
     "$glslc" --target-env=vulkan1.2 "$shader" -o "$shader.spv"
 done

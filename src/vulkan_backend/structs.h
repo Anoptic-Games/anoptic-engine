@@ -74,6 +74,7 @@
 // cascade-0 is the confirmed validation target; the scene voxel grid is finer (128^3) so geometry
 // detail outresolves the probe grid. RGBA16F is a mandatory storage-image format (no support query).
 #define ANO_RC_VOXEL_DIM        128u
+#define ANO_RC_IRRADIANCE_DIM   64u    // cascade-0 irradiance grid resolution (coarser than the voxel grid)
 #define ANO_RC_VOXEL_FORMAT     VK_FORMAT_R16G16B16A16_SFLOAT
 #define ANO_RC_CLIP_HALF_EXTENT 8.0f   // half-size of the static origin-centred clipmap (16 m cube); matches voxelize.frag
 #define ANO_RC_VOXEL_AXES       3u     // voxelization passes: one ortho projection per dominant axis
@@ -888,7 +889,18 @@ typedef struct RendererState
     VkPipeline              rcVoxelizePipeline;       // flat geometry stage (shadowPass) + voxelize.frag; no attachments
     VkPipelineLayout        rcVoxelizeLayout;
     VkPipelineCache         rcVoxelizeCache;
-    VkSampler               rcSampler;                // linear clamp 3D sampler for the voxel/irradiance volumes (global set 12)
+    VkSampler               rcSampler;                // linear clamp 3D sampler for the voxel/irradiance volumes (global set 12/13)
+
+    // M3b cascade-0 trace: gathers the voxel volumes into the irradiance field, sampled as the GI
+    // ambient term (global set binding 13). Output is ×1 shared, ANO_RC_IRRADIANCE_DIM^3 RGBA16F.
+    VkImage                 rcIrradiance;
+    GpuAllocation           rcIrradianceAlloc;
+    VkImageView             rcIrradianceView;
+    VkDescriptorSetLayout   rcTraceSetLayout;         // 0/1 = voxel albedo+emission (sampled), 2 = irradiance (STORAGE_IMAGE)
+    VkDescriptorSet         rcTraceSet;
+    VkPipeline              rcTracePipeline;          // rc_trace.comp
+    VkPipelineLayout        rcTraceLayout;
+    VkPipelineCache         rcTraceCache;
 } RendererState;
 
 

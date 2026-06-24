@@ -68,11 +68,12 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		static const char* const names[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RADIANCE_CASCADES" };
 		printf("Lighting mode: %s\n", names[next]);
 	}
-	// V toggles the RC debug view (voxel albedo). Only visible in an RC mode (HYBRID/RC), which is
-	// where the voxel volume is populated. See RADIANCE_CASCADES.md M3.
+	// V cycles the RC debug view: 0 off, 1 voxel albedo, 2 gathered irradiance. Only visible in an
+	// RC mode (HYBRID/RC), where the volumes are populated. See RADIANCE_CASCADES.md M3.
 	if (key == GLFW_KEY_V && action == GLFW_PRESS) {
-		rendererState.debugView = rendererState.debugView ? 0u : 1u;
-		printf("RC debug view: %s\n", rendererState.debugView ? "voxel albedo" : "off");
+		rendererState.debugView = (rendererState.debugView + 1u) % 3u;
+		static const char* const dbg[3] = { "off", "voxel albedo", "irradiance" };
+		printf("RC debug view: %s\n", dbg[rendererState.debugView]);
 	}
 }
 
@@ -667,6 +668,8 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	// Vertex fallback path packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
 	// (read as gl_InstanceIndex), which requires this feature for a nonzero value in an indirect draw.
 	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
+	// voxelize.frag imageStores into the 3D voxel volumes from the fragment stage (RADIANCE_CASCADES.md M2).
+	deviceFeatures.fragmentStoresAndAtomics = features2.features.fragmentStoresAndAtomics;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -1473,8 +1476,8 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	// tonemap (per view) + shadow atlas + the RC voxel sampler in each global set (binding 12, per view).
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 2u);
+	// tonemap (per view) + shadow atlas + RC voxel (binding 12) + RC irradiance (binding 13) per global set.
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 2u);
 	// Radiance cascades (RADIANCE_CASCADES.md): storage images for the ×1 shared volumes (M1: the
 	// scene voxel; headroom for the cascade ping-pong / irradiance / history added in M2-M4).
 	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -1704,8 +1707,9 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
             // sampled in SHADER_READ after the voxelize pass; the fragment only reads it when an RC
             // mode is active (so its UNDEFINED layout in SHADOWMAP mode is never accessed).
             VkDescriptorImageInfo rcVoxelInfo = { state->rcSampler, state->rcVoxelAlbedoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo rcIrrInfo   = { state->rcSampler, state->rcIrradianceView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
-            VkWriteDescriptorSet writes[8] = {};
+            VkWriteDescriptorSet writes[9] = {};
             // Global set: 10 = cluster light count, 11 = cluster light index (fragment-read).
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[0].dstSet = vr->globalSet;
@@ -1736,15 +1740,18 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
             writes[6] = writes[3];
             writes[6].dstBinding = 4;
             writes[6].pBufferInfo = &indexInfo;
-            // Global set 12: RC voxel albedo sampler (combined image sampler).
+            // Global set 12: RC voxel albedo sampler (debug). 13: irradiance field sampler (GI ambient).
             writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[7].dstSet = vr->globalSet;
             writes[7].dstBinding = 12;
             writes[7].descriptorCount = 1;
             writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[7].pImageInfo = &rcVoxelInfo;
+            writes[8] = writes[7];
+            writes[8].dstBinding = 13;
+            writes[8].pImageInfo = &rcIrrInfo;
 
-            vkUpdateDescriptorSets(ctx->device, 8, writes, 0, NULL);
+            vkUpdateDescriptorSets(ctx->device, 9, writes, 0, NULL);
         }
     }
 }
@@ -2454,6 +2461,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.rcVoxelEmissionView) vkDestroyImageView(ctx->device, rendererState.rcVoxelEmissionView, NULL);
 	if (rendererState.rcVoxelEmission) vkDestroyImage(ctx->device, rendererState.rcVoxelEmission, NULL);
 	if (rendererState.rcVoxelizeFrustumBuffer) vkDestroyBuffer(ctx->device, rendererState.rcVoxelizeFrustumBuffer, NULL);
+	if (rendererState.rcIrradianceView) vkDestroyImageView(ctx->device, rendererState.rcIrradianceView, NULL);
+	if (rendererState.rcIrradiance) vkDestroyImage(ctx->device, rendererState.rcIrradiance, NULL);
 	if (rendererState.rcSampler) vkDestroySampler(ctx->device, rendererState.rcSampler, NULL);
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
