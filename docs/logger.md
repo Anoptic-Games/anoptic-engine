@@ -4,7 +4,7 @@ Anoptic Engine uses a MPSC buffered logging system with single-ownership per log
 
 The ring is variable-length and cache-line-granular (DPDK `rte_ring` family). Each entry is a contiguous run of cache lines: a 16-byte head-line marker — one atomic commit word doubling as the free/uncommitted sentinel, plus a timestamp — followed by the finished log line as plain text. The producer formats the line on its own thread before it ever touches the ring; the consumer only copies bytes. The earlier fixed-slot Vyukov draft was retired in favor of this layout.
 
-Scope: the producer enqueue path, the single-consumer flusher, the file sink, and the public interface in `include/anoptic_logging.h`, on Linux, macOS, and Windows.
+Scope: the producer enqueue path, the single-consumer flusher, the file sink, and the public interface in `include/anoptic_logger.h`, on Linux, macOS, and Windows.
 
 ---
 
@@ -380,13 +380,13 @@ The deferred alternative captures the raw arguments and formats them later, on t
 
 ## 11. Sink, timestamps, lifecycle, interface
 
-Sink. A minimal append-only handle in `anoptic_filesystem` (opaque `ano_file`; `ano_fs_open_append` / `_write` / `_sync` / `_close`). This API does not exist yet — `anoptic_filesystem.h` today exposes only `ano_fs_gamepath` / `_userpath` / `_chdir_gamepath` and the `filepath` struct — so the append-handle layer is net-new and a hard prerequisite: the flusher cannot write until it lands (it gates Step 3, §13). POSIX `open(O_WRONLY|O_CREAT|O_APPEND,0644)` on Linux and macOS; Windows `CreateFileW(FILE_APPEND_DATA)` + `WriteFile`, UTF-8→UTF-16 at the boundary. One handle per process, one batched `write` per interval (loop on short writes), fsync only on cleanup / `ano_log_flush` / a FATAL write. `ano_log_output_dir(dir)` opens `dir/anoptic_<utc>.log`; with no sink, records still drain to console.
+Sink. A minimal append-only handle in `anoptic_filesystem` (opaque `ano_file`; `ano_fs_open_append` / `_write` / `_sync` / `_close`). This API does not exist yet — `anoptic_filesystem.h` today exposes only `ano_fs_gamepath` / `_userpath` / `_chdir_gamepath` and the `filepath` struct — so the append-handle layer is net-new and a hard prerequisite: the flusher cannot write until it lands (it gates the lifecycle/flusher work, §13). POSIX `open(O_WRONLY|O_CREAT|O_APPEND,0644)` on Linux and macOS; Windows `CreateFileW(FILE_APPEND_DATA)` + `WriteFile`, UTF-8→UTF-16 at the boundary. One handle per process, one batched `write` per interval (loop on short writes), fsync only on cleanup / `ano_log_flush` / a FATAL write. `ano_log_output_dir(dir)` opens `dir/anoptic_<utc>.log`; with no sink, records still drain to console.
 
 Timestamps. `ano_timestamp_raw()` (monotonic ns) stamped per record at capture — the platform clock behind the abstraction (`clock_gettime(CLOCK_MONOTONIC)` on Linux; `mach_absolute_time` / `CNTVCT_EL0` on Apple Silicon). Claim order gives file order, so the timestamp is display only, and the producer leaves it raw in the marker for the flusher to render. Convert with an init-time anchor captured once: `anchor_raw_ns = ano_timestamp_raw()` and `anchor_unix_ns = ano_timestamp_unix() * 1000000000ULL` — `ano_timestamp_unix()` returns whole **seconds** (`time(NULL)`), so the ×10⁹ is required. Then `wall = anchor_unix_ns + (ts − anchor_raw_ns)`: the second is fixed at the anchor, sub-second precision rides the monotonic delta — no per-record syscall, no drift.
 
 Lifecycle. `ano_log_init`: "initialized" false (immediate path stderr-only); allocate the ring with `ano_aligned_malloc(N * ANO_CL, ANO_CACHE_LINE)` and zero it (power-of-two line count); `tail = head = 0`; set defaults; capture the timestamp anchor; open the default sink if a directory was set; `running = 1`; spawn the flusher; "initialized" true. (One cache-line-aligned allocation reused in place — no per-logger `mi_heap` is warranted; `ano_aligned_malloc` is the existing abstraction the current logger already uses.) Any earlier failure rolls back without logging through half-built state. `ano_log_cleanup`: `running = 0`; join the flusher (final drain); sync + close the sink; `ano_aligned_free` the ring.
 
-Public interface (`include/anoptic_logging.h`):
+Public interface (`include/anoptic_logger.h`):
 
 ```c
 typedef enum { LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR, LOG_FATAL } log_types_t;
@@ -423,7 +423,7 @@ uint64_t ano_log_dropped(void);
 
 The level-name table (`log_strings[]`) lives in `logging_core.c`.
 
-Files: `include/anoptic_logging.h` (public contract), `src/logging/logging_core.c` (enqueue, immediate, flusher, lifecycle, `format_line`), `src/logging/logging_ring.h` (private `log_marker_t`/`log_word_t`/`log_ring_t` + claim/drain inlines; migrates to `anoptic_collections.h` at Step 5), and the sink. Only the sink is platform-specific; the ring is portable C23 `<stdatomic.h>`.
+Files: `include/anoptic_logger.h` (public contract), `src/logging/logging_core.c` (enqueue, immediate, flusher, lifecycle, `format_line`), `src/logging/logging_ring.h` (private `log_marker_t`/`log_word_t`/`log_ring_t` + claim/drain inlines; migrates to `anoptic_collections.h` with the lock-free-collections work), and the sink. Only the sink is platform-specific; the ring is portable C23 `<stdatomic.h>`.
 
 ---
 
@@ -474,9 +474,9 @@ TSan gates every concurrency test (the `tsan-runner` agent). The lifetime/order 
 - Cache-line constants (decided, in `anoptic_memory.h`): `ANO_CACHE_LINE` is the true coherency line (64 on x86-64 / 128 on Apple Silicon) and sets the reservation grain `ANO_CL` and packing density; `ANO_THREAD_LINE` (128 everywhere) is the false-sharing isolation distance and is what `tail`/`head` pad to — 128 clears both Apple Silicon's 128-byte line and x86's adjacent-line-prefetch buddy pair. The split mirrors C++17's constructive/destructive interference sizes. `render_bridge.h`'s private `ANO_CACHE_LINE 64` was removed in favor of these, and its SPSC cursors now pad to `ANO_THREAD_LINE`.
 - Eager vs deferred formatting (decided): the logger formats eagerly (§9). The deferred path — call-site dictionary, two-pass argument codec, offline formatting of `(site id, timestamp, arg blob)`, and the fixed-schema `ANO_PROBE(site, u32, u64)` tracer — belongs to `anoptic_profiler.h`. Reopen only if the logger ever needs out-of-process reconstruction, which is a telemetry concern.
 - Mutex fallback: keep behind a compile flag or delete once the ring is proven under TSan.
-- Header name: keep `anoptic_logging.h` or rename to `anoptic_logger.h`. Mechanical.
+- Header name (decided): renamed `anoptic_logging.h` → `anoptic_logger.h`.
 - Sink location: `anoptic_filesystem` (recommended) vs logger-private platform files.
 - Default full policy: IMMEDIATE (no loss, self-throttling).
-- Collections convergence: this ring is the ECS event-bus primitive. At Step 5 it migrates into `anoptic_collections.h` as the shared lock-free variable-record ring, logger and event bus as its two callers. Build it once.
-- Module axis (the through-line). The same variable-record ring backs three callers that pick different policies on one integrity-versus-throughput axis: the logger picks integrity (sparse access, total order, immediate-on-full, never silently drop, eager-formatted finished text) because Release compiles most calls out and volume is low enough to afford it; a future `anoptic_profiler.h` picks throughput (high volume, lossy-OK, per-thread to avoid perturbing the measured path, deferred binary schema — Morgan Stanley Binlog as prior art); a crash trace would pick durability (ring `mmap`'d and never zeroed so the tail survives the process). The logger's shared-ring choice is what buys its integrity (a dead producer strands one gap — §12), and it is the choice most likely to need revisiting at the event-bus port: a high-traffic bus may want per-producer rings. If so, "build it once" splits into "one ring layout, several ownership policies," and that should be decided before Step 5.
+- Collections convergence: this ring is the ECS event-bus primitive. At the collections port it migrates into `anoptic_collections.h` as the shared lock-free variable-record ring, logger and event bus as its two callers. Build it once.
+- Module axis (the through-line). The same variable-record ring backs three callers that pick different policies on one integrity-versus-throughput axis: the logger picks integrity (sparse access, total order, immediate-on-full, never silently drop, eager-formatted finished text) because Release compiles most calls out and volume is low enough to afford it; a future `anoptic_profiler.h` picks throughput (high volume, lossy-OK, per-thread to avoid perturbing the measured path, deferred binary schema — Morgan Stanley Binlog as prior art); a crash trace would pick durability (ring `mmap`'d and never zeroed so the tail survives the process). The logger's shared-ring choice is what buys its integrity (a dead producer strands one gap — §12), and it is the choice most likely to need revisiting at the event-bus port: a high-traffic bus may want per-producer rings. If so, "build it once" splits into "one ring layout, several ownership policies," and that should be decided before the collections port.
 - Deferred: log rotation; `pthread_cond_timedwait` for zero-latency flusher wakeup.

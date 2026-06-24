@@ -1,15 +1,15 @@
 # Strings — Design Progress and Synthesis
 
-The composited record of everything in-tree on the string question: the conventions other languages converged on, the type theory underneath, the notes worth keeping from the literature, and the competing designs on the table for Anoptic. Step 4 of the build sequence (`docs/notes.md`) is `ano_strings`; this is the design context behind it.
+The composited record of everything in-tree on the string question: the conventions other languages converged on, the type theory underneath, the notes worth keeping from the literature, and the competing designs on the table for Anoptic. The build sequence (`docs/notes.md`) specifies `ano_strings`; this is the design context behind it.
 
-Composited from: `.claude/fable_stringtheory.md` (the design conversation), `docs/data.md` ("Safety Through Geometry"), `docs/notes.md` Step 4, `docs/TODO.md`, and `docs/references/game-engine-architecture.md` §6.4. A TODO section closes the file.
+Composited from: `.claude/fable_stringtheory.md` (the string-theory design notes), `docs/data.md` ("Safety Through Geometry"), `docs/notes.md`'s owned-string design, `docs/TODO.md`, and `docs/references/game-engine-architecture.md` §6.4. A TODO section closes the file.
 
 ---
 
 ## 0. Status snapshot
 
-- Step 4 is the live branch (`feature-string-redux`). The string module sits in `src/strings/` with `include/anoptic_strings.h` as its contract (currently a stub on `main`); `src/strings/` is described as "owned-string-type work and scoped-heap experiments" (the `mem_chariot` tests in `ano_strings.c`).
-- The 2024 spec survives on the `feature-strings` branch as `include/ano_strings.h`. It is reviewed below and flagged as "load-bearing": recover it at Step 4 (it predates the `anoptic_core` split and is ~45 commits behind). House rule: archive-tag, never plain-delete.
+- The strings work is the live branch (`feature-string-redux`). The string module sits in `src/strings/` with `include/anoptic_strings.h` as its contract (currently a stub on `main`); `src/strings/` is described as "owned-string-type work and scoped-heap experiments" (the `mem_chariot` tests in `ano_strings.c`).
+- The 2024 spec survives on the `feature-strings` branch as `include/ano_strings.h`. It is reviewed below and flagged as "load-bearing": recover it during the strings work (it predates the `anoptic_core` split and is ~45 commits behind). House rule: archive-tag, never plain-delete.
 - The byte half unblocks the engine; the meaning half (codepoints, graphemes, normalization) stays deferred until a glyph shaper forces it.
 
 ---
@@ -19,7 +19,7 @@ Composited from: `.claude/fable_stringtheory.md` (the design conversation), `doc
 The string question blocked the whole engine, and correctly so. Three framings, all the same fact:
 
 - A string is the purest instance of *dynamically-sized bytes with unknown lifetime* — the universal container problem. Rust states it in its type system: `String` is `Vec<u8>` plus an invariant. Solve owned-growable-sliceable bytes and you have solved the dynamic array, which is the substrate under hash maps, queues, ECS columns, serialization buffers, log lines, asset paths, network packets. In most languages the string and the vector literally share an allocator policy, a growth policy, and an ownership story. Get the ownership story wrong in the string and it metastasizes into every API that touches text — which is every API.
-- The string question and the allocator question are the same question at two granularities: memory itself is one big byte-string (the von Neumann machine is "an arbitrary amount of bytes under a grand series of transformations"). String ownership was undefinable before byte ownership — arenas, `mi_heap_t` — existed. That dependency is the field's actual dependency graph. The infrastructure exists now, so Step 4 is no longer blocked.
+- The string question and the allocator question are the same question at two granularities: memory itself is one big byte-string (the von Neumann machine is "an arbitrary amount of bytes under a grand series of transformations"). String ownership was undefinable before byte ownership — arenas, `mi_heap_t` — existed. That dependency is the field's actual dependency graph. The infrastructure exists now, so the strings work is no longer blocked.
 - Strings are two hard problems stacked: **bytes** (allocation, lifetime) and **meaning** (codepoints, graphemes, normalization). The engine needs only the bytes half to unblock.
 
 The historical record carries a body count, all of it evidence that string decisions are where allocation, encoding, ownership, and ergonomics collide first: NUL termination was a one-byte economy in 1972 that became "the most expensive one-byte mistake" (Kamp) — half a century of buffer overflows; Java, Windows, and JavaScript pay a permanent UTF-16 tax for encoding too early; the largest schism in the most popular language's history, Python 2→3, was a fight about what a string is.
@@ -43,7 +43,7 @@ The payoff of the fat pointer: O(1) length, no NUL-termination dependency, subst
 
 ### Rust, and the load-bearing insight
 
-`String` is `Vec<u8>` plus an invariant: bytes are validated as UTF-8 once, at construction; slicing panics off char boundaries; everything downstream trusts without re-checking. The value was never in the codegen ("nothing crazy in the assembly") — it is in *where validation happens*: once at the boundary. This is the same conclusion as the notes' "UTF-8 is byte-transparent in storage, defer the rest": byte-transparent storage, validation as a separable layer on top.
+`String` is `Vec<u8>` plus an invariant: bytes are validated as UTF-8 once, at construction; slicing panics off char boundaries; everything downstream trusts without re-checking. The value is in *where validation happens* ("nothing crazy in the assembly"): once at the boundary. This is the same conclusion as the notes' "UTF-8 is byte-transparent in storage, defer the rest": byte-transparent storage, validation as a separable layer on top.
 
 ### Five families of "who owns the callee's effects"
 
@@ -112,7 +112,7 @@ The empirical case and a parallel identity type:
 - Strings are expensive: `strcmp` is O(n), `strcpy` copies and maybe allocates; Gregory profiled a game where `strcmp`/`strcpy` were the **top two most expensive functions**.
 - Always pass by reference; know whether a string class **owns** its buffer or references memory it doesn't, and whether it is copy-on-write.
 - **Hashed string ids** ("string id" / Unreal `FName`): hash a string to an int, compare as fast ints, keep originals in a global table for debug. Interning = hash + add to table, done once and cached. Naughty Dog uses compile-time hashing (`"foo"_sid`) so ids are `switch` labels, and moved from 32-bit to **64-bit** hashes to kill collisions. C23 `constexpr` gives us this without C++ UDLs.
-- UTF-8 everywhere on 8-bit `char` (ASCII-backward-compatible, byte-granular, high bit flags multibyte). Define your own string type. This confirms the Step 4 owned-string + length + UTF-8-transparency design precisely.
+- UTF-8 everywhere on 8-bit `char` (ASCII-backward-compatible, byte-granular, high bit flags multibyte). Define your own string type. This confirms the owned-string + length + UTF-8-transparency design precisely.
 
 ---
 
@@ -141,7 +141,7 @@ The deep gap: one type plays both **owner** (some `anostr_t`s own their buffer, 
 anostr_t s CLEANUPATTR(anostr_cleanup) = anostr_heap_slice(...);  // works
 ```
 
-### 5.2 Design B — notes.md Step 4 owned string (the current spec)
+### 5.2 Design B — notes.md's owned string (the current spec)
 
 ```c
 { char* ptr; uint32_t len; uint32_t capacity; }

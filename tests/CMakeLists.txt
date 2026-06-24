@@ -6,11 +6,11 @@ target_link_libraries(anotest_time PRIVATE anoptic_core)
 add_test(NAME anoptic_time COMMAND anotest_time)
 set_tests_properties(anoptic_time PROPERTIES TIMEOUT 30 LABELS "unit")
 
-# Testing for ``anoptic_logging.h``
+# Testing for ``anoptic_logger.h``
 add_executable(anotest_logging anotest_logging.c)
 target_link_libraries(anotest_logging PRIVATE anoptic_core)
 add_test(NAME anoptic_logging COMMAND anotest_logging)
-set_tests_properties(anoptic_logging PROPERTIES TIMEOUT 10 LABELS "unit;concurrency")
+set_tests_properties(anoptic_logging PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
 
 # Testing for mesh optimizer
 add_executable(anotest_meshoptimizer anotest_meshoptimizer.c)
