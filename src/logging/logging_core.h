@@ -10,9 +10,8 @@
 
 #include <anoptic_logger.h>
 
-#define ANO_LOG_MSG_MAX             4096u        // max formatted line, NUL included
-#define ANO_LOG_BUF_CAP             (1u << 16)   // shared buffer, 64 KiB (must exceed MSG_MAX)
-#define ANO_LOG_DEFAULT_INTERVAL_US 100000u      // flusher cadence, 100 ms
-#define ANO_LOG_FILENAME            "anoptic.log"
+#define ANO_LOG_MSG_MAX  4096u        // max formatted line, NUL included
+#define ANO_LOG_BUF_CAP  (1u << 16)   // shared buffer, must exceed MSG_MAX
+#define ANO_LOG_FILENAME "anoptic.log"
 
 #endif //ANOPTICENGINE_LOGGING_CORE_H

@@ -7,8 +7,8 @@
 // through the file sink. The rest abuses the public interface on the assumption it WILL be called
 // wrong: pathological inputs, bogus config, rejected sink switches, lifecycle misuse (calls before
 // init / after cleanup), and three contention tests (flush-vs-write, an ABA tripwire, config/sink
-// thrash). The background flusher is parked at a long interval so most cases drain explicitly and
-// their file contents are deterministic. The final case leaves a human-readable log for inspection.
+// thrash). The logger runs no background thread, so every case drains explicitly via ano_log_flush()
+// and its file contents are deterministic. The final case leaves a human-readable log for inspection.
 
 #include <anoptic_logger.h>
 #include <anoptic_threads.h>
@@ -410,7 +410,6 @@ static void *c3_thrasher(void *arg)
     for (int n = 0; n < C3_OPS; n++) {
         ano_log_set_level((n & 1) ? LOG_DEBUG : LOG_INFO);
         ano_log_set_full_policy((ano_log_full_policy_t)(n % 3));   // IMMEDIATE / DROP_NEWEST / BLOCK
-        ano_log_interval((uint32_t)((n % 10) + 1));                // 1..10 ms
         if (n % 50 == 0)
             ano_log_output_dir((n % 100 == 0) ? LOG_DIR : LOG_DIR_ALT);   // swap the sink mid-write
     }
@@ -434,7 +433,6 @@ static int test_contention_3_config_thrash(void)
     // Restore sane config and confirm the logger still works end to end.
     ano_log_set_level(LOG_DEBUG);
     ano_log_set_full_policy(ANO_LOG_FULL_IMMEDIATE);
-    ano_log_interval(60000);
     ano_log_output_dir(LOG_DIR);
     ano_log_info("c3 survived: %s", "yes");
     ano_log_flush();
@@ -549,7 +547,6 @@ static int test_lifecycle_guard(const char *when)
     g_fail = 0;
     int r = ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, "%s enqueue", when);
     ano_log_immediate(LOG_WARN, __FILE_NAME__, __LINE__, "%s immediate (expected on stderr)", when);
-    ano_log_interval(123);
     ano_log_set_level(LOG_WARN);
     ano_log_set_full_policy(ANO_LOG_DROP_NEWEST);
     ano_log_flush();
@@ -607,7 +604,6 @@ int main(void)
         fprintf(stderr, "ano_log_init failed\n");
         return 1;
     }
-    ano_log_interval(60000); // park the background flusher; cases drain explicitly
     make_dir(LOG_DIR);
 
     struct { const char *name; int (*fn)(void); } cases[] = {
