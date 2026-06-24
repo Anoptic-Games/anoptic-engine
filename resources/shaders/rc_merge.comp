@@ -1,21 +1,23 @@
 #version 450
 
-// Radiance cascades M4b — top-down interval merge with the bilinear (parallax) fix
-// (radiance-cascades.md:170-191). For each child (probe,dir) texel, rather than compositing one stored
-// near interval over an interpolated parent, we REPROJECT: for each of the 8 trilinear parent probes k
-// we re-march a near interval from the child probe to probe k's near point, merge it with probe k's
-// (angular-averaged) parent interval, then trilinearly combine the 8 merged results. Each reprojected
-// near connects the child directly to where that parent's far interval begins, removing the spatial
-// mismatch that leaks light near geometry. Cost: ~8x the inner-cascade ray work (frame budget, not
-// VRAM). rc_trace seeds only the outermost cascade; this pass produces every inner level.
-// Merge operator in transmittance form (radiance-cascades.md:96): I = I_near + T_near*I_far,
-// T = T_near*T_far. Pure write — no read of cascades[c], so no in-place RMW.
+// Radiance cascades M4 — top-down interval merge (radiance-cascades.md §6, merge operator :96).
+// Merge operator in transmittance form: I = I_near + T_near*I_far, T = T_near*T_far.
+//
+// Two paths, selected per cascade level (uniform branch on the push constant — no divergence):
+//   c <  RC_FIX_CASCADES : reprojecting BILINEAR FIX (radiance-cascades.md:170-191). For each of the 8
+//        trilinear parent probes, re-march a near interval from the child probe to that probe's near
+//        point and merge per-corner, then trilinear-combine. Removes the near-geometry light leak, at
+//        ~8x the inner-cascade ray cost. The near-geometry leak is a near-field artifact, so only the
+//        lowest cascade(s) need this.
+//   c >= RC_FIX_CASCADES : cheap interval merge — composite the trace's stored near interval over the
+//        trilinear + angular-averaged parent. No re-march. (rc_trace seeds every level for this path.)
 
-#define RC_H         8.0
-#define RC_VOX       128.0
-#define RC_C0_PROBES 64
-#define RC_C0_OCT    4
-#define RC_CASCADES  6
+#define RC_H            8.0
+#define RC_VOX          128.0
+#define RC_C0_PROBES    64
+#define RC_C0_OCT       4
+#define RC_CASCADES     6
+#define RC_FIX_CASCADES 1   // mirror of ANO_RC_FIX_CASCADES
 
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
@@ -50,15 +52,34 @@ vec4 marchSegment(vec3 S, vec3 E) {
     for (int i = 0; i < n; i++) {
         vec3 uv = worldToUv(S + dir * t);
         if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) break;
+        // Emission volumetric (surfaces + injected lights); opacity only attenuates. Matches rc_trace.
+        radiance += T * texture(voxelEmission, uv).rgb;
         float op = texture(voxelAlbedo, uv).a;
         if (op > 0.01) {
-            radiance += T * texture(voxelEmission, uv).rgb * op;
             T *= (1.0 - op);
             if (T < 0.01) { T = 0.0; break; }
         }
         t += dt;
     }
     return vec4(radiance, T);
+}
+
+// Trilinear sample of parent cascade `lvl` (Pp probes/axis, Op oct res) at continuous probe coord fc,
+// for one fixed parent direction tile (pox,poy). Used by the cheap (non-reprojecting) path.
+vec4 sampleParent(int lvl, vec3 fc, int Pp, int Op, int pox, int poy) {
+    vec3 f = clamp(fc, vec3(0.0), vec3(float(Pp) - 1.0));
+    ivec3 i0 = ivec3(floor(f));
+    ivec3 i1 = min(i0 + 1, ivec3(Pp - 1));
+    vec3 w = f - vec3(i0);
+    vec4 acc = vec4(0.0);
+    for (int dz = 0; dz < 2; dz++)
+    for (int dy = 0; dy < 2; dy++)
+    for (int dx = 0; dx < 2; dx++) {
+        ivec3 q  = ivec3(dx == 0 ? i0.x : i1.x, dy == 0 ? i0.y : i1.y, dz == 0 ? i0.z : i1.z);
+        float wt = (dx == 0 ? 1.0 - w.x : w.x) * (dy == 0 ? 1.0 - w.y : w.y) * (dz == 0 ? 1.0 - w.z : w.z);
+        acc += wt * imageLoad(cascades[lvl], ivec3(q.x * Op + pox, q.y * Op + poy, q.z));
+    }
+    return acc;
 }
 
 void main() {
@@ -79,14 +100,28 @@ void main() {
 
     vec3 dir      = octDecode(ivec2(ox, oy), O);
     vec3 childPos = probeWorld(ivec3(px, py, pz), P);
+    vec3 fc = (childPos + vec3(RC_H)) / (2.0 * RC_H) * float(Pp) - 0.5;
 
+    if (c >= uint(RC_FIX_CASCADES)) {
+        // --- cheap path: stored near over trilinear + angular-averaged parent ---
+        vec4 near = imageLoad(cascades[c], g);
+        vec3 farI = vec3(0.0); float farT = 0.0;
+        for (int dax = 0; dax < 2; dax++)
+        for (int day = 0; day < 2; day++) {
+            vec4 s = sampleParent(parent, fc, Pp, Op, 2 * ox + dax, 2 * oy + day);
+            farI += s.rgb; farT += s.a;
+        }
+        farI *= 0.25; farT *= 0.25;
+        imageStore(cascades[c], g, vec4(near.rgb + near.a * farI, near.a * farT));
+        return;
+    }
+
+    // --- bilinear fix: reproject the near interval to each of the 8 parent probes' near points ---
     float base = (2.0 * RC_H) / float(RC_C0_PROBES);
-    float t0   = base * float((1 << c) - 1);       // child near start
+    float t0   = base * float((1 << c) - 1);        // child near start
     float t1   = base * float((1 << (c + 1)) - 1);  // parent near point distance
     vec3  S    = childPos + dir * t0;
 
-    // continuous child position in the parent probe grid -> 8 trilinear corners + weights
-    vec3  fc = (childPos + vec3(RC_H)) / (2.0 * RC_H) * float(Pp) - 0.5;
     ivec3 i0 = clamp(ivec3(floor(fc)), ivec3(0), ivec3(Pp - 1));
     ivec3 i1 = min(i0 + 1, ivec3(Pp - 1));
     vec3  w  = clamp(fc - vec3(i0), 0.0, 1.0);
@@ -103,20 +138,17 @@ void main() {
         if (wt <= 0.0) continue;
 
         vec3 pPos = probeWorld(q, Pp);
-        // reproject the child near interval to land on parent k's near point
         vec4 reproj = marchSegment(S, pPos + dir * t1);
 
         // parent k's interval in direction ~dir: average its 4 angular sub-directions (2x2 octmap)
         vec3  pI = vec3(0.0); float pT = 0.0;
         for (int dax = 0; dax < 2; dax++)
         for (int day = 0; day < 2; day++) {
-            ivec3 texel = ivec3(q.x * Op + (2 * ox + dax), q.y * Op + (2 * oy + day), q.z);
-            vec4 s = imageLoad(cascades[parent], texel);
+            vec4 s = imageLoad(cascades[parent], ivec3(q.x * Op + (2 * ox + dax), q.y * Op + (2 * oy + day), q.z));
             pI += s.rgb; pT += s.a;
         }
         pI *= 0.25; pT *= 0.25;
 
-        // composite reprojected near over parent k, then accumulate with the trilinear weight
         accI += wt * (reproj.rgb + reproj.a * pI);
         accT += wt * (reproj.a * pT);
     }

@@ -327,6 +327,13 @@ void main() {
             continue;
         }
 
+        // In HYBRID/RC the radiance-cascade field carries point lights (injected as voxel emitters,
+        // gathered with occlusion), so drop their unshadowed forward direct term here — otherwise it
+        // would double-count and leak through walls. SHADOWMAP keeps the forward + shadow-mapped path.
+        if (light.type == LIGHT_TYPE_POINT && global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
+            continue;
+        }
+
         // Derive world placement from the light's driving entity transform.
         mat4 lightXform = transformBuf.transforms[light.transformIndex];
         vec3 lightPos = lightXform[3].xyz;

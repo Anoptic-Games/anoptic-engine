@@ -338,6 +338,12 @@ void main() {
             continue;
         }
 
+        // HYBRID/RC: point lights are carried by the radiance-cascade field (injected emitters,
+        // occluded), so drop their unshadowed forward direct here. SHADOWMAP keeps forward+shadow.
+        if (light.type == LIGHT_TYPE_POINT && global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
+            continue;
+        }
+
         // Derive world placement from the light's driving entity transform.
         mat4 lightXform = transformBuf.transforms[light.transformIndex];
         vec3 lightPos = lightXform[3].xyz;
