@@ -4,10 +4,11 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Baseline + adversarial suite for the mutex logger. The first block round-trips normal usage
-// through the file sink. The rest abuses the public interface on the assumption it WILL be called
-// wrong: pathological inputs, bogus config, rejected sink switches, lifecycle misuse (calls before
-// init / after cleanup), and three contention tests (flush-vs-write, an ABA tripwire, config/sink
-// thrash). The logger runs no background thread, so every case drains explicitly via ano_log_flush()
+// through the output file. The rest abuses the public interface on the assumption it WILL be called
+// wrong: pathological inputs, bogus config, rejected output-file switches, lifecycle misuse (calls
+// before init / after cleanup), and three contention tests (flush-vs-write, an ABA tripwire,
+// config/output-file thrash). The logger runs no background thread, so every case drains explicitly
+// via ano_log_flush()
 // and its file contents are deterministic. The final case leaves a human-readable log for inspection.
 
 #include <anoptic_logger.h>
@@ -88,8 +89,8 @@ static size_t longest_line(const char *s)
     return best;
 }
 
-// Fresh sink file for the next case: drop the old one, then (re)point the logger at LOG_DIR.
-static void reset_sink(void)
+// Fresh output file for the next case: drop the old one, then (re)point the logger at LOG_DIR.
+static void reset_output(void)
 {
     remove(LOG_PATH);
     ano_log_output_dir(LOG_DIR);
@@ -101,7 +102,7 @@ static void reset_sink(void)
 static int test_roundtrip(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     ano_log_info("hello %d", 7);
     ano_log_warn("warn line");
     ano_log_error("err %s", "x");
@@ -123,7 +124,7 @@ static int test_roundtrip(void)
 static int test_formatting(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     ano_log_info("int=%d str=%s hex=%x width=%5d", 42, "abc", 255, 3);
     ano_log_flush();
 
@@ -142,7 +143,7 @@ static int test_formatting(void)
 static int test_accumulation_order(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     for (int i = 0; i < 50; i++)
         ano_log_info("seq %d", i);
     ano_log_flush();
@@ -162,7 +163,7 @@ static int test_accumulation_order(void)
 static int test_level_gate(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     ano_log_set_level(LOG_ERROR);
     ano_log_info("gated info message");
     ano_log_error("passing error message");
@@ -179,31 +180,33 @@ static int test_level_gate(void)
     return g_fail;
 }
 
-static int test_drop_newest(void)
+// Flood far past ring capacity with no intervening flush. The ring fills, then a producer that hits
+// full flushes the buffered batch to make room and keeps buffering. Nothing is lost.
+static int test_full_ring(void)
 {
     g_fail = 0;
-    reset_sink();
-    ano_log_set_full_policy(ANO_LOG_DROP_NEWEST);
+    reset_output();
 
-    uint64_t before = ano_log_dropped();
-    int rejected = 0;
+    int flushed = 0;
     for (int i = 0; i < 5000; i++)
-        if (ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "flood %d", i) == -1)
-            rejected++;
-    uint64_t after = ano_log_dropped();
-
-    ano_log_set_full_policy(ANO_LOG_FULL_IMMEDIATE);
+        if (ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "flood %d", i) == 1)
+            flushed++;
     ano_log_flush();
 
-    CHECK(rejected > 0, "drop: some records rejected");
-    CHECK(after - before == (uint64_t)rejected, "drop: counter matches -1 returns");
+    CHECK(flushed > 0, "full: some records triggered a flush-to-make-room");
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "full: file readable");
+    if (c) {
+        CHECK(count_lines(c) == 5000, "full: every record survives a full ring");
+        free(c);
+    }
     return g_fail;
 }
 
 static int test_immediate_order(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     ano_log_info("buffered before immediate");
     ano_log_immediate(LOG_ERROR, __FILE_NAME__, __LINE__, "immediate %d", 99);
     ano_log_flush();
@@ -224,7 +227,7 @@ static int test_immediate_order(void)
 static int test_truncation(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     char big[6000];
     memset(big, 'A', sizeof big - 1);
     big[sizeof big - 1] = '\0';
@@ -243,7 +246,7 @@ static int test_truncation(void)
 static int test_empty_message(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     ano_log_info("%s", "");
     ano_log_flush();
 
@@ -269,7 +272,7 @@ static void *worker(void *arg)
 static int test_concurrent(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     atomic_store(&g_worker_fail, 0);
 
     anothread_t workers[THREAD_COUNT];
@@ -317,7 +320,7 @@ static void *c1_flusher(void *arg)
 static int test_contention_1_flush_vs_write(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     atomic_store(&g_stop, false);
 
     anothread_t prod[C1_PRODUCERS], flush[C1_FLUSHERS];
@@ -368,7 +371,7 @@ static void *c2_worker(void *arg)
 static int test_contention_2_aba_bait(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
 
     anothread_t t[C2_THREADS];
     for (intptr_t i = 0; i < C2_THREADS; i++)
@@ -388,7 +391,7 @@ static int test_contention_2_aba_bait(void)
 }
 
 
-/* Contention 3 — config and sink thrash under load */
+/* Contention 3 — config and output-file thrash under load */
 
 #define C3_PRODUCERS 3
 #define C3_OPS       600
@@ -401,7 +404,7 @@ static void *c3_producer(void *arg)
     return NULL;
 }
 
-// Cycles every config knob and flips the sink between two directories while producers hammer the
+// Cycles every config knob and flips the output file between two directories while producers hammer the
 // log. Counting is impossible (gated levels, drops, two files), so the assertion is survival: no
 // crash, no deadlock, TSan-clean, and the logger is still functional afterward.
 static void *c3_thrasher(void *arg)
@@ -409,9 +412,8 @@ static void *c3_thrasher(void *arg)
     (void)arg;
     for (int n = 0; n < C3_OPS; n++) {
         ano_log_set_level((n & 1) ? LOG_DEBUG : LOG_INFO);
-        ano_log_set_full_policy((ano_log_full_policy_t)(n % 3));   // IMMEDIATE / DROP_NEWEST / BLOCK
         if (n % 50 == 0)
-            ano_log_output_dir((n % 100 == 0) ? LOG_DIR : LOG_DIR_ALT);   // swap the sink mid-write
+            ano_log_output_dir((n % 100 == 0) ? LOG_DIR : LOG_DIR_ALT);   // swap the output file mid-write
     }
     return NULL;
 }
@@ -419,7 +421,7 @@ static void *c3_thrasher(void *arg)
 static int test_contention_3_config_thrash(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     make_dir(LOG_DIR_ALT);
 
     anothread_t prod[C3_PRODUCERS], thr;
@@ -432,14 +434,13 @@ static int test_contention_3_config_thrash(void)
 
     // Restore sane config and confirm the logger still works end to end.
     ano_log_set_level(LOG_DEBUG);
-    ano_log_set_full_policy(ANO_LOG_FULL_IMMEDIATE);
     ano_log_output_dir(LOG_DIR);
     ano_log_info("c3 survived: %s", "yes");
     ano_log_flush();
 
     char *c = slurp(LOG_PATH, NULL);
     CHECK(c != NULL && strstr(c, "c3 survived: yes"),
-          "contention3: logger functional after config/sink thrash");
+          "contention3: logger functional after config/output-file thrash");
     free(c);
     return g_fail;
 }
@@ -450,7 +451,7 @@ static int test_contention_3_config_thrash(void)
 static int test_abuse_inputs(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
 
     // C-string-scannable content first (no embedded NUL yet to stop strstr/longest_line).
     ano_log_info("multi\nline\nmessage");              // newlines inside one record
@@ -484,7 +485,7 @@ static int test_abuse_inputs(void)
 static int test_abuse_config(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
 
     // Absurd-high level gates everything.
     ano_log_set_level((log_types_t)999);
@@ -502,23 +503,13 @@ static int test_abuse_config(void)
     CHECK(c && strstr(c, "absurd-low"), "abuse-config: absurd-low level passes all");
     free(c);
     ano_log_set_level(LOG_DEBUG);
-
-    // Out-of-range policy: must not crash; it falls through to a drain-and-append.
-    ano_log_set_full_policy((ano_log_full_policy_t)42);
-    for (int i = 0; i < 5000; i++)
-        ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "bogus policy flood %d", i);
-    ano_log_set_full_policy(ANO_LOG_FULL_IMMEDIATE);
-    ano_log_flush();
-    c = slurp(LOG_PATH, NULL);
-    CHECK(c && strstr(c, "bogus policy flood 4999"), "abuse-config: bogus full policy survived flood");
-    free(c);
     return g_fail;
 }
 
 static int test_abuse_output_dir(void)
 {
     g_fail = 0;
-    reset_sink();
+    reset_output();
     ano_log_info("before bad output_dir");
     ano_log_flush();
 
@@ -531,12 +522,12 @@ static int test_abuse_output_dir(void)
     longp[sizeof longp - 1] = '\0';
     CHECK(ano_log_output_dir(longp) == -1, "abuse-dir: overlong path rejected");
 
-    // Every rejected switch must have left the working sink intact.
+    // Every rejected switch must have left the working output file intact.
     ano_log_info("after bad output_dir");
     ano_log_flush();
     char *c = slurp(LOG_PATH, NULL);
     CHECK(c && strstr(c, "before bad output_dir") && strstr(c, "after bad output_dir"),
-          "abuse-dir: working sink survived rejected switches");
+          "abuse-dir: working output file survived rejected switches");
     free(c);
     return g_fail;
 }
@@ -548,13 +539,10 @@ static int test_lifecycle_guard(const char *when)
     int r = ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, "%s enqueue", when);
     ano_log_immediate(LOG_WARN, __FILE_NAME__, __LINE__, "%s immediate (expected on stderr)", when);
     ano_log_set_level(LOG_WARN);
-    ano_log_set_full_policy(ANO_LOG_DROP_NEWEST);
     ano_log_flush();
     int dr = ano_log_output_dir("anywhere");
-    uint64_t d = ano_log_dropped();
     CHECK(r == 0, "lifecycle: enqueue is a no-op (returns 0) when not live");
     CHECK(dr == -1, "lifecycle: output_dir refused when not live");
-    CHECK(d == 0, "lifecycle: dropped reads 0 when not live");
     return g_fail;
 }
 
@@ -580,7 +568,7 @@ static int test_visible_output(void)
         ano_log_info("counted line %d of 5", i);
     ano_log_flush();
 
-    ano_log_output_dir(LOG_DIR);   // move the sink off the showcase file so nothing else touches it
+    ano_log_output_dir(LOG_DIR);   // move the output off the showcase file so nothing else touches it
 
     char *c = slurp(VIS_PATH, NULL);
     CHECK(c != NULL && strstr(c, "showcase"), "visible: showcase file written");
@@ -611,7 +599,7 @@ int main(void)
         { "formatting",                 test_formatting },
         { "accumulation_order",         test_accumulation_order },
         { "level_gate",                 test_level_gate },
-        { "drop_newest",                test_drop_newest },
+        { "full_ring",                  test_full_ring },
         { "immediate_order",            test_immediate_order },
         { "truncation",                 test_truncation },
         { "empty_message",              test_empty_message },

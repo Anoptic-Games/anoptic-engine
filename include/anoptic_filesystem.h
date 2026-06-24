@@ -43,7 +43,7 @@ filepath ano_fs_userpath();
 bool ano_fs_chdir_gamepath(void);
 
 
-// Append-only file sink. Opaque handle -- the platform struct (a POSIX fd, a Win32 HANDLE)
+// Append-only output file. Opaque handle -- the platform struct (a POSIX fd, a Win32 HANDLE)
 // lives in the per-OS source, so callers never see the descriptor. Open once, write many.
 // The logger's batched flush is the first user.
 typedef struct ano_file ano_file;
