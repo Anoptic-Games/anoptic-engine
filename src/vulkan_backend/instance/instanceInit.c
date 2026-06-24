@@ -2254,6 +2254,37 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		}
 	}
 
+	// GPU timestamp profiling (RADIANCE_CASCADES.md §8). One query pool of ANO_TS_COUNT timestamps
+	// per frame in flight. Gated on the graphics queue family's timestampValidBits + a usable period;
+	// when unsupported the whole timing path is a no-op and rendering is unaffected.
+	{
+		VkPhysicalDeviceProperties props;
+		vkGetPhysicalDeviceProperties(ctx->physicalDevice, &props);
+		state->timestampPeriodNs = props.limits.timestampPeriod;
+
+		uint32_t qfCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalDevice, &qfCount, NULL);
+		VkQueueFamilyProperties qfProps[qfCount];
+		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalDevice, &qfCount, qfProps);
+		uint32_t gf = ctx->queueFamilyIndices.graphicsFamily;
+		state->timestampValidBits = (gf < qfCount) ? qfProps[gf].timestampValidBits : 0u;
+		if (state->timestampPeriodNs <= 0.0f) state->timestampValidBits = 0u;
+
+		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			state->frames[i].timestampPool = VK_NULL_HANDLE;
+			if (state->timestampValidBits) {
+				VkQueryPoolCreateInfo qpi = {};
+				qpi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+				qpi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+				qpi.queryCount = ANO_TS_COUNT;
+				if (vkCreateQueryPool(ctx->device, &qpi, NULL, &state->frames[i].timestampPool) != VK_SUCCESS) {
+					printf("Failed to create timestamp query pool; profiling disabled.\n");
+					state->timestampValidBits = 0u; // disable profiling, keep rendering
+				}
+			}
+		}
+	}
+
 	return true;
 }
 
@@ -2440,6 +2471,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		if (rendererState.frames[i].frameFence)
 		{
 			vkDestroyFence(ctx->device, rendererState.frames[i].frameFence, NULL);
+		}
+		if (rendererState.frames[i].timestampPool)
+		{
+			vkDestroyQueryPool(ctx->device, rendererState.frames[i].timestampPool, NULL);
 		}
 
 	}

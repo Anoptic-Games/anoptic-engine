@@ -69,6 +69,19 @@
 #define ANO_SHADOW_DEPTH_FORMAT  VK_FORMAT_D32_SFLOAT   // sampled as a depth-compare (sampler2DArrayShadow)
 #define ANO_SHADOW_ORTHO_EXTENT  8.0f                   // half-size of the directional ortho world box (covers the demo scene)
 
+// Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
+// each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)
+// and the per-frame query-pool sizing (instanceInit). Insert RC boundaries here as those passes land.
+enum {
+    ANO_TS_FRAME_BEGIN = 0, // top of the command buffer
+    ANO_TS_AFTER_UPLOAD,    // delta staging copies done
+    ANO_TS_AFTER_COMPUTE,   // update/scatter/cull done
+    ANO_TS_AFTER_SHADOW,    // shadow depth render done
+    ANO_TS_AFTER_LIGHTING,  // per-view light-cull + geometry done
+    ANO_TS_AFTER_COMPOSITE, // tonemap composite done
+    ANO_TS_COUNT
+};
+
 // FALLBACK_MESH_INDEX is the public renderer contract (anoptic_render.h), pulled
 // in transitively via render_bridge.h above.
 #define FALLBACK_TEXTURE_INDEX 0
@@ -711,6 +724,10 @@ typedef struct PerFrameResources
     // Command recording
     VkCommandBuffer     commandBuffer;
 
+    // Per-pass GPU timestamps (RADIANCE_CASCADES.md profiling harness). One pool per frame in
+    // flight: reset + written during record, read back after this slot's fence next time round.
+    VkQueryPool         timestampPool;
+
     // Per-view resources (camera UBO, depth, HDR target, froxel lists, descriptor sets).
     ViewResources       views[ANO_VIEW_COUNT];
 
@@ -837,6 +854,11 @@ typedef struct RendererState
     // from the render thread (L-key callback / ano_render_set_lighting_mode).
     uint32_t                lightingMode;   // AnoLightingMode; default ANO_LIGHTING_SHADOWMAP (0)
     uint32_t                debugView;      // RC debug visualization selector (0 = off)
+
+    // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
+    // limits + graphics queue family; validBits == 0 disables the per-pass timing path.
+    float                   timestampPeriodNs;  // ns per timestamp tick (limits.timestampPeriod)
+    uint32_t                timestampValidBits;  // graphics-queue timestampValidBits (0 = unsupported)
 } RendererState;
 
 
