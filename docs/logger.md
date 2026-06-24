@@ -242,13 +242,14 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
     uint64_t need = (ANO_LOG_HDR + len + ANO_CL - 1) / ANO_CL;   // cache lines, >= 1
 
     uint64_t pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);
-    int flushes = 0;
+    bool flushed = false;
     for (;;) {
         uint64_t hd = atomic_load_explicit(&g_ring.head, memory_order_acquire); // full + reuse-safety
         if ((pos + need) - hd > g_ring.mask + 1) {  // would alias an undrained line → full
-            if (flushes++ >= ANO_LOG_FULL_FLUSH_TRIES)  // a gap is wedging the drain (§7, §10)
+            if (flushed)                            // still full after a flush → a gap is wedging it (§7)
                 return on_full(level, ts, blob, len);   // last resort: write this line straight through
-            drain_wait();                           // flush the batch to free room, then keep buffering
+            drain();                                // flush the batch to free room, then keep buffering
+            flushed = true;
             pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);
             continue;                               // retry the reservation into the freed space
         }
@@ -267,7 +268,7 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
            memcpy(g_ring.buf, blob + toend, len - toend); }
     log_word_t v = { .len = len, .level = level, .flags = ANO_LOG_COMMITTED };
     atomic_store_explicit(&m->tag, v.w, memory_order_release);    // publish — one gate, whole record
-    return flushes ? 1 : 0;                         // 1: had to flush to make room before buffering
+    return flushed ? 1 : 0;                         // 1: had to flush to make room before buffering
 }
 ```
 
@@ -277,7 +278,7 @@ Notes.
 - Lock-free, bounded steps. The only contended line is `tail`. Its CAS retries only under concurrent reservation. The full-check `head` read is an acquire load of a line written once per drain pass.
 - One publish. The producer writes the run as one (or seam-split two) `memcpy` and a single release store of `tag` publishes the whole entry. `len` lives in `tag`, so it commits with the gate.
 - No capture codec, no fallback. The line is finished text, so there is no argument blob to misread and no unsupported-conversion path. `vsnprintf` handles every conversion natively. The record is self-contained bytes.
-- Full ring flushes, then keeps buffering. On a full ring the producer takes the gated drain itself (`drain_wait`, §10), which writes the buffered batch in one `write` and frees the whole committed run, then it retries the reservation and buffers the line. `on_full` is only the last-resort path for a gap that a flush cannot clear (§7).
+- Full ring flushes, then keeps buffering. On a full ring the producer takes the gated drain itself (`drain()`, §10), which writes the buffered batch in one `write` and frees the whole committed run, then it retries the reservation and buffers the line. The drain gate is a blocking mutex (one consumer at a time), so a producer that hit full waits for the in-progress pass rather than spinning. `on_full` is only the last-resort path for a gap that a single flush cannot clear (§7).
 - A mutex-based fallback is selectable behind a compile flag as the trivially-correct reference (§14).
 
 ---
@@ -324,11 +325,11 @@ atomic_store_explicit(&g_ring.head, h, memory_order_release); // frees [h0, h); 
 
 - Order: claim order is a single global serialization, so the batch is already ordered. The pass drains `[head, tail)`. The `tail` snapshot is the upper bound, and the only thing that ends the pass when the ring is exactly full and carries no zero line (§3). A producer that reserved but has not published stops the walk early at its zero `tag`. The flusher resumes there next pass (§7).
 - Zeroing: after the walk the consumer zeroes the drained range `[h0, h)` (one `memset`, two at the seam), restoring the all-zero free state before the `head` release frees the lines. Whole-line zeroing is branchless and lowers to wide stores / `dc zva` on ARM, keeping "all-zero line = free" as one invariant. The `memset` is plain. The `head` release publishes it.
-- Batch: `emit_record` does no parsing. The text is the final message. The flusher only prepends the wall-clock time (and routes by `level`), appending `"<wall-time> <text>"` into a reusable consumer-owned buffer (grown geometrically). A seam-straddling record is gathered into contiguous scratch first (§8). This is the only formatting the consumer does, and it is uniform per record. No `fmt` walk, no dictionary lookup.
+- Batch: `emit_record` does no parsing. The text is the final message. The flusher only prepends the wall-clock time (and routes by `level`), appending `"<wall-time> <text>"` into a reusable consumer-owned buffer. The `"HH:MM:SS"` prefix is memoized for the whole second it was rendered (records in a drain burst share a second), so the civil-time conversion runs once per second, not per record, and the digits are written by hand, not through `snprintf`. A seam-straddling record is gathered into contiguous scratch first (§8). This is the only formatting the consumer does, and it is uniform per record. No `fmt` walk, no dictionary lookup.
 - One write: `ano_fs_write(g_outFile, batch, len)`, one syscall. No fsync here. Echo to console if configured (`>WARN` to stderr, else stdout), routed by `level`.
 - High-watermark: a near-full ring (`tail − head` crossing ~75% of `N`) is the caller's signal to flush sooner. A full event (§10) writes that record immediately. Full is "write now."
 
-Single consumer is a caller contract: the caller must drain from a single thread, since `ano_log_flush` owns `head`. A caller that wants periodic background flushing runs its own thread that calls `ano_log_flush()` on a timer. The logger does not own that policy.
+Single consumer at a time, enforced by a blocking drain mutex rather than left to the caller: `ano_log_flush` is safe to call from any thread, and concurrent flushers (plus a producer flushing a full ring) serialize on the gate, one drain pass at a time. A caller that wants periodic background flushing runs its own thread that calls `ano_log_flush()` on a timer. The mutex on this cold path is a stopgap; a lock-free handoff is the eventual goal.
 
 ---
 
@@ -369,7 +370,7 @@ The deferred alternative captures the raw arguments and formats them later, on t
 - Format synchronously. An immediate write has no flusher pass. `ano_log_immediate` runs `format_line` from its own live `va_list` and prepends the wall-clock time directly, then writes to console (`>WARN` to stderr, else stdout), then the output file if open, then fsync. A FATAL means the flusher will not run again. The full-ring gap fallback already holds the finished line from the producer's `format_line`, so it just writes those bytes (no fsync).
 - Never touch the ring (immediate). `ano_log_immediate` must not reset or consume buffered records, preserving single-consumer.
 - Init error path: before `g_log` is live, write to stderr only, guarded by an "initialized" flag. Never lock or log through half-constructed state.
-- Full ring. On `(pos + need) − head > N` the producer flushes the buffered batch (one gated drain pass, §6, a single batched `write`) to free space, then buffers its line normally and keeps going. This is the same flush-then-keep-buffering policy a bounded write buffer uses, so a burst that outruns the flusher costs one batched `write` per ring-fill, not one `write` per record. Concurrent producers wait on the drain gate for that one pass, never on each other's records, and nothing is dropped. The one case a flush cannot clear is a gap (a producer that reserved but has not published, or died mid-window, §7): after a bounded number of flushes still free nothing, that single line is written straight through as a last resort. There is no runtime policy knob: the logger is the integrity corner of the design axis (§14). The lossy `DROP_NEWEST` and the `BLOCK` spin were cut; a lossy variant belongs to `anoptic_profiler.h`. Overwrite-oldest would reclaim an undrained line, so it is excluded.
+- Full ring. On `(pos + need) − head > N` the producer flushes the buffered batch (one gated drain pass, §6, a single batched `write`) to free space, then buffers its line normally and keeps going. This is the same flush-then-keep-buffering policy a bounded write buffer uses, so a burst that outruns the flusher costs one batched `write` per ring-fill, not one `write` per record. The drain gate is a blocking mutex, so concurrent producers wait on that one pass, never on each other's records, and nothing is dropped. The one case a flush cannot clear is a gap (a producer that reserved but has not published, or died mid-window, §7): if the ring is still full right after a flush, that single line is written straight through as a last resort. There is no runtime policy knob: the logger is the integrity corner of the design axis (§14). The lossy `DROP_NEWEST` and the `BLOCK` spin were cut; a lossy variant belongs to `anoptic_profiler.h`. Overwrite-oldest would reclaim an undrained line, so it is excluded.
 
 ---
 

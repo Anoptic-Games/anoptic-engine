@@ -43,16 +43,20 @@ _Static_assert(ANO_LOG_HDR <= ANO_CACHE_LINE, "marker fits in one cache line");
 // atomic op. The shared word is always accessed atomically. Reading a union member you did not write
 // is defined in C (C99 6.5.2.3, carried through C23).
 typedef union {
-    struct { // @CLAUDE check the order of these again. Safest order to pack a struct is always smallest->biggest.
+    // Order is irrelevant to packing here: 2+1+1+4 already tiles 8 bytes with every field naturally
+    // aligned, zero padding (the _Static_assert below proves it). It is chosen so `len` is the low 16
+    // bits of `w`. smallest->biggest would also be 8 bytes -- nothing to save.
+    struct {
         uint16_t len;       // stored text bytes, span = ceil((16 + len) / ANO_CL)
         uint8_t  level;     // log_types_t copy, so the flusher routes by severity without the text
         uint8_t  flags;     // ANO_LOG_COMMITTED, the commit marker
-        uint32_t _rsvd;     // keeps the commit word 64-bit: no ABA on the publish gate
-        //@Claude ^_rsvd is just empty padding?
+        uint32_t _rsvd;     // not idle padding: defines the high 32 bits so the whole 64-bit `w` is
+                            //   determinate when assembled via these members; reserved for a future
+                            //   ABA/cycle counter on the publish gate
     };
     uint64_t w;
 } log_word_t;
-_Static_assert(sizeof(log_word_t) == 8, "commit word is 8 bytes");  // @CLAUDE oh so we're sure it's packed?
+_Static_assert(sizeof(log_word_t) == 8, "commit word is 8 bytes");  // compile-time proof it packs to 8
 
 typedef struct {
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t tail;    // producer reserve cursor, in cache lines

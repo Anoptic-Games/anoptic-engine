@@ -20,15 +20,6 @@
 // Far above the 65-line max entry, so any record fits an empty ring.
 #define ANO_LOG_RING_LINES (1u << 10)
 
-// @CLAUDE An unpublished or dead producer shouldn't be able to wedge anything. 
-    // Bumping the tail is atomic. If it failed to produce useable log data in the meantime that's too bad!
-    // We just overwrite it, it's a ring buffer.
-    // Flush when full means flush when full. There's no conceiveable reason why (at least as I designed this in my drawings) this should occur.
-// On a full ring the producer flushes to make room, then keeps buffering. If this many flushes in a
-// row still free nothing, a gap (an unpublished or dead producer) is wedging the drain, so the line
-// is written straight through instead of spinning. A flush normally frees the whole committed run.
-#define ANO_LOG_FULL_FLUSH_TRIES 8
-
 #define ANO_LOG_FILENAME "anoptic.log"
 
 #endif //ANOPTICENGINE_LOGGING_CORE_H
