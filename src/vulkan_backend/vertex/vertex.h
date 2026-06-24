@@ -49,7 +49,7 @@ typedef struct GlobalUBO
 	// in the GlobalUBO declarations that read it (flat.frag, transmission.frag, lightcull.comp).
 	uint32_t lightingMode;     // row: 192  (AnoLightingMode)
 	uint32_t debugView;        //      196  (RC debug visualization; 0 = off)
-	uint32_t pad0;             //      200
+	float    giStrength;       //      200  (RC GI ambient gain; runtime-tunable, RADIANCE_CASCADES.md R13)
 	uint32_t pad1;             //      204
 } GlobalUBO;
 

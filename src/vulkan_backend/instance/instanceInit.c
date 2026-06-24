@@ -75,6 +75,15 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		static const char* const dbg[3] = { "off", "voxel albedo", "irradiance" };
 		printf("RC debug view: %s\n", dbg[rendererState.debugView]);
 	}
+	// [ and ] scrub the RC GI ambient gain live (calibration knob, RADIANCE_CASCADES.md R13).
+	// Hold-repeat enabled (PRESS|REPEAT); clamped to [0, 16].
+	if ((key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET) && (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+		float step = (key == GLFW_KEY_RIGHT_BRACKET) ? 0.25f : -0.25f;
+		rendererState.giStrength += step;
+		if (rendererState.giStrength < 0.0f) rendererState.giStrength = 0.0f;
+		if (rendererState.giStrength > 16.0f) rendererState.giStrength = 16.0f;
+		printf("RC GI strength: %.2f\n", (double)rendererState.giStrength);
+	}
 }
 
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope

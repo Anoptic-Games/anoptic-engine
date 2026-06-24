@@ -1007,6 +1007,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         // stage gates per-light shadow sampling on this; the shadow depth render is gated to match.
         viewUbo->lightingMode = state->lightingMode;
         viewUbo->debugView = state->debugView;
+        viewUbo->giStrength = state->giStrength;
     }
 
     ubo->viewCount = ANO_VIEW_COUNT;
@@ -2691,6 +2692,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &rcAllocator.memProps);
 	rcAllocator.blocks = NULL;
 	rcAllocator.blockCount = 0;
+	rendererState.giStrength = ANO_RC_GI_STRENGTH_DEFAULT; // non-zero default (zero-init would disable GI)
 
 	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device, ctx.queueFamilyIndices.graphicsFamily, ctx.queueFamilyIndices.transferFamily)) {
 		printf("Quitting init: geometry pool creation failure!\n");
