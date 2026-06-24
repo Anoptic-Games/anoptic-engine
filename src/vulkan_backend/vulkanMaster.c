@@ -510,7 +510,28 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
         vkCmdEndRendering(cmd);
 
-        // GENERAL -> SHADER_READ for M3's trace (sampled). No consumer yet in M2.
+        // Point-light injection (RADIANCE_CASCADES.md §6): add each point light as a voxel emitter so
+        // the trace gathers it with occlusion. Reuses the voxelize sets (global = transforms+lights,
+        // rcVoxelize = emission storage); the forward pass drops point direct in HYBRID/RC and reads
+        // the lights back through the irradiance field. Runs while the volumes are still GENERAL.
+        if (rendererState.lightBuffer.count > 0) {
+            // Make voxelize's material-emission writes visible to the inject compute (load+add).
+            VkMemoryBarrier emReady = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT };
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &emReady, 0, NULL, 0, NULL);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcLightInjectPipeline);
+            VkDescriptorSet injSets[3] = { vSet0, rendererState.bindlessTextures.set, rendererState.rcVoxelizeSet };
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcLightInjectLayout, 0, 3, injSets, 0, NULL);
+            struct { uint32_t count; float scale; } injPC = { rendererState.lightBuffer.count, ANO_RC_LIGHT_INJECT_SCALE };
+            vkCmdPushConstants(cmd, rendererState.rcLightInjectLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(injPC), &injPC);
+            vkCmdDispatch(cmd, (rendererState.lightBuffer.count + 63u) / 64u, 1, 1);
+        }
+
+        // GENERAL -> SHADER_READ for the trace (sampled) + flat.frag's debug sample. Emission is now
+        // produced by the inject compute (or voxelize fragment if no lights), albedo by the fragment —
+        // so the source stage spans FRAGMENT | COMPUTE.
         VkImageMemoryBarrier toRead[2] = {};
         for (int k = 0; k < 2; k++) {
             toRead[k].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -522,7 +543,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             toRead[k].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; toRead[k].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         }
         // Voxel volumes visible to BOTH the trace (compute) below and flat.frag's debug sample (fragment).
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             0, 0, NULL, 0, NULL, 2, toRead);
 
@@ -554,19 +575,21 @@ void recordCommandBuffer(uint32_t imageIndex)
         VkMemoryBarrier rcMem = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT };
 
-        // Trace seeds only the outermost cascade (its near interval + sky far-cap) over its
-        // (256,256,P_top) image; the reprojecting merge re-marches every inner level. Barrier after
-        // makes the seed visible to the first merge.
+        // Trace: one dispatch per level over its (256,256,P_c) image, seeding each level's raw near
+        // interval (+ sky far-cap on the outermost). The cheap merge path consumes these; the
+        // bilinear-fix path re-marches instead. Levels write distinct images (no inter-level barrier);
+        // one barrier after makes all raw intervals visible to the merge.
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTracePipeline);
-        uint32_t topCascade = ANO_RC_CASCADE_COUNT - 1u;
-        uint32_t topProbes = ANO_RC_C0_PROBES >> topCascade;
-        vkCmdPushConstants(cmd, rendererState.rcTraceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &topCascade);
-        vkCmdDispatch(cmd, ANO_RC_CASCADE_XY / 4u, ANO_RC_CASCADE_XY / 4u, (topProbes + 3u) / 4u);
+        for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) {
+            uint32_t probes = ANO_RC_C0_PROBES >> c;
+            vkCmdPushConstants(cmd, rendererState.rcTraceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &c);
+            vkCmdDispatch(cmd, ANO_RC_CASCADE_XY / 4u, ANO_RC_CASCADE_XY / 4u, (probes + 3u) / 4u);
+        }
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 1, &rcMem, 0, NULL, 0, NULL);
 
-        // Merge top-down: child c reprojects its near interval and composites over the (already-merged)
-        // parent c+1, so a barrier follows every dispatch.
+        // Merge top-down: child c composites over the (already-merged) parent c+1 — reprojecting near
+        // cascades (bilinear fix) or via the cheap interval merge above — so a barrier follows each.
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcMergePipeline);
         for (int c = (int)ANO_RC_CASCADE_COUNT - 2; c >= 0; c--) {
             uint32_t cu = (uint32_t)c;
@@ -1785,12 +1808,18 @@ static void ano_print_profiling(void) {
     double swap = (double)allocator_used_bytes(&swapchainAllocator) / MiB;
     double stg  = (double)allocator_used_bytes(&stagingAllocator)   / MiB;
     double rc   = (double)allocator_used_bytes(&rcAllocator)        / MiB;
-    double atlas = (double)((VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM
-                            * 4u * MAX_FRAMES_IN_FLIGHT) / MiB;
+    // Atlas VRAM, split into the dir/spot share RC keeps (hard contact shadows) and the point-cubemap
+    // share RC eliminates (the memory wall: POINT*6 layers). At ANO_SHADOW_POINT_COUNT=0 the point share
+    // is 0 and the atlas allocation shrinks by exactly `atlasPoint` — the M5 thesis, measurable in VRAM.
+    double perLayer  = (double)((VkDeviceSize)ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u * MAX_FRAMES_IN_FLIGHT) / MiB;
+    double atlasFixed = (double)(ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT) * perLayer;
+    double atlasPoint = (double)(ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) * perLayer;
 
     printf("[profile mode=%s] GPU ms: upload=%.3f compute=%.3f rc=%.3f shadow=%.3f lighting=%.3f composite=%.3f total=%.3f"
-           " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f rc=%.1f | shadowAtlas(resident)=%.1f\n",
-           mn, up, cp, rcms, sh, li, co, total, gpu, tex, swap, stg, rc, atlas);
+           " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f rc=%.1f"
+           " | shadowAtlas resident=%.1f (dir/spot=%.1f + point-cubemaps=%.1f, RC-eliminable)\n",
+           mn, up, cp, rcms, sh, li, co, total, gpu, tex, swap, stg, rc,
+           atlasFixed + atlasPoint, atlasFixed, atlasPoint);
 }
 
 // Read this frame slot's timestamps (its prior submission is fence-complete) and fold the per-pass
@@ -2012,11 +2041,11 @@ static uint32_t addLightEntity(LightData light, mat4 transform) {
                     : light.type == LIGHT_TYPE_POINT       ? ANO_SHADOW_POINT_COUNT
                                                            : ANO_SHADOW_SPOT_COUNT;
     uint32_t blockSize = light.type == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u;
+    ShadowLightInfo* info = (ShadowLightInfo*)rendererState.shadowLightInfoMapped;
     if (rendererState.shadowTypeUsed[light.type] < budget &&
         rendererState.shadowFrustumNext + blockSize <= ANO_SHADOW_FRUSTUM_COUNT) {
         uint32_t base = rendererState.shadowFrustumNext;
         ShadowFrustumConfig* cfg = (ShadowFrustumConfig*)rendererState.shadowFrustumConfigMapped;
-        ShadowLightInfo* info = (ShadowLightInfo*)rendererState.shadowLightInfoMapped;
         for (uint32_t f = 0; f < blockSize; f++)
             cfg[base + f] = (ShadowFrustumConfig){ .lightIndex = lightIdx, .lightType = light.type,
                 .faceIndex = (light.type == LIGHT_TYPE_POINT ? f : 0u), .pad = 0u };
@@ -2024,6 +2053,10 @@ static uint32_t addLightEntity(LightData light, mat4 transform) {
             .frustumCount = blockSize, .pad = 0u };
         rendererState.shadowFrustumNext += blockSize;
         rendererState.shadowTypeUsed[light.type] += 1u;
+    } else {
+        // No caster slot (over budget, or the type's count is 0 — e.g. ANO_SHADOW_POINT_COUNT=0 routes
+        // point lights to RC): explicitly unshadowed so the fragment falls back to direct + RC ambient.
+        info[lightIdx] = (ShadowLightInfo){ .castsShadow = 0u, .baseFrustum = 0u, .frustumCount = 0u, .pad = 0u };
     }
     return entIdx;
 }
@@ -2886,6 +2919,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if (!ano_vk_init_rc_trace(&ctx, &rendererState))
 	{
 		printf("Quitting init: radiance-cascade trace pipeline failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!ano_vk_init_rc_light_inject(&ctx, &rendererState))
+	{
+		printf("Quitting init: radiance-cascade light-injection pipeline failure!\n");
 		unInitVulkan();
 		return false;
 	}

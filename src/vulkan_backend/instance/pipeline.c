@@ -95,8 +95,9 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	ssboLayoutBinding.descriptorCount = 1;
 	// Also visible to the fragment stage: lights derive world position/direction
-	// from their driving entity's transform (transforms[transformIndex]).
-	ssboLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
+	// from their driving entity's transform (transforms[transformIndex]). COMPUTE: the RC
+	// light-injection pass reads transforms to place point-light emitters (RADIANCE_CASCADES.md §6).
+	ssboLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 	ssboLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding materialLayoutBinding = {};
@@ -146,7 +147,8 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	lightLayoutBinding.binding = 8;
 	lightLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	lightLayoutBinding.descriptorCount = 1;
-	lightLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// COMPUTE: the RC light-injection pass iterates lights to write point-light voxel emitters.
+	lightLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 	lightLayoutBinding.pImmutableSamplers = NULL;
 
 	// Open-ended per-entity instance channel (tint/flags/scalars). Fragment reads
@@ -1025,7 +1027,8 @@ bool ano_vk_init_rc_voxelize(VulkanContext* ctx, RendererState* state)
 	setBindings[2].binding = 2;
 	setBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	setBindings[2].descriptorCount = 1;
-	setBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// FRAGMENT writes material emission (voxelize.frag); COMPUTE adds point-light emitters (rc_light_inject.comp).
+	setBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorSetLayoutCreateInfo setInfo = {};
 	setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1202,6 +1205,31 @@ bool ano_vk_init_rc_trace(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
+// RC point-light injection pipeline (RADIANCE_CASCADES.md §6). Reuses the existing set layouts —
+// set 0 = global (transforms@1, lights@8, both widened to COMPUTE), set 2 = rcVoxelize (emission@2) —
+// so no new descriptor set is allocated; the record path binds the same sets voxelize does. Prereq:
+// ano_vk_init_rc_voxelize (rcVoxelizeSetLayout) + the global + bindless layouts already created.
+bool ano_vk_init_rc_light_inject(VulkanContext* ctx, RendererState* state)
+{
+	VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 2u * sizeof(uint32_t) }; // lightCount + injectScale
+	VkDescriptorSetLayout setLayouts[3] = { state->globalSetLayout, state->bindlessTextures.layout, state->rcVoxelizeSetLayout };
+	VkPipelineLayoutCreateInfo layoutInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	layoutInfo.setLayoutCount = 3;
+	layoutInfo.pSetLayouts = setLayouts;
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &pcr;
+	if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->rcLightInjectLayout) != VK_SUCCESS) return false;
+
+	VkPipelineCacheCreateInfo cacheInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->rcLightInjectCache);
+
+	if (!rc_make_compute(ctx, "rc_light_inject.comp.spv", state->rcLightInjectLayout, state->rcLightInjectCache, &state->rcLightInjectPipeline)) {
+		printf("Failed to create rc light inject pipeline!\n");
+		return false;
+	}
+	return true;
+}
+
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	// Tonemap pass (standalone)
@@ -1322,6 +1350,21 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyPipeline(ctx->device, state->rcIntegratePipeline, NULL);
         state->rcIntegratePipeline = VK_NULL_HANDLE;
+    }
+    if (state->rcLightInjectPipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(ctx->device, state->rcLightInjectPipeline, NULL);
+        state->rcLightInjectPipeline = VK_NULL_HANDLE;
+    }
+    if (state->rcLightInjectLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(ctx->device, state->rcLightInjectLayout, NULL);
+        state->rcLightInjectLayout = VK_NULL_HANDLE;
+    }
+    if (state->rcLightInjectCache != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineCache(ctx->device, state->rcLightInjectCache, NULL);
+        state->rcLightInjectCache = VK_NULL_HANDLE;
     }
     if (state->rcTraceLayout != VK_NULL_HANDLE)
     {

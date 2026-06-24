@@ -8,8 +8,13 @@
 
 layout(local_size_x = 64) in;
 
-// Must match the structs.h constants (DIR=1 + SPOT=1 + POINT=4*6).
-#define ANO_SHADOW_FRUSTUM_COUNT 26u
+// Mirror of structs.h shadow caster counts (the M5 perf/VRAM knob — change all three sites together:
+// structs.h, cull.comp, shadowsetup.comp). POINT=0 routes point lights to RC and frees their atlas layers.
+#define ANO_SHADOW_DIR_COUNT     1u
+#define ANO_SHADOW_SPOT_COUNT    1u
+#define ANO_SHADOW_POINT_COUNT   4u
+#define ANO_SHADOW_CUBE_FACES    6u
+#define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES)
 #define ANO_SHADOW_ORTHO_EXTENT  8.0
 #define LIGHT_TYPE_DIRECTIONAL 0u
 #define LIGHT_TYPE_POINT       1u

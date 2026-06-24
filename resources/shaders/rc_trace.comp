@@ -1,13 +1,12 @@
 #version 450
 
-// Radiance cascades M4 — cascade interval trace (RADIANCE_CASCADES.md §6/§7).
-// Generic over a cascade level c (push.cascade); since the bilinear-fix merge (rc_merge.comp)
-// reprojects and re-marches every inner level's near interval itself, the host now dispatches this
-// only for the outermost cascade — seeding its radial interval [t_c, t_{c+1}] plus the sky far-cap.
-// One invocation per (probe, direction) texel: march that interval through the scene voxel volume,
-// producing the radiance interval R = [radiance, T] (T = transmittance through the segment). Cascade c
-// packs a P^3 probe grid (P = 64>>c) and an O*O octahedral direction map (O = 4<<c) into a
-// (P*O, P*O, P) image; P*O = 256 is invariant.
+// Radiance cascades M4 — per-cascade interval trace (RADIANCE_CASCADES.md §6/§7).
+// One dispatch per cascade level c (push.cascade). One invocation per (probe, direction) texel of
+// cascade c: march only that level's radial interval [t_c, t_{c+1}] through the scene voxel volume,
+// producing the raw radiance interval R = [radiance, T] (T = transmittance through the segment). The
+// cheap merge path consumes these stored intervals; the bilinear-fix path re-marches its own near
+// interval instead (rc_merge.comp). Cascade c packs a P^3 probe grid (P = 64>>c) and an O*O octahedral
+// direction map (O = 4<<c) into a (P*O, P*O, P) image; P*O = 256 is invariant.
 
 #define RC_H         8.0   // clipmap half-extent (ANO_RC_CLIP_HALF_EXTENT)
 #define RC_VOX       128.0 // scene voxel resolution
@@ -68,9 +67,12 @@ void main() {
     for (int i = 0; i < n; i++) {
         vec3 uv = worldToUv(probe + dir * t);
         if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) break; // left the clipmap
+        // Emission is volumetric (surfaces + injected point lights), gathered regardless of opacity;
+        // opacity only attenuates transmittance. Decoupling lets a light blob (opacity 0) be gathered
+        // without occluding itself. Surfaces (opacity 1) are unchanged (emission*1 == emission).
+        radiance += T * texture(voxelEmission, uv).rgb;
         float op = texture(voxelAlbedo, uv).a;
         if (op > 0.01) {
-            radiance += T * texture(voxelEmission, uv).rgb * op;
             T *= (1.0 - op);
             if (T < 0.01) { T = 0.0; break; } // fully occluded segment
         }

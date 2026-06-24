@@ -59,9 +59,14 @@
 // a dynamic "any light casts" registry is a follow-on.
 // Built incrementally: directional first (this increment), then spot, then point cubes — bump
 // the spot/point counts to add them once the directional path is hardware-verified.
+// M5 perf/VRAM knob: drop ANO_SHADOW_POINT_COUNT toward 0 to route point lights to RC and reclaim the
+// expensive point-cubemap atlas layers (POINT*6 layers x ANO_SHADOW_DIM^2 x 4 B x MAX_FRAMES_IN_FLIGHT;
+// 24 layers = 288 MiB at the defaults). Mirrored by hand into cull.comp + shadowsetup.comp (no shared
+// GLSL/C header) — change all three sites together. At 0, addLightEntity gives point lights castsShadow=0
+// (unshadowed direct + RC ambient); the report breaks out the freed point share.
 #define ANO_SHADOW_DIR_COUNT     1u    // directional casters (one ortho map each)
 #define ANO_SHADOW_SPOT_COUNT    1u    // spot casters (one perspective map each)
-#define ANO_SHADOW_POINT_COUNT   4u    // point casters (6 cube-face maps each)
+#define ANO_SHADOW_POINT_COUNT   4u    // point casters (6 cube-face maps each); 0 = RC-handled (M5)
 #define ANO_SHADOW_CUBE_FACES    6u
 #define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // currently 26 (DIR=1, SPOT=1, POINT=4)
 #define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = currently 28
@@ -79,6 +84,7 @@
 #define ANO_RC_CLIP_HALF_EXTENT 8.0f   // half-size of the static origin-centred clipmap (16 m cube); matches voxelize.frag
 #define ANO_RC_VOXEL_AXES       3u     // voxelization passes: one ortho projection per dominant axis
 #define ANO_RC_GI_STRENGTH_DEFAULT 3.0f // initial GI ambient gain (runtime-tunable; see RADIANCE_CASCADES.md R13)
+#define ANO_RC_LIGHT_INJECT_SCALE  1.0f // point-light emitter gain when injected into the voxel volume (§6)
 // Cascade hierarchy (M4). Level c: probes/axis P_c = 64>>c, octahedral res O_c = 4<<c (D_c = O_c^2
 // directions). P_c*O_c = 256 is invariant across levels, so every cascade is a (256,256,P_c) RGBA16F
 // image storing the interval R = [radiance.rgb, transmittance.a]. Per-level storage halves; stack ~2x cascade-0.
@@ -86,6 +92,11 @@
 #define ANO_RC_C0_PROBES        64u    // cascade-0 probes/axis (= ANO_RC_IRRADIANCE_DIM)
 #define ANO_RC_C0_OCT           4u     // cascade-0 octahedral resolution (O0^2 = 16 base directions)
 #define ANO_RC_CASCADE_XY       (ANO_RC_C0_PROBES * ANO_RC_C0_OCT) // 256, invariant probe*oct extent
+// Reprojecting bilinear fix (R8) applies to cascades < this; higher levels use the cheap interval
+// merge (no re-march). The near-geometry leak is a near-field artifact, and the re-march cost is ~flat
+// per cascade, so K=1 fixes the worst leak at 1/Nth the re-march cost. Perf/quality knob: 0 = no fix
+// (fast baseline, ~standard merge), ANO_RC_CASCADE_COUNT = fix every level (slow). Mirror in rc_merge.comp.
+#define ANO_RC_FIX_CASCADES     1u
 
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
 // each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)
@@ -919,6 +930,12 @@ typedef struct RendererState
     VkImageView             rcCascadeView[ANO_RC_CASCADE_COUNT];
     VkPipeline              rcMergePipeline;          // rc_merge.comp
     VkPipeline              rcIntegratePipeline;      // rc_integrate.comp
+
+    // Point-light injection (RADIANCE_CASCADES.md §6): writes point lights as voxel emitters into
+    // rcVoxelEmission so the trace gathers them with occlusion. Reuses the global + rcVoxelize sets.
+    VkPipeline              rcLightInjectPipeline;    // rc_light_inject.comp
+    VkPipelineLayout        rcLightInjectLayout;      // {global, bindless, rcVoxelize} + COMPUTE push (lightCount, injectScale)
+    VkPipelineCache         rcLightInjectCache;
 } RendererState;
 
 

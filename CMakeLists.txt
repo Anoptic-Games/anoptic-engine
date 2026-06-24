@@ -122,7 +122,7 @@ if(Vulkan_FOUND)
     if(Vulkan_GLSLC_EXECUTABLE)
         set(SHADER_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
         set(SPV_OUTPUTS "")
-        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp scatter.comp lightcull.comp shadowsetup.comp shadow_depth.frag tonemap.vert tonemap.frag voxelize.frag rc_trace.comp rc_merge.comp rc_integrate.comp)
+        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp scatter.comp lightcull.comp shadowsetup.comp shadow_depth.frag tonemap.vert tonemap.frag voxelize.frag rc_trace.comp rc_merge.comp rc_integrate.comp rc_light_inject.comp)
             add_custom_command(
                     OUTPUT  ${SHADER_DIR}/${shader}.spv
                     COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${SHADER_DIR}/${shader} -o ${SHADER_DIR}/${shader}.spv

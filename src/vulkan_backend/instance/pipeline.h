@@ -32,6 +32,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state); // fullscree
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state);  // depth-only shadow pipeline + compare sampler
 bool ano_vk_init_rc_voxelize(VulkanContext* ctx, RendererState* state); // radiance-cascade voxelize pipeline (RADIANCE_CASCADES.md M2)
 bool ano_vk_init_rc_trace(VulkanContext* ctx, RendererState* state);    // radiance-cascade cascade-0 trace pipeline (RADIANCE_CASCADES.md M3b)
+bool ano_vk_init_rc_light_inject(VulkanContext* ctx, RendererState* state); // radiance-cascade point-light injection (RADIANCE_CASCADES.md §6)
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state);
 
 #endif

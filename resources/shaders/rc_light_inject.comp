@@ -1,0 +1,52 @@
+#version 450
+
+// Radiance cascades — point-light injection (RADIANCE_CASCADES.md §6, "lights as emitters").
+// One invocation per light: each enabled point light is written as a small emitter blob into the
+// scene voxel emission volume, so rc_trace / rc_merge gather its radiance through opacity (soft,
+// occluded). This is what lets RC carry point lights once their shadow maps are dropped (M5): the
+// forward pass skips point direct in HYBRID/RC and reads the lights back through the irradiance
+// field instead. Runs after voxelize fills the volume (material emission), before the trace.
+// Additive (load+add+store) on top of material emission; overlapping blobs race benignly.
+
+#define RC_H    8.0
+#define RC_VOX  128
+#define RC_BLOB 2          // emitter radius in voxels (~0.25 m at 16 m / 128)
+#define LIGHT_TYPE_POINT 1u
+
+layout(local_size_x = 64) in;
+
+// Mirror of LightData (structs.h / shadowsetup.comp) — std430.
+struct LightData {
+    vec3  color; float intensity;
+    float range; float innerConeCos; float outerConeCos; uint type;
+    uint  transformIndex; uint enabled; uint pad0; uint pad1;
+};
+
+layout(set = 0, binding = 1) readonly buffer TransformSSBO { mat4 transforms[]; };
+layout(set = 0, binding = 8) readonly buffer LightSSBO     { LightData lights[]; };
+layout(set = 2, binding = 2, rgba16f) uniform image3D rcVoxelEmission;
+
+layout(push_constant) uniform PC { uint lightCount; float injectScale; } pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.lightCount) return;
+    LightData L = lights[idx];
+    if (L.enabled == 0u || L.type != LIGHT_TYPE_POINT) return;
+
+    vec3 pos = transforms[L.transformIndex][3].xyz;
+    vec3 t = (pos + vec3(RC_H)) / (2.0 * RC_H);                  // world -> [0,1]
+    if (any(lessThan(t, vec3(0.0))) || any(greaterThanEqual(t, vec3(1.0)))) return; // outside clipmap
+    ivec3 center = ivec3(t * float(RC_VOX));
+    vec3 radiance = L.color * L.intensity * pc.injectScale;
+
+    for (int dz = -RC_BLOB; dz <= RC_BLOB; dz++)
+    for (int dy = -RC_BLOB; dy <= RC_BLOB; dy++)
+    for (int dx = -RC_BLOB; dx <= RC_BLOB; dx++) {
+        ivec3 p = center + ivec3(dx, dy, dz);
+        if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(RC_VOX)))) continue;
+        float falloff = max(0.0, 1.0 - length(vec3(dx, dy, dz)) / float(RC_BLOB + 1));
+        vec4 cur = imageLoad(rcVoxelEmission, p);
+        imageStore(rcVoxelEmission, p, vec4(cur.rgb + radiance * falloff, cur.a));
+    }
+}
