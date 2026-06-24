@@ -17,6 +17,15 @@
 /// \brief Obtain a high-resolution monotonic raw timestamp in nanoseconds.
 uint64_t ano_timestamp_raw();
 
+/// \brief Raw monotonic hardware counter, no unit conversion -- the cheapest possible timestamp.
+/// \note Units are the platform timebase (mach ticks / QPC counts / ns on Linux), so only deltas are
+///       meaningful and only after ano_ticks_to_ns. Use to timestamp a hot path and defer the
+///       division to a colder one.
+uint64_t ano_timestamp_ticks();
+
+/// \brief Convert a raw counter value or delta from ano_timestamp_ticks to nanoseconds.
+uint64_t ano_ticks_to_ns(uint64_t ticks);
+
 /// \brief Obtain a high-resolution monotonic raw timestamp, scaled to microseconds.
 uint64_t ano_timestamp_us();
 

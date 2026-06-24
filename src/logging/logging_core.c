@@ -57,9 +57,10 @@ static void (*g_persist)(const void *data, size_t len);
 static void (*g_syncOut)(void);
 static bool         g_haveFile;
 
-// Timestamp anchor, a raw and unix-ns pair captured once at init. wall = unix + (raw - anchor), so the
-// second is fixed and sub-second precision rides the monotonic delta. No per-record syscall. (§11)
-static uint64_t     g_anchorRaw;
+// Timestamp anchor, a ticks and unix-ns pair captured once at init. wall = unix + ticks_to_ns(ticks -
+// anchor), so the second is fixed and sub-second precision rides the monotonic delta. The producer
+// stamps a record with the bare counter (no division); the drainer does the conversion here. (§11)
+static uint64_t     g_anchorTicks;
 static uint64_t     g_anchorUnixNs;
 
 // Drainer-private, touched only under g_drainMtx. g_scratch gathers a seam-straddling record. g_batch
@@ -199,17 +200,18 @@ static void render_hms(char *out8, uint64_t sec)
     (void)   put2(p, t.second);
 }
 
-// Wall-clock second for a raw timestamp, through the init anchor.
-static inline uint64_t wall_second(uint64_t raw_ts)
+// Wall-clock second for a record's raw ticks, through the init anchor. The ticks->ns division is
+// deferred to here (the drainer), off the producer's hot path.
+static inline uint64_t wall_second(uint64_t ticks)
 {
-    return (g_anchorUnixNs + (raw_ts - g_anchorRaw)) / 1000000000ull;
+    return (g_anchorUnixNs + ano_ticks_to_ns(ticks - g_anchorTicks)) / 1000000000ull;
 }
 
-// Render the 8-byte "HH:MM:SS" prefix for a raw timestamp. Immediate path only. The drain path
+// Render the 8-byte "HH:MM:SS" prefix for a record's raw ticks. Immediate path only. The drain path
 // memoizes per second instead (see drain_and_emit).
-static int render_walltime(char *out, uint64_t raw_ts)
+static int render_walltime(char *out, uint64_t ticks)
 {
-    render_hms(out, wall_second(raw_ts));
+    render_hms(out, wall_second(ticks));
     return 8;
 }
 
@@ -294,15 +296,6 @@ static uint64_t drain_and_emit(void)
     uint64_t cap = atomic_load_explicit(&g_ring.tail, memory_order_relaxed); // reserved frontier, a count bound
     size_t   blen = 0;
 
-    // One wall-clock read for the whole pass: records share the drain second, civil-time conversion
-    // memoized per second. The producer no longer stamps per record (§11); claim order is the real order.
-    uint64_t passSec = wall_second(ano_timestamp_raw());
-    if (!g_drainHMSValid || passSec != g_drainSec) {
-        render_hms(g_drainHMS, passSec);
-        g_drainSec = passSec;
-        g_drainHMSValid = true;
-    }
-
     for (;;) {  // bounded walk, not a spin: stops at the tail bound or the first uncommitted gap
         if (h == cap)
             break;  // caught up to tail, the only stop at exact fullness
@@ -313,6 +306,12 @@ static uint64_t drain_and_emit(void)
         uint64_t need = log_span(v.len);
         const char *line = log_gather(&g_ring, h, v.len, g_scratch);   // <= 2 memcpys (§8)
 
+        uint64_t sec = wall_second(m->timestamp);   // deferred ticks->wall conversion, off the producer
+        if (!g_drainHMSValid || sec != g_drainSec) {   // civil-time conversion once per second, not per record
+            render_hms(g_drainHMS, sec);
+            g_drainSec = sec;
+            g_drainHMSValid = true;
+        }
         memcpy(g_batch + blen, g_drainHMS, 8); blen += 8;
         g_batch[blen++] = ' ';
         memcpy(g_batch + blen, line, v.len); blen += v.len;
@@ -360,6 +359,8 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
     if ((int)level < atomic_load_explicit(&g_minLevel, memory_order_relaxed))
         return 0;   // one relaxed load gates both severity and liveness (INT_MAX until init)
 
+    uint64_t ts = ano_timestamp_ticks();   // stamp at the call site, bare counter; convert at drain (§11)
+
     char blob[ANO_LOG_MSG_MAX]; // the final line, formatted on this thread, off-ring
     va_list ap; va_start(ap, fmt);
     int n = format_line(blob, (int)ANO_LOG_MSG_MAX,
@@ -387,7 +388,7 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
             waited = true;
             if (hd != lastHead) { lastHead = hd; stall = 0; }
             else if (++stall > FULL_STALL_LIMIT) {
-                emit_one(level, ano_timestamp_raw(), blob, len, false, false);   // cold escape: stamp now
+                emit_one(level, ts, blob, len, false, false);   // cold escape: the call-site ticks
                 return 1;
             }
             ano_busywait(128);  // brief, off the consumer's cache line between rechecks
@@ -401,7 +402,8 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
     }
 
     log_marker_t *m = log_marker_at(&g_ring, pos);
-    log_write_body(&g_ring, pos, blob, len);    // <= 2 memcpys (§8); timestamp stamped at drain (§11)
+    m->timestamp = ts;  // plain store, ordered by the release below
+    log_write_body(&g_ring, pos, blob, len);    // <= 2 memcpys (§8)
     log_word_t v = { .len = len, .level = (uint8_t)level, .flags = ANO_LOG_COMMITTED,
                      .cycle = log_cycle(&g_ring, pos) };
     atomic_store_explicit(&m->tag, v.w, memory_order_release);  // publish: one gate, whole record
@@ -421,7 +423,7 @@ void ano_log_immediate(log_types_t level, const char *file, int line, const char
         return;
     }
     drain();    // flush buffered records first to keep order
-    emit_one(level, ano_timestamp_raw(), blob, (uint16_t)n, /*console*/true, /*sync*/true);
+    emit_one(level, ano_timestamp_ticks(), blob, (uint16_t)n, /*console*/true, /*sync*/true);
 }
 
 int ano_log_output_dir(const char *directoryPath)
@@ -485,7 +487,7 @@ int ano_log_init(void)
     g_drainHMSValid = false;
     g_outFile = NULL;
 
-    g_anchorRaw    = ano_timestamp_raw();
+    g_anchorTicks  = ano_timestamp_ticks();
     g_anchorUnixNs = (uint64_t)ano_timestamp_unix() * 1000000000ull;
 
     // Default output file is in the game directory.

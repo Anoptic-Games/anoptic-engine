@@ -33,10 +33,19 @@ int initialize_performance_frequency() {
     return 0;
 }
 
-uint64_t ano_timestamp_raw() {
+// Bare QPC counter, no conversion. The frequency divide is deferred to ano_ticks_to_ns.
+uint64_t ano_timestamp_ticks() {
 
-    uint64_t counter;
     LARGE_INTEGER tmp;
+    if(QueryPerformanceCounter(&tmp) == 0) {
+        printf("Error getting Windows performance Counter.");
+        return UINT64_MAX; // Indicate an error occurred.
+    }
+    return (uint64_t)tmp.QuadPart;
+}
+
+// Convert raw QPC counts (value or delta) to nanoseconds, overflow-safe via the cached frequency.
+uint64_t ano_ticks_to_ns(uint64_t ticks) {
 
     // Cache the performance frequency on first run.
     if(cachedPerfFreq == 0) {
@@ -46,21 +55,17 @@ uint64_t ano_timestamp_raw() {
         }
     }
 
-    if(QueryPerformanceCounter(&tmp) == 0) {
-        printf("Error getting Windows performance Counter.");
-        return UINT64_MAX; // Indicate an error occurred.
-    }
-    counter = tmp.QuadPart;
-
     // Split into two parts to scale without overflow.
-    uint64_t largePart = counter / cachedPerfFreq;    // Seconds
-    uint64_t smallPart = counter % cachedPerfFreq;    // Sub-seconds
+    uint64_t largePart = ticks / cachedPerfFreq;    // Seconds
+    uint64_t smallPart = ticks % cachedPerfFreq;    // Sub-seconds
 
     // Recombine the two parts.
     smallPart = smallPart * 1000000000LL / cachedPerfFreq;
-    uint64_t timeStamp = smallPart + (largePart * 1000000000LL);
+    return smallPart + (largePart * 1000000000LL);
+}
 
-    return timeStamp;
+uint64_t ano_timestamp_raw() {
+    return ano_ticks_to_ns(ano_timestamp_ticks());
 }
 
 // return ano_timestamp_raw, but scaled to microseconds.

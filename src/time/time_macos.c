@@ -43,7 +43,13 @@ static int initialize_timebase() {
     return 0;
 }
 
-uint64_t ano_timestamp_raw() {
+// Bare timebase counter, no conversion. mach_absolute_time() is a register read, no syscall, no divides.
+uint64_t ano_timestamp_ticks() {
+    return mach_absolute_time();
+}
+
+// Convert raw mach ticks (value or delta) to nanoseconds, overflow-safe via the cached timebase.
+uint64_t ano_ticks_to_ns(uint64_t ticks) {
 
     // Cache the timebase frequency on first run.
     if (cachedTimebaseFreq == 0) {
@@ -53,17 +59,17 @@ uint64_t ano_timestamp_raw() {
         }
     }
 
-    uint64_t counter = mach_absolute_time();
-
-    // Split the counter into seconds and sub-seconds to scale without overflow.
-    uint64_t largePart = counter / cachedTimebaseFreq;    // Seconds
-    uint64_t smallPart = counter % cachedTimebaseFreq;    // Sub-seconds
+    // Split into seconds and sub-seconds to scale without overflow.
+    uint64_t largePart = ticks / cachedTimebaseFreq;    // Seconds
+    uint64_t smallPart = ticks % cachedTimebaseFreq;    // Sub-seconds
 
     // Recombine the two parts.
     smallPart = smallPart * 1000000000LL / cachedTimebaseFreq;
-    uint64_t timeStamp = smallPart + (largePart * 1000000000LL);
+    return smallPart + (largePart * 1000000000LL);
+}
 
-    return timeStamp;
+uint64_t ano_timestamp_raw() {
+    return ano_ticks_to_ns(ano_timestamp_ticks());
 }
 
 // return ano_timestamp_raw, but scaled to microseconds.
