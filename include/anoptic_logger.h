@@ -4,9 +4,9 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // The logger follows a singleton pattern (one per program), owned by main. A producer formats its
-// line on the calling thread and appends it to a shared buffer; the caller drains that buffer to
-// the output file on its own schedule via ano_log_flush() (the logger runs no background thread).
-// Design: docs/logger.md.
+// line on the calling thread and appends it to a shared ring; an owned consumer thread drains that
+// ring to the output file continuously. ano_log_flush() drains inline for callers that need records
+// on disk at once (e.g. per tick). Design: docs/logger.md.
 
 #ifndef ANOPTIC_LOGGER_H
 #define ANOPTIC_LOGGER_H
@@ -23,8 +23,8 @@ typedef enum {
     LOG_FATAL
 } log_types_t;
 
-// Full ring: a producer whose reservation would overrun an undrained record writes the finished line
-// straight through on the calling thread. No loss, self-throttling to disk speed.
+// Full ring: a producer whose reservation would overrun an undrained record waits for the owned consumer
+// to free room. No loss, self-throttling to the drain rate.
 
 // Lifecycle. ano_log_init opens the default output file (the game directory); until it returns 0, only
 // the immediate (stderr) path works. ano_log_cleanup drains any buffered records, then syncs and closes
@@ -35,8 +35,8 @@ int ano_log_cleanup(void);  // Teardown, most likely at program exit.
 
 // The usual method: format {level, file, line, fmt, ...} into one line on the calling thread, copy
 // it into the ring, and publish with one release store.
-// Returns: 0 enqueued; 1 the ring was full, so buffered records were flushed to make room before
-// this line was buffered (same flush-then-keep-buffering policy as a full write buffer).
+// Returns: 0 enqueued; 1 the ring was full, so this thread waited for the consumer to free room before
+// buffering this line (self-throttling to the drain rate, never dropping).
 // printFormat MUST be a string literal -- the format attribute checks the args against it.
 int ano_log_enqueue(log_types_t log_type, const char* sourceFile, int lineNumber,
                     const char* printFormat, ...) __attribute__((format(printf, 4, 5)));
@@ -55,10 +55,10 @@ int ano_log_output_dir(const char* directoryPath);
 // Runtime severity gate: enqueues below min are refused with one relaxed load.
 void ano_log_set_level(log_types_t min);
 
-// Drain all buffered records to the output file, synchronously on the calling thread. This is the only
-// flush mechanism: call it on your own schedule (e.g. once per tick). ano_log_cleanup drains a
-// final time, and a full ring self-drains by writing immediately, so a missed flush delays records
-// but never loses them.
+// Drain all buffered records to the output file, synchronously on the calling thread. The owned consumer
+// thread already drains continuously; call this when you need records on disk now (e.g. once per tick).
+// ano_log_cleanup drains a final time, and a full ring makes producers wait for room, so a missed flush
+// delays records but never loses them.
 void ano_log_flush(void);
 
 

@@ -7,9 +7,8 @@
 // through the output file. The rest abuses the public interface on the assumption it WILL be called
 // wrong: pathological inputs, bogus config, rejected output-file switches, lifecycle misuse (calls
 // before init / after cleanup), and three contention tests (flush-vs-write, an ABA tripwire,
-// config/output-file thrash). The logger runs no background thread, so every case drains explicitly
-// via ano_log_flush()
-// and its file contents are deterministic. The final case leaves a human-readable log for inspection.
+// config/output-file thrash). Every case drains explicitly via ano_log_flush() before reading back, so
+// its file contents are deterministic. The final case leaves a human-readable log for inspection.
 
 #include <anoptic_logger.h>
 #include <anoptic_threads.h>
@@ -180,27 +179,48 @@ static int test_level_gate(void)
     return g_fail;
 }
 
-// Flood far past ring capacity with no intervening flush. The ring fills, then a producer that hits
-// full flushes the buffered batch to make room and keeps buffering. Nothing is lost. The count is
-// sized to overrun the ring at any ANO_LOG_RING_BYTES in the experiment range (a 2 MiB ring is 16384
-// lines), so the full path is exercised regardless of the configured ring size.
-#define FULL_FLOOD 50000
+// Flood far past ring capacity from several producers at once, with no intervening flush. The owned
+// consumer can't drain as fast as many producers enqueue, so the ring fills and producers take the full
+// path (wait for the consumer to free room, returning 1). Nothing is lost. The flood is concurrent
+// because one producer cannot overflow a continuously-drained ring -- the consumer keeps it empty. The
+// total overruns the ring at any ANO_LOG_RING_BYTES in the experiment range (a 2 MiB ring is 16384 lines).
+#define FULL_THREADS 6
+#define FULL_PER     12000
+#define FULL_FLOOD   (FULL_THREADS * FULL_PER)
+
+static _Atomic int g_full_flushed;
+
+static void *full_flooder(void *arg)
+{
+    int id = (int)(intptr_t)arg;
+    for (int i = 0; i < FULL_PER; i++)
+        if (ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "flood t%d %d", id, i) == 1)
+            atomic_fetch_add(&g_full_flushed, 1);
+    return NULL;
+}
+
 static int test_full_ring(void)
 {
     g_fail = 0;
     reset_output();
+    atomic_store(&g_full_flushed, 0);
 
-    int flushed = 0;
-    for (int i = 0; i < FULL_FLOOD; i++)
-        if (ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "flood %d", i) == 1)
-            flushed++;
+    anothread_t t[FULL_THREADS];
+    for (intptr_t i = 0; i < FULL_THREADS; i++)
+        ano_thread_create(&t[i], NULL, full_flooder, (void *)i);
+    for (int i = 0; i < FULL_THREADS; i++)
+        ano_thread_join(t[i], NULL);
     ano_log_flush();
 
-    CHECK(flushed > 0, "full: some records triggered a flush-to-make-room");
+    // Whether the ring actually saturated depends on producer-vs-consumer speed (the owned consumer may
+    // keep up, especially instrumented under TSan), so it is an observation, not an assertion. The
+    // invariant under test is no loss: every record survives, full path or not.
+    if (atomic_load(&g_full_flushed) == 0)
+        printf("  NOTE: flood did not saturate the ring this run (consumer kept pace)\n");
     char *c = slurp(LOG_PATH, NULL);
     CHECK(c != NULL, "full: file readable");
     if (c) {
-        CHECK(count_lines(c) == FULL_FLOOD, "full: every record survives a full ring");
+        CHECK(count_lines(c) == FULL_FLOOD, "full: every record survives heavy concurrent flood");
         free(c);
     }
     return g_fail;

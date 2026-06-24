@@ -4,12 +4,13 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Lock-free MPSC ring logger. A producer formats its line on its own stack, reserves a run of cache
-// lines with one CAS on `tail`, copies the text in, and publishes with one release store of `tag`. It
-// never waits on another thread. The caller drains the ring via ano_log_flush() on its own schedule,
-// so the logger owns no thread. The producer path is lock-free. The cold paths (drain, immediate,
-// output-file swap) take small locks: a drain mutex (one consumer) and an output-file mutex. FATAL
-// writes straight through. A full ring flushes, then keeps buffering. Stop all producers before
-// ano_log_cleanup. Design: docs/logger.md.
+// lines with one CAS on `tail`, copies the text in, and publishes with one release store of `tag`. On
+// the common path it never waits. The logger owns one consumer thread that drains the ring continuously,
+// so producers stay on the lock-free path; ano_log_flush() also drains inline for callers needing records
+// on disk now. The cold paths (drain, immediate, output-file swap) take small locks: a drain mutex (one
+// active drainer) and an output-file mutex. FATAL writes straight through. A full ring makes the producer
+// wait for the consumer to free room, never dropping. Stop all producers before ano_log_cleanup.
+// Design: docs/logger.md.
 
 #include "logging/logging_ring.h"
 
@@ -37,6 +38,13 @@ static anothread_mutex_t g_drainMtx;   // gates the single consumer: one drainer
 static anothread_mutex_t g_outFileMtx; // guards the output file handle's lifecycle and writes
 static ano_file    *g_outFile;         // the open output file, or NULL
 
+// The owned consumer thread (§6, Stage 1). It drains the ring continuously so producers stay on the
+// pure lock-free path. g_drainRun gates its loop; cleared at cleanup before the join.
+static anothread_t  g_drainThread;
+static atomic_bool  g_drainRun;
+#define DRAIN_IDLE_US     100u      // park this long after an empty drain pass, microseconds
+#define FULL_STALL_LIMIT  65536u    // full rechecks with head frozen before declaring the consumer wedged
+
 // Output target, bound once when the file opens or closes, so the write path never tests g_outFile.
 // g_persist writes a buffer (file, else console). g_syncOut fsyncs (file) or no-ops. g_haveFile gates
 // the immediate echo.
@@ -61,21 +69,41 @@ static bool         g_drainHMSValid;
 
 /* Formatting (eager, on the producer; §9) */
 
+// Decimal of v at p, advance. No printf machinery.
+static inline char *put_u32(char *p, uint32_t v)
+{
+    char tmp[10];
+    int i = 0;
+    do { tmp[i++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (i) *p++ = tmp[--i];
+    return p;
+}
+
 // Compose "<LEVEL> <file>:<line>:  <message>" into out, no time prefix, no newline. The flusher adds
 // the time at emit. Returns the byte length clamped to cap-1 so an over-long line never overruns the
-// entry. format(printf, 6, 0) marks this a printf forwarder so the vsnprintf below passes -Wformat-nonliteral.
+// entry. The fixed-shape prefix is hand-rolled (no snprintf); only the user fmt takes vsnprintf.
+// format(printf, 6, 0) marks this a printf forwarder so the vsnprintf below passes -Wformat-nonliteral.
 __attribute__((format(printf, 6, 0)))
 static int format_line(char *out, int cap, log_types_t level,
                        const char *file, int line, const char *fmt, va_list ap)
 {
     const char *name = (level >= LOG_DEBUG && level <= LOG_FATAL) ? logStrings[level] : "?????";
-    int head = snprintf(out, (size_t)cap, "%-5s %s:%d:  ", name, file, line);
-    if (head < 0) head = 0;
-    if (head >= cap) return cap - 1;                                   // prefix alone filled the buffer
+    char  *p  = out;
+    size_t nl = strlen(name);
+    memcpy(p, name, nl); p += nl;
+    while (nl < 5) { *p++ = ' '; nl++; }    // left-justify the level to 5
+    *p++ = ' ';
+    size_t fl = strlen(file);
+    if (fl > 256) fl = 256;                 // clamp so a freak file name can't crowd out the message
+    memcpy(p, file, fl); p += fl;
+    *p++ = ':';
+    p = put_u32(p, (uint32_t)(line < 0 ? 0 : line));
+    *p++ = ':'; *p++ = ' '; *p++ = ' ';
+    int head = (int)(p - out);              // bounded <= 5+1+256+1+10+3, far under cap
     int body = vsnprintf(out + head, (size_t)(cap - head), fmt, ap);   // forwarded under the attribute
     if (body < 0) body = 0;
     int total = head + body;
-    return total < cap ? total : cap - 1;                             // clamp: never overrun the entry
+    return total < cap ? total : cap - 1;   // clamp: never overrun the entry
 }
 
 // Two digits (00-99) at p, advance. No printf machinery.
@@ -176,9 +204,11 @@ static void emit_one(log_types_t level, uint64_t raw_ts, const char *text, uint1
 }
 
 
-/* The consumer: one synchronous, single-active drain pass (§6) */
+/* The consumer: one single-active drain pass, run by the owned drain thread (§6) */
 
-static void drain_and_emit(void)
+// Drain every committed record up to the tail bound into one batch write. Returns lines reclaimed,
+// so the caller parks when a pass finds nothing.
+static uint64_t drain_and_emit(void)
 {
     // Not one linearization point: a batch drain is N consume events, each linearizing at its own `tag`
     // acquire below. head is drainer-private. The tail load is a relaxed count bound on the walk. The
@@ -193,8 +223,8 @@ static void drain_and_emit(void)
             break;  // caught up to tail, the only stop at exact fullness
         log_marker_t *m = log_marker_at(&g_ring, h);
         log_word_t v = { .w = atomic_load_explicit(&m->tag, memory_order_acquire) };
-        if (v.w == 0)
-            break;  // gap: reserved but unpublished, resume here next pass
+        if (!(v.flags & ANO_LOG_COMMITTED) || v.cycle != log_cycle(&g_ring, h))
+            break;  // gap: free, reserved-but-unpublished, or a stale prior-lap tag. Resume here next pass
         uint64_t need = log_span(v.len);
         const char *line = log_gather(&g_ring, h, v.len, g_scratch);   // <= 2 memcpys (§8)
 
@@ -211,26 +241,36 @@ static void drain_and_emit(void)
         h += need;
     }
 
-    if (h != h0) {  // zero the drained range, all-zero line = free again
-        uint64_t n = h - h0, a = h0 & g_ring.mask, N = log_lines(&g_ring);
-        uint64_t first = (a + n <= N) ? n : (N - a);
-        memset(g_ring.buf + a * ANO_CL, 0, (size_t)first * ANO_CL);         // up to the buffer end
-        if (first < n) memset(g_ring.buf, 0, (size_t)(n - first) * ANO_CL); // wrap remainder
-    }
-    atomic_store_explicit(&g_ring.head, h, memory_order_release);   // frees [h0,h), memset happens-before reuse
+    // No zeroing: a reused slot carries last lap's tag until republished, and the cycle check above
+    // rejects it. Reclaim is just the head advance, halving the drainer's memory traffic.
+    atomic_store_explicit(&g_ring.head, h, memory_order_release);   // frees [h0,h) for reuse
 
     write_batch(g_batch, blen); // one syscall for the whole pass
+    return h - h0;
 }
 
-// One drain pass, serialized so exactly one thread drains at a time. The full-ring path calls this too,
-// so it must block, not skip, hence a mutex.
-// WORKAROUND (FOR NOW): A BLOCKING MUTEX GATES THE SINGLE CONSUMER. REVISIT WITH A LOCK-FREE HANDOFF
-// SO CONCURRENT FLUSHERS DON'T SERIALIZE ON IT (THE SPIN THAT WAS HERE REGRESSED 8-PRODUCER THROUGHPUT).
-static void drain(void)
+// One drain pass, serialized so exactly one thread drains at a time. The owned drain thread runs it in
+// a loop; ano_log_flush() runs it inline for a synchronous guarantee. A mutex (not a spin) gates it so
+// an inline flush and the owned drainer never overlap, and neither burns a core waiting.
+static uint64_t drain(void)
 {
     ano_mutex_lock(&g_drainMtx);
-    drain_and_emit();
+    uint64_t n = drain_and_emit();
     ano_mutex_unlock(&g_drainMtx);
+    return n;
+}
+
+// The owned consumer (§6, Stage 1). Drains continuously while there is work, so the ring stays empty
+// under load and producers never fall back to draining themselves. Parks briefly when a pass is empty,
+// so an idle logger costs nothing. ano_log_flush() still drains inline for callers that need it now.
+static void *drainer_main(void *arg)
+{
+    (void)arg;
+    while (atomic_load_explicit(&g_drainRun, memory_order_relaxed)) {
+        if (drain() == 0)
+            ano_sleep(DRAIN_IDLE_US);   // empty pass: park, else stay hot and loop
+    }
+    return NULL;
 }
 
 
@@ -254,18 +294,27 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
 
     // No log_entry_t: an "entry" is a marker (tag + timestamp) plus inline text, laid straight into the
     // ring's reserved cache lines below. The ring is the storage.
+    uint64_t cap = log_lines(&g_ring);
     uint64_t pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);
-    bool flushed = false;
+    uint64_t lastHead = 0;
+    uint32_t stall = 0;
+    bool waited = false;
     for (;;) {
         uint64_t hd = atomic_load_explicit(&g_ring.head, memory_order_acquire); // full and reuse-safety
-        if ((pos + need) - hd > log_lines(&g_ring)) {   // would alias undrained: ring full
-            if (flushed) {
-                // WORKAROUND (FOR NOW): A GAP (PREEMPTED/DEAD PRODUCER MID-PUBLISH) WEDGED THE DRAIN; WRITE THIS ONE THROUGH.
+        if ((pos + need) - hd > cap) {   // would alias undrained: ring full
+            // Don't drain inline (that serialized every full producer on g_drainMtx and collapsed @8).
+            // Back off and let the owned consumer free space, self-throttling to the drain rate. While
+            // head keeps advancing this is plain backpressure; if it stalls (a producer died mid-publish,
+            // leaving a gap the consumer can't pass) write this line through so a wedge degrades to direct
+            // output instead of blocking every producer forever. The reservation isn't claimed yet (no CAS),
+            // so bailing here leaks no slot.
+            waited = true;
+            if (hd != lastHead) { lastHead = hd; stall = 0; }
+            else if (++stall > FULL_STALL_LIMIT) {
                 emit_one(level, ts, blob, len, false, false);
                 return 1;
             }
-            drain();    // flush the buffered batch to make room, then keep buffering this line
-            flushed = true;
+            ano_busywait(128);  // brief, off the consumer's cache line between rechecks
             pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);     // re-snapshot, retry
             continue;
         }
@@ -278,9 +327,10 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
     log_marker_t *m = log_marker_at(&g_ring, pos);
     m->timestamp = ts;  // plain store, ordered by the release below
     log_write_body(&g_ring, pos, blob, len);    // <= 2 memcpys (§8)
-    log_word_t v = { .len = len, .level = (uint8_t)level, .flags = ANO_LOG_COMMITTED };
+    log_word_t v = { .len = len, .level = (uint8_t)level, .flags = ANO_LOG_COMMITTED,
+                     .cycle = log_cycle(&g_ring, pos) };
     atomic_store_explicit(&m->tag, v.w, memory_order_release);  // publish: one gate, whole record
-    return flushed ? 1 : 0;   // 1: the ring was full, so we flushed to make room before buffering
+    return waited ? 1 : 0;   // 1: the ring was full, so we waited for the consumer to make room
 }
 
 void ano_log_immediate(log_types_t level, const char *file, int line, const char *fmt, ...)
@@ -340,8 +390,9 @@ int ano_log_init(void)
         return -1;
     if (ano_mutex_init(&g_drainMtx, NULL) != 0) { ano_mutex_destroy(&g_outFileMtx); return -1; }
 
-    g_ring.mask = ANO_LOG_RING_LINES - 1;
-    g_ring.buf  = ano_aligned_malloc(ANO_LOG_RING_BYTES, ANO_LOG_RING_ALIGN);
+    g_ring.mask  = ANO_LOG_RING_LINES - 1;
+    g_ring.shift = (uint32_t)__builtin_ctzll(ANO_LOG_RING_LINES);   // log2(N) for the lap counter
+    g_ring.buf   = ano_aligned_malloc(ANO_LOG_RING_BYTES, ANO_LOG_RING_ALIGN);
     if (g_ring.buf == NULL) { ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx); return -1; }
     memset(g_ring.buf, 0, ANO_LOG_RING_BYTES);
     atomic_store(&g_ring.tail, 0);
@@ -373,6 +424,17 @@ int ano_log_init(void)
     select_output();    // bind g_persist/g_syncOut/g_haveFile to the chosen output
 
     atomic_store_explicit(&g_initialized, true, memory_order_release);
+
+    // Spawn the owned consumer last, once the ring and output are live.
+    atomic_store_explicit(&g_drainRun, true, memory_order_relaxed);
+    if (ano_thread_create(&g_drainThread, NULL, drainer_main, NULL) != 0) {
+        atomic_store_explicit(&g_drainRun, false, memory_order_relaxed);
+        atomic_store_explicit(&g_initialized, false, memory_order_release);
+        ano_aligned_free(g_ring.buf); g_ring.buf = NULL;
+        mi_free(g_batch);             g_batch = NULL;
+        ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
+        return -1;
+    }
     return 0;
 }
 
@@ -382,6 +444,10 @@ int ano_log_cleanup(void)
         return 0;
 
     atomic_store_explicit(&g_initialized, false, memory_order_release);
+
+    // Stop the owned consumer before tearing down the ring it reads.
+    atomic_store_explicit(&g_drainRun, false, memory_order_relaxed);
+    ano_thread_join(g_drainThread, NULL);
 
     drain();    // one final drain, no producers remain by contract
 
