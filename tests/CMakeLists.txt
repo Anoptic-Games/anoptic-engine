@@ -33,6 +33,17 @@ target_compile_options(anotest_chariots PRIVATE -w)
 add_test(NAME anoptic_chariots COMMAND anotest_chariots)
 set_tests_properties(anoptic_chariots PROPERTIES DISABLED TRUE LABELS "optional;easteregg")
 
+# Optional logger benchmark: the lock-free ring (in anoptic_core) vs the preserved mutex baseline.
+# logging_old.c is compiled ONLY into this target -- it never enters anoptic_core or the standard
+# build, so the two loggers coexist in one executable (the baseline is namespaced mtxlog_*). The
+# src include dir resolves "logging/logging_old.h". Built so it cannot rot, DISABLED in ctest --
+# run ./anotest_logbench by hand.
+add_executable(anotest_logbench anotest_logbench.c ${CMAKE_SOURCE_DIR}/src/logging/logging_old.c)
+target_include_directories(anotest_logbench PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(anotest_logbench PRIVATE anoptic_core)
+add_test(NAME anoptic_logbench COMMAND anotest_logbench)
+set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
 # Testing for the render_bridge transport (SPSC rings; concurrency)
 add_executable(anotest_render_bridge anotest_render_bridge.c)
 target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)

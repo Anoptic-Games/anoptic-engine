@@ -5,7 +5,7 @@
 
 // The logger follows a singleton pattern (one per program), owned by main. A producer formats its
 // line on the calling thread and appends it to a shared buffer; the caller drains that buffer to
-// the sink on its own schedule via ano_log_flush() (the logger runs no background thread).
+// the output file on its own schedule via ano_log_flush() (the logger runs no background thread).
 // Design: docs/logger.md.
 
 #ifndef ANOPTIC_LOGGER_H
@@ -23,25 +23,20 @@ typedef enum {
     LOG_FATAL
 } log_types_t;
 
-// Policy when a producer's reservation would overrun an undrained record (a full ring).
-// IMMEDIATE (default): write the finished line on the calling thread -- no loss, self-throttling.
-// DROP_NEWEST: discard it and count it (ano_log_dropped). BLOCK: spin until space; debug only.
-typedef enum {
-    ANO_LOG_FULL_IMMEDIATE = 0,
-    ANO_LOG_DROP_NEWEST    = 1,
-    ANO_LOG_BLOCK          = 2
-} ano_log_full_policy_t;
+// Full ring: a producer whose reservation would overrun an undrained record writes the finished line
+// straight through on the calling thread. No loss, self-throttling to disk speed.
 
-// Lifecycle. ano_log_init opens the default sink (the game directory); until it returns 0, only the
-// immediate (stderr) path works. ano_log_cleanup drains any buffered records, then syncs and closes
-// the sink. Both return 0 on success. Single-owner teardown: all producer threads must have stopped
+// Lifecycle. ano_log_init opens the default output file (the game directory); until it returns 0, only
+// the immediate (stderr) path works. ano_log_cleanup drains any buffered records, then syncs and closes
+// the output file. Both return 0 on success. Single-owner teardown: all producer threads must have stopped
 // before ano_log_cleanup is called -- calling any ano_log_* concurrently with cleanup is undefined.
 int ano_log_init(void);     // Build up, singleton initialization.
 int ano_log_cleanup(void);  // Teardown, most likely at program exit.
 
 // The usual method: format {level, file, line, fmt, ...} into one line on the calling thread, copy
-// it into the ring, and publish with one release store. Never waits on another thread.
-// Returns: 0 enqueued; 1 written immediately (full policy); -1 dropped (DROP_NEWEST).
+// it into the ring, and publish with one release store.
+// Returns: 0 enqueued; 1 the ring was full, so buffered records were flushed to make room before
+// this line was buffered (same flush-then-keep-buffering policy as a full write buffer).
 // printFormat MUST be a string literal -- the format attribute checks the args against it.
 int ano_log_enqueue(log_types_t log_type, const char* sourceFile, int lineNumber,
                     const char* printFormat, ...) __attribute__((format(printf, 4, 5)));
@@ -51,26 +46,20 @@ int ano_log_enqueue(log_types_t log_type, const char* sourceFile, int lineNumber
 void ano_log_immediate(log_types_t log_type, const char* sourceFile, int lineNumber,
                        const char* printFormat, ...) __attribute__((format(printf, 4, 5)));
 
-// Open dir/anoptic.log as the file sink (a per-run UTC-stamped name is deferred). Returns 0 on
+// Open dir/anoptic.log as the output file (a per-run UTC-stamped name is deferred). Returns 0 on
 // success; -1 if the directory is invalid or could not be opened, in which case a previously open
-// sink is kept. With no sink set, records still drain to console.
+// output file is kept. With no output file set, records still drain to console.
 // Should probably use a filepath type from anoptic_filesystem.h
 int ano_log_output_dir(const char* directoryPath);
 
 // Runtime severity gate: enqueues below min are refused with one relaxed load.
 void ano_log_set_level(log_types_t min);
 
-// Select the full-ring policy (default ANO_LOG_FULL_IMMEDIATE).
-void ano_log_set_full_policy(ano_log_full_policy_t policy);
-
-// Drain all buffered records to the sink, synchronously on the calling thread. This is the only
+// Drain all buffered records to the output file, synchronously on the calling thread. This is the only
 // flush mechanism: call it on your own schedule (e.g. once per tick). ano_log_cleanup drains a
-// final time, and a full buffer self-drains via the full policy, so a missed flush delays records
+// final time, and a full ring self-drains by writing immediately, so a missed flush delays records
 // but never loses them.
 void ano_log_flush(void);
-
-// Count of records discarded under DROP_NEWEST since init.
-uint64_t ano_log_dropped(void);
 
 
 // Call-site macros: pass level + __FILE_NAME__ + __LINE__ + fmt straight through. The first three
