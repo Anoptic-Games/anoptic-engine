@@ -1,0 +1,78 @@
+#version 450
+
+// Radiance cascades M4 — top-down interval merge (RADIANCE_CASCADES.md §6).
+// One dispatch per child level c (push.cascade), run highest-1 down to 0. Each child (probe,dir)
+// texel composites its own near interval over the parent's far interval, front-to-back:
+//   I = I_near + T_near * I_far ;  T = T_near * T_far
+// (the reference's merge operator in transmittance form; radiance-cascades.md:96).
+// The child direction tile (ox,oy) at cascade c subdivides into the 4 parent direction tiles
+// (2ox+{0,1}, 2oy+{0,1}) at cascade c+1; the far radiance is their average, each trilinearly
+// interpolated over the parent's 8 surrounding (sparser) probes. This is the standard trilinear
+// merge; the reprojected bilinear-fix variant (R8, the near-geometry leak) is a follow-on.
+// In-place: each invocation reads then overwrites only its own texel, so no self-barrier is needed.
+
+#define RC_H         8.0
+#define RC_C0_PROBES 64
+#define RC_C0_OCT    4
+#define RC_CASCADES  6
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(set = 0, binding = 3, rgba16f) uniform image3D cascades[RC_CASCADES];
+layout(push_constant) uniform PC { uint cascade; } pc;
+
+// Trilinear sample of parent cascade `lvl` (Pp probes/axis, Op oct res) at continuous probe coord
+// fc, for one fixed parent direction tile (pox,poy).
+vec4 sampleParent(int lvl, vec3 fc, int Pp, int Op, int pox, int poy) {
+    vec3 f = clamp(fc, vec3(0.0), vec3(float(Pp) - 1.0));
+    ivec3 i0 = ivec3(floor(f));
+    ivec3 i1 = min(i0 + 1, ivec3(Pp - 1));
+    vec3 w = f - vec3(i0);
+    vec4 acc = vec4(0.0);
+    for (int dz = 0; dz < 2; dz++)
+    for (int dy = 0; dy < 2; dy++)
+    for (int dx = 0; dx < 2; dx++) {
+        ivec3 q  = ivec3(dx == 0 ? i0.x : i1.x, dy == 0 ? i0.y : i1.y, dz == 0 ? i0.z : i1.z);
+        float wt = (dx == 0 ? 1.0 - w.x : w.x) * (dy == 0 ? 1.0 - w.y : w.y) * (dz == 0 ? 1.0 - w.z : w.z);
+        ivec3 texel = ivec3(q.x * Op + pox, q.y * Op + poy, q.z);
+        acc += wt * imageLoad(cascades[lvl], texel);
+    }
+    return acc;
+}
+
+void main() {
+    uint c = pc.cascade;
+    int parent = int(c) + 1;
+    int P  = RC_C0_PROBES >> c;
+    int O  = RC_C0_OCT << c;
+    int Pp = RC_C0_PROBES >> parent;
+    int Op = RC_C0_OCT << parent;
+
+    ivec3 g = ivec3(gl_GlobalInvocationID);
+    ivec3 sz = imageSize(cascades[c]);
+    if (any(greaterThanEqual(g, sz))) return;
+
+    int px = g.x / O, ox = g.x - px * O;
+    int py = g.y / O, oy = g.y - py * O;
+    int pz = g.z;
+
+    vec4 near = imageLoad(cascades[c], g);
+
+    // child probe world pos -> continuous parent probe coord
+    vec3 probe = -vec3(RC_H) + (vec3(px, py, pz) + 0.5) * (2.0 * RC_H / float(P));
+    vec3 fc = (probe + vec3(RC_H)) / (2.0 * RC_H) * float(Pp) - 0.5;
+
+    vec3  farI = vec3(0.0);
+    float farT = 0.0;
+    for (int dax = 0; dax < 2; dax++)
+    for (int day = 0; day < 2; day++) {
+        vec4 s = sampleParent(parent, fc, Pp, Op, 2 * ox + dax, 2 * oy + day);
+        farI += s.rgb;
+        farT += s.a;
+    }
+    farI *= 0.25;
+    farT *= 0.25;
+
+    vec3  mI = near.rgb + near.a * farI;
+    float mT = near.a * farT;
+    imageStore(cascades[c], g, vec4(mI, mT));
+}

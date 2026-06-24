@@ -1145,48 +1145,60 @@ bool ano_vk_init_rc_voxelize(VulkanContext* ctx, RendererState* state)
 
 // Radiance-cascade trace pipeline (RADIANCE_CASCADES.md M3b). Compute: gathers the two scene voxel
 // volumes (sampled) into the irradiance field (storage image). Standalone, like voxelize. Run after
-// ano_vk_init_rc_voxelize. in: ctx, state; out: rcTrace{SetLayout,Layout,Cache,Pipeline}.
+// Load one compute SPIR-V from resources/shaders and build a pipeline against `layout`/`cache`.
+static bool rc_make_compute(VulkanContext* ctx, const char* spv, VkPipelineLayout layout, VkPipelineCache cache, VkPipeline* out)
+{
+	struct Buffer code;
+	char path[256];
+	snprintf(path, sizeof(path), "%s/resources/shaders/%s", PROJECT_ROOT, spv);
+	if (!loadFile(path, &code)) return false;
+	VkShaderModule module = createShaderModule(ctx->device, &code);
+	VkComputePipelineCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+	pci.layout = layout;
+	pci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	pci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	pci.stage.module = module;
+	pci.stage.pName = "main";
+	VkResult r = vkCreateComputePipelines(ctx->device, cache, 1, &pci, NULL, out);
+	ano_aligned_free(code.data);
+	vkDestroyShaderModule(ctx->device, module, NULL);
+	return r == VK_SUCCESS;
+}
+
+// Radiance-cascade compute set + the three pipelines that share it (trace/merge/integrate).
+// in: ctx, state; out: rcTrace{SetLayout,Layout,Cache,Pipeline}, rcMergePipeline, rcIntegratePipeline.
+// Set 0: 0/1 = voxel albedo+emission (sampled), 2 = irradiance (STORAGE_IMAGE), 3 = cascade array
+// (STORAGE_IMAGE[ANO_RC_CASCADE_COUNT]). Push constant: uint cascade level.
 bool ano_vk_init_rc_trace(VulkanContext* ctx, RendererState* state)
 {
-	VkDescriptorSetLayoutBinding b[3] = {};
-	b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-	b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-	b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          b[2].descriptorCount = 1; b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	VkDescriptorSetLayoutBinding b[4] = {};
+	b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[0].descriptorCount = 1;                      b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[1].descriptorCount = 1;                      b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          b[2].descriptorCount = 1;                      b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	b[3].binding = 3; b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          b[3].descriptorCount = ANO_RC_CASCADE_COUNT;   b[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorSetLayoutCreateInfo setInfo = {};
 	setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	setInfo.bindingCount = 3;
+	setInfo.bindingCount = 4;
 	setInfo.pBindings = b;
 	if (vkCreateDescriptorSetLayout(ctx->device, &setInfo, NULL, &state->rcTraceSetLayout) != VK_SUCCESS) return false;
 
+	VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t) }; // cascade level
 	VkPipelineLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layoutInfo.setLayoutCount = 1;
 	layoutInfo.pSetLayouts = &state->rcTraceSetLayout;
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &pcr;
 	if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->rcTraceLayout) != VK_SUCCESS) return false;
 
 	VkPipelineCacheCreateInfo cacheInfo = {};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->rcTraceCache);
 
-	struct Buffer code;
-	char path[256];
-	snprintf(path, sizeof(path), "%s/resources/shaders/rc_trace.comp.spv", PROJECT_ROOT);
-	if (!loadFile(path, &code)) return false;
-	VkShaderModule module = createShaderModule(ctx->device, &code);
-
-	VkComputePipelineCreateInfo pipelineInfo = {};
-	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-	pipelineInfo.layout = state->rcTraceLayout;
-	pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-	pipelineInfo.stage.module = module;
-	pipelineInfo.stage.pName = "main";
-	VkResult r = vkCreateComputePipelines(ctx->device, state->rcTraceCache, 1, &pipelineInfo, NULL, &state->rcTracePipeline);
-
-	ano_aligned_free(code.data);
-	vkDestroyShaderModule(ctx->device, module, NULL);
-	if (r != VK_SUCCESS) { printf("Failed to create rc trace pipeline!\n"); return false; }
+	if (!rc_make_compute(ctx, "rc_trace.comp.spv",     state->rcTraceLayout, state->rcTraceCache, &state->rcTracePipeline))     { printf("Failed to create rc trace pipeline!\n");     return false; }
+	if (!rc_make_compute(ctx, "rc_merge.comp.spv",     state->rcTraceLayout, state->rcTraceCache, &state->rcMergePipeline))     { printf("Failed to create rc merge pipeline!\n");     return false; }
+	if (!rc_make_compute(ctx, "rc_integrate.comp.spv", state->rcTraceLayout, state->rcTraceCache, &state->rcIntegratePipeline)) { printf("Failed to create rc integrate pipeline!\n"); return false; }
 	return true;
 }
 
@@ -1295,11 +1307,21 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
         state->rcVoxelizeSetLayout = VK_NULL_HANDLE;
     }
 
-    // Radiance-cascade trace pipeline (standalone compute) + its set layout.
+    // Radiance-cascade trace/merge/integrate pipelines (standalone compute) + their shared set layout.
     if (state->rcTracePipeline != VK_NULL_HANDLE)
     {
         vkDestroyPipeline(ctx->device, state->rcTracePipeline, NULL);
         state->rcTracePipeline = VK_NULL_HANDLE;
+    }
+    if (state->rcMergePipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(ctx->device, state->rcMergePipeline, NULL);
+        state->rcMergePipeline = VK_NULL_HANDLE;
+    }
+    if (state->rcIntegratePipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(ctx->device, state->rcIntegratePipeline, NULL);
+        state->rcIntegratePipeline = VK_NULL_HANDLE;
     }
     if (state->rcTraceLayout != VK_NULL_HANDLE)
     {

@@ -526,8 +526,8 @@ void recordCommandBuffer(uint32_t imageIndex)
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             0, 0, NULL, 0, NULL, 2, toRead);
 
-        // Cascade-0 trace (M3b): gather the voxel volumes into the irradiance field. irradiance
-        // UNDEFINED -> GENERAL, dispatch, GENERAL -> SHADER_READ for the geometry stage's GI sample.
+        // === Cascade hierarchy (M4): trace each level's interval, merge top-down, integrate to irradiance ===
+        // irradiance UNDEFINED -> GENERAL (rc_integrate writes it). Cascade volumes already rest in GENERAL.
         VkImageSubresourceRange irrRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         VkImageMemoryBarrier irrToGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         irrToGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // regenerated each frame; discard
@@ -540,11 +540,49 @@ void recordCommandBuffer(uint32_t imageIndex)
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, NULL, 0, NULL, 1, &irrToGeneral);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTracePipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTraceLayout, 0, 1, &rendererState.rcTraceSet, 0, NULL);
-        uint32_t traceGroups = (ANO_RC_IRRADIANCE_DIM + 3u) / 4u; // local_size 4^3
-        vkCmdDispatch(cmd, traceGroups, traceGroups, traceGroups);
+        // WAR: order this frame's cascade writes after the previous frame's cascade reads (×1 shared,
+        // single graphics queue — the barrier's execution dependency spans earlier submits).
+        VkMemoryBarrier rcWar = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT, .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT };
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &rcWar, 0, NULL, 0, NULL);
 
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTraceLayout, 0, 1, &rendererState.rcTraceSet, 0, NULL);
+
+        // Reused between cascade passes: all volumes are GENERAL, so a global COMPUTE write->read|write
+        // memory barrier (no layout change) suffices.
+        VkMemoryBarrier rcMem = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT };
+
+        // Trace: one dispatch per level over its (256,256,P_c) image. Levels write distinct images, so
+        // no barrier between them; one barrier after makes all raw intervals visible to the merge.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTracePipeline);
+        for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) {
+            uint32_t probes = ANO_RC_C0_PROBES >> c;
+            vkCmdPushConstants(cmd, rendererState.rcTraceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &c);
+            vkCmdDispatch(cmd, ANO_RC_CASCADE_XY / 4u, ANO_RC_CASCADE_XY / 4u, (probes + 3u) / 4u);
+        }
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &rcMem, 0, NULL, 0, NULL);
+
+        // Merge top-down: child c composites over the (already-merged) parent c+1, so a barrier follows
+        // every dispatch.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcMergePipeline);
+        for (int c = (int)ANO_RC_CASCADE_COUNT - 2; c >= 0; c--) {
+            uint32_t cu = (uint32_t)c;
+            uint32_t probes = ANO_RC_C0_PROBES >> cu;
+            vkCmdPushConstants(cmd, rendererState.rcTraceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &cu);
+            vkCmdDispatch(cmd, ANO_RC_CASCADE_XY / 4u, ANO_RC_CASCADE_XY / 4u, (probes + 3u) / 4u);
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &rcMem, 0, NULL, 0, NULL);
+        }
+
+        // Integrate merged cascade 0 into the irradiance field (64^3 = ANO_RC_IRRADIANCE_DIM^3).
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcIntegratePipeline);
+        uint32_t intGroups = (ANO_RC_IRRADIANCE_DIM + 3u) / 4u;
+        vkCmdDispatch(cmd, intGroups, intGroups, intGroups);
+
+        // irradiance GENERAL -> SHADER_READ for the geometry stage's GI sample.
         VkImageMemoryBarrier irrToRead = irrToGeneral;
         irrToRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
         irrToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2234,6 +2272,35 @@ static bool rc_create_voxel_image(VulkanContext* ctx, uint32_t dim, VkImage* img
     return vkCreateImageView(ctx->device, &vinfo, NULL, view) == VK_SUCCESS;
 }
 
+// One cascade interval volume (M4): a (w,h,d) RGBA16F 3D storage image holding [radiance, transmittance].
+// STORAGE-only (never sampled — the merge/integrate use integer imageLoad), rests in GENERAL.
+// in: ctx, dims; out: img/alloc/view. Returns false on failure.
+static bool rc_create_cascade_image(VulkanContext* ctx, uint32_t w, uint32_t h, uint32_t d, VkImage* img, GpuAllocation* alloc, VkImageView* view) {
+    VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    iinfo.imageType = VK_IMAGE_TYPE_3D;
+    iinfo.format = ANO_RC_VOXEL_FORMAT;
+    iinfo.extent = (VkExtent3D){ w, h, d };
+    iinfo.mipLevels = 1;
+    iinfo.arrayLayers = 1;
+    iinfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    iinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    iinfo.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+    iinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    iinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(ctx->device, &iinfo, NULL, img) != VK_SUCCESS) return false;
+    VkMemoryRequirements imr; vkGetImageMemoryRequirements(ctx->device, *img, &imr);
+    *alloc = gpu_alloc(&rcAllocator, imr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (alloc->memory == VK_NULL_HANDLE) return false;
+    vkBindImageMemory(ctx->device, *img, alloc->memory, alloc->offset);
+
+    VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vinfo.image = *img;
+    vinfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    vinfo.format = ANO_RC_VOXEL_FORMAT;
+    vinfo.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    return vkCreateImageView(ctx->device, &vinfo, NULL, view) == VK_SUCCESS;
+}
+
 // Axis-aligned orthographic clipmap viewProj projecting `depthAxis` (0=X,1=Y,2=Z) as depth: the two
 // other world axes map to ndc.xy in [-1,1], depthAxis maps to ndc.z in [0,1], all over [-H,H].
 // Column-major mat4 (m[col][row]), matching the GLSL CullView.viewProj the geometry stage reads.
@@ -2259,6 +2326,13 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     if (!rc_create_voxel_image(ctx, ANO_RC_VOXEL_DIM, &state->rcVoxelAlbedo, &state->rcVoxelAlbedoAlloc, &state->rcVoxelAlbedoView)) return false;
     if (!rc_create_voxel_image(ctx, ANO_RC_VOXEL_DIM, &state->rcVoxelEmission, &state->rcVoxelEmissionAlloc, &state->rcVoxelEmissionView)) return false;
     if (!rc_create_voxel_image(ctx, ANO_RC_IRRADIANCE_DIM, &state->rcIrradiance, &state->rcIrradianceAlloc, &state->rcIrradianceView)) return false;
+
+    // M4 cascade stack: level c is (256, 256, 64>>c) RGBA16F. ~63 MiB total (per-level storage halves).
+    for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) {
+        uint32_t pc = ANO_RC_C0_PROBES >> c;
+        if (!rc_create_cascade_image(ctx, ANO_RC_CASCADE_XY, ANO_RC_CASCADE_XY, pc,
+                &state->rcCascade[c], &state->rcCascadeAlloc[c], &state->rcCascadeView[c])) return false;
+    }
 
     // Linear, clamp-to-edge sampler for trilinear reads of the 3D voxel/irradiance volumes (the
     // debug voxel view samples albedo through it; M3's trace + the GI ambient term reuse it).
@@ -2318,13 +2392,18 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     VkDescriptorImageInfo tAlbedo   = { state->rcSampler, state->rcVoxelAlbedoView,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkDescriptorImageInfo tEmission = { state->rcSampler, state->rcVoxelEmissionView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkDescriptorImageInfo tIrr      = { .imageView = state->rcIrradianceView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkWriteDescriptorSet tw[3] = {};
+    VkDescriptorImageInfo tCasc[ANO_RC_CASCADE_COUNT];
+    for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++)
+        tCasc[c] = (VkDescriptorImageInfo){ .imageView = state->rcCascadeView[c], .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet tw[4] = {};
     tw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[0].dstSet = state->rcTraceSet; tw[0].dstBinding = 0;
     tw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[0].descriptorCount = 1; tw[0].pImageInfo = &tAlbedo;
     tw[1] = tw[0]; tw[1].dstBinding = 1; tw[1].pImageInfo = &tEmission;
     tw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[2].dstSet = state->rcTraceSet; tw[2].dstBinding = 2;
     tw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; tw[2].descriptorCount = 1; tw[2].pImageInfo = &tIrr;
-    vkUpdateDescriptorSets(ctx->device, 3, tw, 0, NULL);
+    tw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[3].dstSet = state->rcTraceSet; tw[3].dstBinding = 3;
+    tw[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; tw[3].descriptorCount = ANO_RC_CASCADE_COUNT; tw[3].pImageInfo = tCasc;
+    vkUpdateDescriptorSets(ctx->device, 4, tw, 0, NULL);
 
     // One-time UNDEFINED -> SHADER_READ so the binding-12/13 samplers always reference a valid layout,
     // even before the first voxelize/trace (default SHADOWMAP mode never runs them). HYBRID/RC
@@ -2344,6 +2423,23 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     }
     vkCmdPipelineBarrier(init, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL, 3, toRead);
+
+    // Cascade volumes rest in GENERAL — the trace overwrites them each RC frame, the merge reads/writes
+    // them in place, none are ever sampled. One-time UNDEFINED -> GENERAL so the binding-3 descriptors
+    // reference a valid layout even when SHADOWMAP never runs the cascade passes.
+    VkImageMemoryBarrier toGen[ANO_RC_CASCADE_COUNT] = {};
+    for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) {
+        toGen[c].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toGen[c].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toGen[c].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        toGen[c].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGen[c].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGen[c].image = state->rcCascade[c];
+        toGen[c].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        toGen[c].srcAccessMask = 0; toGen[c].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    }
+    vkCmdPipelineBarrier(init, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL, ANO_RC_CASCADE_COUNT, toGen);
     endSingleTimeCommands(ctx, init);
 
     return true;
