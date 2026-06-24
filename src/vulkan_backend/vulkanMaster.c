@@ -422,41 +422,107 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
 
-    // === Radiance cascades (RADIANCE_CASCADES.md M1): storage-image plumbing proof ===
-    // Write the 3D scene voxel volume via imageStore, then leave it SHADER_READ. No consumer yet
-    // (M3 samples it); this exercises the first VK_IMAGE_TYPE_3D + STORAGE_IMAGE + GENERAL path and
-    // the first 3D compute dispatch. View-independent (×1 shared), so it lives here, not per view.
-    {
-        VkImageMemoryBarrier toGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-        toGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // contents regenerated each frame; discard
-        toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toGeneral.image = rendererState.rcSceneVoxel;
-        toGeneral.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        toGeneral.srcAccessMask = 0;
-        toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, NULL, 0, NULL, 1, &toGeneral);
+    // === Radiance cascades (RADIANCE_CASCADES.md M2): rasterized clipmap voxelization ===
+    // Clear the scene voxel volumes, then rasterize the cull-compacted opaque geometry by 3 ortho
+    // clipmap projections (one per dominant axis) into them via imageStore (voxelize.frag). Fills the
+    // albedo+opacity + emission substrate M3 marches. View-independent (×1 shared). Gated on an RC
+    // mode so SHADOWMAP keeps a clean baseline; nothing samples the volumes yet.
+    bool rcActive = (rendererState.lightingMode != ANO_LIGHTING_SHADOWMAP);
+    if (rcActive && entityCount > 0) {
+        VkImage voxImgs[2] = { rendererState.rcVoxelAlbedo, rendererState.rcVoxelEmission };
+        VkImageSubresourceRange full = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-            rendererState.prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations[0].pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-            rendererState.prototypes[PIPELINE_COMPUTE_RC_PROBE].layout, 0, 1, &rendererState.rcProbeSet, 0, NULL);
-        uint32_t rcGroups = (ANO_RC_VOXEL_DIM + 3u) / 4u; // local_size 4^3
-        vkCmdDispatch(cmd, rcGroups, rcGroups, rcGroups);
+        // UNDEFINED -> TRANSFER_DST, clear to zero (opacity 0 = empty), TRANSFER_DST -> GENERAL.
+        VkImageMemoryBarrier toClear[2] = {}, toGeneral[2] = {};
+        for (int k = 0; k < 2; k++) {
+            toClear[k].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toClear[k].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            toClear[k].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toClear[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toClear[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toClear[k].image = voxImgs[k]; toClear[k].subresourceRange = full;
+            toClear[k].srcAccessMask = 0; toClear[k].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        }
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, NULL, 0, NULL, 2, toClear);
+        VkClearColorValue zero = {0};
+        for (int k = 0; k < 2; k++)
+            vkCmdClearColorImage(cmd, voxImgs[k], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &full);
+        for (int k = 0; k < 2; k++) {
+            toGeneral[k].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toGeneral[k].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toGeneral[k].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            toGeneral[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toGeneral[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toGeneral[k].image = voxImgs[k]; toGeneral[k].subresourceRange = full;
+            toGeneral[k].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; toGeneral[k].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        }
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 2, toGeneral);
 
-        VkImageMemoryBarrier toRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-        toRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toRead.image = rendererState.rcSceneVoxel;
-        toRead.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        toRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, NULL, 0, NULL, 1, &toRead);
+        // Attachment-less render: the rasterizer grid is the voxel resolution; voxelize.frag derives
+        // the third coord from worldPos and imageStores. Three draws of view 0's opaque partition,
+        // one ortho axis each (push.shadowFrustumIndex selects the clipmap matrix in set 2).
+        VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO };
+        ri.renderArea.offset = (VkOffset2D){0, 0};
+        ri.renderArea.extent = (VkExtent2D){ ANO_RC_VOXEL_DIM, ANO_RC_VOXEL_DIM };
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 0;
+        vkCmdBeginRendering(cmd, &ri);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.rcVoxelizePipeline);
+        VkViewport vvp = { 0.0f, 0.0f, (float)ANO_RC_VOXEL_DIM, (float)ANO_RC_VOXEL_DIM, 0.0f, 1.0f };
+        vkCmdSetViewport(cmd, 0, 1, &vvp);
+        VkRect2D vsc = { .offset = {0, 0}, .extent = { ANO_RC_VOXEL_DIM, ANO_RC_VOXEL_DIM } };
+        vkCmdSetScissor(cmd, 0, 1, &vsc);
+
+        bool useMeshV = ctx.deviceCapabilities.meshShader;
+        VkShaderStageFlags pcStageV = useMeshV ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+        uint32_t drawSlotCountV = ano_draw_pipeline_count();
+        uint32_t opaqueSlotV = ano_draw_slot_of(PIPELINE_FLAT);
+        uint32_t partitionV = 0u * drawSlotCountV + opaqueSlotV; // view 0 opaque
+        uint32_t maxDrawsV = rendererState.indirectBuffer.capacity;
+        VkBuffer indirectBufV = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
+        VkBuffer drawCountBufV = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
+        VkDeviceSize countOffsetV = (VkDeviceSize)partitionV * sizeof(uint32_t);
+
+        VkDescriptorSet vSet0 = rendererState.frames[rendererState.frameIndex].views[0].globalSet;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.rcVoxelizeLayout, 0, 1, &vSet0, 0, NULL);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.rcVoxelizeLayout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.rcVoxelizeLayout, 2, 1, &rendererState.rcVoxelizeSet, 0, NULL);
+        if (!useMeshV) vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+        for (uint32_t axis = 0; axis < ANO_RC_VOXEL_AXES; axis++) {
+            uint32_t pcVals[2] = { partitionV * rendererState.culling.maxEntities, axis }; // baseOffset, axis
+            vkCmdPushConstants(cmd, rendererState.rcVoxelizeLayout, pcStageV, 0, sizeof(pcVals), pcVals);
+            if (useMeshV) {
+                VkDeviceSize io = (VkDeviceSize)partitionV * maxDrawsV * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                if (ctx.deviceCapabilities.drawIndirectCount)
+                    pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBufV, io, drawCountBufV, countOffsetV, maxDrawsV, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                else
+                    pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBufV, io, entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+            } else {
+                VkDeviceSize io = (VkDeviceSize)partitionV * maxDrawsV * sizeof(VkDrawIndexedIndirectCommand);
+                if (ctx.deviceCapabilities.drawIndirectCount)
+                    vkCmdDrawIndexedIndirectCount(cmd, indirectBufV, io, drawCountBufV, countOffsetV, maxDrawsV, sizeof(VkDrawIndexedIndirectCommand));
+                else
+                    vkCmdDrawIndexedIndirect(cmd, indirectBufV, io, entityCount, sizeof(VkDrawIndexedIndirectCommand));
+            }
+        }
+        vkCmdEndRendering(cmd);
+
+        // GENERAL -> SHADER_READ for M3's trace (sampled). No consumer yet in M2.
+        VkImageMemoryBarrier toRead[2] = {};
+        for (int k = 0; k < 2; k++) {
+            toRead[k].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toRead[k].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            toRead[k].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toRead[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toRead[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toRead[k].image = voxImgs[k]; toRead[k].subresourceRange = full;
+            toRead[k].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; toRead[k].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        }
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 2, toRead);
     }
     ano_ts(cmd, ANO_TS_AFTER_RC);
 
@@ -2110,11 +2176,10 @@ bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
 // per-light shadow info, both host-visible, filled here for the demo's directional caster (light 0).
 // in:  ctx, state (lightBuffer.capacity known)
 // out: true on success; populates frames[].shadow.* and state->shadow{FrustumConfig,LightInfo}*
-// Radiance-cascade resources (RADIANCE_CASCADES.md M1). The ×1 shared scene voxel volume + its
-// single STORAGE_IMAGE descriptor set. Hand-rolled (createImage() is 2D/depth=1 only): a
-// VK_IMAGE_TYPE_3D image from rcAllocator + a VK_IMAGE_VIEW_TYPE_3D view, matching the shadow-atlas
-// pattern. Prereqs: rcAllocator initialised, rcProbeSetLayout created, the global pool created.
-bool createRcResources(VulkanContext* ctx, RendererState* state) {
+// One ×1 shared 3D voxel image (RGBA16F): STORAGE (voxelize writes) + SAMPLED (M3 trace reads) +
+// TRANSFER_DST (per-frame clear). Hand-rolled — createImage() is 2D/depth=1 only — like the shadow
+// atlas, with a VK_IMAGE_VIEW_TYPE_3D view. in: ctx; out: img/alloc/view. Returns false on failure.
+static bool rc_create_voxel_image(VulkanContext* ctx, VkImage* img, GpuAllocation* alloc, VkImageView* view) {
     VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     iinfo.imageType = VK_IMAGE_TYPE_3D;
     iinfo.format = ANO_RC_VOXEL_FORMAT;
@@ -2123,39 +2188,83 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     iinfo.arrayLayers = 1;
     iinfo.samples = VK_SAMPLE_COUNT_1_BIT;
     iinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    iinfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    iinfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     iinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     iinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (vkCreateImage(ctx->device, &iinfo, NULL, &state->rcSceneVoxel) != VK_SUCCESS) return false;
-    VkMemoryRequirements imr; vkGetImageMemoryRequirements(ctx->device, state->rcSceneVoxel, &imr);
-    state->rcSceneVoxelAlloc = gpu_alloc(&rcAllocator, imr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (state->rcSceneVoxelAlloc.memory == VK_NULL_HANDLE) return false;
-    vkBindImageMemory(ctx->device, state->rcSceneVoxel, state->rcSceneVoxelAlloc.memory, state->rcSceneVoxelAlloc.offset);
+    if (vkCreateImage(ctx->device, &iinfo, NULL, img) != VK_SUCCESS) return false;
+    VkMemoryRequirements imr; vkGetImageMemoryRequirements(ctx->device, *img, &imr);
+    *alloc = gpu_alloc(&rcAllocator, imr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (alloc->memory == VK_NULL_HANDLE) return false;
+    vkBindImageMemory(ctx->device, *img, alloc->memory, alloc->offset);
 
     VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    vinfo.image = state->rcSceneVoxel;
+    vinfo.image = *img;
     vinfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
     vinfo.format = ANO_RC_VOXEL_FORMAT;
     vinfo.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    if (vkCreateImageView(ctx->device, &vinfo, NULL, &state->rcSceneVoxelView) != VK_SUCCESS) return false;
+    return vkCreateImageView(ctx->device, &vinfo, NULL, view) == VK_SUCCESS;
+}
 
-    // Single shared set (the volume is ×1). STORAGE_IMAGE descriptors must reference GENERAL layout.
+// Axis-aligned orthographic clipmap viewProj projecting `depthAxis` (0=X,1=Y,2=Z) as depth: the two
+// other world axes map to ndc.xy in [-1,1], depthAxis maps to ndc.z in [0,1], all over [-H,H].
+// Column-major mat4 (m[col][row]), matching the GLSL CullView.viewProj the geometry stage reads.
+static void rc_build_clipmap_ortho(mat4 out, uint32_t depthAxis) {
+    float H = ANO_RC_CLIP_HALF_EXTENT;
+    float s = 1.0f / H;            // [-H,H] -> [-1,1]
+    float ds = 1.0f / (2.0f * H);  // [-H,H] -> [0,1]
+    memset(out, 0, sizeof(mat4));
+    uint32_t sx = (depthAxis + 1u) % 3u; // first screen axis  -> ndc.x
+    uint32_t sy = (depthAxis + 2u) % 3u; // second screen axis -> ndc.y
+    out[sx][0] = s;          // ndc.x from world[sx]
+    out[sy][1] = s;          // ndc.y from world[sy]
+    out[depthAxis][2] = ds;  // ndc.z from world[depthAxis]
+    out[3][2] = 0.5f;        // depth offset to [0,1]
+    out[3][3] = 1.0f;
+}
+
+// Radiance-cascade resources (RADIANCE_CASCADES.md M2). The ×1 shared scene voxel substrate
+// (albedo+opacity and emission 3D images) + a host-written CullView[3] holding the 3 ortho clipmap
+// viewProjs (static origin clipmap, written once) + one descriptor set (set 2: frustums + the two
+// storage images). Prereqs: rcAllocator + rcVoxelizeSetLayout + the global pool all created.
+bool createRcResources(VulkanContext* ctx, RendererState* state) {
+    if (!rc_create_voxel_image(ctx, &state->rcVoxelAlbedo, &state->rcVoxelAlbedoAlloc, &state->rcVoxelAlbedoView)) return false;
+    if (!rc_create_voxel_image(ctx, &state->rcVoxelEmission, &state->rcVoxelEmissionAlloc, &state->rcVoxelEmissionView)) return false;
+
+    // Ortho frustum buffer: CullView[ANO_RC_VOXEL_AXES], host-visible, viewProj filled per axis
+    // (planes unused — the geometry stage only reads viewProj). Static clipmap, so written once.
+    VkDeviceSize frustumSize = (VkDeviceSize)sizeof(CullView) * ANO_RC_VOXEL_AXES;
+    if (!createDataBuffer(ctx, &gpuAllocator, frustumSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &state->rcVoxelizeFrustumBuffer, &state->rcVoxelizeFrustumAlloc)) return false;
+    CullView* frustums = (CullView*)state->rcVoxelizeFrustumAlloc.mapped;
+    memset(frustums, 0, (size_t)frustumSize);
+    for (uint32_t a = 0; a < ANO_RC_VOXEL_AXES; a++)
+        rc_build_clipmap_ortho(frustums[a].viewProj, a);
+
+    // One shared set (the volumes are ×1). Binding 0 = frustums (SSBO), 1/2 = storage images (GENERAL).
     VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     dai.descriptorPool = state->globalDescriptorPool;
     dai.descriptorSetCount = 1;
-    dai.pSetLayouts = &state->rcProbeSetLayout;
-    if (vkAllocateDescriptorSets(ctx->device, &dai, &state->rcProbeSet) != VK_SUCCESS) return false;
+    dai.pSetLayouts = &state->rcVoxelizeSetLayout;
+    if (vkAllocateDescriptorSets(ctx->device, &dai, &state->rcVoxelizeSet) != VK_SUCCESS) return false;
 
-    VkDescriptorImageInfo dii = {};
-    dii.imageView = state->rcSceneVoxelView;
-    dii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-    w.dstSet = state->rcProbeSet;
-    w.dstBinding = 0;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w.descriptorCount = 1;
-    w.pImageInfo = &dii;
-    vkUpdateDescriptorSets(ctx->device, 1, &w, 0, NULL);
+    VkDescriptorBufferInfo frustumInfo = { state->rcVoxelizeFrustumBuffer, 0, VK_WHOLE_SIZE };
+    VkDescriptorImageInfo albedoInfo   = { .imageView = state->rcVoxelAlbedoView,   .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo emissionInfo = { .imageView = state->rcVoxelEmissionView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet writes[3] = {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = state->rcVoxelizeSet; writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &frustumInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = state->rcVoxelizeSet; writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].descriptorCount = 1;
+    writes[1].pImageInfo = &albedoInfo;
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = state->rcVoxelizeSet; writes[2].dstBinding = 2;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[2].descriptorCount = 1;
+    writes[2].pImageInfo = &emissionInfo;
+    vkUpdateDescriptorSets(ctx->device, 3, writes, 0, NULL);
 
     return true;
 }
@@ -2590,6 +2699,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	if (!ano_vk_init_rc_voxelize(&ctx, &rendererState))
+	{
+		printf("Quitting init: radiance-cascade voxelize pipeline failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
 	if(!createTextureSampler(&ctx, &rendererState))
 	{
 		printf("Quitting init: texture sampler failure!\n");
@@ -2918,8 +3034,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Radiance-cascade resources (RADIANCE_CASCADES.md M1): needs the pool (above) + rcProbeSetLayout
-	// (ano_vk_init_pipelines) + rcAllocator (all created earlier in init).
+	// Radiance-cascade resources (RADIANCE_CASCADES.md M2): needs the pool (above) + rcVoxelizeSetLayout
+	// (ano_vk_init_rc_voxelize) + rcAllocator (all created earlier in init).
 	if (!createRcResources(&ctx, &rendererState))
 	{
 		printf("Quitting init: radiance-cascade resource creation failure!\n");

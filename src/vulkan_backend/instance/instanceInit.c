@@ -1477,7 +1477,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 5;
 	poolInfo.pPoolSizes = poolSize;
-	// + 4 non-per-frame RC sets (×1 shared volumes): M1 allocates 1 (rcProbeSet), M2-M4 the rest.
+	// + 4 non-per-frame RC sets (×1 shared volumes): M2 allocates 1 (rcVoxelizeSet), M3-M4 the rest.
 	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 6u) + 4u;
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
@@ -2428,9 +2428,13 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.shadowFrustumConfigBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowFrustumConfigBuffer, NULL);
 	if (rendererState.shadowLightInfoBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowLightInfoBuffer, NULL);
 
-	// Radiance-cascade resources (×1 shared; backing memory freed with rcAllocator below).
-	if (rendererState.rcSceneVoxelView) vkDestroyImageView(ctx->device, rendererState.rcSceneVoxelView, NULL);
-	if (rendererState.rcSceneVoxel) vkDestroyImage(ctx->device, rendererState.rcSceneVoxel, NULL);
+	// Radiance-cascade resources (×1 shared; image backing memory freed with rcAllocator below,
+	// the frustum buffer's with gpuAllocator).
+	if (rendererState.rcVoxelAlbedoView) vkDestroyImageView(ctx->device, rendererState.rcVoxelAlbedoView, NULL);
+	if (rendererState.rcVoxelAlbedo) vkDestroyImage(ctx->device, rendererState.rcVoxelAlbedo, NULL);
+	if (rendererState.rcVoxelEmissionView) vkDestroyImageView(ctx->device, rendererState.rcVoxelEmissionView, NULL);
+	if (rendererState.rcVoxelEmission) vkDestroyImage(ctx->device, rendererState.rcVoxelEmission, NULL);
+	if (rendererState.rcVoxelizeFrustumBuffer) vkDestroyBuffer(ctx->device, rendererState.rcVoxelizeFrustumBuffer, NULL);
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
 	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the

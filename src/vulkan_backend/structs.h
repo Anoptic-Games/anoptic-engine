@@ -73,8 +73,10 @@
 // storage-image resource class with the scene voxel volume + a placeholder write pass. 16 m / 64^3
 // cascade-0 is the confirmed validation target; the scene voxel grid is finer (128^3) so geometry
 // detail outresolves the probe grid. RGBA16F is a mandatory storage-image format (no support query).
-#define ANO_RC_VOXEL_DIM     128u
-#define ANO_RC_VOXEL_FORMAT  VK_FORMAT_R16G16B16A16_SFLOAT
+#define ANO_RC_VOXEL_DIM        128u
+#define ANO_RC_VOXEL_FORMAT     VK_FORMAT_R16G16B16A16_SFLOAT
+#define ANO_RC_CLIP_HALF_EXTENT 8.0f   // half-size of the static origin-centred clipmap (16 m cube); matches voxelize.frag
+#define ANO_RC_VOXEL_AXES       3u     // voxelization passes: one ortho projection per dominant axis
 
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
 // each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)
@@ -868,15 +870,24 @@ typedef struct RendererState
     float                   timestampPeriodNs;  // ns per timestamp tick (limits.timestampPeriod)
     uint32_t                timestampValidBits;  // graphics-queue timestampValidBits (0 = unsupported)
 
-    // Radiance cascades (RADIANCE_CASCADES.md, M1). Shared ×1 (not per-frame, not per-view): the
+    // Radiance cascades (RADIANCE_CASCADES.md, M2). Shared ×1 (not per-frame, not per-view): the
     // volumes are produced + consumed within a frame behind barriers, fence-serialized per slot.
-    // M1 is the scene voxel volume + a placeholder compute that imageStores into it, proving the
-    // 3D STORAGE_IMAGE + GENERAL-layout path. rcProbeSet is a single set (the image is ×1 shared).
-    VkImage                 rcSceneVoxel;       // VK_IMAGE_TYPE_3D, ANO_RC_VOXEL_DIM^3, RGBA16F
-    GpuAllocation           rcSceneVoxelAlloc;
-    VkImageView             rcSceneVoxelView;   // VK_IMAGE_VIEW_TYPE_3D
-    VkDescriptorSetLayout   rcProbeSetLayout;   // 1 binding: STORAGE_IMAGE (the voxel volume)
-    VkDescriptorSet         rcProbeSet;
+    // Scene voxel substrate filled by rasterized voxelization (rcVoxelize* pipeline): albedo+opacity
+    // and emission, marched by M3's trace. Two 3D images + a host-written ortho-matrix frustum buffer
+    // (3 axes) + one shared descriptor set (set 2: frustums + the two storage images).
+    VkImage                 rcVoxelAlbedo;      // VK_IMAGE_TYPE_3D ANO_RC_VOXEL_DIM^3 RGBA16F: albedo.rgb + opacity.a
+    GpuAllocation           rcVoxelAlbedoAlloc;
+    VkImageView             rcVoxelAlbedoView;  // VK_IMAGE_VIEW_TYPE_3D
+    VkImage                 rcVoxelEmission;    // emission.rgb
+    GpuAllocation           rcVoxelEmissionAlloc;
+    VkImageView             rcVoxelEmissionView;
+    VkBuffer                rcVoxelizeFrustumBuffer;  // CullView[ANO_RC_VOXEL_AXES]: 3 ortho clipmap viewProjs (host-visible, written once)
+    GpuAllocation           rcVoxelizeFrustumAlloc;
+    VkDescriptorSetLayout   rcVoxelizeSetLayout;      // set 2: 0=frustums(SSBO), 1=albedo(STORAGE_IMAGE), 2=emission(STORAGE_IMAGE)
+    VkDescriptorSet         rcVoxelizeSet;
+    VkPipeline              rcVoxelizePipeline;       // flat geometry stage (shadowPass) + voxelize.frag; no attachments
+    VkPipelineLayout        rcVoxelizeLayout;
+    VkPipelineCache         rcVoxelizeCache;
 } RendererState;
 
 
