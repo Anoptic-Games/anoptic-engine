@@ -39,6 +39,33 @@ GpuAllocator textureAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
+// --- Profiling harness (RADIANCE_CASCADES.md §8) -------------------------------------------
+// Per-pass GPU timestamps as a fence-post: one timestamp (boundary enum in structs.h) at each
+// section boundary, region time = consecutive delta * timestampPeriod. All boundaries are written
+// unconditionally at top level (outside any render pass) so a skipped section yields a ~0 region,
+// never an unwritten query. BOTTOM_OF_PIPE marks "all prior work retired", so a delta is that
+// section's wall-clock including barrier stalls — coarse but apples-to-apples across lighting modes
+// on the single graphics queue. Period (ns/tick) + valid bits live on rendererState (set at init).
+static double   g_tsAccumMs[ANO_TS_COUNT - 1]; // accumulated per-region ms over the print window
+static uint32_t g_tsFrames = 0;             // frames accumulated since the last print
+#define ANO_PROFILE_PRINT_INTERVAL 120u     // print averaged stats every N frames
+
+// Live VRAM use of a bump allocator: sum of each block's high-water offset (RADIANCE_CASCADES.md
+// reports per-allocator resident so the shadow atlas can be broken out from the RC budget).
+static VkDeviceSize allocator_used_bytes(const GpuAllocator* a) {
+    VkDeviceSize used = 0;
+    for (uint32_t i = 0; i < a->blockCount; i++) used += a->blocks[i].offset;
+    return used;
+}
+
+// Stamp a section-boundary timestamp (BOTTOM_OF_PIPE = after all prior work). No-op when the queue
+// has no timestamp support. The frame-begin boundary is stamped separately at TOP_OF_PIPE.
+static inline void ano_ts(VkCommandBuffer cmd, uint32_t query) {
+    if (rendererState.timestampValidBits)
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            rendererState.frames[rendererState.frameIndex].timestampPool, query);
+}
+
 static GLFWwindow* window;
 
 static Monitors monitors =
@@ -221,9 +248,17 @@ void recordCommandBuffer(uint32_t imageIndex)
 	
 	VkCommandBuffer cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
 
-	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) 
+	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
 	{
 		printf("Failed to begin recording command buffer!\n");
+	}
+
+	// Profiling: reset this frame's query pool and stamp the frame-begin boundary (outside any
+	// render pass). The five section boundaries below are stamped unconditionally at top level.
+	if (rendererState.timestampValidBits) {
+		vkCmdResetQueryPool(cmd, rendererState.frames[rendererState.frameIndex].timestampPool, 0, ANO_TS_COUNT);
+		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			rendererState.frames[rendererState.frameIndex].timestampPool, ANO_TS_FRAME_BEGIN);
 	}
 
 	// Transition swapchain image to color attachment optimal
@@ -289,6 +324,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 0, 1, &post, 0, NULL, 0, NULL);
         }
     }
+    ano_ts(cmd, ANO_TS_AFTER_UPLOAD);
 
     uint32_t entityCount = rendererState.entityCount;
 
@@ -382,6 +418,8 @@ void recordCommandBuffer(uint32_t imageIndex)
     }
 
     uint32_t drawSlotCount = ano_draw_pipeline_count();
+
+    ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
 
     // === Shadow depth render: each shadow frustum's opaque casters into its atlas layer ===
     // Reads the cull's shadow partition (opaque draw slot only); writes depth into one array layer;
@@ -502,6 +540,8 @@ void recordCommandBuffer(uint32_t imageIndex)
                 0, 0, NULL, 0, NULL, 1, &toRead);
         }
     }
+
+    ano_ts(cmd, ANO_TS_AFTER_SHADOW);
 
     // === Per view: light-cull (this view's froxel lists) then geometry into this view's
     // HDR target + depth, reading this view's cull partition. ===
@@ -690,6 +730,8 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
     }
 
+    ano_ts(cmd, ANO_TS_AFTER_LIGHTING);
+
     // --- Composite: tonemap each view's HDR target onto the swapchain ---
     // View 0 fills the screen; auxiliary views composite as picture-in-picture insets along the
     // bottom-right. Each draw is the same ACES tonemap fullscreen triangle, scoped to its
@@ -749,6 +791,7 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
         vkCmdEndRendering(cmd);
     }
+    ano_ts(cmd, ANO_TS_AFTER_COMPOSITE);
 
 	// Transition swapchain image to present
 	swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1535,11 +1578,69 @@ bool ano_render_submit_bulk_destroy(AnoRenderBridge* bridge, const uint32_t* ren
 // from the render thread (frame record + L-key callback are both main-thread), so no atomics.
 void ano_render_set_lighting_mode(AnoLightingMode mode) {
     if ((uint32_t)mode >= (uint32_t)ANO_LIGHTING_MODE_COUNT) return;
-    rendererState.lightingMode = (uint32_t)mode;
+    if (rendererState.lightingMode != (uint32_t)mode) {
+        rendererState.lightingMode = (uint32_t)mode;
+        // Discard the in-progress timing window so the next printed average is pure for the new mode.
+        for (int r = 0; r < ANO_TS_COUNT - 1; r++) g_tsAccumMs[r] = 0.0;
+        g_tsFrames = 0;
+    }
 }
 
 AnoLightingMode ano_render_get_lighting_mode(void) {
     return (AnoLightingMode)rendererState.lightingMode;
+}
+
+// Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode
+// (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident D32 atlas (ANO_SHADOW_FRUSTUM_COUNT
+// layers x ANO_SHADOW_DIM^2 x 4 B x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
+// not charged for the idle-but-resident atlas — the fairness break-out the harness requires.
+static void ano_print_profiling(void) {
+    static const char* const modeNames[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RC" };
+    uint32_t m = rendererState.lightingMode;
+    const char* mn = (m < (uint32_t)ANO_LIGHTING_MODE_COUNT) ? modeNames[m] : "?";
+    double inv = g_tsFrames ? 1.0 / (double)g_tsFrames : 0.0;
+    double up = g_tsAccumMs[ANO_TS_FRAME_BEGIN]    * inv;
+    double cp = g_tsAccumMs[ANO_TS_AFTER_UPLOAD]   * inv;
+    double sh = g_tsAccumMs[ANO_TS_AFTER_COMPUTE]  * inv;
+    double li = g_tsAccumMs[ANO_TS_AFTER_SHADOW]   * inv;
+    double co = g_tsAccumMs[ANO_TS_AFTER_LIGHTING] * inv;
+    double total = up + cp + sh + li + co;
+
+    const double MiB = 1024.0 * 1024.0;
+    double gpu  = (double)allocator_used_bytes(&gpuAllocator)       / MiB;
+    double tex  = (double)allocator_used_bytes(&textureAllocator)   / MiB;
+    double swap = (double)allocator_used_bytes(&swapchainAllocator) / MiB;
+    double stg  = (double)allocator_used_bytes(&stagingAllocator)   / MiB;
+    double atlas = (double)((VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM
+                            * 4u * MAX_FRAMES_IN_FLIGHT) / MiB;
+
+    printf("[profile mode=%s] GPU ms: upload=%.3f compute=%.3f shadow=%.3f lighting=%.3f composite=%.3f total=%.3f"
+           " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f\n",
+           mn, up, cp, sh, li, co, total, gpu, tex, swap, stg, atlas);
+}
+
+// Read this frame slot's timestamps (its prior submission is fence-complete) and fold the per-pass
+// deltas into the running average; print every ANO_PROFILE_PRINT_INTERVAL frames. Masks to the
+// queue's valid bits and handles counter wraparound. No-op when timestamps are unsupported.
+static void ano_collect_frame_stats(uint32_t frameIndex) {
+    if (!rendererState.timestampValidBits) return;
+    VkQueryPool pool = rendererState.frames[frameIndex].timestampPool;
+    if (pool == VK_NULL_HANDLE) return;
+    uint64_t ts[ANO_TS_COUNT];
+    if (vkGetQueryPoolResults(ctx.device, pool, 0, ANO_TS_COUNT, sizeof(ts), ts,
+                              sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+        return;
+    uint64_t mask = (rendererState.timestampValidBits >= 64) ? ~0ull : ((1ull << rendererState.timestampValidBits) - 1ull);
+    for (int r = 0; r < ANO_TS_COUNT - 1; r++) {
+        uint64_t a = ts[r] & mask, b = ts[r + 1] & mask;
+        uint64_t d = (b >= a) ? (b - a) : (mask - a + b + 1u); // wrap-safe
+        g_tsAccumMs[r] += (double)d * (double)rendererState.timestampPeriodNs * 1e-6;
+    }
+    if (++g_tsFrames >= ANO_PROFILE_PRINT_INTERVAL) {
+        ano_print_profiling();
+        for (int r = 0; r < ANO_TS_COUNT - 1; r++) g_tsAccumMs[r] = 0.0;
+        g_tsFrames = 0;
+    }
 }
 
 void drawFrame()
@@ -1558,6 +1659,9 @@ void drawFrame()
     if (rendererState.frames[rendererState.frameIndex].frameSubmitted == true)
     {
         vkWaitForFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence), VK_TRUE, UINT64_MAX);
+
+        // This slot's prior submission is complete: its per-pass timestamps are ready to read.
+        ano_collect_frame_stats(rendererState.frameIndex);
 
         // Reclaim streamed-transform ring slices the GPU is finished reading. Hold-last-
         // value means several in-flight frames can share one seq (one slice), so this
