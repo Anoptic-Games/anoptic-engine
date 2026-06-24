@@ -1,0 +1,39 @@
+#version 450
+
+// Radiance cascades M6 — temporal accumulation (RADIANCE_CASCADES.md).
+// EMA-blend the freshly integrated irradiance field against the previous frame's accumulated history,
+// in place: history holds the smoothed result, the sampled field gets the blend. World-space history —
+// the clipmap is static-origin, so cell c maps to the same world position every frame and NO motion
+// reprojection is needed (the screen-space alternative would have to reproject per view, ANO_VIEW_COUNT
+// x + PiP). An adaptive alpha snaps toward the current frame where a cell changed a lot (a light/geometry
+// moved) so motion doesn't ghost, while small frame-to-frame fluctuations are averaged away (flicker).
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 2, rgba16f) uniform image3D irradiance;        // current (integrate out) -> blended
+layout(set = 0, binding = 4, rgba16f) uniform image3D irradianceHistory; // previous blend -> updated blend
+
+layout(push_constant) uniform PC { uint reset; float alpha; } pc;
+
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    ivec3 dim = imageSize(irradiance);
+    if (any(greaterThanEqual(p, dim))) return;
+
+    vec4 cur  = imageLoad(irradiance, p);
+    vec4 hist = imageLoad(irradianceHistory, p);
+
+    float a = clamp(pc.alpha, 0.0, 1.0);     // base blend toward current (small = smoother)
+    if (pc.reset != 0u) {
+        a = 1.0;                              // hard reset: discard stale/uninitialised history
+    } else {
+        // Adaptive: large relative per-cell change -> trust the current frame (avoid ghosting).
+        float d   = length(cur.rgb - hist.rgb);
+        float ref = length(cur.rgb) + length(hist.rgb) + 1e-3;
+        a = mix(a, 1.0, smoothstep(0.15, 0.6, d / ref));
+    }
+
+    vec3 blended = mix(hist.rgb, cur.rgb, a);
+    imageStore(irradiance,        p, vec4(blended, cur.a)); // sampled by flat.frag this frame
+    imageStore(irradianceHistory, p, vec4(blended, cur.a)); // history for next frame
+}

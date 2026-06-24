@@ -605,6 +605,16 @@ void recordCommandBuffer(uint32_t imageIndex)
         uint32_t intGroups = (ANO_RC_IRRADIANCE_DIM + 3u) / 4u;
         vkCmdDispatch(cmd, intGroups, intGroups, intGroups);
 
+        // Temporal accumulation (M6): EMA-blend this frame's irradiance against the world-space history
+        // (static clipmap -> no reprojection), in place. reset snaps for the first RC frames / mode change.
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &rcMem, 0, NULL, 0, NULL);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTemporalPipeline);
+        struct { uint32_t reset; float alpha; } tPC = { rendererState.rcTemporalReset > 0u ? 1u : 0u, rendererState.rcTemporalAlpha };
+        vkCmdPushConstants(cmd, rendererState.rcTraceLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tPC), &tPC);
+        vkCmdDispatch(cmd, intGroups, intGroups, intGroups);
+        if (rendererState.rcTemporalReset > 0u) rendererState.rcTemporalReset--;
+
         // irradiance GENERAL -> SHADER_READ for the geometry stage's GI sample.
         VkImageMemoryBarrier irrToRead = irrToGeneral;
         irrToRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1778,6 +1788,8 @@ void ano_render_set_lighting_mode(AnoLightingMode mode) {
         // Discard the in-progress timing window so the next printed average is pure for the new mode.
         for (int r = 0; r < ANO_TS_COUNT - 1; r++) g_tsAccumMs[r] = 0.0;
         g_tsFrames = 0;
+        // Hard-snap temporal history: a mode change can swap which lights the RC field carries.
+        rendererState.rcTemporalReset = 2u;
     }
 }
 
@@ -2367,6 +2379,10 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
                 &state->rcCascade[c], &state->rcCascadeAlloc[c], &state->rcCascadeView[c])) return false;
     }
 
+    // M6 temporal history: same shape as the irradiance field (64^3 RGBA16F), rests in GENERAL.
+    if (!rc_create_voxel_image(ctx, ANO_RC_IRRADIANCE_DIM, &state->rcIrradianceHistory,
+            &state->rcIrradianceHistoryAlloc, &state->rcIrradianceHistoryView)) return false;
+
     // Linear, clamp-to-edge sampler for trilinear reads of the 3D voxel/irradiance volumes (the
     // debug voxel view samples albedo through it; M3's trace + the GI ambient term reuse it).
     VkSamplerCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
@@ -2428,7 +2444,8 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     VkDescriptorImageInfo tCasc[ANO_RC_CASCADE_COUNT];
     for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++)
         tCasc[c] = (VkDescriptorImageInfo){ .imageView = state->rcCascadeView[c], .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-    VkWriteDescriptorSet tw[4] = {};
+    VkDescriptorImageInfo tHist = { .imageView = state->rcIrradianceHistoryView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet tw[5] = {};
     tw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[0].dstSet = state->rcTraceSet; tw[0].dstBinding = 0;
     tw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[0].descriptorCount = 1; tw[0].pImageInfo = &tAlbedo;
     tw[1] = tw[0]; tw[1].dstBinding = 1; tw[1].pImageInfo = &tEmission;
@@ -2436,7 +2453,9 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     tw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; tw[2].descriptorCount = 1; tw[2].pImageInfo = &tIrr;
     tw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[3].dstSet = state->rcTraceSet; tw[3].dstBinding = 3;
     tw[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; tw[3].descriptorCount = ANO_RC_CASCADE_COUNT; tw[3].pImageInfo = tCasc;
-    vkUpdateDescriptorSets(ctx->device, 4, tw, 0, NULL);
+    tw[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[4].dstSet = state->rcTraceSet; tw[4].dstBinding = 4;
+    tw[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; tw[4].descriptorCount = 1; tw[4].pImageInfo = &tHist;
+    vkUpdateDescriptorSets(ctx->device, 5, tw, 0, NULL);
 
     // One-time UNDEFINED -> SHADER_READ so the binding-12/13 samplers always reference a valid layout,
     // even before the first voxelize/trace (default SHADOWMAP mode never runs them). HYBRID/RC
@@ -2471,8 +2490,19 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
         toGen[c].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         toGen[c].srcAccessMask = 0; toGen[c].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     }
+    // M6 temporal history rests in GENERAL too (rc_temporal reads/writes it in place, never sampled).
+    // Uninitialised contents are harmless: the reset push snaps to the current frame for the first frames.
+    VkImageMemoryBarrier histGen = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    histGen.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; histGen.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    histGen.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; histGen.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    histGen.image = state->rcIrradianceHistory;
+    histGen.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    histGen.srcAccessMask = 0; histGen.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    VkImageMemoryBarrier genAll[ANO_RC_CASCADE_COUNT + 1];
+    for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) genAll[c] = toGen[c];
+    genAll[ANO_RC_CASCADE_COUNT] = histGen;
     vkCmdPipelineBarrier(init, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 0, NULL, 0, NULL, ANO_RC_CASCADE_COUNT, toGen);
+        0, 0, NULL, 0, NULL, ANO_RC_CASCADE_COUNT + 1, genAll);
     endSingleTimeCommands(ctx, init);
 
     return true;
@@ -2822,6 +2852,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	rcAllocator.blocks = NULL;
 	rcAllocator.blockCount = 0;
 	rendererState.giStrength = ANO_RC_GI_STRENGTH_DEFAULT; // non-zero default (zero-init would disable GI)
+	rendererState.rcTemporalAlpha = ANO_RC_TEMPORAL_ALPHA_DEFAULT; // M6 EMA blend toward current
+	rendererState.rcTemporalReset = 2u;                            // snap the first RC frames (seed history)
 
 	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device, ctx.queueFamilyIndices.graphicsFamily, ctx.queueFamilyIndices.transferFamily)) {
 		printf("Quitting init: geometry pool creation failure!\n");

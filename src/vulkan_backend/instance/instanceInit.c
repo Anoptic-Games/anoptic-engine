@@ -84,6 +84,14 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		if (rendererState.giStrength > 16.0f) rendererState.giStrength = 16.0f;
 		printf("RC GI strength: %.2f\n", (double)rendererState.giStrength);
 	}
+	// M6 temporal blend alpha: small = smoother (more flicker rejection), large = more responsive.
+	if ((key == GLFW_KEY_COMMA || key == GLFW_KEY_PERIOD) && (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+		float step = (key == GLFW_KEY_PERIOD) ? 0.02f : -0.02f;
+		rendererState.rcTemporalAlpha += step;
+		if (rendererState.rcTemporalAlpha < 0.02f) rendererState.rcTemporalAlpha = 0.02f;
+		if (rendererState.rcTemporalAlpha > 1.0f) rendererState.rcTemporalAlpha = 1.0f;
+		printf("RC temporal alpha: %.2f\n", (double)rendererState.rcTemporalAlpha);
+	}
 }
 
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
@@ -2474,6 +2482,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.rcVoxelizeFrustumBuffer) vkDestroyBuffer(ctx->device, rendererState.rcVoxelizeFrustumBuffer, NULL);
 	if (rendererState.rcIrradianceView) vkDestroyImageView(ctx->device, rendererState.rcIrradianceView, NULL);
 	if (rendererState.rcIrradiance) vkDestroyImage(ctx->device, rendererState.rcIrradiance, NULL);
+	if (rendererState.rcIrradianceHistoryView) vkDestroyImageView(ctx->device, rendererState.rcIrradianceHistoryView, NULL);
+	if (rendererState.rcIrradianceHistory) vkDestroyImage(ctx->device, rendererState.rcIrradianceHistory, NULL);
 	for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) {
 		if (rendererState.rcCascadeView[c]) vkDestroyImageView(ctx->device, rendererState.rcCascadeView[c], NULL);
 		if (rendererState.rcCascade[c]) vkDestroyImage(ctx->device, rendererState.rcCascade[c], NULL);
