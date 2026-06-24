@@ -13,14 +13,24 @@
 
 /* Precision Timestamps */
 
-// High resolution relative timestamps from this local machine.
-uint64_t ano_timestamp_raw() {
+// The Linux monotonic clock already reports nanoseconds, so the counter IS the ns value.
+uint64_t ano_timestamp_ticks() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
         return UINT64_MAX; // Indicate an error occurred.
     }
     return (uint64_t)(ts.tv_sec * 1000000000LL) + ts.tv_nsec;
+}
+
+// Linux ticks are already nanoseconds: identity.
+uint64_t ano_ticks_to_ns(uint64_t ticks) {
+    return ticks;
+}
+
+// High resolution relative timestamps from this local machine.
+uint64_t ano_timestamp_raw() {
+    return ano_timestamp_ticks();
 }
 
 // return ano_timestamp_raw, but scaled to microseconds.
