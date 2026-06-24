@@ -8,7 +8,7 @@ Terisfy should always preserve semantic meaning.
 
 Comments:
 - One clause each. Cut dragging run-on sentences down to their meaning.
-- No comment should have a ; or - or -- or — inside of it to split a sentence. Needing one means the sentence is too long, so truncate it and get the meaning across already.
+- No comment should have a ; or - or -- or — inside of it to split a sentence. Needing one means the sentence is too long, so truncate it and get the meaning across already. a -> b is ok.
 - A comment needing paragraphs means the code is unclear. Rename a local instead.
 - Use the shorter synonym when a dev reads it identically. eg: "longest formatted line" --> "max formatted line"
 - Keep my `/* Section */` comments and my own comments verbatim.

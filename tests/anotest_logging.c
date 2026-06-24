@@ -139,6 +139,100 @@ static int test_formatting(void)
     return g_fail;
 }
 
+// Screen the deferred-formatting path against snprintf across the full conversion matrix: width,
+// precision, flags, length mods, floats, hex/octal, and '*' width/precision from args. Each case logs
+// fmt+args, and the message must appear in the file byte-identical to snprintf of the same call. The
+// unique "Dnn:" prefix bounds each expected substring so matches can't collide.
+static int test_deferred_formatting(void)
+{
+    g_fail = 0;
+    reset_output();
+
+    char exp[64][256];
+    int  ne = 0;
+#define DCHK(...) do { \
+        snprintf(exp[ne], sizeof exp[ne], __VA_ARGS__); \
+        ano_log_info(__VA_ARGS__); \
+        ne++; \
+    } while (0)
+
+    DCHK("D00:[%d]", -2147483647 - 1);     // INT_MIN
+    DCHK("D01:[%5d]", 42);
+    DCHK("D02:[%-5d]", 42);
+    DCHK("D03:[%05d]", 42);
+    DCHK("D04:[%+d]", 42);
+    DCHK("D05:[% d]", 42);
+    DCHK("D06:[%x]", 0xdeadbeefu);
+    DCHK("D07:[%#x]", 255);
+    DCHK("D08:[%X]", 0xabc);
+    DCHK("D09:[%o]", 64);
+    DCHK("D10:[%u]", 4000000000u);
+    DCHK("D11:[%ld]", 9000000000L);
+    DCHK("D12:[%lld]", -9000000000000LL);
+    DCHK("D13:[%lu]", 18000000000UL);
+    DCHK("D14:[%zu]", (size_t)123456);
+    DCHK("D15:[%.3f]", 3.14159);
+    DCHK("D16:[%10.3f]", 3.14159);
+    DCHK("D17:[%-10.3f]", 3.14159);
+    DCHK("D18:[%+.2f]", 2.5);
+    DCHK("D19:[%e]", 12345.678);
+    DCHK("D20:[%g]", 0.0001);
+    DCHK("D21:[%c]", 'Q');
+    DCHK("D22:[%5c]", 'Q');
+    DCHK("D23:[%s]", "hello");
+    DCHK("D24:[%-8s]", "hi");
+    DCHK("D25:[%.3s]", "truncateme");
+    DCHK("D26:[%*d]", 6, 42);              // width from arg
+    DCHK("D27:[%.*f]", 2, 3.14159);        // precision from arg
+    DCHK("D28:[%-*.*f]", 8, 2, 3.5);       // width and precision from args
+    DCHK("D29:x=%%=%d", 7);                // literal percent plus an arg
+    DCHK("D30:[%hhd]", 200);               // narrows to signed char in printf
+    DCHK("D31:[%hu]", 70000);              // narrows to unsigned short
+    DCHK("D32:multi %d and %s and %5.2f", 3, "mix", 1.5);
+    DCHK("D33:[%d]", 0);                                   // zero, hand-rolled
+    DCHK("D34:[%x]", 0);                                   // zero hex
+    DCHK("D35:[%lld]", -9223372036854775807LL - 1);       // LLONG_MIN magnitude edge
+    DCHK("D36:[%llu]", 18446744073709551615ULL);          // ULLONG_MAX
+    DCHK("D37:[%u]", 4294967295u);                        // UINT_MAX
+    DCHK("D38:[%lx]", 0xfeedfacecafeUL);                  // long hex, hand-rolled
+    DCHK("D39:[%*d]", -5, 42);                            // negative '*' width = left justify
+    DCHK("D40:[%#x]", 0);                                  // alt-form zero
+    DCHK("D41:[%#o]", 0);
+    DCHK("D42:[%.0d]", 0);                                 // precision 0 of zero = empty
+    DCHK("D43:[%5.0d]", 0);                                // width with empty precision-0
+    DCHK("D44:[%s]", "");                                  // empty string
+    DCHK("D45:[%+.1f]", -0.0);                             // signed negative zero
+    DCHK("D46:[%08.2f]", -3.5);                            // zero-pad, sign, width, precision
+    DCHK("D47:[%jd]", (intmax_t)(-9223372036854775807LL - 1));  // INTMAX_MIN, j length, hand-rolled
+    DCHK("D48:[%td]", (ptrdiff_t)-1);                      // t length, signed
+    DCHK("D49:[%zu]", (size_t)0);                          // z length, zero
+    DCHK("D50:[%llX]", 0xDEADBEEFCAFEULL);                 // uppercase 64-bit hex, hand-rolled
+    DCHK("D51:[%o]", 8);                                   // octal, no '#' prefix
+    DCHK("D52:[%c]", 0xFF);                                // high byte, raw
+    DCHK("D53:[%.*d]", 5, 42);                             // '*' precision = zero-pad to 00042
+    DCHK("D54:[%#.0o]", 0);                                // alt-form octal zero = "0"
+    DCHK("D55:[%#.0x]", 0);                                // alt-form hex zero = "" (prefix suppressed)
+    DCHK("D56:[%-*.*s]", 10, 3, "abcdef");                 // width + precision on string
+    DCHK("D57:[%*d]", 0, 42);                              // '*' width 0 = no width
+
+#undef DCHK
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "deferred: file readable");
+    if (c) {
+        for (int i = 0; i < ne; i++) {
+            if (strstr(c, exp[i]) == NULL) {
+                fprintf(stderr, "  MISMATCH case %d: expected \"%s\"\n", i, exp[i]);
+                g_fail = 1;
+            }
+        }
+        CHECK(g_fail == 0, "deferred: every conversion matches snprintf byte-for-byte");
+        free(c);
+    }
+    return g_fail;
+}
+
 static int test_accumulation_order(void)
 {
     g_fail = 0;
@@ -600,6 +694,333 @@ static int test_visible_output(void)
 }
 
 
+/* Edge cases — boundaries, seams, alternation, churn */
+
+// A message whose body is exactly at the 4096-byte cap: build a body of known length and confirm it
+// survives as one line clamped to the cap. Deterministic single record.
+static int test_edge_cap_boundary(void)
+{
+    g_fail = 0;
+    reset_output();
+    char body[4096];
+    memset(body, 'B', sizeof body - 1);
+    body[sizeof body - 1] = '\0';
+    ano_log_info("%s", body);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "edge-cap: file readable");
+    if (c) {
+        CHECK(count_lines(c) == 1, "edge-cap: one line emitted");
+        CHECK(longest_line(c) <= 4096, "edge-cap: line clamped to message cap");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Many tiny back-to-back records (one byte of body each). Exact count, no loss.
+#define TINY_COUNT 2000
+static int test_edge_tiny_records(void)
+{
+    g_fail = 0;
+    reset_output();
+    for (int i = 0; i < TINY_COUNT; i++)
+        ano_log_info("%c", 'a' + (i % 26));
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "edge-tiny: file readable");
+    if (c) {
+        CHECK(count_lines(c) == TINY_COUNT, "edge-tiny: every tiny record survives");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Drive the ring through several wraps with mid-stream flushes so the producer crosses the buffer seam
+// repeatedly. Each record carries a unique index; assert exact total and that first/last are ordered.
+#define SEAM_BATCHES 8
+#define SEAM_PER     900
+static int test_edge_ring_seam(void)
+{
+    g_fail = 0;
+    reset_output();
+    int n = 0;
+    for (int b = 0; b < SEAM_BATCHES; b++) {
+        for (int i = 0; i < SEAM_PER; i++)
+            ano_log_info("seam %d", n++);
+        ano_log_flush();   // drain mid-stream so the write cursor laps the buffer across batches
+    }
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "edge-seam: file readable");
+    if (c) {
+        CHECK(count_lines(c) == SEAM_BATCHES * SEAM_PER, "edge-seam: every record survives ring wrap");
+        char *first = strstr(c, "seam 0");
+        char buf[32];
+        snprintf(buf, sizeof buf, "seam %d", SEAM_BATCHES * SEAM_PER - 1);
+        char *last = strstr(c, buf);
+        CHECK(first && last && first < last, "edge-seam: order preserved across seams");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Alternate buffered enqueue and synchronous immediate. Both paths feed one file; assert exact total
+// and that ordering holds within the pairs (buffered before the immediate that follows it).
+#define ALT_PAIRS 200
+static int test_edge_alternating_immediate(void)
+{
+    g_fail = 0;
+    reset_output();
+    for (int i = 0; i < ALT_PAIRS; i++) {
+        ano_log_info("alt buffered %d", i);
+        ano_log_immediate(LOG_ERROR, __FILE_NAME__, __LINE__, "alt immediate %d", i);
+    }
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "edge-alt: file readable");
+    if (c) {
+        CHECK(count_lines(c) == ALT_PAIRS * 2, "edge-alt: every buffered and immediate record present");
+        char *b0 = strstr(c, "alt buffered 0");
+        char *i0 = strstr(c, "alt immediate 0");
+        CHECK(b0 && i0 && b0 < i0, "edge-alt: buffered precedes its paired immediate");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Rapidly switch the output between two valid dirs, logging into each. Content written before a switch
+// must survive in the file it landed in. Deterministic: known marker per target, exact line counts.
+static int test_edge_output_dir_switch(void)
+{
+    g_fail = 0;
+    reset_output();
+    make_dir(LOG_DIR_ALT);
+    remove(LOG_PATH_ALT);   // earlier cases write LOG_DIR_ALT; start both targets empty
+
+    for (int round = 0; round < 4; round++) {
+        ano_log_output_dir(LOG_DIR);
+        ano_log_info("switch primary r%d", round);
+        ano_log_flush();
+        ano_log_output_dir(LOG_DIR_ALT);
+        ano_log_info("switch alt r%d", round);
+        ano_log_flush();
+    }
+    ano_log_output_dir(LOG_DIR);
+
+    char *p = slurp(LOG_PATH, NULL);
+    char *a = slurp(LOG_PATH_ALT, NULL);
+    CHECK(p != NULL && a != NULL, "edge-dirswitch: both files readable");
+    if (p && a) {
+        CHECK(count_lines(p) == 4 && count_lines(a) == 4, "edge-dirswitch: four lines per target");
+        CHECK(strstr(p, "switch primary r3") && strstr(a, "switch alt r3"),
+              "edge-dirswitch: content survives in each target file");
+    }
+    free(p);
+    free(a);
+    return g_fail;
+}
+
+// Churn the level threshold between every record while alternating severities. Only records at or above
+// the level live at enqueue time survive; arrange a deterministic pattern and assert the exact survivor
+// count. Pattern: for each i, set level then log INFO and ERROR. INFO survives iff level <= LOG_INFO.
+static int test_edge_level_churn(void)
+{
+    g_fail = 0;
+    reset_output();
+    int expect = 0;
+    for (int i = 0; i < 100; i++) {
+        log_types_t lvl = (i & 1) ? LOG_ERROR : LOG_INFO;
+        ano_log_set_level(lvl);
+        ano_log_info("churn info %d", i);    // survives only when lvl == LOG_INFO (even i)
+        if (lvl <= LOG_INFO) expect++;
+        ano_log_error("churn error %d", i);  // ERROR >= every level set here, always survives
+        expect++;
+    }
+    ano_log_set_level(LOG_DEBUG);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "edge-levelchurn: file readable");
+    if (c) {
+        CHECK(count_lines(c) == expect, "edge-levelchurn: exact survivor count under level churn");
+        free(c);
+    }
+    return g_fail;
+}
+
+
+/* Contention — heavy producers vs flushers, sustained soak */
+
+#define HEAVY_PRODUCERS 12
+#define HEAVY_PER       1500
+#define HEAVY_FLUSHERS  2
+
+static void *heavy_producer(void *arg)
+{
+    int id = (int)(intptr_t)arg;
+    log_types_t lvls[3] = { LOG_INFO, LOG_WARN, LOG_ERROR };
+    for (int i = 0; i < HEAVY_PER; i++)
+        ano_log_enqueue(lvls[i % 3], __FILE_NAME__, __LINE__, "heavy p%d %d", id, i);
+    return NULL;
+}
+
+static void *heavy_flusher(void *arg)
+{
+    (void)arg;
+    while (!atomic_load(&g_stop)) {
+        ano_log_flush();
+        ano_sleep(50);
+    }
+    return NULL;
+}
+
+// 12 producers at mixed severities hammer while 2 flushers drain. Level stays at DEBUG so nothing gates;
+// the no-loss invariant gives an exact total.
+static int test_contention_heavy_mixed(void)
+{
+    g_fail = 0;
+    reset_output();
+    ano_log_set_level(LOG_DEBUG);
+    atomic_store(&g_stop, false);
+
+    anothread_t prod[HEAVY_PRODUCERS], flush[HEAVY_FLUSHERS];
+    for (int i = 0; i < HEAVY_FLUSHERS; i++)
+        ano_thread_create(&flush[i], NULL, heavy_flusher, NULL);
+    for (intptr_t i = 0; i < HEAVY_PRODUCERS; i++)
+        ano_thread_create(&prod[i], NULL, heavy_producer, (void *)i);
+    for (int i = 0; i < HEAVY_PRODUCERS; i++)
+        ano_thread_join(prod[i], NULL);
+    atomic_store(&g_stop, true);
+    for (int i = 0; i < HEAVY_FLUSHERS; i++)
+        ano_thread_join(flush[i], NULL);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "heavy-mixed: file readable");
+    if (c) {
+        CHECK(count_lines(c) == HEAVY_PRODUCERS * HEAVY_PER, "heavy-mixed: every record survives");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Sustained soak: 16 producers run a long fixed workload while one flusher drains continuously. Final
+// exact line-count assertion proves zero loss across the whole soak.
+#define SOAK_PRODUCERS 16
+#define SOAK_PER       2000
+
+static void *soak_producer(void *arg)
+{
+    int id = (int)(intptr_t)arg;
+    for (int i = 0; i < SOAK_PER; i++)
+        ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "soak p%d %d", id, i);
+    return NULL;
+}
+
+static int test_contention_soak(void)
+{
+    g_fail = 0;
+    reset_output();
+    atomic_store(&g_stop, false);
+
+    anothread_t prod[SOAK_PRODUCERS], flush;
+    ano_thread_create(&flush, NULL, heavy_flusher, NULL);
+    for (intptr_t i = 0; i < SOAK_PRODUCERS; i++)
+        ano_thread_create(&prod[i], NULL, soak_producer, (void *)i);
+    for (int i = 0; i < SOAK_PRODUCERS; i++)
+        ano_thread_join(prod[i], NULL);
+    atomic_store(&g_stop, true);
+    ano_thread_join(flush, NULL);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "soak: file readable");
+    if (c) {
+        CHECK(count_lines(c) == SOAK_PRODUCERS * SOAK_PER, "soak: exact line count, no loss over soak");
+        free(c);
+    }
+    return g_fail;
+}
+
+
+/* Premature thread-join — producers finish/exit before any flush */
+
+#define PJ_PRODUCERS 8
+#define PJ_PER       300
+
+static void *pj_producer(void *arg)
+{
+    int id = (int)(intptr_t)arg;
+    for (int i = 0; i < PJ_PER; i++)
+        ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "pj p%d %d", id, i);
+    return NULL;
+}
+
+// Spawn producers, JOIN them all (they finish and exit) BEFORE any flush, then flush on main. Because
+// records live in the SHARED ring, every enqueued record must still appear -- the producer threads
+// ending changes nothing. Exact total asserts zero loss.
+static int test_premature_join_all(void)
+{
+    g_fail = 0;
+    reset_output();
+
+    anothread_t prod[PJ_PRODUCERS];
+    for (intptr_t i = 0; i < PJ_PRODUCERS; i++)
+        ano_thread_create(&prod[i], NULL, pj_producer, (void *)i);
+    for (int i = 0; i < PJ_PRODUCERS; i++)
+        ano_thread_join(prod[i], NULL);   // all producers dead before the first flush
+
+    ano_log_flush();   // first and only flush, on main, after every producer exited
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "pj-all: file readable");
+    if (c) {
+        CHECK(count_lines(c) == PJ_PRODUCERS * PJ_PER,
+              "pj-all: shared ring loses nothing when producers exit before draining");
+        // Spot-check a record from the very first and very last producer survived.
+        char b0[32], bN[32];
+        snprintf(b0, sizeof b0, "pj p0 %d", PJ_PER - 1);
+        snprintf(bN, sizeof bN, "pj p%d %d", PJ_PRODUCERS - 1, PJ_PER - 1);
+        CHECK(strstr(c, b0) && strstr(c, bN), "pj-all: first and last producer's records present");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Half the producers are joined early (they exit) while the other half keep running; then the rest are
+// joined and a single flush on main drains everything. Exact total across both waves proves no record
+// from the early-exited threads was lost.
+static int test_premature_join_half(void)
+{
+    g_fail = 0;
+    reset_output();
+
+    anothread_t prod[PJ_PRODUCERS];
+    for (intptr_t i = 0; i < PJ_PRODUCERS; i++)
+        ano_thread_create(&prod[i], NULL, pj_producer, (void *)i);
+
+    int half = PJ_PRODUCERS / 2;
+    for (int i = 0; i < half; i++)
+        ano_thread_join(prod[i], NULL);   // first wave exits while the rest still produce
+    for (int i = half; i < PJ_PRODUCERS; i++)
+        ano_thread_join(prod[i], NULL);   // second wave joined
+
+    ano_log_flush();   // single drain after all producers exited
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "pj-half: file readable");
+    if (c) {
+        CHECK(count_lines(c) == PJ_PRODUCERS * PJ_PER,
+              "pj-half: exact total, early-exited producers lose nothing");
+        free(c);
+    }
+    return g_fail;
+}
+
+
 int main(void)
 {
     int failures = 0;
@@ -620,6 +1041,7 @@ int main(void)
     struct { const char *name; int (*fn)(void); } cases[] = {
         { "roundtrip",                  test_roundtrip },
         { "formatting",                 test_formatting },
+        { "deferred_formatting",        test_deferred_formatting },
         { "accumulation_order",         test_accumulation_order },
         { "level_gate",                 test_level_gate },
         { "full_ring",                  test_full_ring },
@@ -630,6 +1052,16 @@ int main(void)
         { "contention_1_flush_vs_write", test_contention_1_flush_vs_write },
         { "contention_2_aba_bait",       test_contention_2_aba_bait },
         { "contention_3_config_thrash",  test_contention_3_config_thrash },
+        { "edge_cap_boundary",          test_edge_cap_boundary },
+        { "edge_tiny_records",          test_edge_tiny_records },
+        { "edge_ring_seam",             test_edge_ring_seam },
+        { "edge_alternating_immediate", test_edge_alternating_immediate },
+        { "edge_output_dir_switch",     test_edge_output_dir_switch },
+        { "edge_level_churn",           test_edge_level_churn },
+        { "contention_heavy_mixed",     test_contention_heavy_mixed },
+        { "contention_soak",            test_contention_soak },
+        { "premature_join_all",         test_premature_join_all },
+        { "premature_join_half",        test_premature_join_half },
         { "abuse_inputs",               test_abuse_inputs },
         { "abuse_config",               test_abuse_config },
         { "abuse_output_dir",           test_abuse_output_dir },
