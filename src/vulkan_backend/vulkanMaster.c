@@ -521,8 +521,36 @@ void recordCommandBuffer(uint32_t imageIndex)
             toRead[k].image = voxImgs[k]; toRead[k].subresourceRange = full;
             toRead[k].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; toRead[k].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         }
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        // Voxel volumes visible to BOTH the trace (compute) below and flat.frag's debug sample (fragment).
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             0, 0, NULL, 0, NULL, 2, toRead);
+
+        // Cascade-0 trace (M3b): gather the voxel volumes into the irradiance field. irradiance
+        // UNDEFINED -> GENERAL, dispatch, GENERAL -> SHADER_READ for the geometry stage's GI sample.
+        VkImageSubresourceRange irrRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        VkImageMemoryBarrier irrToGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        irrToGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // regenerated each frame; discard
+        irrToGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        irrToGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        irrToGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        irrToGeneral.image = rendererState.rcIrradiance;
+        irrToGeneral.subresourceRange = irrRange;
+        irrToGeneral.srcAccessMask = 0; irrToGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &irrToGeneral);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTracePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.rcTraceLayout, 0, 1, &rendererState.rcTraceSet, 0, NULL);
+        uint32_t traceGroups = (ANO_RC_IRRADIANCE_DIM + 3u) / 4u; // local_size 4^3
+        vkCmdDispatch(cmd, traceGroups, traceGroups, traceGroups);
+
+        VkImageMemoryBarrier irrToRead = irrToGeneral;
+        irrToRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        irrToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        irrToRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; irrToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &irrToRead);
     }
     ano_ts(cmd, ANO_TS_AFTER_RC);
 
@@ -2179,11 +2207,11 @@ bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
 // One ×1 shared 3D voxel image (RGBA16F): STORAGE (voxelize writes) + SAMPLED (M3 trace reads) +
 // TRANSFER_DST (per-frame clear). Hand-rolled — createImage() is 2D/depth=1 only — like the shadow
 // atlas, with a VK_IMAGE_VIEW_TYPE_3D view. in: ctx; out: img/alloc/view. Returns false on failure.
-static bool rc_create_voxel_image(VulkanContext* ctx, VkImage* img, GpuAllocation* alloc, VkImageView* view) {
+static bool rc_create_voxel_image(VulkanContext* ctx, uint32_t dim, VkImage* img, GpuAllocation* alloc, VkImageView* view) {
     VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     iinfo.imageType = VK_IMAGE_TYPE_3D;
     iinfo.format = ANO_RC_VOXEL_FORMAT;
-    iinfo.extent = (VkExtent3D){ ANO_RC_VOXEL_DIM, ANO_RC_VOXEL_DIM, ANO_RC_VOXEL_DIM };
+    iinfo.extent = (VkExtent3D){ dim, dim, dim };
     iinfo.mipLevels = 1;
     iinfo.arrayLayers = 1;
     iinfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2227,8 +2255,9 @@ static void rc_build_clipmap_ortho(mat4 out, uint32_t depthAxis) {
 // viewProjs (static origin clipmap, written once) + one descriptor set (set 2: frustums + the two
 // storage images). Prereqs: rcAllocator + rcVoxelizeSetLayout + the global pool all created.
 bool createRcResources(VulkanContext* ctx, RendererState* state) {
-    if (!rc_create_voxel_image(ctx, &state->rcVoxelAlbedo, &state->rcVoxelAlbedoAlloc, &state->rcVoxelAlbedoView)) return false;
-    if (!rc_create_voxel_image(ctx, &state->rcVoxelEmission, &state->rcVoxelEmissionAlloc, &state->rcVoxelEmissionView)) return false;
+    if (!rc_create_voxel_image(ctx, ANO_RC_VOXEL_DIM, &state->rcVoxelAlbedo, &state->rcVoxelAlbedoAlloc, &state->rcVoxelAlbedoView)) return false;
+    if (!rc_create_voxel_image(ctx, ANO_RC_VOXEL_DIM, &state->rcVoxelEmission, &state->rcVoxelEmissionAlloc, &state->rcVoxelEmissionView)) return false;
+    if (!rc_create_voxel_image(ctx, ANO_RC_IRRADIANCE_DIM, &state->rcIrradiance, &state->rcIrradianceAlloc, &state->rcIrradianceView)) return false;
 
     // Linear, clamp-to-edge sampler for trilinear reads of the 3D voxel/irradiance volumes (the
     // debug voxel view samples albedo through it; M3's trace + the GI ambient term reuse it).
@@ -2277,13 +2306,32 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     writes[2].pImageInfo = &emissionInfo;
     vkUpdateDescriptorSets(ctx->device, 3, writes, 0, NULL);
 
-    // One-time UNDEFINED -> SHADER_READ so the binding-12 sampler always references a valid layout,
-    // even before the first voxelize (default SHADOWMAP mode never runs it). HYBRID/RC re-transition
-    // from UNDEFINED each frame (discarding), so this is purely the resting state for unused frames.
+    // Trace set (M3b): 0/1 = voxel albedo+emission sampled (SHADER_READ after voxelize), 2 = the
+    // irradiance field as a storage image (GENERAL, written by rc_trace.comp).
+    VkDescriptorSetAllocateInfo tdai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    tdai.descriptorPool = state->globalDescriptorPool;
+    tdai.descriptorSetCount = 1;
+    tdai.pSetLayouts = &state->rcTraceSetLayout;
+    if (vkAllocateDescriptorSets(ctx->device, &tdai, &state->rcTraceSet) != VK_SUCCESS) return false;
+
+    VkDescriptorImageInfo tAlbedo   = { state->rcSampler, state->rcVoxelAlbedoView,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo tEmission = { state->rcSampler, state->rcVoxelEmissionView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo tIrr      = { .imageView = state->rcIrradianceView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet tw[3] = {};
+    tw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[0].dstSet = state->rcTraceSet; tw[0].dstBinding = 0;
+    tw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[0].descriptorCount = 1; tw[0].pImageInfo = &tAlbedo;
+    tw[1] = tw[0]; tw[1].dstBinding = 1; tw[1].pImageInfo = &tEmission;
+    tw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; tw[2].dstSet = state->rcTraceSet; tw[2].dstBinding = 2;
+    tw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; tw[2].descriptorCount = 1; tw[2].pImageInfo = &tIrr;
+    vkUpdateDescriptorSets(ctx->device, 3, tw, 0, NULL);
+
+    // One-time UNDEFINED -> SHADER_READ so the binding-12/13 samplers always reference a valid layout,
+    // even before the first voxelize/trace (default SHADOWMAP mode never runs them). HYBRID/RC
+    // re-transition from UNDEFINED each frame (discarding), so this is the resting state for unused frames.
     VkCommandBuffer init = beginSingleTimeCommands(ctx);
-    VkImage imgs[2] = { state->rcVoxelAlbedo, state->rcVoxelEmission };
-    VkImageMemoryBarrier toRead[2] = {};
-    for (int k = 0; k < 2; k++) {
+    VkImage imgs[3] = { state->rcVoxelAlbedo, state->rcVoxelEmission, state->rcIrradiance };
+    VkImageMemoryBarrier toRead[3] = {};
+    for (int k = 0; k < 3; k++) {
         toRead[k].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         toRead[k].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         toRead[k].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2294,7 +2342,7 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
         toRead[k].srcAccessMask = 0; toRead[k].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     }
     vkCmdPipelineBarrier(init, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, NULL, 0, NULL, 2, toRead);
+        0, 0, NULL, 0, NULL, 3, toRead);
     endSingleTimeCommands(ctx, init);
 
     return true;
@@ -2733,6 +2781,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if (!ano_vk_init_rc_voxelize(&ctx, &rendererState))
 	{
 		printf("Quitting init: radiance-cascade voxelize pipeline failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	if (!ano_vk_init_rc_trace(&ctx, &rendererState))
+	{
+		printf("Quitting init: radiance-cascade trace pipeline failure!\n");
 		unInitVulkan();
 		return false;
 	}

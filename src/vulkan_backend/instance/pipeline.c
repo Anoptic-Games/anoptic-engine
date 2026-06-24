@@ -175,8 +175,8 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	clusterIndexLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	clusterIndexLayoutBinding.pImmutableSamplers = NULL;
 
-	// 12: radiance-cascade scene voxel albedo sampler (RADIANCE_CASCADES.md M3). Sampled by the
-	// fragment stage for the debug voxel view (and later the GI ambient term). ×1 shared image.
+	// 12: radiance-cascade scene voxel albedo sampler (RADIANCE_CASCADES.md M3a, debug voxel view).
+	// 13: irradiance field sampler (M3b) — the GI ambient term. Both ×1 shared, fragment-sampled.
 	VkDescriptorSetLayoutBinding rcVoxelLayoutBinding = {};
 	rcVoxelLayoutBinding.binding = 12;
 	rcVoxelLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -184,7 +184,10 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	rcVoxelLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	rcVoxelLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[13] = {
+	VkDescriptorSetLayoutBinding rcIrradianceLayoutBinding = rcVoxelLayoutBinding;
+	rcIrradianceLayoutBinding.binding = 13;
+
+	VkDescriptorSetLayoutBinding bindings[14] = {
 		uboLayoutBinding,
 		ssboLayoutBinding,
 		materialLayoutBinding,
@@ -197,12 +200,13 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		instanceDataLayoutBinding,
 		clusterCountLayoutBinding,
 		clusterIndexLayoutBinding,
-		rcVoxelLayoutBinding
+		rcVoxelLayoutBinding,
+		rcIrradianceLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 13;
+	layoutInfo.bindingCount = 14;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -1139,6 +1143,53 @@ bool ano_vk_init_rc_voxelize(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
+// Radiance-cascade trace pipeline (RADIANCE_CASCADES.md M3b). Compute: gathers the two scene voxel
+// volumes (sampled) into the irradiance field (storage image). Standalone, like voxelize. Run after
+// ano_vk_init_rc_voxelize. in: ctx, state; out: rcTrace{SetLayout,Layout,Cache,Pipeline}.
+bool ano_vk_init_rc_trace(VulkanContext* ctx, RendererState* state)
+{
+	VkDescriptorSetLayoutBinding b[3] = {};
+	b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          b[2].descriptorCount = 1; b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+	VkDescriptorSetLayoutCreateInfo setInfo = {};
+	setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	setInfo.bindingCount = 3;
+	setInfo.pBindings = b;
+	if (vkCreateDescriptorSetLayout(ctx->device, &setInfo, NULL, &state->rcTraceSetLayout) != VK_SUCCESS) return false;
+
+	VkPipelineLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	layoutInfo.setLayoutCount = 1;
+	layoutInfo.pSetLayouts = &state->rcTraceSetLayout;
+	if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->rcTraceLayout) != VK_SUCCESS) return false;
+
+	VkPipelineCacheCreateInfo cacheInfo = {};
+	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->rcTraceCache);
+
+	struct Buffer code;
+	char path[256];
+	snprintf(path, sizeof(path), "%s/resources/shaders/rc_trace.comp.spv", PROJECT_ROOT);
+	if (!loadFile(path, &code)) return false;
+	VkShaderModule module = createShaderModule(ctx->device, &code);
+
+	VkComputePipelineCreateInfo pipelineInfo = {};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	pipelineInfo.layout = state->rcTraceLayout;
+	pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	pipelineInfo.stage.module = module;
+	pipelineInfo.stage.pName = "main";
+	VkResult r = vkCreateComputePipelines(ctx->device, state->rcTraceCache, 1, &pipelineInfo, NULL, &state->rcTracePipeline);
+
+	ano_aligned_free(code.data);
+	vkDestroyShaderModule(ctx->device, module, NULL);
+	if (r != VK_SUCCESS) { printf("Failed to create rc trace pipeline!\n"); return false; }
+	return true;
+}
+
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	// Tonemap pass (standalone)
@@ -1242,6 +1293,28 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyDescriptorSetLayout(ctx->device, state->rcVoxelizeSetLayout, NULL);
         state->rcVoxelizeSetLayout = VK_NULL_HANDLE;
+    }
+
+    // Radiance-cascade trace pipeline (standalone compute) + its set layout.
+    if (state->rcTracePipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(ctx->device, state->rcTracePipeline, NULL);
+        state->rcTracePipeline = VK_NULL_HANDLE;
+    }
+    if (state->rcTraceLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(ctx->device, state->rcTraceLayout, NULL);
+        state->rcTraceLayout = VK_NULL_HANDLE;
+    }
+    if (state->rcTraceCache != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineCache(ctx->device, state->rcTraceCache, NULL);
+        state->rcTraceCache = VK_NULL_HANDLE;
+    }
+    if (state->rcTraceSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(ctx->device, state->rcTraceSetLayout, NULL);
+        state->rcTraceSetLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts

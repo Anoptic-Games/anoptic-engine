@@ -91,10 +91,11 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
-// RC scene voxel albedo (RADIANCE_CASCADES.md M3): a = opacity (>0.5 occupied), rgb = albedo.
-// Sampled for the debug voxel view; the GI ambient term consumes the irradiance field in M3b.
-layout(set = 0, binding = 12) uniform sampler3D rcVoxelAlbedo;
+// RC scene voxel albedo (debug, binding 12) + the cascade-0 irradiance field (GI ambient, binding 13).
+layout(set = 0, binding = 12) uniform sampler3D rcVoxelAlbedo;  // a = opacity, rgb = albedo
+layout(set = 0, binding = 13) uniform sampler3D rcIrradiance;   // gathered irradiance (RADIANCE_CASCADES.md M3b)
 const float ANO_RC_CLIP_HALF = 8.0; // matches ANO_RC_CLIP_HALF_EXTENT + voxelize.frag
+vec3 anoRcUv(vec3 w) { return (w + vec3(ANO_RC_CLIP_HALF)) / (2.0 * ANO_RC_CLIP_HALF); }
 
 // --- Dynamic shadows (set 2): GPU-built shadow frustum viewProjs + the depth atlas array + the
 // per-light shadow placement. A light that casts projects fragWorldPos into its shadow map and
@@ -250,14 +251,18 @@ vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, 
 }
 
 void main() {
-    // Debug: voxel albedo view (RADIANCE_CASCADES.md M3). Surfaces show the albedo stored in their
-    // voxel; empty voxels render red to expose coverage gaps. Only sampled when an RC mode populated
-    // the volume this frame (in SHADOWMAP it is never written, hence never read here).
-    if (global.debugView == 1u && global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
-        vec3 vuv = (fragWorldPos + vec3(ANO_RC_CLIP_HALF)) / (2.0 * ANO_RC_CLIP_HALF);
-        vec4 vox = texture(rcVoxelAlbedo, vuv);
-        outColor = vec4(vox.a > 0.5 ? vox.rgb : vec3(1.0, 0.0, 0.0), 1.0);
-        return;
+    // Debug views (RADIANCE_CASCADES.md M3), only valid in an RC mode (the volumes are unpopulated
+    // in SHADOWMAP, hence never sampled). 1 = voxel albedo (red = empty), 2 = gathered irradiance.
+    if (global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
+        if (global.debugView == 1u) {
+            vec4 vox = texture(rcVoxelAlbedo, anoRcUv(fragWorldPos));
+            outColor = vec4(vox.a > 0.5 ? vox.rgb : vec3(1.0, 0.0, 0.0), 1.0);
+            return;
+        }
+        if (global.debugView == 2u) {
+            outColor = vec4(texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb, 1.0);
+            return;
+        }
     }
 
     MaterialData mat = materialBuf.materials[inMaterialIndex];
@@ -362,7 +367,13 @@ void main() {
     // -------------------------------------------------------------
     // Ambient & Final Color Assembly
     // -------------------------------------------------------------
-    vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion;
+    // Ambient: radiance-cascade GI when an RC mode is active (the gathered irradiance replaces the
+    // flat constant), else the legacy constant ambient. Honors the L-key A/B toggle.
+    vec3 ambient;
+    if (global.lightingMode != ANO_LIGHTING_SHADOWMAP)
+        ambient = texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb * baseColor.rgb * occlusion;
+    else
+        ambient = vec3(0.05) * baseColor.rgb * occlusion;
     vec3 finalColor = ambient + accumulatedDirect;
 
     outColor = vec4(finalColor, 1.0);

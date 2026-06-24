@@ -1,0 +1,68 @@
+#version 450
+
+// Radiance cascades M3b — single-cascade gather (RADIANCE_CASCADES.md).
+// One invocation per irradiance-grid cell: march N directions through the scene voxel volume,
+// accumulating emission attenuated by opacity (the radiance-interval merge), and adding sky light
+// where a ray escapes or runs out of occluders. The averaged result is the cell's irradiance,
+// sampled by flat.frag as the ambient/GI term. This is cascade 0 only; the full hierarchy + bilinear
+// fix is M4. Fixed-step march over a static origin-centred clipmap (DDA + camera-following follow on).
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0) uniform sampler3D voxelAlbedo;   // .a = opacity (>0.5 occupied), .rgb = albedo
+layout(set = 0, binding = 1) uniform sampler3D voxelEmission; // .rgb = emission
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image3D irradianceOut;
+
+const float H      = 8.0;   // clipmap half-extent (matches ANO_RC_CLIP_HALF_EXTENT)
+const float VOX    = 128.0; // scene voxel resolution
+const int   DIRS   = 16;    // cascade-0 base directions
+const int   STEPS  = 48;    // march steps per ray
+const float GOLDEN = 2.399963229; // golden angle for the Fibonacci sphere
+
+vec3 skyLight(vec3 d) {
+    // Cheap sky: cool up, dim toward the horizon/down. Stands in for an environment until lights
+    // are injected as emitters; gives occlusion-modulated ambient so the GI is visibly meaningful.
+    float up = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(vec3(0.18, 0.20, 0.24), vec3(0.45, 0.55, 0.75), up);
+}
+
+vec3 worldToUv(vec3 w) { return (w + vec3(H)) / (2.0 * H); }
+
+// Gather radiance arriving at `origin` from direction `dir` by marching the voxel volume.
+vec3 gather(vec3 origin, vec3 dir) {
+    float stepSize = (2.0 * H) / VOX; // one voxel
+    vec3  radiance = vec3(0.0);
+    float trans = 1.0;
+    float t = stepSize * 1.5; // skip the originating cell
+    for (int i = 0; i < STEPS; i++) {
+        vec3 sp = origin + dir * t;
+        vec3 uv = worldToUv(sp);
+        if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0))))
+            return radiance + trans * skyLight(dir); // escaped the clipmap
+        float op = texture(voxelAlbedo, uv).a;
+        if (op > 0.5) {
+            radiance += trans * texture(voxelEmission, uv).rgb;
+            trans *= (1.0 - op);
+            if (trans < 0.02) return radiance; // fully occluded
+        }
+        t += stepSize;
+    }
+    return radiance + trans * skyLight(dir); // ran out of range -> assume open sky
+}
+
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    ivec3 dim = imageSize(irradianceOut);
+    if (any(greaterThanEqual(p, dim))) return;
+    vec3 worldPos = -vec3(H) + (vec3(p) + 0.5) / vec3(dim) * (2.0 * H);
+
+    vec3 acc = vec3(0.0);
+    for (int i = 0; i < DIRS; i++) {
+        float phi = float(i) * GOLDEN;
+        float y = 1.0 - (2.0 * float(i) + 1.0) / float(DIRS); // even over the sphere
+        float r = sqrt(max(0.0, 1.0 - y * y));
+        vec3 dir = vec3(r * cos(phi), y, r * sin(phi));
+        acc += gather(worldPos, dir);
+    }
+    imageStore(irradianceOut, p, vec4(acc / float(DIRS), 1.0));
+}

@@ -91,9 +91,11 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
-// RC scene voxel albedo (RADIANCE_CASCADES.md M3); mirrors flat.frag. a = opacity, rgb = albedo.
+// RC voxel albedo (debug, 12) + cascade-0 irradiance (GI ambient, 13); mirrors flat.frag.
 layout(set = 0, binding = 12) uniform sampler3D rcVoxelAlbedo;
+layout(set = 0, binding = 13) uniform sampler3D rcIrradiance;
 const float ANO_RC_CLIP_HALF = 8.0;
+vec3 anoRcUv(vec3 w) { return (w + vec3(ANO_RC_CLIP_HALF)) / (2.0 * ANO_RC_CLIP_HALF); }
 
 // --- Dynamic shadows (set 2), mirrors flat.frag (audit 4.7) ---
 struct ShadowCullView { mat4 viewProj; vec4 frustumPlanes[6]; };
@@ -246,12 +248,17 @@ vec3 calculatePBRDirect(vec3 albedo, float metallic, float roughness, vec3 N, ve
 }
 
 void main() {
-    // Debug: voxel albedo view (RADIANCE_CASCADES.md M3); mirrors flat.frag.
-    if (global.debugView == 1u && global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
-        vec3 vuv = (fragWorldPos + vec3(ANO_RC_CLIP_HALF)) / (2.0 * ANO_RC_CLIP_HALF);
-        vec4 vox = texture(rcVoxelAlbedo, vuv);
-        outColor = vec4(vox.a > 0.5 ? vox.rgb : vec3(1.0, 0.0, 0.0), 1.0);
-        return;
+    // Debug views (RADIANCE_CASCADES.md M3); mirrors flat.frag. 1 = voxel albedo, 2 = irradiance.
+    if (global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
+        if (global.debugView == 1u) {
+            vec4 vox = texture(rcVoxelAlbedo, anoRcUv(fragWorldPos));
+            outColor = vec4(vox.a > 0.5 ? vox.rgb : vec3(1.0, 0.0, 0.0), 1.0);
+            return;
+        }
+        if (global.debugView == 2u) {
+            outColor = vec4(texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb, 1.0);
+            return;
+        }
     }
 
     MaterialData mat = materialBuf.materials[inMaterialIndex];
@@ -307,7 +314,9 @@ void main() {
     vec3 V = normalize(global.cameraPos.xyz - fragWorldPos);
     
     // Ambient & transmissive color contributions (evaluated once)
-    vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion * (1.0 - transmission);
+    vec3 ambient = (global.lightingMode != ANO_LIGHTING_SHADOWMAP
+                    ? texture(rcIrradiance, anoRcUv(fragWorldPos)).rgb
+                    : vec3(0.05)) * baseColor.rgb * occlusion * (1.0 - transmission);
     vec3 transmissive = baseColor.rgb * transmissionTint * transmission;
     
     // Clustered forward: accumulate only this fragment's froxel lights (see flat.frag).
