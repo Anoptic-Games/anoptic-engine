@@ -830,6 +830,13 @@ typedef struct RendererState
     RenderSlotTable         slots;          // logical render_id -> stable GPU slot
     AnoRenderBridge         bridge;         // logic->render commands, render->logic events
     uint64_t                globalFrame;    // monotonic frame counter for slot quarantine
+
+    // Runtime render config (RADIANCE_CASCADES.md). lightingMode is an AnoLightingMode, stored
+    // as u32 so it copies straight into the GlobalUBO tail; debugView selects a visualization
+    // (0 = off) added with the radiance-cascade passes. Process-arena lifetime, mutated only
+    // from the render thread (L-key callback / ano_render_set_lighting_mode).
+    uint32_t                lightingMode;   // AnoLightingMode; default ANO_LIGHTING_SHADOWMAP (0)
+    uint32_t                debugView;      // RC debug visualization selector (0 = off)
 } RendererState;
 
 

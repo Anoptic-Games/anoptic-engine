@@ -76,6 +76,10 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint clusterDimY;
     uint clusterDimZ;
     uint maxLightsPerCluster;
+    uint lightingMode;   // AnoLightingMode (RADIANCE_CASCADES.md); gates shadow sampling below
+    uint debugView;      // RC debug visualization selector (0 = off)
+    uint pad0;
+    uint pad1;
 } global;
 
 // Clustered-forward froxel light lists (light-cull pass output). The fragment maps to its
@@ -135,6 +139,19 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
 const uint LIGHT_TYPE_DIRECTIONAL = 0u;
 const uint LIGHT_TYPE_POINT       = 1u;
 const uint LIGHT_TYPE_SPOT        = 2u;
+
+// Lighting mode (AnoLightingMode, RADIANCE_CASCADES.md). Whether a light's direct occlusion is
+// shadow-mapped this frame, vs carried by the radiance cascade field. MUST match the C-side
+// lightTypeShadowMapped() that gates the shadow depth render, or a gated-off atlas layer is
+// sampled stale. HYBRID keeps directional + spot maps and routes point lights to RC.
+const uint ANO_LIGHTING_SHADOWMAP = 0u;
+const uint ANO_LIGHTING_HYBRID    = 1u;
+const uint ANO_LIGHTING_RC        = 2u;
+bool lightUsesShadowMap(uint lightType, uint mode) {
+    if (mode == ANO_LIGHTING_SHADOWMAP) return true;
+    if (mode == ANO_LIGHTING_RC)        return false;
+    return lightType != LIGHT_TYPE_POINT; // ANO_LIGHTING_HYBRID
+}
 
 struct LightData {
     vec3  color;
@@ -315,7 +332,7 @@ void main() {
         // their single frustum at baseFrustum; point lights pick one of 6 cube faces by dominant axis.
         float shadowFactor = 1.0;
         ShadowLightInfo si = shadowInfoBuf.info[i];
-        if (si.castsShadow != 0u && si.frustumCount > 0u) {
+        if (lightUsesShadowMap(light.type, global.lightingMode) && si.castsShadow != 0u && si.frustumCount > 0u) {
             float nDotL = max(dot(N, L), 0.0);
             if (light.type == LIGHT_TYPE_POINT)
                 shadowFactor = sampleShadowPCF(si.baseFrustum + cubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);

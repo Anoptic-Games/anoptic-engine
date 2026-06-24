@@ -104,6 +104,20 @@ typedef struct RenderLightParams
     RenderLightType type;
 } RenderLightParams;
 
+// Occlusion model selector, profiled head-to-head against radiance cascades (see
+// docs/artifacts/RADIANCE_CASCADES.md). Drives, per light type, whether a light's direct
+// occlusion is sampled from its conventional shadow map this frame or carried by the radiance
+// cascade field. The renderer also gates the shadow depth render itself on this, so a type that
+// is RC-occluded pays no shadow-map render cost (the memory/bandwidth win under measurement).
+// The default preserves the existing all-shadow-mapped behavior. Toggle live with the L key.
+typedef enum AnoLightingMode
+{
+    ANO_LIGHTING_SHADOWMAP  = 0, // all sources shadow-mapped (default; current renderer)
+    ANO_LIGHTING_HYBRID     = 1, // radiance cascades for point lights, shadow maps for directional + spot
+    ANO_LIGHTING_RC         = 2, // all sources via radiance cascades (no shadow maps rendered)
+    ANO_LIGHTING_MODE_COUNT = 3,
+} AnoLightingMode;
+
 // Continuous, GPU-derived motion. The producer establishes a motion ONCE (via
 // RFIELD_ANIM) and the GPU update pass derives the live transform from global time
 // every frame, so a steady trajectory costs zero per-tick bridge traffic; only a
@@ -291,5 +305,11 @@ bool ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *ren
 // Single-producer only (the thread that owns the bridge); valid after init.
 bool ano_render_stream_begin(AnoStreamRegion *out);
 bool ano_render_stream_commit(const AnoStreamRegion *region, uint32_t count);
+
+// Lighting-mode control (see AnoLightingMode). Selects the occlusion model used from the next
+// recorded frame onward. Set/read from the render thread (the frame record path is single
+// threaded); the L key cycles modes through the same setter. Out-of-range values are ignored.
+void            ano_render_set_lighting_mode(AnoLightingMode mode);
+AnoLightingMode ano_render_get_lighting_mode(void);
 
 #endif // ANOPTIC_RENDER_H

@@ -413,7 +413,7 @@ better than one global growing buffer).
   components, data-defined content) needs a reflection + scripting layer the foundation does not
   hint at. Extensible, large; the runtime-registration hook is the seam to build on.
 
-### 4.7 Lighting does not scale; no shadows; no transparency ordering (root renderer architecture) - PARTIAL - light clustering | NEXT: shadows, transparency, light/renderable
+### 4.7 Lighting does not scale; no shadows; no transparency ordering (root renderer architecture) - PARTIAL - light clustering, shadows | NEXT: transparency, light/renderable
 
 - Many lights. `flat.frag:198` loops *every* active light for *every* fragment, with no culling,
   no clustering, no tiling, no deferred path. Storage allows 10000 lights but the per-fragment

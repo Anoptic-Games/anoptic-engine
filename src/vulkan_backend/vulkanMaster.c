@@ -200,7 +200,19 @@ static const RenderPassDef g_framePasses[] = {
     },
 };
 
-void recordCommandBuffer(uint32_t imageIndex) 
+// Whether a light type's direct occlusion is shadow-mapped (vs carried by the radiance cascade
+// field) under the given AnoLightingMode. Mirrors lightUsesShadowMap() in flat.frag /
+// transmission.frag — the shadow depth render (caster geometry) and the fragment PCF sample MUST
+// agree, or a gated-off atlas layer gets sampled stale. HYBRID keeps directional + spot maps and
+// routes point lights to RC; RC drops all shadow maps; SHADOWMAP keeps all (current behavior).
+static inline bool lightTypeShadowMapped(uint32_t lightType, uint32_t mode)
+{
+    if (mode == ANO_LIGHTING_SHADOWMAP) return true;
+    if (mode == ANO_LIGHTING_RC)        return false;
+    return lightType != (uint32_t)LIGHT_TYPE_POINT; // ANO_LIGHTING_HYBRID
+}
+
+void recordCommandBuffer(uint32_t imageIndex)
 {
 	VkCommandBufferBeginInfo beginInfo = {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -381,7 +393,27 @@ void recordCommandBuffer(uint32_t imageIndex)
         uint32_t maxDrawsS = rendererState.indirectBuffer.capacity;
         VkShaderStageFlags pcStageS = useMeshS ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
+        const ShadowFrustumConfig* shadowCfgs = (const ShadowFrustumConfig*)rendererState.shadowFrustumConfigMapped;
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+            // Gate the depth render on the lighting mode: a light type carried by radiance cascades
+            // this frame renders no caster geometry (the shadow-map bandwidth win under measurement).
+            // Still drive its layer to SHADER_READ so the sampled atlas array stays uniformly
+            // readable — the fragment is gated not to sample it, but the bound view spans all layers.
+            if (!lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode)) {
+                VkImageMemoryBarrier toReadSkip = {};
+                toReadSkip.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                toReadSkip.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // contents unused; discard
+                toReadSkip.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                toReadSkip.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toReadSkip.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toReadSkip.image = sh->atlasImage;
+                toReadSkip.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, s, 1 };
+                toReadSkip.srcAccessMask = 0;
+                toReadSkip.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 0, NULL, 0, NULL, 1, &toReadSkip);
+                continue;
+            }
             // This atlas layer -> DEPTH_ATTACHMENT (UNDEFINED: cleared + fully written this frame).
             VkImageMemoryBarrier toDepth = {};
             toDepth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -795,6 +827,10 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         extractFrustumPlanes(ubo->views[v].frustumPlanes, ubo->views[v].viewProj);
         // Publish the active light count to each view's fragment stage.
         viewUbo->lightCount = state->lightBuffer.count;
+        // Publish the runtime lighting mode + debug selector (RADIANCE_CASCADES.md). The fragment
+        // stage gates per-light shadow sampling on this; the shadow depth render is gated to match.
+        viewUbo->lightingMode = state->lightingMode;
+        viewUbo->debugView = state->debugView;
     }
 
     ubo->viewCount = ANO_VIEW_COUNT;
@@ -1492,6 +1528,18 @@ bool ano_render_submit_bulk_destroy(AnoRenderBridge* bridge, const uint32_t* ren
     RenderCommand cmd = { .kind = RCMD_BULK_DESTROY, .destroy = b, .bulk_owned = true };
     if (!ano_render_submit(bridge, &cmd)) { mi_free(blk); return false; }
     return true;
+}
+
+// Lighting-mode control (RADIANCE_CASCADES.md). Stored on the render state and published into the
+// GlobalUBO tail by updateCullingBuffers; takes effect from the next recorded frame. Mutated only
+// from the render thread (frame record + L-key callback are both main-thread), so no atomics.
+void ano_render_set_lighting_mode(AnoLightingMode mode) {
+    if ((uint32_t)mode >= (uint32_t)ANO_LIGHTING_MODE_COUNT) return;
+    rendererState.lightingMode = (uint32_t)mode;
+}
+
+AnoLightingMode ano_render_get_lighting_mode(void) {
+    return (AnoLightingMode)rendererState.lightingMode;
 }
 
 void drawFrame()
