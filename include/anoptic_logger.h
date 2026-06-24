@@ -4,16 +4,17 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // The logger follows a singleton pattern (one per program), owned by main. A producer formats its
-// line on the calling thread and publishes it lock-free into a shared cache-line-granular ring;
-// one flusher thread batches the drained text to the sink. Design: docs/logger.md.
+// line on the calling thread and appends it to a shared buffer; the caller drains that buffer to
+// the sink on its own schedule via ano_log_flush() (the logger runs no background thread).
+// Design: docs/logger.md.
 
 #ifndef ANOPTIC_LOGGER_H
 #define ANOPTIC_LOGGER_H
 
 #include <stdint.h>
 
-// Severity levels, ascending. The runtime gate (ano_log_set_level) admits >= its minimum; the
-// flusher echoes > LOG_WARN to stderr and the rest to stdout. FATAL takes the immediate path.
+// Severity levels, ascending. The runtime gate (ano_log_set_level) admits >= its minimum. FATAL
+// takes the immediate path, which echoes > LOG_WARN to stderr and the rest to stdout.
 typedef enum {
     LOG_DEBUG,
     LOG_INFO,
@@ -31,11 +32,10 @@ typedef enum {
     ANO_LOG_BLOCK          = 2
 } ano_log_full_policy_t;
 
-// Lifecycle. ano_log_init spawns the flusher thread; until it returns 0, only the immediate
-// (stderr) path works. ano_log_cleanup stops and joins the flusher (one final drain), then syncs
-// and closes the sink. Both return 0 on success. Single-owner teardown: all producer threads must
-// have stopped before ano_log_cleanup is called -- calling any ano_log_* concurrently with cleanup
-// is undefined (the lock-free version lifts this restriction).
+// Lifecycle. ano_log_init opens the default sink (the game directory); until it returns 0, only the
+// immediate (stderr) path works. ano_log_cleanup drains any buffered records, then syncs and closes
+// the sink. Both return 0 on success. Single-owner teardown: all producer threads must have stopped
+// before ano_log_cleanup is called -- calling any ano_log_* concurrently with cleanup is undefined.
 int ano_log_init(void);     // Build up, singleton initialization.
 int ano_log_cleanup(void);  // Teardown, most likely at program exit.
 
@@ -51,9 +51,6 @@ int ano_log_enqueue(log_types_t log_type, const char* sourceFile, int lineNumber
 void ano_log_immediate(log_types_t log_type, const char* sourceFile, int lineNumber,
                        const char* printFormat, ...) __attribute__((format(printf, 4, 5)));
 
-// Flusher cadence, in milliseconds (stored internally as microseconds for ano_sleep).
-void ano_log_interval(uint32_t ms);
-
 // Open dir/anoptic.log as the file sink (a per-run UTC-stamped name is deferred). Returns 0 on
 // success; -1 if the directory is invalid or could not be opened, in which case a previously open
 // sink is kept. With no sink set, records still drain to console.
@@ -66,7 +63,10 @@ void ano_log_set_level(log_types_t min);
 // Select the full-ring policy (default ANO_LOG_FULL_IMMEDIATE).
 void ano_log_set_full_policy(ano_log_full_policy_t policy);
 
-// Request a drain and block until the flusher has caught up to this request.
+// Drain all buffered records to the sink, synchronously on the calling thread. This is the only
+// flush mechanism: call it on your own schedule (e.g. once per tick). ano_log_cleanup drains a
+// final time, and a full buffer self-drains via the full policy, so a missed flush delays records
+// but never loses them.
 void ano_log_flush(void);
 
 // Count of records discarded under DROP_NEWEST since init.
