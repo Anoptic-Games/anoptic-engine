@@ -91,6 +91,10 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
+// RC scene voxel albedo (RADIANCE_CASCADES.md M3); mirrors flat.frag. a = opacity, rgb = albedo.
+layout(set = 0, binding = 12) uniform sampler3D rcVoxelAlbedo;
+const float ANO_RC_CLIP_HALF = 8.0;
+
 // --- Dynamic shadows (set 2), mirrors flat.frag (audit 4.7) ---
 struct ShadowCullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
@@ -242,6 +246,14 @@ vec3 calculatePBRDirect(vec3 albedo, float metallic, float roughness, vec3 N, ve
 }
 
 void main() {
+    // Debug: voxel albedo view (RADIANCE_CASCADES.md M3); mirrors flat.frag.
+    if (global.debugView == 1u && global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
+        vec3 vuv = (fragWorldPos + vec3(ANO_RC_CLIP_HALF)) / (2.0 * ANO_RC_CLIP_HALF);
+        vec4 vox = texture(rcVoxelAlbedo, vuv);
+        outColor = vec4(vox.a > 0.5 ? vox.rgb : vec3(1.0, 0.0, 0.0), 1.0);
+        return;
+    }
+
     MaterialData mat = materialBuf.materials[inMaterialIndex];
     vec4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexture != 0xFFFFFFFF) {

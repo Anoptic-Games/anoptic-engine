@@ -2230,6 +2230,17 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     if (!rc_create_voxel_image(ctx, &state->rcVoxelAlbedo, &state->rcVoxelAlbedoAlloc, &state->rcVoxelAlbedoView)) return false;
     if (!rc_create_voxel_image(ctx, &state->rcVoxelEmission, &state->rcVoxelEmissionAlloc, &state->rcVoxelEmissionView)) return false;
 
+    // Linear, clamp-to-edge sampler for trilinear reads of the 3D voxel/irradiance volumes (the
+    // debug voxel view samples albedo through it; M3's trace + the GI ambient term reuse it).
+    VkSamplerCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    si.magFilter = VK_FILTER_LINEAR; si.minFilter = VK_FILTER_LINEAR;
+    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    if (vkCreateSampler(ctx->device, &si, NULL, &state->rcSampler) != VK_SUCCESS) return false;
+
     // Ortho frustum buffer: CullView[ANO_RC_VOXEL_AXES], host-visible, viewProj filled per axis
     // (planes unused — the geometry stage only reads viewProj). Static clipmap, so written once.
     VkDeviceSize frustumSize = (VkDeviceSize)sizeof(CullView) * ANO_RC_VOXEL_AXES;
@@ -2265,6 +2276,26 @@ bool createRcResources(VulkanContext* ctx, RendererState* state) {
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[2].descriptorCount = 1;
     writes[2].pImageInfo = &emissionInfo;
     vkUpdateDescriptorSets(ctx->device, 3, writes, 0, NULL);
+
+    // One-time UNDEFINED -> SHADER_READ so the binding-12 sampler always references a valid layout,
+    // even before the first voxelize (default SHADOWMAP mode never runs it). HYBRID/RC re-transition
+    // from UNDEFINED each frame (discarding), so this is purely the resting state for unused frames.
+    VkCommandBuffer init = beginSingleTimeCommands(ctx);
+    VkImage imgs[2] = { state->rcVoxelAlbedo, state->rcVoxelEmission };
+    VkImageMemoryBarrier toRead[2] = {};
+    for (int k = 0; k < 2; k++) {
+        toRead[k].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toRead[k].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toRead[k].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toRead[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toRead[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toRead[k].image = imgs[k];
+        toRead[k].subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        toRead[k].srcAccessMask = 0; toRead[k].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    }
+    vkCmdPipelineBarrier(init, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 2, toRead);
+    endSingleTimeCommands(ctx, init);
 
     return true;
 }

@@ -175,7 +175,16 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	clusterIndexLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	clusterIndexLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[12] = {
+	// 12: radiance-cascade scene voxel albedo sampler (RADIANCE_CASCADES.md M3). Sampled by the
+	// fragment stage for the debug voxel view (and later the GI ambient term). ×1 shared image.
+	VkDescriptorSetLayoutBinding rcVoxelLayoutBinding = {};
+	rcVoxelLayoutBinding.binding = 12;
+	rcVoxelLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	rcVoxelLayoutBinding.descriptorCount = 1;
+	rcVoxelLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	rcVoxelLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[13] = {
 		uboLayoutBinding,
 		ssboLayoutBinding,
 		materialLayoutBinding,
@@ -187,12 +196,13 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		lightLayoutBinding,
 		instanceDataLayoutBinding,
 		clusterCountLayoutBinding,
-		clusterIndexLayoutBinding
+		clusterIndexLayoutBinding,
+		rcVoxelLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 12;
+	layoutInfo.bindingCount = 13;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)

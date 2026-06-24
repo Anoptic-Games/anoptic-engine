@@ -888,6 +888,7 @@ typedef struct RendererState
     VkPipeline              rcVoxelizePipeline;       // flat geometry stage (shadowPass) + voxelize.frag; no attachments
     VkPipelineLayout        rcVoxelizeLayout;
     VkPipelineCache         rcVoxelizeCache;
+    VkSampler               rcSampler;                // linear clamp 3D sampler for the voxel/irradiance volumes (global set 12)
 } RendererState;
 
 

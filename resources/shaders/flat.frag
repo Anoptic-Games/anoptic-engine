@@ -91,6 +91,11 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
+// RC scene voxel albedo (RADIANCE_CASCADES.md M3): a = opacity (>0.5 occupied), rgb = albedo.
+// Sampled for the debug voxel view; the GI ambient term consumes the irradiance field in M3b.
+layout(set = 0, binding = 12) uniform sampler3D rcVoxelAlbedo;
+const float ANO_RC_CLIP_HALF = 8.0; // matches ANO_RC_CLIP_HALF_EXTENT + voxelize.frag
+
 // --- Dynamic shadows (set 2): GPU-built shadow frustum viewProjs + the depth atlas array + the
 // per-light shadow placement. A light that casts projects fragWorldPos into its shadow map and
 // PCF-compares against stored occluder depth. (audit 4.7) ---
@@ -245,6 +250,16 @@ vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, 
 }
 
 void main() {
+    // Debug: voxel albedo view (RADIANCE_CASCADES.md M3). Surfaces show the albedo stored in their
+    // voxel; empty voxels render red to expose coverage gaps. Only sampled when an RC mode populated
+    // the volume this frame (in SHADOWMAP it is never written, hence never read here).
+    if (global.debugView == 1u && global.lightingMode != ANO_LIGHTING_SHADOWMAP) {
+        vec3 vuv = (fragWorldPos + vec3(ANO_RC_CLIP_HALF)) / (2.0 * ANO_RC_CLIP_HALF);
+        vec4 vox = texture(rcVoxelAlbedo, vuv);
+        outColor = vec4(vox.a > 0.5 ? vox.rgb : vec3(1.0, 0.0, 0.0), 1.0);
+        return;
+    }
+
     MaterialData mat = materialBuf.materials[inMaterialIndex];
     vec4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexture != 0xFFFFFFFF) {

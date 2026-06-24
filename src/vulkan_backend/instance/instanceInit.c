@@ -68,6 +68,12 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		static const char* const names[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RADIANCE_CASCADES" };
 		printf("Lighting mode: %s\n", names[next]);
 	}
+	// V toggles the RC debug view (voxel albedo). Only visible in an RC mode (HYBRID/RC), which is
+	// where the voxel volume is populated. See RADIANCE_CASCADES.md M3.
+	if (key == GLFW_KEY_V && action == GLFW_PRESS) {
+		rendererState.debugView = rendererState.debugView ? 0u : 1u;
+		printf("RC debug view: %s\n", rendererState.debugView ? "voxel albedo" : "off");
+	}
 }
 
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
@@ -1467,7 +1473,8 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 2u); // tonemap (per view) + shadow atlas
+	// tonemap (per view) + shadow atlas + the RC voxel sampler in each global set (binding 12, per view).
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 2u);
 	// Radiance cascades (RADIANCE_CASCADES.md): storage images for the ×1 shared volumes (M1: the
 	// scene voxel; headroom for the cascade ping-pong / irradiance / history added in M2-M4).
 	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -1693,7 +1700,12 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
             VkDescriptorBufferInfo xformInfo = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
             VkDescriptorBufferInfo lightInfo = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
 
-            VkWriteDescriptorSet writes[7] = {};
+            // Global set 12 = RC scene voxel albedo sampler (debug view + GI). ×1 shared image,
+            // sampled in SHADER_READ after the voxelize pass; the fragment only reads it when an RC
+            // mode is active (so its UNDEFINED layout in SHADOWMAP mode is never accessed).
+            VkDescriptorImageInfo rcVoxelInfo = { state->rcSampler, state->rcVoxelAlbedoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+            VkWriteDescriptorSet writes[8] = {};
             // Global set: 10 = cluster light count, 11 = cluster light index (fragment-read).
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[0].dstSet = vr->globalSet;
@@ -1724,8 +1736,15 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
             writes[6] = writes[3];
             writes[6].dstBinding = 4;
             writes[6].pBufferInfo = &indexInfo;
+            // Global set 12: RC voxel albedo sampler (combined image sampler).
+            writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[7].dstSet = vr->globalSet;
+            writes[7].dstBinding = 12;
+            writes[7].descriptorCount = 1;
+            writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[7].pImageInfo = &rcVoxelInfo;
 
-            vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
+            vkUpdateDescriptorSets(ctx->device, 8, writes, 0, NULL);
         }
     }
 }
@@ -2435,6 +2454,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.rcVoxelEmissionView) vkDestroyImageView(ctx->device, rendererState.rcVoxelEmissionView, NULL);
 	if (rendererState.rcVoxelEmission) vkDestroyImage(ctx->device, rendererState.rcVoxelEmission, NULL);
 	if (rendererState.rcVoxelizeFrustumBuffer) vkDestroyBuffer(ctx->device, rendererState.rcVoxelizeFrustumBuffer, NULL);
+	if (rendererState.rcSampler) vkDestroySampler(ctx->device, rendererState.rcSampler, NULL);
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
 	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the
