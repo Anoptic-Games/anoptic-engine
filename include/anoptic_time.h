@@ -27,7 +27,7 @@ uint32_t ano_timestamp_ms();
 /// \note Timestamps are not guaranteed to be monotonic.
 int64_t ano_timestamp_unix();
 
-/// \brief Broken-down local civil time — platform-agnostic.
+/// \brief Platform-agnostic broken-down local civil time.
 /// The platform layer wraps localtime_r / localtime_s.
 typedef struct {
     int year;    ///< full year, e.g. 2026

@@ -42,7 +42,7 @@ typedef pthread_rwlockattr_t anothread_rwlockattr_t;
 typedef struct {
     unsigned int count;       // required arrivals, set at init
     atomic_uint  arrived;     // arrivals this round
-    atomic_uint  generation;  // phase counter — enables barrier reuse
+    atomic_uint  generation;  // phase counter enabling barrier reuse
 } pthread_barrier_t;
 typedef struct {
     int pshared;

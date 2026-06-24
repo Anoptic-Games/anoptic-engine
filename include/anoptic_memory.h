@@ -49,7 +49,7 @@ void ano_heap_release(mi_heap_t **in);
  * @brief Allocates @p size bytes aligned to a @p alignment boundary.
  *
  * @param size      Block size in bytes.
- * @param alignment Block alignment — must be a power of 2.
+ * @param alignment Block alignment, a power of 2.
  *
  * @return Pointer to the block, or NULL on failure.
  *

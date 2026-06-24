@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // macOS libpthread has no spinlocks or barriers.
-// Fill the gap with C23 atomics — lock-free, no pthread_mutex, per engine rules.
+// Fill the gap with C23 atomics that stay lock-free, no pthread_mutex, per engine rules.
 // Darwin counterpart to the !__APPLE__ sections of threads.c.
 
 #if defined(__APPLE__)

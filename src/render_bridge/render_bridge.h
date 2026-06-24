@@ -23,13 +23,13 @@
  *
  * Both directions are strictly single-producer/single-consumer, so the rings are
  * bounded SPSC (acquire/release on head/tail, no CAS). The logic master is the
- * sole command producer — it emits AFTER the parallel update stage settles, so
+ * sole command producer, and it emits AFTER the parallel update stage settles, so
  * ordering is total. The render master is the sole event producer.
  *
  * Renderables are named by a stable logical `render_id` assigned by the ECS. The
  * render world privately maps render_id -> physical GPU slot and never exposes
  * GPU slots. Continuous, GPU-parameterized motion (orbit/spin) is sent ONCE as
- * animation parameters and never streamed — only discrete transitions cross.
+ * animation parameters and never streamed, since only discrete transitions cross.
  */
 
 #ifndef ANO_RENDER_BRIDGE_INTERNAL_H
@@ -97,17 +97,17 @@ typedef struct DisplayState
 // ---------------------------------------------------------------------------
 
 // Single-producer/single-consumer bounded ring over fixed-size POD elements.
-// Lock-free and wait-free on both ends — capacity is a power of two so index
+// Lock-free and wait-free on both ends, with capacity a power of two so index
 // wrap is a mask. The producer owns `tail`, the consumer owns `head`.
 // Each reads the other's index with acquire and publishes its own with release.
 //
 // tail (producer) and head (consumer) sit on separate ANO_THREAD_LINE regions.
 // The producer's frequent tail-store must not invalidate the line the consumer
 // spins on for head (and vice versa), or the ring ping-pongs cache lines.
-// ANO_THREAD_LINE (anoptic_memory.h) is the false-sharing isolation distance —
+// ANO_THREAD_LINE (anoptic_memory.h) is the false-sharing isolation distance of
 // 128, wide enough to clear x86's adjacent-line prefetch pair and Apple Silicon's
 // 128-byte line. A member carries _Alignas(ANO_THREAD_LINE), so the whole struct
-// inherits that alignment — an embedding struct (AnoRenderBridge) gets it for free
+// inherits that alignment, so an embedding struct (AnoRenderBridge) gets it for free
 // on the stack or in static storage. A HEAP owner must request ANO_THREAD_LINE
 // alignment (e.g. mi_heap_malloc_aligned) for the separation to hold.
 //
