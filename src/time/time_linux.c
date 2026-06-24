@@ -50,16 +50,16 @@ uint32_t ano_timestamp_ms() {
 
 // Unix UTC timestamp.
 int64_t ano_timestamp_unix() {
-    time_t current_time;
-    current_time = time(NULL);
+    time_t currentTime;
+    currentTime = time(NULL);
 
     // Error handling
-    if (current_time == (time_t)-1) {
+    if (currentTime == (time_t)-1) {
         perror("time()");
         return INT64_MIN; // Out-of-range sentinel value
     }
 
-    return (int64_t)current_time;
+    return (int64_t)currentTime;
 }
 
 // Convert a Unix timestamp to broken-down local civil time.
@@ -91,12 +91,12 @@ int ano_busywait(uint64_t ns) {
         return -1; // failure
     }
 
-    uint64_t start_time = ano_timestamp_raw();
-    uint64_t end_time;
+    uint64_t startTime = ano_timestamp_raw();
+    uint64_t endTime;
 
     do {
-        end_time = ano_timestamp_raw();
-    } while (end_time - start_time < ns);
+        endTime = ano_timestamp_raw();
+    } while (endTime - startTime < ns);
 
     return 0; // success
 }

@@ -15,12 +15,12 @@
 #include <libloaderapi.h>
 #include <mimalloc.h>
 
-// Backs the user-data stub below; the game path is queried fresh per call.
-static filepath game_user_path;
+// Backs the user-data stub below -- the game path is queried fresh per call.
+static filepath gameUserPath;
 
-// Windows paths are UTF-16 underneath; GetModuleFileNameA returns the ANSI form.
-// Output: directory of the running executable (no file name); pathString is
-// mi_malloc'd for the caller to free. {0, NULL} on failure.
+// Windows paths are UTF-16 underneath -- GetModuleFileNameA returns the ANSI form.
+// Output: directory of the running executable, no file name.
+// pathString is mi_malloc'd for the caller to free. {0, NULL} on failure.
 filepath ano_fs_gamepath() {
 
     filepath result = {.length = 0, .pathString = NULL};
@@ -28,7 +28,7 @@ filepath ano_fs_gamepath() {
     char pathBuffer[MAX_PATH];
     DWORD len = GetModuleFileName(NULL, pathBuffer, MAX_PATH);
     if (len == 0 || len >= MAX_PATH)
-        return result; // failed, or truncated (path length >= MAX_PATH)
+        return result; // failed or truncated (path >= MAX_PATH)
 
     // Trim the executable file name, leaving its containing directory.
     while (len > 0 && pathBuffer[len - 1] != '\\' && pathBuffer[len - 1] != '/')
@@ -50,24 +50,23 @@ filepath ano_fs_gamepath() {
 // Eg: "C:\Users\Pyrus\Documents\anoptic" or "...\My Games\anoptic", etc.
 filepath ano_fs_userpath() {
 
-    // Still a stub: no user directory is resolved yet. Return the {0, NULL} "unresolved" form the
-    // other resolvers use rather than copying from the unset static (which would deref NULL).
+    // Still a stub -- no user directory is resolved yet.
+    // Return the {0, NULL} "unresolved" form rather than deref the unset static.
     filepath result = {.length = 0, .pathString = NULL};
-    if (game_user_path.pathString == NULL)
+    if (gameUserPath.pathString == NULL)
         return result;
 
     // mi_malloc to match ano_fs_gamepath and the mi_free the caller is expected to use.
-    result.pathString = mi_malloc((size_t)game_user_path.length + 1);
+    result.pathString = mi_malloc((size_t)gameUserPath.length + 1);
     if (result.pathString == NULL)
         return result; // {0, NULL} on OOM
-    memcpy(result.pathString, game_user_path.pathString, (size_t)game_user_path.length + 1);
-    result.length = game_user_path.length;
+    memcpy(result.pathString, gameUserPath.pathString, (size_t)gameUserPath.length + 1);
+    result.length = gameUserPath.length;
     return result;
 }
 
-// Inputs: none. Output: bool, true on success.
-// Points the working directory at the directory holding the running executable so
-// CWD-relative asset loads resolve regardless of where the binary was launched from.
+// Input: none. Output: true on success.
+// Sets CWD to ano_fs_gamepath() so relative asset loads resolve regardless of launch directory.
 bool ano_fs_chdir_gamepath(void)
 {
     filepath dir = ano_fs_gamepath();
@@ -105,7 +104,7 @@ ano_file *ano_fs_open_append(const char *path)
     return file;
 }
 
-// Output: 0 once all bytes are written; -1 on error. Chunks past the DWORD count limit.
+// Output: 0 once all bytes are written, -1 on error. Chunks past the DWORD count limit.
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
     if (file == NULL || (data == NULL && length != 0))

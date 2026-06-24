@@ -7,5 +7,4 @@
 
 // Anoptic Strings Implementation.
 //
-// The string API (UTF-8, scoped managed strings, copy-on-slice) is not yet implemented
-// See anoptic_strings.h.
+// Not yet implemented -- see anoptic_strings.h.

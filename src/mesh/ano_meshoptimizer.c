@@ -13,7 +13,7 @@ typedef struct {
     float live[1 + K_VALENCE_MAX];
 } vertex_score_table_t;
 
-// Tuned to minimize the ACMR of a GPU that has a cache profile similar to NVidia and AMD
+// Tuned to minimize ACMR on NVidia/AMD-like cache profiles
 static const vertex_score_table_t kVertexScoreTable = {
     {0.0f, 0.779f, 0.791f, 0.789f, 0.981f, 0.843f, 0.726f, 0.847f, 0.882f, 0.867f, 0.799f, 0.642f, 0.613f, 0.600f, 0.568f, 0.372f, 0.234f},
     {0.0f, 0.995f, 0.713f, 0.450f, 0.404f, 0.059f, 0.005f, 0.147f, 0.006f}
@@ -85,7 +85,7 @@ size_t ano_build_meshlets_bound(size_t index_count, size_t max_vertices, size_t 
     if (max_vertices < 3) return 0;
     if (max_triangles < 1) return 0;
 
-    // Clamp limits for safety
+    // Clamp limits
     if (max_vertices > 256) max_vertices = 256;
     if (max_triangles > 256) max_triangles = 256;
 
@@ -106,7 +106,7 @@ void ano_optimize_vertex_cache(uint32_t* destination, const uint32_t* indices, s
     const uint32_t* src_indices = indices;
     uint32_t* indices_copy = NULL;
 
-    // support in-place optimization
+    // Support in-place optimization
     if (destination == indices) {
         indices_copy = (uint32_t*)malloc(index_count * sizeof(uint32_t));
         if (!indices_copy) {
@@ -119,7 +119,7 @@ void ano_optimize_vertex_cache(uint32_t* destination, const uint32_t* indices, s
     uint32_t cache_size = 16;
     size_t face_count = index_count / 3;
 
-    // Partition a single block of scratch memory for all helper arrays
+    // Partition one scratch block across all helper arrays
     size_t counts_offset = 0;
     size_t offsets_offset = align_up(counts_offset + vertex_count * sizeof(uint32_t), 16);
     size_t data_offset = align_up(offsets_offset + vertex_count * sizeof(uint32_t), 16);
@@ -278,7 +278,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
                           size_t max_vertices, size_t max_triangles) {
     size_t meshlet_count = 0;
     
-    // Clamp parameters to stay within local scratchpad bounds and prevent uint8_t index overflows
+    // Clamp params to scratchpad bounds — prevents uint8_t index overflow
     if (max_vertices > 256) max_vertices = 256;
     if (max_triangles > 256) max_triangles = 256;
     
@@ -299,7 +299,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
         int32_t a_idx = -1, b_idx = -1, c_idx = -1;
         uint32_t added_vertices = 0;
         
-        // Local linear scan for vertex reuse (cache-friendly, SIMD-amenable)
+        // Linear scan for vertex reuse — cache-friendly, SIMD-amenable
         for (uint32_t j = 0; j < num_current_vertices; ++j) {
             if (current_meshlet_vertices[j] == a) a_idx = (int32_t)j;
             if (current_meshlet_vertices[j] == b) b_idx = (int32_t)j;
@@ -310,7 +310,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
         if (b_idx == -1 && a != b) added_vertices++;
         if (c_idx == -1 && c != a && c != b) added_vertices++;
         
-        // If limits exceeded, commit current meshlet and reset
+        // Limits exceeded — commit current meshlet and reset
         if (num_current_vertices + added_vertices > max_vertices || num_current_triangles >= max_triangles) {
             if (num_current_triangles > 0) {
                 meshlets[meshlet_count].vertex_offset = vertex_offset;
@@ -332,7 +332,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
             a_idx = -1; b_idx = -1; c_idx = -1;
         }
         
-        // Add new vertices and assign indices. We map local index sentinels immediately to avoid duplicate vertex insertion bugs.
+        // Add new vertices and assign indices — map sentinels immediately to avoid duplicate insertion
         if (a_idx == -1) {
             a_idx = (int32_t)num_current_vertices;
             current_meshlet_vertices[num_current_vertices++] = a;
@@ -349,7 +349,7 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
             current_meshlet_vertices[num_current_vertices++] = c;
         }
         
-        // Add triangle
+        // Emit triangle
         meshlet_triangles[triangle_offset + num_current_triangles * 3 + 0] = (uint8_t)a_idx;
         meshlet_triangles[triangle_offset + num_current_triangles * 3 + 1] = (uint8_t)b_idx;
         meshlet_triangles[triangle_offset + num_current_triangles * 3 + 2] = (uint8_t)c_idx;
@@ -385,18 +385,18 @@ static inline void cross_product(const float* a, const float* b, float* out) {
 ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vertices, const uint8_t* meshlet_triangles, 
                                                     size_t triangle_count, const float* vertex_positions, 
                                                     size_t vertex_count, size_t vertex_positions_stride) {
-    (void)vertex_count; // Unused in this direct calculation
+    (void)vertex_count; // Unused here
     ano_meshlet_bounds_gpu_t bounds;
     memset(&bounds, 0, sizeof(bounds));
     
     if (triangle_count == 0) return bounds;
 
-    // 1. Calculate Bounding Sphere (Ritter's bounding sphere algorithm)
-    // Find a starting point (use the first vertex in the meshlet)
+    // 1. Bounding sphere (Ritter's algorithm)
+    // Start from the meshlet's first vertex
     uint32_t first_global_idx = meshlet_vertices[meshlet_triangles[0]];
     const float* p_start = (const float*)((const char*)vertex_positions + first_global_idx * vertex_positions_stride);
 
-    // Find the point furthest from p_start
+    // Furthest point from p_start
     float max_dist_sq = -1.0f;
     const float* p_min = p_start;
     for (size_t i = 0; i < triangle_count * 3; ++i) {
@@ -412,7 +412,7 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
         }
     }
 
-    // Find the point furthest from p_min
+    // Furthest point from p_min
     max_dist_sq = -1.0f;
     const float* p_max = p_min;
     for (size_t i = 0; i < triangle_count * 3; ++i) {
@@ -428,14 +428,14 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
         }
     }
 
-    // Initialize sphere with center at the midpoint and radius as half the distance
+    // Center at the midpoint, radius half the distance
     bounds.center[0] = (p_min[0] + p_max[0]) * 0.5f;
     bounds.center[1] = (p_min[1] + p_max[1]) * 0.5f;
     bounds.center[2] = (p_min[2] + p_max[2]) * 0.5f;
     float rad_sq = max_dist_sq * 0.25f;
     bounds.radius = sqrtf(rad_sq);
 
-    // Refine: check if all points are inside. If not, grow the sphere.
+    // Refine — grow the sphere to enclose any outside point
     for (size_t i = 0; i < triangle_count * 3; ++i) {
         uint32_t global_idx = meshlet_vertices[meshlet_triangles[i]];
         const float* pos = (const float*)((const char*)vertex_positions + global_idx * vertex_positions_stride);
@@ -455,7 +455,7 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
         }
     }
 
-    // 2. Calculate Bounding Cone
+    // 2. Bounding cone
     float avg_normal[3] = { 0.0f, 0.0f, 0.0f };
     float triangle_normals[256][3]; // Max 256 triangles
     size_t valid_normals = 0;
@@ -479,12 +479,12 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
         
         float len = sqrtf(dot_product(normal, normal));
         if (len > 1e-6f) {
-            // Keep the normal unnormalized when adding to avg_normal so it's weighted by triangle area
+            // Accumulate unnormalized — weights avg_normal by triangle area
             avg_normal[0] += normal[0];
             avg_normal[1] += normal[1];
             avg_normal[2] += normal[2];
             
-            // Normalize for storing in the list (used for angle deviation cutoff)
+            // Normalize for the list — used for the angle deviation cutoff
             triangle_normals[valid_normals][0] = normal[0] / len;
             triangle_normals[valid_normals][1] = normal[1] / len;
             triangle_normals[valid_normals][2] = normal[2] / len;
@@ -508,11 +508,11 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
             if (d < min_dot) min_dot = d;
         }
 
-        // Add a small epsilon to cutoff for safety, cap to max spread (backface culling invalid if < 0)
+        // Epsilon for safety, cap to max spread — backface culling invalid if < 0
         bounds.cone_cutoff = min_dot - 0.05f; 
         if (bounds.cone_cutoff < -1.0f) bounds.cone_cutoff = -1.0f;
         
-        // Apex is placed at the sphere center for culling.
+        // Apex at the sphere center for culling
         bounds.cone_apex[0] = bounds.center[0];
         bounds.cone_apex[1] = bounds.center[1];
         bounds.cone_apex[2] = bounds.center[2];
