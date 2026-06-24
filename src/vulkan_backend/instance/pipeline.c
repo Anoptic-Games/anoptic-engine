@@ -715,64 +715,6 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(shadowSetupCode.data);
     vkDestroyShaderModule(ctx->device, shadowSetupModule, NULL);
 
-    // Compute Radiance-Cascade Probe Pipeline (RADIANCE_CASCADES.md M1). One STORAGE_IMAGE binding:
-    // the 3D scene voxel volume. First storage-image pipeline in the engine; M2-M4 add the real
-    // voxelize/trace/merge passes alongside it following this same prototype pattern.
-    VkDescriptorSetLayoutBinding rcProbeBinding = {};
-    rcProbeBinding.binding = 0;
-    rcProbeBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    rcProbeBinding.descriptorCount = 1;
-    rcProbeBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo rcProbeLayoutInfo = {};
-    rcProbeLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    rcProbeLayoutInfo.bindingCount = 1;
-    rcProbeLayoutInfo.pBindings = &rcProbeBinding;
-    if (vkCreateDescriptorSetLayout(ctx->device, &rcProbeLayoutInfo, NULL, &state->rcProbeSetLayout) != VK_SUCCESS)
-    {
-        printf("Failed to create rc-probe descriptor set layout!\n");
-        return false;
-    }
-
-    VkPipelineLayoutCreateInfo rcProbePipelineLayoutInfo = {};
-    rcProbePipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    rcProbePipelineLayoutInfo.setLayoutCount = 1;
-    rcProbePipelineLayoutInfo.pSetLayouts = &state->rcProbeSetLayout;
-    if (vkCreatePipelineLayout(ctx->device, &rcProbePipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_RC_PROBE].layout) != VK_SUCCESS)
-    {
-        printf("Failed to create rc-probe pipeline layout!\n");
-        return false;
-    }
-
-    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].type = PIPELINE_COMPUTE_RC_PROBE;
-    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementationCount = 1;
-    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations = calloc(1, sizeof(PipelineImplementation));
-    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].supportedFeatures = PBR_FEATURE_NONE;
-
-    struct Buffer rcProbeCode;
-    char rcProbePath[256];
-    snprintf(rcProbePath, sizeof(rcProbePath), "%s/resources/shaders/rc_probe.comp.spv", PROJECT_ROOT);
-    if (!loadFile(rcProbePath, &rcProbeCode)) return false;
-    VkShaderModule rcProbeModule = createShaderModule(ctx->device, &rcProbeCode);
-
-    VkComputePipelineCreateInfo rcProbePipelineInfo = {};
-    rcProbePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    rcProbePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_RC_PROBE].layout;
-    rcProbePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    rcProbePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    rcProbePipelineInfo.stage.module = rcProbeModule;
-    rcProbePipelineInfo.stage.pName = "main";
-
-    VkPipelineCacheCreateInfo rcProbeCacheInfo = {};
-    rcProbeCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &rcProbeCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_RC_PROBE].cache);
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_RC_PROBE].cache, 1, &rcProbePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations[0].pipeline) != VK_SUCCESS) return false;
-    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
-    ano_aligned_free(rcProbeCode.data);
-    vkDestroyShaderModule(ctx->device, rcProbeModule, NULL);
-
 	return true;
 }
 
@@ -1048,6 +990,145 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
+// Radiance-cascade voxelize pipeline (RADIANCE_CASCADES.md M2). Reuses the FLAT geometry stage
+// (flat.mesh/flat.vert) with shadowPass = true, so the geometry projects by an ortho clipmap
+// viewProj (set 2, binding 0) instead of the camera, paired with voxelize.frag which imageStores
+// albedo/opacity + emission into the two scene voxel volumes (set 2, bindings 1/2). No colour or
+// depth attachment — pure imageStore. Standalone (not a prototype), like the shadow + tonemap passes.
+// Must run after ano_vk_init_pipelines (needs globalSetLayout + the bindless layout).
+bool ano_vk_init_rc_voxelize(VulkanContext* ctx, RendererState* state)
+{
+	// Set 2: 0 = ortho frustum buffer (geometry stage), 1 = albedo image, 2 = emission image (frag).
+	VkDescriptorSetLayoutBinding setBindings[3] = {};
+	setBindings[0].binding = 0;
+	setBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	setBindings[0].descriptorCount = 1;
+	setBindings[0].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_VERTEX_BIT;
+	setBindings[1].binding = 1;
+	setBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	setBindings[1].descriptorCount = 1;
+	setBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	setBindings[2].binding = 2;
+	setBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	setBindings[2].descriptorCount = 1;
+	setBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutCreateInfo setInfo = {};
+	setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	setInfo.bindingCount = 3;
+	setInfo.pBindings = setBindings;
+	if (vkCreateDescriptorSetLayout(ctx->device, &setInfo, NULL, &state->rcVoxelizeSetLayout) != VK_SUCCESS) return false;
+
+	bool useMesh = ctx->deviceCapabilities.meshShader;
+	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+
+	// Same 2-uint push as flat (transformBaseOffset + shadowFrustumIndex == axis here).
+	VkPushConstantRange pushRange = { .stageFlags = geometryStage, .offset = 0, .size = 2u * sizeof(uint32_t) };
+	VkDescriptorSetLayout setLayouts[3] = { state->globalSetLayout, state->bindlessTextures.layout, state->rcVoxelizeSetLayout };
+	VkPipelineLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	layoutInfo.setLayoutCount = 3;
+	layoutInfo.pSetLayouts = setLayouts;
+	layoutInfo.pushConstantRangeCount = 1;
+	layoutInfo.pPushConstantRanges = &pushRange;
+	if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->rcVoxelizeLayout) != VK_SUCCESS) return false;
+
+	VkPipelineCacheCreateInfo cacheInfo = {};
+	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->rcVoxelizeCache);
+
+	struct Buffer geomCode, fragCode;
+	char path[256];
+	snprintf(path, sizeof(path), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
+	if (!loadFile(path, &geomCode)) return false;
+	snprintf(path, sizeof(path), "%s/resources/shaders/voxelize.frag.spv", PROJECT_ROOT);
+	if (!loadFile(path, &fragCode)) return false;
+	VkShaderModule geomModule = createShaderModule(ctx->device, &geomCode);
+	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+
+	VkBool32 shadowPassTrue = VK_TRUE; // reuse the shadowPass path: project by set-2 frustum viewProj
+	VkSpecializationMapEntry specEntry = { .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
+	VkSpecializationInfo specInfo = { .mapEntryCount = 1, .pMapEntries = &specEntry, .dataSize = sizeof(VkBool32), .pData = &shadowPassTrue };
+
+	VkPipelineShaderStageCreateInfo stages[2] = {};
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = geometryStage;
+	stages[0].module = geomModule;
+	stages[0].pName = "main";
+	stages[0].pSpecializationInfo = &specInfo;
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[1].module = fragModule;
+	stages[1].pName = "main";
+
+	VkPipelineViewportStateCreateInfo viewportState = {};
+	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewportState.viewportCount = 1;
+	viewportState.scissorCount = 1;
+
+	VkPipelineRasterizationStateCreateInfo rasterizer = {};
+	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizer.cullMode = VK_CULL_MODE_NONE;      // voxelize both faces
+	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterizer.lineWidth = 1.0f;
+
+	VkPipelineMultisampleStateCreateInfo multisampling = {};
+	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // no attachments, single-sample raster
+
+	VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depthStencil.depthTestEnable = VK_FALSE;
+	depthStencil.depthWriteEnable = VK_FALSE;
+
+	VkPipelineColorBlendStateCreateInfo colorBlending = {};
+	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	colorBlending.attachmentCount = 0; // no colour attachment; imageStore side effects only
+
+	VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkPipelineDynamicStateCreateInfo dynamicState = {};
+	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicState.dynamicStateCount = 2;
+	dynamicState.pDynamicStates = dynamicStates;
+
+	VkPipelineVertexInputStateCreateInfo vertexInput = {};
+	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	VkPipelineRenderingCreateInfo renderingInfo = {};
+	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	renderingInfo.colorAttachmentCount = 0; // no attachments
+
+	VkGraphicsPipelineCreateInfo pipelineInfo = {};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipelineInfo.pNext = &renderingInfo;
+	pipelineInfo.stageCount = 2;
+	pipelineInfo.pStages = stages;
+	pipelineInfo.pVertexInputState = useMesh ? NULL : &vertexInput;
+	pipelineInfo.pInputAssemblyState = useMesh ? NULL : &inputAssembly;
+	pipelineInfo.pViewportState = &viewportState;
+	pipelineInfo.pRasterizationState = &rasterizer;
+	pipelineInfo.pMultisampleState = &multisampling;
+	pipelineInfo.pDepthStencilState = &depthStencil;
+	pipelineInfo.pColorBlendState = &colorBlending;
+	pipelineInfo.pDynamicState = &dynamicState;
+	pipelineInfo.layout = state->rcVoxelizeLayout;
+	pipelineInfo.renderPass = VK_NULL_HANDLE;
+
+	VkResult r = vkCreateGraphicsPipelines(ctx->device, state->rcVoxelizeCache, 1, &pipelineInfo, NULL, &state->rcVoxelizePipeline);
+
+	ano_aligned_free(geomCode.data);
+	ano_aligned_free(fragCode.data);
+	vkDestroyShaderModule(ctx->device, geomModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragModule, NULL);
+
+	if (r != VK_SUCCESS) { printf("Failed to create rc voxelize pipeline!\n"); return false; }
+	return true;
+}
+
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	// Tonemap pass (standalone)
@@ -1131,11 +1212,26 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
         state->lightcullSetLayout = VK_NULL_HANDLE;
     }
 
-    // Radiance-cascade probe set layout (the prototype pipeline/layout/cache go via the loop below).
-    if (state->rcProbeSetLayout != VK_NULL_HANDLE)
+    // Radiance-cascade voxelize pipeline (standalone, like shadow/tonemap) + its set layout.
+    if (state->rcVoxelizePipeline != VK_NULL_HANDLE)
     {
-        vkDestroyDescriptorSetLayout(ctx->device, state->rcProbeSetLayout, NULL);
-        state->rcProbeSetLayout = VK_NULL_HANDLE;
+        vkDestroyPipeline(ctx->device, state->rcVoxelizePipeline, NULL);
+        state->rcVoxelizePipeline = VK_NULL_HANDLE;
+    }
+    if (state->rcVoxelizeLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(ctx->device, state->rcVoxelizeLayout, NULL);
+        state->rcVoxelizeLayout = VK_NULL_HANDLE;
+    }
+    if (state->rcVoxelizeCache != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineCache(ctx->device, state->rcVoxelizeCache, NULL);
+        state->rcVoxelizeCache = VK_NULL_HANDLE;
+    }
+    if (state->rcVoxelizeSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(ctx->device, state->rcVoxelizeSetLayout, NULL);
+        state->rcVoxelizeSetLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts
