@@ -1,0 +1,18 @@
+#version 450
+
+// Radiance cascades M1 — storage-image plumbing proof (RADIANCE_CASCADES.md).
+// First VK_IMAGE_TYPE_3D + STORAGE_IMAGE + GENERAL-layout pass in the engine: one invocation per
+// voxel writes a normalized gradient so a future sampler (M3) can confirm structure. No scene input
+// yet; M2 replaces this with rasterized emissive+albedo+opacity voxelization.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image3D rcVoxel;
+
+void main() {
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    ivec3 dim = imageSize(rcVoxel);
+    if (any(greaterThanEqual(p, dim))) return; // dispatch rounds up; guard the tail invocations
+    vec3 c = vec3(p) / vec3(dim);
+    imageStore(rcVoxel, p, vec4(c, 1.0));
+}

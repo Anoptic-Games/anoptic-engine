@@ -25,6 +25,7 @@ GpuAllocator gpuAllocator;
 GpuAllocator stagingAllocator;
 GpuAllocator swapchainAllocator;
 GpuAllocator textureAllocator;
+GpuAllocator rcAllocator;       // radiance-cascade volumes (RADIANCE_CASCADES.md)
 
 // Entity (render-slot) buffer sizing. INITIAL_ENTITY_CAPACITY is just the
 // starting slot count, NOT a ceiling: the slot-indexed GPU buffers grow on demand
@@ -420,6 +421,44 @@ void recordCommandBuffer(uint32_t imageIndex)
     uint32_t drawSlotCount = ano_draw_pipeline_count();
 
     ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
+
+    // === Radiance cascades (RADIANCE_CASCADES.md M1): storage-image plumbing proof ===
+    // Write the 3D scene voxel volume via imageStore, then leave it SHADER_READ. No consumer yet
+    // (M3 samples it); this exercises the first VK_IMAGE_TYPE_3D + STORAGE_IMAGE + GENERAL path and
+    // the first 3D compute dispatch. View-independent (×1 shared), so it lives here, not per view.
+    {
+        VkImageMemoryBarrier toGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        toGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // contents regenerated each frame; discard
+        toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGeneral.image = rendererState.rcSceneVoxel;
+        toGeneral.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        toGeneral.srcAccessMask = 0;
+        toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &toGeneral);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            rendererState.prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations[0].pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            rendererState.prototypes[PIPELINE_COMPUTE_RC_PROBE].layout, 0, 1, &rendererState.rcProbeSet, 0, NULL);
+        uint32_t rcGroups = (ANO_RC_VOXEL_DIM + 3u) / 4u; // local_size 4^3
+        vkCmdDispatch(cmd, rcGroups, rcGroups, rcGroups);
+
+        VkImageMemoryBarrier toRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        toRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toRead.image = rendererState.rcSceneVoxel;
+        toRead.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        toRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &toRead);
+    }
+    ano_ts(cmd, ANO_TS_AFTER_RC);
 
     // === Shadow depth render: each shadow frustum's opaque casters into its atlas layer ===
     // Reads the cull's shadow partition (opaque draw slot only); writes depth into one array layer;
@@ -1599,24 +1638,26 @@ static void ano_print_profiling(void) {
     uint32_t m = rendererState.lightingMode;
     const char* mn = (m < (uint32_t)ANO_LIGHTING_MODE_COUNT) ? modeNames[m] : "?";
     double inv = g_tsFrames ? 1.0 / (double)g_tsFrames : 0.0;
-    double up = g_tsAccumMs[ANO_TS_FRAME_BEGIN]    * inv;
-    double cp = g_tsAccumMs[ANO_TS_AFTER_UPLOAD]   * inv;
-    double sh = g_tsAccumMs[ANO_TS_AFTER_COMPUTE]  * inv;
-    double li = g_tsAccumMs[ANO_TS_AFTER_SHADOW]   * inv;
-    double co = g_tsAccumMs[ANO_TS_AFTER_LIGHTING] * inv;
-    double total = up + cp + sh + li + co;
+    double up   = g_tsAccumMs[ANO_TS_FRAME_BEGIN]   * inv; // FRAME_BEGIN -> AFTER_UPLOAD
+    double cp   = g_tsAccumMs[ANO_TS_AFTER_UPLOAD]  * inv; // -> AFTER_COMPUTE
+    double rcms = g_tsAccumMs[ANO_TS_AFTER_COMPUTE] * inv; // -> AFTER_RC
+    double sh   = g_tsAccumMs[ANO_TS_AFTER_RC]      * inv; // -> AFTER_SHADOW
+    double li   = g_tsAccumMs[ANO_TS_AFTER_SHADOW]  * inv; // -> AFTER_LIGHTING
+    double co   = g_tsAccumMs[ANO_TS_AFTER_LIGHTING]* inv; // -> AFTER_COMPOSITE
+    double total = up + cp + rcms + sh + li + co;
 
     const double MiB = 1024.0 * 1024.0;
     double gpu  = (double)allocator_used_bytes(&gpuAllocator)       / MiB;
     double tex  = (double)allocator_used_bytes(&textureAllocator)   / MiB;
     double swap = (double)allocator_used_bytes(&swapchainAllocator) / MiB;
     double stg  = (double)allocator_used_bytes(&stagingAllocator)   / MiB;
+    double rc   = (double)allocator_used_bytes(&rcAllocator)        / MiB;
     double atlas = (double)((VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM
                             * 4u * MAX_FRAMES_IN_FLIGHT) / MiB;
 
-    printf("[profile mode=%s] GPU ms: upload=%.3f compute=%.3f shadow=%.3f lighting=%.3f composite=%.3f total=%.3f"
-           " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f\n",
-           mn, up, cp, sh, li, co, total, gpu, tex, swap, stg, atlas);
+    printf("[profile mode=%s] GPU ms: upload=%.3f compute=%.3f rc=%.3f shadow=%.3f lighting=%.3f composite=%.3f total=%.3f"
+           " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f rc=%.1f | shadowAtlas(resident)=%.1f\n",
+           mn, up, cp, rcms, sh, li, co, total, gpu, tex, swap, stg, rc, atlas);
 }
 
 // Read this frame slot's timestamps (its prior submission is fence-complete) and fold the per-pass
@@ -2069,6 +2110,56 @@ bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
 // per-light shadow info, both host-visible, filled here for the demo's directional caster (light 0).
 // in:  ctx, state (lightBuffer.capacity known)
 // out: true on success; populates frames[].shadow.* and state->shadow{FrustumConfig,LightInfo}*
+// Radiance-cascade resources (RADIANCE_CASCADES.md M1). The ×1 shared scene voxel volume + its
+// single STORAGE_IMAGE descriptor set. Hand-rolled (createImage() is 2D/depth=1 only): a
+// VK_IMAGE_TYPE_3D image from rcAllocator + a VK_IMAGE_VIEW_TYPE_3D view, matching the shadow-atlas
+// pattern. Prereqs: rcAllocator initialised, rcProbeSetLayout created, the global pool created.
+bool createRcResources(VulkanContext* ctx, RendererState* state) {
+    VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    iinfo.imageType = VK_IMAGE_TYPE_3D;
+    iinfo.format = ANO_RC_VOXEL_FORMAT;
+    iinfo.extent = (VkExtent3D){ ANO_RC_VOXEL_DIM, ANO_RC_VOXEL_DIM, ANO_RC_VOXEL_DIM };
+    iinfo.mipLevels = 1;
+    iinfo.arrayLayers = 1;
+    iinfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    iinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    iinfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    iinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    iinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(ctx->device, &iinfo, NULL, &state->rcSceneVoxel) != VK_SUCCESS) return false;
+    VkMemoryRequirements imr; vkGetImageMemoryRequirements(ctx->device, state->rcSceneVoxel, &imr);
+    state->rcSceneVoxelAlloc = gpu_alloc(&rcAllocator, imr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (state->rcSceneVoxelAlloc.memory == VK_NULL_HANDLE) return false;
+    vkBindImageMemory(ctx->device, state->rcSceneVoxel, state->rcSceneVoxelAlloc.memory, state->rcSceneVoxelAlloc.offset);
+
+    VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vinfo.image = state->rcSceneVoxel;
+    vinfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    vinfo.format = ANO_RC_VOXEL_FORMAT;
+    vinfo.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    if (vkCreateImageView(ctx->device, &vinfo, NULL, &state->rcSceneVoxelView) != VK_SUCCESS) return false;
+
+    // Single shared set (the volume is ×1). STORAGE_IMAGE descriptors must reference GENERAL layout.
+    VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    dai.descriptorPool = state->globalDescriptorPool;
+    dai.descriptorSetCount = 1;
+    dai.pSetLayouts = &state->rcProbeSetLayout;
+    if (vkAllocateDescriptorSets(ctx->device, &dai, &state->rcProbeSet) != VK_SUCCESS) return false;
+
+    VkDescriptorImageInfo dii = {};
+    dii.imageView = state->rcSceneVoxelView;
+    dii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    w.dstSet = state->rcProbeSet;
+    w.dstBinding = 0;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    w.descriptorCount = 1;
+    w.pImageInfo = &dii;
+    vkUpdateDescriptorSets(ctx->device, 1, &w, 0, NULL);
+
+    return true;
+}
+
 bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     VkDeviceSize frustumSize = (VkDeviceSize)sizeof(CullView) * ANO_SHADOW_FRUSTUM_COUNT;
 
@@ -2407,6 +2498,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &textureAllocator.memProps);
 	textureAllocator.blocks = NULL;
 	textureAllocator.blockCount = 0;
+
+	rcAllocator.device = ctx.device;
+	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &rcAllocator.memProps);
+	rcAllocator.blocks = NULL;
+	rcAllocator.blockCount = 0;
 
 	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device, ctx.queueFamilyIndices.graphicsFamily, ctx.queueFamilyIndices.transferFamily)) {
 		printf("Quitting init: geometry pool creation failure!\n");
@@ -2818,6 +2914,15 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if (!createDescriptorPool(&ctx, &rendererState))
 	{
 		printf("Quitting init: UBO descriptor pool creation failure!\n");
+		unInitVulkan();
+		return false;
+	}
+
+	// Radiance-cascade resources (RADIANCE_CASCADES.md M1): needs the pool (above) + rcProbeSetLayout
+	// (ano_vk_init_pipelines) + rcAllocator (all created earlier in init).
+	if (!createRcResources(&ctx, &rendererState))
+	{
+		printf("Quitting init: radiance-cascade resource creation failure!\n");
 		unInitVulkan();
 		return false;
 	}

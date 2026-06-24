@@ -715,6 +715,64 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(shadowSetupCode.data);
     vkDestroyShaderModule(ctx->device, shadowSetupModule, NULL);
 
+    // Compute Radiance-Cascade Probe Pipeline (RADIANCE_CASCADES.md M1). One STORAGE_IMAGE binding:
+    // the 3D scene voxel volume. First storage-image pipeline in the engine; M2-M4 add the real
+    // voxelize/trace/merge passes alongside it following this same prototype pattern.
+    VkDescriptorSetLayoutBinding rcProbeBinding = {};
+    rcProbeBinding.binding = 0;
+    rcProbeBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    rcProbeBinding.descriptorCount = 1;
+    rcProbeBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo rcProbeLayoutInfo = {};
+    rcProbeLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    rcProbeLayoutInfo.bindingCount = 1;
+    rcProbeLayoutInfo.pBindings = &rcProbeBinding;
+    if (vkCreateDescriptorSetLayout(ctx->device, &rcProbeLayoutInfo, NULL, &state->rcProbeSetLayout) != VK_SUCCESS)
+    {
+        printf("Failed to create rc-probe descriptor set layout!\n");
+        return false;
+    }
+
+    VkPipelineLayoutCreateInfo rcProbePipelineLayoutInfo = {};
+    rcProbePipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    rcProbePipelineLayoutInfo.setLayoutCount = 1;
+    rcProbePipelineLayoutInfo.pSetLayouts = &state->rcProbeSetLayout;
+    if (vkCreatePipelineLayout(ctx->device, &rcProbePipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_RC_PROBE].layout) != VK_SUCCESS)
+    {
+        printf("Failed to create rc-probe pipeline layout!\n");
+        return false;
+    }
+
+    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].type = PIPELINE_COMPUTE_RC_PROBE;
+    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].supportedFeatures = PBR_FEATURE_NONE;
+
+    struct Buffer rcProbeCode;
+    char rcProbePath[256];
+    snprintf(rcProbePath, sizeof(rcProbePath), "%s/resources/shaders/rc_probe.comp.spv", PROJECT_ROOT);
+    if (!loadFile(rcProbePath, &rcProbeCode)) return false;
+    VkShaderModule rcProbeModule = createShaderModule(ctx->device, &rcProbeCode);
+
+    VkComputePipelineCreateInfo rcProbePipelineInfo = {};
+    rcProbePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    rcProbePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_RC_PROBE].layout;
+    rcProbePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    rcProbePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    rcProbePipelineInfo.stage.module = rcProbeModule;
+    rcProbePipelineInfo.stage.pName = "main";
+
+    VkPipelineCacheCreateInfo rcProbeCacheInfo = {};
+    rcProbeCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(ctx->device, &rcProbeCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_RC_PROBE].cache);
+
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_RC_PROBE].cache, 1, &rcProbePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations[0].pipeline) != VK_SUCCESS) return false;
+    state->prototypes[PIPELINE_COMPUTE_RC_PROBE].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(rcProbeCode.data);
+    vkDestroyShaderModule(ctx->device, rcProbeModule, NULL);
+
 	return true;
 }
 
@@ -1071,6 +1129,13 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyDescriptorSetLayout(ctx->device, state->lightcullSetLayout, NULL);
         state->lightcullSetLayout = VK_NULL_HANDLE;
+    }
+
+    // Radiance-cascade probe set layout (the prototype pipeline/layout/cache go via the loop below).
+    if (state->rcProbeSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(ctx->device, state->rcProbeSetLayout, NULL);
+        state->rcProbeSetLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts
