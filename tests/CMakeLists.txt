@@ -71,7 +71,9 @@ if(TARGET anoptic_render)
     add_executable(anotest_vk_compliance_layers anotest_vk_compliance_layers.c)
     target_link_libraries(anotest_vk_compliance_layers PRIVATE anoptic_render)
     add_test(NAME anotest_vk_compliance_layers COMMAND anotest_vk_compliance_layers)
-    set_tests_properties(anotest_vk_compliance_layers PROPERTIES TIMEOUT 30 LABELS "unit;vulkan")
+    # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
+    set_tests_properties(anotest_vk_compliance_layers PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
+        DISABLED "$<CONFIG:Release>")
 
     add_executable(anotest_vk_memory anotest_vk_memory.c)
     target_link_libraries(anotest_vk_memory PRIVATE anoptic_render)
@@ -81,7 +83,9 @@ if(TARGET anoptic_render)
     add_executable(anotest_vk_sync anotest_vk_sync.c)
     target_link_libraries(anotest_vk_sync PRIVATE anoptic_render)
     add_test(NAME anotest_vk_sync COMMAND anotest_vk_sync)
-    set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT 30 LABELS "unit;vulkan")
+    # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
+    set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
+        DISABLED "$<CONFIG:Release>")
 else()
     message(WARNING
         "\n"
