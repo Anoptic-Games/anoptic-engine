@@ -9,16 +9,27 @@
 #define ANOPTICENGINE_LOGGING_CORE_H
 
 #include <anoptic_logger.h>
+#include <anoptic_memory.h>   // ANO_CACHE_LINE (the cache-line / ring reservation grain)
 
-// Cap on the stored line (severity, file:line, message). The flusher prepends the wall-clock prefix
-// at emit. ANO_LOG_TIME_RESV reserves room for it so an emitted line never exceeds ANO_LOG_MSG_MAX.
-// A max-length entry spans ceil((16 + 4096) / 64) = 65 cache lines.
-#define ANO_LOG_MSG_MAX   4096u     // max stored line
-#define ANO_LOG_TIME_RESV 16u       // room reserved for the "HH:MM:SS " prefix
+// A stored line plus the flusher's wall-clock prefix total 4096 bytes. ANO_LOG_MSG_MAX is the stored
+// cap (severity, file:line, message). ANO_LOG_TIME_RESV is the prefix budget. So an emitted line never
+// exceeds 4096, and a max-size entry spans ceil((16 + MSG_MAX) / ANO_CL) <= 64 lines.
+#define ANO_LOG_TIME_RESV 16u                          // budget for the "HH:MM:SS " prefix
+#define ANO_LOG_MSG_MAX   (4096u - ANO_LOG_TIME_RESV)  // stored line, stored + prefix = 4096
 
-// Ring capacity in cache lines, a power of two. 1024 lines = 64 KiB x86-64 / 128 KiB Apple Silicon.
-// Far above the 65-line max entry, so any record fits an empty ring.
-#define ANO_LOG_RING_LINES (1u << 10)
+// Ring capacity in BYTES, a power of two, so the byte size is identical on every platform. The line
+// size is not (64 on x86-64, 128 on Apple Silicon), so a fixed line count would drift. Sized and
+// aligned to a power of two so the ring sits in one self-sized region: page-allocator, Windows 256 KiB
+// cache-view, Linux large-folio, and (at 2 MiB) hugepage friendly. Override -DANO_LOG_RING_BYTES=... to
+// experiment across 64 KiB .. 2 MiB. The line count derives from it and stays a power of two.
+#ifndef ANO_LOG_RING_BYTES
+#define ANO_LOG_RING_BYTES (512u * 1024u)              // default 512 KiB (two Windows cache views)
+#endif
+#define ANO_LOG_RING_LINES (ANO_LOG_RING_BYTES / ANO_CACHE_LINE)
+#define ANO_LOG_RING_ALIGN (ANO_LOG_RING_BYTES < (2u << 20) ? ANO_LOG_RING_BYTES : (2u << 20))
+
+_Static_assert((ANO_LOG_RING_BYTES & (ANO_LOG_RING_BYTES - 1)) == 0, "ring bytes must be a power of two");
+_Static_assert(ANO_LOG_RING_LINES >= 64, "ring must hold at least one max-size entry (64 lines)");
 
 #define ANO_LOG_FILENAME "anoptic.log"
 

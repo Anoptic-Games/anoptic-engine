@@ -4,12 +4,11 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Lock-free MPSC ring logger. A producer formats its line on its own stack, reserves a run of cache
-// lines by bumping `tail` with one CAS, copies the finished text in, and publishes with one release
-// store of `tag`. It never waits on another thread. The caller drains the ring on its own schedule
-// via ano_log_flush(), so the logger owns no thread. The producer path is lock-free. The cold paths
-// (drain, immediate, output-file swap) take small locks: one active-consumer gate so any thread may
-// call ano_log_flush() safely, and one mutex around the output file handle's lifecycle. FATAL and the
-// full-ring overflow write straight through on the calling thread. Stop all producers before
+// lines with one CAS on `tail`, copies the text in, and publishes with one release store of `tag`. It
+// never waits on another thread. The caller drains the ring via ano_log_flush() on its own schedule,
+// so the logger owns no thread. The producer path is lock-free. The cold paths (drain, immediate,
+// output-file swap) take small locks: a drain mutex (one consumer) and an output-file mutex. FATAL
+// writes straight through. A full ring flushes, then keeps buffering. Stop all producers before
 // ano_log_cleanup. Design: docs/logger.md.
 
 #include "logging/logging_ring.h"
@@ -26,7 +25,7 @@
 #include <string.h>
 
 
-/* Internal state. The ring is the only shared producer surface; everything else is cold. */
+/* Internal state. Only the ring is producer-shared, the rest is cold. */
 
 static const char  *logStrings[] = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
 
@@ -38,23 +37,21 @@ static anothread_mutex_t g_drainMtx;   // gates the single consumer: one drainer
 static anothread_mutex_t g_outFileMtx; // guards the output file handle's lifecycle and writes
 static ano_file    *g_outFile;         // the open output file, or NULL
 
-// Output target, decided once whenever the file opens/closes (init, output_dir, cleanup) so the write
-// path never branches on g_outFile. g_persist writes a finished buffer (file with stderr fallback, or
-// console when none); g_syncOut fsyncs (file) or no-ops (console); g_haveFile gates the immediate echo.
+// Output target, bound once when the file opens or closes, so the write path never tests g_outFile.
+// g_persist writes a buffer (file, else console). g_syncOut fsyncs (file) or no-ops. g_haveFile gates
+// the immediate echo.
 static void (*g_persist)(const void *data, size_t len);
 static void (*g_syncOut)(void);
 static bool         g_haveFile;
 
-// Timestamp anchor, a monotonic-raw and unix-ns pair captured once at init. wall = unix + (raw -
-// anchor), so the second is fixed at the anchor and sub-second precision rides the monotonic delta.
-// No per-record syscall, no drift. (§11)
+// Timestamp anchor, a raw and unix-ns pair captured once at init. wall = unix + (raw - anchor), so the
+// second is fixed and sub-second precision rides the monotonic delta. No per-record syscall. (§11)
 static uint64_t     g_anchorRaw;
 static uint64_t     g_anchorUnixNs;
 
-// Drainer-private state, touched only by the one thread holding g_drainMtx. g_scratch gathers a
-// seam-straddling record; g_batch accumulates a whole drain pass for one write; g_drainHMS caches the
-// "HH:MM:SS" prefix for the second it was rendered, so the civil-time conversion runs once per second
-// (records in a burst share a second), not once per record.
+// Drainer-private, touched only under g_drainMtx. g_scratch gathers a seam-straddling record. g_batch
+// holds a whole drain pass for one write. g_drainHMS caches the "HH:MM:SS" prefix for its second, so
+// the civil-time conversion runs once per second, not per record.
 static char         g_scratch[ANO_LOG_MSG_MAX];
 static char        *g_batch;
 static size_t       g_batchCap;
@@ -64,10 +61,9 @@ static bool         g_drainHMSValid;
 
 /* Formatting (eager, on the producer; §9) */
 
-// Compose "<LEVEL> <file>:<line>:  <message>" into out, no wall-clock prefix and no newline. The
-// flusher prepends the time at emit. Returns the byte length, clamped to cap-1 so an over-long line
-// can never overrun the entry (the ring stores exactly that many bytes). format(printf, 6, 0) marks
-// this a printf forwarder so the vsnprintf below passes -Wformat-nonliteral.
+// Compose "<LEVEL> <file>:<line>:  <message>" into out, no time prefix, no newline. The flusher adds
+// the time at emit. Returns the byte length clamped to cap-1 so an over-long line never overruns the
+// entry. format(printf, 6, 0) marks this a printf forwarder so the vsnprintf below passes -Wformat-nonliteral.
 __attribute__((format(printf, 6, 0)))
 static int format_line(char *out, int cap, log_types_t level,
                        const char *file, int line, const char *fmt, va_list ap)
@@ -90,8 +86,7 @@ static inline char *put2(char *p, int v)
     return p;
 }
 
-// Render "HH:MM:SS" (exactly 8 bytes) for wall-clock second `sec` into out8. The civil-time
-// conversion is the cost; the formatting is hand-rolled (no snprintf).
+// Render "HH:MM:SS" (8 bytes) for wall-clock second `sec` into out8. Hand-rolled, no snprintf.
 static void render_hms(char *out8, uint64_t sec)
 {
     ano_datetime t = ano_localtime((int64_t)sec);
@@ -106,8 +101,8 @@ static inline uint64_t wall_second(uint64_t raw_ts)
     return (g_anchorUnixNs + (raw_ts - g_anchorRaw)) / 1000000000ull;
 }
 
-// Render the 8-byte "HH:MM:SS" prefix for a raw timestamp. Used by the cold immediate path; the drain
-// path memoizes per second instead of calling this per record (see drain_and_emit).
+// Render the 8-byte "HH:MM:SS" prefix for a raw timestamp. Immediate path only. The drain path
+// memoizes per second instead (see drain_and_emit).
 static int render_walltime(char *out, uint64_t raw_ts)
 {
     render_hms(out, wall_second(raw_ts));
@@ -125,9 +120,8 @@ static ano_file *open_log(const char *dir)
     return (n > 0 && n < (int)sizeof path) ? ano_fs_open_append(path) : NULL;
 }
 
-// The two persist targets. The active one is bound by select_output() when the file opens/closes, so
-// the write paths call through g_persist with no per-write target test. The console target only fires
-// in the degraded case where the default file failed to open.
+// The two persist targets, bound by select_output() when the file opens or closes. The console one
+// only fires when the default file failed to open.
 static void persist_file(const void *data, size_t len)
 {
     if (ano_fs_write(g_outFile, data, len) != 0)
@@ -161,10 +155,9 @@ static void write_batch(const char *data, size_t len)
     ano_mutex_unlock(&g_outFileMtx);
 }
 
-// Write one finished record straight through on the calling thread (immediate path or the full-ring
-// gap fallback). Assembles "<walltime> <text>\n" once so the record is one atomic append. `console`
-// echoes by severity, suppressed when there is no file (the persist below is already the console).
-// `sync` fsyncs after the write for FATAL durability.
+// Write one finished record straight through on the calling thread (immediate path or full-ring gap
+// fallback). Assembles "<walltime> <text>\n" once so the append is atomic. `console` echoes by
+// severity, suppressed with no file. `sync` fsyncs after the write for FATAL durability.
 static void emit_one(log_types_t level, uint64_t raw_ts, const char *text, uint16_t len,
                      bool console, bool sync)
 {
@@ -187,9 +180,9 @@ static void emit_one(log_types_t level, uint64_t raw_ts, const char *text, uint1
 
 static void drain_and_emit(void)
 {
-    // Not one linearization point: a batch drain is N consume events, each linearizing at its own
-    // `tag` acquire below. head is drainer-private (g_drainMtx serializes drainers); the tail load is
-    // a relaxed count bound on the walk; the reclaim linearizes at the head release-store at the end.
+    // Not one linearization point: a batch drain is N consume events, each linearizing at its own `tag`
+    // acquire below. head is drainer-private. The tail load is a relaxed count bound on the walk. The
+    // reclaim linearizes at the head release-store at the end.
     uint64_t h0  = atomic_load_explicit(&g_ring.head, memory_order_relaxed); // drainer-private
     uint64_t h   = h0;
     uint64_t cap = atomic_load_explicit(&g_ring.tail, memory_order_relaxed); // reserved frontier, a count bound
@@ -229,8 +222,8 @@ static void drain_and_emit(void)
     write_batch(g_batch, blen); // one syscall for the whole pass
 }
 
-// One drain pass, serialized so exactly one thread drains at a time. The full-ring path calls this too
-// (a producer that hit full flushes here to make room), so it must block, not skip -- hence a mutex.
+// One drain pass, serialized so exactly one thread drains at a time. The full-ring path calls this too,
+// so it must block, not skip, hence a mutex.
 // WORKAROUND (FOR NOW): A BLOCKING MUTEX GATES THE SINGLE CONSUMER. REVISIT WITH A LOCK-FREE HANDOFF
 // SO CONCURRENT FLUSHERS DON'T SERIALIZE ON IT (THE SPIN THAT WAS HERE REGRESSED 8-PRODUCER THROUGHPUT).
 static void drain(void)
@@ -252,15 +245,15 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
 
     char blob[ANO_LOG_MSG_MAX]; // the final line, formatted on this thread, off-ring
     va_list ap; va_start(ap, fmt);
-    int n = format_line(blob, (int)(ANO_LOG_MSG_MAX - ANO_LOG_TIME_RESV),
+    int n = format_line(blob, (int)ANO_LOG_MSG_MAX,
                         level, file, line, fmt, ap);
     va_end(ap);
     uint16_t len  = (uint16_t)n;
     uint64_t ts   = ano_timestamp_raw();
     uint64_t need = log_span(len);
 
-    // No log_entry_t: an "entry" is a marker (tag + timestamp) plus the inline text, laid straight
-    // into the ring's `need` reserved cache lines below -- never a struct. The ring is the storage.
+    // No log_entry_t: an "entry" is a marker (tag + timestamp) plus inline text, laid straight into the
+    // ring's reserved cache lines below. The ring is the storage.
     uint64_t pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);
     bool flushed = false;
     for (;;) {
@@ -294,7 +287,7 @@ void ano_log_immediate(log_types_t level, const char *file, int line, const char
 {
     char blob[ANO_LOG_MSG_MAX];
     va_list ap; va_start(ap, fmt);
-    int n = format_line(blob, (int)(ANO_LOG_MSG_MAX - ANO_LOG_TIME_RESV),
+    int n = format_line(blob, (int)ANO_LOG_MSG_MAX,
                         level, file, line, fmt, ap);
     va_end(ap);
 
@@ -348,9 +341,9 @@ int ano_log_init(void)
     if (ano_mutex_init(&g_drainMtx, NULL) != 0) { ano_mutex_destroy(&g_outFileMtx); return -1; }
 
     g_ring.mask = ANO_LOG_RING_LINES - 1;
-    g_ring.buf  = ano_aligned_malloc((size_t)ANO_LOG_RING_LINES * ANO_CL, ANO_CACHE_LINE);
+    g_ring.buf  = ano_aligned_malloc(ANO_LOG_RING_BYTES, ANO_LOG_RING_ALIGN);
     if (g_ring.buf == NULL) { ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx); return -1; }
-    memset(g_ring.buf, 0, (size_t)ANO_LOG_RING_LINES * ANO_CL);
+    memset(g_ring.buf, 0, ANO_LOG_RING_BYTES);
     atomic_store(&g_ring.tail, 0);
     atomic_store(&g_ring.head, 0);
 
