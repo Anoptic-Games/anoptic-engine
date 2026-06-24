@@ -28,14 +28,17 @@
 #define ANO_CL ANO_CACHE_LINE
 #define ANO_LOG_HDR  16     // head-line marker: one commit word plus one raw timestamp
 
-enum { ANO_LOG_COMMITTED = 1 << 0 }; // set on publish, so a committed tag is nonzero even at len 0
+enum {
+    ANO_LOG_COMMITTED = 1 << 0, // set on publish, so a committed tag is nonzero even at len 0
+    ANO_LOG_DEFERRED  = 1 << 1, // body is a deferred-format capture blob, not finished text (§9 proto)
+};
 
 // An entry's head line begins with this 16-byte marker. The rest of the head line and every
 // continuation line are finished text. Only `tag` is atomic, the single publish gate for the whole
 // record. `timestamp` and the text are plain memory whose visibility rides tag's release.
 typedef struct {
-    _Atomic uint64_t tag;   // 0 = free sentinel, nonzero = committed. Published LAST (release),
-    uint64_t timestamp;     // ano_timestamp_raw() ns, display only, rendered at emit.
+    _Atomic uint64_t tag;   // 0 = free, nonzero = committed. Published last (release), read first (acquire).
+    uint64_t timestamp;     // raw ticks, display only, rendered at drain.
 } log_marker_t;
 _Static_assert(sizeof(log_marker_t) == ANO_LOG_HDR, "marker is 16 bytes");
 _Static_assert(ANO_LOG_HDR <= ANO_CACHE_LINE, "marker fits in one cache line");
@@ -49,9 +52,9 @@ typedef union {
     struct {
         uint16_t len;       // stored text bytes, span = ceil((16 + len) / ANO_CL)
         uint8_t  level;     // log_types_t copy, so the flusher routes by severity without the text
-        uint8_t  flags;     // ANO_LOG_COMMITTED, the commit marker
-        uint32_t cycle;     // lap number (pos >> shift) so a stale prior-lap tag is told from this lap's.
-                            //   Lets the drainer reclaim by cycle check instead of zeroing each slot.
+        uint8_t  flags;     // ANO_LOG_COMMITTED + ANO_LOG_DEFERRED
+        uint32_t cycle;     // lap number (pos >> shift), so a stale prior-lap tag is told from this lap's.
+                            //   Lets the drainer reclaim by cycle check, no per-slot zeroing.
     };
     uint64_t w;
 } log_word_t;
@@ -65,8 +68,8 @@ typedef struct {
     char        *buf;   // N*ANO_CL bytes, cache-line aligned
 } log_ring_t;
 
-// The lap a monotonic line position belongs to, low 32 bits. A committed tag carries its own lap; the
-// drainer compares against this so a reclaimed slot's old tag never reads as live without being zeroed.
+// The lap a monotonic line position belongs to, low 32 bits. A committed tag carries its own lap. The
+// drainer compares against this so a reclaimed slot's old tag never reads as live without zeroing.
 static inline uint32_t log_cycle(const log_ring_t *r, uint64_t pos) { return (uint32_t)(pos >> r->shift); }
 
 

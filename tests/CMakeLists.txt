@@ -44,6 +44,16 @@ target_link_libraries(anotest_logbench PRIVATE anoptic_core)
 add_test(NAME anoptic_logbench COMMAND anotest_logbench)
 set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
+# Logger fuzzer: many producers drive ano_log_* with randomized well-typed input (variable-length
+# content as "%s", a fixed (literal-fmt, typed-arg) table for the deferred formatter, immediates, and
+# output-dir swaps) while a flusher drains on short random intervals. Oracle: the logger drops nothing,
+# so the summed output line count must equal the total enqueued. Deterministic and fast by default
+# (fixed seed, ~few seconds); pass an iteration count as argv[1] for a longer soak.
+add_executable(anotest_logfuzz anotest_logfuzz.c)
+target_link_libraries(anotest_logfuzz PRIVATE anoptic_core)
+add_test(NAME anoptic_logfuzz COMMAND anotest_logfuzz)
+set_tests_properties(anoptic_logfuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;concurrency")
+
 # Testing for the render_bridge transport (SPSC rings; concurrency)
 add_executable(anotest_render_bridge anotest_render_bridge.c)
 target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
