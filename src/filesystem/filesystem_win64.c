@@ -3,12 +3,15 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+#if defined(_WIN32)
+
 #include "anoptic_filesystem.h"
 
 #include <stdio.h>
 #include <stdlib.h>       // malloc
-#include <string.h>       // strcpy, strlen
+#include <string.h>       // memcpy
 #include <direct.h>       // _chdir
+#include <windows.h>      // CreateFileA, WriteFile, FlushFileBuffers, CloseHandle
 #include <libloaderapi.h>
 #include <mimalloc.h>
 
@@ -43,13 +46,22 @@ filepath ano_fs_gamepath() {
 }
 
 
-// This is meant to be a persisting user directory. 
+// This is meant to be a persisting user directory.
 // Eg: "C:\Users\Pyrus\Documents\anoptic" or "...\My Games\anoptic", etc.
 filepath ano_fs_userpath() {
 
-    // Right now it's a stub that harmlessly does nothing.
-    filepath result = {.pathString = malloc(game_user_path.length + 1), .length = game_user_path.length};
-    strcpy(result.pathString, game_user_path.pathString);
+    // Still a stub: no user directory is resolved yet. Return the {0, NULL} "unresolved" form the
+    // other resolvers use rather than copying from the unset static (which would deref NULL).
+    filepath result = {.length = 0, .pathString = NULL};
+    if (game_user_path.pathString == NULL)
+        return result;
+
+    // mi_malloc to match ano_fs_gamepath and the mi_free the caller is expected to use.
+    result.pathString = mi_malloc((size_t)game_user_path.length + 1);
+    if (result.pathString == NULL)
+        return result; // {0, NULL} on OOM
+    memcpy(result.pathString, game_user_path.pathString, (size_t)game_user_path.length + 1);
+    result.length = game_user_path.length;
     return result;
 }
 
@@ -65,3 +77,69 @@ bool ano_fs_chdir_gamepath(void)
     mi_free(dir.pathString);
     return ok;
 }
+
+
+/* Append-only file sink (Win32). The opaque handle wraps a single file HANDLE. */
+
+struct ano_file {
+    HANDLE handle;
+};
+
+// Output: handle opened FILE_APPEND_DATA, or NULL on failure. OPEN_ALWAYS creates if absent.
+ano_file *ano_fs_open_append(const char *path)
+{
+    if (path == NULL)
+        return NULL;
+
+    HANDLE handle = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
+                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle == INVALID_HANDLE_VALUE)
+        return NULL;
+
+    ano_file *file = mi_malloc(sizeof *file);
+    if (file == NULL) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    file->handle = handle;
+    return file;
+}
+
+// Output: 0 once all bytes are written; -1 on error. Chunks past the DWORD count limit.
+int ano_fs_write(ano_file *file, const void *data, size_t length)
+{
+    if (file == NULL || (data == NULL && length != 0))
+        return -1;
+
+    const char *cursor = data;
+    size_t remaining = length;
+    while (remaining > 0) {
+        DWORD chunk = remaining > 0x7fffffff ? 0x7fffffff : (DWORD)remaining;
+        DWORD written = 0;
+        if (!WriteFile(file->handle, cursor, chunk, &written, NULL))
+            return -1;
+        cursor += written;
+        remaining -= written;
+    }
+    return 0;
+}
+
+// Output: 0 on success, -1 on error.
+int ano_fs_sync(ano_file *file)
+{
+    if (file == NULL)
+        return -1;
+    return FlushFileBuffers(file->handle) ? 0 : -1;
+}
+
+// Output: 0 on success, -1 on error. The handle is freed either way.
+int ano_fs_close(ano_file *file)
+{
+    if (file == NULL)
+        return -1;
+    int rc = CloseHandle(file->handle) ? 0 : -1;
+    mi_free(file);
+    return rc;
+}
+
+#endif // _WIN32

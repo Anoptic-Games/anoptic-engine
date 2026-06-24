@@ -110,6 +110,20 @@ int64_t ano_timestamp_unix() {
     return (int64_t)current_time;
 }
 
+// Convert a Unix timestamp to broken-down local civil time.
+ano_datetime ano_localtime(int64_t unix_seconds) {
+
+    time_t t = (time_t)unix_seconds;
+    struct tm tm;
+    if (localtime_r(&t, &tm) == NULL)
+        return (ano_datetime){0};
+
+    return (ano_datetime){
+        .year = tm.tm_year + 1900, .month = tm.tm_mon + 1, .day = tm.tm_mday,
+        .hour = tm.tm_hour, .minute = tm.tm_min, .second = tm.tm_sec,
+    };
+}
+
 
 /* Waiting Facilities */
 

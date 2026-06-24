@@ -3,11 +3,15 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+#if defined(__linux__)
+
 #include "anoptic_filesystem.h"
 
-#include <unistd.h>   // readlink, chdir
+#include <unistd.h>   // readlink, chdir, write, fsync, close
 #include <string.h>   // strlen, memcpy
 #include <limits.h>   // PATH_MAX
+#include <fcntl.h>    // open, O_*
+#include <errno.h>    // errno, EINTR
 #include <mimalloc.h>
 
 // Output: directory of the running executable (no file name); 
@@ -54,3 +58,70 @@ bool ano_fs_chdir_gamepath(void)
     mi_free(dir.pathString);
     return ok;
 }
+
+
+/* Append-only file sink (POSIX). The opaque handle wraps a single file descriptor. */
+
+struct ano_file {
+    int fd;
+};
+
+// Output: handle opened O_APPEND, or NULL on failure (bad path, open error, OOM).
+ano_file *ano_fs_open_append(const char *path)
+{
+    if (path == NULL)
+        return NULL;
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0)
+        return NULL;
+
+    ano_file *file = mi_malloc(sizeof *file);
+    if (file == NULL) {
+        close(fd);
+        return NULL;
+    }
+    file->fd = fd;
+    return file;
+}
+
+// Output: 0 once all bytes are written; -1 on error. Loops past partial writes and EINTR.
+int ano_fs_write(ano_file *file, const void *data, size_t length)
+{
+    if (file == NULL || (data == NULL && length != 0))
+        return -1;
+
+    const char *cursor = data;
+    size_t remaining = length;
+    while (remaining > 0) {
+        ssize_t written = write(file->fd, cursor, remaining);
+        if (written < 0) {
+            if (errno == EINTR)
+                continue; // interrupted before any byte moved; retry
+            return -1;
+        }
+        cursor += written;
+        remaining -= (size_t)written;
+    }
+    return 0;
+}
+
+// Output: 0 on success, -1 on error.
+int ano_fs_sync(ano_file *file)
+{
+    if (file == NULL)
+        return -1;
+    return fsync(file->fd) == 0 ? 0 : -1;
+}
+
+// Output: 0 on success, -1 on error. The handle is freed either way.
+int ano_fs_close(ano_file *file)
+{
+    if (file == NULL)
+        return -1;
+    int rc = close(file->fd) == 0 ? 0 : -1;
+    mi_free(file);
+    return rc;
+}
+
+#endif // __linux__

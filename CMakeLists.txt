@@ -96,6 +96,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
@@ -156,8 +157,6 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
     else()
         target_link_libraries(anopticengine PRIVATE anoptic_core)
     endif()
-    # Platform filesystem helpers (executable-dir resolution) compiled into the engine.
-    add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 endif()
 
 # CTest integration

@@ -8,6 +8,8 @@
 // rules) and supplies the spin/barrier ano_ wrappers — the Darwin counterpart to
 // the !__APPLE__ sections of threads.c.
 
+#if defined(__APPLE__)
+
 #include "threads_macos.h"
 #include <errno.h>
 
@@ -145,3 +147,5 @@ int ano_thread_barrier_destroy(anothread_barrier_t *barrier) {
 
     return pthread_barrier_destroy(barrier);
 }
+
+#endif // __APPLE__
