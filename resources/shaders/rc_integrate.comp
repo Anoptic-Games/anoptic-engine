@@ -1,0 +1,51 @@
+#version 450
+
+// Radiance cascades M4 — integrate merged cascade 0 into the irradiance field
+// (RADIANCE_CASCADES.md §4, the zeroth angular moment). One invocation per irradiance cell (64^3,
+// aligned 1:1 with the cascade-0 probe grid): average the merged cascade-0 radiance over all O0^2
+// directions to get the scalar diffuse ambient term flat.frag/transmission.frag sample at binding
+// 13. This replaces the direction-collapse the old single-cascade trace did inline.
+
+#define RC_H         8.0
+#define RC_C0_PROBES 64
+#define RC_C0_OCT    4
+#define RC_CASCADES  6
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image3D irradianceOut;
+layout(set = 0, binding = 3, rgba16f) uniform image3D cascades[RC_CASCADES];
+
+vec4 sampleParent(int lvl, vec3 fc, int Pp, int Op, int pox, int poy) {
+    vec3 f = clamp(fc, vec3(0.0), vec3(float(Pp) - 1.0));
+    ivec3 i0 = ivec3(floor(f));
+    ivec3 i1 = min(i0 + 1, ivec3(Pp - 1));
+    vec3 w = f - vec3(i0);
+    vec4 acc = vec4(0.0);
+    for (int dz = 0; dz < 2; dz++)
+    for (int dy = 0; dy < 2; dy++)
+    for (int dx = 0; dx < 2; dx++) {
+        ivec3 q  = ivec3(dx == 0 ? i0.x : i1.x, dy == 0 ? i0.y : i1.y, dz == 0 ? i0.z : i1.z);
+        float wt = (dx == 0 ? 1.0 - w.x : w.x) * (dy == 0 ? 1.0 - w.y : w.y) * (dz == 0 ? 1.0 - w.z : w.z);
+        ivec3 texel = ivec3(q.x * Op + pox, q.y * Op + poy, q.z);
+        acc += wt * imageLoad(cascades[lvl], texel);
+    }
+    return acc;
+}
+
+void main() {
+    ivec3 g = ivec3(gl_GlobalInvocationID);
+    ivec3 dim = imageSize(irradianceOut);
+    if (any(greaterThanEqual(g, dim))) return;
+
+    int P0 = RC_C0_PROBES, O0 = RC_C0_OCT;
+    vec3 w  = -vec3(RC_H) + (vec3(g) + 0.5) / vec3(dim) * (2.0 * RC_H);
+    vec3 fc = (w + vec3(RC_H)) / (2.0 * RC_H) * float(P0) - 0.5;
+
+    vec3 acc = vec3(0.0);
+    for (int ox = 0; ox < O0; ox++)
+    for (int oy = 0; oy < O0; oy++)
+        acc += sampleParent(0, fc, P0, O0, ox, oy).rgb;
+    acc /= float(O0 * O0);
+
+    imageStore(irradianceOut, g, vec4(acc, 1.0));
+}

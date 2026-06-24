@@ -679,6 +679,8 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
 	// voxelize.frag imageStores into the 3D voxel volumes from the fragment stage (RADIANCE_CASCADES.md M2).
 	deviceFeatures.fragmentStoresAndAtomics = features2.features.fragmentStoresAndAtomics;
+	// rc_trace/merge/integrate index the cascade storage-image array by a push-constant level (M4).
+	deviceFeatures.shaderStorageImageArrayDynamicIndexing = features2.features.shaderStorageImageArrayDynamicIndexing;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -2472,6 +2474,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.rcVoxelizeFrustumBuffer) vkDestroyBuffer(ctx->device, rendererState.rcVoxelizeFrustumBuffer, NULL);
 	if (rendererState.rcIrradianceView) vkDestroyImageView(ctx->device, rendererState.rcIrradianceView, NULL);
 	if (rendererState.rcIrradiance) vkDestroyImage(ctx->device, rendererState.rcIrradiance, NULL);
+	for (uint32_t c = 0; c < ANO_RC_CASCADE_COUNT; c++) {
+		if (rendererState.rcCascadeView[c]) vkDestroyImageView(ctx->device, rendererState.rcCascadeView[c], NULL);
+		if (rendererState.rcCascade[c]) vkDestroyImage(ctx->device, rendererState.rcCascade[c], NULL);
+	}
 	if (rendererState.rcSampler) vkDestroySampler(ctx->device, rendererState.rcSampler, NULL);
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging

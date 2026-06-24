@@ -79,6 +79,13 @@
 #define ANO_RC_CLIP_HALF_EXTENT 8.0f   // half-size of the static origin-centred clipmap (16 m cube); matches voxelize.frag
 #define ANO_RC_VOXEL_AXES       3u     // voxelization passes: one ortho projection per dominant axis
 #define ANO_RC_GI_STRENGTH_DEFAULT 3.0f // initial GI ambient gain (runtime-tunable; see RADIANCE_CASCADES.md R13)
+// Cascade hierarchy (M4). Level c: probes/axis P_c = 64>>c, octahedral res O_c = 4<<c (D_c = O_c^2
+// directions). P_c*O_c = 256 is invariant across levels, so every cascade is a (256,256,P_c) RGBA16F
+// image storing the interval R = [radiance.rgb, transmittance.a]. Per-level storage halves; stack ~2x cascade-0.
+#define ANO_RC_CASCADE_COUNT    6u
+#define ANO_RC_C0_PROBES        64u    // cascade-0 probes/axis (= ANO_RC_IRRADIANCE_DIM)
+#define ANO_RC_C0_OCT           4u     // cascade-0 octahedral resolution (O0^2 = 16 base directions)
+#define ANO_RC_CASCADE_XY       (ANO_RC_C0_PROBES * ANO_RC_C0_OCT) // 256, invariant probe*oct extent
 
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
 // each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)
@@ -898,11 +905,20 @@ typedef struct RendererState
     VkImage                 rcIrradiance;
     GpuAllocation           rcIrradianceAlloc;
     VkImageView             rcIrradianceView;
-    VkDescriptorSetLayout   rcTraceSetLayout;         // 0/1 = voxel albedo+emission (sampled), 2 = irradiance (STORAGE_IMAGE)
+    VkDescriptorSetLayout   rcTraceSetLayout;         // 0/1 = voxel albedo+emission (sampled), 2 = irradiance (STORAGE_IMAGE), 3 = cascade array (STORAGE_IMAGE[N])
     VkDescriptorSet         rcTraceSet;
-    VkPipeline              rcTracePipeline;          // rc_trace.comp
-    VkPipelineLayout        rcTraceLayout;
+    VkPipeline              rcTracePipeline;          // rc_trace.comp     (per-level interval trace; shared layout/set/cache)
+    VkPipelineLayout        rcTraceLayout;            // push constant: uint cascade level
     VkPipelineCache         rcTraceCache;
+
+    // M4 cascade hierarchy: per-level interval volumes (256,256,P_c) RGBA16F = [radiance, transmittance],
+    // bound as the binding-3 storage-image array. rc_trace writes each level, rc_merge composites
+    // top-down in place, rc_integrate collapses merged cascade 0 into rcIrradiance. ×1 shared.
+    VkImage                 rcCascade[ANO_RC_CASCADE_COUNT];
+    GpuAllocation           rcCascadeAlloc[ANO_RC_CASCADE_COUNT];
+    VkImageView             rcCascadeView[ANO_RC_CASCADE_COUNT];
+    VkPipeline              rcMergePipeline;          // rc_merge.comp
+    VkPipeline              rcIntegratePipeline;      // rc_integrate.comp
 } RendererState;
 
 
