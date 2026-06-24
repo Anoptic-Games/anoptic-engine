@@ -1174,19 +1174,20 @@ static bool rc_make_compute(VulkanContext* ctx, const char* spv, VkPipelineLayou
 // (STORAGE_IMAGE[ANO_RC_CASCADE_COUNT]). Push constant: uint cascade level.
 bool ano_vk_init_rc_trace(VulkanContext* ctx, RendererState* state)
 {
-	VkDescriptorSetLayoutBinding b[4] = {};
+	VkDescriptorSetLayoutBinding b[5] = {};
 	b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[0].descriptorCount = 1;                      b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b[1].descriptorCount = 1;                      b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          b[2].descriptorCount = 1;                      b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	b[3].binding = 3; b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          b[3].descriptorCount = ANO_RC_CASCADE_COUNT;   b[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	b[4].binding = 4; b[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          b[4].descriptorCount = 1;                      b[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; // M6 temporal history
 
 	VkDescriptorSetLayoutCreateInfo setInfo = {};
 	setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	setInfo.bindingCount = 4;
+	setInfo.bindingCount = 5;
 	setInfo.pBindings = b;
 	if (vkCreateDescriptorSetLayout(ctx->device, &setInfo, NULL, &state->rcTraceSetLayout) != VK_SUCCESS) return false;
 
-	VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t) }; // cascade level
+	VkPushConstantRange pcr = { VK_SHADER_STAGE_COMPUTE_BIT, 0, 2u * sizeof(uint32_t) }; // trace/merge: cascade level; temporal: reset+alpha
 	VkPipelineLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layoutInfo.setLayoutCount = 1;
@@ -1202,6 +1203,7 @@ bool ano_vk_init_rc_trace(VulkanContext* ctx, RendererState* state)
 	if (!rc_make_compute(ctx, "rc_trace.comp.spv",     state->rcTraceLayout, state->rcTraceCache, &state->rcTracePipeline))     { printf("Failed to create rc trace pipeline!\n");     return false; }
 	if (!rc_make_compute(ctx, "rc_merge.comp.spv",     state->rcTraceLayout, state->rcTraceCache, &state->rcMergePipeline))     { printf("Failed to create rc merge pipeline!\n");     return false; }
 	if (!rc_make_compute(ctx, "rc_integrate.comp.spv", state->rcTraceLayout, state->rcTraceCache, &state->rcIntegratePipeline)) { printf("Failed to create rc integrate pipeline!\n"); return false; }
+	if (!rc_make_compute(ctx, "rc_temporal.comp.spv",  state->rcTraceLayout, state->rcTraceCache, &state->rcTemporalPipeline))  { printf("Failed to create rc temporal pipeline!\n");  return false; }
 	return true;
 }
 
@@ -1350,6 +1352,11 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyPipeline(ctx->device, state->rcIntegratePipeline, NULL);
         state->rcIntegratePipeline = VK_NULL_HANDLE;
+    }
+    if (state->rcTemporalPipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(ctx->device, state->rcTemporalPipeline, NULL);
+        state->rcTemporalPipeline = VK_NULL_HANDLE;
     }
     if (state->rcLightInjectPipeline != VK_NULL_HANDLE)
     {

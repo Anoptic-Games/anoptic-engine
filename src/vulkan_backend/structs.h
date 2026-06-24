@@ -85,6 +85,7 @@
 #define ANO_RC_VOXEL_AXES       3u     // voxelization passes: one ortho projection per dominant axis
 #define ANO_RC_GI_STRENGTH_DEFAULT 3.0f // initial GI ambient gain (runtime-tunable; see RADIANCE_CASCADES.md R13)
 #define ANO_RC_LIGHT_INJECT_SCALE  1.0f // point-light emitter gain when injected into the voxel volume (§6)
+#define ANO_RC_TEMPORAL_ALPHA_DEFAULT 0.1f // M6 EMA blend toward the current frame (small = smoother; runtime-tunable)
 // Cascade hierarchy (M4). Level c: probes/axis P_c = 64>>c, octahedral res O_c = 4<<c (D_c = O_c^2
 // directions). P_c*O_c = 256 is invariant across levels, so every cascade is a (256,256,P_c) RGBA16F
 // image storing the interval R = [radiance.rgb, transmittance.a]. Per-level storage halves; stack ~2x cascade-0.
@@ -936,6 +937,15 @@ typedef struct RendererState
     VkPipeline              rcLightInjectPipeline;    // rc_light_inject.comp
     VkPipelineLayout        rcLightInjectLayout;      // {global, bindless, rcVoxelize} + COMPUTE push (lightCount, injectScale)
     VkPipelineCache         rcLightInjectCache;
+
+    // M6 temporal accumulation: world-space EMA history (no reprojection — static clipmap). rcTraceSet
+    // binding 4. rc_temporal blends rcIrradiance against this in place; reset snaps for the first frames.
+    VkImage                 rcIrradianceHistory;
+    GpuAllocation           rcIrradianceHistoryAlloc;
+    VkImageView             rcIrradianceHistoryView;
+    VkPipeline              rcTemporalPipeline;       // rc_temporal.comp (shares rcTraceLayout/Set/Cache)
+    float                   rcTemporalAlpha;          // EMA blend toward current (runtime-tunable, , / . keys)
+    uint32_t                rcTemporalReset;          // frames remaining to hard-snap (history seed / mode change)
 } RendererState;
 
 
