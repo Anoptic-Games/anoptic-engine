@@ -42,15 +42,24 @@ if "%1"=="1" (
     set TOOLCHAIN_FILE=tests_clang-windows-x64-mingw.cmake
     set EXTRA_FLAGS=-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON
     set RUN_TESTS=1
+) else if "%1"=="7" (
+    :: Release (-O3) build with CTest enabled: optimized test + benchmark runs. Option 1 is the same
+    :: -O3 full engine build without tests. Use this, NOT 3, to benchmark the logger (3 is Debug -O0).
+    set BUILD_LABEL=RelTests
+    set CMAKE_CONFIG=Release
+    set TOOLCHAIN_FILE=release_clang-windows-x64-mingw.cmake
+    set EXTRA_FLAGS=-DANOPTIC_TESTS=ON
+    set RUN_TESTS=1
 ) else (
     echo Usage: %0 ^<build_type^>
     echo   where ^<build_type^> is one of:
-    echo     1 = Release
+    echo     1 = Release ^(-O3 full engine build^)
     echo     2 = Debug
-    echo     3 = Tests ^(build + run CTest^)
+    echo     3 = Tests ^(Debug -O0, build + run CTest^)
     echo     4 = Tests + AddressSanitizer/UBSan
     echo     5 = Tests + ThreadSanitizer
     echo     6 = Headless tests ^(core + CTest, no renderer^)
+    echo     7 = Release tests ^(-O3, build + run CTest^)
     exit /b 1
 )
 
