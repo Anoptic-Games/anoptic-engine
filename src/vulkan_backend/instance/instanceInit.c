@@ -1461,9 +1461,10 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u);
 	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
-	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets.
+	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets. Transparency sort (audit 4.7) adds
+	// cull binding 10 (1 SSBO, the sort-key buffer) — the +1 in the shared term below.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (15u * ANO_VIEW_COUNT + 16u + 7u);
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (15u * ANO_VIEW_COUNT + 16u + 7u + 1u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1836,7 +1837,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
 		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
 		compactedEntityIndicesInfo.offset = 0;
-		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_partition_count();
 
 		VkDescriptorBufferInfo lightInfo = {};
 		lightInfo.buffer = rendererState.lightBuffer.device;        // ×1 device-local (SlotUpload)
@@ -1973,17 +1974,17 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         // the descriptor — the cull's OOB writes are dropped and the fallback casts no shadows.
         VkDeviceSize indirectCmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
             ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
-        indirectInfo.range = indirectCmdStride * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+        indirectInfo.range = indirectCmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count();
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
-        countInfo.range = sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+        countInfo.range = sizeof(uint32_t) * ano_draw_partition_count();
 
         VkDescriptorBufferInfo compactedEntityIndicesCullInfo = {};
         compactedEntityIndicesCullInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
         compactedEntityIndicesCullInfo.offset = 0;
-        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_partition_count();
 
         VkDescriptorBufferInfo materialCullInfo = {};
         materialCullInfo.buffer = rendererState.materialBuffer.buffer[i];
@@ -1996,8 +1997,14 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         shadowFrustumCullInfo.offset = 0;
         shadowFrustumCullInfo.range = VK_WHOLE_SIZE;
 
-        VkWriteDescriptorSet cullWrites[10] = {};
-        for(int j=0; j<10; ++j) {
+        // Binding 10: per-draw depth keys (transparency sort). Camera partitions only.
+        VkDescriptorBufferInfo sortKeysCullInfo = {};
+        sortKeysCullInfo.buffer = rendererState.culling.sortKeysBuffer[i];
+        sortKeysCullInfo.offset = 0;
+        sortKeysCullInfo.range = sizeof(float) * (VkDeviceSize)ANO_VIEW_COUNT * rendererState.culling.maxEntities;
+
+        VkWriteDescriptorSet cullWrites[11] = {};
+        for(int j=0; j<11; ++j) {
             cullWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             cullWrites[j].dstSet = rendererState.frames[i].cullSet;
             cullWrites[j].dstBinding = j;
@@ -2017,8 +2024,9 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullWrites[7].pBufferInfo = &compactedEntityIndicesCullInfo;
         cullWrites[8].pBufferInfo = &materialCullInfo;
         cullWrites[9].pBufferInfo = &shadowFrustumCullInfo;
+        cullWrites[10].pBufferInfo = &sortKeysCullInfo;
 
-        vkUpdateDescriptorSets(ctx->device, 10, cullWrites, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 11, cullWrites, 0, NULL);
 
         // Update Compute Descriptor Sets
         VkDescriptorBufferInfo motionInfo = {};
@@ -2403,6 +2411,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.culling.drawCountBuffer[i], NULL);
 		if(rendererState.culling.compactedEntityIndicesBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.compactedEntityIndicesBuffer[i], NULL);
+		if(rendererState.culling.sortKeysBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.sortKeysBuffer[i], NULL);
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {

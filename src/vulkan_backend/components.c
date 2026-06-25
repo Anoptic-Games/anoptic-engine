@@ -14,16 +14,23 @@
 // cull UBO draw-slot map. See components.h for the rationale.
 const PipelineType ano_draw_pipelines[] = {
     PIPELINE_FLAT,          // slot 0: opaque flat-shaded geometry
-    PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission
+    PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission (depth-sorted "over" lane)
+    PIPELINE_ADDITIVE,      // slot 2: order-independent additive glows (ONE/ONE; no sort, no shadow)
 };
 
 // The cull UBO map (CullUBO.drawSlotOf) is indexed by a material's raw PipelineType, so it
 // must span the whole enum; it is stored as uvec4[4] in cull.comp, hence the 16-slot bound.
 _Static_assert(PIPELINE_TYPE_COUNT <= 16, "drawSlotOf map (CullUBO/cull.comp) holds 16 entries");
 
-// out: number of draw partitions (drawing pipeline types). Single source of truth for sizing.
+// out: number of drawing pipeline types == per-camera-view draw-slot stride.
 uint32_t ano_draw_pipeline_count(void) {
     return (uint32_t)(sizeof(ano_draw_pipelines) / sizeof(ano_draw_pipelines[0]));
+}
+
+// out: total compacted-draw partitions. Camera views own every draw slot; each shadow frustum owns
+// one slot-0 partition (see components.h). Sizes the indirect/drawCount/compacted buffers + fills.
+uint32_t ano_draw_partition_count(void) {
+    return ANO_VIEW_COUNT * ano_draw_pipeline_count() + ANO_SHADOW_FRUSTUM_COUNT;
 }
 
 // in:  type — any PipelineType

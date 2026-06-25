@@ -6,6 +6,7 @@ target_sources(anoptic_render PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipeline.c
 	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/flat.c
 	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/transmission.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/additive.c
 	${CMAKE_CURRENT_SOURCE_DIR}/vulkanConfig.c
 	${CMAKE_CURRENT_SOURCE_DIR}/vertex/vertex.c
 	${CMAKE_CURRENT_SOURCE_DIR}/texture/texture.c

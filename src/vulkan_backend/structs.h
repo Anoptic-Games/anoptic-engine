@@ -565,12 +565,17 @@ typedef struct CullUBO
     // compacted buffers hold only the drawing partitions. Indexed by material pipelineType, so
     // it spans the enum; padded to 16 (uvec4[4] in cull.comp). std140: uint32_t[16] == uvec4[4].
     uint32_t drawSlotOf[16];
+    // Special draw slots (ano_draw_slot_of): [0] = additive lane (emits no shadow caster), [1] =
+    // transmission lane (the depth-sorted "over" lane). ANO_NO_DRAW_SLOT if that lane is absent.
+    // std140 uvec4 (16 B contiguous); cull.comp reads specialSlots.x / .y.
+    uint32_t specialSlots[4];
 } CullUBO;
 
 // --- Dynamic shadows (audit 4.7 follow-on, on the 4.8 multi-frustum cull) -------------------
 // Shadow frustums reuse CullView (viewProj + 6 planes): shadowsetup.comp writes them from each
 // light's live GPU transform, cull.comp tests entities against the planes, and the depth render +
-// fragment sampler use the viewProj. They occupy cull partitions [ANO_VIEW_COUNT, ANO_FRUSTUM_COUNT).
+// fragment sampler use the viewProj. They occupy one slot-0 cull partition each, packed after the
+// camera partitions: ANO_VIEW_COUNT*drawSlotCount + s (see ano_draw_partition_count, components.h).
 
 // CPU-authored, one per shadow frustum: which light + cube face it renders. Drives shadowsetup.comp's
 // projection choice (ortho / perspective / cube face). std430: 4 x u32 = 16 B.
@@ -661,6 +666,12 @@ typedef struct CullingBuffers {
     VkBuffer                compactedEntityIndicesBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           compactedEntityIndicesAllocs[MAX_FRAMES_IN_FLIGHT];
     uint32_t*               compactedEntityIndicesMapped[MAX_FRAMES_IN_FLIGHT];
+
+    // Per-draw depth keys for the transparency sort (audit 4.7). cull writes one float per camera
+    // transmission draw at [view*maxEntities + writeIdx]; tpsort.comp reads them to reorder the
+    // partition back-to-front. GPU-private (DEVICE_LOCAL), sized ANO_VIEW_COUNT*maxEntities floats.
+    VkBuffer                sortKeysBuffer[MAX_FRAMES_IN_FLIGHT];
+    GpuAllocation           sortKeysAllocs[MAX_FRAMES_IN_FLIGHT];
 
     // Descriptor infrastructure
     VkDescriptorSetLayout   setLayout;
