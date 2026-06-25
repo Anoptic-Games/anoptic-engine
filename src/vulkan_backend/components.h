@@ -17,10 +17,12 @@ typedef enum PipelineType
     PIPELINE_PARTICLE,          // Point-sprite / billboard particles
     PIPELINE_SDF_COMPOSITE,     // SDF raymarching compositing pass (future)
     PIPELINE_UI,                // UI overlay (future)
-    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects
+    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects (depth-sorted "over" lane)
+    PIPELINE_ADDITIVE,          // Order-independent additive (ONE/ONE) glows: stars, engine fire, weapon FX
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
     PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass (Path B)
+    PIPELINE_COMPUTE_TPSORT,    // transparency back-to-front sort of the "over" lane (compute, never draws)
     // --- Skeletons: enum slots reserved so the per-type buffers (indirect/drawCount/
     // compacted indices) and the prototype table size for them, but no pipeline is
     // created and no g_framePasses entry drives them yet. See render_bridge.h notes
@@ -44,8 +46,17 @@ typedef enum PipelineType
 #define ANO_NO_DRAW_SLOT 0xFFFFFFFFu
 
 extern const PipelineType ano_draw_pipelines[]; // drawing pipeline types, in slot order
-uint32_t ano_draw_pipeline_count(void);         // partition count = number of drawing types
-uint32_t ano_draw_slot_of(PipelineType type);   // enum -> partition index, ANO_NO_DRAW_SLOT if it never draws
+uint32_t ano_draw_pipeline_count(void);         // number of drawing types == per-camera-view draw-slot stride
+uint32_t ano_draw_slot_of(PipelineType type);   // enum -> draw slot, ANO_NO_DRAW_SLOT if it never draws
+
+// Total compacted-draw partitions across the indirect / drawCount / compacted buffers. Camera views
+// each get every draw slot (partition = view*drawSlotCount + slot, range [0, ANO_VIEW_COUNT*
+// drawSlotCount)); each shadow frustum gets a SINGLE slot-0 partition (ANO_VIEW_COUNT*drawSlotCount
+// + s) because the shadow depth render only ever rasterizes the opaque caster slot. Reserving every
+// draw slot per shadow frustum (the old ano_draw_pipeline_count()*ANO_FRUSTUM_COUNT sizing) made each
+// new draw lane cost 26 permanently-idle, frame-zeroed shadow partitions — the dominant VRAM waste at
+// a million entities. This is the single sizing source for those three buffers and their cull map.
+uint32_t ano_draw_partition_count(void);
 
 typedef enum PassType
 {

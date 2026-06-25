@@ -213,11 +213,24 @@ static const RenderPassDef g_framePasses[] = {
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
-    // 5. Transmissive geometry
+    // 5. Transmissive geometry (depth-sorted "over" lane)
     {
         .type                   = PASS_GRAPHICS,
         .prototype              = PIPELINE_TRANSMISSION,
         .implementationIndex    = 1,  // blended transmission variant
+        .perView                = true,
+        .colorAttachmentCount   = 1,
+        .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // test against opaque depth (no write)
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // additive pass below loads this depth
+        .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
+    },
+    // 6. Additive glows (order-independent ONE/ONE). Drawn last so glows composite on top; depth-
+    //    tested against opaque depth (hidden behind solids) but no depth write, so layers all add.
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_ADDITIVE,
+        .implementationIndex    = 0,  // single additive variant
         .perView                = true,
         .colorAttachmentCount   = 1,
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -345,9 +358,9 @@ void recordCommandBuffer(uint32_t imageIndex)
                 VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
                     ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
                 vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
-                    cmdStride * rendererState.indirectBuffer.capacity * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0);
+                    cmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count(), 0);
                 vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
-                    sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0);
+                    sizeof(uint32_t) * ano_draw_partition_count(), 0);
 
                 VkMemoryBarrier fillBarrier = {};
                 fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -406,12 +419,16 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else {
-                // The cull pass feeds the indirect commands (DRAW_INDIRECT) and the
-                // compacted/entity SSBOs read by the geometry stage (mesh or vertex).
+                // The cull pass feeds the indirect commands (DRAW_INDIRECT) and the compacted/entity
+                // SSBOs read by the geometry stage (mesh or vertex) AND the transparency-sort compute
+                // pass (tpsort), which reads the compacted draws + depth keys and rewrites the
+                // transmission partition. So the barrier reaches COMPUTE as well as DRAW_INDIRECT|geom,
+                // and dst includes SHADER_WRITE (tpsort overwrites cull's writes — WAW).
                 VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
                     ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-                memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage,
+                memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             }
         }
@@ -502,7 +519,10 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flatLayout, 2, 1,
                 &sh->geomSet, 0, NULL);
 
-            uint32_t partition = (ANO_VIEW_COUNT + s) * drawSlotCount + opaqueSlot;
+            // Shadow frustums own one slot-0 partition each, packed after the camera partitions:
+            // base = ANO_VIEW_COUNT*drawSlotCount, partition = base + s (matches cull.comp emit).
+            (void)opaqueSlot; // shadow partitions are slot-0-only; index is base + s, not by slot
+            uint32_t partition = ANO_VIEW_COUNT * drawSlotCount + s;
             uint32_t pcVals[2] = { partition * rendererState.culling.maxEntities, s }; // baseOffset, shadowFrustumIndex
             vkCmdPushConstants(cmd, flatLayout, pcStageS, 0, sizeof(pcVals), pcVals);
 
@@ -542,6 +562,32 @@ void recordCommandBuffer(uint32_t imageIndex)
     }
 
     ano_ts(cmd, ANO_TS_AFTER_SHADOW);
+
+    // === Transparency sort: reorder each camera view's transmission partition back-to-front ===
+    // tpsort.comp reads cull's compacted draws + per-draw depth keys and rewrites the transmission
+    // partition in place so the "over" blend in the per-view transmission pass composites farthest-
+    // first instead of in cull's arbitrary atomic-append order. One workgroup per camera view. Runs
+    // after cull (whose post-barrier now reaches COMPUTE) and before the per-view geometry passes.
+    if (entityCount > 0 && ano_draw_slot_of(PIPELINE_TRANSMISSION) != ANO_NO_DRAW_SLOT) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            rendererState.prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            rendererState.prototypes[PIPELINE_COMPUTE_TPSORT].layout, 0, 1,
+            &rendererState.frames[rendererState.frameIndex].cullSet, 0, NULL);
+        vkCmdDispatch(cmd, ANO_VIEW_COUNT, 1, 1); // one workgroup per camera view
+
+        // Sort writes (compacted indices + indirect commands) -> the geometry stage's indirect +
+        // SSBO reads in the per-view transmission pass below.
+        VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
+            ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+        VkMemoryBarrier sortBarrier = {};
+        sortBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        sortBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        sortBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage,
+            0, 1, &sortBarrier, 0, NULL, 0, NULL);
+    }
 
     // === Per view: light-cull (this view's froxel lists) then geometry into this view's
     // HDR target + depth, reading this view's cull partition. ===
@@ -886,6 +932,13 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     for (uint32_t t = 0; t < 16u; ++t)
         ubo->drawSlotOf[t] = (t < PIPELINE_TYPE_COUNT) ? ano_draw_slot_of((PipelineType)t) : ANO_NO_DRAW_SLOT;
 
+    // Special lanes the cull pass branches on: additive (slot x) emits no shadow caster, transmission
+    // (slot y) is the depth-sorted "over" lane (tpsort.comp). ANO_NO_DRAW_SLOT when a lane is absent.
+    ubo->specialSlots[0] = ano_draw_slot_of(PIPELINE_ADDITIVE);
+    ubo->specialSlots[1] = ano_draw_slot_of(PIPELINE_TRANSMISSION);
+    ubo->specialSlots[2] = ANO_NO_DRAW_SLOT;
+    ubo->specialSlots[3] = ANO_NO_DRAW_SLOT;
+
     // The EntitySSBO (mesh/material per slot) is seeded once at init and mutated
     // sparsely through the command bridge (render_apply_commands) — no per-frame
     // O(N) rewrite. MeshSSBO/MeshBoundsSSBO below are per-mesh (bounded by
@@ -1205,10 +1258,12 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
         growBufferSet(state->transformBuffer.buffer, state->transformBuffer.allocs, ssbo, devProps,
                       (VkDeviceSize)sizeof(mat4) * newCap, 0) &&
         growBufferSet(state->culling.compactedEntityIndicesBuffer, state->culling.compactedEntityIndicesAllocs, ssbo, devProps,
-                      (VkDeviceSize)sizeof(uint32_t) * newCap * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0) &&
+                      (VkDeviceSize)sizeof(uint32_t) * newCap * ano_draw_partition_count(), 0) &&
         growBufferSet(state->indirectBuffer.buffer, state->indirectBuffer.allocs,
                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, devProps,
-                      cmdStride * newCap * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT, 0);
+                      cmdStride * newCap * ano_draw_partition_count(), 0) &&
+        growBufferSet(state->culling.sortKeysBuffer, state->culling.sortKeysAllocs, ssbo, devProps,
+                      (VkDeviceSize)sizeof(float) * (VkDeviceSize)ANO_VIEW_COUNT * newCap, 0);
     if (!ok) {
         printf("Fatal: entity capacity growth %u -> %u failed (GPU out of memory?).\n", oldCap, newCap);
         return false;
@@ -1991,9 +2046,9 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
     // paths: VkDrawMeshTasksIndirectCommandEXT (12 B) or VkDrawIndexedIndirectCommand (20 B).
     VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
         ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
-    // Partitioned by (frustum, draw slot): ANO_FRUSTUM_COUNT * ano_draw_pipeline_count() partitions,
-    // each holding up to maxDraws commands. cull.comp writes (view*drawSlotCount + slot).
-    VkDeviceSize bufferSize = cmdStride * maxDraws * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+    // Partitioned: each camera view owns every draw slot, each shadow frustum owns one slot-0
+    // partition (ano_draw_partition_count(), see components.h), each holding up to maxDraws commands.
+    VkDeviceSize bufferSize = cmdStride * maxDraws * ano_draw_partition_count();
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->indirectBuffer.drawCount[i] = 0;
@@ -2152,8 +2207,11 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
-    VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
-    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_pipeline_count() * ANO_FRUSTUM_COUNT;
+    VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_partition_count();
+    VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_partition_count();
+    // Transparency sort keys: one float per camera draw slot (only the transmission partition writes
+    // them, but sizing per camera-view keeps the index = view*maxEntities + writeIdx trivially in range).
+    VkDeviceSize sortKeysSize = sizeof(float) * (VkDeviceSize)ANO_VIEW_COUNT * maxEntities;
     VkDeviceSize uboSize = sizeof(CullUBO);
     
     // Per-slot mesh/material (meshIndex, materialIndex): ×1 device-local + delta staging,
@@ -2229,6 +2287,21 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         }
         vkBindBufferMemory(ctx->device, state->culling.compactedEntityIndicesBuffer[i], state->culling.compactedEntityIndicesAllocs[i].memory, state->culling.compactedEntityIndicesAllocs[i].offset);
         state->culling.compactedEntityIndicesMapped[i] = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
+
+        // Sort Keys Buffer (transparency sort): GPU-private, written by cull.comp, read by tpsort.comp.
+        VkBufferCreateInfo sortKeysInfo = {};
+        sortKeysInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        sortKeysInfo.size = sortKeysSize;
+        sortKeysInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        sortKeysInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vkCreateBuffer(ctx->device, &sortKeysInfo, NULL, &state->culling.sortKeysBuffer[i]);
+        vkGetBufferMemoryRequirements(ctx->device, state->culling.sortKeysBuffer[i], &memReqs);
+        state->culling.sortKeysAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (state->culling.sortKeysAllocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, state->culling.sortKeysBuffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, state->culling.sortKeysBuffer[i], state->culling.sortKeysAllocs[i].memory, state->culling.sortKeysAllocs[i].offset);
 
         // Cull UBO
         VkBufferCreateInfo uboInfo = {};

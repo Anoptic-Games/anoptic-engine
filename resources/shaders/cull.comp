@@ -21,10 +21,13 @@ layout(set = 0, binding = 0) uniform CullUBO {
     uint  viewCount;      // active views (<= ANO_VIEW_COUNT)
     uint  entityCount;
     uint  maxEntities;    // per-partition capacity
-    uint  drawSlotCount;  // drawing-partition count; partition = view*drawSlotCount + slot
-    // PipelineType -> draw partition; ANO_NO_DRAW_SLOT (0xFFFFFFFF) means the type never draws.
+    uint  drawSlotCount;  // per-camera-view draw-slot stride; camera partition = view*drawSlotCount + slot
+    // PipelineType -> draw slot; ANO_NO_DRAW_SLOT (0xFFFFFFFF) means the type never draws.
     // Packed uvec4[4]: index t as drawSlotOf[t >> 2][t & 3]. Built CPU-side from ano_draw_*.
     uvec4 drawSlotOf[4];
+    // Special draw slots (CPU-built from ano_draw_slot_of). x = additive lane (casts no shadow),
+    // y = transmission lane (the depth-sorted "over" lane). 0xFFFFFFFF if that lane is absent.
+    uvec4 specialSlots;
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -140,10 +143,17 @@ layout(set = 0, binding = 8) readonly buffer MaterialSSBO {
 };
 
 // Shadow frustums (audit 4.7): GPU-built by shadowsetup.comp. Tested here exactly like the camera
-// frustums; survivors are written into partitions [ANO_VIEW_COUNT, ANO_FRUSTUM_COUNT). Must match
-// structs.h. CullView = viewProj + 6 planes; this pass uses only the planes.
+// frustums; survivors are written into one slot-0 partition each, packed after the camera partitions
+// (ANO_VIEW_COUNT*drawSlotCount + s). Must match structs.h. CullView = viewProj + 6 planes; this
+// pass uses only the planes.
 #define ANO_SHADOW_FRUSTUM_COUNT 26u  // must match structs.h (DIR=1 + SPOT=1 + POINT=4*6)
 layout(set = 0, binding = 9) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
+
+// Per-draw depth key for the Phase 2 transparency sort. cull writes one key per CAMERA transmission
+// draw at sortKeys[view*maxEntities + writeIdx]; tpsort.comp reads them to reorder that camera
+// view's transmission partition back-to-front. Sized for camera partitions only (ANO_VIEW_COUNT*
+// maxEntities), indexed by the same per-view writeIdx the partition uses.
+layout(set = 0, binding = 10) writeonly buffer SortKeys { float sortKeys[]; };
 
 // World-space bounding sphere vs one view's 6 frustum planes. The sphere (worldCenter,
 // worldRadius) is computed once per entity by the caller and reused across all views.
@@ -165,8 +175,9 @@ bool isVisibleInShadow(uint s, vec4 worldCenter, float worldRadius) {
     return true;
 }
 
-// Append one compacted draw for entity idx into partition partIdx (= frustum*drawSlotCount + slot).
-void emitDraw(uint partIdx, uint idx, MeshData mData) {
+// Append one compacted draw for entity idx into partition partIdx. Returns the draw's position
+// within the partition (writeIdx) so the caller can write a parallel sort key for it.
+uint emitDraw(uint partIdx, uint idx, MeshData mData) {
     uint writeIdx = atomicAdd(drawCounts[partIdx], 1);
     uint destIdx = partIdx * maxEntities + writeIdx;
     if (useMeshShader) {
@@ -183,6 +194,7 @@ void emitDraw(uint partIdx, uint idx, MeshData mData) {
         indirectData[b + 4u] = writeIdx;                 // firstInstance = draw ordinal (gl_InstanceIndex)
     }
     entityIndices[destIdx] = idx;
+    return writeIdx;
 }
 
 void main() {
@@ -218,20 +230,28 @@ void main() {
     float worldRadius = bounds.w * maxScale;
 
     // Single-pass multi-frustum: read this entity once, test it against every camera frustum and
-    // every shadow frustum, append one compacted draw per frustum it survives. Camera frustums own
-    // partitions [0, ANO_VIEW_COUNT); shadow frustums own [ANO_VIEW_COUNT, ANO_FRUSTUM_COUNT).
+    // every shadow frustum, append one compacted draw per frustum it survives. Camera partitions own
+    // [0, ANO_VIEW_COUNT*drawSlotCount) as view*drawSlotCount + slot; shadow partitions own the
+    // contiguous range above as one slot-0 partition per frustum (ANO_VIEW_COUNT*drawSlotCount + s).
     for (uint view = 0u; view < viewCount; ++view) {
         if (isVisibleIn(view, worldCenter, worldRadius)) {
-            emitDraw(view * drawSlotCount + slot, idx, mData);
+            uint w = emitDraw(view * drawSlotCount + slot, idx, mData);
+            // Only the "over" (transmission) lane is depth-sorted. clip.w == -view_z under the RH
+            // zero-to-one perspective (docs/math_conventions.md): larger key = farther; tpsort.comp
+            // sorts descending so the farthest draws first (back-to-front).
+            if (slot == specialSlots.y) {
+                sortKeys[view * maxEntities + w] = (views[view].viewProj * worldCenter).w;
+            }
         }
     }
-    // Shadow frustums: every drawable caster (opaque AND transparent) writes into the opaque
-    // shadow partition (draw slot 0), so the single depth render casts solid shadows for all
-    // geometry — e.g. the glass candle holder, which is a TRANSMISSION draw. Alpha-aware shadows
-    // are a later refinement; for now transparent geometry casts a solid shadow.
-    for (uint s = 0u; s < ANO_SHADOW_FRUSTUM_COUNT; ++s) {
-        if (isVisibleInShadow(s, worldCenter, worldRadius)) {
-            emitDraw((ANO_VIEW_COUNT + s) * drawSlotCount + 0u, idx, mData);
+    // Shadow casters: opaque + transmission (glass) cast solid shadows into the single slot-0 depth
+    // render; the additive lane (glows, engine plumes) casts none — an emissive throwing a hard black
+    // shadow is never wanted. Alpha-aware shadows for glass are a later refinement.
+    if (slot != specialSlots.x) {
+        for (uint s = 0u; s < ANO_SHADOW_FRUSTUM_COUNT; ++s) {
+            if (isVisibleInShadow(s, worldCenter, worldRadius)) {
+                emitDraw(ANO_VIEW_COUNT * drawSlotCount + s, idx, mData);
+            }
         }
     }
 }

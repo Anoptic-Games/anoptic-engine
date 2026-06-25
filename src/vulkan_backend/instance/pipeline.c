@@ -7,6 +7,7 @@
 #include "pipeline.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
+#include "pipelines/additive.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -206,7 +207,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[10] = {};
+    VkDescriptorSetLayoutBinding bindings[11] = {};
 
     // 0: CullUBO
     bindings[0].binding = 0;
@@ -268,9 +269,15 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     bindings[9].descriptorCount = 1;
     bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    // 10: SortKeys (audit 4.7 transparency sort): cull writes per-draw depth keys, tpsort.comp reads them.
+    bindings[10].binding = 10;
+    bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[10].descriptorCount = 1;
+    bindings[10].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 10;
+    layoutInfo.bindingCount = 11;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
@@ -384,6 +391,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 
 	state->prototypes[PIPELINE_FLAT].descriptorLayout = state->bindlessTextures.layout;
 	state->prototypes[PIPELINE_TRANSMISSION].descriptorLayout = state->bindlessTextures.layout;
+	state->prototypes[PIPELINE_ADDITIVE].descriptorLayout = state->bindlessTextures.layout;
 
 	return true;
 }
@@ -401,6 +409,11 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	}
 
 	if (!ano_pipeline_transmission_init(ctx, state, &state->prototypes[PIPELINE_TRANSMISSION]))
+	{
+		return false;
+	}
+
+	if (!ano_pipeline_additive_init(ctx, state, &state->prototypes[PIPELINE_ADDITIVE]))
 	{
 		return false;
 	}
@@ -622,6 +635,61 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     ano_aligned_free(compShaderCode.data);
     vkDestroyShaderModule(ctx->device, compShaderModule, NULL);
+
+    // Compute Transparency-Sort Pipeline (audit 4.7). Reuses the cull descriptor set layout (it
+    // operates on the same indirect / drawCount / compacted / sortKeys buffers); one workgroup per
+    // camera view sorts that view's transmission partition back-to-front. No push constants (view =
+    // gl_WorkGroupID.x); shares cull's useMeshShader spec constant so the command stride matches.
+    VkPipelineCacheCreateInfo tpsortCacheInfo = {};
+    tpsortCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(ctx->device, &tpsortCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].cache);
+
+    VkPipelineLayoutCreateInfo tpsortLayoutInfo = {};
+    tpsortLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    tpsortLayoutInfo.setLayoutCount = 1;
+    tpsortLayoutInfo.pSetLayouts = &state->culling.setLayout;
+    if (vkCreatePipelineLayout(ctx->device, &tpsortLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].layout) != VK_SUCCESS)
+    {
+        printf("Failed to create transparency-sort pipeline layout!\n");
+        return false;
+    }
+
+    state->prototypes[PIPELINE_COMPUTE_TPSORT].type = PIPELINE_COMPUTE_TPSORT;
+    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_TPSORT].supportedFeatures = PBR_FEATURE_NONE;
+
+    struct Buffer tpsortShaderCode;
+    char tpsortShaderPath[256];
+    snprintf(tpsortShaderPath, sizeof(tpsortShaderPath), "%s/resources/shaders/tpsort.comp.spv", PROJECT_ROOT);
+    if (!loadFile(tpsortShaderPath, &tpsortShaderCode)) return false;
+    VkShaderModule tpsortShaderModule = createShaderModule(ctx->device, &tpsortShaderCode);
+
+    VkBool32 tpsortUseMeshShader = ctx->deviceCapabilities.meshShader ? VK_TRUE : VK_FALSE;
+    VkSpecializationMapEntry tpsortSpecMapEntry = {};
+    tpsortSpecMapEntry.constantID = 1;
+    tpsortSpecMapEntry.offset = 0;
+    tpsortSpecMapEntry.size = sizeof(VkBool32);
+    VkSpecializationInfo tpsortSpecInfo = {};
+    tpsortSpecInfo.mapEntryCount = 1;
+    tpsortSpecInfo.pMapEntries = &tpsortSpecMapEntry;
+    tpsortSpecInfo.dataSize = sizeof(VkBool32);
+    tpsortSpecInfo.pData = &tpsortUseMeshShader;
+
+    VkComputePipelineCreateInfo tpsortPipelineInfo = {};
+    tpsortPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    tpsortPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TPSORT].layout;
+    tpsortPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    tpsortPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    tpsortPipelineInfo.stage.module = tpsortShaderModule;
+    tpsortPipelineInfo.stage.pName = "main";
+    tpsortPipelineInfo.stage.pSpecializationInfo = &tpsortSpecInfo;
+
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TPSORT].cache, 1, &tpsortPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].pipeline) != VK_SUCCESS) return false;
+    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(tpsortShaderCode.data);
+    vkDestroyShaderModule(ctx->device, tpsortShaderModule, NULL);
 
     // Compute Light-cull Pipeline (clustered-forward froxel light assignment).
     // 0: GlobalUBO (in)  1: TransformSSBO (in, light world pos)  2: LightSSBO (in)

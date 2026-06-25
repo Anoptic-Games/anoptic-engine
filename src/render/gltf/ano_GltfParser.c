@@ -569,10 +569,16 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.emissiveStrength = (float)prim->material->emissive_strength.emissive_strength;
                     }
                     
-                    // Determine which pipeline prototype to use
+                    // Pipeline routing (audit 4.7 transparency lanes):
+                    //   transmission/volume         -> PIPELINE_TRANSMISSION (depth-sorted "over" lane)
+                    //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE (order-independent ONE/ONE)
+                    //   otherwise                    -> PIPELINE_FLAT (opaque)
+                    // alphaMode 2 == BLEND (set above). The additive branch is exclusive of transmission.
                     uint32_t selectedPipeline = PIPELINE_FLAT;
                     if (supportedFeatures & (PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME)) {
                         selectedPipeline = PIPELINE_TRANSMISSION;
+                    } else if (matData.emissiveStrength > 1.0f || matData.alphaMode == 2u) {
+                        selectedPipeline = PIPELINE_ADDITIVE;
                     }
                     matData.pipelineType = selectedPipeline;
                 }
