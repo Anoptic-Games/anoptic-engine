@@ -53,20 +53,26 @@
 
 // Dynamic shadow pass (audit 4.7 follow-on, built on the 4.8 multi-frustum cull). Each shadow map
 // is one more frustum to cull against: a directional ortho map, a spot perspective map, and 6
-// perspective faces per point light. All shadow maps are layers of one D32 2D array — point lights
+// perspective faces per point light. All shadow maps are layers of one 2D array — point lights
 // pick a face by the dominant axis of (frag - light) in the fragment (no samplerCube). The cull
 // frustum set is the camera views followed by the shadow frustums. Sized to the demo's light rig;
 // a dynamic "any light casts" registry is a follow-on.
-// Built incrementally: directional first (this increment), then spot, then point cubes — bump
-// the spot/point counts to add them once the directional path is hardware-verified.
+//
+// Storage is moment shadow maps (Peters & Klein 2015), NOT binary depth-compare: each layer is a
+// filterable RGBA16_UNORM color image holding the optimized 4-power-moment encoding of the nearest
+// occluder depth (a transient depth buffer still selects the nearest occluder during the render).
+// The fragment reconstructs a CDF lower bound (Hamburger 4MSM) instead of PCF-ing a depth-compare.
+// A separable Gaussian prefilter blurs the moments (filtering = soft shadows), which is why the map
+// resolution dropped to 512: filtered moments don't alias the way a depth-compare map does.
 #define ANO_SHADOW_DIR_COUNT     1u    // directional casters (one ortho map each)
 #define ANO_SHADOW_SPOT_COUNT    1u    // spot casters (one perspective map each)
 #define ANO_SHADOW_POINT_COUNT   4u    // point casters (6 cube-face maps each)
 #define ANO_SHADOW_CUBE_FACES    6u
 #define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // currently 26 (DIR=1, SPOT=1, POINT=4)
 #define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = currently 28
-#define ANO_SHADOW_DIM           1024u                  // per-layer shadow map resolution
-#define ANO_SHADOW_DEPTH_FORMAT  VK_FORMAT_D32_SFLOAT   // sampled as a depth-compare (sampler2DArrayShadow)
+#define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution (moment filtering lets this drop from 1024)
+#define ANO_SHADOW_MOMENT_FORMAT VK_FORMAT_R16G16B16A16_UNORM // 4 optimized power moments, filterable (sampler2DArray)
+#define ANO_SHADOW_TRANSIENT_DEPTH_FORMAT VK_FORMAT_D32_SFLOAT // transient nearest-occluder select; not sampled
 #define ANO_SHADOW_ORTHO_EXTENT  8.0f                   // half-size of the directional ortho world box (covers the demo scene)
 
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
@@ -638,18 +644,30 @@ typedef struct ShadowLightInfo {
     uint32_t pad;
 } ShadowLightInfo;
 
-// Per-frame shadow state: the GPU-written frustum buffer and the depth atlas array. The atlas is a
-// D32 2D array (one layer per shadow frustum); layerView[] are per-layer render targets, arrayView
-// is the single sampled view (depth-compare via shadowSampler in the fragment shader).
+// Per-frame shadow state: the GPU-written frustum buffer and the moment atlas array. The atlas is a
+// RGBA16_UNORM 2D array (one layer per shadow frustum) of optimized 4-moment values; layerView[] are
+// per-layer color render targets, arrayView is the single sampled view (read by the lighting frags
+// and by the prefilter blur). tempImage is the separable-blur ping target (same shape); depthImage
+// is one transient depth buffer reused per layer to select the nearest occluder during the moment
+// render (cleared each layer, never sampled). blurAtlasSet/blurTempSet feed the blur pipeline.
 typedef struct ShadowResources {
     VkBuffer        frustumBuffer;   // CullView[ANO_SHADOW_FRUSTUM_COUNT], written by shadowsetup.comp
     GpuAllocation   frustumAlloc;
-    VkImage         atlasImage;      // D32 2D array, ANO_SHADOW_FRUSTUM_COUNT layers
+    VkImage         atlasImage;      // RGBA16_UNORM 2D array, ANO_SHADOW_FRUSTUM_COUNT layers (moments)
     GpuAllocation   atlasAlloc;
-    VkImageView     arrayView;       // sample view (2D array, depth aspect)
-    VkImageView     layerView[ANO_SHADOW_FRUSTUM_COUNT]; // per-layer depth render targets
+    VkImageView     arrayView;       // sample view (2D array, color aspect)
+    VkImageView     layerView[ANO_SHADOW_FRUSTUM_COUNT]; // per-layer color render targets
+    VkImage         tempImage;       // separable-blur intermediate (same format/extent/layers)
+    GpuAllocation   tempAlloc;
+    VkImageView     tempArrayView;   // blur-Y source (2D array)
+    VkImageView     tempLayerView[ANO_SHADOW_FRUSTUM_COUNT]; // blur-X render targets
+    VkImage         depthImage;      // transient nearest-occluder depth (single layer, reused)
+    GpuAllocation   depthAlloc;
+    VkImageView     depthView;       // depth render target (reused per shadow layer)
     VkDescriptorSet setupSet;        // shadowsetup.comp inputs/outputs
-    VkDescriptorSet geomSet;         // depth render (shadow.mesh / shadow.vert)
+    VkDescriptorSet geomSet;         // moment render (flat.mesh / flat.vert) + frag sampling
+    VkDescriptorSet blurAtlasSet;    // blur src = atlas array (X pass: atlas -> temp)
+    VkDescriptorSet blurTempSet;     // blur src = temp array  (Y pass: temp -> atlas)
 } ShadowResources;
 
 typedef struct CullUboBuffer
@@ -864,13 +882,19 @@ typedef struct RendererState
     VkDescriptorSetLayout   lightcullSetLayout; // clustered-forward light assignment pass
     VkDescriptorSetLayout   shadowSetupSetLayout; // shadowsetup compute pass (per-shadow-frustum viewProj build)
 
-    // Dynamic shadow pass (audit 4.7). Depth-only render into the shadow atlas array. Standalone
-    // pipeline (not a PipelineType): reuses the cull-compacted draw lists but writes depth only.
+    // Dynamic shadow pass (audit 4.7; moment shadow maps). Renders the optimized 4-moment encoding
+    // (color) of the nearest occluder into the shadow atlas array. Standalone pipeline (not a
+    // PipelineType): reuses the cull-compacted draw lists. A separable Gaussian prefilter (the
+    // shadowBlur* fullscreen pipeline) then softens the moments before the lighting frags sample.
     VkPipeline              shadowPipeline;
     VkPipelineLayout        shadowLayout;
-    VkDescriptorSetLayout   shadowGeomSetLayout; // depth render: shadow frustums + transforms + compacted indices + geometry
+    VkDescriptorSetLayout   shadowGeomSetLayout; // moment render: shadow frustums + transforms + compacted indices + geometry
     VkPipelineCache         shadowCache;
-    VkSampler               shadowSampler;       // depth-compare sampler (PCF) for sampler2DArrayShadow
+    VkSampler               shadowSampler;       // plain linear/clamp sampler for sampler2DArray (moments + blur taps)
+    // Moment prefilter: fullscreen separable Gaussian over the atlas, reusing tonemap.vert.
+    VkPipeline              shadowBlurPipeline;
+    VkPipelineLayout        shadowBlurLayout;
+    VkDescriptorSetLayout   shadowBlurSetLayout; // 1 combined-image-sampler (blur source array)
 
     // CPU-authored shadow config: per-frustum (which light/face) + per-light (where its maps live).
     // Static (filled once at init), host-visible. The light-info buffer is indexed by light index.

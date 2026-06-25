@@ -936,7 +936,9 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 // out: true on success; populates state->shadow{Pipeline,Cache,Sampler}
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 {
-	// PCF depth-compare sampler: linear filtering does the 2x2 bilinear comparison per tap.
+	// Plain linear/clamp sampler for the moment atlas: the CDF reconstruction happens in-shader, so
+	// there is no hardware depth-compare. Linear filtering gives the 2x2 bilinear of the (affine,
+	// filterable) optimized moments — both for the lighting frags and the separable blur taps.
 	VkSamplerCreateInfo samplerInfo = {};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 	samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -944,8 +946,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	samplerInfo.compareEnable = VK_TRUE;
-	samplerInfo.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL; // frag depth <= occluder -> lit
+	samplerInfo.compareEnable = VK_FALSE;
 	samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
 	samplerInfo.maxLod = 1.0f;
 	if (vkCreateSampler(ctx->device, &samplerInfo, NULL, &state->shadowSampler) != VK_SUCCESS)
@@ -994,9 +995,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	rasterizer.cullMode = VK_CULL_MODE_NONE;       // demo geometry is double-sided
 	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.lineWidth = 1.0f;
-	rasterizer.depthBiasEnable = VK_TRUE;          // suppress shadow acne
-	rasterizer.depthBiasConstantFactor = 1.5f;
-	rasterizer.depthBiasSlopeFactor = 2.5f;
+	// No rasterizer depth bias: MSM acne suppression lives in the moment bias (alpha) + a sample-time
+	// depth offset, so the stored moments describe the true geometric depth (gl_FragCoord.z).
 
 	VkPipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1009,9 +1009,15 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 	depthStencil.maxDepthBounds = 1.0f;
 
+	// One moment color attachment (the optimized 4-moment encode), blending disabled — the depth test
+	// already keeps the nearest occluder, so the color write is a plain overwrite of that fragment.
+	VkPipelineColorBlendAttachmentState momentBlend = {};
+	momentBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	momentBlend.blendEnable = VK_FALSE;
 	VkPipelineColorBlendStateCreateInfo colorBlending = {};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	colorBlending.attachmentCount = 0; // depth only
+	colorBlending.attachmentCount = 1;
+	colorBlending.pAttachments = &momentBlend;
 
 	VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 	VkPipelineDynamicStateCreateInfo dynamicState = {};
@@ -1025,11 +1031,13 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-	VkFormat depthFormat = ANO_SHADOW_DEPTH_FORMAT;
+	// Moment color target + a transient depth (nearest-occluder select; never sampled).
+	VkFormat momentFormat = ANO_SHADOW_MOMENT_FORMAT;
 	VkPipelineRenderingCreateInfo renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-	renderingInfo.colorAttachmentCount = 0;
-	renderingInfo.depthAttachmentFormat = depthFormat;
+	renderingInfo.colorAttachmentCount = 1;
+	renderingInfo.pColorAttachmentFormats = &momentFormat;
+	renderingInfo.depthAttachmentFormat = ANO_SHADOW_TRANSIENT_DEPTH_FORMAT;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1055,6 +1063,81 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	vkDestroyShaderModule(ctx->device, fragModule, NULL);
 
 	if (r != VK_SUCCESS) { printf("Failed to create shadow depth pipeline!\n"); return false; }
+
+	// --- Moment prefilter pipeline: fullscreen separable Gaussian over the atlas (X then Y) ---
+	// One combined-image-sampler (the blur source array) at set 0, plus a 16-byte push (dir + layer).
+	// Vertex stage is the shared fullscreen triangle (tonemap.vert); the frag is shadowblur.frag.
+	VkDescriptorSetLayoutBinding blurBinding = {};
+	blurBinding.binding = 0;
+	blurBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	blurBinding.descriptorCount = 1;
+	blurBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	VkDescriptorSetLayoutCreateInfo blurSetInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 1, .pBindings = &blurBinding };
+	if (vkCreateDescriptorSetLayout(ctx->device, &blurSetInfo, NULL, &state->shadowBlurSetLayout) != VK_SUCCESS) {
+		printf("Failed to create shadow blur set layout!\n"); return false; }
+
+	VkPushConstantRange blurPush = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 }; // vec2 dir + int layer + int pad
+	VkPipelineLayoutCreateInfo blurLayoutInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1, .pSetLayouts = &state->shadowBlurSetLayout,
+		.pushConstantRangeCount = 1, .pPushConstantRanges = &blurPush };
+	if (vkCreatePipelineLayout(ctx->device, &blurLayoutInfo, NULL, &state->shadowBlurLayout) != VK_SUCCESS) {
+		printf("Failed to create shadow blur pipeline layout!\n"); return false; }
+
+	struct Buffer blurVertCode, blurFragCode;
+	snprintf(path, sizeof(path), "%s/resources/shaders/tonemap.vert.spv", PROJECT_ROOT);
+	if (!loadFile(path, &blurVertCode)) return false;
+	snprintf(path, sizeof(path), "%s/resources/shaders/shadowblur.frag.spv", PROJECT_ROOT);
+	if (!loadFile(path, &blurFragCode)) return false;
+	VkShaderModule blurVert = createShaderModule(ctx->device, &blurVertCode);
+	VkShaderModule blurFrag = createShaderModule(ctx->device, &blurFragCode);
+
+	VkPipelineShaderStageCreateInfo blurStages[2] = {};
+	blurStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	blurStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	blurStages[0].module = blurVert; blurStages[0].pName = "main";
+	blurStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	blurStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	blurStages[1].module = blurFrag; blurStages[1].pName = "main";
+
+	VkPipelineVertexInputStateCreateInfo blurVertexInput = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+	VkPipelineInputAssemblyStateCreateInfo blurIA = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+	VkPipelineViewportStateCreateInfo blurVP = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		.viewportCount = 1, .scissorCount = 1 };
+	VkPipelineRasterizationStateCreateInfo blurRaster = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f };
+	VkPipelineMultisampleStateCreateInfo blurMS = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+	VkPipelineColorBlendStateCreateInfo blurCB = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		.attachmentCount = 1, .pAttachments = &momentBlend };
+	VkPipelineDepthStencilStateCreateInfo blurDS = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = VK_FALSE, .depthWriteEnable = VK_FALSE };
+	VkPipelineDynamicStateCreateInfo blurDyn = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		.dynamicStateCount = 2, .pDynamicStates = dynamicStates };
+	VkPipelineRenderingCreateInfo blurRendering = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+		.colorAttachmentCount = 1, .pColorAttachmentFormats = &momentFormat };
+
+	VkGraphicsPipelineCreateInfo blurPipeline = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &blurRendering };
+	blurPipeline.stageCount = 2; blurPipeline.pStages = blurStages;
+	blurPipeline.pVertexInputState = &blurVertexInput;
+	blurPipeline.pInputAssemblyState = &blurIA;
+	blurPipeline.pViewportState = &blurVP;
+	blurPipeline.pRasterizationState = &blurRaster;
+	blurPipeline.pMultisampleState = &blurMS;
+	blurPipeline.pDepthStencilState = &blurDS;
+	blurPipeline.pColorBlendState = &blurCB;
+	blurPipeline.pDynamicState = &blurDyn;
+	blurPipeline.layout = state->shadowBlurLayout;
+	blurPipeline.renderPass = VK_NULL_HANDLE;
+
+	VkResult br = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &blurPipeline, NULL, &state->shadowBlurPipeline);
+	ano_aligned_free(blurVertCode.data);
+	ano_aligned_free(blurFragCode.data);
+	vkDestroyShaderModule(ctx->device, blurVert, NULL);
+	vkDestroyShaderModule(ctx->device, blurFrag, NULL);
+	if (br != VK_SUCCESS) { printf("Failed to create shadow blur pipeline!\n"); return false; }
+
 	return true;
 }
 
@@ -1088,6 +1171,21 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 	{
 		vkDestroyPipeline(ctx->device, state->shadowPipeline, NULL);
 		state->shadowPipeline = VK_NULL_HANDLE;
+	}
+	if (state->shadowBlurPipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(ctx->device, state->shadowBlurPipeline, NULL);
+		state->shadowBlurPipeline = VK_NULL_HANDLE;
+	}
+	if (state->shadowBlurLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(ctx->device, state->shadowBlurLayout, NULL);
+		state->shadowBlurLayout = VK_NULL_HANDLE;
+	}
+	if (state->shadowBlurSetLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(ctx->device, state->shadowBlurSetLayout, NULL);
+		state->shadowBlurSetLayout = VK_NULL_HANDLE;
 	}
 	if (state->shadowCache != VK_NULL_HANDLE)
 	{
