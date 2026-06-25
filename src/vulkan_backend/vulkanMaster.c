@@ -314,14 +314,15 @@ void recordCommandBuffer(uint32_t imageIndex)
     // complete before the copy writes; the second makes the writes visible to this frame's
     // update/cull/geometry reads. Skipped entirely when nothing changed this frame.
     {
-        SlotUpload* ups[5] = {
+        SlotUpload* ups[7] = {
             &rendererState.initialTransformBuffer, &rendererState.motionBuffer,
             &rendererState.instanceDataBuffer, &rendererState.lightBuffer,
             &rendererState.culling.entity,
+            &rendererState.shadowConfig, &rendererState.shadowInfo, // runtime shadow caster lifecycle
         };
         uint32_t fi = rendererState.frameIndex;
         bool any = false;
-        for (int u = 0; u < 5; u++) if (ups[u]->staged[fi]) { any = true; break; }
+        for (int u = 0; u < 7; u++) if (ups[u]->staged[fi]) { any = true; break; }
         if (any) {
             // These buffers are only ever read by the shader stages below: compute (update/cull/
             // lightcull), the geometry stage (entity buffer), and fragment (instance data + lights).
@@ -335,7 +336,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 .srcAccessMask = VK_ACCESS_SHADER_READ_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
             vkCmdPipelineBarrier(cmd, shaderStages, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 1, &pre, 0, NULL, 0, NULL);
-            for (int u = 0; u < 5; u++) slot_upload_flush(cmd, ups[u], fi);
+            for (int u = 0; u < 7; u++) slot_upload_flush(cmd, ups[u], fi);
             VkMemoryBarrier post = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                 .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, shaderStages,
@@ -454,7 +455,7 @@ void recordCommandBuffer(uint32_t imageIndex)
         bool useMeshS = ctx.deviceCapabilities.meshShader;
         uint32_t maxDrawsS = rendererState.indirectBuffer.capacity;
         VkShaderStageFlags pcStageS = useMeshS ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
-        const ShadowFrustumConfig* shadowCfgs = (const ShadowFrustumConfig*)rendererState.shadowFrustumConfigMapped;
+        const ShadowFrustumConfig* shadowCfgs = rendererState.shadowCfgMirror; // render-thread mirror (device copy not host-readable)
 
         VkViewport shVp = { 0.0f, 0.0f, (float)ANO_SHADOW_DIM, (float)ANO_SHADOW_DIM, 0.0f, 1.0f };
         VkRect2D   shSc = { .offset = {0, 0}, .extent = { ANO_SHADOW_DIM, ANO_SHADOW_DIM } };
@@ -474,9 +475,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 
         // --- Phase 1: moment render ---
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
-            // Gate on lighting mode: a layer carried by radiance cascades this frame renders no caster
-            // geometry. Still drive it to SHADER_READ so the sampled atlas array is uniformly readable.
-            if (!lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode)) {
+            // Gate on active (spare/runtime-freed frustums) + lighting mode (a layer carried by radiance
+            // cascades renders no caster). Still drive skipped layers to SHADER_READ so the sampled atlas
+            // array stays uniformly readable.
+            if (!shadowCfgs[s].active || !lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode)) {
                 VkImageMemoryBarrier toReadSkip = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -579,7 +581,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             bpc.dir[0] = pass == 0 ? invDim : 0.0f;
             bpc.dir[1] = pass == 0 ? 0.0f   : invDim;
             for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
-                if (!lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode)) {
+                if (!shadowCfgs[s].active || !lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode)) {
                     if (pass == 0) { // temp layer -> SHADER_READ so phase-3's temp array view is uniform
                         VkImageMemoryBarrier tSkip = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                             .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1427,7 +1429,7 @@ static void light_registry_init(LightRegistry* r, uint32_t base, uint32_t capaci
 
 static void light_registry_destroy(LightRegistry* r) {
     free(r->idToRow); free(r->rowState); free(r->rowParent); free(r->rowLightId); free(r->rowMirror);
-    free(r->freeRows); free(r->quarantine);
+    free(r->rowShadowBase); free(r->freeRows); free(r->quarantine);
     memset(r, 0, sizeof(*r));
 }
 
@@ -1440,13 +1442,16 @@ static bool lr_reserve_rows(LightRegistry* r, uint32_t need) {
     uint32_t* pp = realloc(r->rowParent,  (size_t)nc * sizeof(uint32_t));
     uint32_t* li = realloc(r->rowLightId, (size_t)nc * sizeof(uint32_t));
     LightData* mi = realloc(r->rowMirror, (size_t)nc * sizeof(LightData));
+    uint32_t* sb = realloc(r->rowShadowBase, (size_t)nc * sizeof(uint32_t));
     if (s)  r->rowState   = s;
     if (pp) r->rowParent  = pp;
     if (li) r->rowLightId = li;
     if (mi) r->rowMirror  = mi;
-    if (!s || !pp || !li || !mi) return false;
+    if (sb) r->rowShadowBase = sb;
+    if (!s || !pp || !li || !mi || !sb) return false;
     for (uint32_t i = r->rowsCapacity; i < nc; i++) {
         s[i] = LIGHT_ROW_FREE; pp[i] = ANO_RENDER_SLOT_UNMAPPED; li[i] = ANO_RENDER_SLOT_UNMAPPED;
+        sb[i] = ANO_SHADOW_NONE;
     }
     r->rowsCapacity = nc;
     return true;
@@ -1627,16 +1632,76 @@ static void light_apply_fields(LightData* dst, const RenderLightParams* p, const
     if (fields & ANO_LIGHT_FIELD_DIRECTION) light_set_dir(dst, p->localDir);
 }
 
+// --- Runtime shadow-frustum pools (audit 4.7 budget expansion) ------------------------------------
+// Allocate a runtime frustum block base for a casting light (single = 1 frustum for dir/spot, point =
+// 6 contiguous cube faces). Returns ANO_SHADOW_NONE when the type's pool is exhausted (light stays
+// shadowless — no error). The pool is inferred from the block base on free (slot-range partition).
+static uint32_t shadow_frustum_alloc(RendererState* st, uint32_t lightType) {
+    if (lightType == LIGHT_TYPE_POINT)
+        return st->rtPointFreeCount  ? st->rtPointFree[--st->rtPointFreeCount]   : ANO_SHADOW_NONE;
+    return     st->rtSingleFreeCount ? st->rtSingleFree[--st->rtSingleFreeCount] : ANO_SHADOW_NONE;
+}
+static void shadow_frustum_free(RendererState* st, uint32_t base) {
+    if (base == ANO_SHADOW_NONE) return;
+    // Bounds-guard the push: alloc/free are balanced so the pool can never legitimately overflow, but
+    // a guard turns any future double-free into a dropped no-op instead of a silent OOB write.
+    if (base >= ANO_SHADOW_RT_POINT_BASE) {
+        if (st->rtPointFreeCount  < ANO_SHADOW_RT_POINT_COUNT)  st->rtPointFree[st->rtPointFreeCount++]   = base;
+    } else {
+        if (st->rtSingleFreeCount < ANO_SHADOW_RT_SINGLE_COUNT) st->rtSingleFree[st->rtSingleFreeCount++] = base;
+    }
+}
+
+// Attach a runtime shadow caster: allocate a frustum block, stage its per-frustum config (active=1)
+// + this light's per-light info (castsShadow=1, base, count) through the SlotUploads + the CPU mirror,
+// and record the base on the registry row so detach can free it. No-op past budget (shadowless).
+// lightPalIdx = absolute light-palette row; regRow = relative registry row.
+static void shadow_caster_attach(RendererState* st, uint32_t lightPalIdx, uint32_t regRow,
+                                 uint32_t lightType, uint32_t frameIndex) {
+    uint32_t base = shadow_frustum_alloc(st, lightType);
+    st->lightRegistry.rowShadowBase[regRow] = base; // NONE if budget full
+    if (base == ANO_SHADOW_NONE) return;
+    uint32_t blockSize = (lightType == LIGHT_TYPE_POINT) ? ANO_SHADOW_CUBE_FACES : 1u;
+    for (uint32_t f = 0; f < blockSize; f++) {
+        ShadowFrustumConfig c = { .lightIndex = lightPalIdx, .lightType = lightType,
+            .faceIndex = (lightType == LIGHT_TYPE_POINT ? f : 0u), .active = 1u };
+        st->shadowCfgMirror[base + f] = c;
+        slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
+    }
+    ShadowLightInfo si = { .castsShadow = 1u, .baseFrustum = base, .frustumCount = blockSize, .pad = 0u };
+    slot_upload_stage(&st->shadowInfo, frameIndex, lightPalIdx, &si);
+}
+
+// Free a registry row's runtime shadow caster (if any): mark its frustum block inactive (mirror +
+// SlotUpload, so shadowsetup writes reject-all and the record loop skips it) and return it to the
+// pool. The light itself is disabled (enabled=0) by the caller, so the fragment stops sampling it;
+// shadowInfo need not be re-staged (a reuse re-stages it). rowShadowBase -> NONE.
+static void shadow_caster_detach(RendererState* st, uint32_t regRow, uint32_t frameIndex) {
+    uint32_t base = st->lightRegistry.rowShadowBase[regRow];
+    if (base == ANO_SHADOW_NONE) return;
+    uint32_t blockSize = (base >= ANO_SHADOW_RT_POINT_BASE) ? ANO_SHADOW_CUBE_FACES : 1u;
+    for (uint32_t f = 0; f < blockSize; f++) {
+        ShadowFrustumConfig c = st->shadowCfgMirror[base + f];
+        c.active = 0u;
+        st->shadowCfgMirror[base + f] = c;
+        slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
+    }
+    shadow_frustum_free(st, base);
+    st->lightRegistry.rowShadowBase[regRow] = ANO_SHADOW_NONE;
+}
+
 // Cascade: disable + quarantine every runtime light attached to a renderable that is being destroyed.
 // Stages enabled=0 into THIS frame for each child (correctness write, while the parent slot is still
-// resolvable); the rows return to the free-list after their quarantine elapses.
+// resolvable) and frees its runtime shadow frustum; the rows return to the free-list after quarantine.
 static void cascade_detach_lights(RendererState* state, uint32_t parentRid, uint32_t frameIndex) {
     uint32_t rows[64]; uint32_t n;
     LightData off = {0}; // enabled == 0
     do {
         n = light_registry_detach_children(&state->lightRegistry, parentRid, state->globalFrame, rows, 64u);
-        for (uint32_t k = 0; k < n; k++)
+        for (uint32_t k = 0; k < n; k++) {
             slot_upload_stage(&state->lightBuffer, frameIndex, rows[k], &off);
+            shadow_caster_detach(state, rows[k] - state->lightRegistry.base, frameIndex);
+        }
     } while (n == 64u);
 }
 
@@ -1757,9 +1822,19 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent not (yet) resolvable: drop
             uint32_t row = light_registry_alloc(&state->lightRegistry, cmd.light_id, cmd.render_id);
             if (row == ANO_RENDER_SLOT_UNMAPPED) break; // palette full / double-attach: drop
+            uint32_t regRow = row - state->lightRegistry.base;
             LightData L = light_data_from_params(&cmd.light, parentSlot, cmd.light_offset);
-            state->lightRegistry.rowMirror[row - state->lightRegistry.base] = L; // seed the partial-update RMW base
+            state->lightRegistry.rowMirror[regRow] = L; // seed the partial-update RMW base
             slot_upload_stage(&state->lightBuffer, frameIndex, row, &L);
+            // Shadow caster: allocate a runtime frustum block if requested (and budget allows), else
+            // stage non-casting info so a reused palette row never inherits a prior caster's info.
+            if (cmd.light.castsShadow) {
+                shadow_caster_attach(state, row, regRow, L.type, frameIndex);
+            } else {
+                ShadowLightInfo si = {0}; // castsShadow == 0
+                slot_upload_stage(&state->shadowInfo, frameIndex, row, &si);
+                state->lightRegistry.rowShadowBase[regRow] = ANO_SHADOW_NONE;
+            }
             break;
         }
 
@@ -1772,11 +1847,20 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             // Read-modify-write the mirror: merge only the masked fields (0 == legacy full overwrite),
             // then refresh the render-derived transformIndex + enabled and re-stage the whole element.
             uint32_t fields = cmd.light_fields ? cmd.light_fields : ANO_LIGHT_FIELD_ALL;
-            LightData* mir = &state->lightRegistry.rowMirror[row - state->lightRegistry.base];
+            uint32_t regRow = row - state->lightRegistry.base;
+            LightData* mir = &state->lightRegistry.rowMirror[regRow];
+            uint32_t oldType = mir->type;
             light_apply_fields(mir, &cmd.light, cmd.light_offset, fields);
             mir->transformIndex = parentSlot;
             mir->enabled = 1u;
             slot_upload_stage(&state->lightBuffer, frameIndex, row, mir);
+            // Re-typing a casting light invalidates its frustum block (point = 6 frustums vs single =
+            // 1): the stale frustumCount / cube-face fan would sample unallocated layers. Re-allocate
+            // for the new type (shadowless if that pool is full). Type is the only field that does this.
+            if (mir->type != oldType && state->lightRegistry.rowShadowBase[regRow] != ANO_SHADOW_NONE) {
+                shadow_caster_detach(state, regRow, frameIndex);
+                shadow_caster_attach(state, row, regRow, mir->type, frameIndex);
+            }
             break;
         }
 
@@ -1785,6 +1869,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             if (row != ANO_RENDER_SLOT_UNMAPPED) {
                 LightData off = {0}; // enabled == 0
                 slot_upload_stage(&state->lightBuffer, frameIndex, row, &off);
+                shadow_caster_detach(state, row - state->lightRegistry.base, frameIndex); // free its frustum if casting
             }
             break;
         }
@@ -2241,16 +2326,18 @@ static uint32_t register_light(LightData light, bool castsShadow) {
                     : light.type == LIGHT_TYPE_POINT       ? ANO_SHADOW_POINT_COUNT
                                                            : ANO_SHADOW_SPOT_COUNT;
     uint32_t blockSize = light.type == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u;
+    // Static rig: monotonic alloc within the STATIC region (the runtime pools own the headroom above).
     if (rendererState.shadowTypeUsed[light.type] < budget &&
-        rendererState.shadowFrustumNext + blockSize <= ANO_SHADOW_FRUSTUM_COUNT) {
+        rendererState.shadowFrustumNext + blockSize <= ANO_SHADOW_STATIC_FRUSTUM_COUNT) {
         uint32_t base = rendererState.shadowFrustumNext;
-        ShadowFrustumConfig* cfg = (ShadowFrustumConfig*)rendererState.shadowFrustumConfigMapped;
-        ShadowLightInfo* info = (ShadowLightInfo*)rendererState.shadowLightInfoMapped;
-        for (uint32_t f = 0; f < blockSize; f++)
-            cfg[base + f] = (ShadowFrustumConfig){ .lightIndex = lightIdx, .lightType = light.type,
-                .faceIndex = (light.type == LIGHT_TYPE_POINT ? f : 0u), .pad = 0u };
-        info[lightIdx] = (ShadowLightInfo){ .castsShadow = 1u, .baseFrustum = base,
-            .frustumCount = blockSize, .pad = 0u };
+        for (uint32_t f = 0; f < blockSize; f++) {
+            ShadowFrustumConfig c = { .lightIndex = lightIdx, .lightType = light.type,
+                .faceIndex = (light.type == LIGHT_TYPE_POINT ? f : 0u), .active = 1u };
+            rendererState.shadowCfgMirror[base + f] = c;
+            slot_upload_stage(&rendererState.shadowConfig, 0, base + f, &c); // frame 0: init flush uploads
+        }
+        ShadowLightInfo si = { .castsShadow = 1u, .baseFrustum = base, .frustumCount = blockSize, .pad = 0u };
+        slot_upload_stage(&rendererState.shadowInfo, 0, lightIdx, &si);
         rendererState.shadowFrustumNext += blockSize;
         rendererState.shadowTypeUsed[light.type] += 1u;
     }
@@ -2584,27 +2671,25 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         // Layout handled per-frame in recordCommandBuffer (UNDEFINED->COLOR/DEPTH->SHADER_READ).
     }
 
-    // Static CPU config (once), host-visible. Demo rig: light 0 is the directional caster.
-    GpuAllocation cfgAlloc, infoAlloc;
-    VkDeviceSize cfgSize = (VkDeviceSize)sizeof(ShadowFrustumConfig) * ANO_SHADOW_FRUSTUM_COUNT;
-    VkDeviceSize infoSize = (VkDeviceSize)sizeof(ShadowLightInfo) * state->lightBuffer.capacity;
-    if (!createDataBuffer(ctx, &gpuAllocator, cfgSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &state->shadowFrustumConfigBuffer, &cfgAlloc)) return false;
-    if (!createDataBuffer(ctx, &gpuAllocator, infoSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &state->shadowLightInfoBuffer, &infoAlloc)) return false;
-    state->shadowFrustumConfigAlloc = cfgAlloc; state->shadowFrustumConfigMapped = cfgAlloc.mapped;
-    state->shadowLightInfoAlloc = infoAlloc;   state->shadowLightInfoMapped = infoAlloc.mapped;
+    // Shadow config + per-light info as SlotUploads (×1 device + delta staging) so the runtime caster
+    // lifecycle mutates them race-free, like lightBuffer. The static rig stages into frame 0 (in
+    // register_light) and the init flush uploads + zero-fills the device (spare slots: active=0 /
+    // castsShadow=0). shadowCfgMirror is the render-thread CPU copy the record loop gates on.
+    if (!slot_upload_create(&state->shadowConfig, ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig), SLOT_STAGING_INIT)) return false;
+    if (!slot_upload_create(&state->shadowInfo, state->lightBuffer.capacity, sizeof(ShadowLightInfo), SLOT_STAGING_INIT)) return false;
+    state->shadowCfgMirror = (ShadowFrustumConfig*)calloc(ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig)); // active=0
+    if (!state->shadowCfgMirror) return false;
 
-    // Config starts empty: addLightEntity registers each caster (per-type budget) as the scene rig
-    // is built, advancing state->shadowFrustumNext. Frustums never claimed by a caster stay zeroed,
-    // which shadowsetup reads as light 0's directional map — harmless, since no light's info points
-    // at them. info[] starts all-non-casting; the rig sets the casters' baseFrustum/frustumCount.
-    memset(state->shadowFrustumConfigMapped, 0, (size_t)cfgSize);
-    ShadowLightInfo* info = (ShadowLightInfo*)state->shadowLightInfoMapped;
-    for (uint32_t l = 0; l < state->lightBuffer.capacity; l++)
-        info[l] = (ShadowLightInfo){ .castsShadow = 0u, .baseFrustum = 0u, .frustumCount = 0u, .pad = 0u };
+    // Static rig allocator (monotonic, fills [0, shadowFrustumNext) within the static region).
     state->shadowFrustumNext = 0u;
     state->shadowTypeUsed[0] = state->shadowTypeUsed[1] = state->shadowTypeUsed[2] = 0u;
+    // Runtime pools: push every free single slot + point-block base in the headroom region.
+    state->rtSingleFreeCount = 0u;
+    for (uint32_t s = 0; s < ANO_SHADOW_RT_SINGLE_COUNT; s++)
+        state->rtSingleFree[state->rtSingleFreeCount++] = ANO_SHADOW_RT_SINGLE_BASE + s;
+    state->rtPointFreeCount = 0u;
+    for (uint32_t b = 0; b < ANO_SHADOW_RT_POINT_COUNT; b++)
+        state->rtPointFree[state->rtPointFreeCount++] = ANO_SHADOW_RT_POINT_BASE + b * ANO_SHADOW_CUBE_FACES;
 
     return true;
 }
@@ -3348,6 +3433,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		// after; the barrier orders the fill before that overlapping copy.
 		vkCmdFillBuffer(up, rendererState.lightBuffer.device, 0,
 		                (VkDeviceSize)sizeof(LightData) * rendererState.lightBuffer.capacity, 0u);
+		// Same hardening for the shadow config/info device buffers: spare frustum slots read active=0
+		// (inactive) and unregistered lights read castsShadow=0 instead of uninitialized device memory.
+		// The rig's staged casters are copied over their slots by the flush right after.
+		vkCmdFillBuffer(up, rendererState.shadowConfig.device, 0,
+		                (VkDeviceSize)sizeof(ShadowFrustumConfig) * rendererState.shadowConfig.capacity, 0u);
+		vkCmdFillBuffer(up, rendererState.shadowInfo.device, 0,
+		                (VkDeviceSize)sizeof(ShadowLightInfo) * rendererState.shadowInfo.capacity, 0u);
 		{
 			VkMemoryBarrier fillToCopy = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
 			    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
@@ -3356,6 +3448,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		}
 		slot_upload_flush(up, &rendererState.lightBuffer, 0);
 		slot_upload_flush(up, &rendererState.culling.entity, 0);
+		slot_upload_flush(up, &rendererState.shadowConfig, 0);
+		slot_upload_flush(up, &rendererState.shadowInfo, 0);
 		endSingleTimeCommands(&ctx, up);
 	}
 

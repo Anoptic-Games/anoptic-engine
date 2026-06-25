@@ -105,6 +105,9 @@ typedef struct RenderLightParams
     float           localDir[3];  // spot/dir aim in the parent's MODEL space; world forward =
                                   // rotate(parent, localDir). (0,0,0) -> parent -Z (the default).
                                   // Lets spots on a shared parent slot fan independently. Point: ignored.
+    uint32_t        castsShadow;  // RCMD_LIGHT_ATTACH: 1 = allocate a runtime shadow frustum so this
+                                  // light casts (within the runtime budget; silently shadowless if full).
+                                  // Decided at attach. dir/spot = 1 frustum, point = 6 (a cube).
 } RenderLightParams;
 
 // Field mask for ano_render_light_update_fields: which RenderLightParams fields (+ the model-space

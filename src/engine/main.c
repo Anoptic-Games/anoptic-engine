@@ -197,9 +197,13 @@ void* anoLogicThreadMain(void* arg)
 		// Runtime light lifecycle stand-in (4.7 Phase 3). Each attach/update/detach is one ring
 		// message; advance its flag only on a successful enqueue (backpressure, never drop).
 		if (!rt5000 && now - startTime > 3000000) {
-			RenderLightParams warm = { .color = {1.0f, 0.6f, 0.2f}, .intensity = 8.0f,
-			                           .range = 5.0f, .type = RENDER_LIGHT_POINT };
-			if (ano_render_light_attach(bridge, 5000u, 2u, &warm, 0.0f, 1.0f, 0.0f)) rt5000 = true;
+			// A CASTING runtime spot (audit 4.7 budget expansion): attaches to rid2 at a +Y offset,
+			// aims down, and allocates a runtime shadow frustum so it casts its own shadow. Detached
+			// at ~12 s, which frees the frustum back to the pool.
+			RenderLightParams warm = { .color = {1.0f, 0.6f, 0.2f}, .intensity = 12.0f, .range = 8.0f,
+			                           .innerConeCos = 0.95f, .outerConeCos = 0.80f, .type = RENDER_LIGHT_SPOT,
+			                           .localDir = {0.0f, -1.0f, 0.0f}, .castsShadow = 1u };
+			if (ano_render_light_attach(bridge, 5000u, 2u, &warm, 0.0f, 2.0f, 0.0f)) rt5000 = true;
 		}
 		if (!rt5001 && now - startTime > 3000000) {
 			RenderLightParams cyan = { .color = {0.2f, 0.8f, 1.0f}, .intensity = 8.0f,

@@ -64,11 +64,22 @@
 // The fragment reconstructs a CDF lower bound (Hamburger 4MSM) instead of PCF-ing a depth-compare.
 // A separable Gaussian prefilter blurs the moments (filtering = soft shadows), which is why the map
 // resolution dropped to 512: filtered moments don't alias the way a depth-compare map does.
-#define ANO_SHADOW_DIR_COUNT     1u    // directional casters (one ortho map each)
-#define ANO_SHADOW_SPOT_COUNT    1u    // spot casters (one perspective map each)
-#define ANO_SHADOW_POINT_COUNT   4u    // point casters (6 cube-face maps each)
+#define ANO_SHADOW_DIR_COUNT     1u    // static directional casters (one ortho map each)
+#define ANO_SHADOW_SPOT_COUNT    1u    // static spot casters (one perspective map each)
+#define ANO_SHADOW_POINT_COUNT   4u    // static point casters (6 cube-face maps each)
 #define ANO_SHADOW_CUBE_FACES    6u
-#define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // currently 26 (DIR=1, SPOT=1, POINT=4)
+#define ANO_SHADOW_STATIC_FRUSTUM_COUNT (ANO_SHADOW_DIR_COUNT + ANO_SHADOW_SPOT_COUNT + ANO_SHADOW_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // 26: the init rig
+// Runtime shadow-caster headroom (audit 4.7): frustums above the static rig, allocated/freed at
+// runtime as attached lights opt into casting (ano_render_light_attach castsShadow). Two pools, no
+// fragmentation: single = dir/spot (1 frustum), point = 6 contiguous cube faces. Each frustum is a
+// 512^2 RGBA16 atlas+temp layer (~12.6 MiB x3 frames), so this headroom is a real VRAM budget.
+#define ANO_SHADOW_RT_SINGLE_COUNT 4u  // runtime dir/spot casters (1 frustum each)
+#define ANO_SHADOW_RT_POINT_COUNT  2u  // runtime point casters (6 frustums each)
+#define ANO_SHADOW_RT_FRUSTUM_COUNT (ANO_SHADOW_RT_SINGLE_COUNT + ANO_SHADOW_RT_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // 16
+#define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_STATIC_FRUSTUM_COUNT + ANO_SHADOW_RT_FRUSTUM_COUNT) // 42 (static 26 + runtime 16)
+#define ANO_SHADOW_RT_SINGLE_BASE ANO_SHADOW_STATIC_FRUSTUM_COUNT                          // single-pool first slot (26)
+#define ANO_SHADOW_RT_POINT_BASE  (ANO_SHADOW_RT_SINGLE_BASE + ANO_SHADOW_RT_SINGLE_COUNT) // point-pool first slot (30)
+#define ANO_SHADOW_NONE          0xFFFFFFFFu // "no shadow frustum" sentinel (ShadowLightInfo.baseFrustum / rowShadowBase)
 #define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = currently 28
 #define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution (moment filtering lets this drop from 1024)
 #define ANO_SHADOW_MOMENT_FORMAT VK_FORMAT_R16G16B16A16_UNORM // 4 optimized power moments, filterable (sampler2DArray)
@@ -515,6 +526,8 @@ typedef struct LightRegistry
     LightData *rowMirror;       // [rowsCapacity] CPU mirror of each row's staged LightData; the
                                 // read-modify-write base for partial RCMD_LIGHT_UPDATE (device copy
                                 // is not host-readable). Written fully on attach/full-update.
+    uint32_t  *rowShadowBase;   // [rowsCapacity] the runtime shadow frustum block base this row's light
+                                // owns (ANO_SHADOW_NONE = non-casting); freed back to the pool on detach.
     uint32_t   rowsCapacity;
 
     uint32_t  *freeRows;        // stack of FREE relative rows (holes below highWater)
@@ -638,13 +651,17 @@ typedef struct CullUBO
 // fragment sampler use the viewProj. They occupy one slot-0 cull partition each, packed after the
 // camera partitions: ANO_VIEW_COUNT*drawSlotCount + s (see ano_draw_partition_count, components.h).
 
-// CPU-authored, one per shadow frustum: which light + cube face it renders. Drives shadowsetup.comp's
-// projection choice (ortho / perspective / cube face). std430: 4 x u32 = 16 B.
+// One per shadow frustum: which light + cube face it renders. Drives shadowsetup.comp's projection
+// choice (ortho / perspective / cube face). `active` lets spare/runtime-freed frustums be skipped:
+// shadowsetup writes reject-all planes for inactive slots (cull then emits nothing) and the record
+// loop skips them, so the runtime headroom slots don't spuriously render light 0. Written through a
+// SlotUpload (race-free runtime mutation) + a render-thread CPU mirror for the record-loop gating.
+// std430: 4 x u32 = 16 B.
 typedef struct ShadowFrustumConfig {
     uint32_t lightIndex;   // index into the light buffer
     uint32_t lightType;    // LightType
     uint32_t faceIndex;    // cube face [0,6) for point lights; 0 otherwise
-    uint32_t pad;
+    uint32_t active;       // 0 = inactive (skip render, reject-all cull), 1 = live
 } ShadowFrustumConfig;
 
 // CPU-authored, indexed by light index: where this light's shadow frustums (= array layers) live,
@@ -908,18 +925,28 @@ typedef struct RendererState
     VkPipelineLayout        shadowBlurLayout;
     VkDescriptorSetLayout   shadowBlurSetLayout; // 1 combined-image-sampler (blur source array)
 
-    // CPU-authored shadow config: per-frustum (which light/face) + per-light (where its maps live).
-    // Static (filled once at init), host-visible. The light-info buffer is indexed by light index.
-    VkBuffer                shadowFrustumConfigBuffer;
-    GpuAllocation           shadowFrustumConfigAlloc;
-    void*                   shadowFrustumConfigMapped;
-    VkBuffer                shadowLightInfoBuffer;
-    GpuAllocation           shadowLightInfoAlloc;
-    void*                   shadowLightInfoMapped;
-    // Running shadow-frustum allocator, advanced by addLightEntity as casters register at init.
+    // Shadow config: per-frustum (which light/face/active) + per-light (where its maps live). Both
+    // are SlotUpload (×1 device + delta staging) so the runtime caster lifecycle can mutate them
+    // race-free, exactly like lightBuffer; the static rig seeds them at init. shadowCfgMirror is the
+    // render-thread CPU copy of the config the record loop reads for per-frustum gating (the device
+    // copy is not host-readable). shadowInfo is GPU-only (fragment), so it needs no mirror.
+    SlotUpload              shadowConfig;           // ShadowFrustumConfig[ANO_SHADOW_FRUSTUM_COUNT]
+    SlotUpload              shadowInfo;             // ShadowLightInfo[lightBuffer.capacity]
+    ShadowFrustumConfig*    shadowCfgMirror;        // [ANO_SHADOW_FRUSTUM_COUNT] render-thread mirror
+
+    // Static rig frustum allocator (monotonic, init only): the rig fills [0, shadowFrustumNext).
     // shadowTypeUsed indexed by LightType (0 dir / 1 point / 2 spot); bounds each type to its budget.
     uint32_t                shadowFrustumNext;
     uint32_t                shadowTypeUsed[3];
+
+    // Runtime frustum pools (audit 4.7): free-lists over the headroom above the static rig. Single =
+    // dir/spot (1 frustum) in [RT_SINGLE_BASE, RT_POINT_BASE); point = 6-block bases in
+    // [RT_POINT_BASE, FRUSTUM_COUNT). Stacks of free slot/block-base indices; no quarantine needed
+    // (the atlas is per-frame and the config SlotUpload WAR barrier serializes reuse).
+    uint32_t                rtSingleFree[ANO_SHADOW_RT_SINGLE_COUNT];
+    uint32_t                rtSingleFreeCount;
+    uint32_t                rtPointFree[ANO_SHADOW_RT_POINT_COUNT];
+    uint32_t                rtPointFreeCount;
 
     // Fallback resources
     VkImage                 fallbackImage;

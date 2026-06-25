@@ -146,7 +146,7 @@ layout(set = 0, binding = 8) readonly buffer MaterialSSBO {
 // frustums; survivors are written into one slot-0 partition each, packed after the camera partitions
 // (ANO_VIEW_COUNT*drawSlotCount + s). Must match structs.h. CullView = viewProj + 6 planes; this
 // pass uses only the planes.
-#define ANO_SHADOW_FRUSTUM_COUNT 26u  // must match structs.h (DIR=1 + SPOT=1 + POINT=4*6)
+#define ANO_SHADOW_FRUSTUM_COUNT 42u  // must match structs.h (static 26 + runtime 16; inactive slots get reject-all planes)
 layout(set = 0, binding = 9) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
 
 // Per-draw depth key for the Phase 2 transparency sort. cull writes one key per CAMERA transmission
