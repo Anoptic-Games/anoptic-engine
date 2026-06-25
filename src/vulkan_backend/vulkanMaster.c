@@ -1563,6 +1563,32 @@ static void light_registry_collect(LightRegistry* r, uint64_t currentFrame) {
     r->quarantineCount = w;
 }
 
+// Ascending compare for the free-row sort below. Subtraction would overflow on uint32_t.
+static int lr_cmp_u32_asc(const void* a, const void* b) {
+    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
+    return (x > y) - (x < y);
+}
+
+// High-water compaction: peel the trailing contiguous run of FREE rows off the top so the published
+// cull light count (base + highWater) shrinks after a permanent drop in live lights, instead of
+// staying pinned at the historical peak. Mirrors render_slots_compact (audit 4.5). Only FREE rows
+// peel — QUARANTINED rows still inside their framesInFlight reuse window stay counted (an in-flight
+// frame may still read them, and a peel-then-regrow would reuse the index too early). Call AFTER
+// collect (so newly-expired rows are FREE) and BEFORE publishing the count. Returns rows reclaimed.
+static uint32_t light_registry_compact(LightRegistry* r) {
+    if (r->freeCount == 0u) return 0u;
+    // Sort ascending so the trailing free run is a suffix; non-trailing holes stay a valid prefix
+    // free-list (alloc pops from the end — order is irrelevant to correctness).
+    qsort(r->freeRows, r->freeCount, sizeof(uint32_t), lr_cmp_u32_asc);
+    uint32_t before = r->highWater;
+    // freeCount>0 short-circuits before the highWater-1u read, so highWater==0 can't underflow.
+    while (r->freeCount > 0u && r->freeRows[r->freeCount - 1u] == r->highWater - 1u) {
+        r->freeCount--;
+        r->highWater--;
+    }
+    return before - r->highWater;
+}
+
 // Build a GPU LightData from bridge params + a resolved parent slot (transformIndex) + local offset.
 static LightData light_data_from_params(const RenderLightParams* p, uint32_t transformIndex, const float off[3]) {
     LightData L = {0};
@@ -1764,6 +1790,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
     // ran before this drain (per-frame order), so a light attached this frame is binned next frame,
     // one frame after its row data was staged + flushed — acceptable for a discrete attach/detach.
     light_registry_collect(&state->lightRegistry, state->globalFrame);
+    light_registry_compact(&state->lightRegistry); // peel trailing free rows -> shrink the cull light count
     state->lightBuffer.count = state->lightRegistry.base + state->lightRegistry.highWater;
 
     // Stage the held streamed slice into this frame against the now-settled slot map.

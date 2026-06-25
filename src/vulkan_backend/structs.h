@@ -484,9 +484,9 @@ _Static_assert(sizeof(LightData) == 64, "LightData must be 64B (4x vec4) to matc
 // light palette: rows [base, base+capacity); rows [0, base) are the permanent init-rig lights. Maps a
 // producer-owned light_id -> palette row, records each row's parent render_id for the parent-DESTROY
 // cascade, and frame-quarantines a detached row before reuse (mirrors RenderSlotTable's quarantine).
-// highWater is the dynamic peak; the cull light count is base + highWater. No high-water compaction
-// in v1 — the free-list caps growth at the concurrent peak; reclaiming the bound after a permanent
-// drop is a follow-up. Render-thread only; no synchronization. ANO_RENDER_SLOT_UNMAPPED == unmapped.
+// highWater is the dynamic peak; the cull light count is base + highWater. light_registry_compact
+// peels the trailing free run each drain to lower highWater after a permanent drop, so the cull bound
+// reclaims past the concurrent peak. Render-thread only; no synchronization. ANO_RENDER_SLOT_UNMAPPED == unmapped.
 enum { LIGHT_ROW_FREE = 0u, LIGHT_ROW_LIVE = 1u, LIGHT_ROW_QUARANTINED = 2u };
 
 typedef struct LightRowQuarantine { uint32_t row; uint64_t safeFrame; } LightRowQuarantine;
