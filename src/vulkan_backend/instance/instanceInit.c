@@ -1468,13 +1468,16 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 2u); // tonemap (per view) + shadow atlas
+	// Per frame: ANO_VIEW_COUNT tonemap + the +4 = shadow atlas (geomSet) + blurAtlasSet + blurTempSet
+	// + 1 spare (inherited margin). Actual use is ANO_VIEW_COUNT+3; +4 keeps a one-descriptor cushion.
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u);
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 4;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 6u);
+	// + 2 blur sets/frame on top of (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2).
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 8u);
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1669,6 +1672,18 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     if (vkAllocateDescriptorSets(ctx->device, &geomAlloc, geomTemp) != VK_SUCCESS) { printf("Failed to allocate shadow geom sets!\n"); return false; }
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { rendererState.frames[i].shadow.setupSet = setupTemp[i]; rendererState.frames[i].shadow.geomSet = geomTemp[i]; }
 
+    // Moment-blur source sets (audit 4.7 MSM): two per frame (blur-X reads atlas, blur-Y reads temp).
+    VkDescriptorSetLayout blurLayouts[2 * MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < 2 * MAX_FRAMES_IN_FLIGHT; ++i) blurLayouts[i] = rendererState.shadowBlurSetLayout;
+    VkDescriptorSetAllocateInfo blurAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = 2 * MAX_FRAMES_IN_FLIGHT, .pSetLayouts = blurLayouts };
+    VkDescriptorSet blurTemp[2 * MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &blurAlloc, blurTemp) != VK_SUCCESS) { printf("Failed to allocate shadow blur sets!\n"); return false; }
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        rendererState.frames[i].shadow.blurAtlasSet = blurTemp[2 * i + 0];
+        rendererState.frames[i].shadow.blurTempSet  = blurTemp[2 * i + 1];
+    }
+
 	return true;
 }
 
@@ -1743,8 +1758,9 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo frI   = { sh->frustumBuffer, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo infoI = { state->shadowLightInfoBuffer, 0, VK_WHOLE_SIZE };
         VkDescriptorImageInfo  atI   = { state->shadowSampler, sh->arrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo  tmI   = { state->shadowSampler, sh->tempArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
-        VkWriteDescriptorSet w[7] = {};
+        VkWriteDescriptorSet w[9] = {};
         // shadowsetup set (0 config, 1 transforms, 2 lights, 3 frustums-out) — all storage.
         for (int j = 0; j < 4; ++j) {
             w[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1766,7 +1782,15 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
         w[6].dstSet = sh->geomSet; w[6].dstBinding = 2; w[6].descriptorCount = 1;
         w[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[6].pBufferInfo = &infoI;
 
-        vkUpdateDescriptorSets(ctx->device, 7, w, 0, NULL);
+        // moment-blur source sets: blurAtlasSet samples the atlas (X pass), blurTempSet the temp (Y pass).
+        w[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[7].dstSet = sh->blurAtlasSet; w[7].dstBinding = 0; w[7].descriptorCount = 1;
+        w[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[7].pImageInfo = &atI;
+        w[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[8].dstSet = sh->blurTempSet; w[8].dstBinding = 0; w[8].descriptorCount = 1;
+        w[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[8].pImageInfo = &tmI;
+
+        vkUpdateDescriptorSets(ctx->device, 9, w, 0, NULL);
     }
 }
 
@@ -2421,13 +2445,20 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			if(rendererState.frames[i].views[v].clusterLightIndexBuffer)
 				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightIndexBuffer, NULL);
 		}
-		// Dynamic shadow resources (audit 4.7): per-frame frustum buffer + depth atlas + views.
+		// Dynamic shadow resources (audit 4.7 MSM): per-frame frustum buffer + moment atlas + blur
+		// temp + transient depth + their views.
 		ShadowResources* sh = &rendererState.frames[i].shadow;
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
 		if (sh->arrayView) vkDestroyImageView(ctx->device, sh->arrayView, NULL);
-		for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
+		if (sh->tempArrayView) vkDestroyImageView(ctx->device, sh->tempArrayView, NULL);
+		for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
 			if (sh->layerView[s]) vkDestroyImageView(ctx->device, sh->layerView[s], NULL);
+			if (sh->tempLayerView[s]) vkDestroyImageView(ctx->device, sh->tempLayerView[s], NULL);
+		}
+		if (sh->depthView) vkDestroyImageView(ctx->device, sh->depthView, NULL);
 		if (sh->atlasImage) vkDestroyImage(ctx->device, sh->atlasImage, NULL);
+		if (sh->tempImage) vkDestroyImage(ctx->device, sh->tempImage, NULL);
+		if (sh->depthImage) vkDestroyImage(ctx->device, sh->depthImage, NULL);
 	}
 	// Static shadow config/info buffers (once).
 	if (rendererState.shadowFrustumConfigBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowFrustumConfigBuffer, NULL);

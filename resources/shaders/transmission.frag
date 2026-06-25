@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
 
 struct MaterialData {
     uint      features;
@@ -91,37 +92,16 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
-// --- Dynamic shadows (set 2), mirrors flat.frag (audit 4.7) ---
+// --- Dynamic shadows (set 2), mirrors flat.frag (audit 4.7; moment shadow maps) ---
 struct ShadowCullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
 layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { ShadowCullView shadowFrustums[]; } shadowFrustumBuf;
-layout(set = 2, binding = 1) uniform sampler2DArrayShadow shadowAtlas;
+layout(set = 2, binding = 1) uniform sampler2DArray shadowAtlas;
 layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
 
-float sampleShadowPCF(uint layer, vec3 worldPos, float nDotL) {
-    vec4 lc = shadowFrustumBuf.shadowFrustums[layer].viewProj * vec4(worldPos, 1.0);
-    vec3 proj = lc.xyz / lc.w;
-    if (proj.z > 1.0 || proj.z < 0.0) return 1.0;
-    vec2 uv = proj.xy * 0.5 + 0.5;
-    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 1.0;
-    float bias = max(0.0015 * (1.0 - nDotL), 0.0004);
-    float ref = proj.z - bias;
-    vec2 texel = 1.0 / vec2(textureSize(shadowAtlas, 0).xy);
-    float sum = 0.0;
-    for (int dy = -1; dy <= 1; ++dy)
-        for (int dx = -1; dx <= 1; ++dx)
-            sum += texture(shadowAtlas, vec4(uv + vec2(dx, dy) * texel, float(layer), ref));
-    return sum / 9.0;
-}
-
-// Point-light cube face for direction d = fragWorldPos - lightPos. 0..5 = +X,-X,+Y,-Y,+Z,-Z; MUST
-// match shadowsetup.comp's cubeFaceBasis so layer baseFrustum+face reprojects the fragment in-range.
-uint cubeFaceIndex(vec3 d) {
-    vec3 a = abs(d);
-    if (a.x >= a.y && a.x >= a.z) return d.x >= 0.0 ? 0u : 1u;
-    if (a.y >= a.z)               return d.y >= 0.0 ? 2u : 3u;
-    return d.z >= 0.0 ? 4u : 5u;
-}
+// Moment reconstruct (sampleShadowMSM) + anoCubeFaceIndex, shared with flat.frag. References
+// shadowAtlas + shadowFrustumBuf declared just above.
+#include "shadow_sample.glsl"
 
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
@@ -349,9 +329,9 @@ void main() {
         if (lightUsesShadowMap(light.type, global.lightingMode) && si.castsShadow != 0u && si.frustumCount > 0u) {
             float nDotL = max(dot(normal, L), 0.0);
             if (light.type == LIGHT_TYPE_POINT)
-                shadowFactor = sampleShadowPCF(si.baseFrustum + cubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
+                shadowFactor = sampleShadowMSM(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
             else
-                shadowFactor = sampleShadowPCF(si.baseFrustum, fragWorldPos, nDotL);
+                shadowFactor = sampleShadowMSM(si.baseFrustum, fragWorldPos, nDotL);
         }
 
         vec3 radiance = light.color * light.intensity * attenuation * shadowFactor;
