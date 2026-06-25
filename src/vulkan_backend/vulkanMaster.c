@@ -2641,6 +2641,22 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	candleTransform[3][0] = 2.0f; // Orbit radius of 5 units on X
 	instantiate_model(candleHolderAsset, candleTransform);
 
+	// Second transmissive candle holder, orbiting just beyond the first (audit 4.7: observe the
+	// back-to-front transparency sort). Reuses the same parsed asset, so both share the glass
+	// (TRANSMISSION) material and land in the same sorted "over" partition. The motion loop below
+	// gives every candle entity ANO_MOTION_ORBIT about +Y at the same 0.5 rad/s, so the two stay
+	// radially aligned at different radii and their camera-space front/back order swaps each
+	// revolution — exactly the overlap the sort must keep flicker-free. The 2.5 below is the single
+	// knob: closer to 2.0 = more screen overlap.
+	mat4 candleTransform2 = {
+		{1, 0, 0, 0},
+		{0, 1, 0, 0},
+		{0, 0, 1, 0},
+		{0, 0, 0, 1}
+	};
+	candleTransform2[3][0] = 2.2f; // just beyond the first candle's orbit radius (2.0)
+	instantiate_model(candleHolderAsset, candleTransform2);
+
 	// Ground plane (audit 4.7): a wide thin slab — the fallback cube scaled flat — placed below
 	// the scene so the directional shadow is visible regardless of light orientation. Reuses the
 	// viking room's opaque material (guaranteed to draw + cast). Forced static in the motion loop.
