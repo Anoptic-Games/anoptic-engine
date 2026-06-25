@@ -5,7 +5,7 @@
 
 // Preserved baseline: the pre-ring mutex logger, namespaced mtxlog_* for the optional benchmark
 // (anotest_logbench). Body unchanged from the commit before the lock-free rewrite. Not in the
-// standard build -- see logging_old.h.
+// standard build. See logging_old.h.
 
 // Mutex logger. Producers format on their own thread, then append to a shared buffer under one
 // mutex. The caller drains it to the sink via mtxlog_flush() on its own schedule, so the logger

@@ -8,7 +8,7 @@
 #ifndef ANOPTICENGINE_LOGGING_CORE_H
 #define ANOPTICENGINE_LOGGING_CORE_H
 
-#include <anoptic_logger.h>
+#include <anoptic_logging.h>
 #include <anoptic_memory.h>   // ANO_CACHE_LINE (the cache-line / ring reservation grain)
 
 // A stored line plus the wall-clock prefix total 4096 bytes. ANO_LOG_MSG_MAX is the stored cap.

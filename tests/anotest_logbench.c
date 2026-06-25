@@ -16,8 +16,8 @@
 //      concurrently (the real single-consumer deployment). This is where the lock-free ring should
 //      pull ahead: producers never serialize on a shared mutex.
 
-#include <anoptic_logger.h>          // ring logger (ano_log_*)
-#include "logging/logging_old.h"     // mutex baseline (mtxlog_*)
+#include <anoptic_logging.h>        // ring logger (ano_log_*)
+#include "logging/logging_old.h"    // mutex baseline (mtxlog_*)
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
@@ -31,12 +31,19 @@
 #if defined(_WIN32)
 #include <direct.h>
 static void make_dir(const char *p) { _mkdir(p); }
+static void remove_dir(const char *p) { _rmdir(p); }
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 static void make_dir(const char *p) { mkdir(p, 0777); }
+static void remove_dir(const char *p) { rmdir(p); }
 #endif
 
-#define BENCH_DIR   "anolog_bench"
+// CMake points ANO_TEST_OUTDIR at this test's build tree, so the scratch dir never lands in the caller's CWD.
+#ifndef ANO_TEST_OUTDIR
+#define ANO_TEST_OUTDIR "."
+#endif
+#define BENCH_DIR   ANO_TEST_OUTDIR "/anolog_bench"
 
 #define LAT_BURST   512      // enqueues per timed round; must fit both buffers with no drain
 #define LAT_ROUNDS  4000     // timed rounds -> ~2M enqueues per implementation
@@ -45,14 +52,14 @@ static void make_dir(const char *p) { mkdir(p, 0777); }
 static const int TP_THREADS[] = {1, 2, 4, 8, 16};
 #define TP_POINTS   (int)(sizeof TP_THREADS / sizeof TP_THREADS[0])
 
-#define VAR_MSGS    100000   // variable-length messages per producer thread
-#define VAR_MIN     8        // smallest random message body (bytes)
-#define VAR_MAX     1024     // largest random message body (bytes)
-#define VAR_SEED    0xA0B1C2u // fixed srand seed for reproducible variable-length runs
-#define MIX_MSGS    100000   // mixed small+large messages per producer thread
-#define MIX_LARGE   2048     // large-message body for the mixed battery (bytes)
-#define MIX_SMALL   16       // small-message body for the mixed battery (bytes)
-#define MIX_SEED    0x5E3D17u // fixed srand seed for the mixed battery
+#define VAR_MSGS    100000      // variable-length messages per producer thread
+#define VAR_MIN     8           // smallest random message body (bytes)
+#define VAR_MAX     1024        // largest random message body (bytes)
+#define VAR_SEED    0xA0B1C2u   // fixed srand seed for reproducible variable-length runs
+#define MIX_MSGS    100000      // mixed small+large messages per producer thread
+#define MIX_LARGE   2048        // large-message body for the mixed battery (bytes)
+#define MIX_SMALL   16          // small-message body for the mixed battery (bytes)
+#define MIX_SEED    0x5E3D17u   // fixed srand seed for the mixed battery
 
 // The two implementations behind one vtable. ano_log_* and mtxlog_* share these signatures, so the
 // benchmark drives both through identical call sites.
@@ -155,9 +162,9 @@ static double run_throughput(const logger_api *api, int producers)
    as ("%s", buf) -- the format is a literal, so no varargs/format mismatch is ever possible.
    rand() is seeded once per battery (VAR_SEED) for reproducibility. */
 
-static int g_var_msgs;   // per-thread message count for the active variable-length battery
+static int g_var_msgs;          // per-thread message count for the active variable-length battery
 
-static char rand_ascii(void)                              // printable ASCII, no embedded NUL
+static char rand_ascii(void)    // printable ASCII, no embedded NUL
 {
     static const char alphabet[] =
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,-_";
@@ -199,7 +206,7 @@ static void *mix_producer(void *p)
 static double run_var_throughput(const logger_api *api, int producers,
                                  void *(*prod_fn)(void *), unsigned seed)
 {
-    srand(seed);                       // reproducible content stream (producers spawned serially below)
+    srand(seed);    // reproducible content stream (producers spawned serially below)
 
     atomic_store(&g_flusher_stop, false);
     anothread_t fl;
@@ -273,14 +280,14 @@ int main(void)
     printf("-------------------------------------------------------------------------\n");
     printf("%-26s %12.1f ns %12.1f ns %9.2fx\n", "enqueue latency (1 thread)",
            ring.latency_ns, mutex.latency_ns,
-           mutex.latency_ns / ring.latency_ns);                 // >1 = ring faster per call
+           mutex.latency_ns / ring.latency_ns); // >1 = ring faster per call
     for (int i = 0; i < TP_POINTS; i++) {
         char label[40];
         snprintf(label, sizeof label, "throughput @ %d producer%s", TP_THREADS[i],
                  TP_THREADS[i] == 1 ? "" : "s");
         printf("%-26s %9.2f M/s %11.2f M/s %9.2fx\n", label,
                ring.throughput[i] / 1e6, mutex.throughput[i] / 1e6,
-               ring.throughput[i] / mutex.throughput[i]);       // >1 = ring faster
+               ring.throughput[i] / mutex.throughput[i]);   // >1 = ring faster
     }
 
     // Variable-length battery: random length VAR_MIN..VAR_MAX, random ASCII, logged as ("%s", buf).
@@ -312,8 +319,9 @@ int main(void)
     printf("\n(ring/mutex > 1.0 means the ring won. Latency column inverts the ratio so >1 is\n");
     printf(" always \"ring better\". Numbers vary run to run; take the trend, not the digits.)\n");
 
-    // Tidy the throwaway files.
+    // Tidy the throwaway files and directory.
     remove(BENCH_DIR "/anoptic.log");
     remove(BENCH_DIR "/anoptic_mtx.log");
+    remove_dir(BENCH_DIR);
     return 0;
 }

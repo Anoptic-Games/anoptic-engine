@@ -6,9 +6,12 @@ target_link_libraries(anotest_time PRIVATE anoptic_core)
 add_test(NAME anoptic_time COMMAND anotest_time)
 set_tests_properties(anoptic_time PROPERTIES TIMEOUT 30 LABELS "unit")
 
-# Testing for ``anoptic_logger.h``
+# Testing for ``anoptic_logging.h``
+# ANO_TEST_OUTDIR anchors the test's scratch dirs to its own build tree, so output never lands in
+# the caller's CWD even when the binary is run by hand from the repo root.
 add_executable(anotest_logging anotest_logging.c)
 target_link_libraries(anotest_logging PRIVATE anoptic_core)
+target_compile_definitions(anotest_logging PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME anoptic_logging COMMAND anotest_logging)
 set_tests_properties(anoptic_logging PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
 
@@ -40,6 +43,7 @@ set_tests_properties(anoptic_chariots PROPERTIES DISABLED TRUE LABELS "optional;
 # run ./anotest_logbench by hand.
 add_executable(anotest_logbench anotest_logbench.c ${CMAKE_SOURCE_DIR}/src/logging/logging_old.c)
 target_include_directories(anotest_logbench PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_definitions(anotest_logbench PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(anotest_logbench PRIVATE anoptic_core)
 add_test(NAME anoptic_logbench COMMAND anotest_logbench)
 set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
@@ -50,6 +54,7 @@ set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;
 # so the summed output line count must equal the total enqueued. Deterministic and fast by default
 # (fixed seed, ~few seconds); pass an iteration count as argv[1] for a longer soak.
 add_executable(anotest_logfuzz anotest_logfuzz.c)
+target_compile_definitions(anotest_logfuzz PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(anotest_logfuzz PRIVATE anoptic_core)
 add_test(NAME anoptic_logfuzz COMMAND anotest_logfuzz)
 set_tests_properties(anoptic_logfuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;concurrency")

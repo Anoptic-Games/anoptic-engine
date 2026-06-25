@@ -10,7 +10,7 @@
 // config/output-file thrash). Every case drains explicitly via ano_log_flush() before reading back, so
 // its file contents are deterministic. The final case leaves a human-readable log for inspection.
 
-#include <anoptic_logger.h>
+#include <anoptic_logging.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
@@ -23,20 +23,27 @@
 #if defined(_WIN32)
 #include <direct.h>
 static void  make_dir(const char *p) { _mkdir(p); }
+static void  remove_dir(const char *p) { _rmdir(p); }
 static char *cwd_str(char *b, size_t n) { return _getcwd(b, (int)n); }
 #else
 #include <sys/stat.h>
 #include <unistd.h>
 static void  make_dir(const char *p) { mkdir(p, 0777); }
+static void  remove_dir(const char *p) { rmdir(p); }
 static char *cwd_str(char *b, size_t n) { return getcwd(b, n); }
 #endif
 
-#define LOG_DIR      "anolog_test"
-#define LOG_PATH     "anolog_test/anoptic.log"
-#define LOG_DIR_ALT  "anolog_test_alt"
-#define LOG_PATH_ALT "anolog_test_alt/anoptic.log"
-#define VIS_DIR      "anolog_visible"
-#define VIS_PATH     "anolog_visible/anoptic.log"
+// CMake points ANO_TEST_OUTDIR at this test's build tree (build/<cfg>/tests). Fallback "." only when
+// compiled outside the build, so scratch dirs never land in the caller's CWD.
+#ifndef ANO_TEST_OUTDIR
+#define ANO_TEST_OUTDIR "."
+#endif
+#define LOG_DIR      ANO_TEST_OUTDIR "/anolog_test"
+#define LOG_PATH     ANO_TEST_OUTDIR "/anolog_test/anoptic.log"
+#define LOG_DIR_ALT  ANO_TEST_OUTDIR "/anolog_test_alt"
+#define LOG_PATH_ALT ANO_TEST_OUTDIR "/anolog_test_alt/anoptic.log"
+#define VIS_DIR      ANO_TEST_OUTDIR "/anolog_visible"
+#define VIS_PATH     ANO_TEST_OUTDIR "/anolog_visible/anoptic.log"
 
 #define THREAD_COUNT    4
 #define MSGS_PER_THREAD 50
@@ -1083,15 +1090,19 @@ int main(void)
         failures += rc;
     }
 
-    // Ephemeral files are removed; the showcase file is left on disk on purpose.
-    remove(LOG_PATH);
-    remove(LOG_PATH_ALT);
-
     char cwd[1024];
     if (cwd_str(cwd, sizeof cwd))
-        printf("  Showcase log left for inspection: %s/%s\n", cwd, VIS_PATH);
+        printf("  Showcase log written and verified: %s/%s\n", cwd, VIS_PATH);
     else
-        printf("  Showcase log left for inspection: ./%s\n", VIS_PATH);
+        printf("  Showcase log written and verified: ./%s\n", VIS_PATH);
+
+    // Remove every file and directory this test created, so a manual run leaves nothing behind.
+    remove(LOG_PATH);
+    remove(LOG_PATH_ALT);
+    remove(VIS_PATH);
+    remove_dir(LOG_DIR);
+    remove_dir(LOG_DIR_ALT);
+    remove_dir(VIS_DIR);
 
     if (failures != 0) {
         fprintf(stderr, "anoptic_logging: %d case(s) failed\n", failures);

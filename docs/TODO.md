@@ -2,8 +2,8 @@
 
 The macOS Vulkan bring-up epic is done and merged to `main` (PR #62). This file is reset to the engine build sequence from `docs/notes.md` ("What Needs to Be Built", bottom-up dependency order). Terse here. The full spec, current-state audits, and rationale live in notes.md. Current branch: `feature-string-redux` (Step 4).
 
-## Step 1 -- High-performance logger
-Standalone module. Lock-free MPSC enqueue (`fetch_add` + per-slot commit marker), timestamped records, flusher thread via `anoptic_threads`. Wire the sink (`ano_log_output_dir`, `ano_log_interval`) and test file output. The mutex version exists and is concurrency-correct, but output is entirely stubbed. See the audit, rewrite plan, and test plan in notes.md Step 1. First module to exercise arenas + atomics + threads together. Instruments everything after.
+## Step 1 -- High-performance logger  ✅ DONE (2026-06-24)
+Lock-free MPSC ring (variable-length, cache-line-granular; CAS reserve with a full-check; lap-counter reclaim with no zeroing) and an owned consumer drain thread; `ano_log_flush` is a synchronous inline pass. Caller-side bare-ticks timestamp, divisions deferred to drain. Two formatting strategies: eager (hand-rolled prefix + `fast_format`, ~48 ns) and deferred (capture pointers + typed args, render at drain, ~22 ns). Output file + `ano_log_output_dir` wired. Public header `include/anoptic_logging.h`, impl `src/logging/`. Validated four ways: TLA+/TLC + a Haskell model (`scratch/logger/`, gitignored), TSan-clean, byte-for-byte format battery + the `anotest_logfuzz` no-loss fuzzer, and the benchmark (`anotest_logbench`, run from `build.sh 7`). Design `docs/logger.md`; per-function line-count justification `docs/logger_explained.md`. The first module exercising atomics + threads together; instruments everything after.
 
 ## Step 2 -- Dependency update
 Bump GLFW, stb, jsmn, mimalloc submodules to latest stable. Audit API changes. Revalidate mimalloc heaps (`mi_heap_new`/`_destroy`/`_zalloc_aligned`), hugepages, `LOCALHEAPATTR` teardown, and the `mimalloc-override.h` global override. Low risk, low effort.
