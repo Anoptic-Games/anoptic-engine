@@ -123,6 +123,17 @@ void* anoLogicThreadMain(void* arg)
 	bool     tintOn        = false;
 	bool     bulkDestroyed = false;
 
+	// STAND-IN (4.7 Phase 3): runtime light attach / update / detach. ~3 s: attach a warm point
+	// light (light_id 5000) to render_id 2 and a cyan one (5001) to render_id 3, each riding its
+	// parent at a model-space offset. Pulse 5000's intensity every ~0.5 s. ~12 s: detach 5000.
+	// 5001 is left attached so the 16 s bulk-despawn of {3,4} exercises the parent-DESTROY cascade
+	// (the render side auto-disables and reclaims it). Remove when a real light producer exists.
+	bool     rt5000     = false;
+	bool     rt5001     = false;
+	bool     rtDetached = false;
+	uint64_t lastPulse  = startTime;
+	float    pulsePhase = 0.0f;
+
 	while (!atomic_load(&g_logicShouldStop))
 	{
 		uint64_t now = ano_timestamp_us();
@@ -181,6 +192,29 @@ void* anoLogicThreadMain(void* arg)
 			uint32_t ids[2] = { 3u, 4u };
 			if (ano_render_submit_bulk_destroy(bridge, ids, 2)) bulkDestroyed = true;
 			// else: ring full; retry next tick
+		}
+
+		// Runtime light lifecycle stand-in (4.7 Phase 3). Each attach/update/detach is one ring
+		// message; advance its flag only on a successful enqueue (backpressure, never drop).
+		if (!rt5000 && now - startTime > 3000000) {
+			RenderLightParams warm = { .color = {1.0f, 0.6f, 0.2f}, .intensity = 8.0f,
+			                           .range = 5.0f, .type = RENDER_LIGHT_POINT };
+			if (ano_render_light_attach(bridge, 5000u, 2u, &warm, 0.0f, 1.0f, 0.0f)) rt5000 = true;
+		}
+		if (!rt5001 && now - startTime > 3000000) {
+			RenderLightParams cyan = { .color = {0.2f, 0.8f, 1.0f}, .intensity = 8.0f,
+			                           .range = 5.0f, .type = RENDER_LIGHT_POINT };
+			if (ano_render_light_attach(bridge, 5001u, 3u, &cyan, 0.0f, 1.0f, 0.0f)) rt5001 = true;
+		}
+		if (rt5000 && !rtDetached && now - lastPulse > 500000) {
+			pulsePhase += 0.25f; if (pulsePhase >= 2.0f) pulsePhase -= 2.0f;
+			float tri = pulsePhase < 1.0f ? pulsePhase : 2.0f - pulsePhase; // 0..1..0, no libm
+			RenderLightParams warm = { .color = {1.0f, 0.6f, 0.2f}, .intensity = 3.0f + 9.0f * tri,
+			                           .range = 5.0f, .type = RENDER_LIGHT_POINT };
+			if (ano_render_light_update(bridge, 5000u, &warm, 0.0f, 1.0f, 0.0f)) lastPulse = now;
+		}
+		if (rt5000 && !rtDetached && now - startTime > 12000000) {
+			if (ano_render_light_detach(bridge, 5000u)) rtDetached = true;
 		}
 		ano_sleep(2000); // ~2 ms logic tick (stand-in pacing)
 	}
