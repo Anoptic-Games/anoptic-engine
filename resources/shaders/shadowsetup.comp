@@ -22,6 +22,7 @@ struct LightData {
     float range; float innerConeCos; float outerConeCos; uint type;
     uint  transformIndex; uint enabled; uint pad0; uint pad1;
     vec3  localOffset; uint pad2; // model-space offset (audit 4.7); shadow eye uses it too
+    vec3  localDir; uint pad3;    // model-space aim (audit 4.7 fanned spots); shadow eye looks along it
 };
 
 // CullView: viewProj + 6 planes (matches structs.h CullView / cull.comp's shadow read).
@@ -114,7 +115,8 @@ void main() {
     // Shadow eye uses the light's local offset too (audit 4.7), so an offset light's shadow map is
     // built around the same world position the fragment shades + cube-face-picks from — no mismatch.
     vec3 lightPos = (lx * vec4(L.localOffset, 1.0)).xyz;
-    vec3 lightForward = normalize(-lx[2].xyz); // entity local -Z is the travel direction
+    vec3 aim = dot(L.localDir, L.localDir) > 0.0 ? L.localDir : vec3(0.0, 0.0, -1.0); // zero -> -Z
+    vec3 lightForward = normalize(mat3(lx) * aim); // model-space aim; default == old -lx[2]
 
     mat4 viewProj;
     if (cfg.lightType == LIGHT_TYPE_DIRECTIONAL) {

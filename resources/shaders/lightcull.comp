@@ -48,6 +48,8 @@ struct LightData {
     uint  pad1;
     vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
     uint  pad2;
+    vec3  localDir;    // unused here (binning is position+range); present so the struct stride matches
+    uint  pad3;
 };
 
 layout(set = 0, binding = 2) readonly buffer LightSSBO {

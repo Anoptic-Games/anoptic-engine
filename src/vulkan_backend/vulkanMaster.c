@@ -1591,6 +1591,15 @@ static uint32_t light_registry_compact(LightRegistry* r) {
     return before - r->highWater;
 }
 
+// Spot/dir aim into LightData.localDir, defaulting a zero vector to model -Z (reproduces the prior
+// -lx[2] forward). The shader normalizes after rotating by the parent, so a non-unit dir is fine.
+static void light_set_dir(LightData* L, const float d[3]) {
+    bool zero = (d[0] == 0.0f && d[1] == 0.0f && d[2] == 0.0f);
+    L->localDir[0] = zero ? 0.0f : d[0];
+    L->localDir[1] = zero ? 0.0f : d[1];
+    L->localDir[2] = zero ? -1.0f : d[2];
+}
+
 // Build a GPU LightData from bridge params + a resolved parent slot (transformIndex) + local offset.
 static LightData light_data_from_params(const RenderLightParams* p, uint32_t transformIndex, const float off[3]) {
     LightData L = {0};
@@ -1600,6 +1609,7 @@ static LightData light_data_from_params(const RenderLightParams* p, uint32_t tra
     L.type = (uint32_t)p->type;
     L.transformIndex = transformIndex;
     L.localOffset[0] = off[0]; L.localOffset[1] = off[1]; L.localOffset[2] = off[2];
+    light_set_dir(&L, p->localDir);
     L.enabled = 1u;
     return L;
 }
@@ -1614,6 +1624,7 @@ static void light_apply_fields(LightData* dst, const RenderLightParams* p, const
     if (fields & ANO_LIGHT_FIELD_CONE)      { dst->innerConeCos = p->innerConeCos; dst->outerConeCos = p->outerConeCos; }
     if (fields & ANO_LIGHT_FIELD_TYPE)      dst->type = (uint32_t)p->type;
     if (fields & ANO_LIGHT_FIELD_OFFSET)    { dst->localOffset[0] = off[0]; dst->localOffset[1] = off[1]; dst->localOffset[2] = off[2]; }
+    if (fields & ANO_LIGHT_FIELD_DIRECTION) light_set_dir(dst, p->localDir);
 }
 
 // Cascade: disable + quarantine every runtime light attached to a renderable that is being destroyed.
@@ -3191,6 +3202,24 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		c.color[0] = 1.0f; c.color[1] = 0.2f; c.color[2] = 0.8f; // magenta
 		c.intensity = 5.0f; c.range = 4.0f; c.type = LIGHT_TYPE_POINT;
 		addLightToEntity(c, candleSlot,  0.0f, 0.8f, 0.0f, false);
+
+		// Fanned-spot demo (audit 4.7 localDir): two NON-casting spots on the SAME candle slot, same
+		// offset, but aimed in DIFFERENT model-space directions. Their cones fan apart (down-+X vs
+		// down--X) and ride the orbit together — the old parent-(-Z)-only forward could not express
+		// two distinct aims from one slot. localDir is rotated by the parent transform per fragment.
+		LightData s0 = {0};
+		s0.color[0] = 0.5f; s0.color[1] = 1.0f; s0.color[2] = 0.6f; // green
+		s0.intensity = 12.0f; s0.range = 6.0f; s0.type = LIGHT_TYPE_SPOT;
+		s0.innerConeCos = 0.95f; s0.outerConeCos = 0.85f;
+		s0.localDir[0] = 0.7f; s0.localDir[1] = -0.7f; s0.localDir[2] = 0.0f; // aim down and +X
+		addLightToEntity(s0, candleSlot, 0.0f, 1.2f, 0.0f, false);
+
+		LightData s1 = {0};
+		s1.color[0] = 1.0f; s1.color[1] = 0.7f; s1.color[2] = 0.3f; // warm
+		s1.intensity = 12.0f; s1.range = 6.0f; s1.type = LIGHT_TYPE_SPOT;
+		s1.innerConeCos = 0.95f; s1.outerConeCos = 0.85f;
+		s1.localDir[0] = -0.7f; s1.localDir[1] = -0.7f; s1.localDir[2] = 0.0f; // aim down and -X
+		addLightToEntity(s1, candleSlot, 0.0f, 1.2f, 0.0f, false);
 	}
 
 	// ECS <-> render bridge: render-owned slot authority + command/event rings

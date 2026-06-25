@@ -102,6 +102,9 @@ typedef struct RenderLightParams
     float           innerConeCos; // spot inner cone half-angle cosine
     float           outerConeCos; // spot outer cone half-angle cosine
     RenderLightType type;
+    float           localDir[3];  // spot/dir aim in the parent's MODEL space; world forward =
+                                  // rotate(parent, localDir). (0,0,0) -> parent -Z (the default).
+                                  // Lets spots on a shared parent slot fan independently. Point: ignored.
 } RenderLightParams;
 
 // Field mask for ano_render_light_update_fields: which RenderLightParams fields (+ the model-space
@@ -115,7 +118,8 @@ enum {
     ANO_LIGHT_FIELD_CONE      = 1 << 3, // innerConeCos + outerConeCos
     ANO_LIGHT_FIELD_TYPE      = 1 << 4, // type
     ANO_LIGHT_FIELD_OFFSET    = 1 << 5, // light_offset[3]
-    ANO_LIGHT_FIELD_ALL       = (1 << 6) - 1,
+    ANO_LIGHT_FIELD_DIRECTION = 1 << 6, // localDir[3] (spot/dir aim)
+    ANO_LIGHT_FIELD_ALL       = (1 << 7) - 1,
 };
 
 // Occlusion model selector, profiled head-to-head against radiance cascades (see
