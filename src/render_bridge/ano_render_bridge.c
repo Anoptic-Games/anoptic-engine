@@ -98,7 +98,14 @@ bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_
 bool ano_render_light_update(AnoRenderBridge *bridge, uint32_t light_id,
                              const RenderLightParams *params, float ox, float oy, float oz)
 {
-    RenderCommand c = { .kind = RCMD_LIGHT_UPDATE, .light_id = light_id };
+    return ano_render_light_update_fields(bridge, light_id, params, ox, oy, oz, ANO_LIGHT_FIELD_ALL);
+}
+
+bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
+                                    const RenderLightParams *params, float ox, float oy, float oz,
+                                    uint32_t fields)
+{
+    RenderCommand c = { .kind = RCMD_LIGHT_UPDATE, .light_id = light_id, .light_fields = fields };
     if (params) c.light = *params;
     c.light_offset[0] = ox; c.light_offset[1] = oy; c.light_offset[2] = oz;
     return ano_spsc_push(&bridge->commands, &c);

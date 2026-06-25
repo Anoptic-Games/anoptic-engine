@@ -209,9 +209,11 @@ void* anoLogicThreadMain(void* arg)
 		if (rt5000 && !rtDetached && now - lastPulse > 500000) {
 			pulsePhase += 0.25f; if (pulsePhase >= 2.0f) pulsePhase -= 2.0f;
 			float tri = pulsePhase < 1.0f ? pulsePhase : 2.0f - pulsePhase; // 0..1..0, no libm
-			RenderLightParams warm = { .color = {1.0f, 0.6f, 0.2f}, .intensity = 3.0f + 9.0f * tri,
-			                           .range = 5.0f, .type = RENDER_LIGHT_POINT };
-			if (ano_render_light_update(bridge, 5000u, &warm, 0.0f, 1.0f, 0.0f)) lastPulse = now;
+			// Partial update: pulse ONLY intensity. The other params are left zero on purpose — if the
+			// render-side mirror works, the light keeps its warm color/range/offset from attach.
+			RenderLightParams pulse = { .intensity = 3.0f + 9.0f * tri };
+			if (ano_render_light_update_fields(bridge, 5000u, &pulse, 0.0f, 0.0f, 0.0f, ANO_LIGHT_FIELD_INTENSITY))
+				lastPulse = now;
 		}
 		if (rt5000 && !rtDetached && now - startTime > 12000000) {
 			if (ano_render_light_detach(bridge, 5000u)) rtDetached = true;

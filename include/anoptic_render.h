@@ -104,6 +104,20 @@ typedef struct RenderLightParams
     RenderLightType type;
 } RenderLightParams;
 
+// Field mask for ano_render_light_update_fields: which RenderLightParams fields (+ the model-space
+// offset) the update writes. Unnamed fields are PRESERVED from the light's current render-side state,
+// so a producer can pulse just intensity/color without re-sending position/type. The transform/parent
+// are render-derived and always refreshed. ALL == the full overwrite (what ano_render_light_update does).
+enum {
+    ANO_LIGHT_FIELD_COLOR     = 1 << 0, // color[3]
+    ANO_LIGHT_FIELD_INTENSITY = 1 << 1, // intensity
+    ANO_LIGHT_FIELD_RANGE     = 1 << 2, // range
+    ANO_LIGHT_FIELD_CONE      = 1 << 3, // innerConeCos + outerConeCos
+    ANO_LIGHT_FIELD_TYPE      = 1 << 4, // type
+    ANO_LIGHT_FIELD_OFFSET    = 1 << 5, // light_offset[3]
+    ANO_LIGHT_FIELD_ALL       = (1 << 6) - 1,
+};
+
 // Occlusion model selector, profiled head-to-head against radiance cascades (see
 // docs/artifacts/RADIANCE_CASCADES.md). Drives, per light type, whether a light's direct
 // occlusion is sampled from its conventional shadow map this frame or carried by the radiance
@@ -272,6 +286,7 @@ typedef struct RenderCommand
     RenderLightParams light;            // CREATE (if light) or UPDATE | RFIELD_LIGHT; also RCMD_LIGHT_ATTACH/UPDATE
     uint32_t          light_id;         // RCMD_LIGHT_* : producer-owned logical light handle
     float             light_offset[3];  // RCMD_LIGHT_ATTACH/UPDATE : offset in the parent's model space
+    uint32_t          light_fields;     // RCMD_LIGHT_UPDATE : ANO_LIGHT_FIELD_* mask (0 == ALL, full overwrite)
     AnoInstanceData   instance_data;    // CREATE, or UPDATE | RFIELD_USERDATA (zero == inert)
 
     const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
@@ -325,6 +340,12 @@ bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_
                              const RenderLightParams *params, float ox, float oy, float oz);
 bool ano_render_light_update(AnoRenderBridge *bridge, uint32_t light_id,
                              const RenderLightParams *params, float ox, float oy, float oz);
+// Partial update: only the RenderLightParams fields (+ offset) named in `fields` (ANO_LIGHT_FIELD_*)
+// are written; the rest of the light's state is preserved render-side. ano_render_light_update is
+// this with ANO_LIGHT_FIELD_ALL. Same backpressure contract (false == ring full: retry).
+bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
+                                    const RenderLightParams *params, float ox, float oy, float oz,
+                                    uint32_t fields);
 bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 
 // Lighting-mode control (see AnoLightingMode). Selects the occlusion model used from the next

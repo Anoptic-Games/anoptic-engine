@@ -1426,7 +1426,7 @@ static void light_registry_init(LightRegistry* r, uint32_t base, uint32_t capaci
 }
 
 static void light_registry_destroy(LightRegistry* r) {
-    free(r->idToRow); free(r->rowState); free(r->rowParent); free(r->rowLightId);
+    free(r->idToRow); free(r->rowState); free(r->rowParent); free(r->rowLightId); free(r->rowMirror);
     free(r->freeRows); free(r->quarantine);
     memset(r, 0, sizeof(*r));
 }
@@ -1439,10 +1439,12 @@ static bool lr_reserve_rows(LightRegistry* r, uint32_t need) {
     uint8_t*  s  = realloc(r->rowState,   nc);
     uint32_t* pp = realloc(r->rowParent,  (size_t)nc * sizeof(uint32_t));
     uint32_t* li = realloc(r->rowLightId, (size_t)nc * sizeof(uint32_t));
+    LightData* mi = realloc(r->rowMirror, (size_t)nc * sizeof(LightData));
     if (s)  r->rowState   = s;
     if (pp) r->rowParent  = pp;
     if (li) r->rowLightId = li;
-    if (!s || !pp || !li) return false;
+    if (mi) r->rowMirror  = mi;
+    if (!s || !pp || !li || !mi) return false;
     for (uint32_t i = r->rowsCapacity; i < nc; i++) {
         s[i] = LIGHT_ROW_FREE; pp[i] = ANO_RENDER_SLOT_UNMAPPED; li[i] = ANO_RENDER_SLOT_UNMAPPED;
     }
@@ -1602,6 +1604,18 @@ static LightData light_data_from_params(const RenderLightParams* p, uint32_t tra
     return L;
 }
 
+// Partial RCMD_LIGHT_UPDATE: merge only the producer fields named in `fields` (ANO_LIGHT_FIELD_*) into
+// an existing mirror LightData; unnamed fields keep their current value. transformIndex/enabled are
+// render-derived and refreshed by the caller, not here.
+static void light_apply_fields(LightData* dst, const RenderLightParams* p, const float off[3], uint32_t fields) {
+    if (fields & ANO_LIGHT_FIELD_COLOR)     { dst->color[0] = p->color[0]; dst->color[1] = p->color[1]; dst->color[2] = p->color[2]; }
+    if (fields & ANO_LIGHT_FIELD_INTENSITY) dst->intensity = p->intensity;
+    if (fields & ANO_LIGHT_FIELD_RANGE)     dst->range = p->range;
+    if (fields & ANO_LIGHT_FIELD_CONE)      { dst->innerConeCos = p->innerConeCos; dst->outerConeCos = p->outerConeCos; }
+    if (fields & ANO_LIGHT_FIELD_TYPE)      dst->type = (uint32_t)p->type;
+    if (fields & ANO_LIGHT_FIELD_OFFSET)    { dst->localOffset[0] = off[0]; dst->localOffset[1] = off[1]; dst->localOffset[2] = off[2]; }
+}
+
 // Cascade: disable + quarantine every runtime light attached to a renderable that is being destroyed.
 // Stages enabled=0 into THIS frame for each child (correctness write, while the parent slot is still
 // resolvable); the rows return to the free-list after their quarantine elapses.
@@ -1733,6 +1747,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             uint32_t row = light_registry_alloc(&state->lightRegistry, cmd.light_id, cmd.render_id);
             if (row == ANO_RENDER_SLOT_UNMAPPED) break; // palette full / double-attach: drop
             LightData L = light_data_from_params(&cmd.light, parentSlot, cmd.light_offset);
+            state->lightRegistry.rowMirror[row - state->lightRegistry.base] = L; // seed the partial-update RMW base
             slot_upload_stage(&state->lightBuffer, frameIndex, row, &L);
             break;
         }
@@ -1743,8 +1758,14 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             uint32_t parentRid  = light_registry_parent_of(&state->lightRegistry, cmd.light_id);
             uint32_t parentSlot = render_slots_resolve(&state->slots, parentRid);
             if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent gone: drop (cascade clears it)
-            LightData L = light_data_from_params(&cmd.light, parentSlot, cmd.light_offset);
-            slot_upload_stage(&state->lightBuffer, frameIndex, row, &L);
+            // Read-modify-write the mirror: merge only the masked fields (0 == legacy full overwrite),
+            // then refresh the render-derived transformIndex + enabled and re-stage the whole element.
+            uint32_t fields = cmd.light_fields ? cmd.light_fields : ANO_LIGHT_FIELD_ALL;
+            LightData* mir = &state->lightRegistry.rowMirror[row - state->lightRegistry.base];
+            light_apply_fields(mir, &cmd.light, cmd.light_offset, fields);
+            mir->transformIndex = parentSlot;
+            mir->enabled = 1u;
+            slot_upload_stage(&state->lightBuffer, frameIndex, row, mir);
             break;
         }
 
