@@ -12,7 +12,6 @@
 #endif
 #include "anoptic_time.h"
 #include <Windows.h>
-#include <timeapi.h>   // timeBeginPeriod / timeEndPeriod (link winmm)
 #include <time.h>
 #include <errno.h>
 #include <stdatomic.h>
@@ -149,8 +148,9 @@ int ano_busywait(uint64_t ns) {
     return 0; // success
 }
 
-// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is Win10 1803+; define it if the SDK predates it so the
-// source still compiles. An old kernel just rejects the flag at runtime (NULL handle).
+// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is Win10 1803+ (2018); define it if the SDK headers predate
+// it so the source still compiles. We target 1803+, so the hi-res timer is always available and needs
+// no timeBeginPeriod floor.
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -172,30 +172,8 @@ static void NTAPI ano_sleep_timer_free(PVOID p) {
         CloseHandle((HANDLE)p);
 }
 
-// timeBeginPeriod(1) held for the process, taken at most once via CAS and paired with timeEndPeriod
-// at exit so the global multimedia period is never leaked. Only the legacy timer path needs it.
-static _Atomic int gTimePeriodSet = 0;
-
-static void ano_end_time_period(void) {
-    if (atomic_load_explicit(&gTimePeriodSet, memory_order_acquire))
-        timeEndPeriod(1);
-}
-
-// Acquire the 1ms multimedia timer resolution exactly once for the process.
-static void ano_ensure_time_period(void) {
-    int expected = 0;
-    if (atomic_compare_exchange_strong(&gTimePeriodSet, &expected, 1)) {
-        // Begin first, then publish the flag, so "flag set <=> period held" stays exact. On failure
-        // reset to 0 so a later caller can retry rather than the floor being lost for the process.
-        if (timeBeginPeriod(1) != TIMERR_NOERROR)
-            atomic_store(&gTimePeriodSet, 0);
-        else
-            atexit(ano_end_time_period);        // pair the begin exactly once
-    }
-}
-
-// This thread's waitable timer. Prefers the hi-res timer (Win10 1803+), falls back to a manual-reset
-// timer floored by timeBeginPeriod(1). Returns NULL on hard failure (caller degrades to busywait).
+// This thread's hi-res waitable timer, created lazily. Returns NULL on hard failure (caller degrades
+// to a coarse Sleep).
 static HANDLE ano_sleep_timer(void) {
     if (tlSleepTimer == INVALID_HANDLE_VALUE)
         return NULL;             // previously determined unsupported
@@ -204,11 +182,6 @@ static HANDLE ano_sleep_timer(void) {
 
     HANDLE h = CreateWaitableTimerExW(NULL, NULL,
                                       CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    if (h == NULL) {             // pre-1803: plain manual-reset timer floored to 1ms
-        ano_ensure_time_period();
-        h = CreateWaitableTimerExW(NULL, NULL,
-                                   CREATE_WAITABLE_TIMER_MANUAL_RESET, TIMER_ALL_ACCESS);
-    }
     if (h == NULL) {
         tlSleepTimer = INVALID_HANDLE_VALUE;   // give up once, not every call
         return NULL;
