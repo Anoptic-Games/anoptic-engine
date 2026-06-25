@@ -7,6 +7,13 @@ if (WIN32)
     target_sources(anoptic_core PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/time_win64.c
     )
+    # timeBeginPeriod / timeEndPeriod (multimedia timer) for ano_sleep's coarse wait
+    target_link_libraries(anoptic_core PRIVATE winmm)
+    # MSVC ships native <stdatomic.h> only from VS2022 17.5 (MSVC_VERSION 1935) under /std:clatest;
+    # older MSVC needs the experimental flag. MinGW/Clang are unaffected.
+    if (MSVC AND MSVC_VERSION LESS 1935)
+        target_compile_options(anoptic_core PRIVATE /experimental:c11atomics)
+    endif()
 elseif (APPLE)
     target_sources(anoptic_core PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/time_macos.c

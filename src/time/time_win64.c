@@ -4,10 +4,19 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #if defined(_WIN32)
+// Pin the API level before any Windows header so CreateWaitableTimerExW / FlsAlloc prototypes are
+// visible on every toolchain, not just those defaulting to a modern target.
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00   // Win10: hi-res waitable timers
+#define WINVER       0x0A00
+#endif
 #include "anoptic_time.h"
 #include <Windows.h>
+#include <timeapi.h>   // timeBeginPeriod / timeEndPeriod (link winmm)
 #include <time.h>
+#include <errno.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 
@@ -140,11 +149,135 @@ int ano_busywait(uint64_t ns) {
     return 0; // success
 }
 
-// Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix, MultiMedia Timer on Windows)
+// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is Win10 1803+; define it if the SDK predates it so the
+// source still compiles. An old kernel just rejects the flag at runtime (NULL handle).
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+// Spin the last 1ms on ano_busywait; waitable-timer wakeups slop ~0.5-1ms.
+#define ANO_SLEEP_SPIN_TAIL_NS 1000000ULL
+
+// Per-thread cached waitable timer, created lazily and reused for the thread's life. Thread-local so
+// no locks. NULL = not yet attempted, INVALID_HANDLE_VALUE = attempted and unsupported.
+static _Thread_local HANDLE tlSleepTimer = NULL;
+
+// FLS slot whose per-thread destructor closes the cached timer at thread exit, so a churn of
+// transient threads doesn't leak one kernel timer each. Allocated once via CAS.
+static DWORD       gSleepTimerFls = FLS_OUT_OF_INDEXES;
+static _Atomic int gFlsInit = 0;
+
+static void NTAPI ano_sleep_timer_free(PVOID p) {
+    if (p != NULL && p != INVALID_HANDLE_VALUE)
+        CloseHandle((HANDLE)p);
+}
+
+// timeBeginPeriod(1) held for the process, taken at most once via CAS and paired with timeEndPeriod
+// at exit so the global multimedia period is never leaked. Only the legacy timer path needs it.
+static _Atomic int gTimePeriodSet = 0;
+
+static void ano_end_time_period(void) {
+    if (atomic_load_explicit(&gTimePeriodSet, memory_order_acquire))
+        timeEndPeriod(1);
+}
+
+// Acquire the 1ms multimedia timer resolution exactly once for the process.
+static void ano_ensure_time_period(void) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&gTimePeriodSet, &expected, 1)) {
+        // Begin first, then publish the flag, so "flag set <=> period held" stays exact. On failure
+        // reset to 0 so a later caller can retry rather than the floor being lost for the process.
+        if (timeBeginPeriod(1) != TIMERR_NOERROR)
+            atomic_store(&gTimePeriodSet, 0);
+        else
+            atexit(ano_end_time_period);        // pair the begin exactly once
+    }
+}
+
+// This thread's waitable timer. Prefers the hi-res timer (Win10 1803+), falls back to a manual-reset
+// timer floored by timeBeginPeriod(1). Returns NULL on hard failure (caller degrades to busywait).
+static HANDLE ano_sleep_timer(void) {
+    if (tlSleepTimer == INVALID_HANDLE_VALUE)
+        return NULL;             // previously determined unsupported
+    if (tlSleepTimer != NULL)
+        return tlSleepTimer;     // hot path: reuse
+
+    HANDLE h = CreateWaitableTimerExW(NULL, NULL,
+                                      CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (h == NULL) {             // pre-1803: plain manual-reset timer floored to 1ms
+        ano_ensure_time_period();
+        h = CreateWaitableTimerExW(NULL, NULL,
+                                   CREATE_WAITABLE_TIMER_MANUAL_RESET, TIMER_ALL_ACCESS);
+    }
+    if (h == NULL) {
+        tlSleepTimer = INVALID_HANDLE_VALUE;   // give up once, not every call
+        return NULL;
+    }
+    tlSleepTimer = h;
+
+    // Register a thread-exit destructor so the handle is closed when this thread dies.
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&gFlsInit, &expected, 1))
+        gSleepTimerFls = FlsAlloc(ano_sleep_timer_free);
+    if (gSleepTimerFls != FLS_OUT_OF_INDEXES)
+        FlsSetValue(gSleepTimerFls, h);        // fires ano_sleep_timer_free at thread exit
+    return h;
+}
+
+// Use OS time facilities for a high-res sleep that DOES give up thread execution. (clock_nanosleep on
+// Unix, waitable timer + busywait tail on Windows.) The timer yields the CPU for the bulk of the wait,
+// then a sub-millisecond busywait tail recovers the accuracy the scheduler slops away.
+//   in:  us (uint64_t) microseconds to sleep
+//   out: int, 0 on success, positive errno-ish on failure (Unix-backend parity)
 int ano_sleep(uint64_t us) {
 
-    // Convert microseconds to milliseconds and call windows.h Sleep function
-    Sleep((DWORD)(us / 1000));
+    if (us == 0)
+        return 0;   // nothing to wait on, matches a zero-length nanosleep
+
+    uint64_t target_ns = us * 1000ULL;
+    uint64_t start = ano_timestamp_raw();
+    if (start == 0 || start == UINT64_MAX)
+        return EIO;   // clock broken, refuse rather than spin on a garbage delta
+
+    // Coarse stage: yield the CPU for everything but the spin tail.
+    if (target_ns > ANO_SLEEP_SPIN_TAIL_NS) {
+        uint64_t coarse_ns = target_ns - ANO_SLEEP_SPIN_TAIL_NS;
+        HANDLE timer = ano_sleep_timer();
+        bool yielded = false;
+        if (timer != NULL) {
+            // Relative due time in 100ns units, negative per the Win32 ABI. Clamp the magnitude to
+            // INT64_MAX so the negation can't overflow into an absolute (positive) due time on a
+            // pathologically long sleep; floor to 1 so a real wait never rounds to "signal now".
+            uint64_t units = coarse_ns / 100ULL;
+            if (units == 0) units = 1;
+            if (units > (uint64_t)INT64_MAX) units = (uint64_t)INT64_MAX;
+
+            LARGE_INTEGER due;
+            due.QuadPart = -(LONGLONG)units;
+            if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+                if (WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0)
+                    return EIO;
+                yielded = true;
+            }
+        }
+        // No timer, or SetWaitableTimer failed: yield coarsely via Sleep rather than spinning the
+        // whole interval on a core. The spin tail below still recovers the sub-ms accuracy.
+        if (!yielded)
+            Sleep((DWORD)(coarse_ns / 1000000ULL));
+    }
+
+    // Spin stage: busy-wait whatever remains, in <=MAX_BUSYWAIT_NS chunks so a long oversleep (or a
+    // missing coarse stage) can't trip ano_busywait's 1e9ns cap.
+    for (;;) {
+        uint64_t now = ano_timestamp_raw();
+        if (now == 0 || now == UINT64_MAX)
+            return EIO;
+        uint64_t elapsed = now - start;
+        if (elapsed >= target_ns)
+            break;
+        uint64_t remaining = target_ns - elapsed;
+        ano_busywait(remaining > MAX_BUSYWAIT_NS ? MAX_BUSYWAIT_NS : remaining);
+    }
 
     return 0; // success
 }
