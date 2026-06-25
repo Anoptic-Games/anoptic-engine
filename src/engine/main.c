@@ -118,7 +118,7 @@ void* anoLogicThreadMain(void* arg)
 #endif // !HEADLESS_BUILD
 
 // Main function
-#include "anoptic_logger.h"
+#include "anoptic_logging.h"
 int main()
 {
     mi_version();

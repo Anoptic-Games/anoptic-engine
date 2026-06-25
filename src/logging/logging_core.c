@@ -264,7 +264,7 @@ static int format_deferred(char *out, int cap, log_types_t level, const char *bl
         ++f;
         if (*f == '%') { if (p < end) *p++ = '%'; continue; }
         // Fast plain path: % [l|ll|z|t|j](d i u o x X c s), no flags/width/precision/h. Hand-rolled, no
-        // spec build, no libc -- the common case, and what keeps the drain fast.
+        // spec build, no libc. The common case, what keeps the drain fast.
         {
             const char *g = f;
             int plng = 0;

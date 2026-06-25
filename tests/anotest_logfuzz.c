@@ -27,7 +27,7 @@
 // safe by its design but opaque to TSan, not in the logger or this harness, so the teardown frames are
 // suppressed below.
 
-#include <anoptic_logger.h>
+#include <anoptic_logging.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
@@ -40,9 +40,12 @@
 #if defined(_WIN32)
 #include <direct.h>
 static void make_dir(const char *p) { _mkdir(p); }
+static void remove_dir(const char *p) { _rmdir(p); }
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 static void make_dir(const char *p) { mkdir(p, 0777); }
+static void remove_dir(const char *p) { rmdir(p); }
 #endif
 
 // Suppress only mimalloc's thread-teardown frames (see the file banner). Matching either side of a race
@@ -61,14 +64,18 @@ const char *__tsan_default_suppressions(void)
 #  endif
 #endif
 
-#define DIR_A      "anolog_fuzz"
-#define PATH_A     "anolog_fuzz/anoptic.log"
-#define DIR_B      "anolog_fuzz_alt"
-#define PATH_B     "anolog_fuzz_alt/anoptic.log"
+// CMake points ANO_TEST_OUTDIR at this test's build tree, so scratch dirs never land in the caller's CWD.
+#ifndef ANO_TEST_OUTDIR
+#define ANO_TEST_OUTDIR "."
+#endif
+#define DIR_A      ANO_TEST_OUTDIR "/anolog_fuzz"
+#define PATH_A     ANO_TEST_OUTDIR "/anolog_fuzz/anoptic.log"
+#define DIR_B      ANO_TEST_OUTDIR "/anolog_fuzz_alt"
+#define PATH_B     ANO_TEST_OUTDIR "/anolog_fuzz_alt/anoptic.log"
 
 #define PRODUCERS      6
-#define DEFAULT_ITERS  4000   // per producer; ~few seconds, overflows the ring repeatedly
-#define MAX_CONTENT    600    // > one ring entry (64/128B line) to force spanning/wrap, < message cap
+#define DEFAULT_ITERS  4000     // per producer; ~few seconds, overflows the ring repeatedly
+#define MAX_CONTENT    600      // > one ring entry (64/128B line) to force spanning/wrap, < message cap
 
 // Total records actually enqueued, summed across all producers. The drop-nothing oracle.
 static _Atomic uint64_t g_enqueued;
@@ -102,12 +109,12 @@ static size_t make_content(char *buf, uint32_t *s)
 // nothing; the caller counts it. Pick is chosen at random per call.
 static void formatter_case(uint32_t *s)
 {
-    int      i  = (int)xs(s) - (int)0x40000000;       // full signed range
+    int      i  = (int)xs(s) - (int)0x40000000; // full signed range
     unsigned u  = xs(s);
     long long ll = ((long long)xs(s) << 31) ^ xs(s);
     unsigned long long ull = ((unsigned long long)xs(s) << 32) | xs(s);
-    int      w  = (int)(xs(s) % 12);                  // width 0..11
-    int      pr = (int)(xs(s) % 8);                   // precision 0..7
+    int      w  = (int)(xs(s) % 12);            // width 0..11
+    int      pr = (int)(xs(s) % 8);             // precision 0..7
     double   d  = (double)(int)xs(s) / (double)(1 + xs(s) % 1000);
     int      ch = 0x21 + (int)(xs(s) % 0x5d);         // printable char arg
     static const char *strs[] = { "alpha", "", "x", "spanning-sample", "0xZZ" };
@@ -248,6 +255,12 @@ int main(int argc, char **argv)
 
     printf("logfuzz: producers=%d iters=%d enqueued=%llu lines=%llu\n",
            PRODUCERS, g_iters, (unsigned long long)enq, (unsigned long long)lines);
+
+    // Counted above; drop the files and directories so a manual run leaves nothing behind.
+    remove(PATH_A);
+    remove(PATH_B);
+    remove_dir(DIR_A);
+    remove_dir(DIR_B);
 
     if (wfail != 0) {
         fprintf(stderr, "logfuzz: FAIL: %d enqueue call(s) returned an unexpected error code\n", wfail);

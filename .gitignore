@@ -114,6 +114,9 @@ CMakeCache.txt
 # Test assets
 assets/*
 
+# Scratchpad
+scratch/
+
 # Exceptions
 .claude/*
 !.claude/settings.json

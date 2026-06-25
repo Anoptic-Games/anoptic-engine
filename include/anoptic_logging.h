@@ -8,8 +8,8 @@
 // ring to the output file continuously. ano_log_flush() drains inline for callers that need records
 // on disk at once (e.g. per tick). Design: docs/logger.md.
 
-#ifndef ANOPTIC_LOGGER_H
-#define ANOPTIC_LOGGER_H
+#ifndef ANOPTIC_LOGGING_H
+#define ANOPTIC_LOGGING_H
 
 #include <stdint.h>
 
@@ -79,4 +79,4 @@ void ano_log_flush(void);
 #define ano_log_error(...)  ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, __VA_ARGS__)
 #define ano_log_fatal(...)  ano_log_immediate(LOG_FATAL, __FILE_NAME__, __LINE__, __VA_ARGS__)
 
-#endif // ANOPTIC_LOGGER_H
+#endif // ANOPTIC_LOGGING_H
