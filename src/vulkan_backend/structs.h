@@ -463,7 +463,16 @@ typedef struct LightData
     uint32_t    enabled;        // 0 = ignored, 1 = active
     uint32_t    pad0;
     uint32_t    pad1;
-} LightData; // 48 bytes
+    // row 3 (audit 4.7 multi-light). Local offset in the driving entity's MODEL space: world pos =
+    // transforms[transformIndex] * vec4(localOffset, 1). Lets many lights share ONE parent slot at
+    // distinct positions (running lights / engine / cockpit) with no entity slot each; zero ==
+    // driver origin (reproduces the pre-offset behaviour). Applied at ALL FOUR world-pos sites in
+    // lockstep — flat.frag, transmission.frag, lightcull.comp (froxel binning), shadowsetup.comp
+    // (shadow eye, so offset lights also cast correctly). Edit those five mirrors together.
+    float       localOffset[3];
+    uint32_t    pad2;           // reserved (future: packed local direction for fanned spots)
+} LightData; // 64 bytes
+_Static_assert(sizeof(LightData) == 64, "LightData must be 64B (4x vec4) to match the GLSL std430 mirrors");
 
 typedef struct LightBuffer
 {

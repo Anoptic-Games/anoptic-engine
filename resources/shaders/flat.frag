@@ -164,6 +164,8 @@ struct LightData {
     uint  enabled;
     uint  pad0;
     uint  pad1;
+    vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
+    uint  pad2;
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -304,9 +306,10 @@ void main() {
             continue;
         }
 
-        // Derive world placement from the light's driving entity transform.
+        // Derive world placement from the light's driving entity transform + its local offset, so
+        // many lights can share one parent slot at distinct positions (audit 4.7 multi-light).
         mat4 lightXform = transformBuf.transforms[light.transformIndex];
-        vec3 lightPos = lightXform[3].xyz;
+        vec3 lightPos = (lightXform * vec4(light.localOffset, 1.0)).xyz;
         vec3 lightForward = normalize(-lightXform[2].xyz); // entity local -Z is forward
 
         vec3 L;
