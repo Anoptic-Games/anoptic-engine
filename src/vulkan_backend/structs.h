@@ -503,6 +503,9 @@ typedef struct LightRegistry
     uint8_t   *rowState;        // [rowsCapacity] LIGHT_ROW_*
     uint32_t  *rowParent;       // [rowsCapacity] parent render_id  (LIVE rows; drives the cascade scan)
     uint32_t  *rowLightId;      // [rowsCapacity] light_id in the row (LIVE rows; to unmap on cascade)
+    LightData *rowMirror;       // [rowsCapacity] CPU mirror of each row's staged LightData; the
+                                // read-modify-write base for partial RCMD_LIGHT_UPDATE (device copy
+                                // is not host-readable). Written fully on attach/full-update.
     uint32_t   rowsCapacity;
 
     uint32_t  *freeRows;        // stack of FREE relative rows (holes below highWater)
