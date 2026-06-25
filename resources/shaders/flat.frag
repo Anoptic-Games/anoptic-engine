@@ -144,6 +144,8 @@ struct LightData {
     uint  pad1;
     vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
     uint  pad2;
+    vec3  localDir;    // model-space aim; world fwd = normalize(mat3(transforms[transformIndex]) * localDir)
+    uint  pad3;
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -288,7 +290,8 @@ void main() {
         // many lights can share one parent slot at distinct positions (audit 4.7 multi-light).
         mat4 lightXform = transformBuf.transforms[light.transformIndex];
         vec3 lightPos = (lightXform * vec4(light.localOffset, 1.0)).xyz;
-        vec3 lightForward = normalize(-lightXform[2].xyz); // entity local -Z is forward
+        vec3 aim = dot(light.localDir, light.localDir) > 0.0 ? light.localDir : vec3(0.0, 0.0, -1.0); // zero -> -Z
+        vec3 lightForward = normalize(mat3(lightXform) * aim); // model-space aim; default == old -lx[2]
 
         vec3 L;
         float attenuation;

@@ -443,8 +443,8 @@ typedef struct MaterialBuffer
 // (transforms[transformIndex]) so GPU animation (orbit/spin) applies for free.
 // Only photometric parameters and the transform link live in this struct.
 //
-// LightData is laid out as 3 x vec4 (48 bytes) for std430. The leading vec3 +
-// float pack into one 16-byte row (standard std430 vec3+scalar packing); the C
+// LightData is laid out as 5 x vec4 (80 bytes) for std430. Each leading vec3 +
+// scalar packs into one 16-byte row (standard std430 vec3+scalar packing); the C
 // layout below matches byte-for-byte.
 // ---------------------------------------------------------------------------
 typedef enum LightType
@@ -476,9 +476,18 @@ typedef struct LightData
     // lockstep — flat.frag, transmission.frag, lightcull.comp (froxel binning), shadowsetup.comp
     // (shadow eye, so offset lights also cast correctly). Edit those five mirrors together.
     float       localOffset[3];
-    uint32_t    pad2;           // reserved (future: packed local direction for fanned spots)
-} LightData; // 64 bytes
-_Static_assert(sizeof(LightData) == 64, "LightData must be 64B (4x vec4) to match the GLSL std430 mirrors");
+    uint32_t    pad2;
+    // row 4 (audit 4.7 fanned spots). Light direction in the driving entity's MODEL space: world
+    // forward = normalize(mat3(transforms[transformIndex]) * localDir). Lets spots/directionals on a
+    // shared parent slot aim independently instead of all following the parent's -Z. (0,0,-1)
+    // reproduces the prior -lx[2] behaviour (the C layer defaults a zero vector to it). Decoded at
+    // the three direction sites in lockstep: flat.frag, transmission.frag, shadowsetup.comp (spot
+    // shadow eye). lightcull.comp bins by position+range only, so it ignores this field (but its
+    // struct mirror MUST still carry the row for a matching stride).
+    float       localDir[3];
+    uint32_t    pad3;
+} LightData; // 80 bytes
+_Static_assert(sizeof(LightData) == 80, "LightData must be 80B (5x vec4) to match the GLSL std430 mirrors");
 
 // Runtime light lifecycle (audit 4.7 Phase 3). Render-side authority over the DYNAMIC region of the
 // light palette: rows [base, base+capacity); rows [0, base) are the permanent init-rig lights. Maps a
