@@ -82,6 +82,10 @@ static void slot_upload_stage(SlotUpload* b, uint32_t f, uint32_t index, const v
 static void slot_upload_flush(VkCommandBuffer cmd, SlotUpload* b, uint32_t f);
 static bool slot_upload_grow_device(SlotUpload* b, uint32_t newCap, uint32_t keep);
 
+// Runtime light registry teardown (audit 4.7 Phase 3); defined with the registry below but used by
+// unInitVulkan above it.
+static void light_registry_destroy(LightRegistry* r);
+
 // Assorted utility functions
 
 void unInitVulkan() // A celebration
@@ -99,6 +103,7 @@ void unInitVulkan() // A celebration
 	// failure) since the destroys guard NULL and the heap free is gated below.
 	ano_render_bridge_destroy(&rendererState.bridge);
 	render_slots_destroy(&rendererState.slots);
+	light_registry_destroy(&rendererState.lightRegistry);
 	if (rendererState.renderHeap)
 	{
 		mi_heap_destroy(rendererState.renderHeap);
@@ -1340,6 +1345,182 @@ static void free_owned_bulk(const RenderCommand* c)
     if (blk) mi_free(blk);
 }
 
+// ---------------------------------------------------------------------------
+// Runtime light registry (audit 4.7 Phase 3). Render-thread only; no locks. Owns the dynamic light
+// palette region [base, base+capacity). See LightRegistry in structs.h.
+// ---------------------------------------------------------------------------
+
+static void light_registry_init(LightRegistry* r, uint32_t base, uint32_t capacity, uint32_t framesInFlight) {
+    memset(r, 0, sizeof(*r));
+    r->base = base;
+    r->capacity = capacity;
+    r->framesInFlight = framesInFlight;
+}
+
+static void light_registry_destroy(LightRegistry* r) {
+    free(r->idToRow); free(r->rowState); free(r->rowParent); free(r->rowLightId);
+    free(r->freeRows); free(r->quarantine);
+    memset(r, 0, sizeof(*r));
+}
+
+// Grow the per-row arrays (state/parent/lightId share rowsCapacity), zero/UNMAPPED-filling the tail.
+static bool lr_reserve_rows(LightRegistry* r, uint32_t need) {
+    if (need <= r->rowsCapacity) return true;
+    uint32_t nc = r->rowsCapacity ? r->rowsCapacity : 16u;
+    while (nc < need) nc *= 2u;
+    uint8_t*  s  = realloc(r->rowState,   nc);
+    uint32_t* pp = realloc(r->rowParent,  (size_t)nc * sizeof(uint32_t));
+    uint32_t* li = realloc(r->rowLightId, (size_t)nc * sizeof(uint32_t));
+    if (s)  r->rowState   = s;
+    if (pp) r->rowParent  = pp;
+    if (li) r->rowLightId = li;
+    if (!s || !pp || !li) return false;
+    for (uint32_t i = r->rowsCapacity; i < nc; i++) {
+        s[i] = LIGHT_ROW_FREE; pp[i] = ANO_RENDER_SLOT_UNMAPPED; li[i] = ANO_RENDER_SLOT_UNMAPPED;
+    }
+    r->rowsCapacity = nc;
+    return true;
+}
+
+static bool lr_reserve_ids(LightRegistry* r, uint32_t need) {
+    if (need <= r->idCapacity) return true;
+    uint32_t nc = r->idCapacity ? r->idCapacity : 16u;
+    while (nc < need) {
+        if (nc > (0xFFFFFFFFu / 2u)) { nc = need; break; } // cap the doubling so nc cannot wrap to 0
+        nc *= 2u;
+    }
+    uint32_t* p = realloc(r->idToRow, (size_t)nc * sizeof(uint32_t));
+    if (!p) return false;
+    for (uint32_t i = r->idCapacity; i < nc; i++) p[i] = ANO_RENDER_SLOT_UNMAPPED;
+    r->idToRow = p; r->idCapacity = nc;
+    return true;
+}
+
+static void lr_push_free(LightRegistry* r, uint32_t row) {
+    if (r->freeCount >= r->freeCapacity) {
+        uint32_t nc = r->freeCapacity ? r->freeCapacity * 2u : 16u;
+        uint32_t* p = realloc(r->freeRows, (size_t)nc * sizeof(uint32_t));
+        if (!p) return; // OOM: row leaks (stays unused), no corruption
+        r->freeRows = p; r->freeCapacity = nc;
+    }
+    r->freeRows[r->freeCount++] = row;
+}
+
+static void lr_push_quarantine(LightRegistry* r, uint32_t row, uint64_t safeFrame) {
+    if (r->quarantineCount >= r->quarantineCapacity) {
+        uint32_t nc = r->quarantineCapacity ? r->quarantineCapacity * 2u : 16u;
+        LightRowQuarantine* p = realloc(r->quarantine, (size_t)nc * sizeof(LightRowQuarantine));
+        if (!p) return; // OOM: row stays QUARANTINED forever (never reused), no corruption
+        r->quarantine = p; r->quarantineCapacity = nc;
+    }
+    r->quarantine[r->quarantineCount++] = (LightRowQuarantine){ .row = row, .safeFrame = safeFrame };
+}
+
+// Attach: map light_id to a fresh row driven by parentRid. Returns the ABSOLUTE palette row, or
+// ANO_RENDER_SLOT_UNMAPPED on capacity exhaustion / OOM / already-mapped id (producer error -> drop).
+static uint32_t light_registry_alloc(LightRegistry* r, uint32_t light_id, uint32_t parentRid) {
+    if (light_id == ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED; // sentinel reserved; also guards light_id+1u wrap
+    if (!lr_reserve_ids(r, light_id + 1u)) return ANO_RENDER_SLOT_UNMAPPED;
+    if (r->idToRow[light_id] != ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED; // double-attach
+    uint32_t row;
+    if (r->freeCount > 0u) {
+        row = r->freeRows[--r->freeCount];           // reuse a quarantine-expired hole
+    } else {
+        if (r->highWater >= r->capacity) return ANO_RENDER_SLOT_UNMAPPED; // palette full
+        if (!lr_reserve_rows(r, r->highWater + 1u)) return ANO_RENDER_SLOT_UNMAPPED;
+        row = r->highWater++;
+    }
+    r->rowState[row]     = LIGHT_ROW_LIVE;
+    r->rowParent[row]    = parentRid;
+    r->rowLightId[row]   = light_id;
+    r->idToRow[light_id] = row;
+    return r->base + row;
+}
+
+static uint32_t light_registry_resolve(const LightRegistry* r, uint32_t light_id) {
+    if (light_id >= r->idCapacity) return ANO_RENDER_SLOT_UNMAPPED;
+    uint32_t row = r->idToRow[light_id];
+    return (row == ANO_RENDER_SLOT_UNMAPPED) ? ANO_RENDER_SLOT_UNMAPPED : r->base + row;
+}
+
+static uint32_t light_registry_parent_of(const LightRegistry* r, uint32_t light_id) {
+    if (light_id >= r->idCapacity) return ANO_RENDER_SLOT_UNMAPPED;
+    uint32_t row = r->idToRow[light_id];
+    return (row == ANO_RENDER_SLOT_UNMAPPED) ? ANO_RENDER_SLOT_UNMAPPED : r->rowParent[row];
+}
+
+// Detach one light_id: quarantine its row and unmap the id. Returns the ABSOLUTE row to disable
+// (caller stages enabled=0), or ANO_RENDER_SLOT_UNMAPPED if the id was not mapped.
+static uint32_t light_registry_detach(LightRegistry* r, uint32_t light_id, uint64_t currentFrame) {
+    if (light_id >= r->idCapacity) return ANO_RENDER_SLOT_UNMAPPED;
+    uint32_t row = r->idToRow[light_id];
+    if (row == ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED;
+    r->idToRow[light_id] = ANO_RENDER_SLOT_UNMAPPED;
+    r->rowState[row]     = LIGHT_ROW_QUARANTINED;
+    r->rowLightId[row]   = ANO_RENDER_SLOT_UNMAPPED;
+    lr_push_quarantine(r, row, currentFrame + r->framesInFlight);
+    return r->base + row;
+}
+
+// Detach every light attached to parentRid (parent-DESTROY cascade). Writes up to `max` ABSOLUTE
+// rows to disable into out_rows; returns the count. Call in a loop while it returns `max`. O(highWater)
+// per call — a sibling-list index is the scale upgrade; runtime light churn is bounded for now.
+static uint32_t light_registry_detach_children(LightRegistry* r, uint32_t parentRid,
+                                               uint64_t currentFrame, uint32_t* out_rows, uint32_t max) {
+    uint32_t n = 0;
+    for (uint32_t row = 0; row < r->highWater && n < max; row++) {
+        if (r->rowState[row] != LIGHT_ROW_LIVE || r->rowParent[row] != parentRid) continue;
+        uint32_t lid = r->rowLightId[row];
+        if (lid != ANO_RENDER_SLOT_UNMAPPED && lid < r->idCapacity) r->idToRow[lid] = ANO_RENDER_SLOT_UNMAPPED;
+        r->rowState[row]   = LIGHT_ROW_QUARANTINED;
+        r->rowLightId[row] = ANO_RENDER_SLOT_UNMAPPED;
+        lr_push_quarantine(r, row, currentFrame + r->framesInFlight);
+        out_rows[n++] = r->base + row;
+    }
+    return n;
+}
+
+// Return quarantined rows whose safeFrame has elapsed to the free-list for reuse.
+static void light_registry_collect(LightRegistry* r, uint64_t currentFrame) {
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < r->quarantineCount; i++) {
+        LightRowQuarantine q = r->quarantine[i];
+        if (q.safeFrame <= currentFrame) {
+            r->rowState[q.row] = LIGHT_ROW_FREE;
+            lr_push_free(r, q.row);
+        } else {
+            r->quarantine[w++] = q; // not yet safe: keep
+        }
+    }
+    r->quarantineCount = w;
+}
+
+// Build a GPU LightData from bridge params + a resolved parent slot (transformIndex) + local offset.
+static LightData light_data_from_params(const RenderLightParams* p, uint32_t transformIndex, const float off[3]) {
+    LightData L = {0};
+    L.color[0] = p->color[0]; L.color[1] = p->color[1]; L.color[2] = p->color[2];
+    L.intensity = p->intensity; L.range = p->range;
+    L.innerConeCos = p->innerConeCos; L.outerConeCos = p->outerConeCos;
+    L.type = (uint32_t)p->type;
+    L.transformIndex = transformIndex;
+    L.localOffset[0] = off[0]; L.localOffset[1] = off[1]; L.localOffset[2] = off[2];
+    L.enabled = 1u;
+    return L;
+}
+
+// Cascade: disable + quarantine every runtime light attached to a renderable that is being destroyed.
+// Stages enabled=0 into THIS frame for each child (correctness write, while the parent slot is still
+// resolvable); the rows return to the free-list after their quarantine elapses.
+static void cascade_detach_lights(RendererState* state, uint32_t parentRid, uint32_t frameIndex) {
+    uint32_t rows[64]; uint32_t n;
+    LightData off = {0}; // enabled == 0
+    do {
+        n = light_registry_detach_children(&state->lightRegistry, parentRid, state->globalFrame, rows, 64u);
+        for (uint32_t k = 0; k < n; k++)
+            slot_upload_stage(&state->lightBuffer, frameIndex, rows[k], &off);
+    } while (n == 64u);
+}
+
 static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 {
     // Drain the bridge and stage each command's changed per-slot fields into THIS frame's
@@ -1382,7 +1563,8 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
         case RCMD_DESTROY: {
             uint32_t slot = render_slots_resolve(&state->slots, cmd.render_id);
             if (slot != ANO_RENDER_SLOT_UNMAPPED) {
-                stage_command_fields(state, &cmd, slot, frameIndex); // dead-mark
+                stage_command_fields(state, &cmd, slot, frameIndex);     // dead-mark
+                cascade_detach_lights(state, cmd.render_id, frameIndex); // disable lights riding this slot
                 render_slots_retire(&state->slots, cmd.render_id, state->globalFrame);
             }
             break;
@@ -1443,9 +1625,41 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 uint32_t slot = render_slots_resolve(&state->slots, rid);
                 if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
                 slot_upload_stage(&state->culling.entity, frameIndex, slot, dead);
+                cascade_detach_lights(state, rid, frameIndex); // disable lights riding this slot
                 render_slots_retire(&state->slots, rid, state->globalFrame);
             }
             free_owned_bulk(&cmd);
+            break;
+        }
+
+        case RCMD_LIGHT_ATTACH: {
+            // Attach a runtime light to a renderable: it rides that slot's transform at light_offset.
+            uint32_t parentSlot = render_slots_resolve(&state->slots, cmd.render_id);
+            if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent not (yet) resolvable: drop
+            uint32_t row = light_registry_alloc(&state->lightRegistry, cmd.light_id, cmd.render_id);
+            if (row == ANO_RENDER_SLOT_UNMAPPED) break; // palette full / double-attach: drop
+            LightData L = light_data_from_params(&cmd.light, parentSlot, cmd.light_offset);
+            slot_upload_stage(&state->lightBuffer, frameIndex, row, &L);
+            break;
+        }
+
+        case RCMD_LIGHT_UPDATE: {
+            uint32_t row = light_registry_resolve(&state->lightRegistry, cmd.light_id);
+            if (row == ANO_RENDER_SLOT_UNMAPPED) break; // unknown light: drop
+            uint32_t parentRid  = light_registry_parent_of(&state->lightRegistry, cmd.light_id);
+            uint32_t parentSlot = render_slots_resolve(&state->slots, parentRid);
+            if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent gone: drop (cascade clears it)
+            LightData L = light_data_from_params(&cmd.light, parentSlot, cmd.light_offset);
+            slot_upload_stage(&state->lightBuffer, frameIndex, row, &L);
+            break;
+        }
+
+        case RCMD_LIGHT_DETACH: {
+            uint32_t row = light_registry_detach(&state->lightRegistry, cmd.light_id, state->globalFrame);
+            if (row != ANO_RENDER_SLOT_UNMAPPED) {
+                LightData off = {0}; // enabled == 0
+                slot_upload_stage(&state->lightBuffer, frameIndex, row, &off);
+            }
             break;
         }
 
@@ -1476,6 +1690,13 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
         // buffers stay grown — see SLOT_RECLAIM.md for the deferred per-region VRAM path).
         render_slots_compact(&state->slots);
     }
+
+    // Runtime light lifecycle (audit 4.7 Phase 3): return quarantine-expired light rows to the
+    // free-list, then publish the cull light count = base + dynamic high-water. updateCullingBuffers
+    // ran before this drain (per-frame order), so a light attached this frame is binned next frame,
+    // one frame after its row data was staged + flushed — acceptable for a discrete attach/detach.
+    light_registry_collect(&state->lightRegistry, state->globalFrame);
+    state->lightBuffer.count = state->lightRegistry.base + state->lightRegistry.highWater;
 
     // Stage the held streamed slice into this frame against the now-settled slot map.
     // Re-resolves only on a resolveGen bump (new publish or retirement); otherwise it
@@ -2838,6 +3059,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Runtime light registry (audit 4.7 Phase 3). The init rig's lights occupy palette rows
+	// [0, lightBuffer.count); the registry owns the dynamic remainder for runtime attach/detach.
+	// Captured here, after the whole scene rig has staged its permanent lights and before the
+	// init-batch drain (render_apply_commands below) first publishes base + highWater.
+	light_registry_init(&rendererState.lightRegistry, rendererState.lightBuffer.count,
+	                    rendererState.lightBuffer.capacity - rendererState.lightBuffer.count,
+	                    MAX_FRAMES_IN_FLIGHT);
+
 	// Stream render_id ring now that renderHeap exists: CPU-only, parallel to xformRing,
 	// producer-written and render-resolved. Freed wholesale on mi_heap_destroy at teardown.
 	rendererState.transformStream.idRing = mi_heap_malloc(rendererState.renderHeap,
@@ -2931,6 +3160,20 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		slot_upload_flush(up, &rendererState.initialTransformBuffer, 0);
 		slot_upload_flush(up, &rendererState.motionBuffer, 0);
 		slot_upload_flush(up, &rendererState.instanceDataBuffer, 0);
+		// Zero the whole light palette before seeding it (audit 4.7 Phase 3 hardening): a dynamic row
+		// that is counted (base+highWater) but never staged — e.g. an attach whose host-side staging
+		// growth fails under OOM — then reads as enabled=0 (inert) instead of uninitialized device
+		// memory, which the cull/fragment would treat as a phantom light with an OOB transformIndex
+		// (they only skip enabled==0). The init rig's rows are copied over [0,count) by the flush right
+		// after; the barrier orders the fill before that overlapping copy.
+		vkCmdFillBuffer(up, rendererState.lightBuffer.device, 0,
+		                (VkDeviceSize)sizeof(LightData) * rendererState.lightBuffer.capacity, 0u);
+		{
+			VkMemoryBarrier fillToCopy = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+			    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
+			vkCmdPipelineBarrier(up, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			    0, 1, &fillToCopy, 0, NULL, 0, NULL);
+		}
 		slot_upload_flush(up, &rendererState.lightBuffer, 0);
 		slot_upload_flush(up, &rendererState.culling.entity, 0);
 		endSingleTimeCommands(&ctx, up);

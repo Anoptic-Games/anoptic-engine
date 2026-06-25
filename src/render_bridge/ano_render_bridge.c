@@ -83,3 +83,29 @@ bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd)
 {
     return ano_spsc_push(&bridge->commands, cmd);
 }
+
+// Runtime light endpoints (audit 4.7). Build a POD RenderCommand and push it through the same SPSC
+// command ring; backpressure contract is ano_render_submit's (false == ring full, retry).
+bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_t parent_render_id,
+                             const RenderLightParams *params, float ox, float oy, float oz)
+{
+    RenderCommand c = { .kind = RCMD_LIGHT_ATTACH, .render_id = parent_render_id, .light_id = light_id };
+    if (params) c.light = *params;
+    c.light_offset[0] = ox; c.light_offset[1] = oy; c.light_offset[2] = oz;
+    return ano_spsc_push(&bridge->commands, &c);
+}
+
+bool ano_render_light_update(AnoRenderBridge *bridge, uint32_t light_id,
+                             const RenderLightParams *params, float ox, float oy, float oz)
+{
+    RenderCommand c = { .kind = RCMD_LIGHT_UPDATE, .light_id = light_id };
+    if (params) c.light = *params;
+    c.light_offset[0] = ox; c.light_offset[1] = oy; c.light_offset[2] = oz;
+    return ano_spsc_push(&bridge->commands, &c);
+}
+
+bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
+{
+    RenderCommand c = { .kind = RCMD_LIGHT_DETACH, .light_id = light_id };
+    return ano_spsc_push(&bridge->commands, &c);
+}

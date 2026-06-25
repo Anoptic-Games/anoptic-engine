@@ -161,6 +161,9 @@ typedef enum RenderCommandKind
     RCMD_BULK_UPDATE,  // one shared field mask applied across a render_id array; see `update`
     RCMD_BULK_DESTROY, // mass despawn of a render_id array; see `destroy`
     RCMD_STREAM_TRANSFORMS, // publishes one streamed-transform ring slice; carries {stream_seq, stream_count}, see ano_render_stream_begin
+    RCMD_LIGHT_ATTACH,      // attach a runtime light to a renderable (render_id = parent); see ano_render_light_attach
+    RCMD_LIGHT_UPDATE,      // change an attached light's params/offset (addressed by light_id)
+    RCMD_LIGHT_DETACH,      // remove an attached light (addressed by light_id)
 } RenderCommandKind;
 
 // Which payload fields a CREATE/UPDATE carries. A single UPDATE may set several
@@ -266,7 +269,9 @@ typedef struct RenderCommand
     uint32_t          mesh_index;       // CREATE, or UPDATE | RFIELD_MESH_MAT
     uint32_t          material_index;   // CREATE, or UPDATE | RFIELD_MESH_MAT
     uint32_t          light_index;      // ANO_RENDER_NO_LIGHT if not a light
-    RenderLightParams light;            // CREATE (if light) or UPDATE | RFIELD_LIGHT
+    RenderLightParams light;            // CREATE (if light) or UPDATE | RFIELD_LIGHT; also RCMD_LIGHT_ATTACH/UPDATE
+    uint32_t          light_id;         // RCMD_LIGHT_* : producer-owned logical light handle
+    float             light_offset[3];  // RCMD_LIGHT_ATTACH/UPDATE : offset in the parent's model space
     AnoInstanceData   instance_data;    // CREATE, or UPDATE | RFIELD_USERDATA (zero == inert)
 
     const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
@@ -305,6 +310,22 @@ bool ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *ren
 // Single-producer only (the thread that owns the bridge); valid after init.
 bool ano_render_stream_begin(AnoStreamRegion *out);
 bool ano_render_stream_commit(const AnoStreamRegion *region, uint32_t count);
+
+// Runtime per-renderable lights (audit 4.7). A light is attached to a parent renderable by a
+// producer-owned light_id and rides the parent's live transform at a model-space offset; many lights
+// may share one parent, none cost an entity slot. Same backpressure contract as ano_render_submit
+// (false == ring full: retry, never drop). The light_id namespace is the producer's to assign and
+// recycle, independent of render_id. Detach is implicit on the parent's DESTROY (the render side
+// disables and reclaims the parent's lights as part of the slot cascade), so an explicit detach is
+// only needed to remove a light while its parent lives.
+//   attach: light_id must be currently unmapped; the parent CREATE must precede it in ring order.
+//   update: carries the full params + offset (the light payload is tiny; there is no partial mask).
+//   detach: idempotent (an unknown/already-detached light_id is a no-op).
+bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_t parent_render_id,
+                             const RenderLightParams *params, float ox, float oy, float oz);
+bool ano_render_light_update(AnoRenderBridge *bridge, uint32_t light_id,
+                             const RenderLightParams *params, float ox, float oy, float oz);
+bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 
 // Lighting-mode control (see AnoLightingMode). Selects the occlusion model used from the next
 // recorded frame onward. Set/read from the render thread (the frame record path is single
