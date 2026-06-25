@@ -1752,11 +1752,11 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         ShadowResources* sh = &state->frames[i].shadow;
-        VkDescriptorBufferInfo cfgI  = { state->shadowFrustumConfigBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo cfgI  = { state->shadowConfig.device, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo xfI   = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo ltI   = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo frI   = { sh->frustumBuffer, 0, VK_WHOLE_SIZE };
-        VkDescriptorBufferInfo infoI = { state->shadowLightInfoBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo infoI = { state->shadowInfo.device, 0, VK_WHOLE_SIZE };
         VkDescriptorImageInfo  atI   = { state->shadowSampler, sh->arrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo  tmI   = { state->shadowSampler, sh->tempArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
@@ -2460,17 +2460,17 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		if (sh->tempImage) vkDestroyImage(ctx->device, sh->tempImage, NULL);
 		if (sh->depthImage) vkDestroyImage(ctx->device, sh->depthImage, NULL);
 	}
-	// Static shadow config/info buffers (once).
-	if (rendererState.shadowFrustumConfigBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowFrustumConfigBuffer, NULL);
-	if (rendererState.shadowLightInfoBuffer) vkDestroyBuffer(ctx->device, rendererState.shadowLightInfoBuffer, NULL);
+	// Shadow config mirror (the render-thread CPU copy; the device buffers are SlotUploads destroyed below).
+	if (rendererState.shadowCfgMirror) { free(rendererState.shadowCfgMirror); rendererState.shadowCfgMirror = NULL; }
 
 	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
 	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the
 	// gpu allocator; here we destroy the VkBuffer handles and free the region arrays.)
 	{
-		SlotUpload* ups[5] = { &rendererState.initialTransformBuffer, &rendererState.motionBuffer,
-			&rendererState.instanceDataBuffer, &rendererState.lightBuffer, &rendererState.culling.entity };
-		for (uint32_t u = 0; u < 5; u++) {
+		SlotUpload* ups[7] = { &rendererState.initialTransformBuffer, &rendererState.motionBuffer,
+			&rendererState.instanceDataBuffer, &rendererState.lightBuffer, &rendererState.culling.entity,
+			&rendererState.shadowConfig, &rendererState.shadowInfo };
+		for (uint32_t u = 0; u < 7; u++) {
 			if (ups[u]->device) vkDestroyBuffer(ctx->device, ups[u]->device, NULL);
 			for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 				if (ups[u]->staging[i]) vkDestroyBuffer(ctx->device, ups[u]->staging[i], NULL);
