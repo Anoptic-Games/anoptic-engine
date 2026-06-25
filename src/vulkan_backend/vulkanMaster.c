@@ -1868,27 +1868,24 @@ bool createLightBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxLig
 // the entry into every frame's light buffer. Must be called before the per-frame
 // transform upload loop so the light's transform reaches the transform buffers.
 // Returns the new entity index.
-static uint32_t addLightEntity(LightData light, mat4 transform) {
-    uint32_t entIdx = rendererState.entityCount;
-    rendererState.entityCount += 1;
-    rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
-
+// Stage a light into the palette and (optionally) register its shadow caster. The caller must have
+// already set transformIndex + localOffset + photometric fields. Returns the palette index.
+// castsShadow=false leaves info[lightIdx] at its default non-casting state (the right choice for the
+// many small decorative lights of audit 4.7 multi-light, and mandatory once the 26-layer atlas is
+// full). Shared by addLightEntity (light-only entity) and addLightToEntity (attach to a renderable).
+static uint32_t register_light(LightData light, bool castsShadow) {
     uint32_t lightIdx = rendererState.lightBuffer.count++;
-
-    rendererState.entities[entIdx].meshIndex = NO_MESH_INDEX;   // skipped by culling -> draws nothing
-    rendererState.entities[entIdx].materialIndex = 0;
-    rendererState.entities[entIdx].lightIndex = lightIdx;
-    memcpy(&rendererState.entities[entIdx].transform, transform, sizeof(mat4));
-
-    light.transformIndex = entIdx;
     light.enabled = 1;
     // Stage into frame 0's light delta; init's one-shot flush uploads it to the device buffer
     // (shared by all frames in flight). Called during scene setup, before the first draw.
     slot_upload_stage(&rendererState.lightBuffer, 0, lightIdx, &light);
 
-    // Register a shadow caster for this light, within its type's budget (ANO_SHADOW_*_COUNT). Point
-    // lights claim 6 contiguous cube-face frustums, dir/spot one each. The frustum block lays out
-    // cfg[base..] and the light's info points at it; shadowsetup builds each, the fragment samples.
+    if (!castsShadow) return lightIdx;
+
+    // Register a shadow caster within its type's budget (ANO_SHADOW_*_COUNT). Point lights claim 6
+    // contiguous cube-face frustums, dir/spot one each. The frustum block lays out cfg[base..] and
+    // the light's info points at it; shadowsetup builds each (offset-aware), the fragment samples.
+    // Beyond budget the light stays shadowless (info default castsShadow=0) — no error.
     uint32_t budget = light.type == LIGHT_TYPE_DIRECTIONAL ? ANO_SHADOW_DIR_COUNT
                     : light.type == LIGHT_TYPE_POINT       ? ANO_SHADOW_POINT_COUNT
                                                            : ANO_SHADOW_SPOT_COUNT;
@@ -1906,7 +1903,35 @@ static uint32_t addLightEntity(LightData light, mat4 transform) {
         rendererState.shadowFrustumNext += blockSize;
         rendererState.shadowTypeUsed[light.type] += 1u;
     }
+    return lightIdx;
+}
+
+// Light-only entity (the original 1:1 model): a mesh-less entity slot whose transform drives ONE
+// light at the slot origin (localOffset stays the caller's value, conventionally {0}). Casts a
+// shadow within budget. Prefer addLightToEntity to hang extra lights on an existing renderable.
+static uint32_t addLightEntity(LightData light, mat4 transform) {
+    uint32_t entIdx = rendererState.entityCount;
+    rendererState.entityCount += 1;
+    rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
+
+    rendererState.entities[entIdx].meshIndex = NO_MESH_INDEX;   // skipped by culling -> draws nothing
+    rendererState.entities[entIdx].materialIndex = 0;
+    memcpy(&rendererState.entities[entIdx].transform, transform, sizeof(mat4));
+
+    light.transformIndex = entIdx;                       // driven by this slot's transform
+    rendererState.entities[entIdx].lightIndex = register_light(light, true);
     return entIdx;
+}
+
+// Attach a light to an EXISTING renderable (audit 4.7 multi-light): it rides that entity's live
+// transform at a model-space localOffset, costing a palette row but NO entity slot. Many lights can
+// share one parent (running lights / engine / cockpit), all animated for free. Returns the palette
+// index. Pass castsShadow=true only if a shadow frustum is genuinely available (the atlas is small).
+static uint32_t addLightToEntity(LightData light, uint32_t parentEntityIndex,
+                                 float ox, float oy, float oz, bool castsShadow) {
+    light.transformIndex = parentEntityIndex;
+    light.localOffset[0] = ox; light.localOffset[1] = oy; light.localOffset[2] = oz;
+    return register_light(light, castsShadow);
 }
 
 bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
@@ -2771,6 +2796,29 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		l.innerConeCos = 0.966f; // ~15 degrees
 		l.outerConeCos = 0.906f; // ~25 degrees
 		addLightEntity(l, xform);
+	}
+
+	// Audit 4.7 multi-light demo: three small NON-casting point lights attached to the (orbiting)
+	// candle holder's slot at distinct LOCAL offsets. They cost three light-palette rows but ZERO
+	// entity slots, and ride the candle's GPU orbit for free — the running-lights / engine / cockpit
+	// case the scalar light_index could not express. Non-casting because the shadow atlas is already
+	// full (DIR + 4 point + spot = 26 layers) and decorative ship lights do not cast anyway.
+	{
+		uint32_t candleSlot = vikingRoomEntityCount; // first candle holder entity (orbits about +Y)
+		LightData a = {0};
+		a.color[0] = 1.0f; a.color[1] = 0.5f; a.color[2] = 0.15f; // warm amber
+		a.intensity = 6.0f; a.range = 4.0f; a.type = LIGHT_TYPE_POINT;
+		addLightToEntity(a, candleSlot,  0.6f, 0.3f, 0.0f, false);
+
+		LightData b = {0};
+		b.color[0] = 0.2f; b.color[1] = 0.8f; b.color[2] = 1.0f; // cyan
+		b.intensity = 6.0f; b.range = 4.0f; b.type = LIGHT_TYPE_POINT;
+		addLightToEntity(b, candleSlot, -0.6f, 0.3f, 0.0f, false);
+
+		LightData c = {0};
+		c.color[0] = 1.0f; c.color[1] = 0.2f; c.color[2] = 0.8f; // magenta
+		c.intensity = 5.0f; c.range = 4.0f; c.type = LIGHT_TYPE_POINT;
+		addLightToEntity(c, candleSlot,  0.0f, 0.8f, 0.0f, false);
 	}
 
 	// ECS <-> render bridge: render-owned slot authority + command/event rings

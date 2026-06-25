@@ -46,6 +46,8 @@ struct LightData {
     uint  enabled;
     uint  pad0;
     uint  pad1;
+    vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
+    uint  pad2;
 };
 
 layout(set = 0, binding = 2) readonly buffer LightSSBO {
@@ -119,7 +121,7 @@ void main() {
         if (L.type == LIGHT_TYPE_DIRECTIONAL || L.range <= 0.0) {
             include = true; // unbounded: relevant to every froxel
         } else {
-            vec3 worldPos = transforms[L.transformIndex][3].xyz;
+            vec3 worldPos = (transforms[L.transformIndex] * vec4(L.localOffset, 1.0)).xyz;
             vec3 viewPos = (g.view * vec4(worldPos, 1.0)).xyz;
             include = sphereAabb(viewPos, L.range, bmin, bmax);
         }
