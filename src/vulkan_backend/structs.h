@@ -51,6 +51,12 @@
 // shadow pass); every per-view buffer/target/set array and the CullUBO frustum array size to it.
 #define ANO_VIEW_COUNT           2u
 
+// Default per-view screen-area cull threshold, in pixels of projected bounding-sphere radius
+// (review 4.9 step 1). An in-frustum entity smaller than this on screen emits no draw. ~1.5 px
+// drops genuinely sub-pixel geometry while staying conservative; tune per view at runtime via
+// ano_render_set_view_cull_threshold (0 disables the test for that view).
+#define ANO_CULL_PIXEL_THRESHOLD_DEFAULT  1.5f
+
 // Dynamic shadow pass (audit 4.7 follow-on, built on the 4.8 multi-frustum cull). Each shadow map
 // is one more frustum to cull against: a directional ortho map, a spot perspective map, and 6
 // perspective faces per point light. All shadow maps are layers of one 2D array — point lights
@@ -643,6 +649,15 @@ typedef struct CullUBO
     // transmission lane (the depth-sorted "over" lane). ANO_NO_DRAW_SLOT if that lane is absent.
     // std140 uvec4 (16 B contiguous); cull.comp reads specialSlots.x / .y.
     uint32_t specialSlots[4];
+    // Per-view screen-area cull knobs (review 4.9 step 1). One vec4 per view, tightly packed like
+    // drawSlotOf so C float[ANO_VIEW_COUNT][4] mirrors GLSL vec4[ANO_VIEW_COUNT] with no std140
+    // scalar-array padding (a bare float[] pads each element to 16 B and desyncs). Per view:
+    //   [v][0] screenAreaScale  = |proj[1][1]| * 0.5 * screenHeight  (cot(fovY/2) * half-height px),
+    //                             so projected pixel radius rpx = worldRadius * scale / dist.
+    //   [v][1] pixelThresholdSq = (min drawn pixel radius)^2; a draw is dropped iff rpx^2 < this.
+    //                             0 disables the test for that view (pre-step-1 behavior).
+    //   [v][2..3] reserved (step 2 per-view LOD thresholds).
+    float    viewCullParams[ANO_VIEW_COUNT][4];
 } CullUBO;
 
 // --- Dynamic shadows (audit 4.7 follow-on, on the 4.8 multi-frustum cull) -------------------
@@ -972,6 +987,12 @@ typedef struct RendererState
     // from the render thread (L-key callback / ano_render_set_lighting_mode).
     uint32_t                lightingMode;   // AnoLightingMode; default ANO_LIGHTING_SHADOWMAP (0)
     uint32_t                debugView;      // RC debug visualization selector (0 = off)
+    // Per-view screen-area cull threshold in pixels (review 4.9 step 1): an in-frustum entity whose
+    // projected bounding-sphere radius falls below this is dropped before it emits a draw. Held per
+    // view (a peripheral main view can cull harder than a zoomed scope inset) and runtime-set via
+    // ano_render_set_view_cull_threshold; 0 disables the test for that view. updateCullingBuffers
+    // squares it into CullUBO.viewCullParams[v][1]. Defaulted in createCullingBuffers.
+    float                   cullPixelThreshold[ANO_VIEW_COUNT];
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.

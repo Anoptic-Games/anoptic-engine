@@ -12,7 +12,8 @@ struct EntityInfo {
 #define ANO_VIEW_COUNT 2u
 
 struct CullView {
-    mat4 viewProj;        // unused here (frustum is pre-extracted CPU-side), kept for std140 layout
+    mat4 viewProj;        // frustum is pre-extracted CPU-side; viewProj still used for the screen-area
+                          // cull distance + the transmission sort key (both read its .w == -view_z)
     vec4 frustumPlanes[6];
 };
 
@@ -28,6 +29,10 @@ layout(set = 0, binding = 0) uniform CullUBO {
     // Special draw slots (CPU-built from ano_draw_slot_of). x = additive lane (casts no shadow),
     // y = transmission lane (the depth-sorted "over" lane). 0xFFFFFFFF if that lane is absent.
     uvec4 specialSlots;
+    // Per-view screen-area cull knobs (review 4.9 step 1; mirrors CullUBO.viewCullParams in
+    // structs.h). .x = screenAreaScale (cot(fovY/2) * half viewport height in px), .y =
+    // pixelThresholdSq (min drawn pixel radius squared; 0 = test off). .zw reserved (step 2 LOD).
+    vec4 viewCullParams[ANO_VIEW_COUNT];
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -235,12 +240,24 @@ void main() {
     // contiguous range above as one slot-0 partition per frustum (ANO_VIEW_COUNT*drawSlotCount + s).
     for (uint view = 0u; view < viewCount; ++view) {
         if (isVisibleIn(view, worldCenter, worldRadius)) {
+            // dist = clip.w == -view_z (positive in front of the eye) under the RH zero-to-one
+            // perspective (docs/math_conventions.md). Drives both the screen-area cull and the
+            // transmission sort key, so compute it once.
+            float dist = (views[view].viewProj * worldCenter).w;
+            // Screen-area cull (review 4.9 step 1): projected pixel radius rpx = worldRadius *
+            // screenAreaScale / dist; drop draws below this view's threshold. Compared squared to
+            // avoid the divide: rpx^2 < thresh^2  <=>  (worldRadius*scale)^2 < threshSq * dist^2.
+            // dist <= 0 (center at/behind the eye) bypasses the test so straddling geometry is kept;
+            // thresholdSq == 0 disables it entirely for this view.
+            float rnum = worldRadius * viewCullParams[view].x;
+            if (dist > 0.0 && rnum * rnum < viewCullParams[view].y * dist * dist) {
+                continue;
+            }
             uint w = emitDraw(view * drawSlotCount + slot, idx, mData);
-            // Only the "over" (transmission) lane is depth-sorted. clip.w == -view_z under the RH
-            // zero-to-one perspective (docs/math_conventions.md): larger key = farther; tpsort.comp
+            // Only the "over" (transmission) lane is depth-sorted. Larger key = farther; tpsort.comp
             // sorts descending so the farthest draws first (back-to-front).
             if (slot == specialSlots.y) {
-                sortKeys[view * maxEntities + w] = (views[view].viewProj * worldCenter).w;
+                sortKeys[view * maxEntities + w] = dist;
             }
         }
     }
