@@ -850,6 +850,13 @@ typedef struct ViewResources
     GpuAllocation       hdrColorAlloc;
     VkImageView         hdrColorView;
 
+    // Picking id resolve target (R32_UINT, single-sample): SAMPLE_ZERO resolve of the shared MSAA
+    // id attachment, then copied to a readback buffer. ONLY frames[*].views[0] is populated (the
+    // gameplay view); other views render the id attachment but discard it (resolveMode=NONE).
+    VkImage             pickIdResolveImage;
+    GpuAllocation       pickIdResolveAlloc;
+    VkImageView         pickIdResolveView;
+
     // Hi-Z occlusion pyramid (review 4.9 step 3): half-res R32F mip chain built from depthImage each
     // frame. hizSampledView covers all mips (downsample reads mip k-1; the cull samples it next frame);
     // hizMipViews[k] is a single-mip storage view the build writes via imageStore. hizSets[k] is the
@@ -895,6 +902,12 @@ typedef struct PerFrameResources
     // flight: reset + written during record, read back after this slot's fence next time round.
     VkQueryPool         timestampPool;
 
+    // Picking readback: the view-0 id texel under the cursor, copied here each frame and read after
+    // this slot's fence (the timestamp-collect pattern). Host-visible|coherent, persistently mapped.
+    VkBuffer            pickReadback;
+    GpuAllocation       pickReadbackAlloc;
+    uint32_t*           pickReadbackMapped;
+
     // Per-view resources (camera UBO, depth, HDR target, froxel lists, descriptor sets).
     ViewResources       views[ANO_VIEW_COUNT];
 
@@ -916,6 +929,18 @@ typedef struct RendererState
     PerFrameResources       frames[MAX_FRAMES_IN_FLIGHT];
     uint32_t                frameIndex;
     bool                    framebufferResized;
+
+    // Latest cursor position in framebuffer pixels (origin top-left), updated by the GLFW cursor
+    // callback on the render thread; the picking readback samples the id-buffer texel here. Read +
+    // written only on the render thread, so plain floats (no atomics).
+    float                   cursorX, cursorY;
+
+    // GPU id-buffer picking (audit 3.1): shared MSAA R32_UINT id attachment (mirrors colorImage),
+    // resolved per frame for view 0. lastPickRenderId de-dupes REVENT_PICK_RESULT (emit on change).
+    VkImage                 pickIdImage;
+    GpuAllocation           pickIdImageAlloc;
+    VkImageView             pickIdView;
+    uint32_t                lastPickRenderId;
 
     // Swapchain
     VkSwapchainKHR          swapChain;

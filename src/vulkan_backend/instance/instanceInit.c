@@ -46,22 +46,87 @@ void enumerateMonitors(Monitors* monitors) // Instance creation helper
 	}
 }
 
+static void forward_input(const AnoInputEvent* ie); // defined below; the resize callback forwards too
+
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height) // Called by GLFW on window resize, not part of instance creation but related
 {
 	static uint32_t count = 0;
 	// VulkanContext* ctx = glfwGetWindowUserPointer(window);
 	printf("Resize: %d\n", count);
 	count++;
-	rendererState.framebufferResized = true;
+	rendererState.framebufferResized = true; // swapchain recreate stays render-owned
+	// Also forward to logic so it learns the new aspect (for UI / cursor interpretation).
+	AnoInputEvent ie = { .kind = ANO_INPUT_FRAMEBUFFER_RESIZE,
+	                     .u.resize = { (uint32_t)width, (uint32_t)height } };
+	forward_input(&ie);
+}
+
+// Slots of the events ring reserved for LOSSLESS render->logic facts (slot retirement, batch acks).
+// Input is best-effort and shares the one ring with those facts, so it must never fill the ring's
+// last slots and starve them: input is dropped once free space falls to this margin (audit 4.11).
+#define ANO_INPUT_RING_RESERVE 256u
+
+// Forward one input sample to the logic master over the events ring (audit 4.11). All GLFW input
+// flows through here. Render must NOT block (it shares the thread with glfwPollEvents), so input is
+// best-effort: it is dropped (never blocks, never overruns the lossless reserve) when the ring is
+// near full. The reserved headroom guarantees a same-frame REVENT_SLOT_RETIRED still has room.
+static void forward_input(const AnoInputEvent* ie)
+{
+	AnoSpscRing* r = &rendererState.bridge.events;
+	if (!r->buffer) return; // ring not built yet (a window-creation-time callback); nothing to forward
+	uint32_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed); // render is the sole producer
+	uint32_t head = atomic_load_explicit(&r->head, memory_order_acquire);
+	if ((tail - head) + ANO_INPUT_RING_RESERVE > r->mask) return; // keep headroom for lossless facts
+	RenderEvent ev = { .kind = REVENT_INPUT, .u.input = *ie };
+	(void)ano_render_emit_event(&rendererState.bridge, &ev); // room checked above
+}
+
+// GLFW input callbacks: build one AnoInputEvent and forward it. GLFW codes are passed verbatim (the
+// keymap layer is the game's). The cursor callback also caches the position for the picking readback.
+static void cursorPosCallback(GLFWwindow* window, double x, double y)
+{
+	(void)window;
+	rendererState.cursorX = (float)x;
+	rendererState.cursorY = (float)y;
+	AnoInputEvent ie = { .kind = ANO_INPUT_CURSOR_POS, .u.cursor = { (float)x, (float)y } };
+	forward_input(&ie);
+}
+static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_MOUSE_BUTTON, .u.button = { button, action, mods } };
+	forward_input(&ie);
+}
+static void scrollCallback(GLFWwindow* window, double dx, double dy)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_SCROLL, .u.scroll = { (float)dx, (float)dy } };
+	forward_input(&ie);
+}
+static void windowFocusCallback(GLFWwindow* window, int focused)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_FOCUS, .u.focus = { focused } };
+	forward_input(&ie);
+}
+static void charCallback(GLFWwindow* window, unsigned int codepoint)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_CHAR, .u.ch = { codepoint } };
+	forward_input(&ie);
 }
 
 // L cycles the lighting mode: shadow maps -> hybrid (RC point + shadow-mapped dir/spot) ->
 // radiance cascades. Edge-triggered on press so one keystroke advances one mode. The setter just
 // updates the render state; updateCullingBuffers publishes it into the GlobalUBO. See AnoLightingMode
 // and docs/artifacts/RADIANCE_CASCADES.md. Runs on the main (render) thread alongside the frame loop.
+// These L/H/[]/;' keys stay render-side dev tooling (they tune render-thread-only state); the same
+// keystrokes are ALSO forwarded to logic, which today consumes only the camera-control keys.
 static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-	(void)window; (void)scancode; (void)mods;
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_KEY, .u.key = { key, scancode, action, mods } };
+	forward_input(&ie);
 	if (key == GLFW_KEY_L && action == GLFW_PRESS) {
 		AnoLightingMode next = (AnoLightingMode)(((uint32_t)ano_render_get_lighting_mode() + 1u) % (uint32_t)ANO_LIGHTING_MODE_COUNT);
 		ano_render_set_lighting_mode(next);
@@ -134,7 +199,14 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	
 	glfwSetWindowUserPointer(window, &rendererState);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
-	glfwSetKeyCallback(window, keyCallback); // L cycles the lighting mode (RADIANCE_CASCADES.md)
+	// All input flows to the logic master via the events ring (audit 4.11). GLFW pins these to the
+	// render thread; each callback forwards one AnoInputEvent.
+	glfwSetKeyCallback(window, keyCallback);            // also tunes render-side debug state (L/H/[]/;')
+	glfwSetMouseButtonCallback(window, mouseButtonCallback);
+	glfwSetCursorPosCallback(window, cursorPosCallback);
+	glfwSetScrollCallback(window, scrollCallback);
+	glfwSetWindowFocusCallback(window, windowFocusCallback);
+	glfwSetCharCallback(window, charCallback);
 
 	return window;
 }
@@ -529,16 +601,25 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 
 VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 {
-	VkPhysicalDeviceProperties physicalDeviceProperties;
-	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &physicalDeviceProperties); // Cached properties should be preferentially used
+	// framebufferIntegerColorSampleCounts lives in VkPhysicalDeviceVulkan12Properties (a 1.2 property),
+	// not base limits, so query it via properties2 (core since 1.1; the instance targets 1.3).
+	VkPhysicalDeviceVulkan12Properties vk12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
+	VkPhysicalDeviceProperties2 physicalDeviceProperties2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vk12 };
+	vkGetPhysicalDeviceProperties2(ctx->physicalDevice, &physicalDeviceProperties2);
+	VkPhysicalDeviceProperties physicalDeviceProperties = physicalDeviceProperties2.properties;
 
 	// The per-view depth target is now ALSO sampled (Hi-Z occlusion pyramid, review 4.9 step 3), so the
 	// chosen count must satisfy sampledImageDepthSampleCounts too: the spec permits it to be a strict
 	// subset of framebufferDepthSampleCounts, which would otherwise trip VUID-VkImageCreateInfo-samples-02258
 	// when the depth image is created with SAMPLED_BIT. No-op where sampled depth matches the framebuffer.
+	// Likewise the picking id attachment (audit 3.1) is an INTEGER color format (R32_UINT) MSAA target,
+	// governed by framebufferIntegerColorSampleCounts — which the spec also permits to be a strict subset
+	// of framebufferColorSampleCounts — so fold it in too, or the shared MSAA id image trips the same VUID
+	// on hardware where integer-color MSAA is narrower. No-op where it matches the framebuffer count.
 	VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts
 	                          & physicalDeviceProperties.limits.framebufferDepthSampleCounts
-	                          & physicalDeviceProperties.limits.sampledImageDepthSampleCounts;
+	                          & physicalDeviceProperties.limits.sampledImageDepthSampleCounts
+	                          & vk12.framebufferIntegerColorSampleCounts;
 	if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
 	if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
 	if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
@@ -1055,6 +1136,19 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
         state->colorView = VK_NULL_HANDLE;
     }
 
+    // Picking id attachment (memory backed by swapchainAllocator, reset below).
+    if (state->pickIdView != VK_NULL_HANDLE)
+    {
+        vkDestroyImageView(ctx->device, state->pickIdView, NULL);
+        state->pickIdView = VK_NULL_HANDLE;
+    }
+    if (state->pickIdImage != VK_NULL_HANDLE)
+    {
+        vkDestroyImage(ctx->device, state->pickIdImage, NULL);
+        state->pickIdImage = VK_NULL_HANDLE;
+    }
+    state->pickIdImageAlloc.memory = VK_NULL_HANDLE;
+
     // Destroy per-view HDR resolve targets (memory backed by swapchainAllocator, reset below)
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
@@ -1072,6 +1166,19 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
                 vr->hdrColorImage = VK_NULL_HANDLE;
             }
             vr->hdrColorAlloc.memory = VK_NULL_HANDLE;
+
+            // Picking id resolve target (view 0 only; the rest stay VK_NULL_HANDLE).
+            if (vr->pickIdResolveView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->pickIdResolveView, NULL);
+                vr->pickIdResolveView = VK_NULL_HANDLE;
+            }
+            if (vr->pickIdResolveImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->pickIdResolveImage, NULL);
+                vr->pickIdResolveImage = VK_NULL_HANDLE;
+            }
+            vr->pickIdResolveAlloc.memory = VK_NULL_HANDLE;
         }
     }
 
@@ -1305,18 +1412,23 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 	float deltaTime = (time - oldTime) / 1000000.0f;
 	float elapsedTime = (time - startTime) / 1000000.0f;
 
-	float center[] = {0.0f, 0.15f, 0.0f}; // both cameras look at the scene origin
-	float up[]     = {0.0f, 1.0f, 0.0f};  // world is unflipped
+	float centerDefault[] = {0.0f, 0.15f, 0.0f}; // default look target (scene origin)
+	float upDefault[]     = {0.0f, 1.0f, 0.0f};  // world is unflipped
+	float fovDefault      = 45.0f;               // degrees
 
 	// Shared projection params. Both views render at full resolution (the inset is composited
-	// smaller), so they share the screen extent and froxel grid; only the camera differs.
-	float fov = 45.0f; // degrees
+	// smaller), so they share the screen extent and froxel grid; only the camera differs. The
+	// renderer always owns the projection (aspect/near/far); logic only supplies the view-0 pose.
 	float aspect = (float)state->imageExtent.width / (float)state->imageExtent.height;
 	float near = 0.1f;
 	float far = 100.0f;
 
-	// Build each view's camera (audit 4.8). View 0 is the main camera; view 1 is an orbiting
-	// "second feed" composited as a picture-in-picture inset, proving the multi-view path.
+	// View 0 is the gameplay camera the logic master owns (audit 4.11): use its published pose if it
+	// has published one, else fall back to the built-in camera (no first-frame regression, no init
+	// handshake). View 1 stays the orbiting inset demo (audit 4.8).
+	AnoViewState vs;
+	bool haveVs = ano_render_acquire_view(&state->bridge, &vs);
+
 	for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 	{
 		GlobalUBO* u = &state->uboData[v];
@@ -1324,9 +1436,14 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 		u->deltaTime = deltaTime;
 		u->frameCount = frameCount;
 
-		float eye[3];
-		if (v == 0) {
-			eye[0] = 0.0f; eye[1] = 0.9f; eye[2] = 3.5f;   // main: up and back
+		float eye[3], center[3], up[3], fov;
+		if (v == 0 && haveVs) {
+			for (int k = 0; k < 3; k++) { eye[k] = vs.eye[k]; center[k] = vs.center[k]; up[k] = vs.up[k]; }
+			fov = vs.fovYDeg;
+		} else if (v == 0) {
+			eye[0] = 0.0f; eye[1] = 0.9f; eye[2] = 3.5f;   // main fallback: up and back
+			for (int k = 0; k < 3; k++) { center[k] = centerDefault[k]; up[k] = upDefault[k]; }
+			fov = fovDefault;
 		} else {
 			// Inset: orbit the scene at a higher angle so the feed is obviously live + distinct.
 			float a = elapsedTime * 0.5f;
@@ -1334,6 +1451,8 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 			eye[0] = r * sinf(a);
 			eye[1] = 2.5f;
 			eye[2] = r * cosf(a);
+			for (int k = 0; k < 3; k++) { center[k] = centerDefault[k]; up[k] = upDefault[k]; }
+			fov = fovDefault;
 		}
 
 		lookAt(u->view, eye, center, up);
@@ -1559,6 +1678,18 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 		printf("Failed to transition color image layout!\n");
 	}
 
+	// Shared MSAA picking-id attachment (audit 3.1): mirrors the MSAA color above (transient,
+	// resolved per view, never stored). The opaque pass writes each fragment's slot here; view 0
+	// resolves it to a single-sample target (below) for cursor readback.
+	createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+		1, ctx->msaaSamples, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.pickIdImage, &rendererState.pickIdImageAlloc, false);
+	rendererState.pickIdView = createImageView(ctx->device, rendererState.pickIdImage, VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+	if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.pickIdImage, VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+	{
+		printf("Failed to transition picking id image layout!\n");
+	}
+
 	// Single-sample HDR resolve target, one per view per frame: resolve destination
 	// (COLOR_ATTACHMENT) for that view's MSAA HDR pass, and composite source (SAMPLED). Not
 	// transient — the composite reads it back. Seeded to SHADER_READ_ONLY; recordCommandBuffer
@@ -1575,6 +1706,21 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hdrColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
 			{
 				printf("Failed to transition HDR resolve image layout!\n");
+			}
+
+			// Picking id resolve target: view 0 only (the gameplay view). Single-sample R32_UINT,
+			// the SAMPLE_ZERO resolve destination of the shared MSAA id image, then a TRANSFER_SRC
+			// for the cursor-texel copy. Resting layout COLOR_ATTACHMENT_OPTIMAL (the resolve layout).
+			if (v == 0)
+			{
+				createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+					1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+							VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->pickIdResolveImage, &vr->pickIdResolveAlloc, false);
+				vr->pickIdResolveView = createImageView(ctx->device, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+				{
+					printf("Failed to transition picking id resolve image layout!\n");
+				}
 			}
 		}
 	}
@@ -2537,6 +2683,22 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		}
 	}
 
+	// Picking readback buffers (audit 3.1): one tiny host-visible|coherent buffer per frame in
+	// flight, persistently mapped. The view-0 id texel under the cursor is copied here each frame and
+	// read after this slot's fence; backed by the persistent gpuAllocator so they survive swapchain
+	// recreate. Seeded to the no-hit sentinel so a pre-first-submission read maps to NO_PICK.
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		if (!createDataBuffer(ctx, &gpuAllocator, sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				&state->frames[i].pickReadback, &state->frames[i].pickReadbackAlloc)) {
+			printf("Failed to create picking readback buffer!\n");
+			return false;
+		}
+		state->frames[i].pickReadbackMapped = state->frames[i].pickReadbackAlloc.mapped;
+		*state->frames[i].pickReadbackMapped = 0xFFFFFFFFu;
+	}
+	state->lastPickRenderId = ANO_RENDER_NO_PICK;
+
 	return true;
 }
 
@@ -2736,6 +2898,12 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		if (rendererState.frames[i].timestampPool)
 		{
 			vkDestroyQueryPool(ctx->device, rendererState.frames[i].timestampPool, NULL);
+		}
+		if (rendererState.frames[i].pickReadback)
+		{
+			// Memory is owned by the persistent gpuAllocator (freed when it is destroyed); just the handle here.
+			vkDestroyBuffer(ctx->device, rendererState.frames[i].pickReadback, NULL);
+			rendererState.frames[i].pickReadback = VK_NULL_HANDLE;
 		}
 
 	}

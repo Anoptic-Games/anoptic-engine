@@ -47,6 +47,11 @@ bool render_slots_init(RenderSlotTable *table, mi_heap_t *heap, uint32_t maxSlot
     table->heap           = heap;
     table->slotCapacity   = maxSlots;
     table->framesInFlight = framesInFlight;
+
+    // Reverse map sized to the physical slot ceiling, all slots free initially.
+    table->slotToLogical = mi_heap_malloc(heap, (size_t)maxSlots * sizeof(uint32_t));
+    if (!table->slotToLogical) return false;
+    for (uint32_t i = 0; i < maxSlots; i++) table->slotToLogical[i] = ANO_RENDER_SLOT_UNMAPPED;
     return true;
 }
 
@@ -54,6 +59,7 @@ void render_slots_destroy(RenderSlotTable *table)
 {
     if (!table) return;
     if (table->logicalToSlot) mi_free(table->logicalToSlot);
+    if (table->slotToLogical) mi_free(table->slotToLogical);
     if (table->freeSlots)     mi_free(table->freeSlots);
     if (table->quarantine)    mi_free(table->quarantine);
     memset(table, 0, sizeof(*table));
@@ -72,6 +78,7 @@ uint32_t render_slots_alloc(RenderSlotTable *t, uint32_t render_id)
         return ANO_RENDER_SLOT_UNMAPPED;              // at capacity
     }
     t->logicalToSlot[render_id] = slot;
+    t->slotToLogical[slot] = render_id;
     return slot;
 }
 
@@ -86,6 +93,7 @@ uint32_t render_slots_alloc_range(RenderSlotTable *t, const uint32_t *render_ids
     for (uint32_t i = 0; i < count; i++) {
         if (!logical_reserve(t, render_ids[i])) return ANO_RENDER_SLOT_UNMAPPED;
         t->logicalToSlot[render_ids[i]] = base + i;
+        t->slotToLogical[base + i] = render_ids[i];
     }
     t->slotHighWater = base + count;
     return base;
@@ -99,7 +107,20 @@ uint32_t render_slots_resolve(const RenderSlotTable *t, uint32_t render_id)
 
 void render_slots_set_capacity(RenderSlotTable *t, uint32_t newCapacity)
 {
-    if (newCapacity > t->slotCapacity) t->slotCapacity = newCapacity;
+    if (newCapacity <= t->slotCapacity) return;
+    // Grow the reverse map alongside the slot ceiling; on OOM keep the old ceiling (allocs stay
+    // bounded to it — safe) rather than raise it past the array.
+    uint32_t *p = mi_heap_realloc(t->heap, t->slotToLogical, (size_t)newCapacity * sizeof(uint32_t));
+    if (!p) return;
+    for (uint32_t i = t->slotCapacity; i < newCapacity; i++) p[i] = ANO_RENDER_SLOT_UNMAPPED;
+    t->slotToLogical = p;
+    t->slotCapacity = newCapacity;
+}
+
+uint32_t render_slots_render_id_of(const RenderSlotTable *t, uint32_t slot)
+{
+    if (!t || slot >= t->slotCapacity) return ANO_RENDER_SLOT_UNMAPPED;
+    return t->slotToLogical[slot];
 }
 
 void render_slots_retire(RenderSlotTable *t, uint32_t render_id, uint64_t currentFrame)
@@ -108,6 +129,7 @@ void render_slots_retire(RenderSlotTable *t, uint32_t render_id, uint64_t curren
     if (slot == ANO_RENDER_SLOT_UNMAPPED) return;
 
     t->logicalToSlot[render_id] = ANO_RENDER_SLOT_UNMAPPED;   // unmap immediately
+    t->slotToLogical[slot] = ANO_RENDER_SLOT_UNMAPPED;        // reverse map: slot now free for picking
     if (!ensure_cap(t->heap, (void **)&t->quarantine, &t->quarantineCapacity,
                     t->quarantineCount + 1u, sizeof(RenderSlotQuarantine))) {
         // Quarantine OOM: leak the slot rather than risk reuse-while-in-flight.

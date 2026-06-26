@@ -48,6 +48,11 @@ typedef struct RenderSlotTable
     uint32_t             *logicalToSlot;
     uint32_t              logicalCapacity;
 
+    // slot -> render_id (the inverse of logicalToSlot, ANO_RENDER_SLOT_UNMAPPED == free).
+    // Sized slotCapacity, maintained O(1) on alloc/retire. Lets the picking readback turn a
+    // slot sampled from the id-buffer back into a render_id every frame without a scan.
+    uint32_t             *slotToLogical;
+
     // Free-list stack of reusable physical slots (holes below the high-water mark).
     uint32_t             *freeSlots;
     uint32_t              freeCount;
@@ -93,6 +98,10 @@ void render_slots_set_capacity(RenderSlotTable *table, uint32_t newCapacity);
 
 // out: the physical slot mapped to `render_id`, or ANO_RENDER_SLOT_UNMAPPED.
 uint32_t render_slots_resolve(const RenderSlotTable *table, uint32_t render_id);
+
+// out: the render_id occupying physical `slot`, or ANO_RENDER_SLOT_UNMAPPED if the slot is free,
+//      quarantined, or out of range. The inverse of render_slots_resolve (used by picking).
+uint32_t render_slots_render_id_of(const RenderSlotTable *table, uint32_t slot);
 
 // Begins retirement of `render_id`'s slot (after its dead-mark has propagated to
 // all frame buffers): unmaps the id and quarantines the slot with

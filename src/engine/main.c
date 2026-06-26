@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <math.h>
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
 #include "anoptic_filesystem.h"
@@ -137,9 +138,102 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t lastPulse  = startTime;
 	float    pulsePhase = 0.0f;
 
+	// Free-fly camera owned by logic (audit 4.11). The renderer's view-0 camera is now driven from
+	// here: drain forwarded input, integrate a WASD + right-drag look camera, publish its pose. This
+	// is the demonstrable input -> logic -> render round trip, and the first piece of render-loop
+	// scene control moved into the logic thread. Starts at the renderer's old fallback pose, with the
+	// forward derived (pitch ~ -0.21 rad) so there is no jump on the first publish.
+	float    camEye[3] = { 0.0f, 0.9f, 3.5f };
+	float    camYaw = 0.0f, camPitch = -0.211f;
+	bool     inW = false, inA = false, inS = false, inD = false, inUp = false, inDown = false;
+	bool     looking = false, haveCursor = false;
+	float    prevCx = 0.0f, prevCy = 0.0f;
+	uint64_t lastCam = ano_timestamp_us();
+	uint64_t camSeq = 0;
+	uint64_t lastSnapLog = startTime;
+
 	while (!atomic_load(&g_logicShouldStop))
 	{
 		uint64_t now = ano_timestamp_us();
+
+		// Drain the render -> logic back-channel: input, picking, slot retirement (audit 4.11).
+		RenderEvent ev;
+		while (ano_render_poll_event(bridge, &ev)) {
+			switch (ev.kind) {
+			case REVENT_INPUT: {
+				const AnoInputEvent* ie = &ev.u.input;
+				if (ie->kind == ANO_INPUT_KEY) {
+					bool down = (ie->u.key.action != GLFW_RELEASE); // PRESS or REPEAT
+					switch (ie->u.key.key) {
+					case GLFW_KEY_W:            inW = down;    break;
+					case GLFW_KEY_S:            inS = down;    break;
+					case GLFW_KEY_A:            inA = down;    break;
+					case GLFW_KEY_D:            inD = down;    break;
+					case GLFW_KEY_SPACE:        inUp = down;   break;
+					case GLFW_KEY_LEFT_CONTROL: inDown = down; break;
+					default: break;
+					}
+				} else if (ie->kind == ANO_INPUT_MOUSE_BUTTON) {
+					if (ie->u.button.button == GLFW_MOUSE_BUTTON_RIGHT)
+						looking = (ie->u.button.action == GLFW_PRESS);
+				} else if (ie->kind == ANO_INPUT_CURSOR_POS) {
+					float cx = ie->u.cursor.x, cy = ie->u.cursor.y;
+					if (looking && haveCursor) {
+						camYaw   += (cx - prevCx) * 0.003f;
+						camPitch -= (cy - prevCy) * 0.003f;
+						if (camPitch >  1.5f) camPitch =  1.5f;   // avoid gimbal at the poles
+						if (camPitch < -1.5f) camPitch = -1.5f;
+					}
+					prevCx = cx; prevCy = cy; haveCursor = true;
+				}
+				break;
+			}
+			case REVENT_PICK_RESULT:
+				if (ev.u.pick_render_id != ANO_RENDER_NO_PICK)
+					printf("Pick: cursor over render_id %u\n", ev.u.pick_render_id);
+				break;
+			case REVENT_SLOT_RETIRED:   break; // ECS id recycling lands with the real producer
+			case REVENT_BATCH_CONSUMED: break; // borrowed-batch ack (audit 4.10); unused by this stand-in
+			case REVENT_CAPACITY:
+				printf("Producer: back-channel saturated; some input samples were dropped.\n");
+				break;
+			}
+		}
+
+		// Integrate + publish the camera once per tick.
+		{
+			float dt = (now - lastCam) / 1000000.0f; lastCam = now;
+			if (dt > 0.1f) dt = 0.1f; // clamp a long stall so a hitch is not a teleport
+			float cp = cosf(camPitch), sp = sinf(camPitch), sy = sinf(camYaw), cy = cosf(camYaw);
+			float fwd[3]   = { cp * sy, sp, -cp * cy }; // RH, looks down -Z at yaw 0 (math_conventions.md)
+			float right[3] = { cy, 0.0f, sy };          // normalize(cross(fwd, worldUp))
+			float step = 2.5f * dt;                     // units/sec
+			float mF = (float)((int)inW - (int)inS);
+			float mR = (float)((int)inD - (int)inA);
+			float mU = (float)((int)inUp - (int)inDown);
+			for (int k = 0; k < 3; k++)
+				camEye[k] += (fwd[k] * mF + right[k] * mR) * step;
+			camEye[1] += mU * step;
+
+			AnoViewState view = { .fovYDeg = 45.0f, .seq = ++camSeq };
+			for (int k = 0; k < 3; k++) {
+				view.eye[k]    = camEye[k];
+				view.center[k] = camEye[k] + fwd[k];
+				view.up[k]     = 0.0f;
+			}
+			view.up[1] = 1.0f;
+			ano_render_publish_view(bridge, &view);
+		}
+
+		// Prove the snapshot path: log the renderer's published frame id ~once/sec.
+		{
+			RenderSnapshot snap;
+			if (ano_render_acquire_snapshot(bridge, &snap) && now - lastSnapLog > 1000000) {
+				printf("Snapshot: frameId %llu, viewport %ux%u\n",
+				       (unsigned long long)snap.frameId, snap.vpWidth, snap.vpHeight);
+				lastSnapLog = now;
+			}
+		}
 		if (now - lastStream > 16000) // ~16 ms (roughly frame cadence; keeps ring pressure low)
 		{
 			lastStream = now;

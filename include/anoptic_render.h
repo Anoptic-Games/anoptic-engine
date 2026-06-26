@@ -224,9 +224,8 @@ typedef struct AnoInstanceData
     Vector4  params;
 } AnoInstanceData; // 32 bytes; matches std430 { uvec4 packed; vec4 params; }
 
-// Initial-state batch referenced by RCMD_BULK_CREATE. The producer hands ownership
-// of the arrays (arena-allocated, length `count`) to the render master, which
-// block-writes a contiguous slot range and releases the batch when consumed.
+// Initial-state batch referenced by RCMD_BULK_CREATE. init owns-and-frees its stack batch
+// UPDATE/DESTROY helpers copy-at-submit and render frees
 typedef struct RenderCreateBatch
 {
     uint32_t        count;
@@ -360,6 +359,120 @@ bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
                                     const RenderLightParams *params, float ox, float oy, float oz,
                                     uint32_t fields);
 bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
+
+// ---------------------------------------------------------------------------
+// Back-channel: render -> logic
+// ---------------------------------------------------------------------------
+// The render world owns the window, GLFW, and the resolved camera; the logic world owns gameplay.
+// Three render->logic lanes carry everything that must flow home, designed once so a new fact
+// never means a new ring or a wider enum lockstep again (audit 4.11 / 7.1):
+//   - events    : the SPSC events ring, one typed RenderEvent per fact. Lifetime facts (slot
+//                 retirement, batch acks) are lossless; forwarded INPUT is best-effort and is
+//                 dropped under flood so it can never starve the reserved lossless headroom.
+//   - snapshot  : a published latest-wins RenderSnapshot (the live view-0 camera/viewport), for
+//                 picking rays and attention-driven simulation LOD.
+//   - viewstate : the symmetric logic->render lane (AnoViewState), so logic owns the camera.
+// Standing rule this establishes: discrete lossless facts ride a command/event ring; continuous
+// latest-wins state rides a published double buffer.
+
+// Sentinel render_id for "the cursor is over no renderable" in a REVENT_PICK_RESULT.
+#define ANO_RENDER_NO_PICK 0xFFFFFFFFu
+
+// Input event kinds. GLFW codes (GLFW_KEY_*, GLFW_PRESS/RELEASE/REPEAT, GLFW_MOUSE_BUTTON_*) are
+// forwarded verbatim as stable integers; an engine keymap / action-binding layer is the game's to
+// add atop this raw stream. A new device (joystick, IME) adds an AnoInputKind + a union arm, never
+// a new event kind or ring.
+typedef enum AnoInputKind
+{
+    ANO_INPUT_KEY,                // physical key transition
+    ANO_INPUT_MOUSE_BUTTON,       // mouse button transition
+    ANO_INPUT_CURSOR_POS,         // absolute cursor position (framebuffer pixels, origin top-left)
+    ANO_INPUT_SCROLL,             // scroll wheel delta
+    ANO_INPUT_FOCUS,              // window focus gained/lost
+    ANO_INPUT_FRAMEBUFFER_RESIZE, // framebuffer size changed (swapchain recreate stays render-side)
+    ANO_INPUT_CHAR,               // text input codepoint (for typed UI)
+} AnoInputKind;
+
+// One input sample. Fixed-size POD, sub-tagged on `kind`; rides the events ring inside a RenderEvent.
+typedef struct AnoInputEvent
+{
+    uint32_t kind; // AnoInputKind
+    union {
+        struct { int32_t key, scancode, action, mods; } key;     // largest arm (16 B)
+        struct { int32_t button, action, mods; }        button;
+        struct { float   x, y; }                        cursor;  // framebuffer pixels
+        struct { float   dx, dy; }                      scroll;
+        struct { int32_t focused; }                     focus;   // 1 = gained, 0 = lost
+        struct { uint32_t width, height; }              resize;
+        struct { uint32_t codepoint; }                  ch;
+    } u;
+} AnoInputEvent;
+
+// Render -> logic event protocol. The render master is the SOLE producer (GLFW callbacks and slot
+// retirement both run on the render thread), so the events ring stays SPSC and totally ordered.
+// Every render->logic fact is one kind here; the payload is the matching union arm. The logic
+// master is the sole consumer (ano_render_poll_event) and dispatches on `kind`.
+typedef enum RenderEventKind
+{
+    REVENT_SLOT_RETIRED,   // a render_id's GPU slot cleared every frame in flight; the ECS may recycle it
+    REVENT_CAPACITY,       // render-side capacity / dropped-sample advisory (payload unused)
+    REVENT_INPUT,          // one AnoInputEvent forwarded from GLFW
+    REVENT_PICK_RESULT,    // the renderable under the cursor (pick_render_id, or ANO_RENDER_NO_PICK)
+    REVENT_BATCH_CONSUMED, // a borrowed bulk batch has reached every frame in flight; producer may free it
+} RenderEventKind;
+
+typedef struct RenderEvent
+{
+    RenderEventKind kind;
+    union {
+        uint32_t      render_id;       // REVENT_SLOT_RETIRED
+        AnoInputEvent input;           // REVENT_INPUT
+        uint32_t      pick_render_id;  // REVENT_PICK_RESULT (ANO_RENDER_NO_PICK == nothing under cursor)
+        uint64_t      batch_token;     // REVENT_BATCH_CONSUMED
+    } u;
+} RenderEvent;
+
+// Latest-wins publication of the live VIEW-0 (gameplay) camera, for logic-side picking rays and
+// attention-driven LOD. Published once per recorded frame; logic ticks faster than the frame rate
+// so it never laps the producer and reads tear-free without a lock. View 0 only: the render-private
+// view count must not leak through this public header; multi-view widens this later.
+typedef struct RenderSnapshot
+{
+    mat4     viewProj;     // proj * view for view 0 this frame (column-major)
+    mat4     invViewProj;  // its inverse: unproject a cursor texel to a world-space picking ray
+    Vector4  frustum[6];   // view-0 frustum planes (same packing as the cull pass)
+    uint32_t vpWidth;      // framebuffer extent the matrices were built for
+    uint32_t vpHeight;
+    uint64_t frameId;      // monotonically increasing render frame counter
+} RenderSnapshot;
+
+// The view-0 camera pose logic wants the renderer to use. Pose only: the renderer still owns the
+// projection (it resolves perspective from the live aspect/near/far). Published latest-wins by the
+// logic master; until its first publish the renderer falls back to its built-in camera, so there is
+// no init handshake and no first-frame regression. eye/center/up matches the renderer's lookAt.
+typedef struct AnoViewState
+{
+    float    eye[3];     // camera world position
+    float    center[3];  // look-at target (world)
+    float    up[3];      // world up
+    float    fovYDeg;    // vertical field of view, degrees
+    uint64_t seq;        // producer's monotonic publish counter (diagnostics)
+} AnoViewState;
+
+// Logic master endpoints (consume events, read the snapshot, drive the camera). The producer
+// endpoints (events/snapshot publish, viewstate consume) are render-private in src/render_bridge/.
+
+// Dequeue the next render->logic event. false if none pending. The logic master is the sole
+// consumer and must drain + dispatch on kind every tick (so the ring never backs up).
+bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out);
+
+// Copy the latest published render snapshot into `out`. false (out untouched) if the renderer has
+// not published a frame yet.
+bool ano_render_acquire_snapshot(AnoRenderBridge *bridge, RenderSnapshot *out);
+
+// Publish the view-0 camera pose for the renderer to use from its next recorded frame. Latest-wins;
+// call at most once per logic tick. Single-producer (the logic master that owns the bridge).
+void ano_render_publish_view(AnoRenderBridge *bridge, const AnoViewState *view);
 
 // Lighting-mode control (see AnoLightingMode). Selects the occlusion model used from the next
 // recorded frame onward. Set/read from the render thread (the frame record path is single

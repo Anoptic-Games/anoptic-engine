@@ -186,7 +186,7 @@ arena-owned side stores, never as raw owning pointers in components.
 
 ## 3. Interactions — what entities, components, and the player can do to each other
 
-### 3.1 Picking / hover / selection has zero foundation, and the world-split fights it (root)
+### 3.1 Picking / hover / selection has zero foundation, and the world-split fights it (root) - ADDRESSED (GPU id-buffer + camera snapshot back to logic; logic-raycast path still needs the spatial grid §3.4)
 
 The prompt names "entity hover-over detection" specifically. There is no picking path of any
 kind: grep finds no id-buffer, no `gl_FragCoord` id write, no readback, no raycast, no
@@ -457,7 +457,7 @@ LOD mesh array in the cull pass, additively) and high-leverage — this is proba
 important renderer addition for the stated scale, and the scoped-resolution LOD story has no
 renderer support without it.
 
-### 4.10 Cross-thread BULK_CREATE has no lifetime handshake (correctness gap for the real producer) - NEXT
+### 4.10 Cross-thread BULK_CREATE has no lifetime handshake (correctness gap for the real producer) - ADDRESSED
 
 `RenderCreateBatch` is borrowed: the header says the render master "releases the batch when
 consumed" (`anoptic_render_bridge.h:97`), but the render side never frees it — `render_apply_commands`
@@ -471,7 +471,7 @@ ownership, or add a `REVENT_BATCH_CONSUMED` ack. This is the one item here that 
 correctness bug, not just a scaling shape — it will bite the moment the stand-in producer in
 `main.c` is replaced by the real `DisplayState` extract.
 
-### 4.11 Input lives in the render world with no path to logic (root-for-now, planned)
+### 4.11 Input lives in the render world with no path to logic (root-for-now, planned) - ADDRESSED
 
 `glfwPollEvents` runs on the render thread (`anoRenderThreadMain:801`); GLFW requires single-thread
 window/event ownership, so input is physically render-side. The events ring has no input kind, so

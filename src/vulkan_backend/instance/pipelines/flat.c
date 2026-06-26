@@ -126,22 +126,27 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	multisampling.alphaToCoverageEnable = VK_FALSE;
 	multisampling.alphaToOneEnable = VK_FALSE;
 
-	VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
-	colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	colorBlendAttachment.blendEnable = VK_FALSE;
-	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+	// Two color attachments: [0] HDR color, [1] R32_UINT picking id (audit 3.1). The id attachment
+	// never blends; the opaque variant writes it (colorWriteMask=R), the blended variant masks it off.
+	VkPipelineColorBlendAttachmentState blendAttachments[2] = {};
+	VkPipelineColorBlendAttachmentState* colorBlendAttachment = &blendAttachments[0];
+	colorBlendAttachment->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	colorBlendAttachment->blendEnable = VK_FALSE;
+	colorBlendAttachment->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment->colorBlendOp = VK_BLEND_OP_ADD;
+	colorBlendAttachment->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment->alphaBlendOp = VK_BLEND_OP_ADD;
+	blendAttachments[1].blendEnable = VK_FALSE;
+	blendAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT; // opaque variant writes the id
 
 	VkPipelineColorBlendStateCreateInfo colorBlending = {};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlending.logicOpEnable = VK_FALSE;
 	colorBlending.logicOp = VK_LOGIC_OP_COPY;
-	colorBlending.attachmentCount = 1;
-	colorBlending.pAttachments = &colorBlendAttachment;
+	colorBlending.attachmentCount = 2;
+	colorBlending.pAttachments = blendAttachments;
 	colorBlending.blendConstants[0] = 0.0f;
 	colorBlending.blendConstants[1] = 0.0f;
 	colorBlending.blendConstants[2] = 0.0f;
@@ -163,13 +168,15 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	depthStencil.maxDepthBounds = 1.0f;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT; // geometry renders into the HDR target, not the swapchain
+	// [0] HDR target (geometry renders here, not the swapchain), [1] R32_UINT picking id. The
+	// opaque pass provides both attachments; the count must match the rendering scope (vulkanMaster.c).
+	VkFormat colorFormats[2] = { ANO_HDR_COLOR_FORMAT, VK_FORMAT_R32_UINT };
 	VkFormat depthFormat = state->depthFormat;
 
 	VkPipelineRenderingCreateInfo renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachmentFormats = &colorFormat;
+	renderingInfo.colorAttachmentCount = 2;
+	renderingInfo.pColorAttachmentFormats = colorFormats;
 	renderingInfo.depthAttachmentFormat = depthFormat;
 
 	// The mesh path needs neither vertex-input nor input-assembly state. The fallback
@@ -206,17 +213,18 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	proto->implementations[0].depthWrite = VK_TRUE;
 	proto->implementations[0].blendEnable = VK_FALSE;
 
-	// Blended variant (index 1)
+	// Blended variant (index 1). Bound by no g_framePass today, but must stay a valid 2-attachment
+	// pipeline; mask off the id write so transparent-flat is non-pickable if ever bound.
 	depthStencil.depthWriteEnable = VK_FALSE;
-	colorBlendAttachment.blendEnable = VK_TRUE;
-	colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-	colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-	colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-	colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-	colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-	colorBlending.pAttachments = &colorBlendAttachment;
-	
+	colorBlendAttachment->blendEnable = VK_TRUE;
+	colorBlendAttachment->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment->colorBlendOp = VK_BLEND_OP_ADD;
+	colorBlendAttachment->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachment->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachment->alphaBlendOp = VK_BLEND_OP_ADD;
+	blendAttachments[1].colorWriteMask = 0; // id not written by the blended variant
+
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) return false;
 	proto->implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[1].depthWrite = VK_FALSE;

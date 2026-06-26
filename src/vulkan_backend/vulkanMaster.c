@@ -213,7 +213,7 @@ static const RenderPassDef g_framePasses[] = {
         .prototype              = PIPELINE_FLAT,
         .implementationIndex    = 0,  // opaque variant
         .perView                = true,
-        .colorAttachmentCount   = 1,
+        .colorAttachmentCount   = 2,  // [0] HDR color, [1] R32_UINT picking id (audit 3.1)
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
@@ -728,23 +728,26 @@ void recordCommandBuffer(uint32_t imageIndex)
                 0, 1, &lcBarrier, 0, NULL, 0, NULL);
         }
 
-        // The MSAA color target is shared and reused across views sequentially: order view v's
-        // writes after view v-1's resolve read it.
+        // The MSAA color + id targets are shared and reused across views sequentially: order view
+        // v's writes after view v-1's resolve read of each. Both need the same COLOR->COLOR barrier.
         if (v > 0) {
-            VkImageMemoryBarrier msaaReuse = {};
-            msaaReuse.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            msaaReuse.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            msaaReuse.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            msaaReuse.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            msaaReuse.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            msaaReuse.image = rendererState.colorImage;
-            msaaReuse.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            msaaReuse.subresourceRange.levelCount = 1;
-            msaaReuse.subresourceRange.layerCount = 1;
-            msaaReuse.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-            msaaReuse.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+            VkImageMemoryBarrier msaaReuse[2] = {};
+            for (int b = 0; b < 2; b++) {
+                msaaReuse[b].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                msaaReuse[b].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                msaaReuse[b].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                msaaReuse[b].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                msaaReuse[b].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                msaaReuse[b].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                msaaReuse[b].subresourceRange.levelCount = 1;
+                msaaReuse[b].subresourceRange.layerCount = 1;
+                msaaReuse[b].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+                msaaReuse[b].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+            }
+            msaaReuse[0].image = rendererState.colorImage;
+            msaaReuse[1].image = rendererState.pickIdImage; // shared MSAA id attachment (audit 3.1)
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                0, 0, NULL, 0, NULL, 1, &msaaReuse);
+                0, 0, NULL, 0, NULL, 2, msaaReuse);
         }
 
         for (int p = 0; p < (int)(sizeof(g_framePasses)/sizeof(g_framePasses[0])); p++) {
@@ -756,16 +759,37 @@ void recordCommandBuffer(uint32_t imageIndex)
             clearDepth.depthStencil.depth = 1.0f;
             clearDepth.depthStencil.stencil = 0;
 
-            VkRenderingAttachmentInfo colorAttachment = {};
-            colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            colorAttachment.imageView = rendererState.colorView; // shared MSAA color
-            colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAttachment.resolveMode = pass->resolveMode;
-            colorAttachment.resolveImageView = vr->hdrColorView; // resolve into this view's HDR target
-            colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAttachment.loadOp = pass->colorLoadOp;
-            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorAttachment.clearValue = clearColor;
+            // color[0] = HDR; color[1] = R32_UINT picking id (only the opaque pass declares 2).
+            VkRenderingAttachmentInfo color[2] = {};
+            color[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            color[0].imageView = rendererState.colorView; // shared MSAA color
+            color[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color[0].resolveMode = pass->resolveMode;
+            color[0].resolveImageView = vr->hdrColorView; // resolve into this view's HDR target
+            color[0].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color[0].loadOp = pass->colorLoadOp;
+            color[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            color[0].clearValue = clearColor;
+
+            if (pass->colorAttachmentCount == 2) {
+                // Picking id: render the slot into the shared MSAA id image; clear to the no-hit
+                // sentinel. Integer formats MUST resolve SAMPLE_ZERO (never AVERAGE). Only view 0
+                // resolves to a readable single-sample target; other views render then discard it.
+                color[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                color[1].imageView = rendererState.pickIdView;
+                color[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                color[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                color[1].clearValue.color.uint32[0] = 0xFFFFFFFFu;
+                if (v == 0) {
+                    color[1].resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+                    color[1].resolveImageView = vr->pickIdResolveView;
+                    color[1].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    color[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                } else {
+                    color[1].resolveMode = VK_RESOLVE_MODE_NONE;
+                    color[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                }
+            }
 
             VkRenderingAttachmentInfo depthAttachment = {};
             depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -782,7 +806,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             renderingInfo.renderArea.extent = rendererState.imageExtent;
             renderingInfo.layerCount = 1;
             renderingInfo.colorAttachmentCount = pass->colorAttachmentCount;
-            renderingInfo.pColorAttachments = &colorAttachment;
+            renderingInfo.pColorAttachments = color;
             renderingInfo.pDepthAttachment = &depthAttachment;
             renderingInfo.pStencilAttachment = NULL;
 
@@ -853,6 +877,40 @@ void recordCommandBuffer(uint32_t imageIndex)
             }
 
             vkCmdEndRendering(cmd);
+        }
+
+        // Picking (audit 3.1): copy the cursor texel from view 0's resolved id image into this
+        // frame's readback buffer; ano_collect_pick reads it after this slot's fence next time round.
+        // Skip on a degenerate extent (minimized).
+        if (v == 0 && rendererState.imageExtent.width > 0 && rendererState.imageExtent.height > 0) {
+            VkImageMemoryBarrier toSrc = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = vr->pickIdResolveImage,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, NULL, 0, NULL, 1, &toSrc);
+
+            float fx = rendererState.cursorX < 0.0f ? 0.0f : rendererState.cursorX;
+            float fy = rendererState.cursorY < 0.0f ? 0.0f : rendererState.cursorY;
+            uint32_t cx = (uint32_t)fx, cy = (uint32_t)fy;
+            if (cx >= rendererState.imageExtent.width)  cx = rendererState.imageExtent.width - 1u;
+            if (cy >= rendererState.imageExtent.height) cy = rendererState.imageExtent.height - 1u;
+            VkBufferImageCopy region = { .bufferOffset = 0, .bufferRowLength = 0, .bufferImageHeight = 0,
+                .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .imageOffset = { (int32_t)cx, (int32_t)cy, 0 }, .imageExtent = { 1, 1, 1 } };
+            vkCmdCopyImageToBuffer(cmd, vr->pickIdResolveImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                rendererState.frames[rendererState.frameIndex].pickReadback, 1, &region);
+
+            VkImageMemoryBarrier toColor = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = vr->pickIdResolveImage,
+                .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0, 0, NULL, 0, NULL, 1, &toColor);
         }
 
         // This view's HDR target -> SHADER_READ for the composite below.
@@ -1143,6 +1201,22 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         // stage gates per-light shadow sampling on this; the shadow depth render is gated to match.
         viewUbo->lightingMode = state->lightingMode;
         viewUbo->debugView = state->debugView;
+    }
+
+    // Publish the live view-0 camera to the logic master (audit 4.11 / 7.1): the gameplay camera +
+    // viewport it needs for picking rays and attention-driven LOD. Done here because this is where
+    // this frame's view-0 viewProj + frustum planes are resolved; invViewProj unprojects a cursor
+    // texel to a world ray. Latest-wins, lock-free (logic never laps the once-per-frame producer).
+    {
+        RenderSnapshot snap;
+        memcpy(snap.viewProj, ubo->views[0].viewProj, sizeof(mat4));
+        if (!invertMat4(snap.invViewProj, ubo->views[0].viewProj))
+            memcpy(snap.invViewProj, ubo->views[0].viewProj, sizeof(mat4)); // singular (degenerate camera): publish a harmless placeholder
+        memcpy(snap.frustum, ubo->views[0].frustumPlanes, sizeof snap.frustum);
+        snap.vpWidth  = state->imageExtent.width;
+        snap.vpHeight = state->imageExtent.height;
+        snap.frameId  = state->globalFrame;
+        ano_render_publish_snapshot(&state->bridge, &snap);
     }
 
     ubo->viewCount = ANO_VIEW_COUNT;
@@ -2057,7 +2131,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
         n = render_slots_collect_retired(&state->slots, state->globalFrame, retired, 64u);
         if (n) anyRetired = true;
         for (uint32_t i = 0; i < n; i++) {
-            RenderEvent ev = { .kind = REVENT_SLOT_RETIRED, .render_id = retired[i] };
+            RenderEvent ev = { .kind = REVENT_SLOT_RETIRED, .u.render_id = retired[i] };
             (void)ano_render_emit_event(&state->bridge, &ev);
         }
     } while (n == 64u);
@@ -2374,6 +2448,22 @@ static void ano_collect_frame_stats(uint32_t frameIndex) {
     }
 }
 
+// Read this frame slot's picking readback (fence-complete, like the timestamps): map the sampled
+// slot back to a render_id and emit REVENT_PICK_RESULT to the logic master when the hit changes
+// (audit 3.1). A cleared/unmapped slot collapses to ANO_RENDER_NO_PICK. On a full event ring, skip
+// latching so the change re-emits next frame (backpressure-safe).
+static void ano_collect_pick(uint32_t frameIndex) {
+    uint32_t slot = *rendererState.frames[frameIndex].pickReadbackMapped;
+    uint32_t rid  = (slot == 0xFFFFFFFFu) ? ANO_RENDER_NO_PICK
+                                          : render_slots_render_id_of(&rendererState.slots, slot);
+    if (rid == ANO_RENDER_SLOT_UNMAPPED) rid = ANO_RENDER_NO_PICK; // slot retired between draw and read
+    if (rid != rendererState.lastPickRenderId) {
+        RenderEvent ev = { .kind = REVENT_PICK_RESULT, .u.pick_render_id = rid };
+        if (ano_render_emit_event(&rendererState.bridge, &ev))
+            rendererState.lastPickRenderId = rid;
+    }
+}
+
 void drawFrame()
 {
 	if (rendererState.framebufferResized)
@@ -2393,6 +2483,9 @@ void drawFrame()
 
         // This slot's prior submission is complete: its per-pass timestamps are ready to read.
         ano_collect_frame_stats(rendererState.frameIndex);
+
+        // Same fence-gated readback for picking: this slot's id-texel copy has retired.
+        ano_collect_pick(rendererState.frameIndex);
 
         // Reclaim streamed-transform ring slices the GPU is finished reading. Hold-last-
         // value means several in-flight frames can share one seq (one slice), so this
@@ -3575,7 +3668,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	rendererState.renderHeap = mi_heap_new();
 	if (!rendererState.renderHeap ||
 	    !render_slots_init(&rendererState.slots, rendererState.renderHeap, maxEntities, MAX_FRAMES_IN_FLIGHT) ||
-	    !ano_render_bridge_init(&rendererState.bridge, rendererState.renderHeap, 4096, 1024))
+	    // Events ring widened to 4096: it now also carries forwarded input (key REPEAT bursts), and
+	    // render must never block emitting it, so the ring absorbs the spikes (audit 4.11).
+	    !ano_render_bridge_init(&rendererState.bridge, rendererState.renderHeap, 4096, 4096))
 	{
 		printf("Quitting init: render bridge / slot authority failure!\n");
 		unInitVulkan();

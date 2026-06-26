@@ -81,5 +81,9 @@ void multiplyMat4(mat4 result, const mat4 a, const mat4 b);
 // Extracts the 6 frustum planes from a view-projection matrix
 void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj);
 
+// Inverts a 4x4 matrix (general cofactor method). out = m^-1. Returns false (out untouched) if m is
+// singular. Layout-agnostic: out is m^-1 in the same storage convention as m.
+bool invertMat4(mat4 out, const mat4 m);
+
 
 #endif

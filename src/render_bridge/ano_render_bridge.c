@@ -13,6 +13,12 @@
 #include "render_bridge.h"
 
 #include <stdint.h>
+#include <string.h>
+
+// Catch accidental growth of the events-ring element (copied byte-by-byte per push/pop and sized
+// capacity * this). It is exactly 32 B today and intentionally held there; growing a union arm past
+// it is a deliberate decision (ring footprint, copy cost), so this fires to force that decision.
+_Static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
 
 // Smallest power of two >= v, with a floor of 2. Returns 0 only on overflow
 // (v > 2^31), which the caller treats as failure.
@@ -66,6 +72,12 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
         ano_spsc_destroy(&bridge->commands);
         return false;
     }
+    // Published latest-wins lanes start unpublished (version 0): until logic publishes a pose the
+    // renderer uses its built-in camera, and until render publishes a frame logic's acquire fails.
+    memset(&bridge->snapshot, 0, sizeof bridge->snapshot);
+    memset(&bridge->viewState, 0, sizeof bridge->viewState);
+    atomic_init(&bridge->snapshotVersion, 0u);
+    atomic_init(&bridge->viewStateVersion, 0u);
     return true;
 }
 
@@ -115,4 +127,22 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
 {
     RenderCommand c = { .kind = RCMD_LIGHT_DETACH, .light_id = light_id };
     return ano_spsc_push(&bridge->commands, &c);
+}
+
+// Back-channel logic-master endpoints (anoptic_render.h). Non-inline so the logic master reaches
+// them through the opaque handle; the matching render-side producer/consumer halves are the inline
+// helpers in render_bridge.h.
+bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out)
+{
+    return ano_spsc_pop(&bridge->events, out);
+}
+
+bool ano_render_acquire_snapshot(AnoRenderBridge *bridge, RenderSnapshot *out)
+{
+    return ano_seqpub_load(&bridge->snapshot, &bridge->snapshotVersion, out, sizeof *out);
+}
+
+void ano_render_publish_view(AnoRenderBridge *bridge, const AnoViewState *view)
+{
+    ano_seqpub_store(&bridge->viewState, &bridge->viewStateVersion, view, sizeof *view);
 }
