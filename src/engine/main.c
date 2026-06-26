@@ -123,13 +123,16 @@ void* anoLogicThreadMain(void* arg)
 	bool     tintOn        = false;
 	bool     bulkDestroyed = false;
 
-	// STAND-IN (4.7 Phase 3): runtime light attach / update / detach. ~3 s: attach a warm point
-	// light (light_id 5000) to render_id 2 and a cyan one (5001) to render_id 3, each riding its
-	// parent at a model-space offset. Pulse 5000's intensity every ~0.5 s. ~12 s: detach 5000.
-	// 5001 is left attached so the 16 s bulk-despawn of {3,4} exercises the parent-DESTROY cascade
-	// (the render side auto-disables and reclaims it). Remove when a real light producer exists.
+	// STAND-IN (4.7 Phase 3): runtime light attach / update / detach. ~3 s: attach a warm casting spot
+	// (light_id 5000) to render_id 2 and a cyan point (5001) to render_id 3, each riding its parent at
+	// a model-space offset. Pulse 5000's intensity every ~0.5 s. ~7 s: toggle 5000's shadow casting OFF
+	// (frustum returns to the pool, light stays lit); ~9.5 s: toggle it back ON (re-allocates, proving
+	// pool reuse). ~12 s: detach 5000. 5001 is left attached so the 16 s bulk-despawn of {3,4} exercises
+	// the parent-DESTROY cascade (the render side auto-disables and reclaims it). Remove for a real producer.
 	bool     rt5000     = false;
 	bool     rt5001     = false;
+	bool     rtCastOff  = false;
+	bool     rtCastOn   = false;
 	bool     rtDetached = false;
 	uint64_t lastPulse  = startTime;
 	float    pulsePhase = 0.0f;
@@ -218,6 +221,18 @@ void* anoLogicThreadMain(void* arg)
 			RenderLightParams pulse = { .intensity = 3.0f + 9.0f * tri };
 			if (ano_render_light_update_fields(bridge, 5000u, &pulse, 0.0f, 0.0f, 0.0f, ANO_LIGHT_FIELD_INTENSITY))
 				lastPulse = now;
+		}
+		// Runtime cast toggle (4.7 budget expansion): flip 5000's shadow casting without re-attaching.
+		// Only castsShadow is read for ANO_LIGHT_FIELD_CAST; the warm color/intensity/offset persist.
+		if (rt5000 && !rtCastOff && now - startTime > 7000000) {
+			RenderLightParams off = { .castsShadow = 0u };
+			if (ano_render_light_update_fields(bridge, 5000u, &off, 0.0f, 0.0f, 0.0f, ANO_LIGHT_FIELD_CAST))
+				rtCastOff = true;
+		}
+		if (rtCastOff && !rtCastOn && now - startTime > 9500000) {
+			RenderLightParams on = { .castsShadow = 1u };
+			if (ano_render_light_update_fields(bridge, 5000u, &on, 0.0f, 0.0f, 0.0f, ANO_LIGHT_FIELD_CAST))
+				rtCastOn = true;
 		}
 		if (rt5000 && !rtDetached && now - startTime > 12000000) {
 			if (ano_render_light_detach(bridge, 5000u)) rtDetached = true;

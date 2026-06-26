@@ -1654,13 +1654,20 @@ static void shadow_frustum_free(RendererState* st, uint32_t base) {
 
 // Attach a runtime shadow caster: allocate a frustum block, stage its per-frustum config (active=1)
 // + this light's per-light info (castsShadow=1, base, count) through the SlotUploads + the CPU mirror,
-// and record the base on the registry row so detach can free it. No-op past budget (shadowless).
+// and record the base on the registry row so detach can free it. Past budget it stages NON-casting info
+// (castsShadow=0) and stays shadowless — this is load-bearing: detach deliberately doesn't re-stage
+// shadowInfo (it banks on the reuse re-staging it), so a budget-full attach onto a recycled palette row
+// MUST clear the stale {castsShadow=1, freed base} the prior caster left, or the frag samples it.
 // lightPalIdx = absolute light-palette row; regRow = relative registry row.
 static void shadow_caster_attach(RendererState* st, uint32_t lightPalIdx, uint32_t regRow,
                                  uint32_t lightType, uint32_t frameIndex) {
     uint32_t base = shadow_frustum_alloc(st, lightType);
     st->lightRegistry.rowShadowBase[regRow] = base; // NONE if budget full
-    if (base == ANO_SHADOW_NONE) return;
+    if (base == ANO_SHADOW_NONE) {
+        ShadowLightInfo si = {0}; // castsShadow == 0: clear any prior caster's info on this palette row
+        slot_upload_stage(&st->shadowInfo, frameIndex, lightPalIdx, &si);
+        return;
+    }
     uint32_t blockSize = (lightType == LIGHT_TYPE_POINT) ? ANO_SHADOW_CUBE_FACES : 1u;
     for (uint32_t f = 0; f < blockSize; f++) {
         ShadowFrustumConfig c = { .lightIndex = lightPalIdx, .lightType = lightType,
@@ -1854,12 +1861,22 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             mir->transformIndex = parentSlot;
             mir->enabled = 1u;
             slot_upload_stage(&state->lightBuffer, frameIndex, row, mir);
-            // Re-typing a casting light invalidates its frustum block (point = 6 frustums vs single =
-            // 1): the stale frustumCount / cube-face fan would sample unallocated layers. Re-allocate
-            // for the new type (shadowless if that pool is full). Type is the only field that does this.
-            if (mir->type != oldType && state->lightRegistry.rowShadowBase[regRow] != ANO_SHADOW_NONE) {
-                shadow_caster_detach(state, regRow, frameIndex);
+            // Shadow-caster transitions. castsShadow is preserved across a normal update; only an explicit
+            // ANO_LIGHT_FIELD_CAST request (outside ALL) toggles it, so a full overwrite never silently
+            // drops a caster. A live caster also re-allocates on a TYPE change (point = 6 frustums vs
+            // single = 1; the stale frustumCount / cube-face fan would sample unallocated layers).
+            bool isCasting   = state->lightRegistry.rowShadowBase[regRow] != ANO_SHADOW_NONE;
+            bool wantCast    = (fields & ANO_LIGHT_FIELD_CAST) ? (cmd.light.castsShadow != 0u) : isCasting;
+            bool typeChanged = mir->type != oldType;
+            if (wantCast && (!isCasting || typeChanged)) {
+                if (isCasting) shadow_caster_detach(state, regRow, frameIndex); // re-alloc for new type
                 shadow_caster_attach(state, row, regRow, mir->type, frameIndex);
+            } else if (!wantCast && isCasting) {
+                // Toggle off while the light stays lit: free the frustum and re-stage non-casting info so
+                // the fragment stops sampling the now-inactive block (detach alone leaves shadowInfo set).
+                shadow_caster_detach(state, regRow, frameIndex);
+                ShadowLightInfo si = {0}; // castsShadow == 0
+                slot_upload_stage(&state->shadowInfo, frameIndex, row, &si);
             }
             break;
         }

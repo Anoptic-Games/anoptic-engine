@@ -107,7 +107,8 @@ typedef struct RenderLightParams
                                   // Lets spots on a shared parent slot fan independently. Point: ignored.
     uint32_t        castsShadow;  // RCMD_LIGHT_ATTACH: 1 = allocate a runtime shadow frustum so this
                                   // light casts (within the runtime budget; silently shadowless if full).
-                                  // Decided at attach. dir/spot = 1 frustum, point = 6 (a cube).
+                                  // dir/spot = 1 frustum, point = 6 (a cube). Set at attach; togglable
+                                  // afterward via ano_render_light_update_fields + ANO_LIGHT_FIELD_CAST.
 } RenderLightParams;
 
 // Field mask for ano_render_light_update_fields: which RenderLightParams fields (+ the model-space
@@ -122,7 +123,12 @@ enum {
     ANO_LIGHT_FIELD_TYPE      = 1 << 4, // type
     ANO_LIGHT_FIELD_OFFSET    = 1 << 5, // light_offset[3]
     ANO_LIGHT_FIELD_DIRECTION = 1 << 6, // localDir[3] (spot/dir aim)
-    ANO_LIGHT_FIELD_ALL       = (1 << 7) - 1,
+    ANO_LIGHT_FIELD_ALL       = (1 << 7) - 1, // the full-overwrite set (bits 0..6); preserves cast state
+    ANO_LIGHT_FIELD_CAST      = 1 << 7, // toggle shadow casting via castsShadow. Deliberately OUTSIDE
+                                        // ALL: casting allocates/frees a whole shadow-frustum block, so
+                                        // it flips only on an explicit request, never as a side effect
+                                        // of a full update. On->off frees the block (shadowless within a
+                                        // frame); off->on re-allocates if the runtime budget allows.
 };
 
 // Occlusion model selector, profiled head-to-head against radiance cascades (see
