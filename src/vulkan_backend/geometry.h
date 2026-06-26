@@ -74,7 +74,37 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
                               const Vertex* vertices, uint32_t vertexCount,
                               const uint32_t* indices, uint32_t indexCount);
 
+#define ANO_MAX_LOD 8u
+
+// LOD chain production config (review 4.9 step 2). lodCount levels are emitted as a contiguous run
+// of mesh indices: level 0 is the full mesh, level i is the source decimated to ratios[i] of the
+// source index count under targetError. ratios[0] is conventionally 1.0 (level 0 == full).
+typedef struct AnoLodConfig
+{
+    uint32_t lodCount;             // levels to emit (>=1, clamped to ANO_MAX_LOD)
+    float    ratios[ANO_MAX_LOD];  // per-level target index fraction of the source (level 0 == 1.0)
+    float    targetError;          // ano_simplify relative error budget (fraction of bbox extent)
+} AnoLodConfig;
+
+// A sensible default chain: ratios 1, 1/2, 1/4, ... and a 5%-of-extent error budget.
+AnoLodConfig ano_lod_config_default(uint32_t lodCount);
+
+// Upload a mesh as a contiguous LOD chain. Produces config->lodCount adjacent mesh regions sharing
+// the same vertex data (level i = ano_simplify of the source to ratios[i]); returns the base mesh
+// index and writes the count actually produced to *out_lodCount (the chain truncates if a level's
+// simplify stalls or a pool is exhausted). Bounds are LOD-invariant (full mesh sphere on every
+// level). Returns 0 (fallback) with *out_lodCount == 0 if nothing is produced. out_* may be NULL.
+uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
+                                    uint32_t transferFamily, VkQueue transferQueue,
+                                    const Vertex* vertices, uint32_t vertexCount,
+                                    const uint32_t* indices, uint32_t indexCount,
+                                    const AnoLodConfig* config,
+                                    uint32_t* out_lodBase, uint32_t* out_lodCount);
+
 // Free a mesh region, adding its memory and index to the free lists
 void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex);
+
+// Free a contiguous LOD chain (each level returned to the free lists). Symmetric with upload_chain.
+void geometry_pool_free_chain(GeometryPool* pool, uint32_t lodBase, uint32_t lodCount);
 
 #endif
