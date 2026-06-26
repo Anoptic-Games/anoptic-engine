@@ -25,6 +25,7 @@ typedef struct MeshRegion
     uint32_t    classicIndexCount;  // number of u32 indices in the classic region (fallback path)
     float       boundingSphereCenter[3];
     float       boundingSphereRadius;
+    uint32_t    lodCount;           // # contiguous LOD meshes from this base (1 == standalone); cull reads it off the base
 } MeshRegion;
 
 typedef struct GeoFreeBlock
@@ -75,6 +76,11 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
                               const uint32_t* indices, uint32_t indexCount);
 
 #define ANO_MAX_LOD 8u
+
+// Default LOD levels glTF uploads request. 1 == today's behavior (a single full-detail mesh, no
+// decimation). Raise it (<= ANO_MAX_LOD) to turn LOD chains on engine-wide once decimation quality
+// is verified on real assets.
+#define ANO_DEFAULT_LOD_COUNT 4u
 
 // LOD chain production config (review 4.9 step 2). lodCount levels are emitted as a contiguous run
 // of mesh indices: level 0 is the full mesh, level i is the source decimated to ratios[i] of the

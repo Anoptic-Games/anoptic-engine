@@ -68,6 +68,14 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		static const char* const names[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RADIANCE_CASCADES" };
 		printf("Lighting mode: %s\n", names[next]);
 	}
+	// LOD bias inspection (review 4.9 step 2): [ biases finer, ] coarser. Repeats while held so the
+	// scene can be swept from finest to coarsest; a large bias pins every LOD-chain mesh to one end.
+	if ((key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET) &&
+	    (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+		int32_t bias = ano_render_get_lod_bias() + (key == GLFW_KEY_RIGHT_BRACKET ? 1 : -1);
+		ano_render_set_lod_bias(bias);
+		printf("LOD bias: %+d\n", ano_render_get_lod_bias());
+	}
 }
 
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope

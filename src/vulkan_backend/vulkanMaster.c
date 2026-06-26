@@ -997,8 +997,8 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         float threshold = state->cullPixelThreshold[v];
         ubo->viewCullParams[v][0] = screenAreaScale;
         ubo->viewCullParams[v][1] = threshold * threshold;
-        ubo->viewCullParams[v][2] = 0.0f;
-        ubo->viewCullParams[v][3] = 0.0f;
+        ubo->viewCullParams[v][2] = state->lodPixelThreshold[v]; // LOD level-1 onset (review 4.9 step 2)
+        ubo->viewCullParams[v][3] = (float)state->lodBias;       // global LOD bias (debug/tuning), replicated per view
         // Publish the active light count to each view's fragment stage.
         viewUbo->lightCount = state->lightBuffer.count;
         // Publish the runtime lighting mode + debug selector (RADIANCE_CASCADES.md). The fragment
@@ -1037,14 +1037,15 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     for(uint32_t i=0; i < meshCount; i++) {
         MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
         
-        meshData[i*8 + 0] = mesh->meshletCount;
-        meshData[i*8 + 1] = mesh->meshletOffset;
-        meshData[i*8 + 2] = mesh->uniqueVerticesOffset;
-        meshData[i*8 + 3] = mesh->trianglesOffset;
-        meshData[i*8 + 4] = mesh->vertexOffset;
-        meshData[i*8 + 5] = mesh->classicIndexCount;       // fallback: VkDrawIndexedIndirectCommand.indexCount
-        meshData[i*8 + 6] = mesh->classicIndexOffset / 4;  // fallback: firstIndex (u32 index units)
-        meshData[i*8 + 7] = mesh->boundsOffset;            // byte offset of per-meshlet bounds (sphere+cone) in metadata buffer; consumed by flat.mesh cone cull
+        meshData[i*9 + 0] = mesh->meshletCount;
+        meshData[i*9 + 1] = mesh->meshletOffset;
+        meshData[i*9 + 2] = mesh->uniqueVerticesOffset;
+        meshData[i*9 + 3] = mesh->trianglesOffset;
+        meshData[i*9 + 4] = mesh->vertexOffset;
+        meshData[i*9 + 5] = mesh->classicIndexCount;       // fallback: VkDrawIndexedIndirectCommand.indexCount
+        meshData[i*9 + 6] = mesh->classicIndexOffset / 4;  // fallback: firstIndex (u32 index units)
+        meshData[i*9 + 7] = mesh->boundsOffset;            // byte offset of per-meshlet bounds (sphere+cone) in metadata buffer; consumed by flat.mesh cone cull
+        meshData[i*9 + 8] = mesh->lodCount;                // review 4.9 step 2: contiguous LOD count (cull reads off the base mesh)
 
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
         meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];
@@ -2120,6 +2121,33 @@ float ano_render_get_view_cull_threshold(uint32_t view) {
     return rendererState.cullPixelThreshold[view];
 }
 
+// Per-view LOD threshold (review 4.9 step 2). Copied into CullUBO.viewCullParams[view][2] by
+// updateCullingBuffers; takes effect from the next recorded frame. Pixels of projected radius at
+// which level 1 begins; 0 disables LOD selection (always level 0), negative clamps to 0. Inert
+// until meshes carry LOD chains. Out-of-range view ignored. Render-thread only, like the others.
+void ano_render_set_view_lod_threshold(uint32_t view, float pixels) {
+    if (view >= ANO_VIEW_COUNT) return;
+    rendererState.lodPixelThreshold[view] = (pixels > 0.0f) ? pixels : 0.0f;
+}
+
+float ano_render_get_view_lod_threshold(uint32_t view) {
+    if (view >= ANO_VIEW_COUNT) return 0.0f;
+    return rendererState.lodPixelThreshold[view];
+}
+
+// Global LOD bias (review 4.9 step 2): added to every entity's auto-selected level in cull.comp,
+// then clamped to the mesh's chain range. + = coarser, - = finer; published into viewCullParams[v][3]
+// by updateCullingBuffers; takes effect next recorded frame. Clamped to +/- ANO_MAX_LOD (the shader
+// clamps to the real chain length per entity). Render-thread only, like the other knobs.
+void ano_render_set_lod_bias(int32_t bias) {
+    int32_t lim = (int32_t)ANO_MAX_LOD;
+    rendererState.lodBias = bias < -lim ? -lim : (bias > lim ? lim : bias);
+}
+
+int32_t ano_render_get_lod_bias(void) {
+    return rendererState.lodBias;
+}
+
 // Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode
 // (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident D32 atlas (ANO_SHADOW_FRUSTUM_COUNT
 // layers x ANO_SHADOW_DIM^2 x 4 B x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
@@ -2740,12 +2768,15 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     state->culling.maxEntities = maxEntities;
     uint32_t maxMeshes = 1024;
 
-    // Per-view screen-area cull threshold (review 4.9 step 1); runtime-overridable per view via
-    // ano_render_set_view_cull_threshold. Same default for every view; tune at runtime.
-    for (uint32_t v = 0; v < ANO_VIEW_COUNT; ++v)
+    // Per-view screen-area cull + LOD thresholds (review 4.9 steps 1-2); runtime-overridable per
+    // view via ano_render_set_view_cull_threshold / ano_render_set_view_lod_threshold. Same default
+    // for every view; tune at runtime.
+    for (uint32_t v = 0; v < ANO_VIEW_COUNT; ++v) {
         state->cullPixelThreshold[v] = ANO_CULL_PIXEL_THRESHOLD_DEFAULT;
+        state->lodPixelThreshold[v]  = ANO_LOD_PIXEL_THRESHOLD_DEFAULT;
+    }
     
-    VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
+    VkDeviceSize meshDataSize = sizeof(uint32_t) * 9 * maxMeshes; // MeshData: 9 u32 (8 + lodCount)
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
     VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_partition_count();
     VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_partition_count();

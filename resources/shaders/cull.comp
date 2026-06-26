@@ -52,7 +52,14 @@ struct MeshData {
     uint classicIndexCount;  // fallback: VkDrawIndexedIndirectCommand.indexCount
     uint classicFirstIndex;  // fallback: firstIndex (u32 index units)
     uint boundsOffset;       // byte offset of per-meshlet bounds block; unused here, consumed by flat.mesh cone cull
+    uint lodCount;           // review 4.9 step 2: # contiguous LOD meshes from this base (1 == no LOD)
 };
+
+// LOD level is packed into the high bits of the compacted entity index so flat.mesh can resolve the
+// selected mesh as entities[idx].meshIndex + level. ANO_MAX_LOD (8) needs 3 bits; 29 bits of index
+// addresses 512M entities. flat.mesh / flat.vert must mask with ANO_ENTITY_INDEX_MASK.
+#define ANO_LOD_LEVEL_SHIFT  29u
+#define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
 
 layout(set = 0, binding = 3) readonly buffer MeshSSBO {
     MeshData meshDrawData[];
@@ -180,9 +187,11 @@ bool isVisibleInShadow(uint s, vec4 worldCenter, float worldRadius) {
     return true;
 }
 
-// Append one compacted draw for entity idx into partition partIdx. Returns the draw's position
-// within the partition (writeIdx) so the caller can write a parallel sort key for it.
-uint emitDraw(uint partIdx, uint idx, MeshData mData) {
+// Append one compacted draw for entity idx (at LOD level) into partition partIdx. mData is the
+// SELECTED level's mesh data (the mesh path's groupCountX and the fallback path's index/vertex
+// offsets both come from it); the level is packed alongside idx so the draw stage resolves the same
+// mesh. Returns the draw's position within the partition (writeIdx) for the parallel sort key.
+uint emitDraw(uint partIdx, uint idx, MeshData mData, uint level) {
     uint writeIdx = atomicAdd(drawCounts[partIdx], 1);
     uint destIdx = partIdx * maxEntities + writeIdx;
     if (useMeshShader) {
@@ -198,8 +207,26 @@ uint emitDraw(uint partIdx, uint idx, MeshData mData) {
         indirectData[b + 3u] = mData.vertexOffset / 32u; // vertexOffset -> gl_VertexIndex base
         indirectData[b + 4u] = writeIdx;                 // firstInstance = draw ordinal (gl_InstanceIndex)
     }
-    entityIndices[destIdx] = idx;
+    entityIndices[destIdx] = (idx & ANO_ENTITY_INDEX_MASK) | (level << ANO_LOD_LEVEL_SHIFT);
     return writeIdx;
+}
+
+// Select an LOD level from the projected pixel radius rpx. thresholdPx is the rpx at which level 1
+// begins; each halving of rpx below it drops one further level (the automatic level). bias shifts
+// that selection for debug/tuning: +1 forces one level coarser, -1 one finer; it still applies when
+// distance LOD is off (thresholdPx<=0), so a bias can force coarse meshes for inspection. The final
+// level is clamped to [0, lodCount-1], so a large +bias pins everything to the coarsest level.
+uint lodSelect(float rpx, uint lodCount, float thresholdPx, int bias) {
+    if (lodCount <= 1u) return 0u;
+    int autoLevel = 0;
+    if (thresholdPx > 0.0 && rpx > 0.0) {
+        float l = floor(log2(thresholdPx / rpx));
+        if (l > 0.0) autoLevel = int(l);
+    }
+    int level = autoLevel + bias;
+    if (level < 0) level = 0;
+    if (level > int(lodCount) - 1) level = int(lodCount) - 1;
+    return uint(level);
 }
 
 void main() {
@@ -217,9 +244,14 @@ void main() {
     }
 
     mat4 model = transforms[idx];
-    vec4 bounds = meshBounds[entity.meshIndex];
-    MeshData mData = meshDrawData[entity.meshIndex];
-    
+    // entity.meshIndex is the LOD base (level 0). Bounds + the frustum/screen-area test use the base
+    // (LOD-invariant, so an entity never pops in/out as its level changes); the per-view draw uses the
+    // selected level's mesh data (base + level). lodCount lives in the base mesh's metadata.
+    uint baseMesh = entity.meshIndex;
+    vec4 bounds = meshBounds[baseMesh];
+    MeshData baseData = meshDrawData[baseMesh];
+    uint lodCount = baseData.lodCount;
+
     // Look up material and pipeline type, then map it to its compacted draw partition.
     // Types that never draw (compute passes, unimplemented skeletons) map to the sentinel
     // and emit nothing — partitions exist only for drawing pipeline types (see ano_draw_*).
@@ -253,7 +285,14 @@ void main() {
             if (dist > 0.0 && rnum * rnum < viewCullParams[view].y * dist * dist) {
                 continue;
             }
-            uint w = emitDraw(view * drawSlotCount + slot, idx, mData);
+            // LOD select (review 4.9 step 2): rpx = rnum / dist is the projected pixel radius this
+            // view already needs for the cull; reuse it. Only divides when LOD is present (lodCount>1).
+            uint level = 0u;
+            if (lodCount > 1u && dist > 0.0) {
+                level = lodSelect(rnum / dist, lodCount, viewCullParams[view].z, int(viewCullParams[view].w));
+            }
+            MeshData mData = (level == 0u) ? baseData : meshDrawData[baseMesh + level];
+            uint w = emitDraw(view * drawSlotCount + slot, idx, mData, level);
             // Only the "over" (transmission) lane is depth-sorted. Larger key = farther; tpsort.comp
             // sorts descending so the farthest draws first (back-to-front).
             if (slot == specialSlots.y) {
@@ -267,7 +306,9 @@ void main() {
     if (slot != specialSlots.x) {
         for (uint s = 0u; s < ANO_SHADOW_FRUSTUM_COUNT; ++s) {
             if (isVisibleInShadow(s, worldCenter, worldRadius)) {
-                emitDraw(ANO_VIEW_COUNT * drawSlotCount + s, idx, mData);
+                // Shadow casters render the base level (no screen-area LOD): the shadow atlas has its
+                // own resolution, and a per-frustum texel-size LOD is a later refinement.
+                emitDraw(ANO_VIEW_COUNT * drawSlotCount + s, idx, baseData, 0u);
             }
         }
     }
