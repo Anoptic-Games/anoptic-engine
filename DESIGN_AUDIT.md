@@ -171,7 +171,7 @@ strategic inconsistency: the data structures commit to the expensive path the vi
 Worth a deliberate decision — either embrace PBR and drop the "no PBR" claim, or thin
 `MaterialData` toward the stylized target and reclaim the budget.
 
-### 2.5 Owned / variable-size per-entity data has no managed story (extensible, needs policy)
+### 2.5 Owned / variable-size per-entity data has no managed story (extensible, needs policy) - ECS, if needed for testing
 
 ECS components are fixed-stride POD (`ano_ecs_register_component`, stride fixed for life). A
 component may hold a pointer (to a name, an inventory, a dialogue tree, a mod blob), but
@@ -210,7 +210,7 @@ against a spatial index (§3.4). Either way the *return contract* of the bridge 
 two enum values. This is the most consequential interaction gap and it is structural, not a
 missing feature flag.
 
-### 3.2 Multi-component joins are scattered; the ECS has no archetypes or queries (root performance shape)
+### 3.2 Multi-component joins are scattered; the ECS has no archetypes or queries (root performance shape) - ECS, if needed for testing
 
 The hot iteration primitive is `EcsColumn` over a *single* component (`anoptic_ecs.h:170`).
 Multi-component systems are told to iterate one column and call `ano_ecs_get`/`ano_ecs_has` for
@@ -274,7 +274,7 @@ over the ECS), but its absence silently shapes — and slows — every gameplay 
 before it exists. Build it early and make it the substrate for both range queries and
 logic-side picking (§3.1).
 
-### 3.5 No relationships, hierarchy, or cascade/destroy hooks (root-ish)
+### 3.5 No relationships, hierarchy, or cascade/destroy hooks (root-ish) - ECS, if needed for testing
 
 Entities are flat. An entity can store an `EcsEntityId` in a component, but there is no
 parent/child, no `ChildOf`, no relation graph, and crucially `ano_ecs_flush_structural`
@@ -290,7 +290,7 @@ offers no hook. Cheap to add now (a per-component destroy callback, or a relatio
 registers cleanup at the flush), bug-prone to retrofit after systems assume references never
 dangle.
 
-### 3.6 Parallel systems cannot safely attach components (root ergonomic, cheap fix)
+### 3.6 Parallel systems cannot safely attach components (root ergonomic, cheap fix) - ECS, if needed for testing
 
 The threading contract (`anoptic_ecs.h:18`) defers destroy and remove to a single-threaded
 flush, but `ano_ecs_add` is immediate, append-only, and explicitly *not* safe to call
@@ -303,7 +303,7 @@ is a direct limit on multi-threaded gameplay (the engine's reason for existing).
 and should land before systems are written: add a deferred-add queue symmetric with
 remove/destroy (stage the payload, apply in the flush).
 
-### 3.7 No change detection / reactivity (extensible)
+### 3.7 No change detection / reactivity (extensible) - ECS, if needed for testing
 
 The ECS emits nothing when data changes — no added/removed/changed signals. The only reactive
 mechanism is the manually-maintained `dirty` bitfield in `DisplayState`
@@ -316,7 +316,7 @@ want a generic change/observer mechanism. Extensible; flag so it is designed onc
 
 ## 4. Capabilities — engine-level processing
 
-### 4.1 Multi-threaded ECS is a primitive, not a system (partly root)
+### 4.1 Multi-threaded ECS is a primitive, not a system (partly root) - ECS, if needed for testing
 
 `anoptic_ecs.h` promises "may fan component work out to worker threads," but what exists is the
 *primitive* (`EcsColumn` for manual data-parallel splitting) and the rules; there is no job
@@ -396,7 +396,7 @@ a way to lower the high-water when a trailing run of slots is free (compaction o
 and/or per-region buffers that can be released wholesale on demote (which fits the arena model
 better than one global growing buffer).
 
-### 4.6 No serialization / save-load, and no scripting / modding (root for genre)
+### 4.6 No serialization / save-load, and no scripting / modding (root for genre) - ECS, if needed for testing
 
 - Serialization. None exists. For a simulation game, saving a million entities is mandatory. The
   good news: the SoA stores are *almost* serialization-ideal — dense POD arrays + parallel owners
@@ -413,7 +413,7 @@ better than one global growing buffer).
   components, data-defined content) needs a reflection + scripting layer the foundation does not
   hint at. Extensible, large; the runtime-registration hook is the seam to build on.
 
-### 4.7 Lighting does not scale; no shadows; no transparency ordering (root renderer architecture) - PARTIAL: no high-water compaction, per-light partial-field updates, fanned-spot local directions, and shadow-frustum-budget expansion
+### 4.7 Lighting does not scale; no shadows; no transparency ordering (root renderer architecture) - ADDRESSED
 
 - Many lights. `flat.frag:198` loops *every* active light for *every* fragment, with no culling,
   no clustering, no tiling, no deferred path. Storage allows 10000 lights but the per-fragment
@@ -442,7 +442,7 @@ frustums at once; here it is one. Adding views means N cull passes or an N-frust
 the indirect buffer. Root for any game wanting more than one viewport, and a prerequisite for
 shadows.
 
-### 4.9 Cull is frustum-only; no LOD, no occlusion, no screen-area test (root for the scale goal) - NEXT
+### 4.9 Cull is frustum-only; no LOD, no occlusion, no screen-area test (root for the scale goal) - HERE
 
 `cull.comp` does sphere-vs-frustum and nothing else (`isVisible:129`). There is no LOD selection
 (one mesh per entity, no LOD chain, no impostors), no occlusion culling (the corpus's BF3
@@ -457,7 +457,7 @@ LOD mesh array in the cull pass, additively) and high-leverage — this is proba
 important renderer addition for the stated scale, and the scoped-resolution LOD story has no
 renderer support without it.
 
-### 4.10 Cross-thread BULK_CREATE has no lifetime handshake (correctness gap for the real producer)
+### 4.10 Cross-thread BULK_CREATE has no lifetime handshake (correctness gap for the real producer) - NEXT
 
 `RenderCreateBatch` is borrowed: the header says the render master "releases the batch when
 consumed" (`anoptic_render_bridge.h:97`), but the render side never frees it — `render_apply_commands`
