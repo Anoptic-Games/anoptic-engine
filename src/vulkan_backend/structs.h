@@ -51,6 +51,11 @@
 // shadow pass); every per-view buffer/target/set array and the CullUBO frustum array size to it.
 #define ANO_VIEW_COUNT           2u
 
+// Hi-Z (hierarchical depth) occlusion pyramid (review 4.9 step 3). Each camera view owns a half-res
+// R32F depth pyramid built each frame from its MSAA depth; the cull samples it (next frame, single-
+// phase) to reject occluded entities. Mip cap covers a half-res 4K base (2048 -> 12 mips) with slack.
+#define ANO_MAX_HIZ_MIPS         16u
+
 // Default per-view screen-area cull threshold, in pixels of projected bounding-sphere radius
 // (review 4.9 step 1). An in-frustum entity smaller than this on screen emits no draw. ~1.5 px
 // drops genuinely sub-pixel geometry while staying conservative; tune per view at runtime via
@@ -831,6 +836,18 @@ typedef struct ViewResources
     GpuAllocation       hdrColorAlloc;
     VkImageView         hdrColorView;
 
+    // Hi-Z occlusion pyramid (review 4.9 step 3): half-res R32F mip chain built from depthImage each
+    // frame. hizSampledView covers all mips (downsample reads mip k-1; the cull samples it next frame);
+    // hizMipViews[k] is a single-mip storage view the build writes via imageStore. hizSets[k] is the
+    // per-mip compute descriptor set (single-image binding avoids storage-image-array dynamic indexing,
+    // an unenabled feature). hizMipCount mips are live; dims are state->hizWidth/Height (shared).
+    VkImage             hizImage;
+    GpuAllocation       hizAlloc;
+    VkImageView         hizSampledView;
+    VkImageView         hizMipViews[ANO_MAX_HIZ_MIPS];
+    VkDescriptorSet     hizSets[ANO_MAX_HIZ_MIPS];
+    uint32_t            hizMipCount;
+
     // Clustered-forward froxel light lists for this view (device-local, written by this view's
     // light-cull dispatch, read by its fragment passes). Per view: each frustum bins lights
     // differently. Fixed size: clusterLightCount = uint per froxel; clusterLightIndices =
@@ -922,6 +939,16 @@ typedef struct RendererState
     VkPipelineLayout        tonemapLayout;
     VkDescriptorSetLayout   tonemapSetLayout;       // 1 combined-image-sampler (hdrColorView)
     VkPipelineCache         tonemapCache;
+
+    // Hi-Z occlusion pyramid build (review 4.9 step 3). The pipeline lives in prototypes[
+    // PIPELINE_COMPUTE_HIZ] (two implementations: [0]=reduce MSAA depth->mip0, [1]=downsample mip->mip,
+    // selected by the isReduce spec constant). hizSetLayout is the shared per-mip compute set layout
+    // (sampler2D pyramid, r32f storage mip, sampler2DMS depth). Base pyramid dims are half the swapchain
+    // extent; hizMipCount mips. Recreated with the swapchain.
+    VkDescriptorSetLayout   hizSetLayout;
+    uint32_t                hizWidth;
+    uint32_t                hizHeight;
+    uint32_t                hizMipCount;
 
     // Geometry
     GeometryPool            globalGeometryPool;

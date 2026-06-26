@@ -241,7 +241,7 @@ static const RenderPassDef g_framePasses[] = {
         .colorAttachmentCount   = 1,
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // test against opaque depth (no write)
-        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_DONT_CARE, // last pass; nothing reads depth after
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,     // Hi-Z reduce (review 4.9 step 3) reads this depth
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
 };
@@ -849,6 +849,105 @@ void recordCommandBuffer(uint32_t imageIndex)
             hdrToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &hdrToRead);
+        }
+
+        // Hi-Z occlusion pyramid build (review 4.9 step 3). Reduce this view's MSAA depth into mip 0,
+        // then MAX-downsample the chain (the cull samples it next frame; single-phase). Standard ZO
+        // depth -> MAX reduction (farthest occluder). Depth -> SHADER_READ for the reduce and restored
+        // to DEPTH_ATTACHMENT after, so next frame's geometry pass finds it in the expected layout.
+        {
+            // depth DEPTH_ATTACHMENT -> SHADER_READ (the reduce reads it as a sampler2DMS)
+            VkImageMemoryBarrier depToRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            depToRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            depToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            depToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            depToRead.image = vr->depthImage;
+            depToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            depToRead.subresourceRange.levelCount = 1;
+            depToRead.subresourceRange.layerCount = 1;
+            depToRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            depToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 0, NULL, 0, NULL, 1, &depToRead);
+
+            // pyramid (all mips) -> GENERAL for the storage writes. UNDEFINED oldLayout discards stale
+            // contents: the build fully rewrites every mip this frame.
+            VkImageMemoryBarrier pyrToGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            pyrToGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            pyrToGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            pyrToGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            pyrToGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            pyrToGeneral.image = vr->hizImage;
+            pyrToGeneral.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            pyrToGeneral.subresourceRange.levelCount = vr->hizMipCount;
+            pyrToGeneral.subresourceRange.layerCount = 1;
+            pyrToGeneral.srcAccessMask = 0;
+            pyrToGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 0, NULL, 0, NULL, 1, &pyrToGeneral);
+
+            // mip 0 = reduce (impl 0, MSAA depth); mip k = downsample (impl 1, mip k-1). One barrier
+            // between mips so mip k-1's writes are visible to mip k's reads. PC matches hiz.comp's block.
+            VkPipelineLayout hizLayout = rendererState.prototypes[PIPELINE_COMPUTE_HIZ].layout;
+            for (uint32_t m = 0; m < vr->hizMipCount; m++) {
+                uint32_t dstW = rendererState.hizWidth  >> m; if (dstW < 1u) dstW = 1u;
+                uint32_t dstH = rendererState.hizHeight >> m; if (dstH < 1u) dstH = 1u;
+                struct { int32_t srcMip, pad, dstW, dstH, srcW, srcH; } pc;
+                pc.srcMip = (int32_t)m - 1; pc.pad = 0;
+                pc.dstW = (int32_t)dstW; pc.dstH = (int32_t)dstH;
+                if (m == 0u) {
+                    pc.srcW = (int32_t)rendererState.imageExtent.width;
+                    pc.srcH = (int32_t)rendererState.imageExtent.height;
+                } else {
+                    uint32_t sw = rendererState.hizWidth  >> (m - 1u); if (sw < 1u) sw = 1u;
+                    uint32_t sh = rendererState.hizHeight >> (m - 1u); if (sh < 1u) sh = 1u;
+                    pc.srcW = (int32_t)sw; pc.srcH = (int32_t)sh;
+                }
+                uint32_t impl = (m == 0u) ? 0u : 1u;
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    rendererState.prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].pipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizLayout, 0, 1, &vr->hizSets[m], 0, NULL);
+                vkCmdPushConstants(cmd, hizLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+                vkCmdDispatch(cmd, (dstW + 7u) / 8u, (dstH + 7u) / 8u, 1u);
+
+                if (m + 1u < vr->hizMipCount) {
+                    VkMemoryBarrier mipBarrier = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, 1, &mipBarrier, 0, NULL, 0, NULL);
+                }
+            }
+
+            // pyramid -> SHADER_READ (next frame's cull samples it; step B). Restore depth to
+            // DEPTH_ATTACHMENT for next frame's geometry pass.
+            VkImageMemoryBarrier pyrToRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            pyrToRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            pyrToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            pyrToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            pyrToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            pyrToRead.image = vr->hizImage;
+            pyrToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            pyrToRead.subresourceRange.levelCount = vr->hizMipCount;
+            pyrToRead.subresourceRange.layerCount = 1;
+            pyrToRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            pyrToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 0, NULL, 0, NULL, 1, &pyrToRead);
+
+            VkImageMemoryBarrier depRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            depRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            depRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            depRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            depRestore.image = vr->depthImage;
+            depRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            depRestore.subresourceRange.levelCount = 1;
+            depRestore.subresourceRange.layerCount = 1;
+            depRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            depRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                0, 0, NULL, 0, NULL, 1, &depRestore);
         }
     }
 
@@ -3108,6 +3207,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: depth resource creation failure!\n");
 	}
 
+	// Hi-Z occlusion pyramid images (review 4.9 step 3). Built each frame from depth; the per-mip
+	// descriptor sets are allocated/written after the layout + pool exist (below).
+	if(!createHiZResources(&ctx, &rendererState))
+	{
+		printf("Quitting init: Hi-Z resource creation failure!\n");
+	}
+
 
 
 	if (!ano_vk_init_global_layout(&ctx, &rendererState))
@@ -3584,6 +3690,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	updateUboDescriptorSets(&ctx, &rendererState);
 	updateTonemapDescriptorSets(&ctx, &rendererState);
+	updateHiZDescriptorSets(&ctx, &rendererState);
 	updateClusterDescriptorSets(&ctx, &rendererState);
 	updateShadowDescriptorSets(&ctx, &rendererState);
 
