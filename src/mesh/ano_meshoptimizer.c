@@ -523,3 +523,417 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
 
     return bounds;
 }
+
+// ---------------------------------------------------------------------------
+// Mesh simplification (LOD production). Quadric-error endpoint-snap edge collapse
+// (Garland-Heckbert quadrics). The collapse always snaps one EXISTING endpoint onto the other —
+// it never invents a vertex position — so every LOD level is the same vertex buffer plus a shorter
+// decimated index buffer. Coincident positions are welded so uv/normal seam-split vertices collapse
+// as one topological point; open boundary vertices are restricted to a polyline so silhouettes do
+// not erode. Geometry-only: attributes are not folded into the quadric (a later refinement).
+// ---------------------------------------------------------------------------
+
+// 11-float symmetric error quadric. error(v) = vT A v + 2 bT v + c, with all terms pre-weighted; w
+// is the accumulated weight so quadric_error can return a roughly area-independent squared distance.
+typedef struct {
+    float a00, a11, a22;
+    float a10, a20, a21;
+    float b0, b1, b2;
+    float c;
+    float w;
+} ano_quadric_t;
+
+// A scored, directed collapse: snap vertex v onto vertex t, costing `cost` (normalized squared dist).
+typedef struct { float cost; uint32_t v; uint32_t t; } ano_collapse_t;
+
+static const float ANO_BORDER_WEIGHT = 10.0f;  // border constraint quadric weight (vs ~unit face area)
+static const size_t ANO_SIMPLIFY_MAX_PASSES = 1000u;
+
+static inline uint32_t ano_float_bits(float f) { uint32_t b; memcpy(&b, &f, sizeof b); return b; }
+
+static inline size_t ano_ceil_pow2(size_t x) { size_t p = 16; while (p < x) p <<= 1; return p; }
+
+// Plane (a,b,c unit normal, offset d) weighted by w, as a quadric.
+static void ano_quadric_from_plane(ano_quadric_t* q, float a, float b, float c, float d, float w) {
+    q->a00 = a*a*w; q->a11 = b*b*w; q->a22 = c*c*w;
+    q->a10 = a*b*w; q->a20 = a*c*w; q->a21 = b*c*w;
+    q->b0 = a*d*w; q->b1 = b*d*w; q->b2 = c*d*w;
+    q->c = d*d*w; q->w = w;
+}
+
+static inline void ano_quadric_add(ano_quadric_t* dst, const ano_quadric_t* s) {
+    dst->a00 += s->a00; dst->a11 += s->a11; dst->a22 += s->a22;
+    dst->a10 += s->a10; dst->a20 += s->a20; dst->a21 += s->a21;
+    dst->b0 += s->b0; dst->b1 += s->b1; dst->b2 += s->b2;
+    dst->c += s->c; dst->w += s->w;
+}
+
+// Weighted-average squared distance of point p to the quadric (>= 0).
+static inline float ano_quadric_error(const ano_quadric_t* q, const float* p) {
+    float x = p[0], y = p[1], z = p[2];
+    float r = q->a00*x*x + q->a11*y*y + q->a22*z*z
+            + 2.0f*(q->a10*x*y + q->a20*x*z + q->a21*y*z)
+            + 2.0f*(q->b0*x + q->b1*y + q->b2*z)
+            + q->c;
+    r = fabsf(r);
+    return q->w > 1e-12f ? r / q->w : r;
+}
+
+// Resolve a collapse chain with path halving. collapse[i]==i means i survives.
+static uint32_t ano_resolve(uint32_t* collapse, uint32_t i) {
+    while (collapse[i] != i) {
+        collapse[i] = collapse[collapse[i]];
+        i = collapse[i];
+    }
+    return i;
+}
+
+// Undirected-edge open-addressing multiset over a fixed pow2 table. Key packs (lo<<32)|hi with
+// lo<hi, so it is never 0 (the empty sentinel). Used per pass to count edge uses: 1 == border,
+// 2 == manifold, >2 == complex (non-manifold).
+static void ano_edge_add(uint64_t* keys, uint32_t* cnt, size_t cap, uint32_t lo, uint32_t hi) {
+    uint64_t key = ((uint64_t)lo << 32) | (uint64_t)hi;
+    size_t mask = cap - 1;
+    size_t h = (size_t)((key * 11400714819323198485ull) >> 32) & mask;
+    for (;;) {
+        if (keys[h] == key) { cnt[h]++; return; }
+        if (keys[h] == 0)   { keys[h] = key; cnt[h] = 1; return; }
+        h = (h + 1) & mask;
+    }
+}
+
+static uint32_t ano_edge_get(const uint64_t* keys, const uint32_t* cnt, size_t cap, uint32_t lo, uint32_t hi) {
+    uint64_t key = ((uint64_t)lo << 32) | (uint64_t)hi;
+    size_t mask = cap - 1;
+    size_t h = (size_t)((key * 11400714819323198485ull) >> 32) & mask;
+    for (;;) {
+        uint64_t k = keys[h];
+        if (k == key) return cnt[h];
+        if (k == 0)   return 0;
+        h = (h + 1) & mask;
+    }
+}
+
+static int ano_collapse_cmp(const void* a, const void* b) {
+    float ca = ((const ano_collapse_t*)a)->cost, cb = ((const ano_collapse_t*)b)->cost;
+    return (ca < cb) ? -1 : (ca > cb) ? 1 : 0;
+}
+
+// Rebuild the undirected edge-use multiset for the current triangle list. cnt==1 border,
+// 2 manifold, >2 complex. Cleared then filled; keys/cnt sized to a pow2 >= ~2x unique edges.
+static void ano_count_edges(uint64_t* keys, uint32_t* cnt, size_t cap, const uint32_t* tri, size_t ntri) {
+    memset(keys, 0, cap * sizeof(uint64_t));
+    memset(cnt, 0, cap * sizeof(uint32_t));
+    for (size_t t = 0; t < ntri; ++t) {
+        uint32_t a = tri[t*3+0], b = tri[t*3+1], c = tri[t*3+2];
+        ano_edge_add(keys, cnt, cap, a<b?a:b, a<b?b:a);
+        ano_edge_add(keys, cnt, cap, b<c?b:c, b<c?c:b);
+        ano_edge_add(keys, cnt, cap, a<c?a:c, a<c?c:a);
+    }
+}
+
+float ano_simplify_scale(const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride) {
+    if (vertex_count == 0) return 0.0f;
+    const char* base = (const char*)vertex_positions;
+    const float* p0 = (const float*)base;
+    float mn[3] = { p0[0], p0[1], p0[2] };
+    float mx[3] = { p0[0], p0[1], p0[2] };
+    for (size_t i = 1; i < vertex_count; ++i) {
+        const float* p = (const float*)(base + i * vertex_positions_stride);
+        for (int k = 0; k < 3; ++k) {
+            if (p[k] < mn[k]) mn[k] = p[k];
+            if (p[k] > mx[k]) mx[k] = p[k];
+        }
+    }
+    float ex = mx[0] - mn[0], ey = mx[1] - mn[1], ez = mx[2] - mn[2];
+    float e = ex > ey ? ex : ey;
+    return e > ez ? e : ez;
+}
+
+// kind codes
+#define ANO_VK_MANIFOLD 0u
+#define ANO_VK_BORDER   1u
+#define ANO_VK_LOCKED   2u
+
+size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index_count,
+                    const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride,
+                    size_t target_index_count, float target_error, float* out_result_error) {
+    if (out_result_error) *out_result_error = 0.0f;
+
+    size_t tri0 = index_count / 3;
+    size_t ic = tri0 * 3;  // floored to whole triangles
+    size_t target_ic = (target_index_count / 3) * 3;
+
+    if (ic == 0 || vertex_count == 0) return 0;
+
+    // Target already met by the input: no collapses, but still drop any degenerate (coincident-
+    // position) source triangle so the result is always a valid subset mesh, exactly as the
+    // simplified path guarantees — output validity must not depend on target_index_count.
+    if (target_ic >= ic) {
+        const char* vb = (const char*)vertex_positions;
+        size_t outc = 0;
+        for (size_t t = 0; t < tri0; ++t) {
+            uint32_t a = indices[t*3+0], b = indices[t*3+1], c = indices[t*3+2];
+            const float* pa = (const float*)(vb + a*vertex_positions_stride);
+            const float* pb = (const float*)(vb + b*vertex_positions_stride);
+            const float* pc = (const float*)(vb + c*vertex_positions_stride);
+            if ((pa[0]==pb[0] && pa[1]==pb[1] && pa[2]==pb[2]) ||
+                (pb[0]==pc[0] && pb[1]==pc[1] && pb[2]==pc[2]) ||
+                (pa[0]==pc[0] && pa[1]==pc[1] && pa[2]==pc[2])) continue;
+            destination[outc++] = a; destination[outc++] = b; destination[outc++] = c;
+        }
+        return outc;
+    }
+
+    float extent = ano_simplify_scale(vertex_positions, vertex_count, vertex_positions_stride);
+    float invscale = extent > 0.0f ? 1.0f / extent : 1.0f;
+
+    // Single allocation sweep; on any failure, pass the input through unchanged.
+    float* npos          = (float*)malloc(vertex_count * 3 * sizeof(float));
+    uint32_t* remap      = (uint32_t*)malloc(vertex_count * sizeof(uint32_t));
+    uint32_t* collapse   = (uint32_t*)malloc(vertex_count * sizeof(uint32_t));
+    ano_quadric_t* Q     = (ano_quadric_t*)malloc(vertex_count * sizeof(ano_quadric_t));
+    uint8_t* kind        = (uint8_t*)malloc(vertex_count);
+    uint8_t* locked      = (uint8_t*)malloc(vertex_count);
+    uint32_t* outid      = (uint32_t*)malloc(vertex_count * sizeof(uint32_t));
+    uint32_t* adjCounts  = (uint32_t*)malloc(vertex_count * sizeof(uint32_t));
+    uint32_t* adjOff     = (uint32_t*)malloc(vertex_count * sizeof(uint32_t));
+    uint32_t* adjData    = (uint32_t*)malloc(ic * sizeof(uint32_t));
+    uint32_t* wtri       = (uint32_t*)malloc(ic * sizeof(uint32_t));
+    uint32_t* wtmp       = (uint32_t*)malloc(ic * sizeof(uint32_t));
+    ano_collapse_t* cand = (ano_collapse_t*)malloc(vertex_count * sizeof(ano_collapse_t));
+    size_t weldCap = ano_ceil_pow2(vertex_count * 2 + 16);
+    int32_t* weld        = (int32_t*)malloc(weldCap * sizeof(int32_t));
+    size_t ecap = ano_ceil_pow2(tri0 * 4 + 16);
+    uint64_t* ekeys      = (uint64_t*)malloc(ecap * sizeof(uint64_t));
+    uint32_t* ecnt       = (uint32_t*)malloc(ecap * sizeof(uint32_t));
+
+    if (!npos || !remap || !collapse || !Q || !kind || !locked || !outid || !adjCounts || !adjOff ||
+        !adjData || !wtri || !wtmp || !cand || !weld || !ekeys || !ecnt) {
+        free(npos); free(remap); free(collapse); free(Q); free(kind); free(locked); free(outid);
+        free(adjCounts); free(adjOff); free(adjData); free(wtri); free(wtmp); free(cand);
+        free(weld); free(ekeys); free(ecnt);
+        if (destination != indices) memcpy(destination, indices, ic * sizeof(uint32_t));
+        return ic;
+    }
+
+    // Normalize positions to a unit-extent space so quadric magnitudes stay well-conditioned;
+    // +0.0f folds -0.0 to +0.0 so seam wedges at the origin weld. Errors convert back via *extent.
+    const char* vbase = (const char*)vertex_positions;
+    for (size_t i = 0; i < vertex_count; ++i) {
+        const float* p = (const float*)(vbase + i * vertex_positions_stride);
+        npos[i*3+0] = p[0] * invscale + 0.0f;
+        npos[i*3+1] = p[1] * invscale + 0.0f;
+        npos[i*3+2] = p[2] * invscale + 0.0f;
+    }
+
+    // Position weld: remap[v] = lowest-indexed vertex sharing v's exact position (the canonical id
+    // used for all topology/collapse decisions). Surviving wedges keep their own ids in the output.
+    memset(weld, 0xFF, weldCap * sizeof(int32_t));
+    for (uint32_t v = 0; v < (uint32_t)vertex_count; ++v) {
+        uint32_t hh = ano_float_bits(npos[v*3+0]) * 73856093u
+                    ^ ano_float_bits(npos[v*3+1]) * 19349663u
+                    ^ ano_float_bits(npos[v*3+2]) * 83492791u;
+        size_t h = hh & (weldCap - 1);
+        for (;;) {
+            int32_t e = weld[h];
+            if (e < 0) { weld[h] = (int32_t)v; remap[v] = v; break; }
+            if (npos[e*3+0] == npos[v*3+0] && npos[e*3+1] == npos[v*3+1] && npos[e*3+2] == npos[v*3+2]) {
+                remap[v] = (uint32_t)e; break;
+            }
+            h = (h + 1) & (weldCap - 1);
+        }
+        collapse[v] = v;
+    }
+    free(weld);
+
+    // Working triangle list in canonical (welded) space; drop triangles already degenerate post-weld.
+    size_t tris = 0;
+    for (size_t t = 0; t < tri0; ++t) {
+        uint32_t a = remap[indices[t*3+0]], b = remap[indices[t*3+1]], c = remap[indices[t*3+2]];
+        if (a == b || b == c || a == c) continue;
+        wtri[tris*3+0] = a; wtri[tris*3+1] = b; wtri[tris*3+2] = c; tris++;
+    }
+
+    size_t target_tris = target_ic / 3;
+    float err_limit = target_error * target_error;  // relative error -> normalized squared distance
+    float result_err2 = 0.0f;
+
+    triangle_adjacency_t adj = { adjCounts, adjOff, adjData };
+
+    // Accumulate quadrics ONCE over the original welded mesh: area-weighted face planes plus an
+    // in-plane perpendicular constraint on every original border edge (resists boundary slide).
+    // Collapses MERGE quadrics into survivors, so error is always measured against the original
+    // surface, not the partially-simplified one — that is what makes target_error a real budget.
+    ano_count_edges(ekeys, ecnt, ecap, wtri, tris);
+    memset(Q, 0, vertex_count * sizeof(ano_quadric_t));
+    for (size_t t = 0; t < tris; ++t) {
+        uint32_t ia = wtri[t*3+0], ib = wtri[t*3+1], ic2 = wtri[t*3+2];
+        const float* p0 = &npos[ia*3]; const float* p1 = &npos[ib*3]; const float* p2 = &npos[ic2*3];
+        float e1[3] = { p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2] };
+        float e2[3] = { p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2] };
+        float n[3]; cross_product(e1, e2, n);
+        float len = sqrtf(dot_product(n, n));
+        if (len < 1e-12f) continue;
+        float area = len * 0.5f;
+        float nx = n[0]/len, ny = n[1]/len, nz = n[2]/len;
+        float d = -(nx*p0[0] + ny*p0[1] + nz*p0[2]);
+        ano_quadric_t fq; ano_quadric_from_plane(&fq, nx, ny, nz, d, area);
+        ano_quadric_add(&Q[ia], &fq); ano_quadric_add(&Q[ib], &fq); ano_quadric_add(&Q[ic2], &fq);
+
+        const uint32_t tri[3] = { ia, ib, ic2 };
+        for (int k = 0; k < 3; ++k) {
+            uint32_t x = tri[k], y = tri[(k+1)%3], z = tri[(k+2)%3];
+            if (ano_edge_get(ekeys, ecnt, ecap, x<y?x:y, x<y?y:x) != 1) continue;
+            const float* q0 = &npos[x*3]; const float* q1 = &npos[y*3]; const float* q2 = &npos[z*3];
+            float ed[3] = { q1[0]-q0[0], q1[1]-q0[1], q1[2]-q0[2] };
+            float el = sqrtf(dot_product(ed, ed));
+            if (el < 1e-12f) continue;
+            float eu[3] = { ed[0]/el, ed[1]/el, ed[2]/el };
+            float tv[3] = { q2[0]-q0[0], q2[1]-q0[1], q2[2]-q0[2] };
+            float kdot = dot_product(tv, eu);
+            float pe[3] = { tv[0]-eu[0]*kdot, tv[1]-eu[1]*kdot, tv[2]-eu[2]*kdot };
+            float pl = sqrtf(dot_product(pe, pe));
+            if (pl < 1e-12f) continue;
+            float pnx = pe[0]/pl, pny = pe[1]/pl, pnz = pe[2]/pl;
+            float bd = -(pnx*q0[0] + pny*q0[1] + pnz*q0[2]);
+            float bw = el * ANO_BORDER_WEIGHT;
+            ano_quadric_t bq; ano_quadric_from_plane(&bq, pnx, pny, pnz, bd, bw);
+            ano_quadric_add(&Q[x], &bq); ano_quadric_add(&Q[y], &bq);
+        }
+    }
+
+    for (size_t pass = 0; pass < ANO_SIMPLIFY_MAX_PASSES && tris > target_tris; ++pass) {
+        size_t tris_before = tris;
+
+        // Incident-triangle lists per canonical vertex (counts[v] == incident triangle count).
+        build_triangle_adjacency(&adj, wtri, tris_before * 3, vertex_count);
+
+        // Current edge-use counts -> per-vertex kind (border / locked-complex / manifold). Topology
+        // changes as the mesh simplifies, so kinds are rebuilt each pass; the quadrics are not.
+        ano_count_edges(ekeys, ecnt, ecap, wtri, tris_before);
+        for (size_t v = 0; v < vertex_count; ++v)
+            kind[v] = (adjCounts[v] == 0) ? ANO_VK_LOCKED : ANO_VK_MANIFOLD;
+        for (size_t s = 0; s < ecap; ++s) {
+            if (ekeys[s] == 0) continue;
+            uint32_t lo = (uint32_t)(ekeys[s] >> 32), hi = (uint32_t)(ekeys[s] & 0xFFFFFFFFu);
+            if (ecnt[s] == 1) {
+                if (kind[lo] != ANO_VK_LOCKED) kind[lo] = ANO_VK_BORDER;
+                if (kind[hi] != ANO_VK_LOCKED) kind[hi] = ANO_VK_BORDER;
+            } else if (ecnt[s] > 2) {
+                kind[lo] = ANO_VK_LOCKED; kind[hi] = ANO_VK_LOCKED;
+            }
+        }
+
+        // Score the cheapest legal collapse out of each vertex.
+        size_t ncand = 0;
+        for (uint32_t v = 0; v < (uint32_t)vertex_count; ++v) {
+            if (adjCounts[v] == 0 || kind[v] == ANO_VK_LOCKED) continue;
+            float best = FLT_MAX; uint32_t bestnb = v;
+            for (uint32_t a = 0; a < adjCounts[v]; ++a) {
+                uint32_t t = adjData[adjOff[v] + a];
+                for (int k = 0; k < 3; ++k) {
+                    uint32_t nb = wtri[t*3+k];
+                    if (nb == v) continue;
+                    if (kind[v] == ANO_VK_BORDER) {
+                        // Border may only slide to another border vertex along a border edge.
+                        if (kind[nb] != ANO_VK_BORDER) continue;
+                        if (ano_edge_get(ekeys, ecnt, ecap, v<nb?v:nb, v<nb?nb:v) != 1) continue;
+                    } else {
+                        if (kind[nb] == ANO_VK_LOCKED) continue;
+                    }
+                    float cost = ano_quadric_error(&Q[v], &npos[nb*3]);
+                    if (cost < best) { best = cost; bestnb = nb; }
+                }
+            }
+            if (best < FLT_MAX && bestnb != v) {
+                cand[ncand].cost = best; cand[ncand].v = v; cand[ncand].t = bestnb; ncand++;
+            }
+        }
+        qsort(cand, ncand, sizeof(ano_collapse_t), ano_collapse_cmp);
+
+        // Apply collapses cheapest-first as a maximal matching (each vertex collapses at most once
+        // per pass), skipping any that would flip a triangle. Stop at the count or error budget.
+        memset(locked, 0, vertex_count);
+        size_t collapses = 0;
+        size_t rtris = tris_before;
+        for (size_t i = 0; i < ncand; ++i) {
+            if (rtris <= target_tris) break;
+            if (cand[i].cost > err_limit) break;  // sorted: nothing cheaper remains
+            uint32_t v = cand[i].v, j = cand[i].t;
+            if (locked[v] || locked[j]) continue;
+
+            // Flip guard: every incident triangle not destroyed by the collapse must keep its facing.
+            int flip = 0; uint32_t removed = 0;
+            for (uint32_t a = 0; a < adjCounts[v] && !flip; ++a) {
+                uint32_t t = adjData[adjOff[v] + a];
+                uint32_t c0 = wtri[t*3+0], c1 = wtri[t*3+1], c2 = wtri[t*3+2];
+                if (c0 == j || c1 == j || c2 == j) { removed++; continue; }
+                float o0[3], o1[3], o2[3];
+                o0[0]=npos[c0*3]; o0[1]=npos[c0*3+1]; o0[2]=npos[c0*3+2];
+                o1[0]=npos[c1*3]; o1[1]=npos[c1*3+1]; o1[2]=npos[c1*3+2];
+                o2[0]=npos[c2*3]; o2[1]=npos[c2*3+1]; o2[2]=npos[c2*3+2];
+                float* mv = (c0==v) ? o0 : (c1==v) ? o1 : o2;
+                float oe1[3] = { o1[0]-o0[0], o1[1]-o0[1], o1[2]-o0[2] };
+                float oe2[3] = { o2[0]-o0[0], o2[1]-o0[1], o2[2]-o0[2] };
+                float on[3]; cross_product(oe1, oe2, on);
+                mv[0]=npos[j*3]; mv[1]=npos[j*3+1]; mv[2]=npos[j*3+2];
+                float ne1[3] = { o1[0]-o0[0], o1[1]-o0[1], o1[2]-o0[2] };
+                float ne2[3] = { o2[0]-o0[0], o2[1]-o0[1], o2[2]-o0[2] };
+                float nn[3]; cross_product(ne1, ne2, nn);
+                float nlen2 = dot_product(nn, nn);
+                if (nlen2 < 1e-20f || dot_product(on, nn) < 0.0f) flip = 1;  // sliver or fold
+            }
+            if (flip) continue;
+
+            collapse[v] = j; locked[v] = 1; locked[j] = 1;
+            ano_quadric_add(&Q[j], &Q[v]);
+            rtris -= removed;
+            if (cand[i].cost > result_err2) result_err2 = cand[i].cost;
+            collapses++;
+        }
+
+        // Rebuild the canonical triangle list through the collapse map, dropping degenerates.
+        size_t newtris = 0;
+        for (size_t t = 0; t < tris_before; ++t) {
+            uint32_t a = ano_resolve(collapse, wtri[t*3+0]);
+            uint32_t b = ano_resolve(collapse, wtri[t*3+1]);
+            uint32_t c = ano_resolve(collapse, wtri[t*3+2]);
+            if (a == b || b == c || a == c) continue;
+            wtmp[newtris*3+0] = a; wtmp[newtris*3+1] = b; wtmp[newtris*3+2] = c; newtris++;
+        }
+        uint32_t* swap = wtri; wtri = wtmp; wtmp = swap;
+        tris = newtris;
+
+        if (collapses == 0 || tris >= tris_before) break;  // converged / no progress
+    }
+
+    // Output mapping per ORIGINAL vertex: a vertex whose position survives keeps its own id (so seam
+    // wedges stay distinct); a vertex whose position was collapsed snaps to the survivor canonical id.
+    for (uint32_t o = 0; o < (uint32_t)vertex_count; ++o) {
+        uint32_t c = remap[o];
+        uint32_t r = ano_resolve(collapse, c);
+        outid[o] = (r == c) ? o : r;
+    }
+
+    // Emit surviving source triangles. Degeneracy is tested in canonical position space so a triangle
+    // collapsed onto one position is dropped even when its kept corners are distinct seam wedges.
+    size_t outcount = 0;
+    for (size_t t = 0; t < tri0; ++t) {
+        uint32_t o0 = indices[t*3+0], o1 = indices[t*3+1], o2 = indices[t*3+2];
+        uint32_t r0 = ano_resolve(collapse, remap[o0]);
+        uint32_t r1 = ano_resolve(collapse, remap[o1]);
+        uint32_t r2 = ano_resolve(collapse, remap[o2]);
+        if (r0 == r1 || r1 == r2 || r0 == r2) continue;
+        destination[outcount++] = outid[o0];
+        destination[outcount++] = outid[o1];
+        destination[outcount++] = outid[o2];
+    }
+
+    if (out_result_error) *out_result_error = sqrtf(result_err2) * extent;
+
+    free(npos); free(remap); free(collapse); free(Q); free(kind); free(locked); free(outid);
+    free(adjCounts); free(adjOff); free(adjData); free(wtri); free(wtmp); free(cand);
+    free(ekeys); free(ecnt);
+    return outcount;
+}
