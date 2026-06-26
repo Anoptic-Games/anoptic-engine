@@ -95,15 +95,22 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
-            outMesh->primitives[p].geometryPoolIndex = geometry_pool_upload(
-                &rendererState.globalGeometryPool, 
-                &stagingAllocator, 
-                ctx->device, 
-                ctx->queueFamilyIndices.transferFamily, 
-                ctx->transferQueue, 
-                vertices, vertexCount, 
-                indices, indexCount
+            // Upload as an LOD chain (review 4.9 step 2). geometryPoolIndex is the chain BASE; the
+            // chain length lives in the base mesh's metadata (cull reads it). ANO_DEFAULT_LOD_COUNT
+            // is 1 today (one full level == prior behavior); raise it to turn LOD on engine-wide.
+            AnoLodConfig lodCfg = ano_lod_config_default(ANO_DEFAULT_LOD_COUNT);
+            uint32_t lodBase = 0u, lodProduced = 0u;
+            geometry_pool_upload_chain(
+                &rendererState.globalGeometryPool,
+                &stagingAllocator,
+                ctx->device,
+                ctx->queueFamilyIndices.transferFamily,
+                ctx->transferQueue,
+                vertices, vertexCount,
+                indices, indexCount,
+                &lodCfg, &lodBase, &lodProduced
             );
+            outMesh->primitives[p].geometryPoolIndex = lodBase;
             
             free(vertices);
             free(indices);

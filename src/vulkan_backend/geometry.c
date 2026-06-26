@@ -369,6 +369,7 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
     mesh->boundsOffset = finalIndexOffset + (uint32_t)(meshlets_size + unique_vertices_size + local_triangles_size);
     mesh->classicIndexOffset = finalIndexOffset + (uint32_t)(meshlets_size + unique_vertices_size + local_triangles_size + bounds_size);
     mesh->classicIndexCount = indexCount;
+    mesh->lodCount = 1u; // standalone by default; geometry_pool_upload_chain overrides the base's count
 
     // Calculate bounding sphere
     Vector3 minBounds = vertices[0].position;
@@ -512,6 +513,10 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
 
     // Release the reserved-but-unfilled tail so the cull shader never addresses an empty slot.
     pool->meshCount = lodBase + produced;
+
+    // The base mesh advertises the chain length (cull reads meshDrawData[base].lodCount to pick a
+    // level); members keep their default lodCount==1 since they are never referenced as a base.
+    if (produced) pool->meshes[lodBase].lodCount = produced;
 
     if (out_lodBase)  *out_lodBase = produced ? lodBase : 0u;
     if (out_lodCount) *out_lodCount = produced;

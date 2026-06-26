@@ -375,4 +375,21 @@ AnoLightingMode ano_render_get_lighting_mode(void);
 void  ano_render_set_view_cull_threshold(uint32_t view, float pixels);
 float ano_render_get_view_cull_threshold(uint32_t view);
 
+// Per-view LOD threshold, in pixels of projected bounding-sphere radius: the projected size at which
+// an entity drops from its finest level to the next, each further halving of on-screen size dropping
+// one more level. Independent per view (a peripheral view can bias to coarser meshes than a zoomed
+// inset); 0 disables LOD selection for that view (always the finest level), negative clamps to 0.
+// Inert until meshes are uploaded with LOD chains. Applies from the next recorded frame; render
+// thread only. An out-of-range view index is ignored.
+void  ano_render_set_view_lod_threshold(uint32_t view, float pixels);
+float ano_render_get_view_lod_threshold(uint32_t view);
+
+// Global LOD-level bias for debug inspection and tuning, added to every entity's automatically
+// selected level (then clamped per-entity to that mesh's available levels). Positive biases toward
+// coarser meshes, negative toward finer; a large positive value pins the whole scene to its coarsest
+// level for close-up inspection, a large negative value forces the finest everywhere. Affects only
+// meshes uploaded with LOD chains. Applies from the next recorded frame; render thread only.
+void    ano_render_set_lod_bias(int32_t bias);
+int32_t ano_render_get_lod_bias(void);
+
 #endif // ANOPTIC_RENDER_H

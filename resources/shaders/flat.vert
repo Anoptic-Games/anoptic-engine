@@ -55,6 +55,11 @@ layout(constant_id = 0) const bool shadowPass = false;
 struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; } shadowBuf;
 
+// cull.comp packs the LOD level into the top 3 bits of the compacted entity index. The fallback path
+// gets its geometry from the indirect command (the selected level's index range), so here we only
+// strip the level bits to recover the entity index for the transform / material lookup.
+#define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
+
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) flat out uint outMaterialIndex;
@@ -65,7 +70,7 @@ void main() {
     // Same entity lookup as flat.mesh, but Metal/MoltenVK has no DrawIndex builtin so
     // gl_DrawID is unavailable here. The cull pass packs each draw's ordinal into
     // firstInstance instead; instanceCount is always 1, so gl_InstanceIndex equals it.
-    uint entityIndex = compactedBuf.entityIndices[pc.transformBaseOffset + uint(gl_InstanceIndex)];
+    uint entityIndex = compactedBuf.entityIndices[pc.transformBaseOffset + uint(gl_InstanceIndex)] & ANO_ENTITY_INDEX_MASK;
     EntityInfo entity = entityBuf.entities[entityIndex];
 
     // Programmable vertex pulling. gl_VertexIndex = command.vertexOffset + indexBuffer[i],

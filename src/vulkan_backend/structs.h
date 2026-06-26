@@ -57,6 +57,12 @@
 // ano_render_set_view_cull_threshold (0 disables the test for that view).
 #define ANO_CULL_PIXEL_THRESHOLD_DEFAULT  1.5f
 
+// Default per-view LOD threshold, in pixels of projected bounding-sphere radius (review 4.9 step 2):
+// the rpx at which an entity drops from level 0 to level 1; each halving of rpx below it drops one
+// more level. Inert until meshes carry LOD chains (lodCount>1). Tune per view at runtime via
+// ano_render_set_view_lod_threshold (0 disables LOD selection -> always level 0 for that view).
+#define ANO_LOD_PIXEL_THRESHOLD_DEFAULT   128.0f
+
 // Dynamic shadow pass (audit 4.7 follow-on, built on the 4.8 multi-frustum cull). Each shadow map
 // is one more frustum to cull against: a directional ortho map, a spot perspective map, and 6
 // perspective faces per point light. All shadow maps are layers of one 2D array — point lights
@@ -656,7 +662,8 @@ typedef struct CullUBO
     //                             so projected pixel radius rpx = worldRadius * scale / dist.
     //   [v][1] pixelThresholdSq = (min drawn pixel radius)^2; a draw is dropped iff rpx^2 < this.
     //                             0 disables the test for that view (pre-step-1 behavior).
-    //   [v][2..3] reserved (step 2 per-view LOD thresholds).
+    //   [v][2] lodThresholdPx   = rpx at which LOD level 1 begins (step 2); 0 disables LOD selection.
+    //   [v][3] lodBias          = signed LOD-level bias (debug/tuning), stored as float; + coarser.
     float    viewCullParams[ANO_VIEW_COUNT][4];
 } CullUBO;
 
@@ -993,6 +1000,16 @@ typedef struct RendererState
     // ano_render_set_view_cull_threshold; 0 disables the test for that view. updateCullingBuffers
     // squares it into CullUBO.viewCullParams[v][1]. Defaulted in createCullingBuffers.
     float                   cullPixelThreshold[ANO_VIEW_COUNT];
+    // Per-view LOD threshold in pixels (review 4.9 step 2): the projected radius at which level 1
+    // begins (each further halving drops a level). Runtime-set via ano_render_set_view_lod_threshold,
+    // copied into CullUBO.viewCullParams[v][2]; 0 disables LOD (always level 0). Inert until meshes
+    // carry LOD chains. Defaulted in createCullingBuffers.
+    float                   lodPixelThreshold[ANO_VIEW_COUNT];
+    // Global LOD-level bias for debug/inspection + tuning (review 4.9 step 2): added to every entity's
+    // auto-selected level (cull clamps to the chain range). + = coarser, - = finer; a large +bias pins
+    // the scene to its coarsest level. Replicated into CullUBO.viewCullParams[v][3]. Runtime-set via
+    // ano_render_set_lod_bias (the test scene's [ and ] keys); default 0 (no bias).
+    int32_t                 lodBias;
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.

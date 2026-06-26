@@ -50,7 +50,13 @@ struct MeshData {
     uint classicIndexCount;  // fallback path only
     uint classicFirstIndex;  // fallback path only
     uint boundsOffset;       // byte offset of per-meshlet bounds block in indexBuf (sphere + normal cone)
+    uint lodCount;           // # contiguous LOD meshes from this base (unread here; present for std430 stride)
 };
+
+// cull.comp packs the selected LOD level into the high bits of the compacted entity index; the low
+// 29 bits are the entity index, the top 3 the level. The selected mesh is entities[idx].meshIndex + level.
+#define ANO_LOD_LEVEL_SHIFT  29u
+#define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
 
 layout(set = 0, binding = 6, std430) readonly buffer MeshSSBO {
     MeshData meshDrawData[];
@@ -154,10 +160,12 @@ uint getLocalIndex(uint baseByteOffset, uint triangleOffset, uint t, uint vertex
 
 void main() {
     uint drawId = gl_DrawID;
-    uint entityIndex = compactedBuf.entityIndices[pc.transformBaseOffset + drawId];
+    uint packed = compactedBuf.entityIndices[pc.transformBaseOffset + drawId];
+    uint entityIndex = packed & ANO_ENTITY_INDEX_MASK;
+    uint lodLevel    = packed >> ANO_LOD_LEVEL_SHIFT;
 
     EntityInfo entity = entityBuf.entities[entityIndex];
-    uint meshIndex = entity.meshIndex;
+    uint meshIndex = entity.meshIndex + lodLevel;   // base + the LOD level cull selected for this draw
     uint materialIndex = entity.materialIndex;
 
     MeshData mData = meshBuf.meshDrawData[meshIndex];
