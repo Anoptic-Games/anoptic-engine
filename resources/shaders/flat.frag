@@ -193,6 +193,7 @@ layout(location = 3) in vec3 fragWorldPos;
 layout(location = 4) flat in uint inEntityIndex;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out uint outId; // GPU slot of this fragment, for cursor picking (opaque pass only)
 
 vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, vec3 L) {
     // Clamp roughness to prevent collapsing specular highlights (roughness = 0.0 -> specular = 0.0)
@@ -335,4 +336,5 @@ void main() {
     vec3 finalColor = ambient + accumulatedDirect;
 
     outColor = vec4(finalColor, 1.0);
+    outId = inEntityIndex; // 0xFFFFFFFF clear value == no renderable under this pixel
 }

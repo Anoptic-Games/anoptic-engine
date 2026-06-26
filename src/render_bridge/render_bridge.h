@@ -43,21 +43,10 @@
 #include <anoptic_math.h>
 #include <anoptic_render.h> // command protocol + opaque AnoRenderBridge + ano_render_submit
 
-// ---------------------------------------------------------------------------
-// Events: render -> logic
-// ---------------------------------------------------------------------------
-
-typedef enum RenderEventKind
-{
-    REVENT_SLOT_RETIRED, // render_id's GPU slot has cleared all frames in flight; ECS may recycle the id
-    REVENT_CAPACITY,     // render-side capacity advisory / backpressure (render_id unused)
-} RenderEventKind;
-
-typedef struct RenderEvent
-{
-    RenderEventKind kind;
-    uint32_t        render_id;
-} RenderEvent;
+// The render->logic event protocol (RenderEventKind / RenderEvent / AnoInputEvent), the published
+// RenderSnapshot, and the AnoViewState pose are PUBLIC in anoptic_render.h (the logic master, which
+// lives outside src/render_bridge, consumes them) — symmetric with the public RenderCommand. Only
+// the TRANSPORT (the rings, the published double buffers, this bridge struct) is private here.
 
 // ---------------------------------------------------------------------------
 // Logic-side render-projection component (ECS.md S4)
@@ -162,6 +151,40 @@ static inline bool ano_spsc_pop(AnoSpscRing *ring, void *out)
 }
 
 // ---------------------------------------------------------------------------
+// Lock-free latest-wins seqlock (epoch publication)
+// ---------------------------------------------------------------------------
+// Cross-thread transfer of continuous state where only the newest value matters (the camera snapshot
+// render->logic, the camera pose logic->render). A single producer writes the value guarded by an
+// even/odd version: even == stable, odd == mid-write. The producer is wait-free; the consumer copies
+// the value and retries iff the version moved across its copy, so it never observes a torn value —
+// tear-free for ANY payload size and ANY scheduling (no timing assumption; a mid-copy preemption is
+// detected and retried, not silently torn). In steady state (one publish per frame/tick, a
+// sub-microsecond copy) the consumer retries essentially never. version == 0 means "never published".
+// Generic over element size so the one subtle ordering lives in exactly one place.
+static inline void ano_seqpub_store(void *value, _Atomic uint64_t *version, const void *v, size_t stride)
+{
+    uint64_t s = atomic_load_explicit(version, memory_order_relaxed); // single producer owns version
+    atomic_store_explicit(version, s + 1u, memory_order_relaxed);     // enter write (odd)
+    atomic_thread_fence(memory_order_release);                        // odd marker before the value writes
+    for (size_t i = 0; i < stride; ++i) ((uint8_t *)value)[i] = ((const uint8_t *)v)[i];
+    atomic_store_explicit(version, s + 2u, memory_order_release);     // exit write (even) + publish writes
+}
+
+// out: false (out untouched) if nothing published yet. Otherwise copies a CONSISTENT (untorn) value.
+static inline bool ano_seqpub_load(const void *value, const _Atomic uint64_t *version, void *out, size_t stride)
+{
+    for (;;) {
+        uint64_t s1 = atomic_load_explicit(version, memory_order_acquire);
+        if (s1 == 0u) return false; // never published
+        if (s1 & 1u) continue;      // producer mid-write; re-read (it finishes in nanoseconds)
+        for (size_t i = 0; i < stride; ++i) ((uint8_t *)out)[i] = ((const uint8_t *)value)[i];
+        atomic_thread_fence(memory_order_acquire);                    // value reads before the recheck
+        uint64_t s2 = atomic_load_explicit(version, memory_order_relaxed);
+        if (s1 == s2) return true;  // version unmoved across the copy -> consistent
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The bridge
 // ---------------------------------------------------------------------------
 
@@ -170,6 +193,14 @@ struct AnoRenderBridge
 {
     AnoSpscRing commands; // logic -> render (RenderCommand)
     AnoSpscRing events;   // render -> logic (RenderEvent)
+
+    // Published latest-wins state, each a seqlock with its version on a private cache line so a
+    // publish does not invalidate the line the rings spin on. snapshot: render publishes, logic
+    // acquires. viewState: logic publishes, render acquires.
+    RenderSnapshot snapshot;
+    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t snapshotVersion;
+    AnoViewState   viewState;
+    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t viewStateVersion;
 };
 
 // in:  bridge, heap, cmd_capacity_pow2, evt_capacity_pow2
@@ -180,16 +211,13 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
 
 void ano_render_bridge_destroy(AnoRenderBridge *bridge);
 
-// --- Logic master endpoint (consumes events) ---
-// ano_render_submit (produces commands) is the one public endpoint -> anoptic_render.h.
+// --- Logic master endpoints (anoptic_render.h) ---
+// ano_render_submit (produces commands), ano_render_poll_event (consumes events),
+// ano_render_acquire_snapshot, and ano_render_publish_view are the public endpoints; they are
+// defined non-inline in ano_render_bridge.c so the logic master reaches them through the opaque
+// handle without seeing this transport.
 
-// Dequeue one event into `out`. false if no event pending.
-static inline bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out)
-{
-    return ano_spsc_pop(&bridge->events, out);
-}
-
-// --- Render master endpoint (consumes commands, produces events) ---
+// --- Render master endpoints (consumes commands + viewstate, produces events + snapshot) ---
 
 // Dequeue one command into `out`. false if no command pending.
 static inline bool ano_render_next_command(AnoRenderBridge *bridge, RenderCommand *out)
@@ -197,10 +225,24 @@ static inline bool ano_render_next_command(AnoRenderBridge *bridge, RenderComman
     return ano_spsc_pop(&bridge->commands, out);
 }
 
-// Enqueue one event. false if the event ring is full.
+// Enqueue one event. false if the event ring is full (render must NOT block on this — it runs on
+// the same thread as glfwPollEvents; the caller drops coalescible samples and advises via CAPACITY).
 static inline bool ano_render_emit_event(AnoRenderBridge *bridge, const RenderEvent *evt)
 {
     return ano_spsc_push(&bridge->events, evt);
+}
+
+// Publish this frame's view-0 camera snapshot for the logic master.
+static inline void ano_render_publish_snapshot(AnoRenderBridge *bridge, const RenderSnapshot *snap)
+{
+    ano_seqpub_store(&bridge->snapshot, &bridge->snapshotVersion, snap, sizeof *snap);
+}
+
+// Read the latest camera pose the logic master published. false (out untouched) before its first
+// publish, so the renderer falls back to its built-in camera.
+static inline bool ano_render_acquire_view(AnoRenderBridge *bridge, AnoViewState *out)
+{
+    return ano_seqpub_load(&bridge->viewState, &bridge->viewStateVersion, out, sizeof *out);
 }
 
 #endif // ANO_RENDER_BRIDGE_INTERNAL_H
