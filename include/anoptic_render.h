@@ -401,4 +401,12 @@ int32_t ano_render_get_lod_bias(void);
 void    ano_render_set_shadow_lod_bias(int32_t bias);
 int32_t ano_render_get_shadow_lod_bias(void);
 
+// Per-view GPU Hi-Z occlusion culling toggle. When enabled, the cull rejects entities fully hidden
+// behind the previous frame's depth for that view (single-phase hierarchical-Z; reprojected, so it
+// costs ~1 frame of latency — fast camera motion can briefly cull then reveal newly-disoccluded
+// geometry). Conservative: it never culls visible geometry, only occluded. Independent per view; off
+// by default. Applies from the next recorded frame; render thread only. Out-of-range view is ignored.
+void ano_render_set_view_hiz_enable(uint32_t view, bool enable);
+bool ano_render_get_view_hiz_enable(uint32_t view);
+
 #endif // ANOPTIC_RENDER_H

@@ -207,7 +207,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[11] = {};
+    VkDescriptorSetLayoutBinding bindings[12] = {};
 
     // 0: CullUBO
     bindings[0].binding = 0;
@@ -275,9 +275,17 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     bindings[10].descriptorCount = 1;
     bindings[10].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    // 11: Hi-Z occlusion pyramids (review 4.9 step 3), one combined-image-sampler per camera view (the
+    // cull samples hizPyramid[view] = last frame's pyramid). tpsort reuses this layout but never binds
+    // it (it declares only a CullUBO prefix), so the extra binding is inert there.
+    bindings[11].binding = 11;
+    bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[11].descriptorCount = ANO_VIEW_COUNT;
+    bindings[11].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 11;
+    layoutInfo.bindingCount = 12;
     layoutInfo.pBindings = bindings;
 
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
