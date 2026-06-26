@@ -238,12 +238,163 @@ static void test_vertex_cache_optimization() {
     assert(found_t1 && found_t2);
 }
 
+// Every output triangle must reference in-range, distinct vertices (no degenerates).
+static void validate_indices(const uint32_t* idx, size_t count, uint32_t vertex_count) {
+    assert(count % 3 == 0);
+    for (size_t t = 0; t < count; t += 3) {
+        uint32_t a = idx[t], b = idx[t+1], c = idx[t+2];
+        assert(a < vertex_count && b < vertex_count && c < vertex_count);
+        assert(a != b && b != c && a != c);
+    }
+}
+
+static void test_simplify_scale() {
+    printf("Running test_simplify_scale...\n");
+
+    // Largest axis extent: x spans 2, y spans 1, z spans 0 -> 2.
+    float positions[] = {
+        0.0f, 0.0f, 0.0f,
+        2.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f
+    };
+    float scale = ano_simplify_scale(positions, 3, sizeof(float) * 3);
+    assert(fabs(scale - 2.0f) < 1e-5f);
+
+    assert(ano_simplify_scale(positions, 0, sizeof(float) * 3) == 0.0f);
+}
+
+static void test_simplify_passthrough() {
+    printf("Running test_simplify_passthrough...\n");
+
+    // target_index_count >= index_count returns the input unchanged.
+    uint32_t indices[] = { 0, 1, 2 };
+    float positions[] = { 0.0f,0.0f,0.0f, 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f };
+    uint32_t out[3] = { 99, 99, 99 };
+    float err = -1.0f;
+
+    size_t r = ano_simplify(out, indices, 3, positions, 3, sizeof(float) * 3, 3, 0.01f, &err);
+    assert(r == 3);
+    assert(out[0] == 0 && out[1] == 1 && out[2] == 2);
+    assert(err == 0.0f);
+
+    // Passthrough still drops degenerate (coincident-position) triangles: one real + one with two
+    // corners at the same position, target >= index_count -> only the real triangle survives.
+    uint32_t dindices[] = { 0, 1, 2,  0, 3, 1 };  // vertex 3 coincides with vertex 0
+    float dpositions[] = { 0.0f,0.0f,0.0f, 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,0.0f };
+    uint32_t dout[6];
+    size_t dr = ano_simplify(dout, dindices, 6, dpositions, 4, sizeof(float) * 3, 6, 0.01f, NULL);
+    assert(dr == 3);
+    validate_indices(dout, dr, 4);
+}
+
+static void test_simplify_degenerate_input() {
+    printf("Running test_simplify_degenerate_input...\n");
+
+    // One real triangle + two index-degenerate triangles: must terminate and emit a valid mesh.
+    uint32_t indices[] = { 0, 1, 2,  2, 2, 3,  3, 4, 3 };
+    float positions[] = {
+        0.0f,0.0f,0.0f, 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 1.0f,1.0f,0.0f, 2.0f,2.0f,0.0f
+    };
+    uint32_t out[9];
+
+    size_t r = ano_simplify(out, indices, 9, positions, 5, sizeof(float) * 3, 3, 0.5f, NULL);
+    validate_indices(out, r, 5);
+    assert(r == 3); // only the one non-degenerate triangle survives
+}
+
+// Build an n x n grid of vertices in the z=0 plane, two triangles per cell (CCW, +Z normals).
+static size_t build_grid(uint32_t n, float* positions, uint32_t* indices) {
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            positions[(y*n+x)*3+0] = (float)x;
+            positions[(y*n+x)*3+1] = (float)y;
+            positions[(y*n+x)*3+2] = 0.0f;
+        }
+    size_t k = 0;
+    for (uint32_t y = 0; y < n - 1; ++y)
+        for (uint32_t x = 0; x < n - 1; ++x) {
+            uint32_t i00 = y*n+x, i10 = y*n+x+1, i01 = (y+1)*n+x, i11 = (y+1)*n+x+1;
+            indices[k++] = i00; indices[k++] = i10; indices[k++] = i11;
+            indices[k++] = i00; indices[k++] = i11; indices[k++] = i01;
+        }
+    return k;
+}
+
+static void test_simplify_grid() {
+    printf("Running test_simplify_grid...\n");
+
+    enum { N = 8 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    size_t ic = build_grid(N, positions, indices);
+
+    size_t target = (ic / 2 / 3) * 3;  // ~50%
+    uint32_t out[(N-1)*(N-1)*2*3];
+    float err = -1.0f;
+
+    size_t r = ano_simplify(out, indices, ic, positions, N*N, sizeof(float) * 3, target, 0.05f, &err);
+
+    assert(r % 3 == 0);
+    assert(r > 0 && r < ic);   // reduced, non-empty
+    assert(r <= target);       // flat mesh: the count budget is reached
+    validate_indices(out, r, N*N);
+    assert(err >= 0.0f && err < 0.1f); // a perfectly flat grid simplifies at ~zero error
+
+    // The contract allows destination == indices (in-place).
+    size_t r2 = ano_simplify(indices, indices, ic, positions, N*N, sizeof(float) * 3, target, 0.05f, NULL);
+    assert(r2 == r);
+    validate_indices(indices, r2, N*N);
+}
+
+static void test_simplify_error_budget() {
+    printf("Running test_simplify_error_budget...\n");
+
+    // A curved (bumpy) grid: unlike a flat grid, collapses carry real quadric error, so target_error
+    // actually binds. This exercises the error-accumulation path the flat-grid test cannot.
+    enum { N = 10 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    for (uint32_t y = 0; y < N; ++y)
+        for (uint32_t x = 0; x < N; ++x) {
+            positions[(y*N+x)*3+0] = (float)x;
+            positions[(y*N+x)*3+1] = (float)y;
+            positions[(y*N+x)*3+2] = 0.6f * sinf((float)x * 0.9f) * cosf((float)y * 0.9f);
+        }
+    size_t ic = 0;
+    for (uint32_t y = 0; y < N - 1; ++y)
+        for (uint32_t x = 0; x < N - 1; ++x) {
+            uint32_t i00 = y*N+x, i10 = y*N+x+1, i01 = (y+1)*N+x, i11 = (y+1)*N+x+1;
+            indices[ic++] = i00; indices[ic++] = i10; indices[ic++] = i11;
+            indices[ic++] = i00; indices[ic++] = i11; indices[ic++] = i01;
+        }
+
+    size_t target = (ic / 4 / 3) * 3;  // 25%
+    uint32_t out_g[(N-1)*(N-1)*2*3], out_s[(N-1)*(N-1)*2*3];
+    float err_g = -1.0f, err_s = -1.0f;
+
+    // Generous budget reaches the count target; tiny budget stops short to preserve the shape.
+    size_t rg = ano_simplify(out_g, indices, ic, positions, N*N, sizeof(float)*3, target, 1.0f, &err_g);
+    size_t rs = ano_simplify(out_s, indices, ic, positions, N*N, sizeof(float)*3, target, 1e-4f, &err_s);
+
+    validate_indices(out_g, rg, N*N);
+    validate_indices(out_s, rs, N*N);
+    assert(rg <= target);          // generous: count budget binds
+    assert(rs > target);           // strict: error budget binds first, stays above the count target
+    assert(rg < ic && rs < ic);    // both still reduce
+    assert(err_g >= 0.0f && err_s >= 0.0f);
+}
+
 int main() {
     test_meshlet_bounds_calculation();
     test_degenerate_triangles();
     test_meshlet_limits();
     test_bounds_checks();
     test_vertex_cache_optimization();
+    test_simplify_scale();
+    test_simplify_passthrough();
+    test_simplify_degenerate_input();
+    test_simplify_grid();
+    test_simplify_error_budget();
     printf("All tests passed successfully!\n");
     return 0;
 }

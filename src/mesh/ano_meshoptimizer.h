@@ -52,9 +52,44 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
  * Computes the bounds for a specific meshlet using Ritter's bounding sphere algorithm for the sphere 
  * and average + max deviation for the cone.
  */
-ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vertices, const uint8_t* meshlet_triangles, 
-                                                    size_t triangle_count, const float* vertex_positions, 
+ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vertices, const uint8_t* meshlet_triangles,
+                                                    size_t triangle_count, const float* vertex_positions,
                                                     size_t vertex_count, size_t vertex_positions_stride);
+
+/**
+ * Returns the simplification scale of a vertex set: the largest bounding-box axis extent.
+ * ano_simplify's target_error is expressed relative to this, and its result error comes back in the
+ * same object units (result_relative * scale). Pass the same positions/stride as ano_simplify.
+ *
+ * vertex_positions: float[3] per vertex, byte stride vertex_positions_stride.
+ * Returns the largest axis extent (0 if vertex_count == 0).
+ */
+float ano_simplify_scale(const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride);
+
+/**
+ * Simplifies a triangle mesh by quadric-error edge collapse, producing a shorter index buffer that
+ * references a SUBSET of the SAME vertices — no new vertex positions are created, so every LOD level
+ * shares one vertex buffer.
+ *
+ * destination: receives the simplified indices; must hold index_count entries (NOT target_index_count,
+ *     since over-target intermediate states are written then compacted). May alias indices.
+ * indices / index_count: source triangle list; index_count is floored to a multiple of 3.
+ * vertex_positions / vertex_count / vertex_positions_stride: float[3] positions, byte stride.
+ * target_index_count: desired index count (floored to a multiple of 3). The result may stop short of
+ *     it when open borders or non-manifold topology block further collapses.
+ * target_error: maximum collapse error allowed, relative to ano_simplify_scale (0.01 == 1% of extent).
+ * out_result_error (nullable): receives the achieved error in object units (result_relative * scale).
+ *
+ * Returns the resulting index count (multiple of 3, <= floored index_count). Degenerate source
+ * triangles (coincident-position corners) are always dropped, so the output is a valid subset mesh
+ * even when target_index_count >= index_count. Coincident positions are welded so attribute (uv/normal)
+ * seams collapse topologically while surviving wedges keep their own vertices; open borders are locked
+ * to a polyline so silhouettes do not erode. Geometry-only: attribute drift at collapsed seam corners
+ * is accepted (attribute-aware simplification is a later refinement).
+ */
+size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index_count,
+                    const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride,
+                    size_t target_index_count, float target_error, float* out_result_error);
 
 #ifdef __cplusplus
 }
