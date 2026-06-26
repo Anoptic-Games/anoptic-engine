@@ -77,6 +77,14 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
 
 #define ANO_MAX_LOD 8u
 
+// Per-mesh GPU buffer capacity (MeshSSBO / MeshBoundsSSBO slots), fixed at buffer creation. The host
+// geometry pool grows its meshes[] array on demand but must never register past this, or
+// updateCullingBuffers would write past the mapped device buffers — the upload paths refuse once the
+// pool would exceed it (returning the fallback mesh 0). The cull-set/graphics-set descriptor RANGES
+// and the createCullingBuffers buffer sizes must all use this value; keep them in lockstep. With 4x
+// LOD chains (ANO_DEFAULT_LOD_COUNT) this covers ~2048 distinct source meshes; ~156 B/slot of VRAM.
+#define ANO_MAX_MESHES 8192u
+
 // Default LOD levels glTF uploads request. 1 == today's behavior (a single full-detail mesh, no
 // decimation). Raise it (<= ANO_MAX_LOD) to turn LOD chains on engine-wide once decimation quality
 // is verified on real assets.

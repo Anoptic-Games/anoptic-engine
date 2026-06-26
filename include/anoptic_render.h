@@ -392,4 +392,13 @@ float ano_render_get_view_lod_threshold(uint32_t view);
 void    ano_render_set_lod_bias(int32_t bias);
 int32_t ano_render_get_lod_bias(void);
 
+// Coarse shadow LOD bias: the LOD level shadow casters are decimated to. Shadow frustums have no
+// per-caster screen-area metric, so this is one global level bias applied to every caster — shadows
+// are low-frequency, so a coarser mesh in the depth atlas is cheap and usually imperceptible. Clamped
+// per-entity to that mesh's available levels (non-LOD meshes always cast their base level). Clamped to
+// [0, max LOD]; negative clamps to 0. Affects only meshes uploaded with LOD chains. Applies from the
+// next recorded frame; render thread only.
+void    ano_render_set_shadow_lod_bias(int32_t bias);
+int32_t ano_render_get_shadow_lod_bias(void);
+
 #endif // ANOPTIC_RENDER_H

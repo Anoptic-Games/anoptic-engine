@@ -1011,6 +1011,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     ubo->entityCount = entityCount;
     ubo->maxEntities = state->culling.maxEntities;
     ubo->drawSlotCount = ano_draw_pipeline_count();
+    ubo->shadowLodBias = state->shadowLodBias; // coarse shadow LOD (review 4.9 step 2), global bias
 
     // Publish the PipelineType -> draw-slot map cull.comp compacts by. Frame-invariant, but
     // rewritten here so each frame's UBO (incl. a freshly grown one) is always populated.
@@ -1029,8 +1030,11 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     // O(N) rewrite. MeshSSBO/MeshBoundsSSBO below are per-mesh (bounded by
     // meshCount, not entity count) and refreshed so geometry-pool changes apply.
 
-    // Update MeshSSBO and MeshBoundsSSBO
+    // Update MeshSSBO and MeshBoundsSSBO. meshCount can't exceed ANO_MAX_MESHES (the geometry pool
+    // refuses to register past it), but clamp defensively: these buffers are fixed-size mapped device
+    // memory, so a future cap divergence must never let this loop write past their last slot.
     uint32_t meshCount = state->globalGeometryPool.meshCount;
+    if (meshCount > ANO_MAX_MESHES) meshCount = ANO_MAX_MESHES;
     uint32_t* meshData = (uint32_t*)state->culling.meshDataMapped[frameIndex];
     float* meshBounds = (float*)state->culling.meshBoundsMapped[frameIndex];
     
@@ -2148,6 +2152,20 @@ int32_t ano_render_get_lod_bias(void) {
     return rendererState.lodBias;
 }
 
+// Coarse shadow LOD bias (review 4.9 step 2): the global level every shadow caster is decimated to
+// (the shadow loop has no per-caster screen-area metric). Published into CullUBO.shadowLodBias by
+// updateCullingBuffers; takes effect next recorded frame. cull.comp clamps per-entity to the real
+// chain length, so non-LOD meshes always cast level 0. Clamped to [0, ANO_MAX_LOD]; negative is
+// pointless (no level finer than the base) and clamps to 0. Render-thread only, like the other knobs.
+void ano_render_set_shadow_lod_bias(int32_t bias) {
+    int32_t lim = (int32_t)ANO_MAX_LOD;
+    rendererState.shadowLodBias = bias < 0 ? 0 : (bias > lim ? lim : bias);
+}
+
+int32_t ano_render_get_shadow_lod_bias(void) {
+    return rendererState.shadowLodBias;
+}
+
 // Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode
 // (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident D32 atlas (ANO_SHADOW_FRUSTUM_COUNT
 // layers x ANO_SHADOW_DIM^2 x 4 B x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
@@ -2766,7 +2784,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
 
 bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->culling.maxEntities = maxEntities;
-    uint32_t maxMeshes = 1024;
+    uint32_t maxMeshes = ANO_MAX_MESHES; // must match the descriptor ranges in instanceInit.c
 
     // Per-view screen-area cull + LOD thresholds (review 4.9 steps 1-2); runtime-overridable per
     // view via ano_render_set_view_cull_threshold / ano_render_set_view_lod_threshold. Same default
@@ -2775,6 +2793,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         state->cullPixelThreshold[v] = ANO_CULL_PIXEL_THRESHOLD_DEFAULT;
         state->lodPixelThreshold[v]  = ANO_LOD_PIXEL_THRESHOLD_DEFAULT;
     }
+    state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // coarse shadow LOD (review 4.9 step 2)
     
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 9 * maxMeshes; // MeshData: 9 u32 (8 + lodCount)
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
