@@ -79,6 +79,11 @@ void createColorResources(VulkanContext* ctx);
 // Creates a depth image and view for the current swapchain
 bool createDepthResources(VulkanContext* ctx, RendererState* state);
 
+// Hi-Z occlusion pyramid (review 4.9 step 3): per-view half-res R32F depth pyramids, recreated with
+// the swapchain. updateHiZDescriptorSets rebinds the per-mip compute sets to the (re)created views.
+bool createHiZResources(VulkanContext* ctx, RendererState* state);
+void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state);
+
 // Creates the descriptor pool
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state);
 

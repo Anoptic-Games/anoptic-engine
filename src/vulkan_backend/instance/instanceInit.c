@@ -525,7 +525,13 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 	VkPhysicalDeviceProperties physicalDeviceProperties;
 	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &physicalDeviceProperties); // Cached properties should be preferentially used
 
-	VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+	// The per-view depth target is now ALSO sampled (Hi-Z occlusion pyramid, review 4.9 step 3), so the
+	// chosen count must satisfy sampledImageDepthSampleCounts too: the spec permits it to be a strict
+	// subset of framebufferDepthSampleCounts, which would otherwise trip VUID-VkImageCreateInfo-samples-02258
+	// when the depth image is created with SAMPLED_BIT. No-op where sampled depth matches the framebuffer.
+	VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts
+	                          & physicalDeviceProperties.limits.framebufferDepthSampleCounts
+	                          & physicalDeviceProperties.limits.sampledImageDepthSampleCounts;
 	if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
 	if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
 	if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
@@ -996,6 +1002,28 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
                 vkDestroyImage(ctx->device, vr->depthImage, NULL);
                 vr->depthImage = VK_NULL_HANDLE;
             }
+
+            // Hi-Z pyramid (review 4.9 step 3): destroy the per-mip + sampled views and the image.
+            // hizAlloc.memory is owned by swapchainAllocator (no manual vkFreeMemory), like depthAlloc.
+            for (uint32_t m = 0; m < vr->hizMipCount; m++)
+            {
+                if (vr->hizMipViews[m] != VK_NULL_HANDLE)
+                {
+                    vkDestroyImageView(ctx->device, vr->hizMipViews[m], NULL);
+                    vr->hizMipViews[m] = VK_NULL_HANDLE;
+                }
+            }
+            if (vr->hizSampledView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->hizSampledView, NULL);
+                vr->hizSampledView = VK_NULL_HANDLE;
+            }
+            if (vr->hizImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->hizImage, NULL);
+                vr->hizImage = VK_NULL_HANDLE;
+            }
+            vr->hizMipCount = 0;
         }
     }
 
@@ -1111,6 +1139,16 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 		cleanupVulkan(ctx);
 		exit(1);
 	}
+
+	// Hi-Z pyramid (review 4.9 step 3): recreate at the new (half) resolution, then rebind its
+	// per-mip sets to the new pyramid + depth views (mirrors the tonemap-set rebind below).
+	if (!createHiZResources(ctx, &rendererState))
+	{
+		printf("Hi-Z resources re-creation error, exiting!\n");
+		cleanupVulkan(ctx);
+		exit(1);
+	}
+	updateHiZDescriptorSets(ctx, &rendererState);
 
 	// The per-view HDR resolve views were recreated above; rebind the tonemap sets to them.
 	updateTonemapDescriptorSets(ctx, &rendererState);
@@ -1405,9 +1443,11 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
 			ViewResources* vr = &state->frames[i].views[v];
+			// SAMPLED_BIT (review 4.9 step 3): the Hi-Z reduce pass reads this MSAA depth via a
+			// sampler2DMS to build the occlusion pyramid mip 0.
 			if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width,
 				state->imageExtent.height, 1, ctx->msaaSamples, state->depthFormat,
-				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 							 &vr->depthImage, &vr->depthAlloc, false))
 			{
 				printf("Failed to create depth resource for frame %d view %u!\n", i, v);
@@ -1421,6 +1461,64 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 			{
 				printf("Failed to transition depth buffer layout for frame %d view %u!\n", i, v);
 				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// Hi-Z occlusion pyramid resources (review 4.9 step 3). One half-res R32F mip chain per view per
+// frame-in-flight, built each frame from that view's MSAA depth (recordCommandBuffer) and sampled by
+// the cull next frame. STORAGE (imageStore per mip) + SAMPLED (downsample reads mip k-1; cull reads
+// the pyramid). Each image gets an all-mip sampled view + one single-mip storage view per level. Base
+// dims are half the swapchain extent; recreated with the swapchain. Per-mip descriptor sets are
+// allocated/written later (they need the layout + pool). No initial layout transition: the build
+// transitions UNDEFINED->GENERAL each frame (it fully rewrites every mip).
+bool createHiZResources(VulkanContext* ctx, RendererState* state)
+{
+	uint32_t w = (state->imageExtent.width  + 1u) / 2u; if (w < 1u) w = 1u;
+	uint32_t h = (state->imageExtent.height + 1u) / 2u; if (h < 1u) h = 1u;
+	uint32_t mips = 1u;
+	for (uint32_t m = (w > h) ? w : h; m > 1u; m >>= 1) ++mips;
+	if (mips > ANO_MAX_HIZ_MIPS) mips = ANO_MAX_HIZ_MIPS;
+	state->hizWidth = w;
+	state->hizHeight = h;
+	state->hizMipCount = mips;
+
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+		{
+			ViewResources* vr = &state->frames[i].views[v];
+			vr->hizMipCount = mips;
+			if (!createImage(ctx, &swapchainAllocator, w, h, mips, VK_SAMPLE_COUNT_1_BIT,
+				VK_FORMAT_R32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				&vr->hizImage, &vr->hizAlloc, false))
+			{
+				printf("Failed to create Hi-Z image for frame %u view %u!\n", i, v);
+				return false;
+			}
+
+			vr->hizSampledView = createImageView(ctx->device, vr->hizImage, VK_FORMAT_R32_SFLOAT,
+												 VK_IMAGE_ASPECT_COLOR_BIT, mips);
+
+			for (uint32_t m = 0; m < mips; m++)
+			{
+				VkImageViewCreateInfo iv = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+				iv.image = vr->hizImage;
+				iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+				iv.format = VK_FORMAT_R32_SFLOAT;
+				iv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				iv.subresourceRange.baseMipLevel = m;
+				iv.subresourceRange.levelCount = 1;
+				iv.subresourceRange.baseArrayLayer = 0;
+				iv.subresourceRange.layerCount = 1;
+				if (vkCreateImageView(ctx->device, &iv, NULL, &vr->hizMipViews[m]) != VK_SUCCESS)
+				{
+					printf("Failed to create Hi-Z mip view %u (frame %u view %u)!\n", m, i, v);
+					return false;
+				}
 			}
 		}
 	}
@@ -1473,7 +1571,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	//   SSBO/frame:    global(11: bindings 1-11) + light-cull(4) per view, + cull(8)+update(3)+scatter(2) shared
 	//   SAMPLER/frame: tonemap(1) per view
 	//   sets/frame:    (global+light-cull+tonemap) per view + cull+update+scatter shared
-	VkDescriptorPoolSize poolSize[4] = {};
+	VkDescriptorPoolSize poolSize[5] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u);
 	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
@@ -1486,14 +1584,20 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	// Per frame: ANO_VIEW_COUNT tonemap + the +4 = shadow atlas (geomSet) + blurAtlasSet + blurTempSet
 	// + 1 spare (inherited margin). Actual use is ANO_VIEW_COUNT+3; +4 keeps a one-descriptor cushion.
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u);
+	// Hi-Z (review 4.9 step 3) adds 2 sampled bindings (pyramid + depth) per per-mip build set, i.e.
+	// 2 * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS per frame.
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS);
+	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame.
+	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSize[4].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = 4;
+	poolInfo.poolSizeCount = 5;
 	poolInfo.pPoolSizes = poolSize;
-	// + 2 blur sets/frame on top of (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2).
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 8u);
+	// + 2 blur sets/frame on top of (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2),
+	// + ANO_VIEW_COUNT*ANO_MAX_HIZ_MIPS Hi-Z build sets/frame (one per mip per view, review 4.9 step 3).
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 8u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS);
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1675,6 +1779,29 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
             rendererState.frames[i].views[v].tonemapSet = tonemapSetsTemp[i*ANO_VIEW_COUNT + v];
     }
 
+    // Hi-Z build sets (review 4.9 step 3): one per mip per view per frame. Allocate the max mip count
+    // (ANO_MAX_HIZ_MIPS) so a resize to a higher-res pyramid never reallocates; updateHiZDescriptorSets
+    // writes only the live hizMipCount. The image views are (re)bound there (they change on resize).
+    VkDescriptorSetLayout hizLayouts[MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS];
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS; ++i)
+        hizLayouts[i] = rendererState.hizSetLayout;
+    VkDescriptorSetAllocateInfo hizAllocInfo = {};
+    hizAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    hizAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    hizAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS);
+    hizAllocInfo.pSetLayouts = hizLayouts;
+    VkDescriptorSet hizSetsTemp[MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS];
+    if (vkAllocateDescriptorSets(ctx->device, &hizAllocInfo, hizSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate Hi-Z descriptor sets!\n");
+        return false;
+    }
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+            for (uint32_t m = 0; m < ANO_MAX_HIZ_MIPS; m++)
+                rendererState.frames[i].views[v].hizSets[m] =
+                    hizSetsTemp[(i * ANO_VIEW_COUNT + v) * ANO_MAX_HIZ_MIPS + m];
+
     // Shadow sets (audit 4.7): one shadowsetup set + one shadow geom/sampling set per frame.
     VkDescriptorSetLayout setupLayouts[MAX_FRAMES_IN_FLIGHT], geomLayouts[MAX_FRAMES_IN_FLIGHT];
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { setupLayouts[i] = rendererState.shadowSetupSetLayout; geomLayouts[i] = rendererState.shadowGeomSetLayout; }
@@ -1831,6 +1958,41 @@ void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state)
             write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             write.pImageInfo = &imageInfo;
             vkUpdateDescriptorSets(ctx->device, 1, &write, 0, NULL);
+        }
+    }
+}
+
+// (Re)bind each per-mip Hi-Z build set (review 4.9 step 3); rerun after a swapchain resize since the
+// pyramid + depth views change. Per set: binding 0 = the pyramid all-mip sampled view (downsample
+// reads mip srcMip), 1 = this mip's r32f storage dest, 2 = this view's MSAA depth (reduce source).
+// The pyramid is sampled and stored in GENERAL layout during the build; the depth is in SHADER_READ.
+// texelFetch ignores sampler state, so the shared textureSampler serves both sampled bindings. Only
+// the live hizMipCount mips are written (the rest stay allocated but unused).
+void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            ViewResources* vr = &state->frames[i].views[v];
+            for (uint32_t m = 0; m < vr->hizMipCount; m++)
+            {
+                VkDescriptorImageInfo pyr = { .sampler = state->textureSampler, .imageView = vr->hizSampledView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+                VkDescriptorImageInfo dst = { .imageView = vr->hizMipViews[m], .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+                VkDescriptorImageInfo dep = { .sampler = state->textureSampler, .imageView = vr->depthView, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+                VkWriteDescriptorSet w[3] = {};
+                w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[0].dstSet = vr->hizSets[m]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+                w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &pyr;
+                w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[1].dstSet = vr->hizSets[m]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+                w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &dst;
+                w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[2].dstSet = vr->hizSets[m]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+                w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &dep;
+                vkUpdateDescriptorSets(ctx->device, 3, w, 0, NULL);
+            }
         }
     }
 }

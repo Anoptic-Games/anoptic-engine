@@ -286,6 +286,34 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
         return false;
     }
 
+    // Hi-Z occlusion pyramid build set (review 4.9 step 3): one per mip per view per frame. 0 = the
+    // pyramid sampled all-mip view (downsample reads mip srcMip), 1 = this mip's r32f storage dest,
+    // 2 = the MSAA camera depth (reduce reads it for mip 0). Both build pipelines (reduce/downsample)
+    // share this layout — each uses one of bindings 0/2; the other stays bound but unread.
+    VkDescriptorSetLayoutBinding hizBindings[3] = {};
+    hizBindings[0].binding = 0;
+    hizBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    hizBindings[0].descriptorCount = 1;
+    hizBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    hizBindings[1].binding = 1;
+    hizBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    hizBindings[1].descriptorCount = 1;
+    hizBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    hizBindings[2].binding = 2;
+    hizBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    hizBindings[2].descriptorCount = 1;
+    hizBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo hizLayoutInfo = {};
+    hizLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    hizLayoutInfo.bindingCount = 3;
+    hizLayoutInfo.pBindings = hizBindings;
+    if (vkCreateDescriptorSetLayout(ctx->device, &hizLayoutInfo, NULL, &state->hizSetLayout) != VK_SUCCESS)
+    {
+        printf("Failed to create Hi-Z descriptor set layout!\n");
+        return false;
+    }
+
     // --- Dynamic shadow set layouts (audit 4.7), created here so the FLAT/TRANSMISSION pipeline
     // layouts (set 2) and the shadowsetup compute pipeline can reference them. ---
 
@@ -635,6 +663,63 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     ano_aligned_free(compShaderCode.data);
     vkDestroyShaderModule(ctx->device, compShaderModule, NULL);
+
+    // Compute Hi-Z Pyramid Build Pipeline (review 4.9 step 3). One module, two implementations via the
+    // isReduce spec constant (constant_id 0): [0] = reduce (MSAA depth -> mip 0), [1] = downsample
+    // (mip srcMip -> srcMip+1). Push constant (24 B) = { int srcMip; ivec2 dstSize; ivec2 srcSize; }
+    // matching hiz.comp's std430 block. Shares state->hizSetLayout across both.
+    VkPipelineCacheCreateInfo hizCacheInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+    vkCreatePipelineCache(ctx->device, &hizCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].cache);
+
+    VkPushConstantRange hizPush = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 24 };
+    VkPipelineLayoutCreateInfo hizPipeLayoutInfo = {};
+    hizPipeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    hizPipeLayoutInfo.setLayoutCount = 1;
+    hizPipeLayoutInfo.pSetLayouts = &state->hizSetLayout;
+    hizPipeLayoutInfo.pushConstantRangeCount = 1;
+    hizPipeLayoutInfo.pPushConstantRanges = &hizPush;
+    if (vkCreatePipelineLayout(ctx->device, &hizPipeLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].layout) != VK_SUCCESS)
+    {
+        printf("Failed to create Hi-Z pipeline layout!\n");
+        return false;
+    }
+
+    state->prototypes[PIPELINE_COMPUTE_HIZ].type = PIPELINE_COMPUTE_HIZ;
+    state->prototypes[PIPELINE_COMPUTE_HIZ].implementationCount = 2;
+    state->prototypes[PIPELINE_COMPUTE_HIZ].implementations = calloc(2, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_HIZ].supportedFeatures = PBR_FEATURE_NONE;
+
+    struct Buffer hizShaderCode;
+    char hizShaderPath[256];
+    snprintf(hizShaderPath, sizeof(hizShaderPath), "%s/resources/shaders/hiz.comp.spv", PROJECT_ROOT);
+    if (!loadFile(hizShaderPath, &hizShaderCode)) return false;
+    VkShaderModule hizShaderModule = createShaderModule(ctx->device, &hizShaderCode);
+
+    VkSpecializationMapEntry hizSpecMap = { .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
+    for (uint32_t impl = 0; impl < 2; impl++)
+    {
+        VkBool32 isReduce = (impl == 0u) ? VK_TRUE : VK_FALSE; // [0] reduce, [1] downsample
+        VkSpecializationInfo hizSpec = {};
+        hizSpec.mapEntryCount = 1;
+        hizSpec.pMapEntries = &hizSpecMap;
+        hizSpec.dataSize = sizeof(VkBool32);
+        hizSpec.pData = &isReduce;
+
+        VkComputePipelineCreateInfo hizPipeInfo = {};
+        hizPipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        hizPipeInfo.layout = state->prototypes[PIPELINE_COMPUTE_HIZ].layout;
+        hizPipeInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        hizPipeInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        hizPipeInfo.stage.module = hizShaderModule;
+        hizPipeInfo.stage.pName = "main";
+        hizPipeInfo.stage.pSpecializationInfo = &hizSpec;
+
+        if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_HIZ].cache, 1, &hizPipeInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].pipeline) != VK_SUCCESS) return false;
+        state->prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+    }
+
+    ano_aligned_free(hizShaderCode.data);
+    vkDestroyShaderModule(ctx->device, hizShaderModule, NULL);
 
     // Compute Transparency-Sort Pipeline (audit 4.7). Reuses the cull descriptor set layout (it
     // operates on the same indirect / drawCount / compacted / sortKeys buffers); one workgroup per
@@ -1158,6 +1243,13 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 	{
 		vkDestroyDescriptorSetLayout(ctx->device, state->tonemapSetLayout, NULL);
 		state->tonemapSetLayout = VK_NULL_HANDLE;
+	}
+	// Hi-Z build set layout (review 4.9 step 3). Its PIPELINE_COMPUTE_HIZ prototype (layout/cache/2
+	// implementations) is freed by the generic prototype loop below.
+	if (state->hizSetLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(ctx->device, state->hizSetLayout, NULL);
+		state->hizSetLayout = VK_NULL_HANDLE;
 	}
 	if (state->tonemapCache != VK_NULL_HANDLE)
 	{

@@ -31,6 +31,7 @@ typedef enum PipelineType
     PIPELINE_SKINNED,           // (skeleton) skinned-mesh draw stream (own vertex stage + bone palette)
     PIPELINE_COMPUTE_LIGHTCULL, // clustered-forward froxel light assignment (compute, never draws)
     PIPELINE_COMPUTE_SHADOWSETUP, // per-shadow-frustum light-space viewProj + frustum-plane build (compute, never draws)
+    PIPELINE_COMPUTE_HIZ,       // hierarchical-Z depth pyramid build for occlusion cull (compute, never draws)
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
 } PipelineType;
 

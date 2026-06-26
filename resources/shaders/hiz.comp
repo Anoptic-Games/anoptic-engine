@@ -1,0 +1,51 @@
+#version 450
+
+// Hi-Z (hierarchical depth) pyramid build (review 4.9 step 3, single-phase occlusion groundwork).
+// One module, two compute pipelines via the isReduce specialization constant (mirrors cull.comp's
+// useMeshShader): reduce builds mip 0 from this view's MSAA camera depth; downsample builds mip
+// (srcMip+1) from mip srcMip. Per-mip descriptor sets bind the single destination mip as uMip, so
+// no storage-image-array dynamic indexing (an unenabled 1.0 feature) is required. R32F pyramid.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(constant_id = 0) const bool isReduce = false;
+
+layout(set = 0, binding = 0) uniform sampler2D   uPyramid;            // downsample source (all mips)
+layout(set = 0, binding = 1, r32f) writeonly uniform image2D uMip;    // this mip's destination
+layout(set = 0, binding = 2) uniform sampler2DMS uDepth;              // reduce source (MSAA depth)
+
+layout(push_constant) uniform PC {
+    int   srcMip;     // mip to read for downsample (ignored by reduce; reduce reads full-res depth)
+    ivec2 dstSize;    // destination mip dimensions, px
+    ivec2 srcSize;    // source dimensions, px: full depth for reduce, mip srcMip for downsample
+} pc;
+
+// Conservative MAX over the source footprint this destination texel covers. Standard ZO depth
+// (near=0, far=1, no reverse-Z): the pyramid stores the FARTHEST depth in each texel, so the cull
+// rejects an entity only when its nearest point is behind every covered surface. When a source
+// dimension is odd the footprint extends one texel at the boundary so no far sample is dropped —
+// dropping one would shrink the stored max and risk culling visible geometry (over-occlusion).
+void main() {
+    ivec2 d = ivec2(gl_GlobalInvocationID.xy);
+    if (d.x >= pc.dstSize.x || d.y >= pc.dstSize.y) return;
+
+    int x0 = d.x * 2, y0 = d.y * 2;
+    int x1 = min(x0 + 1, pc.srcSize.x - 1);
+    int y1 = min(y0 + 1, pc.srcSize.y - 1);
+    if ((pc.srcSize.x & 1) != 0 && d.x == pc.dstSize.x - 1) x1 = min(x0 + 2, pc.srcSize.x - 1);
+    if ((pc.srcSize.y & 1) != 0 && d.y == pc.dstSize.y - 1) y1 = min(y0 + 2, pc.srcSize.y - 1);
+
+    float maxd = 0.0;
+    if (isReduce) {
+        int samples = textureSamples(uDepth);
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x)
+                for (int s = 0; s < samples; ++s)
+                    maxd = max(maxd, texelFetch(uDepth, ivec2(x, y), s).r);
+    } else {
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x)
+                maxd = max(maxd, texelFetch(uPyramid, ivec2(x, y), pc.srcMip).r);
+    }
+    imageStore(uMip, d, vec4(maxd, 0.0, 0.0, 0.0));
+}
