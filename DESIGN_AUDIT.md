@@ -442,7 +442,7 @@ frustums at once; here it is one. Adding views means N cull passes or an N-frust
 the indirect buffer. Root for any game wanting more than one viewport, and a prerequisite for
 shadows.
 
-### 4.9 Cull is frustum-only; no LOD, no occlusion, no screen-area test (root for the scale goal) - HERE
+### 4.9 Cull is frustum-only; no LOD, no occlusion, no screen-area test (root for the scale goal) - ADDRESSED
 
 `cull.comp` does sphere-vs-frustum and nothing else (`isVisible:129`). There is no LOD selection
 (one mesh per entity, no LOD chain, no impostors), no occlusion culling (the corpus's BF3

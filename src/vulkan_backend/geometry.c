@@ -413,6 +413,9 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     if (recycled) {
         meshIndex = pool->freeMeshIndices[pool->freeMeshIndexCount - 1];
     } else {
+        // The per-mesh GPU buffers are fixed at ANO_MAX_MESHES slots; refuse past that (updateCullingBuffers
+        // writes meshData[i*9] for i < meshCount, so a host pool larger than the buffer would write OOB).
+        if (pool->meshCount >= ANO_MAX_MESHES) return 0; // fallback mesh; GPU per-mesh buffers full
         if (pool->meshCount >= pool->meshCapacity) {
             pool->meshCapacity = pool->meshCapacity == 0 ? 100 : pool->meshCapacity * 2;
             pool->meshes = realloc(pool->meshes, pool->meshCapacity * sizeof(MeshRegion));
@@ -447,10 +450,40 @@ AnoLodConfig ano_lod_config_default(uint32_t lodCount)
     return c;
 }
 
+// Gather the vertices referenced by `indices` into a dense prefix of outVerts, rewriting `indices`
+// in place to address that prefix (mesh-local, 0-based). Lets a decimated LOD level store only the
+// vertices it actually uses instead of a full copy of the source array. outVerts must hold at least
+// srcVertexCount entries (worst case == every vertex still referenced); remap is one u32 per source
+// vertex. Returns the compacted vertex count (<= srcVertexCount), or 0 if the remap allocation fails
+// (the caller then keeps the full array, indices untouched). Precondition: every index < srcVertexCount
+// (ano_simplify emits only a valid subset of the source vertices), matching emit_level's own trust.
+static uint32_t geometry_compact_level(const Vertex* srcVerts, uint32_t srcVertexCount,
+                                       uint32_t* indices, uint32_t indexCount, Vertex* outVerts)
+{
+    uint32_t* remap = (uint32_t*)malloc((size_t)srcVertexCount * sizeof(uint32_t));
+    if (!remap) return 0;
+    memset(remap, 0xFF, (size_t)srcVertexCount * sizeof(uint32_t)); // 0xFFFFFFFF == unassigned
+
+    uint32_t next = 0;
+    for (uint32_t i = 0; i < indexCount; ++i) {
+        uint32_t old = indices[i];
+        if (remap[old] == 0xFFFFFFFFu) {
+            remap[old] = next;
+            outVerts[next] = srcVerts[old];
+            next++;
+        }
+        indices[i] = remap[old];
+    }
+    free(remap);
+    return next;
+}
+
 // Upload a mesh as a contiguous LOD chain (review 4.9 step 2). Level 0 is the full mesh; level i is
 // the ORIGINAL mesh decimated (ano_simplify, so error never compounds across levels) to ratios[i] of
-// the source index count, re-optimized for the meshlet layout, then emitted. All levels share the
-// full vertex array and carry the full mesh's bounding sphere, so the cull bound is LOD-invariant.
+// the source index count, re-optimized for the meshlet layout, then vertex-subset-compacted (each
+// decimated level stores only the vertices its index buffer references, not a full copy of the source
+// array) and emitted. Cull reads the bounding sphere from the base (level 0, full array) only, so the
+// cull bound stays LOD-invariant even though decimated levels carry a tighter, never-read subset bound.
 //
 // vertices/vertexCount/indices/indexCount: the source (level-0) mesh.
 // config: lodCount + per-level ratios + error budget (NULL => a single full level).
@@ -470,6 +503,17 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
     if (want > ANO_MAX_LOD) want = ANO_MAX_LOD;
     float targetError = config ? config->targetError : 0.0f;
 
+    // The per-mesh GPU buffers are fixed at ANO_MAX_MESHES slots; never register past them (the
+    // updateCullingBuffers write is bounded by meshCount). Clamp the chain to the slots that remain —
+    // it already tolerates producing fewer levels than requested. No room at all -> fallback mesh 0.
+    if (pool->meshCount >= ANO_MAX_MESHES) {
+        if (out_lodBase)  *out_lodBase = 0u;
+        if (out_lodCount) *out_lodCount = 0u;
+        return 0u;
+    }
+    if ((uint64_t)pool->meshCount + want > ANO_MAX_MESHES)
+        want = (uint32_t)(ANO_MAX_MESHES - pool->meshCount);
+
     // Reserve `want` CONTIGUOUS slots by bumping past the recycle free list. The cull shader addresses
     // a level as meshDrawData[lodBase + level], so the run must be adjacent; recycled (freed) indices
     // are not, so chains always allocate fresh and leave the free list for single uploads.
@@ -481,14 +525,19 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
     uint32_t lodBase = pool->meshCount;
     pool->meshCount += want;  // reserve; rolled back to the count actually produced below
 
-    // Simplified-index scratch: ano_simplify writes a subset but its destination must hold the full
-    // source index_count. Reused across levels; only needed when there is at least one decimated level.
+    // Per-level scratch, only needed when there is at least one decimated level:
+    //  - simplified: ano_simplify writes a subset but its destination must hold the full source count.
+    //  - compacted:  the vertex subset a decimated level references; worst case == the full count.
+    // Both reused across levels.
     uint32_t* simplified = (want > 1u) ? (uint32_t*)malloc((size_t)indexCount * sizeof(uint32_t)) : NULL;
+    Vertex*   compacted  = (want > 1u) ? (Vertex*)malloc((size_t)vertexCount * sizeof(Vertex)) : NULL;
 
     uint32_t produced = 0;
     for (uint32_t lvl = 0; lvl < want; ++lvl) {
         const uint32_t* lvlIndices = indices;
         uint32_t lvlCount = indexCount;
+        const Vertex*   lvlVertices = vertices;
+        uint32_t lvlVertexCount = vertexCount;
         if (lvl > 0 && simplified) {
             float ratio = config->ratios[lvl];
             if (ratio <= 0.0f || ratio > 1.0f) ratio = 1.0f;
@@ -502,14 +551,21 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
             ano_optimize_vertex_cache(simplified, simplified, got, vertexCount);
             lvlIndices = simplified;
             lvlCount = (uint32_t)got;
+            // Compact to just the referenced vertices (remaps `simplified` in place). On alloc failure
+            // (cc==0) keep the full array with the unmodified indices — correct, just not space-optimal.
+            if (compacted) {
+                uint32_t cc = geometry_compact_level(vertices, vertexCount, simplified, lvlCount, compacted);
+                if (cc > 0u) { lvlVertices = compacted; lvlVertexCount = cc; }
+            }
         }
         if (!geometry_pool_emit_level(pool, alloc, device, transferFamily, transferQueue,
-                                      vertices, vertexCount, lvlIndices, lvlCount, lodBase + lvl))
+                                      lvlVertices, lvlVertexCount, lvlIndices, lvlCount, lodBase + lvl))
             break;  // pool exhausted: truncate
         produced++;
     }
 
     free(simplified);
+    free(compacted);
 
     // Release the reserved-but-unfilled tail so the cull shader never addresses an empty slot.
     pool->meshCount = lodBase + produced;

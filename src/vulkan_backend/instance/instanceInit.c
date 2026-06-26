@@ -76,6 +76,14 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		ano_render_set_lod_bias(bias);
 		printf("LOD bias: %+d\n", ano_render_get_lod_bias());
 	}
+	// Shadow-caster LOD bias inspection (review 4.9 step 2): ; finer shadows, ' coarser. Lets shadow
+	// geometry cost be traded against shadow silhouette quality live, independent of the camera LOD.
+	if ((key == GLFW_KEY_SEMICOLON || key == GLFW_KEY_APOSTROPHE) &&
+	    (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+		int32_t bias = ano_render_get_shadow_lod_bias() + (key == GLFW_KEY_APOSTROPHE ? 1 : -1);
+		ano_render_set_shadow_lod_bias(bias);
+		printf("Shadow LOD bias: %+d\n", ano_render_get_shadow_lod_bias());
+	}
 }
 
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
@@ -1860,11 +1868,11 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		indexBufferInfo.offset = 0;
 		indexBufferInfo.range = rendererState.globalGeometryPool.indexCapacity;
 
-		uint32_t maxMeshes = 1024;
+		uint32_t maxMeshes = ANO_MAX_MESHES; // must match createCullingBuffers' buffer sizing
 		VkDescriptorBufferInfo globalMeshInfo = {};
 		globalMeshInfo.buffer = rendererState.culling.meshDataBuffer[i];
 		globalMeshInfo.offset = 0;
-		globalMeshInfo.range = sizeof(uint32_t) * 4 * maxMeshes;
+		globalMeshInfo.range = sizeof(uint32_t) * 9 * maxMeshes; // MeshData is 9 u32/slot (== buffer stride)
 
 		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
 		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
@@ -1990,7 +1998,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo meshDataInfo = {};
         meshDataInfo.buffer = rendererState.culling.meshDataBuffer[i];
         meshDataInfo.offset = 0;
-        meshDataInfo.range = sizeof(uint32_t) * 8 * maxMeshes;
+        meshDataInfo.range = sizeof(uint32_t) * 9 * maxMeshes; // MeshData is 9 u32/slot (== buffer stride)
 
         VkDescriptorBufferInfo meshBoundsInfo = {};
         meshBoundsInfo.buffer = rendererState.culling.meshBoundsBuffer[i];

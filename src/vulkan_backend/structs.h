@@ -63,6 +63,13 @@
 // ano_render_set_view_lod_threshold (0 disables LOD selection -> always level 0 for that view).
 #define ANO_LOD_PIXEL_THRESHOLD_DEFAULT   128.0f
 
+// Default shadow-caster LOD bias (review 4.9 step 2). Shadow frustums have no per-caster screen-area
+// metric, so coarse shadow LOD is a single global level bias added to every caster: shadows are
+// low-frequency, so a coarser mesh in the depth atlas is cheap and usually imperceptible. Clamped
+// per-entity to the real chain length (level 0 for non-LOD meshes). 0 == base level (pre-step-2).
+// Runtime-set via ano_render_set_shadow_lod_bias.
+#define ANO_SHADOW_LOD_BIAS_DEFAULT       1
+
 // Dynamic shadow pass (audit 4.7 follow-on, built on the 4.8 multi-frustum cull). Each shadow map
 // is one more frustum to cull against: a directional ortho map, a spot perspective map, and 6
 // perspective faces per point light. All shadow maps are layers of one 2D array — point lights
@@ -665,6 +672,12 @@ typedef struct CullUBO
     //   [v][2] lodThresholdPx   = rpx at which LOD level 1 begins (step 2); 0 disables LOD selection.
     //   [v][3] lodBias          = signed LOD-level bias (debug/tuning), stored as float; + coarser.
     float    viewCullParams[ANO_VIEW_COUNT][4];
+    // Coarse shadow LOD (review 4.9 step 2): one global level bias applied to every shadow caster
+    // (the shadow loop has no per-frustum screen-area metric). cull.comp resolves the level via
+    // lodSelect with no distance term, so this is a pure bias clamped per-entity to its chain length.
+    // Trails viewCullParams at a 16-aligned offset; a bare scalar is std140-safe there. Shaders that
+    // declare only a CullUBO prefix (tpsort.comp) are unaffected by this tail field.
+    int32_t  shadowLodBias;
 } CullUBO;
 
 // --- Dynamic shadows (audit 4.7 follow-on, on the 4.8 multi-frustum cull) -------------------
@@ -1010,6 +1023,11 @@ typedef struct RendererState
     // the scene to its coarsest level. Replicated into CullUBO.viewCullParams[v][3]. Runtime-set via
     // ano_render_set_lod_bias (the test scene's [ and ] keys); default 0 (no bias).
     int32_t                 lodBias;
+    // Coarse shadow LOD bias (review 4.9 step 2): a single level bias applied to every shadow caster
+    // (shadows have no per-caster screen-area metric). Published into CullUBO.shadowLodBias. + = coarser
+    // shadow geometry. Runtime-set via ano_render_set_shadow_lod_bias (the test scene's ; and ' keys);
+    // default ANO_SHADOW_LOD_BIAS_DEFAULT. Only affects meshes with LOD chains.
+    int32_t                 shadowLodBias;
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.

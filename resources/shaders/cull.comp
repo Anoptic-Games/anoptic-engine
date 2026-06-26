@@ -31,8 +31,11 @@ layout(set = 0, binding = 0) uniform CullUBO {
     uvec4 specialSlots;
     // Per-view screen-area cull knobs (review 4.9 step 1; mirrors CullUBO.viewCullParams in
     // structs.h). .x = screenAreaScale (cot(fovY/2) * half viewport height in px), .y =
-    // pixelThresholdSq (min drawn pixel radius squared; 0 = test off). .zw reserved (step 2 LOD).
+    // pixelThresholdSq (min drawn pixel radius squared; 0 = test off). .z = lodThresholdPx, .w = lodBias.
     vec4 viewCullParams[ANO_VIEW_COUNT];
+    // Coarse shadow LOD (review 4.9 step 2): one global level bias for every shadow caster (the shadow
+    // loop has no per-frustum screen-area metric). Trails viewCullParams; mirrors CullUBO in structs.h.
+    int shadowLodBias;
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -304,11 +307,17 @@ void main() {
     // render; the additive lane (glows, engine plumes) casts none — an emissive throwing a hard black
     // shadow is never wanted. Alpha-aware shadows for glass are a later refinement.
     if (slot != specialSlots.x) {
+        // Coarse shadow LOD (review 4.9 step 2): shadows are low-frequency, so casters render a level
+        // chosen by a single global bias (shadowLodBias) rather than per-frustum screen area (a texel-
+        // size metric is a later refinement). lodSelect with no distance term (rpx/threshold 0) yields a
+        // pure bias, clamped per-entity to its real chain length, so non-LOD meshes still emit level 0.
+        // Same level for every frustum, so resolve it once. sData MUST match the token level: both the
+        // mesh path's groupCountX and the fallback indirect index/vertex range come from the mesh data.
+        uint slevel = (lodCount > 1u) ? lodSelect(0.0, lodCount, 0.0, shadowLodBias) : 0u;
+        MeshData sData = (slevel == 0u) ? baseData : meshDrawData[baseMesh + slevel];
         for (uint s = 0u; s < ANO_SHADOW_FRUSTUM_COUNT; ++s) {
             if (isVisibleInShadow(s, worldCenter, worldRadius)) {
-                // Shadow casters render the base level (no screen-area LOD): the shadow atlas has its
-                // own resolution, and a per-frustum texel-size LOD is a later refinement.
-                emitDraw(ANO_VIEW_COUNT * drawSlotCount + s, idx, baseData, 0u);
+                emitDraw(ANO_VIEW_COUNT * drawSlotCount + s, idx, sData, slevel);
             }
         }
     }
