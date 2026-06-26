@@ -367,4 +367,12 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 void            ano_render_set_lighting_mode(AnoLightingMode mode);
 AnoLightingMode ano_render_get_lighting_mode(void);
 
+// Per-view screen-area cull threshold, in pixels of projected bounding-sphere radius. An in-frustum
+// entity smaller than this on the given view emits no draw, so a peripheral/main view can cull
+// harder than a zoomed inset (e.g. a rifle-scope PiP). Independent per view; 0 disables the test for
+// that view, negative is clamped to 0; an out-of-range view index is ignored. Applies from the next
+// recorded frame. Set/read from the render thread (the frame record path is single threaded).
+void  ano_render_set_view_cull_threshold(uint32_t view, float pixels);
+float ano_render_get_view_cull_threshold(uint32_t view);
+
 #endif // ANOPTIC_RENDER_H

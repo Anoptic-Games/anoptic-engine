@@ -5,6 +5,7 @@
 
 
 #include <stdio.h>
+#include <math.h>
 #include <vulkan/vulkan.h>
 #include <mimalloc.h>
 #include <mimalloc-override.h>
@@ -989,6 +990,15 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         GlobalUBO* viewUbo = state->frames[frameIndex].views[v].uniformMapped;
         multiplyMat4(ubo->views[v].viewProj, viewUbo->proj, viewUbo->view);
         extractFrustumPlanes(ubo->views[v].frustumPlanes, ubo->views[v].viewProj);
+        // Screen-area cull knobs (review 4.9 step 1). scale = cot(fovY/2) * half viewport height in
+        // px: |proj[1][1]| is cot(fovY/2) (negative under the Vulkan Y-flip), so rpx = worldRadius *
+        // scale / dist. Threshold is squared here so the shader compares without a sqrt; 0 disables.
+        float screenAreaScale = fabsf(viewUbo->proj[1][1]) * 0.5f * viewUbo->screenHeight;
+        float threshold = state->cullPixelThreshold[v];
+        ubo->viewCullParams[v][0] = screenAreaScale;
+        ubo->viewCullParams[v][1] = threshold * threshold;
+        ubo->viewCullParams[v][2] = 0.0f;
+        ubo->viewCullParams[v][3] = 0.0f;
         // Publish the active light count to each view's fragment stage.
         viewUbo->lightCount = state->lightBuffer.count;
         // Publish the runtime lighting mode + debug selector (RADIANCE_CASCADES.md). The fragment
@@ -2095,6 +2105,21 @@ AnoLightingMode ano_render_get_lighting_mode(void) {
     return (AnoLightingMode)rendererState.lightingMode;
 }
 
+// Per-view screen-area cull threshold (review 4.9 step 1). Stored on the render state and squared
+// into CullUBO.viewCullParams[view][1] by updateCullingBuffers; takes effect from the next recorded
+// frame. Pixels of projected bounding-sphere radius; 0 disables the test for that view, negative is
+// clamped to 0. Out-of-range view index is ignored. Render-thread only (no atomics), like the
+// lighting-mode setter.
+void ano_render_set_view_cull_threshold(uint32_t view, float pixels) {
+    if (view >= ANO_VIEW_COUNT) return;
+    rendererState.cullPixelThreshold[view] = (pixels > 0.0f) ? pixels : 0.0f;
+}
+
+float ano_render_get_view_cull_threshold(uint32_t view) {
+    if (view >= ANO_VIEW_COUNT) return 0.0f;
+    return rendererState.cullPixelThreshold[view];
+}
+
 // Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode
 // (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident D32 atlas (ANO_SHADOW_FRUSTUM_COUNT
 // layers x ANO_SHADOW_DIM^2 x 4 B x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
@@ -2714,6 +2739,11 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
 bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->culling.maxEntities = maxEntities;
     uint32_t maxMeshes = 1024;
+
+    // Per-view screen-area cull threshold (review 4.9 step 1); runtime-overridable per view via
+    // ano_render_set_view_cull_threshold. Same default for every view; tune at runtime.
+    for (uint32_t v = 0; v < ANO_VIEW_COUNT; ++v)
+        state->cullPixelThreshold[v] = ANO_CULL_PIXEL_THRESHOLD_DEFAULT;
     
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 8 * maxMeshes; // uvec8
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
