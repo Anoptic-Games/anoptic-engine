@@ -84,6 +84,13 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		ano_render_set_shadow_lod_bias(bias);
 		printf("Shadow LOD bias: %+d\n", ano_render_get_shadow_lod_bias());
 	}
+	// Hi-Z occlusion toggle (review 4.9 step 3): H flips the main view's GPU occlusion cull on/off for
+	// A/B inspection (default off). With it on, entities fully behind nearer geometry stop drawing.
+	if (key == GLFW_KEY_H && action == GLFW_PRESS) {
+		bool on = !ano_render_get_view_hiz_enable(0u);
+		ano_render_set_view_hiz_enable(0u, on);
+		printf("Hi-Z occlusion (view 0): %s\n", on ? "ON" : "OFF");
+	}
 }
 
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
@@ -1520,6 +1527,16 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 					return false;
 				}
 			}
+
+			// Seed every pyramid to SHADER_READ so the first frames' cull (which samples not-yet-built
+			// previous-slot pyramids, review 4.9 step 3) reads a valid layout. The per-frame build re-
+			// transitions UNDEFINED->GENERAL (discarding), so this initial state is harmless.
+			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hizImage, VK_FORMAT_R32_SFLOAT,
+									   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips))
+			{
+				printf("Failed to transition Hi-Z image for frame %u view %u!\n", i, v);
+				return false;
+			}
 		}
 	}
 	return true;
@@ -1584,9 +1601,10 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	// Per frame: ANO_VIEW_COUNT tonemap + the +4 = shadow atlas (geomSet) + blurAtlasSet + blurTempSet
 	// + 1 spare (inherited margin). Actual use is ANO_VIEW_COUNT+3; +4 keeps a one-descriptor cushion.
-	// Hi-Z (review 4.9 step 3) adds 2 sampled bindings (pyramid + depth) per per-mip build set, i.e.
-	// 2 * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS per frame.
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS);
+	// Hi-Z (review 4.9 step 3) adds: 2 sampled bindings (pyramid + depth) per per-mip build set
+	// (2 * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS/frame), plus the cull set's binding 11 occlusion pyramids
+	// (ANO_VIEW_COUNT samplers/frame).
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + ANO_VIEW_COUNT);
 	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame.
 	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSize[4].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS;
@@ -1994,6 +2012,30 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
                 vkUpdateDescriptorSets(ctx->device, 3, w, 0, NULL);
             }
         }
+    }
+
+    // Cull set binding 11 (review 4.9 step 3): each frame's cull samples the PREVIOUS frame-in-flight
+    // slot's pyramids (single-phase last-frame Hi-Z), so wire cullSet[i].binding11[v] to slot (i-1)'s
+    // view v pyramid. Resting layout is SHADER_READ (the build leaves it there; createHiZResources seeds
+    // it). texelFetch in the cull ignores the sampler, so textureSampler is fine. Re-run on resize.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        uint32_t prev = (i + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
+        VkDescriptorImageInfo hizImg[ANO_VIEW_COUNT];
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            hizImg[v].sampler = state->textureSampler;
+            hizImg[v].imageView = state->frames[prev].views[v].hizSampledView;
+            hizImg[v].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        VkWriteDescriptorSet cw = {};
+        cw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw.dstSet = state->frames[i].cullSet;
+        cw.dstBinding = 11;
+        cw.descriptorCount = ANO_VIEW_COUNT;
+        cw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        cw.pImageInfo = hizImg;
+        vkUpdateDescriptorSets(ctx->device, 1, &cw, 0, NULL);
     }
 }
 

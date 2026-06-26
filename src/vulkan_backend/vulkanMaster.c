@@ -375,6 +375,28 @@ void recordCommandBuffer(uint32_t imageIndex)
                 fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &fillBarrier, 0, NULL, 0, NULL);
+
+                // Hi-Z occlusion (review 4.9 step 3): the cull samples binding 11 = the PREVIOUS frame-
+                // in-flight slot's pyramids (built last frame). Order that build's writes before this
+                // cull reads them (no layout change — they rest in SHADER_READ). First frame: the prev
+                // slot was never built but is seeded to SHADER_READ, so the barrier is a harmless no-op.
+                uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
+                VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
+                for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+                    hizRead[v].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    hizRead[v].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    hizRead[v].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    hizRead[v].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    hizRead[v].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    hizRead[v].image = rendererState.frames[hizPrevSlot].views[v].hizImage;
+                    hizRead[v].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    hizRead[v].subresourceRange.levelCount = rendererState.frames[hizPrevSlot].views[v].hizMipCount;
+                    hizRead[v].subresourceRange.layerCount = 1;
+                    hizRead[v].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                    hizRead[v].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                }
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0, 0, NULL, 0, NULL, ANO_VIEW_COUNT, hizRead);
             }
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
@@ -871,10 +893,13 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &depToRead);
 
-            // pyramid (all mips) -> GENERAL for the storage writes. UNDEFINED oldLayout discards stale
-            // contents: the build fully rewrites every mip this frame.
+            // pyramid (all mips) -> GENERAL for the storage writes. oldLayout is the resting SHADER_READ
+            // (not UNDEFINED): srcStage=COMPUTE makes this rewrite wait, in submission order, on a prior
+            // frame's cull that may still be reading this slot via binding 11 (the slot is read one frame
+            // after it is built, then rewritten two frames later — a cross-frame WAR the per-frame fence
+            // doesn't cover, review 4.9 step 3). The build overwrites every mip, so no contents are kept.
             VkImageMemoryBarrier pyrToGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            pyrToGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            pyrToGeneral.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             pyrToGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
             pyrToGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             pyrToGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -882,9 +907,9 @@ void recordCommandBuffer(uint32_t imageIndex)
             pyrToGeneral.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             pyrToGeneral.subresourceRange.levelCount = vr->hizMipCount;
             pyrToGeneral.subresourceRange.layerCount = 1;
-            pyrToGeneral.srcAccessMask = 0;
+            pyrToGeneral.srcAccessMask = 0;                        // WAR: execution-only (prior reads make nothing available)
             pyrToGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &pyrToGeneral);
 
             // mip 0 = reduce (impl 0, MSAA depth); mip k = downsample (impl 1, mip k-1). One barrier
@@ -1098,6 +1123,20 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         ubo->viewCullParams[v][1] = threshold * threshold;
         ubo->viewCullParams[v][2] = state->lodPixelThreshold[v]; // LOD level-1 onset (review 4.9 step 2)
         ubo->viewCullParams[v][3] = (float)state->lodBias;       // global LOD bias (debug/tuning), replicated per view
+        // Hi-Z occlusion (review 4.9 step 3): publish LAST frame's viewProj for reprojection (the cull
+        // samples the pyramid built last frame), then save this frame's for next. hizParams.z = mipCount
+        // only when this view's test is enabled (else 0 = off, the default). hizProj = the projection
+        // terms the cull needs (screen radius from proj00/proj11, ZO nearest-depth from proj22/proj32).
+        memcpy(ubo->prevViewProj[v], state->prevViewProj[v], sizeof(mat4));   // last frame's viewProj
+        memcpy(state->prevViewProj[v], ubo->views[v].viewProj, sizeof(mat4)); // save this frame's for next
+        ubo->hizParams[v][0] = (float)state->hizWidth;
+        ubo->hizParams[v][1] = (float)state->hizHeight;
+        ubo->hizParams[v][2] = state->hizEnable[v] ? (float)state->hizMipCount : 0.0f;
+        ubo->hizParams[v][3] = 0.0f;
+        ubo->hizProj[v][0] = viewUbo->proj[0][0];
+        ubo->hizProj[v][1] = viewUbo->proj[1][1];
+        ubo->hizProj[v][2] = viewUbo->proj[2][2];
+        ubo->hizProj[v][3] = viewUbo->proj[3][2];
         // Publish the active light count to each view's fragment stage.
         viewUbo->lightCount = state->lightBuffer.count;
         // Publish the runtime lighting mode + debug selector (RADIANCE_CASCADES.md). The fragment
@@ -2265,6 +2304,20 @@ int32_t ano_render_get_shadow_lod_bias(void) {
     return rendererState.shadowLodBias;
 }
 
+// Per-view Hi-Z occlusion toggle (review 4.9 step 3). When enabled, the cull rejects entities fully
+// behind LAST frame's depth pyramid for that view (single-phase; ~1-frame disocclusion latency).
+// Published into CullUBO.hizParams[view].z (mipCount when on, 0 when off) by updateCullingBuffers;
+// takes effect next recorded frame. Default off. Render-thread only; out-of-range view ignored.
+void ano_render_set_view_hiz_enable(uint32_t view, bool enable) {
+    if (view >= ANO_VIEW_COUNT) return;
+    rendererState.hizEnable[view] = enable ? 1u : 0u;
+}
+
+bool ano_render_get_view_hiz_enable(uint32_t view) {
+    if (view >= ANO_VIEW_COUNT) return false;
+    return rendererState.hizEnable[view] != 0u;
+}
+
 // Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode
 // (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident D32 atlas (ANO_SHADOW_FRUSTUM_COUNT
 // layers x ANO_SHADOW_DIM^2 x 4 B x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
@@ -2891,6 +2944,8 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     for (uint32_t v = 0; v < ANO_VIEW_COUNT; ++v) {
         state->cullPixelThreshold[v] = ANO_CULL_PIXEL_THRESHOLD_DEFAULT;
         state->lodPixelThreshold[v]  = ANO_LOD_PIXEL_THRESHOLD_DEFAULT;
+        state->hizEnable[v] = 0u;                          // Hi-Z occlusion off by default (review 4.9 step 3)
+        memset(state->prevViewProj[v], 0, sizeof(mat4));   // first frame: zero matrix -> reprojection skipped
     }
     state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // coarse shadow LOD (review 4.9 step 2)
     

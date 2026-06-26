@@ -20,6 +20,6 @@ fi
 echo "Using glslc: $glslc"
 for shader in flat.mesh flat.vert flat.frag transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.frag tonemap.vert tonemap.frag; do
     echo "  $shader -> $shader.spv"
-    "$glslc" --target-env=vulkan1.2 "$shader" -o "$shader.spv"
+    "$glslc" --target-env=vulkan1.2 "$shader" -o "$shader.spv -g"
 done
 echo "Shaders compiled."

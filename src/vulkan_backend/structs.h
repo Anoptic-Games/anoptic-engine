@@ -683,7 +683,21 @@ typedef struct CullUBO
     // Trails viewCullParams at a 16-aligned offset; a bare scalar is std140-safe there. Shaders that
     // declare only a CullUBO prefix (tpsort.comp) are unaffected by this tail field.
     int32_t  shadowLodBias;
+    int32_t  _hizPad[3];   // std140: align the 16-aligned arrays below to offset 464 (matches cull.comp)
+    // Hi-Z occlusion (review 4.9 step 3, single-phase). Per camera view: prevViewProj reprojects this
+    // frame's bounds into LAST frame's screen (the pyramid the cull samples was built last frame).
+    // hizParams = {baseW, baseH, mipCount, pad}; mipCount==0 disables the test (default off). hizProj =
+    // {proj00, proj11, proj22, proj32} of the current projection for screen radius + the ZO nearest-depth.
+    mat4     prevViewProj[ANO_VIEW_COUNT];
+    float    hizParams[ANO_VIEW_COUNT][4];
+    float    hizProj[ANO_VIEW_COUNT][4];
 } CullUBO;
+
+// std140 layout guards for the Hi-Z tail (review 4.9 step 3): a scalar before 16-aligned arrays is the
+// classic std140 trap (see cull.comp). These pin the C offsets to the SPIR-V offsets (spirv-dis-verified).
+_Static_assert(offsetof(CullUBO, prevViewProj) == 464, "CullUBO.prevViewProj must be std140 offset 464");
+_Static_assert(offsetof(CullUBO, hizParams)    == 592, "CullUBO.hizParams must be std140 offset 592");
+_Static_assert(offsetof(CullUBO, hizProj)      == 624, "CullUBO.hizProj must be std140 offset 624");
 
 // --- Dynamic shadows (audit 4.7 follow-on, on the 4.8 multi-frustum cull) -------------------
 // Shadow frustums reuse CullView (viewProj + 6 planes): shadowsetup.comp writes them from each
@@ -1055,6 +1069,12 @@ typedef struct RendererState
     // shadow geometry. Runtime-set via ano_render_set_shadow_lod_bias (the test scene's ; and ' keys);
     // default ANO_SHADOW_LOD_BIAS_DEFAULT. Only affects meshes with LOD chains.
     int32_t                 shadowLodBias;
+    // Hi-Z occlusion (review 4.9 step 3). prevViewProj holds last frame's viewProj per view (CPU
+    // snapshot, published into CullUBO.prevViewProj so the cull reprojects into the pyramid it samples).
+    // hizEnable is the per-view runtime toggle (0 = off, the default): updateCullingBuffers publishes
+    // mipCount only when enabled, so the occlusion test is inert until ano_render_set_view_hiz_enable.
+    mat4                    prevViewProj[ANO_VIEW_COUNT];
+    uint32_t                hizEnable[ANO_VIEW_COUNT];
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.
