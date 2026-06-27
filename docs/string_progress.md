@@ -252,3 +252,72 @@ Ordered. Earlier items unblock later ones.
 - Mutability story: confirm builder-then-freeze is the only mutation path, or whether a capacity-carrying mutable variant earns its place alongside the immutable value.
 - Whether Design C (German value) supersedes Design B (`{ptr, len, capacity}` owned string) outright, or B remains the long-string backing behind C's value layout.
 - Whether handles (Design D) ship in release or stay a debug-only check.
+
+Three sweeps complete and cross-confirming. Here is the full enumeration, split by what actually compiles today versus what's only designed, with prior-art references last.
+
+---
+
+# Strings in anoptic-engine — every approach
+
+## A. In-tree and compiling today (strings done ad hoc, no unified type)
+
+| # | Approach | Representation | Where | Status |
+|---|----------|----------------|-------|--------|
+| A1 | **`anoptic_strings.h` stub** | empty header; section comments for UTF-8 / scoped dealloc / slices | `include/anoptic_strings.h`, `src/strings/ano_strings.c` | not implemented — the placeholder the whole effort is meant to fill |
+| A2 | **Null-terminated `const char*`** | borrowed pointer + `strlen`/`strcmp`/`strdup`/`strnlen`/`strstr` | everywhere: log APIs, paths, fmt strings, Vk extension name arrays | active, dominant |
+| A3 | **Fixed inline char arrays** | `char name[64]` in `ModelNode`/`ModelAsset`; bounded owned | `src/render/gltf/` | active |
+| A4 | **Stack scratch buffers** | `char path[256]`, `char spec[48]`, `char ts[16]`, `g_scratch[ANO_LOG_MSG_MAX]` + `snprintf`/`sprintf` | pipeline paths, filesystem, logger | active |
+| A5 | **`filepath` length-prefixed struct** | `{uint16_t length; char* pathString;}`, `mi_malloc`'d, caller frees | `include/anoptic_filesystem.h:15`; `ano_fs_gamepath/userpath` | active |
+| A6 | **`Buffer` sized blob** | `{uint32_t size; char* data;}`, not NUL-terminated, `ano_aligned_malloc` | `src/vulkan_backend/instance/pipeline.h:17` (SPIR-V load) | active |
+| A7 | **Logger inline-copy + deferred format** | `%s` args memcpy'd into fixed `char[]` log slot at capture; `uint16_t` len prefix; `vsnprintf` deferred to flusher | `src/logging/logging_core.c` (`capture_deferred`/`format_deferred`) | active, production — the one real "engine string discipline" shipping |
+| A8 | **Hand-rolled numeric→text** | `put_u32`/`put2`/`put_base` + `digLo[]`/`digUp[]` tables, no printf in hot path | `logging_core.c:75` | active |
+| A9 | **Vendored parser strings** | cgltf (JSON+GLB internal); jsmn `jsmntok_t {start,end}` index slices (no copies) | `external/cgltf`, `external/jsmn/jsmn.h` | cgltf active; jsmn vendored, unused |
+| A10 | **FreeType text stubs** | planned `ano_text_add_font(const char* path,...)` | `src/render/text/` | not implemented |
+
+Ground truth: no interning, no SSO, no UTF-8 layer, no unified string type exists in code yet. A7 is the only purpose-built scheme.
+
+## B. The abandoned `feature-strings` branch (Design A, 2024)
+
+| # | Approach | Detail |
+|---|----------|--------|
+| B1 | **`anostr_t` fat pointer** | `{char* buffer, size_t len}` — length-prefixed, no NUL, no capacity. O(1) len, copy-free substring. Owner/view role is ambiguous (the classic C string failure). |
+| B2 | **`anostr_utfhandle_t` cursor** | `{int32 index, uint8 bytesize}` UTF-8 iterator. Fns: `anostr_utflen/utfnexthandle/utfnextchar/utfstrcheck/utfcodecheck/utfslice/byteslice/utfconv_16to8/8to16`. |
+| B3 | **Managed-slice macros** | `ANOSTR_{STACK,HEAP}_{BYTE,UTF}SLICE` — stmt-expr + `alloca`/`mi_malloc` + `__attribute__((cleanup))`. **Both broken**: HEAP frees result before caller reads it (cleanup fires at stmt-expr `}`); STACK never memcpy's source. "The Wall": cleanup binds only at the *declaring* scope, a callee can't attach it to the caller's frame. Also `wchar_t` should be `char16_t`; `int` lens should be `size_t`. |
+
+Status: spec structurally sound, implementation blocked in 2024 by missing arena infrastructure; superseded. Plan (string_progress §6) is to lift onto a fresh branch off main and archive-tag the old.
+
+## C. Proposed strings-module designs (the live decision)
+
+| # | Design | Representation | Lifetime / ownership | Status |
+|---|--------|----------------|----------------------|--------|
+| C1 | **B: Owned + region param** (notes.md Step 4) | `{char* ptr; uint32_t len; uint32_t capacity;}` growable | every alloc takes a `mi_heap_t*` region (Zig-style); copy-on-slice into same arena; cleanup at region granularity | specified, not built — now unblocked by mimalloc + `LOCALHEAPATTR` |
+| C2 | **C: German string** (Umbra/CedarDB) | 16-byte immutable value: `≤12B` inline, else `{len:4, prefix:4, ptr:8}`; prefix = cached first 4 bytes for in-register compare | value semantics, copy like `int`; columnar-scan friendly; immutability is load-bearing | **leading candidate** |
+| C3 | **Ambient frame arena** (Odin/Jai context) | thread-local default heap pushed per tick; transient strings alloc with zero ceremony, die at frame end; debug = ASan-poison freed pages | frame owns lifetime by construction | proposed; logger already proves the thread-local-heap discipline |
+| C4 | **`anostr_keep(heap, s)` promotion** | copy bytes from frame arena up to a persistent region at escape points — the only place a heap parameter appears | explicit escape ceremony | proposed |
+| C5 | **D: Handles + generation** | `{u32 idx, u32 gen}` into a string table; gen bumped on free; access checks gen → UAF becomes a checked error not UB | optional safety layer, even in release | proposed, optional/orthogonal |
+| C6 | **Hashed string IDs `_sid`** | 64-bit compile-time hash (Naughty Dog style, `"foo"_sid` via C23 `constexpr`); intern once, compare as int, recover names from debug table | separate identity primitive for ECS type names, event types, resource GUIDs, config keys | to adopt independently |
+| C7 | **Composed synthesis** | tiers: (1) German value ≤12B → no allocator; (2) longer → frame arena; (3) `anostr_keep` to persist; (4) `_sid` interning for identity/keys | multi-tier | **recommended direction** — called "unclaimed territory": German value + engine-owned ambient regions + scoped promotion combined has no prior implementation |
+
+Shared principle across C: **UTF-8 byte-transparent storage** — strings are always bytes; validation/iteration is a separable layer added only when the text renderer needs it.
+
+## D. Prior-art references cited (not implemented, shaping the above)
+
+Redis `sds` (metadata behind the pointer, public face is plain `char*`) · Lua (intern every string, equality = pointer compare) · kdb+/Q symbols (`u32` into symbol table, integer compare, columnar) · Umbra/CedarDB German strings (source for C2) · Rust `String` = `Vec<u8>` + validate-once UTF-8 invariant · Zig allocator-passing convention (source for C1's region param) · Haskell `ST` monad / rank-2 scope (boundary principle behind C3) · Tofte–Talpin region memory and Cyclone region types (`int *ρ`) — the academic basis for region-polymorphic ownership C cannot enforce, so Anoptic adopts it by discipline.
+
+---
+
+Sources: `docs/notes.md` (Step 4), `docs/string_progress.md`, `.claude/fable_stringtheory.md`, `.claude/logger_old.md`, plus live code in `src/logging/`, `src/strings/`, `include/anoptic_{strings,filesystem,memory}.h`, `src/vulkan_backend/`, `src/render/`.
+
+---
+
+## E. Salvage from the 2024 `feature-strings` branch (commits `8196a49`..`cb0d4df`, Jan–Feb 2024)
+
+The branch shipped a full API sketch over an all-stub implementation — `anostr_utfslice` literally returned `{"hello\0", 5}`, only `anostr_cleanup` had a real body. Nothing is liftable as code. Three things are worth carrying into this spec; the arena/huge-page residue is already documented in the museum copy at `tests/anotest_chariots.c` (FINDINGS block) and distilled in `tests/anotest_memory.c`, so it is not repeated here.
+
+The UTF-8 meaning layer already has a concrete surface. The validation/iteration layer this spec defers to "later" was enumerated in 2024 `include/ano_strings.h` and is worth reviving as-is, with the type bugs fixed: `anostr_bytelen`, `anostr_utflen`, an `anostr_utfnexthandle`/`anostr_utfnextchar` cursor over `anostr_utfhandle_t {i32 index, u8 bytesize}`, `anostr_utfstrcheck`/`anostr_utfcodecheck`, `anostr_utfconv_16to8`/`8to16`, a SIMD `anostrncpy`, and `anostr_utfslice`/`anostr_byteslice`. Carry-forward fixes: the UTF-16 endpoints must be `char16_t`, not `wchar_t` (platform-variable — 32-bit on Linux, 16-bit on Windows), and every `int` length/index must be `size_t`/`ptrdiff_t`. This layer rides on top of the layer-1 view and never owns.
+
+Two of the original TODOs already named the two hard problems. `anostr_t // TODO: figure out what's the point of this type, exactly?` is the owner/view ambiguity — resolved here by splitting the pure borrowing view (layer 1) from the owning builder and German value (layers 2 and 4); the bare `{ptr, len}` survives only as the read face. `ANOSTR_HEAP_BYTESLICE // TODO: this might be quite interesting...` is The Wall — a statement-expression cannot hand a `__cleanup__`-bound buffer back to its caller, since cleanup fires at the stmt-expr brace and frees the result before the caller reads it (deterministic UAF). Resolved by the rule that slicing returns a non-owning view or an arena-backed value, never a cleanup-attached buffer; ownership lives at region granularity, never on the slice.
+
+The arena substrate is validated, with one caveat that lands on layer 5. The playground proves the machinery the frame arena leans on: `__cleanup__` destructors fire at scope exit and `LOCALHEAPATTR` bulk-frees a scoped thread-local `mi_heap` at the brace. Its FINDINGS block carries the constraint for the frame heap: explicit huge pages are a Windows/Linux facility only — Apple Silicon exposes no large-page API at all (`mi_reserve_huge_os_pages` reserves nothing and returns non-zero), so on M1 the frame arena should allocate one big contiguous region and rely on the 16 KiB base granule plus ARMv8 contiguous-bit folding for TLB reach. Gate huge-page reservation to Win/Linux.
+
+Provenance: branch `feature-strings` (`include/ano_strings.h`, `src/strings/ano_strings.c`, `src/strings/ano_string_tests.c`); live museum copy `tests/anotest_chariots.c`.
