@@ -552,6 +552,12 @@ static const float ANO_SIMPLIFY_AREA_EPS2 = 1e-24f;    // (2*area)^2 drop thresh
                                                        // face-plane skip so Guard 5 drops only no-quadric faces
 static const float ANO_SIMPLIFY_ABS_EDGE_FRAC = 0.25f; // absolute edge cap as a fraction of the largest bbox
                                                        // axis (normalized extent==1); backstops coarse flats
+static const float ANO_SIMPLIFY_MAX_NORMAL_DRIFT_COS = 0.5f; // cos(theta_max): reject a collapse whose
+                                                       // resulting face rotates > theta_max (60deg) from its
+                                                       // pass-0 origin normal. Strict no-op on planar in-plane.
+static const float ANO_FEATURE_COS = 0.70710678f;      // cos(45deg): a manifold edge whose two incident face
+                                                       // normals deviate past this is a sharp FEATURE edge.
+// static const float ANO_SIMPLIFY_VOLUME_K = 0.0f;    // G5 (tier-2, OFF): >0 enables swept-volume thickness guard
 
 static inline uint32_t ano_float_bits(float f) { uint32_t b; memcpy(&b, &f, sizeof b); return b; }
 
@@ -616,6 +622,16 @@ static uint32_t ano_edge_get(const uint64_t* keys, const uint32_t* cnt, size_t c
         if (k == 0)   return 0;
         h = (h + 1) & mask;
     }
+}
+
+// Slot index of an edge KNOWN present (ano_count_edges inserted every working edge). Lets the pass-0
+// feature companion table (first incident face normal) key the same slot as the edge use-count.
+static size_t ano_edge_slot(const uint64_t* keys, size_t cap, uint32_t lo, uint32_t hi) {
+    uint64_t key = ((uint64_t)lo << 32) | (uint64_t)hi;
+    size_t mask = cap - 1;
+    size_t h = (size_t)((key * 11400714819323198485ull) >> 32) & mask;
+    while (keys[h] != key) h = (h + 1) & mask;
+    return h;
 }
 
 static int ano_collapse_cmp(const void* a, const void* b) {
@@ -722,15 +738,29 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
     size_t ecap = ano_ceil_pow2(tri0 * 4 + 16);
     uint64_t* ekeys      = (uint64_t*)malloc(ecap * sizeof(uint64_t));
     uint32_t* ecnt       = (uint32_t*)malloc(ecap * sizeof(uint32_t));
+    uint8_t* feature     = (uint8_t*)malloc(vertex_count);   // pass-0 dihedral feature flags (read both paths)
+    uint32_t* linkNbr = NULL;                                 // link-cond common-ring stamp (guards-on only)
+    float* orig_n     = NULL; float* orig_n_tmp = NULL;       // pass-0 face normal per wtri slot (drift ref)
+    float* efn        = NULL; uint8_t* ehas      = NULL;      // feature detection: 1st incident normal per edge
+    if (edge_len_factor > 0.0f) {
+        linkNbr    = (uint32_t*)malloc(vertex_count * sizeof(uint32_t));
+        orig_n     = (float*)malloc(tri0 * 3 * sizeof(float));
+        orig_n_tmp = (float*)malloc(tri0 * 3 * sizeof(float));
+        efn        = (float*)malloc(ecap * 3 * sizeof(float));
+        ehas       = (uint8_t*)malloc(ecap);
+    }
 
     if (!npos || !remap || !collapse || !Q || !kind || !locked || !outid || !adjCounts || !adjOff ||
-        !adjData || !wtri || !wtmp || !cand || !weld || !ekeys || !ecnt) {
+        !adjData || !wtri || !wtmp || !cand || !weld || !ekeys || !ecnt || !feature ||
+        (edge_len_factor > 0.0f && (!linkNbr || !orig_n || !orig_n_tmp || !efn || !ehas))) {
         free(npos); free(remap); free(collapse); free(Q); free(kind); free(locked); free(outid);
         free(adjCounts); free(adjOff); free(adjData); free(wtri); free(wtmp); free(cand);
-        free(weld); free(ekeys); free(ecnt);
+        free(weld); free(ekeys); free(ecnt); free(feature); free(linkNbr);
+        free(orig_n); free(orig_n_tmp); free(efn); free(ehas);  // free(NULL) safe -> off path unaffected
         if (destination != indices) memcpy(destination, indices, ic * sizeof(uint32_t));
         return ic;
     }
+    memset(feature, 0, vertex_count);   // off path stays all-zero -> feature-slide inert
 
     // Normalize positions to a unit-extent space so quadric magnitudes stay well-conditioned;
     // +0.0f folds -0.0 to +0.0 so seam wedges at the origin weld. Errors convert back via *extent.
@@ -775,7 +805,12 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
             float g1[3] = { pb[0]-pa[0], pb[1]-pa[1], pb[2]-pa[2] };
             float g2[3] = { pc[0]-pa[0], pc[1]-pa[1], pc[2]-pa[2] };
             float gc[3]; cross_product(g1, g2, gc);
-            if (dot_product(gc, gc) < ANO_SIMPLIFY_AREA_EPS2) continue;
+            float gl2 = dot_product(gc, gc);
+            if (gl2 < ANO_SIMPLIFY_AREA_EPS2) continue;
+            // Pass-0 origin normal (SAME winding as the flip guard: g1=b-a, g2=c-a). Guard 5 guarantees
+            // gl2 >= AREA_EPS2 so gl>0. Carried through the per-pass rebuild in lockstep with wtri.
+            float gl = sqrtf(gl2);
+            orig_n[tris*3+0] = gc[0]/gl; orig_n[tris*3+1] = gc[1]/gl; orig_n[tris*3+2] = gc[2]/gl;
         }
         wtri[tris*3+0] = a; wtri[tris*3+1] = b; wtri[tris*3+2] = c; tris++;
     }
@@ -783,6 +818,11 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
     size_t target_tris = target_ic / 3;
     float err_limit = target_error * target_error;  // relative error -> normalized squared distance
     float result_err2 = 0.0f;
+
+    // Link-condition scratch: linkNbr[w]==linkGen marks w in the current candidate's common ring. A
+    // per-candidate generation stamp avoids clearing V entries each candidate. 0 stays "never stamped".
+    uint32_t linkGen = 0u;
+    if (edge_len_factor > 0.0f) memset(linkNbr, 0, vertex_count * sizeof(uint32_t));
 
     triangle_adjacency_t adj = { adjCounts, adjOff, adjData };
 
@@ -825,6 +865,32 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
             float bw = el * ANO_BORDER_WEIGHT;
             ano_quadric_t bq; ano_quadric_from_plane(&bq, pnx, pny, pnz, bd, bw);
             ano_quadric_add(&Q[x], &bq); ano_quadric_add(&Q[y], &bq);
+        }
+    }
+
+    // Pass-0 dihedral feature detection (guards-on only; ekeys/ecnt still hold the pass-0 edge multiset).
+    // A manifold edge (ecnt==2) whose two incident face normals deviate past ANO_FEATURE_COS is a sharp
+    // crease; flag both endpoints. Feature verts then slide only onto other feature verts (below). O(tris).
+    if (edge_len_factor > 0.0f) {
+        memset(ehas, 0, ecap);
+        for (size_t t = 0; t < tris; ++t) {
+            uint32_t ia = wtri[t*3+0], ib = wtri[t*3+1], ic2 = wtri[t*3+2];
+            const float* p0 = &npos[ia*3]; const float* p1 = &npos[ib*3]; const float* p2 = &npos[ic2*3];
+            float e1[3] = { p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2] };
+            float e2[3] = { p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2] };
+            float n[3]; cross_product(e1, e2, n);
+            float len = sqrtf(dot_product(n, n)); if (len < 1e-12f) continue;
+            n[0]/=len; n[1]/=len; n[2]/=len;
+            const uint32_t tri[3] = { ia, ib, ic2 };
+            for (int k = 0; k < 3; ++k) {
+                uint32_t x = tri[k], y = tri[(k+1)%3];
+                uint32_t lo = x<y?x:y, hi = x<y?y:x;
+                if (ano_edge_get(ekeys, ecnt, ecap, lo, hi) != 2) continue;   // manifold edges only
+                size_t s = ano_edge_slot(ekeys, ecap, lo, hi);
+                if (!ehas[s]) { efn[s*3]=n[0]; efn[s*3+1]=n[1]; efn[s*3+2]=n[2]; ehas[s]=1; continue; }
+                float dd = efn[s*3]*n[0] + efn[s*3+1]*n[1] + efn[s*3+2]*n[2]; // cos(dihedral deviation)
+                if (dd < ANO_FEATURE_COS) { feature[lo] = 1; feature[hi] = 1; }
+            }
         }
     }
 
@@ -899,6 +965,10 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
                         if (ano_edge_get(ekeys, ecnt, ecap, v<nb?v:nb, v<nb?nb:v) != 1) continue;
                     } else {
                         if (kind[nb] == ANO_VK_LOCKED) continue;
+                        // Feature-slide (gated; feature[] all-zero when off -> inert): a sharp-dihedral
+                        // vertex snaps ONLY onto another feature vertex, so a crease/rim decimates along
+                        // its own loop, never inward. The maxEdge2 move pre-filter below bounds the jump.
+                        if (feature[v] && !feature[nb]) continue;
                     }
                     // Pre-filter: never snap v across more than the growth cap (bounds the move length;
                     // the resulting-triangle cap in the flip guard is the hard backstop). Inert when off.
@@ -925,6 +995,51 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
             uint32_t v = cand[i].v, j = cand[i].t;
             if (locked[v] || locked[j]) continue;
 
+            // Link condition (topology guard; guards-on only, shares Guard 6's gate so pass-start
+            // adjacency is exact at commit time). v->j is manifold-safe iff the shared 1-ring of v and j
+            // is EXACTLY the <=2 apex corners of the triangles on edge (v,j). Any OTHER common neighbor w
+            // means two sheets meet only at w; welding pinches a non-manifold point (bridge; rim->cone).
+            if (maxEdge2 != FLT_MAX) {
+                if (++linkGen == 0u) { memset(linkNbr, 0, vertex_count * sizeof(uint32_t)); linkGen = 1u; }
+                uint32_t apex[2] = {0u, 0u}; uint32_t napex = 0;
+                for (uint32_t a = 0; a < adjCounts[j]; ++a) {          // stamp N(j); collect edge-(v,j) apexes
+                    uint32_t t = adjData[adjOff[j] + a];
+                    uint32_t c0 = wtri[t*3+0], c1 = wtri[t*3+1], c2 = wtri[t*3+2];
+                    linkNbr[c0] = linkGen; linkNbr[c1] = linkGen; linkNbr[c2] = linkGen;
+                    if (c0 == v || c1 == v || c2 == v) {
+                        uint32_t w = (c0 != v && c0 != j) ? c0 : (c1 != v && c1 != j) ? c1 : c2;
+                        if (napex < 2) apex[napex] = w;
+                        napex++;
+                    }
+                }
+                int link_bad = 0;
+                for (uint32_t a = 0; a < adjCounts[v] && !link_bad; ++a) {
+                    uint32_t t = adjData[adjOff[v] + a];
+                    for (int k = 0; k < 3; ++k) {
+                        uint32_t w = wtri[t*3+k];
+                        if (w == v || w == j) continue;
+                        if (linkNbr[w] != linkGen) continue;
+                        if (!(napex > 0 && w == apex[0]) && !(napex > 1 && w == apex[1])) { link_bad = 1; break; }
+                    }
+                }
+                // Tetra exclusion: the vertex link above is necessary-not-sufficient. When the two apexes
+                // a0,a1 close a face on BOTH v and j, v,j,a0,a1 form a filled tetrahedron and v->j emits a
+                // doubled face (v,a0,a1)->(j,a0,a1). A v-incident tri holding both a0,a1 is exactly (v,a0,a1).
+                if (!link_bad && napex == 2) {
+                    uint32_t a0 = apex[0], a1 = apex[1]; int vf = 0, jf = 0;
+                    for (uint32_t a = 0; a < adjCounts[v]; ++a) {
+                        const uint32_t* c = &wtri[adjData[adjOff[v] + a]*3];
+                        if ((c[0]==a0||c[1]==a0||c[2]==a0) && (c[0]==a1||c[1]==a1||c[2]==a1)) { vf = 1; break; }
+                    }
+                    for (uint32_t a = 0; vf && a < adjCounts[j]; ++a) {
+                        const uint32_t* c = &wtri[adjData[adjOff[j] + a]*3];
+                        if ((c[0]==a0||c[1]==a0||c[2]==a0) && (c[0]==a1||c[1]==a1||c[2]==a1)) { jf = 1; break; }
+                    }
+                    if (vf && jf) link_bad = 1;
+                }
+                if (link_bad) continue;
+            }
+
             // Flip guard: every incident triangle not destroyed by the collapse must keep its facing.
             int flip = 0; uint32_t removed = 0;
             for (uint32_t a = 0; a < adjCounts[v] && !flip; ++a) {
@@ -948,7 +1063,17 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
                 if (nlen2 < 1e-20f) { flip = 1; }               // exact sliver (also guards sqrtf(0))
                 else if (maxEdge2 == FLT_MAX) {                 // guards off: baseline fold-only test
                     if (dot_product(on, nn) < 0.0f) flip = 1;
-                } else {                                        // guards on: tighter fold + growth cap
+                } else {                                        // guards on: drift + tighter fold + growth cap
+                    // Cumulative-drift guard (RC2): reject if triangle t has rotated past theta_max (60deg)
+                    // from the ORIGINAL pass-0 normal of the slot it descends from. Bounds TOTAL drift, not
+                    // one step. Squared, sign-guarded form (dnd<0 => >90deg) avoids a sqrt. In-plane planar
+                    // collapse keeps nn || orig_n -> dnd==|nn| -> dnd*dnd==nlen2 > 0.25*nlen2 -> no-op on flats.
+                    const float* onr = &orig_n[t*3];
+                    float dnd = onr[0]*nn[0] + onr[1]*nn[1] + onr[2]*nn[2];
+                    if (dnd < 0.0f || dnd*dnd <
+                            ANO_SIMPLIFY_MAX_NORMAL_DRIFT_COS * ANO_SIMPLIFY_MAX_NORMAL_DRIFT_COS * nlen2) {
+                        flip = 1; break;
+                    }
                     // Guard 4: reject a >~75deg normal turn (fold/cap/spike) the sign test passes; RHS is
                     // the geometric mean of old/new areas, so it is scale-free (meshopt hasTriangleFlip).
                     float olen2 = dot_product(on, on);
@@ -989,9 +1114,16 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
             uint32_t b = ano_resolve(collapse, wtri[t*3+1]);
             uint32_t c = ano_resolve(collapse, wtri[t*3+2]);
             if (a == b || b == c || a == c) continue;
-            wtmp[newtris*3+0] = a; wtmp[newtris*3+1] = b; wtmp[newtris*3+2] = c; newtris++;
+            wtmp[newtris*3+0] = a; wtmp[newtris*3+1] = b; wtmp[newtris*3+2] = c;
+            if (orig_n) {                       // keep orig_n[newtris] aligned with the wtmp slot (1:1 descent)
+                orig_n_tmp[newtris*3+0] = orig_n[t*3+0];
+                orig_n_tmp[newtris*3+1] = orig_n[t*3+1];
+                orig_n_tmp[newtris*3+2] = orig_n[t*3+2];
+            }
+            newtris++;
         }
         uint32_t* swap = wtri; wtri = wtmp; wtmp = swap;
+        if (orig_n) { float* ns = orig_n; orig_n = orig_n_tmp; orig_n_tmp = ns; }  // parallel swap
         tris = newtris;
 
         if (collapses == 0 || tris >= tris_before) break;  // converged / no progress
@@ -1023,6 +1155,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
 
     free(npos); free(remap); free(collapse); free(Q); free(kind); free(locked); free(outid);
     free(adjCounts); free(adjOff); free(adjData); free(wtri); free(wtmp); free(cand);
-    free(ekeys); free(ecnt);
+    free(ekeys); free(ecnt); free(linkNbr); free(feature);
+    free(orig_n); free(orig_n_tmp); free(efn); free(ehas);
     return outcount;
 }
