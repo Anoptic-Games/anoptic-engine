@@ -473,11 +473,12 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
 
-    // === Power CDF shadow render + separable prefilter ===
-    // Three phases over the atlas layers: (1) render the nearest-occluder depth (depth-tested into a
-    // transient depth) as (min,max,mean)=z into each layer; (2) min/max/mean blur-X atlas -> temp;
-    // (3) blur-Y temp -> atlas. Each phase leaves its target layers in SHADER_READ. The lighting frags
-    // then reconstruct occlusion by fitting a power-law CDF to the (filtered) atlas stats. (audit 4.7)
+    // === Layered Power CDF shadow render + separable prefilter ===
+    // Three phases: (1) render the nearest-occluder depth (depth-tested into a transient depth) as a
+    // one-hot (coverage=1, M=z) in its depth band, MRT into each frustum's two atlas sublayers; (2) box
+    // blur-X atlas -> temp; (3) blur-Y temp -> atlas. Each phase leaves its target sublayers in
+    // SHADER_READ. The lighting frags reconstruct occlusion as cumulative per-band coverage. Per frustum
+    // s the two sublayers are the contiguous atlas layers [s*SUBLAYERS, s*SUBLAYERS+SUBLAYERS). (audit 4.7)
     if (entityCount > 0) {
         ShadowResources* sh = &rendererState.frames[rendererState.frameIndex].shadow;
         uint32_t opaqueSlot = ano_draw_slot_of(PIPELINE_FLAT);
@@ -488,10 +489,9 @@ void recordCommandBuffer(uint32_t imageIndex)
 
         VkViewport shVp = { 0.0f, 0.0f, (float)ANO_SHADOW_DIM, (float)ANO_SHADOW_DIM, 0.0f, 1.0f };
         VkRect2D   shSc = { .offset = {0, 0}, .extent = { ANO_SHADOW_DIM, ANO_SHADOW_DIM } };
-        VkClearValue clearStats = {}; // = anoEncodeDepthStats(1.0): an "occluder at the far plane" texel (min=max=mean=1)
-        clearStats.color.float32[0] = 1.0f; clearStats.color.float32[1] = 1.0f;
-        clearStats.color.float32[2] = 1.0f; clearStats.color.float32[3] = 1.0f;
+        VkClearValue clearStats = {}; // all bands empty: coverage 0 (no occluder in this texel) -> lit
         VkClearValue clearDepth = {}; clearDepth.depthStencil.depth = 1.0f;
+        VkClearValue clearMRT[2] = { clearStats, clearStats }; // both sublayers
 
         // Transient depth -> DEPTH_ATTACHMENT once; reused (cleared) per active layer below.
         VkImageMemoryBarrier dInit = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -502,27 +502,28 @@ void recordCommandBuffer(uint32_t imageIndex)
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
             0, 0, NULL, 0, NULL, 1, &dInit);
 
-        // --- Phase 1: moment render ---
+        // --- Phase 1: layered depth render (MRT into the frustum's two sublayers) ---
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+            uint32_t subBase = s * ANO_SHADOW_ATLAS_SUBLAYERS; // first of the frustum's 2 contiguous sublayers
             // Gate on active (spare/runtime-freed frustums) + lighting mode (a layer carried by radiance
-            // cascades renders no caster). Still drive skipped layers to SHADER_READ so the sampled atlas
+            // cascades renders no caster). Still drive skipped sublayers to SHADER_READ so the sampled atlas
             // array stays uniformly readable.
             if (!shadowCfgs[s].active || !lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode)) {
                 VkImageMemoryBarrier toReadSkip = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                     .image = sh->atlasImage, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                    .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 } };
+                    .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, subBase, ANO_SHADOW_ATLAS_SUBLAYERS } };
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     0, 0, NULL, 0, NULL, 1, &toReadSkip);
                 continue;
             }
-            // Atlas layer -> COLOR_ATTACHMENT.
+            // Both sublayers -> COLOR_ATTACHMENT.
             VkImageMemoryBarrier toColor = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = sh->atlasImage, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 } };
+                .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, subBase, ANO_SHADOW_ATLAS_SUBLAYERS } };
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 0, 0, NULL, 0, NULL, 1, &toColor);
             // Serialize transient-depth reuse: this layer's clear/writes wait on the previous layer's.
@@ -535,17 +536,19 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                 0, 0, NULL, 0, NULL, 1, &dWaw);
 
-            VkRenderingAttachmentInfo colorAtt = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .imageView = sh->layerView[s], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = clearStats };
+            VkRenderingAttachmentInfo colorAtt[ANO_SHADOW_ATLAS_SUBLAYERS];
+            for (uint32_t a = 0; a < ANO_SHADOW_ATLAS_SUBLAYERS; a++)
+                colorAtt[a] = (VkRenderingAttachmentInfo){ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                    .imageView = sh->layerView[subBase + a], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = clearMRT[a] };
             VkRenderingAttachmentInfo depthAtt = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = sh->depthView, .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .clearValue = clearDepth };
             VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                 .renderArea = { .offset = {0,0}, .extent = { ANO_SHADOW_DIM, ANO_SHADOW_DIM } },
-                .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &colorAtt, .pDepthAttachment = &depthAtt };
+                .layerCount = 1, .colorAttachmentCount = ANO_SHADOW_ATLAS_SUBLAYERS, .pColorAttachments = colorAtt, .pDepthAttachment = &depthAtt };
             vkCmdBeginRendering(cmd, &ri);
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowPipeline);
@@ -586,21 +589,22 @@ void recordCommandBuffer(uint32_t imageIndex)
             }
             vkCmdEndRendering(cmd);
 
-            // Atlas layer -> SHADER_READ (the blur-X pass samples it next).
+            // Both sublayers -> SHADER_READ (the blur-X pass samples them next).
             VkImageMemoryBarrier toRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .image = sh->atlasImage, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 } };
+                .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, subBase, ANO_SHADOW_ATLAS_SUBLAYERS } };
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &toRead);
         }
 
-        // --- Phases 2 & 3: separable min/max/mean (atlas -> temp -> atlas) over active layers ---
-        // min/max/mean are all separable, so the 2D footprint reduces to two 1D passes exactly; the
-        // filter footprint is what makes the maps soft. Inactive layers are driven to SHADER_READ (temp)
-        // / left as-is (atlas) so neither bound array view samples an undefined layer.
+        // --- Phases 2 & 3: separable box blur (atlas -> temp -> atlas) over active sublayers ---
+        // Every channel (per-band coverage / coverage*mean) is linearly filterable, so the 2D footprint
+        // reduces to two 1D box passes exactly; the coverage gradient across a silhouette is the penumbra.
+        // Each of a frustum's 2 sublayers is filtered independently. Inactive frustums' sublayers are
+        // driven to SHADER_READ (temp) / left as-is (atlas) so neither bound array view samples undefined.
         struct { float dir[2]; int32_t layer; int32_t pad; } bpc = {0};
         float invDim = 1.0f / (float)ANO_SHADOW_DIM;
         for (int pass = 0; pass < 2; pass++) {
@@ -610,57 +614,61 @@ void recordCommandBuffer(uint32_t imageIndex)
             bpc.dir[0] = pass == 0 ? invDim : 0.0f;
             bpc.dir[1] = pass == 0 ? 0.0f   : invDim;
             for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+                uint32_t subBase = s * ANO_SHADOW_ATLAS_SUBLAYERS;
                 if (!shadowCfgs[s].active || !lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode)) {
-                    if (pass == 0) { // temp layer -> SHADER_READ so phase-3's temp array view is uniform
+                    if (pass == 0) { // temp sublayers -> SHADER_READ so phase-3's temp array view is uniform
                         VkImageMemoryBarrier tSkip = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                             .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                             .image = sh->tempImage, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                            .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 } };
+                            .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, subBase, ANO_SHADOW_ATLAS_SUBLAYERS } };
                         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             0, 0, NULL, 0, NULL, 1, &tSkip);
                     }
                     continue;
                 }
-                // dst layer (SHADER_READ for atlas in phase 3, UNDEFINED for temp in phase 2) -> COLOR.
-                VkImageMemoryBarrier toColor = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                    .oldLayout = pass == 0 ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = dstImg, .srcAccessMask = pass == 0 ? 0 : VK_ACCESS_SHADER_READ_BIT,
-                    .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                    .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 } };
-                vkCmdPipelineBarrier(cmd,
-                    pass == 0 ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &toColor);
+                for (uint32_t sub = 0; sub < ANO_SHADOW_ATLAS_SUBLAYERS; sub++) {
+                    uint32_t ss = subBase + sub;
+                    // dst sublayer (SHADER_READ for atlas in phase 3, UNDEFINED for temp in phase 2) -> COLOR.
+                    VkImageMemoryBarrier toColor = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                        .oldLayout = pass == 0 ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = dstImg, .srcAccessMask = pass == 0 ? 0 : VK_ACCESS_SHADER_READ_BIT,
+                        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                        .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, ss, 1 } };
+                    vkCmdPipelineBarrier(cmd,
+                        pass == 0 ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &toColor);
 
-                VkRenderingAttachmentInfo bColor = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                    .imageView = dstLyr[s], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                    .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
-                VkRenderingInfo bri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                    .renderArea = { .offset = {0,0}, .extent = { ANO_SHADOW_DIM, ANO_SHADOW_DIM } },
-                    .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &bColor };
-                vkCmdBeginRendering(cmd, &bri);
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowBlurPipeline);
-                vkCmdSetViewport(cmd, 0, 1, &shVp);
-                vkCmdSetScissor(cmd, 0, 1, &shSc);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowBlurLayout,
-                    0, 1, &srcSet, 0, NULL);
-                bpc.layer = (int32_t)s;
-                vkCmdPushConstants(cmd, rendererState.shadowBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(bpc), &bpc);
-                vkCmdDraw(cmd, 3, 1, 0, 0);
-                vkCmdEndRendering(cmd);
+                    VkRenderingAttachmentInfo bColor = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                        .imageView = dstLyr[ss], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+                    VkRenderingInfo bri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                        .renderArea = { .offset = {0,0}, .extent = { ANO_SHADOW_DIM, ANO_SHADOW_DIM } },
+                        .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &bColor };
+                    vkCmdBeginRendering(cmd, &bri);
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowBlurPipeline);
+                    vkCmdSetViewport(cmd, 0, 1, &shVp);
+                    vkCmdSetScissor(cmd, 0, 1, &shSc);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowBlurLayout,
+                        0, 1, &srcSet, 0, NULL);
+                    bpc.layer = (int32_t)ss;
+                    vkCmdPushConstants(cmd, rendererState.shadowBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(bpc), &bpc);
+                    vkCmdDraw(cmd, 3, 1, 0, 0);
+                    vkCmdEndRendering(cmd);
 
-                // dst layer -> SHADER_READ (phase-3 temp source / final atlas sample).
-                VkImageMemoryBarrier toRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = dstImg, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                    .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 } };
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 0, NULL, 0, NULL, 1, &toRead);
+                    // dst sublayer -> SHADER_READ (phase-3 temp source / final atlas sample).
+                    VkImageMemoryBarrier toRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = dstImg, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                        .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, ss, 1 } };
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        0, 0, NULL, 0, NULL, 1, &toRead);
+                }
             }
         }
     }
@@ -2406,8 +2414,8 @@ bool ano_render_get_view_hiz_enable(uint32_t view) {
 }
 
 // Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode
-// (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident D32 atlas (ANO_SHADOW_FRUSTUM_COUNT
-// layers x ANO_SHADOW_DIM^2 x 4 B x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
+// (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident CDF-stats atlas (ANO_SHADOW_ATLAS_LAYERS
+// RGBA16 layers x ANO_SHADOW_DIM^2 x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
 // not charged for the idle-but-resident atlas — the fairness break-out the harness requires.
 static void ano_print_profiling(void) {
     static const char* const modeNames[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RC" };
@@ -2426,9 +2434,9 @@ static void ano_print_profiling(void) {
     double tex  = (double)allocator_used_bytes(&textureAllocator)   / MiB;
     double swap = (double)allocator_used_bytes(&swapchainAllocator) / MiB;
     double stg  = (double)allocator_used_bytes(&stagingAllocator)   / MiB;
-    // CDF stats atlas + blur temp (both RGBA16_UNORM = 8 B/texel, FRUSTUM_COUNT layers) + the single-layer
-    // transient nearest-occluder depth (D32 = 4 B/texel), all x MAX_FRAMES_IN_FLIGHT.
-    double atlas = (double)(((VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 8u * 2u
+    // CDF stats atlas + blur temp (both RGBA16_UNORM = 8 B/texel, ATLAS_LAYERS = 2 sublayers/frustum) +
+    // the single-layer transient nearest-occluder depth (D32 = 4 B/texel), all x MAX_FRAMES_IN_FLIGHT.
+    double atlas = (double)(((VkDeviceSize)ANO_SHADOW_ATLAS_LAYERS * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 8u * 2u
                             + (VkDeviceSize)ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u)
                             * MAX_FRAMES_IN_FLIGHT) / MiB;
 
@@ -2902,9 +2910,9 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         if (sh->frustumAlloc.memory == VK_NULL_HANDLE) return false;
         vkBindBufferMemory(ctx->device, sh->frustumBuffer, sh->frustumAlloc.memory, sh->frustumAlloc.offset);
 
-        // Moment atlas + blur-temp: both RGBA16_UNORM 2D arrays, ANO_SHADOW_FRUSTUM_COUNT layers,
-        // single-sample, color-rendered + sampled. atlasImage holds the final (blurred) moments;
-        // tempImage is the separable-blur intermediate. Same create info modulo the bound handle.
+        // CDF-stats atlas + blur-temp: both RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS layers (2 MRT
+        // sublayers per frustum = 4 depth bands), single-sample, color-rendered + sampled. atlasImage holds
+        // the final (blurred) per-band (coverage,M); tempImage is the separable-blur intermediate.
         VkImage* momentImgs[2]   = { &sh->atlasImage, &sh->tempImage };
         GpuAllocation* momentAl[2] = { &sh->atlasAlloc, &sh->tempAlloc };
         VkImageView* momentArr[2] = { &sh->arrayView, &sh->tempArrayView };
@@ -2915,7 +2923,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
             iinfo.format = ANO_SHADOW_STATS_FORMAT;
             iinfo.extent = (VkExtent3D){ ANO_SHADOW_DIM, ANO_SHADOW_DIM, 1 };
             iinfo.mipLevels = 1;
-            iinfo.arrayLayers = ANO_SHADOW_FRUSTUM_COUNT;
+            iinfo.arrayLayers = ANO_SHADOW_ATLAS_LAYERS;
             iinfo.samples = VK_SAMPLE_COUNT_1_BIT;
             iinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
             iinfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -2931,10 +2939,10 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
             vinfo.image = *momentImgs[m];
             vinfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
             vinfo.format = ANO_SHADOW_STATS_FORMAT;
-            vinfo.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_FRUSTUM_COUNT };
+            vinfo.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS };
             if (vkCreateImageView(ctx->device, &vinfo, NULL, momentArr[m]) != VK_SUCCESS) return false;
 
-            for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+            for (uint32_t s = 0; s < ANO_SHADOW_ATLAS_LAYERS; s++) {
                 VkImageViewCreateInfo lv = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
                 lv.image = *momentImgs[m];
                 lv.viewType = VK_IMAGE_VIEW_TYPE_2D;

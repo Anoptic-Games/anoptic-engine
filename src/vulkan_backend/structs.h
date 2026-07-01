@@ -106,8 +106,16 @@
 #define ANO_SHADOW_NONE          0xFFFFFFFFu // "no shadow frustum" sentinel (ShadowLightInfo.baseFrustum / rowShadowBase)
 #define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = currently 28
 #define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution (CDF filtering lets this drop from 1024)
-#define ANO_SHADOW_STATS_FORMAT  VK_FORMAT_R16G16B16A16_UNORM // Power CDF (min,max,mean) occluder depth, filterable (sampler2DArray)
+#define ANO_SHADOW_STATS_FORMAT  VK_FORMAT_R16G16B16A16_UNORM // layered Power CDF per-layer (coverage,M) pairs, filterable (sampler2DArray)
 #define ANO_SHADOW_TRANSIENT_DEPTH_FORMAT VK_FORMAT_D32_SFLOAT // transient nearest-occluder select; not sampled
+// Layered Power CDF (LVSM-style): partition light-space depth into CDF_LAYERS bands. Each texel stores,
+// per band, (coverage, coverage*meanDepth) — both linearly filterable — so a receiver's occlusion is the
+// cumulative coverage of nearer bands. Two (coverage,M) pairs pack into one RGBA16 texel, so the atlas
+// holds ATLAS_SUBLAYERS array layers per frustum (rendered together via MRT). Keep in sync with the
+// splits + packing in shadow_cdf.glsl.
+#define ANO_SHADOW_CDF_LAYERS      4u                          // depth partitions
+#define ANO_SHADOW_ATLAS_SUBLAYERS (ANO_SHADOW_CDF_LAYERS / 2u) // RGBA16 texels/frustum (2 pairs each)
+#define ANO_SHADOW_ATLAS_LAYERS    (ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_ATLAS_SUBLAYERS) // 84
 #define ANO_SHADOW_ORTHO_EXTENT  20.0f                  // half-size of the single directional ortho box; sized to enclose the ~30m Sponza atrium (mirror of shadowsetup.comp; non-cascaded, so larger = coarser texels)
 
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
@@ -737,14 +745,14 @@ typedef struct ShadowLightInfo {
 typedef struct ShadowResources {
     VkBuffer        frustumBuffer;   // CullView[ANO_SHADOW_FRUSTUM_COUNT], written by shadowsetup.comp
     GpuAllocation   frustumAlloc;
-    VkImage         atlasImage;      // RGBA16_UNORM 2D array, ANO_SHADOW_FRUSTUM_COUNT layers (moments)
+    VkImage         atlasImage;      // RGBA16_UNORM 2D array, ANO_SHADOW_ATLAS_LAYERS layers (2/frustum)
     GpuAllocation   atlasAlloc;
     VkImageView     arrayView;       // sample view (2D array, color aspect)
-    VkImageView     layerView[ANO_SHADOW_FRUSTUM_COUNT]; // per-layer color render targets
+    VkImageView     layerView[ANO_SHADOW_ATLAS_LAYERS]; // per-sublayer color render targets (frustum s -> 2s,2s+1)
     VkImage         tempImage;       // separable-blur intermediate (same format/extent/layers)
     GpuAllocation   tempAlloc;
     VkImageView     tempArrayView;   // blur-Y source (2D array)
-    VkImageView     tempLayerView[ANO_SHADOW_FRUSTUM_COUNT]; // blur-X render targets
+    VkImageView     tempLayerView[ANO_SHADOW_ATLAS_LAYERS]; // blur-X render targets
     VkImage         depthImage;      // transient nearest-occluder depth (single layer, reused)
     GpuAllocation   depthAlloc;
     VkImageView     depthView;       // depth render target (reused per shadow layer)
