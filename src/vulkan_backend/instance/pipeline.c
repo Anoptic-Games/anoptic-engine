@@ -1104,13 +1104,13 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 
 	// One moment color attachment (the optimized 4-moment encode), blending disabled — the depth test
 	// already keeps the nearest occluder, so the color write is a plain overwrite of that fragment.
-	VkPipelineColorBlendAttachmentState momentBlend = {};
-	momentBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	momentBlend.blendEnable = VK_FALSE;
+	VkPipelineColorBlendAttachmentState statsBlend = {};
+	statsBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	statsBlend.blendEnable = VK_FALSE;
 	VkPipelineColorBlendStateCreateInfo colorBlending = {};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlending.attachmentCount = 1;
-	colorBlending.pAttachments = &momentBlend;
+	colorBlending.pAttachments = &statsBlend;
 
 	VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 	VkPipelineDynamicStateCreateInfo dynamicState = {};
@@ -1124,12 +1124,12 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-	// Moment color target + a transient depth (nearest-occluder select; never sampled).
-	VkFormat momentFormat = ANO_SHADOW_MOMENT_FORMAT;
+	// CDF stats color target + a transient depth (nearest-occluder select; never sampled).
+	VkFormat statsFormat = ANO_SHADOW_STATS_FORMAT;
 	VkPipelineRenderingCreateInfo renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 	renderingInfo.colorAttachmentCount = 1;
-	renderingInfo.pColorAttachmentFormats = &momentFormat;
+	renderingInfo.pColorAttachmentFormats = &statsFormat;
 	renderingInfo.depthAttachmentFormat = ANO_SHADOW_TRANSIENT_DEPTH_FORMAT;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
@@ -1203,13 +1203,13 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkPipelineMultisampleStateCreateInfo blurMS = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
 	VkPipelineColorBlendStateCreateInfo blurCB = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		.attachmentCount = 1, .pAttachments = &momentBlend };
+		.attachmentCount = 1, .pAttachments = &statsBlend };
 	VkPipelineDepthStencilStateCreateInfo blurDS = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		.depthTestEnable = VK_FALSE, .depthWriteEnable = VK_FALSE };
 	VkPipelineDynamicStateCreateInfo blurDyn = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
 		.dynamicStateCount = 2, .pDynamicStates = dynamicStates };
 	VkPipelineRenderingCreateInfo blurRendering = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-		.colorAttachmentCount = 1, .pColorAttachmentFormats = &momentFormat };
+		.colorAttachmentCount = 1, .pColorAttachmentFormats = &statsFormat };
 
 	VkGraphicsPipelineCreateInfo blurPipeline = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &blurRendering };
 	blurPipeline.stageCount = 2; blurPipeline.pStages = blurStages;

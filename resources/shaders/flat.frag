@@ -101,7 +101,7 @@ layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { ShadowCullView 
 layout(set = 2, binding = 1) uniform sampler2DArray shadowAtlas;
 layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
 
-// Moment reconstruct (sampleShadowMSM) + anoCubeFaceIndex, shared with transmission.frag. References
+// Power CDF reconstruct (sampleShadowCDF) + anoCubeFaceIndex, shared with transmission.frag. References
 // shadowAtlas + shadowFrustumBuf declared just above.
 #include "shadow_sample.glsl"
 
@@ -320,9 +320,9 @@ void main() {
         if (lightUsesShadowMap(light.type, global.lightingMode) && si.castsShadow != 0u && si.frustumCount > 0u) {
             float nDotL = max(dot(N, L), 0.0);
             if (light.type == LIGHT_TYPE_POINT)
-                shadowFactor = sampleShadowMSM(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
+                shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
             else
-                shadowFactor = sampleShadowMSM(si.baseFrustum, fragWorldPos, nDotL);
+                shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
         }
 
         vec3 radiance = light.color * light.intensity * attenuation * shadowFactor;

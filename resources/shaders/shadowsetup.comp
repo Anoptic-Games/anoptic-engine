@@ -61,7 +61,7 @@ mat4 orthoRH_ZO(float l, float r, float b, float t, float n, float f) {
 }
 
 // Perspective, right-handed, Vulkan depth [0,1] (glm perspectiveRH_ZO). NO Y-flip: the moment write
-// (flat.vert/.mesh) and the fragment reproject (sampleShadowMSM) share this matrix, so any flip
+// (flat.vert/.mesh) and the fragment reproject (sampleShadowCDF) share this matrix, so any flip
 // cancels; matches orthoRH_ZO's non-flipped convention (positive m[1][1]). Used for spot + point.
 mat4 perspectiveRH_ZO(float fovy, float aspect, float n, float f) {
     float t = tan(fovy * 0.5);

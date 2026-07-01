@@ -123,8 +123,8 @@ if(Vulkan_FOUND)
         set(SHADER_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
         set(SPV_OUTPUTS "")
         # Shared GLSL includes (#include): not compiled standalone, but every shader rebuilds when one
-        # changes so the MSM math can't silently desync from a stale .spv.
-        set(SHADER_INCLUDES ${SHADER_DIR}/shadow_moments.glsl ${SHADER_DIR}/shadow_sample.glsl)
+        # changes so the shadow CDF math can't silently desync from a stale .spv.
+        set(SHADER_INCLUDES ${SHADER_DIR}/shadow_cdf.glsl ${SHADER_DIR}/shadow_sample.glsl)
         foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.frag tonemap.vert tonemap.frag)
             add_custom_command(
                     OUTPUT  ${SHADER_DIR}/${shader}.spv

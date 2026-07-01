@@ -1,13 +1,17 @@
 #version 450
 
-// Separable Gaussian prefilter for the moment shadow atlas. Run twice per active layer (X then Y).
-// The stored optimized-moment encoding is an affine transform of the raw moments, so a normalized
-// linear filter of the stored values is itself a valid optimized-moment vector — i.e. blurring here
-// is exactly "filter then reconstruct", which is what turns moment maps into soft shadows. Vertex
-// stage is the shared fullscreen triangle (tonemap.vert), giving uv in [0,1].
+// Separable min/max/mean prefilter for the Power CDF shadow atlas. Run twice per active layer (X then
+// Y). Channels: R = min occluder depth over the footprint, G = max, B = mean. min/max are morphological
+// (unweighted) and mean is a uniform box average; all three are separable, so a 2D footprint reduces to
+// two 1D passes exactly (2D box min = min of row-mins; box mean = mean of row-means, equal counts).
+// The footprint radius sets shadow softness. Reconstruction (shadow_cdf.glsl) fits a power-law CDF to
+// (min,max,mean), which is inherently leak-free across the near/far depth discontinuity at a silhouette
+// — so no depth-aware / bilateral weighting is needed (that was the moment map's leak workaround).
+// Vertex stage is the shared fullscreen triangle (tonemap.vert), giving uv in [0,1]; the per-tap step
+// lands on exact texel centres, so the linear sampler returns unfiltered stored values.
 
 layout(location = 0) in vec2 uv;
-layout(location = 0) out vec4 outMoments;
+layout(location = 0) out vec4 outStats;
 
 layout(set = 0, binding = 0) uniform sampler2DArray src;
 
@@ -18,17 +22,22 @@ layout(push_constant) uniform Push {
     int  pad;
 } pc;
 
-// 9-tap Gaussian (sigma ~2), matching the paper's 9x9 kernel split into two passes. Weights are
-// pre-normalized so the affine-filter property holds (sum == 1). Softness is the radius/sigma knob.
-const float W[5] = float[5](0.20416369, 0.18017382, 0.12383154, 0.06628225, 0.02763055);
+const int ANO_CDF_FILTER_RADIUS = 4; // footprint half-width in texels; larger = softer shadows
 
 void main() {
-    float l = float(pc.layer);
-    vec4 sum = texture(src, vec3(uv, l)) * W[0];
-    for (int i = 1; i < 5; ++i) {
+    float l   = float(pc.layer);
+    vec4  c   = texture(src, vec3(uv, l));
+    float mn  = c.r;
+    float mx  = c.g;
+    float sum = c.b;
+    for (int i = 1; i <= ANO_CDF_FILTER_RADIUS; ++i) {
         vec2 off = pc.dir * float(i);
-        sum += texture(src, vec3(uv + off, l)) * W[i];
-        sum += texture(src, vec3(uv - off, l)) * W[i];
+        vec4 sp = texture(src, vec3(uv + off, l));
+        vec4 sn = texture(src, vec3(uv - off, l));
+        mn   = min(mn, min(sp.r, sn.r));
+        mx   = max(mx, max(sp.g, sn.g));
+        sum += sp.b + sn.b;
     }
-    outMoments = sum;
+    float mean = sum / float(2 * ANO_CDF_FILTER_RADIUS + 1);
+    outStats = vec4(mn, mx, mean, 1.0);
 }
