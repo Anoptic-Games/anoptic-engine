@@ -63,13 +63,40 @@ typedef struct AnoRenderBridge AnoRenderBridge;
 // Producer endpoint. Valid once initVulkan() has returned.
 AnoRenderBridge *anoRenderBridge(void);
 
-// render_id 0's original geometry index (stand-in producer helper). Read after init.
-uint32_t anoRenderEntity0Mesh(void);
+// ---------------------------------------------------------------------------
+// Loaded-asset query (render world owns assets; logic composes the scene)
+// ---------------------------------------------------------------------------
+// initVulkan loads the glTF assets + the fallback cube and assigns each their GPU mesh/material
+// indices. The logic master composes the scene from these: it queries an asset's primitives,
+// assigns render_ids + motion, and emits the creates. Valid after initVulkan(); read-only.
 
-// Copies render_id's seeded base pose into `out` (stand-in stream-producer helper, so a
-// streamed transform stays in the same world space as the normal path). Read after init.
-// Returns false (out untouched) if render_id is unmapped.
-bool anoRenderEntityBaseTransform(uint32_t render_id, mat4 out);
+// One renderable primitive ready to spawn: the render-assigned GPU mesh + material, and a world
+// transform (the asset's node-local transform composed under the caller's root).
+typedef struct AnoRenderableDesc
+{
+    mat4     transform;
+    uint32_t mesh_index;
+    uint32_t material_index;
+} AnoRenderableDesc;
+
+// Number of asset slots loaded at init (index space for the queries below).
+uint32_t anoRenderAssetCount(void);
+
+// Flatten loaded asset `asset_id` at `root` into renderable primitives. Returns the TOTAL count;
+// fills out[0..min(count,cap)). Call with cap 0 (or out NULL) to size, then again to fill. An
+// out-of-range asset_id returns 0.
+uint32_t anoRenderAssetPrimitives(uint32_t asset_id, const mat4 root, AnoRenderableDesc *out, uint32_t cap);
+
+// The fallback cube's geometry-pool mesh index and a default material, for procedural renderables
+// (ground slab, debug markers) the logic master builds without an asset.
+uint32_t anoRenderFallbackMesh(void);
+uint32_t anoRenderDefaultMaterial(void);
+
+// Light-palette rows [0, anoRenderStaticLightBase()) are the STATIC region the logic master fills
+// with scene light-entities (RCMD_CREATE carrying light params + light_index in this range; casting
+// lights get a static shadow frustum). The runtime attach registry (ano_render_light_attach) owns
+// the rows above it. A scene light-entity's light_index MUST be < this value.
+uint32_t anoRenderStaticLightBase(void);
 
 // ---------------------------------------------------------------------------
 // Command protocol: logic -> render

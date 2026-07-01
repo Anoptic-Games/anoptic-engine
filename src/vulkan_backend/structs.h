@@ -108,7 +108,7 @@
 #define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution (moment filtering lets this drop from 1024)
 #define ANO_SHADOW_MOMENT_FORMAT VK_FORMAT_R16G16B16A16_UNORM // 4 optimized power moments, filterable (sampler2DArray)
 #define ANO_SHADOW_TRANSIENT_DEPTH_FORMAT VK_FORMAT_D32_SFLOAT // transient nearest-occluder select; not sampled
-#define ANO_SHADOW_ORTHO_EXTENT  8.0f                   // half-size of the directional ortho world box (covers the demo scene)
+#define ANO_SHADOW_ORTHO_EXTENT  20.0f                  // half-size of the single directional ortho box; sized to enclose the ~30m Sponza atrium (mirror of shadowsetup.comp; non-cascaded, so larger = coarser texels)
 
 // Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
 // each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)

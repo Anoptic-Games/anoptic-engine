@@ -376,7 +376,7 @@ written. So ~71% of the indirect+compacted memory — which is over half the per
 of permanently-idle VRAM. Fix is mechanical: size partitions by an array of *drawing* pipeline
 types (2 today), not the full enum count. Pure win, no architectural change.
 
-### 4.5 The render-side dispatch bound is the monotonic peak; it never shrinks (root for churn / LOD) - ADDRESSED, needs LOD
+### 4.5 The render-side dispatch bound is the monotonic peak; it never shrinks (root for churn / LOD) - ADDRESSED, needs logic-side spatial LOD
 
 `updateCullingBuffers` sets `entityCount = slots.slotHighWater` (`vulkanMaster.c:437`) and the cull
 and update passes dispatch over `[0, slotHighWater)` every frame, holes included (dead slots

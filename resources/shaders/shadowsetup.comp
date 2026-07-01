@@ -10,7 +10,7 @@ layout(local_size_x = 64) in;
 
 // Must match the structs.h constants (DIR=1 + SPOT=1 + POINT=4*6).
 #define ANO_SHADOW_FRUSTUM_COUNT 42u // must match structs.h (static 26 + runtime 16)
-#define ANO_SHADOW_ORTHO_EXTENT  8.0
+#define ANO_SHADOW_ORTHO_EXTENT  20.0
 #define LIGHT_TYPE_DIRECTIONAL 0u
 #define LIGHT_TYPE_POINT       1u
 #define LIGHT_TYPE_SPOT        2u
@@ -128,14 +128,19 @@ void main() {
 
     mat4 viewProj;
     if (cfg.lightType == LIGHT_TYPE_DIRECTIONAL) {
-        // Look along the light's travel direction at the scene origin from far back.
+        // Orthographic box centred on the world origin, looking along the light's travel direction.
         vec3 toLight = -lightForward;                  // surface -> light
         vec3 up = abs(toLight.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-        float dist = 20.0;
-        vec3 eye = toLight * dist;
-        mat4 view = lookAtRH(eye, vec3(0.0), up);
         float e = ANO_SHADOW_ORTHO_EXTENT;
-        mat4 proj = orthoRH_ZO(-e, e, -e, e, 0.05, dist + e * 2.0);
+        float dist = e + 1.0;                          // eye just outside the cube so the near plane stays > 0
+        mat4 view = lookAtRH(toLight * dist, vec3(0.0), up);
+        // Depth slab tight on the cube ([dist-e, dist+e]), NOT out to a far horizon. The scene fits the
+        // ±e cube, so it now spans almost the whole [0,1] depth range and the 16-bit moments keep their
+        // variance -> the 4MSM solve stays stable. The previous far = dist + 2e crushed a short scene
+        // (an overhead sun over Sponza is only ~12 m deep in what was an 80 m range) into a sliver of the
+        // moment range; the solve went degenerate and the light-bleed clamp then read the deepest surface
+        // — the courtyard floor — as shadowed. Keeping the slab tight is what lets the floor resolve lit.
+        mat4 proj = orthoRH_ZO(-e, e, -e, e, dist - e, dist + e);
         viewProj = proj * view;
     } else if (cfg.lightType == LIGHT_TYPE_SPOT) {
         // Perspective from the light, looking along its forward. fovy spans the full outer cone
