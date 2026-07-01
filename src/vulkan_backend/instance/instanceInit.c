@@ -141,8 +141,9 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		ano_render_set_lod_bias(bias);
 		printf("LOD bias: %+d\n", ano_render_get_lod_bias());
 	}
-	// Shadow-caster LOD bias inspection (review 4.9 step 2): ; finer shadows, ' coarser. Lets shadow
-	// geometry cost be traded against shadow silhouette quality live, independent of the camera LOD.
+	// Shadow-caster LOD offset inspection (review 4.9 step 2, revised): ; finer shadows, ' coarser.
+	// Shadows track the view-0 LOD by default (offset 0); this trades shadow cost against silhouette
+	// quality live by biasing RELATIVE to that matched level (0 = exact match with the visible mesh).
 	if ((key == GLFW_KEY_SEMICOLON || key == GLFW_KEY_APOSTROPHE) &&
 	    (action == GLFW_PRESS || action == GLFW_REPEAT)) {
 		int32_t bias = ano_render_get_shadow_lod_bias() + (key == GLFW_KEY_APOSTROPHE ? 1 : -1);

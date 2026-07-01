@@ -1229,7 +1229,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     ubo->entityCount = entityCount;
     ubo->maxEntities = state->culling.maxEntities;
     ubo->drawSlotCount = ano_draw_pipeline_count();
-    ubo->shadowLodBias = state->shadowLodBias; // coarse shadow LOD (review 4.9 step 2), global bias
+    ubo->shadowLodBias = state->shadowLodBias; // shadow LOD offset (review 4.9 step 2, revised): relative to the view-0 LOD
 
     // Publish the PipelineType -> draw-slot map cull.comp compacts by. Frame-invariant, but
     // rewritten here so each frame's UBO (incl. a freshly grown one) is always populated.
@@ -2376,11 +2376,12 @@ int32_t ano_render_get_lod_bias(void) {
     return rendererState.lodBias;
 }
 
-// Coarse shadow LOD bias (review 4.9 step 2): the global level every shadow caster is decimated to
-// (the shadow loop has no per-caster screen-area metric). Published into CullUBO.shadowLodBias by
-// updateCullingBuffers; takes effect next recorded frame. cull.comp clamps per-entity to the real
-// chain length, so non-LOD meshes always cast level 0. Clamped to [0, ANO_MAX_LOD]; negative is
-// pointless (no level finer than the base) and clamps to 0. Render-thread only, like the other knobs.
+// Shadow LOD offset (review 4.9 step 2, revised): shadow casters now select the primary camera view's
+// (view 0) LOD so a caster's shadow silhouette tracks its visible geometry; this bias is an extra
+// RELATIVE offset added on top (0 = exact match, + = coarser shadow). Published into CullUBO.shadowLodBias
+// by updateCullingBuffers; takes effect next recorded frame. cull.comp clamps per-entity to the real
+// chain length, so non-LOD meshes always cast level 0. Clamped to [0, ANO_MAX_LOD]; negative (a shadow
+// finer than the visible mesh) is pointless and clamps to 0. Render-thread only, like the other knobs.
 void ano_render_set_shadow_lod_bias(int32_t bias) {
     int32_t lim = (int32_t)ANO_MAX_LOD;
     rendererState.shadowLodBias = bias < 0 ? 0 : (bias > lim ? lim : bias);
@@ -3006,7 +3007,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         state->hizEnable[v] = 0u;                          // Hi-Z occlusion off by default (review 4.9 step 3)
         memset(state->prevViewProj[v], 0, sizeof(mat4));   // first frame: zero matrix -> reprojection skipped
     }
-    state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // coarse shadow LOD (review 4.9 step 2)
+    state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // shadow LOD offset relative to view-0 LOD (0 = exact match)
     
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 9 * maxMeshes; // MeshData: 9 u32 (8 + lodCount)
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
