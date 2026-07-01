@@ -473,11 +473,11 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
 
-    // === Moment shadow render + separable prefilter ===
-    // Three phases over the atlas layers: (1) render the optimized 4-moment encode of the nearest
-    // occluder (depth-tested into a transient depth) into each layer; (2) blur-X atlas -> temp;
-    // (3) blur-Y temp -> atlas. Each phase leaves its target layers in SHADER_READ. The lighting
-    // frags then reconstruct occlusion from the (blurred) atlas moments. (audit 4.7, MSM)
+    // === Power CDF shadow render + separable prefilter ===
+    // Three phases over the atlas layers: (1) render the nearest-occluder depth (depth-tested into a
+    // transient depth) as (min,max,mean)=z into each layer; (2) min/max/mean blur-X atlas -> temp;
+    // (3) blur-Y temp -> atlas. Each phase leaves its target layers in SHADER_READ. The lighting frags
+    // then reconstruct occlusion by fitting a power-law CDF to the (filtered) atlas stats. (audit 4.7)
     if (entityCount > 0) {
         ShadowResources* sh = &rendererState.frames[rendererState.frameIndex].shadow;
         uint32_t opaqueSlot = ano_draw_slot_of(PIPELINE_FLAT);
@@ -488,9 +488,9 @@ void recordCommandBuffer(uint32_t imageIndex)
 
         VkViewport shVp = { 0.0f, 0.0f, (float)ANO_SHADOW_DIM, (float)ANO_SHADOW_DIM, 0.0f, 1.0f };
         VkRect2D   shSc = { .offset = {0, 0}, .extent = { ANO_SHADOW_DIM, ANO_SHADOW_DIM } };
-        VkClearValue clearMoments = {}; // = anoEncodeMoments(1.0): an "occluder at the far plane" texel
-        clearMoments.color.float32[0] = 1.0f;    clearMoments.color.float32[1] = 0.99756f;
-        clearMoments.color.float32[2] = 0.89344f; clearMoments.color.float32[3] = 0.0f;
+        VkClearValue clearStats = {}; // = anoEncodeDepthStats(1.0): an "occluder at the far plane" texel (min=max=mean=1)
+        clearStats.color.float32[0] = 1.0f; clearStats.color.float32[1] = 1.0f;
+        clearStats.color.float32[2] = 1.0f; clearStats.color.float32[3] = 1.0f;
         VkClearValue clearDepth = {}; clearDepth.depthStencil.depth = 1.0f;
 
         // Transient depth -> DEPTH_ATTACHMENT once; reused (cleared) per active layer below.
@@ -538,7 +538,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             VkRenderingAttachmentInfo colorAtt = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = sh->layerView[s], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = clearMoments };
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = clearStats };
             VkRenderingAttachmentInfo depthAtt = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = sh->depthView, .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -597,10 +597,10 @@ void recordCommandBuffer(uint32_t imageIndex)
                 0, 0, NULL, 0, NULL, 1, &toRead);
         }
 
-        // --- Phases 2 & 3: separable Gaussian (atlas -> temp -> atlas) over active layers ---
-        // The optimized moments are affine, so a normalized blur of the stored values is valid; this
-        // is what makes the maps soft. Inactive layers are driven to SHADER_READ (temp) / left as-is
-        // (atlas) so neither bound array view samples an undefined layer.
+        // --- Phases 2 & 3: separable min/max/mean (atlas -> temp -> atlas) over active layers ---
+        // min/max/mean are all separable, so the 2D footprint reduces to two 1D passes exactly; the
+        // filter footprint is what makes the maps soft. Inactive layers are driven to SHADER_READ (temp)
+        // / left as-is (atlas) so neither bound array view samples an undefined layer.
         struct { float dir[2]; int32_t layer; int32_t pad; } bpc = {0};
         float invDim = 1.0f / (float)ANO_SHADOW_DIM;
         for (int pass = 0; pass < 2; pass++) {
@@ -2426,7 +2426,7 @@ static void ano_print_profiling(void) {
     double tex  = (double)allocator_used_bytes(&textureAllocator)   / MiB;
     double swap = (double)allocator_used_bytes(&swapchainAllocator) / MiB;
     double stg  = (double)allocator_used_bytes(&stagingAllocator)   / MiB;
-    // Moment atlas + blur temp (both RGBA16_UNORM = 8 B/texel, FRUSTUM_COUNT layers) + the single-layer
+    // CDF stats atlas + blur temp (both RGBA16_UNORM = 8 B/texel, FRUSTUM_COUNT layers) + the single-layer
     // transient nearest-occluder depth (D32 = 4 B/texel), all x MAX_FRAMES_IN_FLIGHT.
     double atlas = (double)(((VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 8u * 2u
                             + (VkDeviceSize)ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u)
@@ -2912,7 +2912,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         for (int m = 0; m < 2; m++) {
             VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
             iinfo.imageType = VK_IMAGE_TYPE_2D;
-            iinfo.format = ANO_SHADOW_MOMENT_FORMAT;
+            iinfo.format = ANO_SHADOW_STATS_FORMAT;
             iinfo.extent = (VkExtent3D){ ANO_SHADOW_DIM, ANO_SHADOW_DIM, 1 };
             iinfo.mipLevels = 1;
             iinfo.arrayLayers = ANO_SHADOW_FRUSTUM_COUNT;
@@ -2930,7 +2930,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
             VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
             vinfo.image = *momentImgs[m];
             vinfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-            vinfo.format = ANO_SHADOW_MOMENT_FORMAT;
+            vinfo.format = ANO_SHADOW_STATS_FORMAT;
             vinfo.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_FRUSTUM_COUNT };
             if (vkCreateImageView(ctx->device, &vinfo, NULL, momentArr[m]) != VK_SUCCESS) return false;
 
@@ -2938,7 +2938,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
                 VkImageViewCreateInfo lv = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
                 lv.image = *momentImgs[m];
                 lv.viewType = VK_IMAGE_VIEW_TYPE_2D;
-                lv.format = ANO_SHADOW_MOMENT_FORMAT;
+                lv.format = ANO_SHADOW_STATS_FORMAT;
                 lv.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 };
                 if (vkCreateImageView(ctx->device, &lv, NULL, &momentLyr[m][s]) != VK_SUCCESS) return false;
             }

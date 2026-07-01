@@ -105,8 +105,8 @@
 #define ANO_SHADOW_RT_POINT_BASE  (ANO_SHADOW_RT_SINGLE_BASE + ANO_SHADOW_RT_SINGLE_COUNT) // point-pool first slot (30)
 #define ANO_SHADOW_NONE          0xFFFFFFFFu // "no shadow frustum" sentinel (ShadowLightInfo.baseFrustum / rowShadowBase)
 #define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums = currently 28
-#define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution (moment filtering lets this drop from 1024)
-#define ANO_SHADOW_MOMENT_FORMAT VK_FORMAT_R16G16B16A16_UNORM // 4 optimized power moments, filterable (sampler2DArray)
+#define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution (CDF filtering lets this drop from 1024)
+#define ANO_SHADOW_STATS_FORMAT  VK_FORMAT_R16G16B16A16_UNORM // Power CDF (min,max,mean) occluder depth, filterable (sampler2DArray)
 #define ANO_SHADOW_TRANSIENT_DEPTH_FORMAT VK_FORMAT_D32_SFLOAT // transient nearest-occluder select; not sampled
 #define ANO_SHADOW_ORTHO_EXTENT  20.0f                  // half-size of the single directional ortho box; sized to enclose the ~30m Sponza atrium (mirror of shadowsetup.comp; non-cascaded, so larger = coarser texels)
 
