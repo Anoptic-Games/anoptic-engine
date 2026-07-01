@@ -38,6 +38,12 @@ GpuAllocator textureAllocator;
 #define STREAM_CAPACITY         16384u  // streamed-transform lane; separate axis, not grown in v1
 #define SLOT_STAGING_INIT        1024u  // initial per-frame delta budget for a SlotUpload; grows on demand
 
+// Light-palette rows [0, ANO_STATIC_LIGHT_COUNT) are the STATIC region the logic master fills with
+// scene light-entities (create-with-light, static shadow budget); the runtime attach registry owns
+// [ANO_STATIC_LIGHT_COUNT, PALETTE_CAPACITY). A fixed boundary (vs the old "base = live scene count")
+// lets the logic master own the static light_index namespace independently of the runtime registry.
+#define ANO_STATIC_LIGHT_COUNT     64u
+
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
 // --- Profiling harness (RADIANCE_CASCADES.md §8) -------------------------------------------
@@ -1129,7 +1135,7 @@ void printUniformTransferState()
 	
 	// Buffer Components
 	printf("\n=== Buffer Components ===\n");
-	printf("Mesh index: %u\n", rendererState.entities[0].meshIndex);
+	printf("Live render slots: %u\n", rendererState.slots.slotHighWater); // scene is logic-composed; entities[] is gone
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		printf("Uniform buffer %d (view 0): %p\n", i, (void*)rendererState.frames[i].views[0].uniformBuffer);
@@ -1149,8 +1155,8 @@ void printUniformTransferState()
 
 void updateTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
-	// Deprecated: Transforms are now updated via GPU compute shader.
-	// Initial transforms are set directly in instantiate_node().
+	// Deprecated: transforms are now device-local. A renderable's base pose arrives per-slot via
+	// RCMD_CREATE -> stage_command_fields -> initialTransformBuffer; update.comp derives the live one.
 	state->transformBuffer.count = state->entityCount;
 }
 
@@ -1317,7 +1323,9 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
         uint32_t ent[2] = { c->mesh_index, c->material_index };
         slot_upload_stage(&s->culling.entity, f, slot, ent);
     }
-    if ((fields & RFIELD_LIGHT) && c->light_index != ANO_RENDER_NO_LIGHT) {
+    // A create/update light-entity writes the STATIC palette region only; runtime lights take the
+    // RCMD_LIGHT_* path. Bound the index so a stray static-region command can't clobber a runtime row.
+    if ((fields & RFIELD_LIGHT) && c->light_index < ANO_STATIC_LIGHT_COUNT) {
         LightData L = {0};
         L.color[0]       = c->light.color[0];
         L.color[1]       = c->light.color[1];
@@ -1939,6 +1947,9 @@ static void cascade_detach_lights(RendererState* state, uint32_t parentRid, uint
     } while (n == 64u);
 }
 
+// Defined below (near the old light-rig helpers); the create-with-light path calls it.
+static void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t lightType, uint32_t frameIndex);
+
 static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 {
     // Drain the bridge and stage each command's changed per-slot fields into THIS frame's
@@ -1967,7 +1978,11 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 break; // growth failed: drop the spawn
             uint32_t slot = render_slots_alloc(&state->slots, cmd.render_id);
             if (slot == ANO_RENDER_SLOT_UNMAPPED) break; // unexpected: drop rather than corrupt
-            stage_command_fields(state, &cmd, slot, frameIndex);
+            stage_command_fields(state, &cmd, slot, frameIndex); // stages the light photometrics if present
+            // A create-with-light that casts gets a static-region shadow frustum (logic owns scene
+            // lights now). Bounded to the static region, matching the light-staging guard above.
+            if (cmd.light_index < ANO_STATIC_LIGHT_COUNT && cmd.light.castsShadow)
+                register_static_shadow(state, cmd.light_index, (uint32_t)cmd.light.type, frameIndex);
             break;
         }
 
@@ -2183,27 +2198,24 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 // there and destroyed in unInitVulkan).
 AnoRenderBridge* anoRenderBridge(void) { return &rendererState.bridge; }
 
-// render_id 0's original geometry index, for the stand-in producer. Safe to read
-// after init: the render loop does not mutate entities[] after init.
-uint32_t anoRenderEntity0Mesh(void) {
-    return rendererState.entities ? rendererState.entities[0].meshIndex : NO_MESH_INDEX;
+// Loaded-asset registry (anoptic_render.h). initVulkan parses the glTF assets and records them here
+// in load order; the logic master flattens them into renderable primitives to compose the scene.
+// g_defaultMaterial is the first asset's first material (the procedural ground/markers borrow it).
+#define ANO_MAX_LOADED_ASSETS 16u
+static ModelAsset* g_assets[ANO_MAX_LOADED_ASSETS];
+static uint32_t    g_assetCount;
+static uint32_t    g_defaultMaterial;
+
+uint32_t anoRenderAssetCount(void) { return g_assetCount; }
+
+uint32_t anoRenderAssetPrimitives(uint32_t asset_id, const mat4 root, AnoRenderableDesc* out, uint32_t cap) {
+    if (asset_id >= g_assetCount) return 0u;
+    return model_flatten(g_assets[asset_id], root, out, cap);
 }
 
-// Copies render_id's seeded base pose — the initialTransform update.comp derives the
-// live transform from, with the scene's nudge already folded in — into `out`. Stand-in
-// stream-producer helper so a fabricated stream stays in the same world space as the
-// normal path (a bare identity would teleport/mirror the entity). Valid after init; the
-// seeded base is not mutated for static entities. Returns false (out untouched) if the
-// id is unmapped.
-// in:  render_id; out: mat4 out
-bool anoRenderEntityBaseTransform(uint32_t render_id, mat4 out) {
-    // initialTransform is DEVICE_LOCAL now (no host readback); the host-side entities[] holds
-    // the seeded base pose with the init spawn nudge folded in. render_id == entity index for
-    // the init scene (identity slot range), which is all the stand-in producer needs.
-    if (!rendererState.entities || render_id >= rendererState.entityCount) return false;
-    memcpy(out, &rendererState.entities[render_id].transform, sizeof(mat4));
-    return true;
-}
+uint32_t anoRenderFallbackMesh(void)    { return FALLBACK_MESH_INDEX; }
+uint32_t anoRenderDefaultMaterial(void) { return g_defaultMaterial; }
+uint32_t anoRenderStaticLightBase(void) { return ANO_STATIC_LIGHT_COUNT; }
 
 // Producer endpoint — reserve the next free transform-ring slice. Returns false (out
 // untouched) when that slice is still in flight on the GPU (reclaimSeq has not caught
@@ -2626,83 +2638,37 @@ bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
 
 bool createLightBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxLights) {
     (void)ctx;
-    // Light palette: ×1 device-local + delta staging (count tracks live lights; addLightEntity
-    // and RFIELD_LIGHT commands stage into it). slot_upload_create zeroes count.
+    // Light palette: ×1 device-local + delta staging (count tracks live lights; create-with-light
+    // and RCMD_LIGHT_* commands stage into it). slot_upload_create zeroes count.
     return slot_upload_create(&state->lightBuffer, maxLights, sizeof(LightData), SLOT_STAGING_INIT);
 }
 
-// Appends a transform-only light entity (no geometry) to the scene and registers
-// its LightData in the light buffer. `light` supplies the photometric parameters;
-// this fills in transformIndex (the new entity) and marks it enabled, then writes
-// the entry into every frame's light buffer. Must be called before the per-frame
-// transform upload loop so the light's transform reaches the transform buffers.
-// Returns the new entity index.
-// Stage a light into the palette and (optionally) register its shadow caster. The caller must have
-// already set transformIndex + localOffset + photometric fields. Returns the palette index.
-// castsShadow=false leaves info[lightIdx] at its default non-casting state (the right choice for the
-// many small decorative lights of audit 4.7 multi-light, and mandatory once the 26-layer atlas is
-// full). Shared by addLightEntity (light-only entity) and addLightToEntity (attach to a renderable).
-static uint32_t register_light(LightData light, bool castsShadow) {
-    uint32_t lightIdx = rendererState.lightBuffer.count++;
-    light.enabled = 1;
-    // Stage into frame 0's light delta; init's one-shot flush uploads it to the device buffer
-    // (shared by all frames in flight). Called during scene setup, before the first draw.
-    slot_upload_stage(&rendererState.lightBuffer, 0, lightIdx, &light);
-
-    if (!castsShadow) return lightIdx;
-
-    // Register a shadow caster within its type's budget (ANO_SHADOW_*_COUNT). Point lights claim 6
-    // contiguous cube-face frustums, dir/spot one each. The frustum block lays out cfg[base..] and
-    // the light's info points at it; shadowsetup builds each (offset-aware), the fragment samples.
-    // Beyond budget the light stays shadowless (info default castsShadow=0) — no error.
-    uint32_t budget = light.type == LIGHT_TYPE_DIRECTIONAL ? ANO_SHADOW_DIR_COUNT
-                    : light.type == LIGHT_TYPE_POINT       ? ANO_SHADOW_POINT_COUNT
-                                                           : ANO_SHADOW_SPOT_COUNT;
-    uint32_t blockSize = light.type == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u;
-    // Static rig: monotonic alloc within the STATIC region (the runtime pools own the headroom above).
-    if (rendererState.shadowTypeUsed[light.type] < budget &&
-        rendererState.shadowFrustumNext + blockSize <= ANO_SHADOW_STATIC_FRUSTUM_COUNT) {
-        uint32_t base = rendererState.shadowFrustumNext;
-        for (uint32_t f = 0; f < blockSize; f++) {
-            ShadowFrustumConfig c = { .lightIndex = lightIdx, .lightType = light.type,
-                .faceIndex = (light.type == LIGHT_TYPE_POINT ? f : 0u), .active = 1u };
-            rendererState.shadowCfgMirror[base + f] = c;
-            slot_upload_stage(&rendererState.shadowConfig, 0, base + f, &c); // frame 0: init flush uploads
-        }
-        ShadowLightInfo si = { .castsShadow = 1u, .baseFrustum = base, .frustumCount = blockSize, .pad = 0u };
-        slot_upload_stage(&rendererState.shadowInfo, 0, lightIdx, &si);
-        rendererState.shadowFrustumNext += blockSize;
-        rendererState.shadowTypeUsed[light.type] += 1u;
+// Register a STATIC-region shadow caster for a light-palette row whose photometric data was already
+// staged (by stage_command_fields on a create-with-light). Allocates the light type's frustum block
+// monotonically within the static region (point = 6 cube faces, dir/spot = 1), stages each frustum's
+// config (active=1) + the light's info (castsShadow=1, base, count) to `frameIndex`. Past the type's
+// budget or the static region it stays shadowless (info default castsShadow=0) — no error. Called by
+// the RCMD_CREATE apply path so the LOGIC master spawns the scene's casting lights (audit: logic owns
+// the scene), on the same static budget the old render-side rig used.
+static void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t lightType, uint32_t frameIndex) {
+    uint32_t budget = lightType == LIGHT_TYPE_DIRECTIONAL ? ANO_SHADOW_DIR_COUNT
+                    : lightType == LIGHT_TYPE_POINT       ? ANO_SHADOW_POINT_COUNT
+                                                          : ANO_SHADOW_SPOT_COUNT;
+    uint32_t blockSize = lightType == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u;
+    if (st->shadowTypeUsed[lightType] >= budget ||
+        st->shadowFrustumNext + blockSize > ANO_SHADOW_STATIC_FRUSTUM_COUNT)
+        return; // budget/region full: light stays shadowless
+    uint32_t base = st->shadowFrustumNext;
+    for (uint32_t f = 0; f < blockSize; f++) {
+        ShadowFrustumConfig c = { .lightIndex = lightIdx, .lightType = lightType,
+            .faceIndex = (lightType == LIGHT_TYPE_POINT ? f : 0u), .active = 1u };
+        st->shadowCfgMirror[base + f] = c;
+        slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
     }
-    return lightIdx;
-}
-
-// Light-only entity (the original 1:1 model): a mesh-less entity slot whose transform drives ONE
-// light at the slot origin (localOffset stays the caller's value, conventionally {0}). Casts a
-// shadow within budget. Prefer addLightToEntity to hang extra lights on an existing renderable.
-static uint32_t addLightEntity(LightData light, mat4 transform) {
-    uint32_t entIdx = rendererState.entityCount;
-    rendererState.entityCount += 1;
-    rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
-
-    rendererState.entities[entIdx].meshIndex = NO_MESH_INDEX;   // skipped by culling -> draws nothing
-    rendererState.entities[entIdx].materialIndex = 0;
-    memcpy(&rendererState.entities[entIdx].transform, transform, sizeof(mat4));
-
-    light.transformIndex = entIdx;                       // driven by this slot's transform
-    rendererState.entities[entIdx].lightIndex = register_light(light, true);
-    return entIdx;
-}
-
-// Attach a light to an EXISTING renderable (audit 4.7 multi-light): it rides that entity's live
-// transform at a model-space localOffset, costing a palette row but NO entity slot. Many lights can
-// share one parent (running lights / engine / cockpit), all animated for free. Returns the palette
-// index. Pass castsShadow=true only if a shadow frustum is genuinely available (the atlas is small).
-static uint32_t addLightToEntity(LightData light, uint32_t parentEntityIndex,
-                                 float ox, float oy, float oz, bool castsShadow) {
-    light.transformIndex = parentEntityIndex;
-    light.localOffset[0] = ox; light.localOffset[1] = oy; light.localOffset[2] = oz;
-    return register_light(light, castsShadow);
+    ShadowLightInfo si = { .castsShadow = 1u, .baseFrustum = base, .frustumCount = blockSize, .pad = 0u };
+    slot_upload_stage(&st->shadowInfo, frameIndex, lightIdx, &si);
+    st->shadowFrustumNext += blockSize;
+    st->shadowTypeUsed[lightType] += 1u;
 }
 
 bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
@@ -3005,9 +2971,9 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     }
 
     // Shadow config + per-light info as SlotUploads (×1 device + delta staging) so the runtime caster
-    // lifecycle mutates them race-free, like lightBuffer. The static rig stages into frame 0 (in
-    // register_light) and the init flush uploads + zero-fills the device (spare slots: active=0 /
-    // castsShadow=0). shadowCfgMirror is the render-thread CPU copy the record loop gates on.
+    // lifecycle mutates them race-free, like lightBuffer. The init zero-fills the device (spare slots:
+    // active=0 / castsShadow=0); a casting create stages its frustum block via register_static_shadow.
+    // shadowCfgMirror is the render-thread CPU copy the record loop gates on.
     if (!slot_upload_create(&state->shadowConfig, ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig), SLOT_STAGING_INIT)) return false;
     if (!slot_upload_create(&state->shadowInfo, state->lightBuffer.capacity, sizeof(ShadowLightInfo), SLOT_STAGING_INIT)) return false;
     state->shadowCfgMirror = (ShadowFrustumConfig*)calloc(ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig)); // active=0
@@ -3449,222 +3415,50 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Load the scene's glTF assets into GPU memory (geometry pool + materials + textures). The render
+	// world owns asset LOADING; the logic master COMPOSES scene instances from them via the public
+	// anoRenderAsset* query API and emits the creates itself (audit: logic owns the scene). Asset load
+	// order is the asset_id namespace (0 = viking room, 1 = candle holder).
 	ModelAsset* vikingRoomAsset = parseGltf(&ctx, "viking_room.gltf");
-	if(!vikingRoomAsset)
+	if (!vikingRoomAsset)
 	{
 		printf("Failed to parse glTF file!\n");
 		unInitVulkan();
 		return false;
 	}
-	
-	mat4 identity = {
-		{1, 0, 0, 0},
-		{0, 1, 0, 0},
-		{0, 0, 1, 0},
-		{0, 0, 0, 1}
-	};
-	rotateMatrix(identity, 'X', -3.14159f / 2.0f);
-	instantiate_model(vikingRoomAsset, identity);
-
-	uint32_t vikingRoomEntityCount = rendererState.entityCount;
-
 	ModelAsset* candleHolderAsset = parseGltf(&ctx, "GlassHurricaneCandleHolder.gltf");
-	if(!candleHolderAsset)
+	if (!candleHolderAsset)
 	{
 		printf("Failed to parse GlassHurricaneCandleHolder glTF file!\n");
 		unInitVulkan();
 		return false;
 	}
-	
-	mat4 candleTransform = {
-		{1, 0, 0, 0},
-		{0, 1, 0, 0},
-		{0, 0, 1, 0},
-		{0, 0, 0, 1}
-	};
-	candleTransform[3][0] = 2.0f; // Orbit radius of 5 units on X
-	instantiate_model(candleHolderAsset, candleTransform);
+	g_assets[g_assetCount++] = vikingRoomAsset;   // asset_id 0
+	g_assets[g_assetCount++] = candleHolderAsset; // asset_id 1
 
-	// Second transmissive candle holder, orbiting just beyond the first (audit 4.7: observe the
-	// back-to-front transparency sort). Reuses the same parsed asset, so both share the glass
-	// (TRANSMISSION) material and land in the same sorted "over" partition. The motion loop below
-	// gives every candle entity ANO_MOTION_ORBIT about +Y at the same 0.5 rad/s, so the two stay
-	// radially aligned at different radii and their camera-space front/back order swaps each
-	// revolution — exactly the overlap the sort must keep flicker-free. The 2.5 below is the single
-	// knob: closer to 2.0 = more screen overlap.
-	mat4 candleTransform2 = {
-		{1, 0, 0, 0},
-		{0, 1, 0, 0},
-		{0, 0, 1, 0},
-		{0, 0, 0, 1}
-	};
-	candleTransform2[3][0] = 2.2f; // just beyond the first candle's orbit radius (2.0)
-	instantiate_model(candleHolderAsset, candleTransform2);
+	// Sponza: a large multi-material interior (103 primitives / 25 materials / 69 textures) parsed under
+	// one node, dropped in as the scene environment to stress-test node-mesh placement and the renderer's
+	// graceful fallback for unimplemented PBR attributes. Texture URIs resolve relative to the glTF's own
+	// directory (see parseGltf). Non-fatal: a missing/failed Sponza just leaves asset_id 2 unregistered,
+	// and the logic master's spawn degrades to a no-op for it (the base scene still comes up).
+	ModelAsset* sponzaAsset = parseGltf(&ctx, "sponza/2.0/Sponza/glTF/Sponza.gltf");
+	if (sponzaAsset)
+		g_assets[g_assetCount++] = sponzaAsset;   // asset_id 2
+	else
+		printf("Warning: failed to parse Sponza glTF; continuing without it.\n");
 
-	// Ground plane (audit 4.7): a wide thin slab — the fallback cube scaled flat — placed below
-	// the scene so the directional shadow is visible regardless of light orientation. Reuses the
-	// viking room's opaque material (guaranteed to draw + cast). Forced static in the motion loop.
-	uint32_t groundEntity = rendererState.entityCount;
+	// Default material for procedural renderables (ground slab / debug markers the logic master builds
+	// without an asset): the first asset's first primitive material, matching the old rig's choice.
 	{
-        // Thin ground box, all-positive scale. The fallback cube's winding now matches glTF, so its
-        // top face is front-facing under frontFace=CCW (no mirror needed), and the constant (1,1,1)
-        // vertex normal resolves to ~+Y here under the inverse-transpose normal matrix (the thin Y
-        // axis dominates), so the top lights and receives shadow correctly. See docs/math_conventions.md.
-        mat4 g = {{15.0f, 0,      0,     0},
-                  {0,     0.05f,  0,     0},
-                  {0,     0,      15.0f, 0},
-                  {0,    -0.6f,   0,     1}};
-		rendererState.entityCount += 1;
-		rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
-		rendererState.entities[groundEntity].meshIndex = FALLBACK_MESH_INDEX;
-		rendererState.entities[groundEntity].materialIndex = rendererState.entities[0].materialIndex;
-		rendererState.entities[groundEntity].lightIndex = ANO_RENDER_NO_LIGHT;
-		memcpy(&rendererState.entities[groundEntity].transform, g, sizeof(mat4));
+		mat4 ident = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+		AnoRenderableDesc d0;
+		if (model_flatten(vikingRoomAsset, ident, &d0, 1u) > 0u) g_defaultMaterial = d0.material_index;
 	}
 
-	// Sun marker (debug, audit 4.7): a small cube at the directional light's source direction
-	// (lightDir * 6, lightDir = normalized (0.5,1,0.3) — the vector shadowsetup derives as
-	// -lightForward). Shadows must extend AWAY from it: an in-render check for the light's
-	// orientation, since the renderer has no other directional-light gizmo.
-	uint32_t sunMarkerEntity = rendererState.entityCount;
-	{
-		mat4 m = {{0.2f,0,0,0},{0,0.2f,0,0},{0,0,0.2f,0},{2.59f,5.18f,1.55f,1}};
-		rendererState.entityCount += 1;
-		rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
-		rendererState.entities[sunMarkerEntity].meshIndex = FALLBACK_MESH_INDEX;
-		rendererState.entities[sunMarkerEntity].materialIndex = rendererState.entities[0].materialIndex;
-		rendererState.entities[sunMarkerEntity].lightIndex = ANO_RENDER_NO_LIGHT;
-		memcpy(&rendererState.entities[sunMarkerEntity].transform, m, sizeof(mat4));
-	}
 
-	// -------------------------------------------------------------
-	// Scene lights (generalized light format, replacing the values
-	// formerly hard-coded in the fragment shaders). Each light is a
-	// transform-only entity: it carries no geometry (culling skips it)
-	// and its world position/direction are derived from its transform,
-	// so it participates in the GPU transform/animation system.
-	//
-	// Convention: a light's "forward" is the entity local -Z axis, i.e.
-	// -transform[2] (column 2). For directional/spot lights set column 2
-	// to the negated travel direction; translation lives in column 3.
-	// -------------------------------------------------------------
-	uint32_t firstLightEntity = rendererState.entityCount;
-
-	// Directional key light (warm white), shining from up/front (0.5,1,0.3).
-	{
-		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-		xform[2][0] = 0.4319f; xform[2][1] = 0.8638f; xform[2][2] = 0.2591f; // normalized (0.5,1,0.3)
-		LightData l = {0};
-		l.color[0] = 1.0f; l.color[1] = 0.96f; l.color[2] = 0.9f;
-		l.intensity = 2.5f;
-		l.range = 0.0f; // directional: unbounded
-		l.type = LIGHT_TYPE_DIRECTIONAL;
-		addLightEntity(l, xform);
-	}
-
-	// Warm point light (orbits the origin to exercise the animation path).
-	uint32_t warmLightEntity;
-	{
-		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-		xform[3][0] = 0.0f; xform[3][1] = 1.5f; xform[3][2] = 1.2f;
-		LightData l = {0};
-		l.color[0] = 1.0f; l.color[1] = 0.95f; l.color[2] = 0.8f;
-		l.intensity = 5.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
-		warmLightEntity = addLightEntity(l, xform);
-	}
-
-	// Cool blue fill from the opposite side.
-	{
-		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-		xform[3][0] = -2.0f; xform[3][1] = 2.0f; xform[3][2] = -1.0f;
-		LightData l = {0};
-		l.color[0] = 0.4f; l.color[1] = 0.6f; l.color[2] = 1.0f;
-		l.intensity = 4.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
-		addLightEntity(l, xform);
-	}
-
-	// Red rim/accent light.
-	{
-		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-		xform[3][0] = 2.0f; xform[3][1] = 0.5f; xform[3][2] = 0.0f;
-		LightData l = {0};
-		l.color[0] = 1.0f; l.color[1] = 0.3f; l.color[2] = 0.3f;
-		l.intensity = 3.5f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
-		addLightEntity(l, xform);
-	}
-
-	// Greenish/cyan fill from below.
-	{
-		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-		xform[3][0] = 0.0f; xform[3][1] = -1.0f; xform[3][2] = 1.0f;
-		LightData l = {0};
-		l.color[0] = 0.3f; l.color[1] = 1.0f; l.color[2] = 0.8f;
-		l.intensity = 2.0f; l.range = 10.0f; l.type = LIGHT_TYPE_POINT;
-		addLightEntity(l, xform);
-	}
-
-	// Overhead spotlight aimed straight down (demonstrates the spot type).
-	{
-		mat4 xform = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-		xform[3][0] = 0.0f; xform[3][1] = 4.0f; xform[3][2] = 0.0f;
-		// forward = -column2 = (0,-1,0): aim down. column2 stays identity (0,0,1)? No:
-		xform[2][0] = 0.0f; xform[2][1] = 1.0f; xform[2][2] = 0.0f; // -column2 = (0,-1,0)
-		LightData l = {0};
-		l.color[0] = 1.0f; l.color[1] = 1.0f; l.color[2] = 1.0f;
-		l.intensity = 20.0f; l.range = 12.0f; l.type = LIGHT_TYPE_SPOT;
-		l.innerConeCos = 0.966f; // ~15 degrees
-		l.outerConeCos = 0.906f; // ~25 degrees
-		addLightEntity(l, xform);
-	}
-
-	// Audit 4.7 multi-light demo: three small NON-casting point lights attached to the (orbiting)
-	// candle holder's slot at distinct LOCAL offsets. They cost three light-palette rows but ZERO
-	// entity slots, and ride the candle's GPU orbit for free — the running-lights / engine / cockpit
-	// case the scalar light_index could not express. Non-casting because the shadow atlas is already
-	// full (DIR + 4 point + spot = 26 layers) and decorative ship lights do not cast anyway.
-	{
-		uint32_t candleSlot = vikingRoomEntityCount; // first candle holder entity (orbits about +Y)
-		LightData a = {0};
-		a.color[0] = 1.0f; a.color[1] = 0.5f; a.color[2] = 0.15f; // warm amber
-		a.intensity = 6.0f; a.range = 4.0f; a.type = LIGHT_TYPE_POINT;
-		addLightToEntity(a, candleSlot,  0.6f, 0.3f, 0.0f, false);
-
-		LightData b = {0};
-		b.color[0] = 0.2f; b.color[1] = 0.8f; b.color[2] = 1.0f; // cyan
-		b.intensity = 6.0f; b.range = 4.0f; b.type = LIGHT_TYPE_POINT;
-		addLightToEntity(b, candleSlot, -0.6f, 0.3f, 0.0f, false);
-
-		LightData c = {0};
-		c.color[0] = 1.0f; c.color[1] = 0.2f; c.color[2] = 0.8f; // magenta
-		c.intensity = 5.0f; c.range = 4.0f; c.type = LIGHT_TYPE_POINT;
-		addLightToEntity(c, candleSlot,  0.0f, 0.8f, 0.0f, false);
-
-		// Fanned-spot demo (audit 4.7 localDir): two NON-casting spots on the SAME candle slot, same
-		// offset, but aimed in DIFFERENT model-space directions. Their cones fan apart (down-+X vs
-		// down--X) and ride the orbit together — the old parent-(-Z)-only forward could not express
-		// two distinct aims from one slot. localDir is rotated by the parent transform per fragment.
-		LightData s0 = {0};
-		s0.color[0] = 0.5f; s0.color[1] = 1.0f; s0.color[2] = 0.6f; // green
-		s0.intensity = 12.0f; s0.range = 6.0f; s0.type = LIGHT_TYPE_SPOT;
-		s0.innerConeCos = 0.95f; s0.outerConeCos = 0.85f;
-		s0.localDir[0] = 0.7f; s0.localDir[1] = -0.7f; s0.localDir[2] = 0.0f; // aim down and +X
-		addLightToEntity(s0, candleSlot, 0.0f, 1.2f, 0.0f, false);
-
-		LightData s1 = {0};
-		s1.color[0] = 1.0f; s1.color[1] = 0.7f; s1.color[2] = 0.3f; // warm
-		s1.intensity = 12.0f; s1.range = 6.0f; s1.type = LIGHT_TYPE_SPOT;
-		s1.innerConeCos = 0.95f; s1.outerConeCos = 0.85f;
-		s1.localDir[0] = -0.7f; s1.localDir[1] = -0.7f; s1.localDir[2] = 0.0f; // aim down and -X
-		addLightToEntity(s1, candleSlot, 0.0f, 1.2f, 0.0f, false);
-	}
-
-	// ECS <-> render bridge: render-owned slot authority + command/event rings
-	// (VK_BACKEND_INTEROP.md). The whole init scene is now published as ONE
-	// RCMD_BULK_CREATE — the same command path a runtime mass-spawn takes — instead
-	// of writing the per-slot GPU buffers directly here. render_id == entity index
-	// because init is append-only, so render_slots_alloc_range hands back a
-	// contiguous identity slot range; this is the seam the logic-side ECS will own
-	// once entities[] is retired.
+	// ECS <-> render bridge: render-owned slot authority + command/event rings (VK_BACKEND_INTEROP.md).
+	// The logic master now composes the whole scene and emits its creates through this command ring —
+	// the same path a runtime spawn takes — so nothing is written to the per-slot GPU buffers here.
 	rendererState.renderHeap = mi_heap_new();
 	if (!rendererState.renderHeap ||
 	    !render_slots_init(&rendererState.slots, rendererState.renderHeap, maxEntities, MAX_FRAMES_IN_FLIGHT) ||
@@ -3677,12 +3471,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Runtime light registry (audit 4.7 Phase 3). The init rig's lights occupy palette rows
-	// [0, lightBuffer.count); the registry owns the dynamic remainder for runtime attach/detach.
-	// Captured here, after the whole scene rig has staged its permanent lights and before the
-	// init-batch drain (render_apply_commands below) first publishes base + highWater.
-	light_registry_init(&rendererState.lightRegistry, rendererState.lightBuffer.count,
-	                    rendererState.lightBuffer.capacity - rendererState.lightBuffer.count,
+	// Runtime light registry (audit 4.7 Phase 3). Palette rows [0, ANO_STATIC_LIGHT_COUNT) are the
+	// STATIC region the logic master fills with scene light-entities (create-with-light, static shadow
+	// budget); the registry owns the dynamic remainder [ANO_STATIC_LIGHT_COUNT, capacity) for runtime
+	// attach/detach. A FIXED base (not the live scene-light count) lets logic own the static light_index
+	// namespace independently of when/whether it has spawned the scene lights.
+	light_registry_init(&rendererState.lightRegistry, ANO_STATIC_LIGHT_COUNT,
+	                    rendererState.lightBuffer.capacity - ANO_STATIC_LIGHT_COUNT,
 	                    MAX_FRAMES_IN_FLIGHT);
 
 	// Stream render_id ring now that renderHeap exists: CPU-only, parallel to xformRing,
@@ -3697,120 +3492,21 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 	rendererState.globalFrame = 0;
 
-	// Build the initial-state batch from the CPU scene record. The base pose folds
-	// in the legacy spawn nudge (first three meshes) and the continuous-motion
-	// vocabulary (spin for meshes, orbit for the candle + warm light); these reach
-	// the GPU once as initialTransform / animation params and are never restreamed.
-	// The live transform is intentionally NOT written — update.comp derives it from
-	// initialTransform every frame. Lights keep their photometric LightData in the
-	// light palette (addLightEntity); the batch only carries their renderable
-	// projection (mesh == NO_MESH_INDEX, so the cull pass skips them).
-	uint32_t batchCount = rendererState.entityCount;
-	uint32_t *batchIds      = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
-	mat4     *batchXforms   = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(mat4));
-	AnoMotionDescriptor *batchMotion = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(AnoMotionDescriptor));
-	uint32_t *batchMesh     = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
-	uint32_t *batchMaterial = mi_heap_malloc(rendererState.renderHeap, (size_t)batchCount * sizeof(uint32_t));
-	if (!batchIds || !batchXforms || !batchMotion || !batchMesh || !batchMaterial)
-	{
-		printf("Quitting init: bulk-create batch allocation failure!\n");
-		unInitVulkan();
-		return false;
-	}
-
-	float moveOffsets[3] = {2.0f, -2.0f, 0.0f};
-	for (uint32_t i = 0; i < batchCount; i++) {
-		bool isLight  = i >= firstLightEntity;
-		bool isCandle = !isLight && i >= vikingRoomEntityCount;
-		bool orbit    = isCandle || i == warmLightEntity;
-
-		batchIds[i]      = i;
-		batchMesh[i]     = rendererState.entities[i].meshIndex;
-		batchMaterial[i] = rendererState.entities[i].materialIndex;
-
-		// Preserve prior behavior: orbiters revolve about world +Y at 0.5 rad/s,
-		// other non-lights spin in place about local +Y at 1.0 rad/s, lights static.
-		AnoMotionDescriptor md = {0}; // ANO_MOTION_STATIC
-		if (orbit) {
-			md.type = ANO_MOTION_ORBIT;
-			md.p0.v[1] = 0.5f;
-		} else if (!isLight) {
-			md.type = ANO_MOTION_SPIN;
-			md.p0.v[1] = 1.0f;
-		}
-		// STAND-IN (Path B): the first two renderables are CPU-streamed (see
-		// stream_stand_in); update.comp leaves them at base and scatter overwrites them.
-		if (i < 2) { md = (AnoMotionDescriptor){0}; md.type = ANO_MOTION_STREAMED; }
-		if (i == groundEntity || i == sunMarkerEntity) md = (AnoMotionDescriptor){0}; // ground + sun marker are static
-		batchMotion[i] = md;
-
-		// Fold the legacy spawn nudge into entities[] so it stays the authoritative host-side
-		// base-pose record (anoRenderEntityBaseTransform reads it; initialTransform is device-local).
-		if (!isLight && i < 3)
-			rendererState.entities[i].transform[3][0] += moveOffsets[i];
-		memcpy(&batchXforms[i], &rendererState.entities[i].transform, sizeof(mat4));
-	}
-
-	RenderCreateBatch initBatch = {
-		.count      = batchCount,
-		.render_ids = batchIds,
-		.transforms = batchXforms,
-		.motion     = batchMotion,
-		.mesh       = batchMesh,
-		.material   = batchMaterial,
-	};
-	RenderCommand bulk = { .kind = RCMD_BULK_CREATE, .batch = &initBatch };
-	if (!ano_render_submit(&rendererState.bridge, &bulk))
-	{
-		printf("Quitting init: failed to submit bulk-create command!\n");
-		unInitVulkan();
-		return false;
-	}
-
-	// Seed every slot once: a single drain allocates the slot range and stages the batch
-	// (plus the addLightEntity light writes) into frame 0's delta staging, then a one-shot
-	// transfer uploads it into the DEVICE_LOCAL authoritative buffers. The device is idle here
-	// (no per-frame command buffer recording yet); the device buffers are shared by every
-	// frame in flight, so one upload seeds them all.
-	render_apply_commands(&rendererState, 0);
+	// Zero the light palette + shadow config/info device buffers once (hardening): an unwritten row
+	// then reads enabled=0 / active=0 / castsShadow=0 (inert) instead of uninitialized memory, which
+	// the cull/fragment would treat as a phantom light/caster. The logic master spawns the scene
+	// asynchronously; each create is staged + uploaded by the normal per-frame path (render_apply_commands
+	// + recordCommandBuffer) as it arrives, so there is no init scene seed beyond this zero-fill.
 	{
 		VkCommandBuffer up = beginSingleTimeCommands(&ctx);
-		slot_upload_flush(up, &rendererState.initialTransformBuffer, 0);
-		slot_upload_flush(up, &rendererState.motionBuffer, 0);
-		slot_upload_flush(up, &rendererState.instanceDataBuffer, 0);
-		// Zero the whole light palette before seeding it (audit 4.7 Phase 3 hardening): a dynamic row
-		// that is counted (base+highWater) but never staged — e.g. an attach whose host-side staging
-		// growth fails under OOM — then reads as enabled=0 (inert) instead of uninitialized device
-		// memory, which the cull/fragment would treat as a phantom light with an OOB transformIndex
-		// (they only skip enabled==0). The init rig's rows are copied over [0,count) by the flush right
-		// after; the barrier orders the fill before that overlapping copy.
 		vkCmdFillBuffer(up, rendererState.lightBuffer.device, 0,
 		                (VkDeviceSize)sizeof(LightData) * rendererState.lightBuffer.capacity, 0u);
-		// Same hardening for the shadow config/info device buffers: spare frustum slots read active=0
-		// (inactive) and unregistered lights read castsShadow=0 instead of uninitialized device memory.
-		// The rig's staged casters are copied over their slots by the flush right after.
 		vkCmdFillBuffer(up, rendererState.shadowConfig.device, 0,
 		                (VkDeviceSize)sizeof(ShadowFrustumConfig) * rendererState.shadowConfig.capacity, 0u);
 		vkCmdFillBuffer(up, rendererState.shadowInfo.device, 0,
 		                (VkDeviceSize)sizeof(ShadowLightInfo) * rendererState.shadowInfo.capacity, 0u);
-		{
-			VkMemoryBarrier fillToCopy = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-			    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
-			vkCmdPipelineBarrier(up, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			    0, 1, &fillToCopy, 0, NULL, 0, NULL);
-		}
-		slot_upload_flush(up, &rendererState.lightBuffer, 0);
-		slot_upload_flush(up, &rendererState.culling.entity, 0);
-		slot_upload_flush(up, &rendererState.shadowConfig, 0);
-		slot_upload_flush(up, &rendererState.shadowInfo, 0);
 		endSingleTimeCommands(&ctx, up);
 	}
-
-	mi_free(batchIds);
-	mi_free(batchXforms);
-	mi_free(batchMotion);
-	mi_free(batchMesh);
-	mi_free(batchMaterial);
 
 	if (!createUniformBuffers(&ctx, &rendererState))
 	{

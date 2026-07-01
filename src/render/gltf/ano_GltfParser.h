@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#include <anoptic_render.h> // AnoRenderableDesc (model_flatten's public output type)
 #include "vulkan_backend/structs.h"
 #include "vulkan_backend/vertex/vertex.h"
 #include "vulkan_backend/instance/instanceInit.h"
@@ -56,9 +57,12 @@ typedef struct ModelAsset {
 // Parses a glTF file, loading assets into GPU memory and returning a ModelAsset blueprint.
 ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName);
 
-// Spawns a ModelAsset blueprint into the world, returning the root EntityId.
-// For now, it just appends the RenderEntities directly to the RendererState.
-void instantiate_model(ModelAsset* asset, mat4 rootTransform);
+// Flattens a parsed asset, at `rootTransform`, into renderable primitive descriptors (one per mesh
+// primitive: its geometry-pool mesh index, material index, and world transform). Pure CPU, no GPU
+// state touched — the render side exposes this so the LOGIC master composes scene instances and
+// emits the creates itself (audit: logic owns the scene). Returns the TOTAL primitive count; fills
+// out[0..min(count,cap)). Call once with cap 0 (or out NULL) to size, then again to fill.
+uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRenderableDesc* out, uint32_t cap);
 
 // Forward declaration of cgltf_material to avoid header inclusion issues
 struct cgltf_material;

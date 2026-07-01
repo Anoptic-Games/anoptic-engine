@@ -82,67 +82,159 @@ void measureFrameTime()
 // is destroyed in unInitVulkan().
 static atomic_bool g_logicShouldStop = false;
 
+// ---------------------------------------------------------------------------
+// Scene composition (logic owns the scene)
+// ---------------------------------------------------------------------------
+// The render world loaded the glTF assets + fallback cube and assigned their GPU mesh/material
+// indices; the logic master composes the scene from them and emits the creates through the bridge —
+// the same command path a runtime spawn takes. This replaces the renderer's old hardcoded init rig.
+
+// Backpressure-safe submit for the one-time, small scene burst: retry until it fits the command ring.
+static void submit_blocking(AnoRenderBridge* bridge, const RenderCommand* c) {
+	while (!ano_render_submit(bridge, c)) ano_sleep(1000);
+}
+
+// Spawn one renderable per primitive of asset `asset_id` at `root`, all sharing `motion` (+ speed for
+// spin/orbit). Returns the first primitive's render_id (so a caller can attach lights to it); advances *nextId.
+// Cap on primitives spawned per asset in one call; sized for Sponza's 103-primitive single node.
+#define SPAWN_ASSET_MAX_PRIMS 256u
+static uint32_t spawn_asset(AnoRenderBridge* bridge, uint32_t* nextId, uint32_t asset_id,
+                            const mat4 root, AnoMotionType motion, float speed) {
+	AnoRenderableDesc descs[SPAWN_ASSET_MAX_PRIMS];
+	uint32_t n = anoRenderAssetPrimitives(asset_id, root, descs, SPAWN_ASSET_MAX_PRIMS);
+	if (n == 0u) { printf("Producer: asset %u has no primitives; nothing spawned.\n", asset_id); return UINT32_MAX; }
+	if (n > SPAWN_ASSET_MAX_PRIMS) { printf("Producer: asset %u has %u primitives; spawning only the first %u.\n", asset_id, n, SPAWN_ASSET_MAX_PRIMS); n = SPAWN_ASSET_MAX_PRIMS; }
+	uint32_t first = *nextId;
+	for (uint32_t i = 0; i < n; i++) {
+		RenderCommand c = { .kind = RCMD_CREATE, .render_id = (*nextId)++,
+			.mesh_index = descs[i].mesh_index, .material_index = descs[i].material_index,
+			.light_index = ANO_RENDER_NO_LIGHT };
+		memcpy(c.transform, descs[i].transform, sizeof(mat4));
+		c.motion.type = (uint32_t)motion;
+		if (motion == ANO_MOTION_SPIN || motion == ANO_MOTION_ORBIT) c.motion.p0.v[1] = speed; // about +Y
+		submit_blocking(bridge, &c);
+	}
+	return first;
+}
+
+// Spawn a procedural box renderable (fallback cube + default material) with a full world transform,
+// static. Advances *nextId; returns its render_id.
+static uint32_t spawn_box(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 transform) {
+	uint32_t id = (*nextId)++;
+	RenderCommand c = { .kind = RCMD_CREATE, .render_id = id,
+		.mesh_index = anoRenderFallbackMesh(), .material_index = anoRenderDefaultMaterial(),
+		.light_index = ANO_RENDER_NO_LIGHT };
+	memcpy(c.transform, transform, sizeof(mat4));
+	c.motion.type = (uint32_t)ANO_MOTION_STATIC;
+	submit_blocking(bridge, &c);
+	return id;
+}
+
+// Spawn a mesh-less scene light-entity: its transform drives the light (position = column 3, forward =
+// -column 2 for dir/spot); light_index is a static-region palette row; casting lights take a static
+// shadow frustum. `motion` animates the slot (an orbiting light rides it for free). Advances *nextId;
+// returns its render_id.
+static uint32_t spawn_light_entity(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 transform,
+                                   uint32_t light_index, const RenderLightParams* params,
+                                   AnoMotionType motion, float speed) {
+	uint32_t id = (*nextId)++;
+	RenderCommand c = { .kind = RCMD_CREATE, .render_id = id,
+		.mesh_index = ANO_RENDER_NO_MESH, .material_index = 0u,
+		.light_index = light_index, .light = *params };
+	memcpy(c.transform, transform, sizeof(mat4));
+	c.motion.type = (uint32_t)motion;
+	if (motion == ANO_MOTION_SPIN || motion == ANO_MOTION_ORBIT) c.motion.p0.v[1] = speed; // about +Y
+	submit_blocking(bridge, &c);
+	return id;
+}
+
+// Compose the whole scene once: geometry, scene lights, candle lights. render_id and static light_index
+// are the logic master's namespaces to assign.
+static void spawn_scene(AnoRenderBridge* bridge) {
+	uint32_t nextId = 0u;
+
+	// Viking room: the glTF is Z-up; rotate -90 deg about X to the engine's Y-up (this is the exact
+	// matrix the old rig's rotateMatrix(identity,'X',-pi/2) produced). Spins about +Y at 1 rad/s.
+	mat4 vikingRoot = {{1,0,0,0},{0,0,-1,0},{0,1,0,0},{0,0,0,1}};
+	spawn_asset(bridge, &nextId, 0u, vikingRoot, ANO_MOTION_SPIN, 1.0f);
+
+	// Two transmissive candle holders orbiting +Y at 0.5 rad/s at radii 2.0 / 2.2 (their camera-space
+	// order swaps each revolution — exercises the transparency sort). The first candle anchors the
+	// decorative candle lights below.
+	mat4 candle1 = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{2.0f,0,0,1}};
+	mat4 candle2 = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{2.2f,0,0,1}};
+	uint32_t candleSlot = spawn_asset(bridge, &nextId, 1u, candle1, ANO_MOTION_ORBIT, 0.5f);
+	spawn_asset(bridge, &nextId, 1u, candle2, ANO_MOTION_ORBIT, 0.5f);
+
+	// Sponza (asset_id 2): the scene environment. Y-up already, with its 0.008 scale baked into the node
+	// transform (~30 m atrium, floor at y ~ -1), so it drops in at identity; static. Its 103 primitives
+	// spawn as individual renderables (node-mesh placement stress) and supply the floor/walls the
+	// directional + point/spot shadows now fall on — so the old wide ground slab is gone. A no-op if
+	// Sponza failed to load (asset_id 2 unregistered). The viking room + candles sit as props on its floor.
+	mat4 sponzaRoot = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+	spawn_asset(bridge, &nextId, 2u, sponzaRoot, ANO_MOTION_STATIC, 0.0f);
+
+	// Small sun-marker cube at the directional light's source (static), so the light's origin is visible.
+	mat4 sunMarker = {{0.2f,0,0,0},{0,0.2f,0,0},{0,0,0.2f,0},{2.59f,5.18f,1.55f,1}};
+	spawn_box(bridge, &nextId, sunMarker);
+
+	// Scene lights as mesh-less light-entities (static palette rows 0..5, casting: 1 dir + 4 point +
+	// 1 spot = the 26-frustum static shadow atlas). Dir/spot direction is the transform's -column2.
+	uint32_t li = 0u;
+    { mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
+      x[2][0]=0.5f; x[2][1]=1.0f; x[2][2]=0.0f; // Shines directly overhead (straight down)
+      RenderLightParams p = { .color={1.0f,0.96f,0.9f}, .intensity=2.5f, .range=0.0f, .type=RENDER_LIGHT_DIRECTIONAL, .castsShadow=1u };
+      spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
+	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,1.5f,1.2f,1}}; // warm point ORBITS +Y (exercises the anim path)
+	  RenderLightParams p = { .color={1.0f,0.95f,0.8f}, .intensity=5.0f, .range=10.0f, .type=RENDER_LIGHT_POINT, .castsShadow=1u };
+	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_ORBIT, 0.5f); }
+	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{-2.0f,2.0f,-1.0f,1}};
+	  RenderLightParams p = { .color={0.4f,0.6f,1.0f}, .intensity=4.0f, .range=10.0f, .type=RENDER_LIGHT_POINT, .castsShadow=1u };
+	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
+	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{2.0f,0.5f,0.0f,1}};
+	  RenderLightParams p = { .color={1.0f,0.3f,0.3f}, .intensity=3.5f, .range=10.0f, .type=RENDER_LIGHT_POINT, .castsShadow=1u };
+	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
+	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0.0f,-1.0f,1.0f,1}};
+	  RenderLightParams p = { .color={0.3f,1.0f,0.8f}, .intensity=2.0f, .range=10.0f, .type=RENDER_LIGHT_POINT, .castsShadow=1u };
+	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
+	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0.0f,4.0f,0.0f,1}};
+	  x[2][0]=0.0f; x[2][1]=1.0f; x[2][2]=0.0f; // forward = -column2 = (0,-1,0): aim straight down
+	  RenderLightParams p = { .color={1.0f,1.0f,1.0f}, .intensity=20.0f, .range=12.0f,
+	      .innerConeCos=0.966f, .outerConeCos=0.906f, .type=RENDER_LIGHT_SPOT, .castsShadow=1u };
+	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
+
+	// Decorative candle lights: ride the first candle's slot at model-space offsets via the runtime
+	// attach API, non-casting (the static shadow atlas is full). light_id is the producer's namespace.
+	uint32_t lid = 100u;
+	struct { float col[3], in, rng, inner, outer; uint32_t type; float dir[3], ox, oy, oz; } cl[5] = {
+		{{1.0f,0.5f,0.15f}, 6.0f, 4.0f, 0,0, RENDER_LIGHT_POINT, {0,0,0},  0.6f,0.3f,0.0f},
+		{{0.2f,0.8f,1.0f},  6.0f, 4.0f, 0,0, RENDER_LIGHT_POINT, {0,0,0}, -0.6f,0.3f,0.0f},
+		{{1.0f,0.2f,0.8f},  5.0f, 4.0f, 0,0, RENDER_LIGHT_POINT, {0,0,0},  0.0f,0.8f,0.0f},
+		{{0.5f,1.0f,0.6f}, 12.0f, 6.0f, 0.95f,0.85f, RENDER_LIGHT_SPOT, { 0.7f,-0.7f,0.0f}, 0.0f,1.2f,0.0f},
+		{{1.0f,0.7f,0.3f}, 12.0f, 6.0f, 0.95f,0.85f, RENDER_LIGHT_SPOT, {-0.7f,-0.7f,0.0f}, 0.0f,1.2f,0.0f},
+	};
+	if (candleSlot != UINT32_MAX) // skip if the candle asset spawned no primitive to anchor them
+	for (int i = 0; i < 5; i++) {
+		RenderLightParams p = { .color={cl[i].col[0],cl[i].col[1],cl[i].col[2]}, .intensity=cl[i].in,
+			.range=cl[i].rng, .innerConeCos=cl[i].inner, .outerConeCos=cl[i].outer, .type=cl[i].type,
+			.localDir={cl[i].dir[0],cl[i].dir[1],cl[i].dir[2]} };
+		while (!ano_render_light_attach(bridge, lid++, candleSlot, &p, cl[i].ox, cl[i].oy, cl[i].oz))
+			ano_sleep(1000); // backpressure: retry until it fits
+	}
+}
+
 void* anoLogicThreadMain(void* arg)
 {
 	(void)arg;
-	// Stand-in producer: until the real DisplayState graphics-extract exists, drive
-	// one discrete transition across the bridge on a timer — toggle render_id 0's
-	// mesh between its original geometry and the fallback cube. Proves the producer
-	// -> SPSC ring -> render-consumer path across the thread boundary.
 	AnoRenderBridge* bridge = anoRenderBridge();
-	uint32_t originalMesh   = anoRenderEntity0Mesh();
-	bool showingFallback    = false;
-	uint64_t lastSwap       = ano_timestamp_us();
 
-	// STAND-IN (Path B v2): stream a vertical bob onto render_ids 0,1 (typed
-	// ANO_MOTION_STREAMED at spawn) so the GPU scatter lane runs on real hardware. Each
-	// entity bobs around its real seeded base pose — a streamed transform is a full world
-	// matrix in the same space as initialTransform, so fabricating a bare identity would
-	// teleport and mirror them. Zero-copy path: reserve the next ring slice, write the
-	// transforms straight into mapped GPU memory, and publish. begin returns false only
-	// when every slice is still in flight (the render side then holds the last slice).
-	// Remove when the real graphics-extract drives the lane.
-	float    streamPhase = 0.0f;
-	uint64_t lastStream  = ano_timestamp_us();
+	// Compose the scene (logic owns it now): geometry + scene lights + candle lights, emitted through
+	// the bridge — the same command path a runtime spawn takes. Replaces the renderer's hardcoded rig.
+	spawn_scene(bridge);
 
-	// Seeded base poses for the two streamed entities, fetched once (stable after init);
-	// identity fallback keeps the fabricated matrix valid if an id fails to resolve.
-	mat4 streamBase[2];
-	for (uint32_t e = 0; e < 2; e++) {
-		for (int r = 0; r < 4; r++)
-			for (int c = 0; c < 4; c++)
-				streamBase[e][r][c] = (r == c) ? 1.0f : 0.0f;
-		anoRenderEntityBaseTransform(e, streamBase[e]); // overwrites on success
-	}
-
-	// STAND-IN (3.3): exercise the bulk commands. Toggle a tint on render_ids {2,3,4} via
-	// one RCMD_BULK_UPDATE every ~2 s (the mass-state-change case), then a one-shot
-	// mass-despawn of {3,4} at ~8 s. Both retry on a full ring (backpressure, never drop);
-	// after the despawn the tint update's {3,4} resolve to nothing and are skipped.
-	uint64_t startTime     = ano_timestamp_us();
-	uint64_t lastTint      = startTime;
-	bool     tintOn        = false;
-	bool     bulkDestroyed = false;
-
-	// STAND-IN (4.7 Phase 3): runtime light attach / update / detach. ~3 s: attach a warm casting spot
-	// (light_id 5000) to render_id 2 and a cyan point (5001) to render_id 3, each riding its parent at
-	// a model-space offset. Pulse 5000's intensity every ~0.5 s. ~7 s: toggle 5000's shadow casting OFF
-	// (frustum returns to the pool, light stays lit); ~9.5 s: toggle it back ON (re-allocates, proving
-	// pool reuse). ~12 s: detach 5000. 5001 is left attached so the 16 s bulk-despawn of {3,4} exercises
-	// the parent-DESTROY cascade (the render side auto-disables and reclaims it). Remove for a real producer.
-	bool     rt5000     = false;
-	bool     rt5001     = false;
-	bool     rtCastOff  = false;
-	bool     rtCastOn   = false;
-	bool     rtDetached = false;
-	uint64_t lastPulse  = startTime;
-	float    pulsePhase = 0.0f;
-
-	// Free-fly camera owned by logic (audit 4.11). The renderer's view-0 camera is now driven from
-	// here: drain forwarded input, integrate a WASD + right-drag look camera, publish its pose. This
-	// is the demonstrable input -> logic -> render round trip, and the first piece of render-loop
-	// scene control moved into the logic thread. Starts at the renderer's old fallback pose, with the
-	// forward derived (pitch ~ -0.21 rad) so there is no jump on the first publish.
+	// Free-fly camera owned by logic (audit 4.11): drain forwarded input, integrate a WASD + right-drag
+	// look camera, publish its pose. Starts at the renderer's old fallback pose, with the forward derived
+	// (pitch ~ -0.21 rad) so there is no jump on the first publish.
 	float    camEye[3] = { 0.0f, 0.9f, 3.5f };
 	float    camYaw = 0.0f, camPitch = -0.211f;
 	bool     inW = false, inA = false, inS = false, inD = false, inUp = false, inDown = false;
@@ -150,7 +242,7 @@ void* anoLogicThreadMain(void* arg)
 	float    prevCx = 0.0f, prevCy = 0.0f;
 	uint64_t lastCam = ano_timestamp_us();
 	uint64_t camSeq = 0;
-	uint64_t lastSnapLog = startTime;
+	uint64_t lastSnapLog = ano_timestamp_us();
 
 	while (!atomic_load(&g_logicShouldStop))
 	{
@@ -234,104 +326,7 @@ void* anoLogicThreadMain(void* arg)
 				lastSnapLog = now;
 			}
 		}
-		if (now - lastStream > 16000) // ~16 ms (roughly frame cadence; keeps ring pressure low)
-		{
-			lastStream = now;
-			streamPhase += 0.05f;
-			if (streamPhase >= 2.0f) streamPhase -= 2.0f;
-			float tri = streamPhase < 1.0f ? streamPhase : 2.0f - streamPhase; // 0..1..0, no libm
-			float bob = tri - 0.5f;
-
-			AnoStreamRegion reg;
-			if (ano_render_stream_begin(&reg) && reg.capacity >= 2) {
-				for (uint32_t e = 0; e < 2; e++) {
-					reg.ids[e] = e;
-					memcpy(&reg.xforms[e], &streamBase[e], sizeof(mat4)); // real base pose...
-					reg.xforms[e][3][1] += bob;                           // ...bobbed in Y
-				}
-				if (!ano_render_stream_commit(&reg, 2))
-					printf("Producer: stream control ring full; tick dropped.\n");
-			}
-			// else: no free slice this tick; the render side holds the last published one.
-		}
-
-		if (now - lastSwap > 1000000) // 1 s
-		{
-			bool next = !showingFallback;
-			RenderCommand cmd = {
-				.kind           = RCMD_UPDATE,
-				.render_id      = 0,
-				.fields         = RFIELD_MESH_MAT,
-				.mesh_index     = next ? FALLBACK_MESH_INDEX : originalMesh,
-				.material_index = 0,
-				.light_index    = ANO_RENDER_NO_LIGHT,
-			};
-			// Backpressure: advance only on a successful enqueue; a full ring means retry
-			// next tick, never drop (policy — see ano_render_submit).
-			if (ano_render_submit(bridge, &cmd)) { showingFallback = next; lastSwap = now; }
-		}
-
-		if (now - lastTint > 2000000) // ~2 s: bulk-toggle a tint on render_ids {2,3,4}
-		{
-			uint32_t ids[3] = { 2u, 3u, 4u };
-			AnoInstanceData inst[3] = {0};
-			if (!tintOn)
-				for (int k = 0; k < 3; k++) { inst[k].packed[0] = 0xFFFF8040u; inst[k].packed[1] = 1u; } // bluish tint + enable bit
-			RenderUpdateBatch ub = {
-				.count = 3, .fields = RFIELD_USERDATA, .render_ids = ids, .instance_data = inst,
-			};
-			if (ano_render_submit_bulk_update(bridge, &ub)) { tintOn = !tintOn; lastTint = now; }
-			// else: ring full; retry next tick (backpressure)
-		}
-
-		if (!bulkDestroyed && now - startTime > 16000000) // one-shot mass-despawn of {3,4}
-		{
-			uint32_t ids[2] = { 3u, 4u };
-			if (ano_render_submit_bulk_destroy(bridge, ids, 2)) bulkDestroyed = true;
-			// else: ring full; retry next tick
-		}
-
-		// Runtime light lifecycle stand-in (4.7 Phase 3). Each attach/update/detach is one ring
-		// message; advance its flag only on a successful enqueue (backpressure, never drop).
-		if (!rt5000 && now - startTime > 3000000) {
-			// A CASTING runtime spot (audit 4.7 budget expansion): attaches to rid2 at a +Y offset,
-			// aims down, and allocates a runtime shadow frustum so it casts its own shadow. Detached
-			// at ~12 s, which frees the frustum back to the pool.
-			RenderLightParams warm = { .color = {1.0f, 0.6f, 0.2f}, .intensity = 12.0f, .range = 8.0f,
-			                           .innerConeCos = 0.95f, .outerConeCos = 0.80f, .type = RENDER_LIGHT_SPOT,
-			                           .localDir = {0.0f, -1.0f, 0.0f}, .castsShadow = 1u };
-			if (ano_render_light_attach(bridge, 5000u, 2u, &warm, 0.0f, 2.0f, 0.0f)) rt5000 = true;
-		}
-		if (!rt5001 && now - startTime > 3000000) {
-			RenderLightParams cyan = { .color = {0.2f, 0.8f, 1.0f}, .intensity = 8.0f,
-			                           .range = 5.0f, .type = RENDER_LIGHT_POINT };
-			if (ano_render_light_attach(bridge, 5001u, 3u, &cyan, 0.0f, 1.0f, 0.0f)) rt5001 = true;
-		}
-		if (rt5000 && !rtDetached && now - lastPulse > 500000) {
-			pulsePhase += 0.25f; if (pulsePhase >= 2.0f) pulsePhase -= 2.0f;
-			float tri = pulsePhase < 1.0f ? pulsePhase : 2.0f - pulsePhase; // 0..1..0, no libm
-			// Partial update: pulse ONLY intensity. The other params are left zero on purpose — if the
-			// render-side mirror works, the light keeps its warm color/range/offset from attach.
-			RenderLightParams pulse = { .intensity = 3.0f + 9.0f * tri };
-			if (ano_render_light_update_fields(bridge, 5000u, &pulse, 0.0f, 0.0f, 0.0f, ANO_LIGHT_FIELD_INTENSITY))
-				lastPulse = now;
-		}
-		// Runtime cast toggle (4.7 budget expansion): flip 5000's shadow casting without re-attaching.
-		// Only castsShadow is read for ANO_LIGHT_FIELD_CAST; the warm color/intensity/offset persist.
-		if (rt5000 && !rtCastOff && now - startTime > 7000000) {
-			RenderLightParams off = { .castsShadow = 0u };
-			if (ano_render_light_update_fields(bridge, 5000u, &off, 0.0f, 0.0f, 0.0f, ANO_LIGHT_FIELD_CAST))
-				rtCastOff = true;
-		}
-		if (rtCastOff && !rtCastOn && now - startTime > 9500000) {
-			RenderLightParams on = { .castsShadow = 1u };
-			if (ano_render_light_update_fields(bridge, 5000u, &on, 0.0f, 0.0f, 0.0f, ANO_LIGHT_FIELD_CAST))
-				rtCastOn = true;
-		}
-		if (rt5000 && !rtDetached && now - startTime > 12000000) {
-			if (ano_render_light_detach(bridge, 5000u)) rtDetached = true;
-		}
-		ano_sleep(2000); // ~2 ms logic tick (stand-in pacing)
+		ano_sleep(2000); // ~2 ms logic tick
 	}
 	return NULL;
 }
