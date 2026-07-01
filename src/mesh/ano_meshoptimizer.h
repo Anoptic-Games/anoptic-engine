@@ -91,6 +91,36 @@ size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index
                     const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride,
                     size_t target_index_count, float target_error, float* out_result_error);
 
+/**
+ * Recommended edge_len_factor for ano_simplify_ex: a resulting triangle edge may grow to at most this
+ * many source mean-edge-lengths. See ano_simplify_ex for the derivation.
+ */
+#define ANO_SIMPLIFY_EDGE_FACTOR_DEFAULT 8.0f
+
+/**
+ * ano_simplify with an added in-plane degeneracy guard. QEM charges ~0 for moving a vertex ANYWHERE
+ * within a large coplanar surface (its quadric is a rank-deficient single plane), so on flat regions
+ * (floors, walls) chained collapses can grow one survivor's 1-ring until a single triangle bridges the
+ * whole surface. Such a triangle keeps its facing, so the flip guard never rejects it, yet it rasterizes
+ * over everything behind it (e.g. shadow depth). This variant additionally caps how far any collapse may
+ * stretch a surviving triangle's edges, forcing the mesh to coarsen roughly uniformly instead.
+ *
+ * edge_len_factor: a resulting triangle edge (and the collapse move distance) may not exceed
+ *     edge_len_factor * (mean source edge length), measured in the internal unit-extent space so the cap
+ *     adapts to mesh density. <= 0 disables the guard, reproducing ano_simplify exactly (the A/B baseline).
+ *     ANO_SIMPLIFY_EDGE_FACTOR_DEFAULT (8.0) rejects a surface-spanning triangle while still permitting
+ *     substantial uniform decimation of dense surfaces. The cap is additionally clamped to an absolute
+ *     fraction of the largest bbox axis (a density-independent backstop for COARSE flats, where
+ *     factor*mean is itself a large fraction of the extent), a tighter ~75deg fold test replaces the
+ *     90deg sign test, and distinct-index collinear source needles are dropped — all gated by the same
+ *     edge_len_factor > 0 and reproduced exactly (A/B baseline) at edge_len_factor <= 0.
+ * All other parameters and the return contract match ano_simplify.
+ */
+size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t index_count,
+                       const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride,
+                       size_t target_index_count, float target_error, float edge_len_factor,
+                       float* out_result_error);
+
 #ifdef __cplusplus
 }
 #endif

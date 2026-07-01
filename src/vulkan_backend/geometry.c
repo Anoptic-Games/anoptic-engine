@@ -442,6 +442,7 @@ AnoLodConfig ano_lod_config_default(uint32_t lodCount)
     if (lodCount > ANO_MAX_LOD) lodCount = ANO_MAX_LOD;
     c.lodCount = lodCount;
     c.targetError = 0.05f;
+    c.edgeLenFactor = ANO_SIMPLIFY_EDGE_FACTOR_DEFAULT;  // guard the in-plane courtyard-bridge case
     float ratio = 1.0f;
     for (uint32_t i = 0; i < ANO_MAX_LOD; ++i) {
         c.ratios[i] = ratio;  // level 0 == 1.0 (full mesh)
@@ -544,9 +545,9 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
             uint32_t targetIdx = (uint32_t)((float)indexCount * ratio);
             targetIdx -= targetIdx % 3u;
             if (targetIdx < 3u) targetIdx = 3u;
-            size_t got = ano_simplify(simplified, indices, indexCount,
-                                      (const float*)vertices, vertexCount, sizeof(Vertex),
-                                      targetIdx, targetError, NULL);
+            size_t got = ano_simplify_ex(simplified, indices, indexCount,
+                                         (const float*)vertices, vertexCount, sizeof(Vertex),
+                                         targetIdx, targetError, config->edgeLenFactor, NULL);
             if (got < 3u) break;  // simplifier produced nothing usable: truncate the chain here
             ano_optimize_vertex_cache(simplified, simplified, got, vertexCount);
             lvlIndices = simplified;

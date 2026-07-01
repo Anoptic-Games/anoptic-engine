@@ -85,9 +85,9 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
 // LOD chains (ANO_DEFAULT_LOD_COUNT) this covers ~2048 distinct source meshes; ~156 B/slot of VRAM.
 #define ANO_MAX_MESHES 8192u
 
-// Default LOD levels glTF uploads request. 1 == today's behavior (a single full-detail mesh, no
-// decimation). Raise it (<= ANO_MAX_LOD) to turn LOD chains on engine-wide once decimation quality
-// is verified on real assets.
+// Default LOD levels glTF uploads request. 4 == LOD chains on engine-wide: level 0 full detail plus
+// three decimated levels (ratios 1, 1/2, 1/4, 1/8). Set to 1 for a single full-detail mesh with no
+// decimation; the clamp is ANO_MAX_LOD.
 #define ANO_DEFAULT_LOD_COUNT 4u
 
 // LOD chain production config (review 4.9 step 2). lodCount levels are emitted as a contiguous run
@@ -98,6 +98,8 @@ typedef struct AnoLodConfig
     uint32_t lodCount;             // levels to emit (>=1, clamped to ANO_MAX_LOD)
     float    ratios[ANO_MAX_LOD];  // per-level target index fraction of the source (level 0 == 1.0)
     float    targetError;          // ano_simplify relative error budget (fraction of bbox extent)
+    float    edgeLenFactor;        // in-plane growth cap: max resulting edge in source mean-edge lengths
+                                   // (ano_simplify_ex); 0 disables the guard (A/B baseline)
 } AnoLodConfig;
 
 // A sensible default chain: ratios 1, 1/2, 1/4, ... and a 5%-of-extent error budget.

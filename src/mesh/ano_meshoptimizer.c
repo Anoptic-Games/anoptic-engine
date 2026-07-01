@@ -548,6 +548,10 @@ typedef struct { float cost; uint32_t v; uint32_t t; } ano_collapse_t;
 
 static const float ANO_BORDER_WEIGHT = 10.0f;  // border constraint quadric weight (vs ~unit face area)
 static const size_t ANO_SIMPLIFY_MAX_PASSES = 1000u;
+static const float ANO_SIMPLIFY_AREA_EPS2 = 1e-24f;    // (2*area)^2 drop threshold; matches the |cross|<1e-12
+                                                       // face-plane skip so Guard 5 drops only no-quadric faces
+static const float ANO_SIMPLIFY_ABS_EDGE_FRAC = 0.25f; // absolute edge cap as a fraction of the largest bbox
+                                                       // axis (normalized extent==1); backstops coarse flats
 
 static inline uint32_t ano_float_bits(float f) { uint32_t b; memcpy(&b, &f, sizeof b); return b; }
 
@@ -655,9 +659,20 @@ float ano_simplify_scale(const float* vertex_positions, size_t vertex_count, siz
 #define ANO_VK_BORDER   1u
 #define ANO_VK_LOCKED   2u
 
+// Guard-disabled baseline: identical behavior to the original simplifier (edge_len_factor <= 0). Kept
+// so the tests and the A/B-comparison path exercise the exact pre-guard collapse decisions.
 size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index_count,
                     const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride,
                     size_t target_index_count, float target_error, float* out_result_error) {
+    return ano_simplify_ex(destination, indices, index_count, vertex_positions, vertex_count,
+                           vertex_positions_stride, target_index_count, target_error, 0.0f,
+                           out_result_error);
+}
+
+size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t index_count,
+                       const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride,
+                       size_t target_index_count, float target_error, float edge_len_factor,
+                       float* out_result_error) {
     if (out_result_error) *out_result_error = 0.0f;
 
     size_t tri0 = index_count / 3;
@@ -752,6 +767,16 @@ size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index
     for (size_t t = 0; t < tri0; ++t) {
         uint32_t a = remap[indices[t*3+0]], b = remap[indices[t*3+1]], c = remap[indices[t*3+2]];
         if (a == b || b == c || a == c) continue;
+        // Guard 5: drop distinct-index but position-collinear source triangles. They contribute no
+        // quadric (same |cross|<1e-12 threshold as the face-plane accumulation below) yet add spurious
+        // edges that skew the per-pass border/manifold classification. Working set only; emit untouched.
+        if (edge_len_factor > 0.0f) {
+            const float* pa = &npos[a*3]; const float* pb = &npos[b*3]; const float* pc = &npos[c*3];
+            float g1[3] = { pb[0]-pa[0], pb[1]-pa[1], pb[2]-pa[2] };
+            float g2[3] = { pc[0]-pa[0], pc[1]-pa[1], pc[2]-pa[2] };
+            float gc[3]; cross_product(g1, g2, gc);
+            if (dot_product(gc, gc) < ANO_SIMPLIFY_AREA_EPS2) continue;
+        }
         wtri[tris*3+0] = a; wtri[tris*3+1] = b; wtri[tris*3+2] = c; tris++;
     }
 
@@ -803,6 +828,39 @@ size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index
         }
     }
 
+    // In-plane degeneracy guard scale. QEM error is ~0 for moving a vertex anywhere within a coplanar
+    // surface, so nothing below bounds triangle GROWTH; chained in-plane collapses otherwise let one
+    // survivor's 1-ring span an entire flat region (a floor/wall bridge). Cap the resulting-triangle
+    // longest edge and the collapse move distance at edge_len_factor * mean source edge (normalized
+    // unit-extent space, so it adapts to mesh density; on tiny meshes it exceeds the extent and is inert).
+    // Computed ONCE over the welded source, giving an absolute cap that forces roughly uniform coarsening.
+    // edge_len_factor <= 0 disables it (maxEdge2 = FLT_MAX): today's exact behavior, the A/B baseline.
+    float maxEdge2 = FLT_MAX;
+    if (edge_len_factor > 0.0f && tris > 0) {
+        double edgesum = 0.0;
+        for (size_t t = 0; t < tris; ++t) {
+            const float* q0 = &npos[wtri[t*3+0]*3];
+            const float* q1 = &npos[wtri[t*3+1]*3];
+            const float* q2 = &npos[wtri[t*3+2]*3];
+            float d0[3] = { q1[0]-q0[0], q1[1]-q0[1], q1[2]-q0[2] };
+            float d1[3] = { q2[0]-q1[0], q2[1]-q1[1], q2[2]-q1[2] };
+            float d2[3] = { q0[0]-q2[0], q0[1]-q2[1], q0[2]-q2[2] };
+            edgesum += sqrt((double)dot_product(d0, d0))
+                     + sqrt((double)dot_product(d1, d1))
+                     + sqrt((double)dot_product(d2, d2));
+        }
+        float mean_edge = (float)(edgesum / (double)(tris * 3));
+        if (mean_edge > 0.0f) {
+            float m = edge_len_factor * mean_edge;
+            // Absolute backstop: on a COARSE flat surface edge_len_factor*mean_edge is itself a large
+            // fraction of the extent, so a surface-spanning triangle still fits under it and the bridge
+            // re-forms. Clamp to a fraction of the largest axis (normalized extent==1) so no surviving
+            // edge can cross the surface at any mesh density. Inert on dense meshes (8*mean < 0.25).
+            if (m > ANO_SIMPLIFY_ABS_EDGE_FRAC) m = ANO_SIMPLIFY_ABS_EDGE_FRAC;
+            maxEdge2 = m * m;
+        }
+    }
+
     for (size_t pass = 0; pass < ANO_SIMPLIFY_MAX_PASSES && tris > target_tris; ++pass) {
         size_t tris_before = tris;
 
@@ -842,6 +900,10 @@ size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index
                     } else {
                         if (kind[nb] == ANO_VK_LOCKED) continue;
                     }
+                    // Pre-filter: never snap v across more than the growth cap (bounds the move length;
+                    // the resulting-triangle cap in the flip guard is the hard backstop). Inert when off.
+                    float dv[3] = { npos[nb*3]-npos[v*3], npos[nb*3+1]-npos[v*3+1], npos[nb*3+2]-npos[v*3+2] };
+                    if (dot_product(dv, dv) > maxEdge2) continue;
                     float cost = ano_quadric_error(&Q[v], &npos[nb*3]);
                     if (cost < best) { best = cost; bestnb = nb; }
                 }
@@ -882,11 +944,38 @@ size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index
                 float ne2[3] = { o2[0]-o0[0], o2[1]-o0[1], o2[2]-o0[2] };
                 float nn[3]; cross_product(ne1, ne2, nn);
                 float nlen2 = dot_product(nn, nn);
-                if (nlen2 < 1e-20f || dot_product(on, nn) < 0.0f) flip = 1;  // sliver or fold
+                // Fold/needle + growth guard. nlen2==(2*newArea)^2, |on|==2*oldArea.
+                if (nlen2 < 1e-20f) { flip = 1; }               // exact sliver (also guards sqrtf(0))
+                else if (maxEdge2 == FLT_MAX) {                 // guards off: baseline fold-only test
+                    if (dot_product(on, nn) < 0.0f) flip = 1;
+                } else {                                        // guards on: tighter fold + growth cap
+                    // Guard 4: reject a >~75deg normal turn (fold/cap/spike) the sign test passes; RHS is
+                    // the geometric mean of old/new areas, so it is scale-free (meshopt hasTriangleFlip).
+                    float olen2 = dot_product(on, on);
+                    if (dot_product(on, nn) <= 0.25f * sqrtf(olen2 * nlen2)) flip = 1;
+                    else {
+                        // Growth cap (anti-bridge): reject if any resulting edge exceeds the cap. This is
+                        // the decisive in-plane guard the fold test misses (a bridge keeps its facing).
+                        // ne1=o1-o0, ne2=o2-o0 are the moved edges; ne3=o2-o1 the third.
+                        float ne3[3] = { o2[0]-o1[0], o2[1]-o1[1], o2[2]-o1[2] };
+                        if (dot_product(ne1, ne1) > maxEdge2 || dot_product(ne2, ne2) > maxEdge2 ||
+                            dot_product(ne3, ne3) > maxEdge2) flip = 1;
+                    }
+                }
             }
             if (flip) continue;
 
             collapse[v] = j; locked[v] = 1; locked[j] = 1;
+            // Guard 6: with the growth cap on, lock EVERY corner of v's incident triangles (not just v/j)
+            // so no other collapse this pass moves a second corner of a triangle this one already moved.
+            // That makes the resulting-edge cap a true per-pass invariant instead of a ~3x per-collapse
+            // bound (every guard check above is then evaluated against un-mutated geometry). Inert when off.
+            if (maxEdge2 != FLT_MAX) {
+                for (uint32_t a = 0; a < adjCounts[v]; ++a) {
+                    uint32_t t = adjData[adjOff[v] + a];
+                    locked[wtri[t*3+0]] = 1; locked[wtri[t*3+1]] = 1; locked[wtri[t*3+2]] = 1;
+                }
+            }
             ano_quadric_add(&Q[j], &Q[v]);
             rtris -= removed;
             if (cand[i].cost > result_err2) result_err2 = cand[i].cost;
