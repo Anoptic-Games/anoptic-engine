@@ -112,8 +112,12 @@ size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index
  *     substantial uniform decimation of dense surfaces. The cap is additionally clamped to an absolute
  *     fraction of the largest bbox axis (a density-independent backstop for COARSE flats, where
  *     factor*mean is itself a large fraction of the extent), a tighter ~75deg fold test replaces the
- *     90deg sign test, and distinct-index collinear source needles are dropped — all gated by the same
- *     edge_len_factor > 0 and reproduced exactly (A/B baseline) at edge_len_factor <= 0.
+ *     90deg sign test, and distinct-index collinear source needles are dropped; a topological link
+ *     condition rejects non-manifold-creating collapses (wall-to-wall pinches, a pillar rim collapsing
+ *     to a point), sharp feature edges (dihedral > 45deg) slide only along themselves so creases/rims
+ *     survive, and a face may not rotate > 60deg from its original pass-0 normal (bounds cumulative
+ *     drift across a concavity) — all gated by the same edge_len_factor > 0 and reproduced exactly
+ *     (A/B baseline) at edge_len_factor <= 0.
  * All other parameters and the return contract match ano_simplify.
  */
 size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t index_count,
