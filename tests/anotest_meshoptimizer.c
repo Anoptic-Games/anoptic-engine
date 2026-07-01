@@ -384,6 +384,51 @@ static void test_simplify_error_budget() {
     assert(err_g >= 0.0f && err_s >= 0.0f);
 }
 
+// Longest edge over an index buffer, in object units. Helper for the guard regression below.
+static float max_edge_len(const uint32_t* idx, size_t r, const float* pos) {
+    float mx = 0.0f;
+    for (size_t t = 0; t < r; t += 3)
+        for (int e = 0; e < 3; ++e) {
+            const float* a = &pos[idx[t + e]*3];
+            const float* b = &pos[idx[t + (e + 1) % 3]*3];
+            float dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2];
+            float d = sqrtf(dx*dx + dy*dy + dz*dz);
+            if (d > mx) mx = d;
+        }
+    return mx;
+}
+
+// Guarded path (ano_simplify_ex, edge_len_factor > 0): the in-plane growth cap must stop a coplanar
+// "bridge" triangle — the Sponza courtyard-floor pathology. A coarse flat grid decimated hard bridges
+// corner-to-corner with the guard OFF (a single triangle spanning most of the model, longer than any
+// real edge); with the guard ON no surviving edge may span the surface, even if that means the count
+// target is missed. Fails if the guard is ever removed (guarded output would then bridge like the
+// unguarded one). Thresholds have wide margins over the measured 1.18-1.41x (off) / <=0.35x (on).
+static void test_simplify_guard_bridge() {
+    printf("Running test_simplify_guard_bridge...\n");
+
+    enum { N = 12 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    size_t ic = build_grid(N, positions, indices);
+    float extent = ano_simplify_scale(positions, N*N, sizeof(float)*3);
+    size_t target = (ic / 8 / 3) * 3;  // decimate hard (~1/8) so an unguarded collapse bridges
+
+    uint32_t guard_off[(N-1)*(N-1)*2*3], guard_on[(N-1)*(N-1)*2*3];
+    size_t r_off = ano_simplify_ex(guard_off, indices, ic, positions, N*N, sizeof(float)*3,
+                                   target, 0.05f, 0.0f, NULL);
+    size_t r_on  = ano_simplify_ex(guard_on, indices, ic, positions, N*N, sizeof(float)*3,
+                                   target, 0.05f, ANO_SIMPLIFY_EDGE_FACTOR_DEFAULT, NULL);
+    validate_indices(guard_off, r_off, N*N);
+    validate_indices(guard_on,  r_on,  N*N);
+
+    // Guard OFF reproduces the pathology: a triangle edge spanning most of the model.
+    assert(max_edge_len(guard_off, r_off, positions) > 0.75f * extent);
+    // Guard ON: no surviving edge spans the surface, yet the mesh still coarsens.
+    assert(max_edge_len(guard_on, r_on, positions) < 0.5f * extent);
+    assert(r_on > 0 && r_on < ic);
+}
+
 int main() {
     test_meshlet_bounds_calculation();
     test_degenerate_triangles();
@@ -395,6 +440,7 @@ int main() {
     test_simplify_degenerate_input();
     test_simplify_grid();
     test_simplify_error_budget();
+    test_simplify_guard_bridge();
     printf("All tests passed successfully!\n");
     return 0;
 }

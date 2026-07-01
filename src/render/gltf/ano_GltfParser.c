@@ -98,7 +98,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             
             // Upload as an LOD chain (review 4.9 step 2). geometryPoolIndex is the chain BASE; the
             // chain length lives in the base mesh's metadata (cull reads it). ANO_DEFAULT_LOD_COUNT
-            // is 1 today (one full level == prior behavior); raise it to turn LOD on engine-wide.
+            // is 4, so LOD chains are on engine-wide (set it to 1 for a single full-detail level).
             AnoLodConfig lodCfg = ano_lod_config_default(ANO_DEFAULT_LOD_COUNT);
             uint32_t lodBase = 0u, lodProduced = 0u;
             geometry_pool_upload_chain(

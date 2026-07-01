@@ -182,7 +182,7 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 	// 1 spot = the 26-frustum static shadow atlas). Dir/spot direction is the transform's -column2.
 	uint32_t li = 0u;
     { mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-      x[2][0]=0.5f; x[2][1]=1.0f; x[2][2]=0.0f; // Shines directly overhead (straight down)
+      x[2][0]=0.2f; x[2][1]=1.0f; x[2][2]=0.0f; // Shines directly overhead (straight down)
       RenderLightParams p = { .color={1.0f,0.96f,0.9f}, .intensity=2.5f, .range=0.0f, .type=RENDER_LIGHT_DIRECTIONAL, .castsShadow=1u };
       spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
 	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,1.5f,1.2f,1}}; // warm point ORBITS +Y (exercises the anim path)
