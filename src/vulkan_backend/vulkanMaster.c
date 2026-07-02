@@ -192,6 +192,15 @@ static const RenderPassDef g_framePasses[] = {
         .prototype  = PIPELINE_COMPUTE_SCATTER,
         .dispatchX  = 0,  // computed from streamCount at runtime
     },
+    // 1b. Per-light world-pose precompute: resolve each light's world position + forward from its (now
+    //     final) driving transform ONCE per frame, so the fragment passes stop reloading the 64B mat4
+    //     and re-deriving lightPos/lightForward per fragment. Shared (not per view); after update+scatter
+    //     finalize transforms, before the geometry passes that read the pose (set 0 binding 12).
+    {
+        .type       = PASS_COMPUTE,
+        .prototype  = PIPELINE_COMPUTE_LIGHTSETUP,
+        .dispatchX  = 0,  // computed from light count at runtime
+    },
     // 2. Shadow-frustum setup: build each shadow map's light-space viewProj + planes from the
     //    light's live transform. Shared (not per view); must precede cull (which tests them).
     {
@@ -373,6 +382,7 @@ void recordCommandBuffer(uint32_t imageIndex)
     // frustum and writes all views' partitions at once, so it runs here, not per view.
     if (entityCount > 0) {
         uint32_t streamCount = rendererState.transformStream.count[rendererState.frameIndex];
+        uint32_t lightCount = rendererState.lightBuffer.count; // active light rows (lightsetup dispatch size)
         for (int p = 0; p < (int)(sizeof(g_framePasses)/sizeof(g_framePasses[0])); p++) {
             const RenderPassDef* pass = &g_framePasses[p];
             if (pass->type != PASS_COMPUTE || pass->perView) continue;
@@ -425,6 +435,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 pass->prototype == PIPELINE_COMPUTE_UPDATE      ? rendererState.frames[rendererState.frameIndex].updateSet :
                 pass->prototype == PIPELINE_COMPUTE_SCATTER     ? rendererState.frames[rendererState.frameIndex].scatterSet :
                 pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP ? rendererState.frames[rendererState.frameIndex].shadow.setupSet :
+                pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP  ? rendererState.frames[rendererState.frameIndex].lightsetupSet :
                                                                   rendererState.frames[rendererState.frameIndex].cullSet;
 
             // Scatter binding 1 (xform ring) is STORAGE_BUFFER_DYNAMIC: bind the
@@ -439,11 +450,15 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &entityCount);
             } else if (pass->prototype == PIPELINE_COMPUTE_SCATTER) {
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &streamCount);
+            } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
+                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &lightCount);
             }
 
             uint32_t dispatchX;
             if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
                 dispatchX = (ANO_SHADOW_FRUSTUM_COUNT + 63u) / 64u; // one invocation per shadow frustum
+            } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
+                dispatchX = (lightCount + 63u) / 64u; // one invocation per light (local_size_x = 64)
             } else {
                 uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
                 dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
@@ -461,6 +476,11 @@ void recordCommandBuffer(uint32_t imageIndex)
                 memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+            } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
+                // Per-light world pose is read by the fragment passes (flat/transmission set 0 binding 12).
+                memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else if (pass->prototype == PIPELINE_COMPUTE_UPDATE || pass->prototype == PIPELINE_COMPUTE_SCATTER) {
                 // update -> scatter is a WAW on streamed slots (scatter must win); both -> cull is a read.
@@ -2838,6 +2858,43 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
     return true;
 }
 
+// Per-light world pose (vec4 worldPos + vec4 worldDir = 32B/light). ×MAX_FRAMES_IN_FLIGHT DEVICE_LOCAL,
+// written by lightsetup.comp each frame and read by the fragment passes — same storage class as the
+// transform buffer, so it reuses TransformBuffer (mapped[] stays NULL for device-local). Fixed at the
+// light palette capacity (never grown, like lightBuffer).
+bool createLightPoseBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxLights, VkMemoryPropertyFlags props) {
+    buf->capacity = maxLights;
+    buf->count = 0;
+
+    VkDeviceSize bufferSize = (VkDeviceSize)(sizeof(float) * 8u) * maxLights; // vec4 worldPos + vec4 worldDir
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &buf->buffer[i]) != VK_SUCCESS) {
+            printf("Failed to create light pose buffer!\n");
+            return false;
+        }
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(ctx->device, buf->buffer[i], &memRequirements);
+
+        buf->allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, props);
+        if (buf->allocs[i].memory == VK_NULL_HANDLE) {
+            vkDestroyBuffer(ctx->device, buf->buffer[i], NULL);
+            return false;
+        }
+        vkBindBufferMemory(ctx->device, buf->buffer[i], buf->allocs[i].memory, buf->allocs[i].offset);
+
+        buf->mapped[i] = (mat4*)buf->allocs[i].mapped;
+    }
+    return true;
+}
+
 bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
     // Size for the larger of the two command formats so one allocation serves both
@@ -3441,6 +3498,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createStreamBuffers(&ctx, &rendererState, STREAM_CAPACITY) ||
 	    !createMaterialBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
+	    !createLightPoseBuffer(&ctx, &rendererState.lightPoseBuffer, PALETTE_CAPACITY,
+	                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createCullingBuffers(&ctx, &rendererState, maxEntities) ||
 	    !createClusterBuffers(&ctx, &rendererState) ||

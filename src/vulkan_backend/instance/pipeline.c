@@ -176,7 +176,16 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	clusterIndexLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	clusterIndexLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[12] = {
+	// 12: per-light world pose (worldPos/worldDir), precomputed by lightsetup.comp. Fragment-only:
+	// replaces the per-fragment transform reload + derivation in flat.frag / transmission.frag.
+	VkDescriptorSetLayoutBinding lightPoseLayoutBinding = {};
+	lightPoseLayoutBinding.binding = 12;
+	lightPoseLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lightPoseLayoutBinding.descriptorCount = 1;
+	lightPoseLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	lightPoseLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[13] = {
 		uboLayoutBinding,
 		ssboLayoutBinding,
 		materialLayoutBinding,
@@ -188,12 +197,13 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		lightLayoutBinding,
 		instanceDataLayoutBinding,
 		clusterCountLayoutBinding,
-		clusterIndexLayoutBinding
+		clusterIndexLayoutBinding,
+		lightPoseLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 12;
+	layoutInfo.bindingCount = 13;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -838,6 +848,66 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(lightcullShaderCode.data);
     vkDestroyShaderModule(ctx->device, lightcullShaderModule, NULL);
 
+    // Compute Light-setup Pipeline: per-light world pose (worldPos/worldDir) precompute, so the
+    // fragment passes stop reloading the 64B transform + re-deriving lightPos/lightForward per fragment.
+    // 0: TransformSSBO (in)  1: LightSSBO (in)  2: LightPoseSSBO (out). Push constant: light count.
+    VkDescriptorSetLayoutBinding lightsetupBindings[3] = {};
+    for (uint32_t b = 0; b < 3; ++b) {
+        lightsetupBindings[b].binding = b;
+        lightsetupBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        lightsetupBindings[b].descriptorCount = 1;
+        lightsetupBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo lightsetupLayoutInfo = {};
+    lightsetupLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    lightsetupLayoutInfo.bindingCount = 3;
+    lightsetupLayoutInfo.pBindings = lightsetupBindings;
+    if (vkCreateDescriptorSetLayout(ctx->device, &lightsetupLayoutInfo, NULL, &state->lightsetupSetLayout) != VK_SUCCESS)
+        return false;
+
+    VkPushConstantRange lightsetupPush = {};
+    lightsetupPush.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    lightsetupPush.offset = 0;
+    lightsetupPush.size = sizeof(uint32_t); // lightCount
+
+    VkPipelineLayoutCreateInfo lightsetupPipelineLayoutInfo = {};
+    lightsetupPipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    lightsetupPipelineLayoutInfo.setLayoutCount = 1;
+    lightsetupPipelineLayoutInfo.pSetLayouts = &state->lightsetupSetLayout;
+    lightsetupPipelineLayoutInfo.pushConstantRangeCount = 1;
+    lightsetupPipelineLayoutInfo.pPushConstantRanges = &lightsetupPush;
+    if (vkCreatePipelineLayout(ctx->device, &lightsetupPipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].layout) != VK_SUCCESS)
+        return false;
+
+    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].type = PIPELINE_COMPUTE_LIGHTSETUP;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementationCount = 1;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].supportedFeatures = PBR_FEATURE_NONE;
+
+    struct Buffer lightsetupShaderCode;
+    char lightsetupShaderPath[256];
+    snprintf(lightsetupShaderPath, sizeof(lightsetupShaderPath), "%s/resources/shaders/lightsetup.comp.spv", PROJECT_ROOT);
+    if (!loadFile(lightsetupShaderPath, &lightsetupShaderCode)) return false;
+    VkShaderModule lightsetupShaderModule = createShaderModule(ctx->device, &lightsetupShaderCode);
+
+    VkComputePipelineCreateInfo lightsetupPipelineInfo = {};
+    lightsetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    lightsetupPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].layout;
+    lightsetupPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    lightsetupPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    lightsetupPipelineInfo.stage.module = lightsetupShaderModule;
+    lightsetupPipelineInfo.stage.pName = "main";
+
+    VkPipelineCacheCreateInfo lightsetupCacheInfo = {};
+    lightsetupCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    vkCreatePipelineCache(ctx->device, &lightsetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache);
+
+    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache, 1, &lightsetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+    ano_aligned_free(lightsetupShaderCode.data);
+    vkDestroyShaderModule(ctx->device, lightsetupShaderModule, NULL);
+
     // Compute Shadow-setup Pipeline (audit 4.7): builds each shadow frustum's light-space viewProj
     // + planes from the light's live transform. Set layout created in ano_vk_init_cull_layout.
     VkPipelineLayoutCreateInfo shadowSetupLayoutInfo = {};
@@ -1341,6 +1411,12 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyDescriptorSetLayout(ctx->device, state->lightcullSetLayout, NULL);
         state->lightcullSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (state->lightsetupSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(ctx->device, state->lightsetupSetLayout, NULL);
+        state->lightsetupSetLayout = VK_NULL_HANDLE;
     }
 
 	// Material layouts
