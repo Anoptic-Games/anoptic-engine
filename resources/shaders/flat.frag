@@ -313,16 +313,26 @@ void main() {
             continue;
         }
 
+        // A light whose direction faces away from the surface contributes exactly zero: the entire BRDF is
+        // scaled by NdotL. Skip its shadow taps + BRDF before paying for them (the dominant avoidable cost
+        // on shadow-heavy views). nDotL is reused below as the shadow slope bias.
+        float nDotL = max(dot(N, L), 0.0);
+        if (nDotL <= 0.0) {
+            continue;
+        }
+
         // Shadowing: a casting light attenuates radiance by its shadow map. Directional/spot sample
         // their single frustum at baseFrustum; point lights pick one of 6 cube faces by dominant axis.
+        // si is read only when the light can actually shadow this frame; otherwise the SSBO load is dead.
         float shadowFactor = 1.0;
-        ShadowLightInfo si = shadowInfoBuf.info[i];
-        if (lightUsesShadowMap(light.type, global.lightingMode) && si.castsShadow != 0u && si.frustumCount > 0u) {
-            float nDotL = max(dot(N, L), 0.0);
-            if (light.type == LIGHT_TYPE_POINT)
-                shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
-            else
-                shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
+        if (lightUsesShadowMap(light.type, global.lightingMode)) {
+            ShadowLightInfo si = shadowInfoBuf.info[i];
+            if (si.castsShadow != 0u && si.frustumCount > 0u) {
+                if (light.type == LIGHT_TYPE_POINT)
+                    shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
+                else
+                    shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
+            }
         }
 
         vec3 radiance = light.color * light.intensity * attenuation * shadowFactor;
