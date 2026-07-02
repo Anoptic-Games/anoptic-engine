@@ -45,8 +45,28 @@ static ano_file    *g_outFile;         // the open output file, or NULL
 // g_drainRun gates its loop, cleared at cleanup before the join.
 static anothread_t  g_drainThread;
 static atomic_bool  g_drainRun;
-#define DRAIN_IDLE_US     100u      // park this long after an empty drain pass, microseconds
-#define FULL_STALL_LIMIT  65536u    // full rechecks with head frozen before declaring the consumer wedged
+
+// Park/wake for the owned consumer. After an empty pass the drainer parks on g_wakeCv and producers
+// signal it on the empty->nonempty transition, so the ring drains at wake latency instead of a fixed
+// poll period. g_drainerParked keeps the producer's check to one relaxed load when the drainer is
+// awake (the common case under load). The park is a timedwait capped at DRAIN_PARK_US: a producer's
+// tag publish (release store) and its g_drainerParked load can reorder against the drainer's
+// parked-store + head-recheck (the classic store-buffering interleaving), losing one wakeup. The cap
+// bounds that loss; it is an emission-latency bound, not a correctness gate, and ano_log_flush stays
+// synchronous regardless.
+static anothread_mutex_t g_wakeMtx;
+static anothread_cond_t  g_wakeCv;
+static atomic_bool       g_drainerParked;
+#define DRAIN_PARK_US     1000u     // park cap: worst-case emission delay on a lost wakeup
+
+// Full-ring producer backoff: escalate the spin between head rechecks from MIN to MAX (doubling),
+// snapping back to MIN whenever head advances. Short stalls stay responsive, long stalls get off
+// the consumer's cache lines. FULL_STALL_LIMIT counts rechecks with head frozen before declaring
+// the consumer wedged; at the capped spin that is tens of ms of zero progress, a catastrophic
+// fallback only (a producer died mid-publish and the drainer cannot pass its gap).
+#define FULL_BACKOFF_MIN_NS 64u
+#define FULL_BACKOFF_MAX_NS 8192u
+#define FULL_STALL_LIMIT    4096u
 
 // Writer set, bound once when the file opens or closes, so the write path never tests g_outFile.
 // g_persist writes a buffer (file else console). g_syncOut fsyncs or no-ops. g_haveFile gates the echo.
@@ -513,15 +533,47 @@ static uint64_t drain(void)
     return n;
 }
 
+// Signal the parked drainer. Producers reach here only after seeing g_drainerParked, so the mutex
+// is uncontended except against the drainer's own park/unpark transitions.
+static void wake_drainer(void)
+{
+    ano_mutex_lock(&g_wakeMtx);
+    ano_thread_cond_signal(&g_wakeCv);
+    ano_mutex_unlock(&g_wakeMtx);
+}
+
+// Park after an empty pass. The parked flag goes up first, then the ring is rechecked under it:
+// a producer that published before the flag went up is caught by the recheck, one that publishes
+// after it sees the flag and signals. The seq_cst store/load pair keeps that window to the
+// store-buffering interleaving, which the DRAIN_PARK_US timedwait cap bounds.
+static void drainer_park(void)
+{
+    ano_mutex_lock(&g_wakeMtx);
+    atomic_store_explicit(&g_drainerParked, true, memory_order_seq_cst);
+    uint64_t t = atomic_load_explicit(&g_ring.tail, memory_order_seq_cst);
+    uint64_t h = atomic_load_explicit(&g_ring.head, memory_order_relaxed);  // drainer-private
+    if (t == h && atomic_load_explicit(&g_drainRun, memory_order_relaxed)) {
+        struct timespec ts;
+        timespec_get(&ts, TIME_UTC);    // CLOCK_REALTIME base, what cond_timedwait expects
+        uint64_t ns = (uint64_t)ts.tv_nsec + (uint64_t)DRAIN_PARK_US * 1000u;
+        ts.tv_sec  += (time_t)(ns / 1000000000u);
+        ts.tv_nsec  = (long)(ns % 1000000000u);
+        ano_thread_cond_timedwait(&g_wakeCv, &g_wakeMtx, &ts);
+    }
+    atomic_store_explicit(&g_drainerParked, false, memory_order_relaxed);
+    ano_mutex_unlock(&g_wakeMtx);
+}
+
 // The owned consumer. Drains continuously while there is work, so the ring stays empty
-// under load and producers never drain themselves. Parks briefly on an empty pass, so an idle logger
-// costs nothing. ano_log_flush still drains inline for callers that need it now.
+// under load and producers never drain themselves. Parks on an empty pass until a producer's
+// wake (or the park cap), so an idle logger costs nothing and the first record after idle is
+// drained at wake latency. ano_log_flush still drains inline for callers that need it now.
 static void *drainer_main(void *arg)
 {
     (void)arg;
     while (atomic_load_explicit(&g_drainRun, memory_order_relaxed)) {
         if (drain() == 0)
-            ano_sleep(DRAIN_IDLE_US);   // empty pass: park, else stay hot and loop
+            drainer_park();     // empty pass: park until woken, else stay hot and loop
     }
     return NULL;
 }
@@ -552,6 +604,7 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
     uint64_t cap = log_lines(&g_ring);
     uint64_t pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);
     uint64_t lastHead = 0;
+    uint64_t backoff = FULL_BACKOFF_MIN_NS;
     uint32_t stall = 0;
     bool waited = false;
     for (;;) {
@@ -563,7 +616,7 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
             // an unpassable gap) write this line through so a wedge degrades to direct output. The
             // reservation isn't claimed yet (no CAS), so bailing leaks no slot.
             waited = true;
-            if (hd != lastHead) { lastHead = hd; stall = 0; }
+            if (hd != lastHead) { lastHead = hd; stall = 0; backoff = FULL_BACKOFF_MIN_NS; }
             else if (++stall > FULL_STALL_LIMIT) {
                 if (deferred) {   // render the capture blob to text for the direct write
                     char txt[ANO_LOG_MSG_MAX];
@@ -574,7 +627,12 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
                 }
                 return 1;
             }
-            ano_busywait(128);  // brief, off the consumer's cache line between rechecks
+            // A full ring normally means the drainer is awake and busy; if it is parked (a lost
+            // wakeup during the fill), signal it rather than spinning out its park cap.
+            if (atomic_load_explicit(&g_drainerParked, memory_order_seq_cst))
+                wake_drainer();
+            ano_busywait(backoff);  // escalating, off the consumer's cache line between rechecks
+            if (backoff < FULL_BACKOFF_MAX_NS) backoff <<= 1;
             pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);     // re-snapshot, retry
             continue;
         }
@@ -591,6 +649,11 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
                      .flags = (uint8_t)(ANO_LOG_COMMITTED | (deferred ? ANO_LOG_DEFERRED : 0)),
                      .cycle = log_cycle(&g_ring, pos) };
     atomic_store_explicit(&m->tag, v.w, memory_order_release);  // publish: one gate, whole record
+
+    // Empty->nonempty wake: one relaxed-cost load when the drainer is awake (the common case under
+    // load). A parked drainer is signaled so the record drains at wake latency, not the park cap.
+    if (atomic_load_explicit(&g_drainerParked, memory_order_seq_cst))
+        wake_drainer();
     return waited ? 1 : 0;   // 1: the ring was full, so we waited for the consumer to make room
 }
 
@@ -650,11 +713,24 @@ int ano_log_init(void)
     if (ano_mutex_init(&g_outFileMtx, NULL) != 0)
         return -1;
     if (ano_mutex_init(&g_drainMtx, NULL) != 0) { ano_mutex_destroy(&g_outFileMtx); return -1; }
+    if (ano_mutex_init(&g_wakeMtx, NULL) != 0) {
+        ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
+        return -1;
+    }
+    if (ano_thread_cond_init(&g_wakeCv, NULL) != 0) {
+        ano_mutex_destroy(&g_wakeMtx); ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
+        return -1;
+    }
+    atomic_store_explicit(&g_drainerParked, false, memory_order_relaxed);
 
     g_ring.mask  = ANO_LOG_RING_LINES - 1;
     g_ring.shift = (uint32_t)__builtin_ctzll(ANO_LOG_RING_LINES);   // log2(N) for the lap counter
     g_ring.buf   = ano_aligned_malloc(ANO_LOG_RING_BYTES, ANO_LOG_RING_ALIGN);
-    if (g_ring.buf == NULL) { ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx); return -1; }
+    if (g_ring.buf == NULL) {
+        ano_thread_cond_destroy(&g_wakeCv); ano_mutex_destroy(&g_wakeMtx);
+        ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
+        return -1;
+    }
     memset(g_ring.buf, 0, ANO_LOG_RING_BYTES);
     atomic_store(&g_ring.tail, 0);
     atomic_store(&g_ring.head, 0);
@@ -665,6 +741,7 @@ int ano_log_init(void)
     g_batch = mi_malloc(g_batchCap);
     if (g_batch == NULL) {
         ano_aligned_free(g_ring.buf);
+        ano_thread_cond_destroy(&g_wakeCv); ano_mutex_destroy(&g_wakeMtx);
         ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
         return -1;
     }
@@ -691,6 +768,7 @@ int ano_log_init(void)
         atomic_store_explicit(&g_initialized, false, memory_order_release);
         ano_aligned_free(g_ring.buf); g_ring.buf = NULL;
         mi_free(g_batch);             g_batch = NULL;
+        ano_thread_cond_destroy(&g_wakeCv); ano_mutex_destroy(&g_wakeMtx);
         ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
         return -1;
     }
@@ -708,8 +786,10 @@ int ano_log_cleanup(void)
     atomic_store_explicit(&g_initialized, false, memory_order_release);
     atomic_store_explicit(&g_minLevel, INT_MAX, memory_order_relaxed);   // close the gate: enqueues now no-op
 
-    // Stop the owned consumer before tearing down the ring it reads.
+    // Stop the owned consumer before tearing down the ring it reads. The signal cuts a parked
+    // drainer's timedwait short so the join doesn't ride out the park cap.
     atomic_store_explicit(&g_drainRun, false, memory_order_relaxed);
+    wake_drainer();
     ano_thread_join(g_drainThread, NULL);
 
     drain();    // one final drain, no producers remain by contract
@@ -724,6 +804,8 @@ int ano_log_cleanup(void)
 
     ano_aligned_free(g_ring.buf); g_ring.buf = NULL;
     mi_free(g_batch);             g_batch = NULL;
+    ano_thread_cond_destroy(&g_wakeCv);
+    ano_mutex_destroy(&g_wakeMtx);
     ano_mutex_destroy(&g_drainMtx);
     ano_mutex_destroy(&g_outFileMtx);
     return 0;

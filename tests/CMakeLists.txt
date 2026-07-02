@@ -48,6 +48,15 @@ target_link_libraries(anotest_logbench PRIVATE anoptic_core)
 add_test(NAME anoptic_logbench COMMAND anotest_logbench)
 set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
+# Logger tail benchmark: per-call enqueue latency percentiles (p50/p90/p99/p99.9) from a calibrated
+# rdtsc tick source -- the percentile complement to anotest_logbench's means. Built so it cannot
+# rot, DISABLED in ctest -- run ./anotest_logtail by hand.
+add_executable(anotest_logtail anotest_logtail.c)
+target_compile_definitions(anotest_logtail PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(anotest_logtail PRIVATE anoptic_core)
+add_test(NAME anoptic_logtail COMMAND anotest_logtail)
+set_tests_properties(anoptic_logtail PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
 # Logger fuzzer: many producers drive ano_log_* with randomized well-typed input (variable-length
 # content as "%s", a fixed (literal-fmt, typed-arg) table for the deferred formatter, immediates, and
 # output-dir swaps) while a flusher drains on short random intervals. Oracle: the logger drops nothing,

@@ -21,6 +21,9 @@
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
+#include "templates/rng.h"          // per-thread deterministic xorshift
+#include "templates/scratch.h"      // scratch dirs, ANO_TEST_OUTDIR anchor
+
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,21 +31,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#include <direct.h>
-static void make_dir(const char *p) { _mkdir(p); }
-static void remove_dir(const char *p) { _rmdir(p); }
-#else
-#include <sys/stat.h>
-#include <unistd.h>
-static void make_dir(const char *p) { mkdir(p, 0777); }
-static void remove_dir(const char *p) { rmdir(p); }
-#endif
-
-// CMake points ANO_TEST_OUTDIR at this test's build tree, so the scratch dir never lands in the caller's CWD.
-#ifndef ANO_TEST_OUTDIR
-#define ANO_TEST_OUTDIR "."
-#endif
 #define BENCH_DIR   ANO_TEST_OUTDIR "/anolog_bench"
 
 #define LAT_BURST   512      // enqueues per timed round; must fit both buffers with no drain
@@ -160,26 +148,24 @@ static double run_throughput(const logger_api *api, int producers)
 /* Variable-length throughput (random length 8..1024B, random ASCII content)
    Stresses ring spanning / wrapping / full. Content is built as a NUL-terminated string and logged
    as ("%s", buf) -- the format is a literal, so no varargs/format mismatch is ever possible.
-   rand() is seeded once per battery (VAR_SEED) for reproducibility. */
+   Each producer owns a test_rng seeded from the battery seed + its id, so content streams are
+   reproducible per thread (the old shared rand() never was under concurrency). */
 
-static int g_var_msgs;          // per-thread message count for the active variable-length battery
+static int      g_var_msgs;     // per-thread message count for the active variable-length battery
+static unsigned g_var_seed;     // battery seed, mixed with each producer's id
 
-static char rand_ascii(void)    // printable ASCII, no embedded NUL
+static inline test_rng bench_thread_rng(int id)
 {
-    static const char alphabet[] =
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,-_";
-    return alphabet[rand() % (int)(sizeof alphabet - 1)];
+    return rng_make(g_var_seed ^ (0x9E3779B9u * (uint32_t)(id + 1)));
 }
 
 static void *var_producer(void *p)
 {
     prod_arg *a = p;
+    test_rng rng = bench_thread_rng(a->id);
     char buf[VAR_MAX + 1];
     for (int i = 0; i < a->count; i++) {
-        int len = VAR_MIN + rand() % (VAR_MAX - VAR_MIN + 1);
-        for (int j = 0; j < len; j++)
-            buf[j] = rand_ascii();
-        buf[len] = '\0';
+        rng_fill_printable(&rng, buf, VAR_MIN, VAR_MAX);
         a->api->enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "%s", buf);   // literal fmt, random content
     }
     return NULL;
@@ -190,12 +176,11 @@ static void *var_producer(void *p)
 static void *mix_producer(void *p)
 {
     prod_arg *a = p;
+    test_rng rng = bench_thread_rng(a->id);
     char buf[MIX_LARGE + 1];
     for (int i = 0; i < a->count; i++) {
-        int len = (rand() & 1) ? MIX_LARGE : MIX_SMALL;
-        for (int j = 0; j < len; j++)
-            buf[j] = rand_ascii();
-        buf[len] = '\0';
+        size_t len = (rng_next(&rng) & 1) ? MIX_LARGE : MIX_SMALL;
+        rng_fill_printable(&rng, buf, len, len);
         a->api->enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "%s", buf);   // literal fmt, random content
     }
     return NULL;
@@ -206,7 +191,7 @@ static void *mix_producer(void *p)
 static double run_var_throughput(const logger_api *api, int producers,
                                  void *(*prod_fn)(void *), unsigned seed)
 {
-    srand(seed);    // reproducible content stream (producers spawned serially below)
+    g_var_seed = seed;  // producers derive per-thread rngs from this
 
     atomic_store(&g_flusher_stop, false);
     anothread_t fl;
@@ -267,7 +252,7 @@ static result measure(const logger_api *api)
 
 int main(void)
 {
-    make_dir(BENCH_DIR);
+    scratch_make_dir(BENCH_DIR);
 
     printf("Anoptic logger benchmark -- ring (lock-free MPSC) vs mutex baseline\n");
     printf("  latency:    %d enqueues x %d rounds, single thread, fast path\n", LAT_BURST, LAT_ROUNDS);
@@ -322,6 +307,6 @@ int main(void)
     // Tidy the throwaway files and directory.
     remove(BENCH_DIR "/anoptic.log");
     remove(BENCH_DIR "/anoptic_mtx.log");
-    remove_dir(BENCH_DIR);
+    scratch_remove_dir(BENCH_DIR);
     return 0;
 }
