@@ -162,6 +162,7 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 	bool drawIndirectCount;
 	bool meshShader;            // VK_EXT_mesh_shader present and meshShader feature usable; false selects the vertex-shader fallback path
 	bool depthMaxResolve;       // VK_RESOLVE_MODE_MAX_BIT in supportedDepthResolveModes: enables the Hi-Z single-sample depth-resolve path (else per-sample MSAA reduce)
+	bool shaderOutputLayer;     // vk1.2 shaderOutputLayer(+ViewportIndex): vertex-stage gl_Layer, enables the single-pass layered shadow blur (else per-layer passes)
 } DeviceCapabilities;
 
 typedef struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
@@ -754,9 +755,6 @@ typedef struct ShadowResources {
     GpuAllocation   tempAlloc;
     VkImageView     tempArrayView;   // blur-Y source (2D array)
     VkImageView     tempLayerView[ANO_SHADOW_ATLAS_LAYERS]; // blur-X render targets
-    VkImage         depthImage;      // transient nearest-occluder depth (single layer, reused)
-    GpuAllocation   depthAlloc;
-    VkImageView     depthView;       // depth render target (reused per shadow layer)
     VkDescriptorSet setupSet;        // shadowsetup.comp inputs/outputs
     VkDescriptorSet geomSet;         // moment render (flat.mesh / flat.vert) + frag sampling
     VkDescriptorSet blurAtlasSet;    // blur src = atlas array (X pass: atlas -> temp)
@@ -1042,10 +1040,22 @@ typedef struct RendererState
     VkDescriptorSetLayout   shadowGeomSetLayout; // moment render: shadow frustums + transforms + compacted indices + geometry
     VkPipelineCache         shadowCache;
     VkSampler               shadowSampler;       // plain linear/clamp sampler for sampler2DArray (moments + blur taps)
-    // Moment prefilter: fullscreen separable Gaussian over the atlas, reusing tonemap.vert.
+    // Moment prefilter: fullscreen separable box over the atlas. Vertex stage is shadowblur.vert
+    // (gl_Layer from push constant, layered single-pass blur) when shaderOutputLayer is available,
+    // else tonemap.vert with per-layer render passes.
     VkPipeline              shadowBlurPipeline;
     VkPipelineLayout        shadowBlurLayout;
     VkDescriptorSetLayout   shadowBlurSetLayout; // 1 combined-image-sampler (blur source array)
+
+    // Transient nearest-occluder depth for the shadow atlas render: one slice per frustum so the
+    // per-frustum depth renders carry no cross-frustum dependency (no WAW barrier chain). Single
+    // instance across frames in flight — contents are frame-transient (loadOp CLEAR, never
+    // sampled); each frame's UNDEFINED->DEPTH transition orders the cross-frame WAR by naming
+    // EARLY|LATE_FRAGMENT_TESTS in its source scope (single in-order queue; same pattern as the
+    // Hi-Z pyramid cross-frame WAR).
+    VkImage                 shadowDepthImage;
+    GpuAllocation           shadowDepthAlloc;
+    VkImageView             shadowDepthSliceView[ANO_SHADOW_FRUSTUM_COUNT];
 
     // Shadow config: per-frustum (which light/face/active) + per-light (where its maps live). Both
     // are SlotUpload (×1 device + delta staging) so the runtime caster lifecycle can mutate them

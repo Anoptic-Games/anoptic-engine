@@ -1262,9 +1262,11 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 
 	if (r != VK_SUCCESS) { printf("Failed to create shadow depth pipeline!\n"); return false; }
 
-	// --- Moment prefilter pipeline: fullscreen separable Gaussian over the atlas (X then Y) ---
+	// --- Moment prefilter pipeline: fullscreen separable box over the atlas (X then Y) ---
 	// One combined-image-sampler (the blur source array) at set 0, plus a 16-byte push (dir + layer).
-	// Vertex stage is the shared fullscreen triangle (tonemap.vert); the frag is shadowblur.frag.
+	// Vertex stage: shadowblur.vert (fullscreen triangle + gl_Layer from the push constant) when the
+	// device has vertex-stage gl_Layer, so both blur directions render as ONE layered pass each;
+	// else the plain fullscreen triangle (tonemap.vert) with per-layer passes. Frag: shadowblur.frag.
 	VkDescriptorSetLayoutBinding blurBinding = {};
 	blurBinding.binding = 0;
 	blurBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1275,7 +1277,9 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (vkCreateDescriptorSetLayout(ctx->device, &blurSetInfo, NULL, &state->shadowBlurSetLayout) != VK_SUCCESS) {
 		printf("Failed to create shadow blur set layout!\n"); return false; }
 
-	VkPushConstantRange blurPush = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 }; // vec2 dir + int layer + int pad
+	// vec2 dir + int layer + int pad. VERTEX included for shadowblur.vert's gl_Layer routing; the
+	// fallback vertex stage ignores it (the record loop always pushes VERTEX|FRAGMENT to match).
+	VkPushConstantRange blurPush = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };
 	VkPipelineLayoutCreateInfo blurLayoutInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = 1, .pSetLayouts = &state->shadowBlurSetLayout,
 		.pushConstantRangeCount = 1, .pPushConstantRanges = &blurPush };
@@ -1283,7 +1287,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 		printf("Failed to create shadow blur pipeline layout!\n"); return false; }
 
 	struct Buffer blurVertCode, blurFragCode;
-	snprintf(path, sizeof(path), "%s/resources/shaders/tonemap.vert.spv", PROJECT_ROOT);
+	snprintf(path, sizeof(path), "%s/resources/shaders/%s.spv", PROJECT_ROOT,
+		ctx->deviceCapabilities.shaderOutputLayer ? "shadowblur.vert" : "tonemap.vert");
 	if (!loadFile(path, &blurVertCode)) return false;
 	snprintf(path, sizeof(path), "%s/resources/shaders/shadowblur.frag.spv", PROJECT_ROOT);
 	if (!loadFile(path, &blurFragCode)) return false;
