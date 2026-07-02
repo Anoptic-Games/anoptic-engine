@@ -1077,6 +1077,15 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
     state->swapChain = swapChain;
     state->imageFormat = chosenFormat.format;
     state->imageExtent = chosenExtent;
+    // Per-view render extents (review finding 6): view 0 fills the swapchain; auxiliary views
+    // render at their composite inset size — the SAME W/3 x H/3 integer math the tonemap composite
+    // uses for placement, so the inset samples its source 1:1 instead of minifying 3:1.
+    state->viewExtent[0] = chosenExtent;
+    for (uint32_t v = 1; v < ANO_VIEW_COUNT; v++) {
+        uint32_t iw = chosenExtent.width / 3u;  if (iw < 1u) iw = 1u;
+        uint32_t ih = chosenExtent.height / 3u; if (ih < 1u) ih = 1u;
+        state->viewExtent[v] = (VkExtent2D){ iw, ih };
+    }
     state->imageCount = imageCount;
     state->images = swapChainImages;
 
@@ -1149,38 +1158,33 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     }
 
 
-    // Free color image
-    if (state->colorImage != VK_NULL_HANDLE)
+    // Per-view MSAA color + picking-id attachments (memory backed by swapchainAllocator, reset below).
+    for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
     {
-        vkDestroyImage(ctx->device, state->colorImage, NULL);
-        state->colorImage = VK_NULL_HANDLE;
-    }
+        if (state->colorView[v])
+        {
+            vkDestroyImageView(ctx->device, state->colorView[v], NULL);
+            state->colorView[v] = VK_NULL_HANDLE;
+        }
+        if (state->colorImage[v] != VK_NULL_HANDLE)
+        {
+            vkDestroyImage(ctx->device, state->colorImage[v], NULL);
+            state->colorImage[v] = VK_NULL_HANDLE;
+        }
+        state->colorImageAlloc[v].memory = VK_NULL_HANDLE;
 
-    // Free color image memory (managed by swapchainAllocator, so no manual vkFreeMemory)
-    if (state->colorImageAlloc.memory != VK_NULL_HANDLE)
-    {
-        state->colorImageAlloc.memory = VK_NULL_HANDLE;
+        if (state->pickIdView[v] != VK_NULL_HANDLE)
+        {
+            vkDestroyImageView(ctx->device, state->pickIdView[v], NULL);
+            state->pickIdView[v] = VK_NULL_HANDLE;
+        }
+        if (state->pickIdImage[v] != VK_NULL_HANDLE)
+        {
+            vkDestroyImage(ctx->device, state->pickIdImage[v], NULL);
+            state->pickIdImage[v] = VK_NULL_HANDLE;
+        }
+        state->pickIdImageAlloc[v].memory = VK_NULL_HANDLE;
     }
-
-    // Destroy color image view
-    if (state->colorView)
-    {
-        vkDestroyImageView(ctx->device, state->colorView, NULL);
-        state->colorView = VK_NULL_HANDLE;
-    }
-
-    // Picking id attachment (memory backed by swapchainAllocator, reset below).
-    if (state->pickIdView != VK_NULL_HANDLE)
-    {
-        vkDestroyImageView(ctx->device, state->pickIdView, NULL);
-        state->pickIdView = VK_NULL_HANDLE;
-    }
-    if (state->pickIdImage != VK_NULL_HANDLE)
-    {
-        vkDestroyImage(ctx->device, state->pickIdImage, NULL);
-        state->pickIdImage = VK_NULL_HANDLE;
-    }
-    state->pickIdImageAlloc.memory = VK_NULL_HANDLE;
 
     // Destroy per-view HDR resolve targets (memory backed by swapchainAllocator, reset below)
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -1449,10 +1453,9 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 	float upDefault[]     = {0.0f, 1.0f, 0.0f};  // world is unflipped
 	float fovDefault      = 45.0f;               // degrees
 
-	// Shared projection params. Both views render at full resolution (the inset is composited
-	// smaller), so they share the screen extent and froxel grid; only the camera differs. The
+	// Shared projection params. Each view renders at its OWN extent (view 0 = swapchain, insets =
+	// W/3 x H/3, review finding 6): aspect + froxel screen size come from viewExtent[v] below. The
 	// renderer always owns the projection (aspect/near/far); logic only supplies the view-0 pose.
-	float aspect = (float)state->imageExtent.width / (float)state->imageExtent.height;
 	float near = 0.1f;
 	float far = 100.0f;
 
@@ -1497,14 +1500,15 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 		u->cameraPos[2] = eye[2];
 		u->cameraPos[3] = 1.0f;
 
+		float aspect = (float)state->viewExtent[v].width / (float)state->viewExtent[v].height;
 		perspective(u->proj, fov, aspect, near, far);
 
-		// Clustered-forward froxel params: near/far + screen size (the light-cull pass and the
-		// fragment shader reconstruct froxels from these), and the fixed grid dimensions.
+		// Clustered-forward froxel params: near/far + THIS VIEW's render extent (the light-cull
+		// pass and the fragment shader reconstruct froxels from these), and the fixed grid dims.
 		u->cameraNear = near;
 		u->cameraFar = far;
-		u->screenWidth = (float)state->imageExtent.width;
-		u->screenHeight = (float)state->imageExtent.height;
+		u->screenWidth = (float)state->viewExtent[v].width;
+		u->screenHeight = (float)state->viewExtent[v].height;
 		u->clusterDimX = ANO_CLUSTER_X;
 		u->clusterDimY = ANO_CLUSTER_Y;
 		u->clusterDimZ = ANO_CLUSTER_Z;
@@ -1603,9 +1607,9 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 		{
 			ViewResources* vr = &state->frames[i].views[v];
 			// SAMPLED_BIT (review 4.9 step 3): the Hi-Z reduce pass reads this MSAA depth via a
-			// sampler2DMS to build the occlusion pyramid mip 0.
-			if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width,
-				state->imageExtent.height, 1, ctx->msaaSamples, state->depthFormat,
+			// sampler2DMS to build the occlusion pyramid mip 0. Sized to the VIEW's extent.
+			if (!createImage(ctx, &swapchainAllocator, state->viewExtent[v].width,
+				state->viewExtent[v].height, 1, ctx->msaaSamples, state->depthFormat,
 				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 							 &vr->depthImage, &vr->depthAlloc, false))
 			{
@@ -1627,8 +1631,8 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 			// DEPTH_ATTACHMENT (the build resolves into it, flips it to SHADER_READ for the reduce, back).
 			if (ctx->deviceCapabilities.depthMaxResolve)
 			{
-				if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width,
-					state->imageExtent.height, 1, VK_SAMPLE_COUNT_1_BIT, state->depthFormat,
+				if (!createImage(ctx, &swapchainAllocator, state->viewExtent[v].width,
+					state->viewExtent[v].height, 1, VK_SAMPLE_COUNT_1_BIT, state->depthFormat,
 					VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 								 &vr->depthResolveImage, &vr->depthResolveAlloc, false))
 				{
@@ -1657,20 +1661,21 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 // transitions UNDEFINED->GENERAL each frame (it fully rewrites every mip).
 bool createHiZResources(VulkanContext* ctx, RendererState* state)
 {
-	uint32_t w = (state->imageExtent.width  + 1u) / 2u; if (w < 1u) w = 1u;
-	uint32_t h = (state->imageExtent.height + 1u) / 2u; if (h < 1u) h = 1u;
-	uint32_t mips = 1u;
-	for (uint32_t m = (w > h) ? w : h; m > 1u; m >>= 1) ++mips;
-	if (mips > ANO_MAX_HIZ_MIPS) mips = ANO_MAX_HIZ_MIPS;
-	state->hizWidth = w;
-	state->hizHeight = h;
-	state->hizMipCount = mips;
-
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
+			// Per-view pyramid: half the VIEW's render extent (views render at their own
+			// resolution, review finding 6), so mip counts differ per view.
+			uint32_t w = (state->viewExtent[v].width  + 1u) / 2u; if (w < 1u) w = 1u;
+			uint32_t h = (state->viewExtent[v].height + 1u) / 2u; if (h < 1u) h = 1u;
+			uint32_t mips = 1u;
+			for (uint32_t m = (w > h) ? w : h; m > 1u; m >>= 1) ++mips;
+			if (mips > ANO_MAX_HIZ_MIPS) mips = ANO_MAX_HIZ_MIPS;
+
 			ViewResources* vr = &state->frames[i].views[v];
+			vr->hizWidth = w;
+			vr->hizHeight = h;
 			vr->hizMipCount = mips;
 			if (!createImage(ctx, &swapchainAllocator, w, h, mips, VK_SAMPLE_COUNT_1_BIT,
 				VK_FORMAT_R32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
@@ -1720,41 +1725,46 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 {
 	// Geometry renders into an HDR float MSAA target (was the swapchain LDR format), so
 	// many-light dynamic range is preserved; a fullscreen tonemap pass encodes to the
-	// swapchain afterwards. The MSAA target stays transient (resolved, never stored).
+	// swapchain afterwards. The MSAA targets stay transient (resolved, never stored) and are
+	// PER VIEW (review finding 6): each is sized to its view's extent, and the views stop
+	// sharing an attachment — no inter-view reuse barrier, so their raster may overlap.
 	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT;
 
-	createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
-		1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageAlloc, false);
-	rendererState.colorView = createImageView(ctx->device, rendererState.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-
-	if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+	for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 	{
-		printf("Failed to transition color image layout!\n");
-	}
+		createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+			1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage[v], &rendererState.colorImageAlloc[v], false);
+		rendererState.colorView[v] = createImageView(ctx->device, rendererState.colorImage[v], colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 
-	// Shared MSAA picking-id attachment (audit 3.1): mirrors the MSAA color above (transient,
-	// resolved per view, never stored). The opaque pass writes each fragment's slot here; view 0
-	// resolves it to a single-sample target (below) for cursor readback.
-	createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
-		1, ctx->msaaSamples, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.pickIdImage, &rendererState.pickIdImageAlloc, false);
-	rendererState.pickIdView = createImageView(ctx->device, rendererState.pickIdImage, VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-	if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.pickIdImage, VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
-	{
-		printf("Failed to transition picking id image layout!\n");
+		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage[v], colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+		{
+			printf("Failed to transition color image layout (view %u)!\n", v);
+		}
+
+		// MSAA picking-id attachment (audit 3.1): mirrors the MSAA color above (transient,
+		// resolved for view 0, discarded elsewhere). Per view like the color target: the opaque
+		// pipeline always declares both attachments, so every view needs one at its own extent.
+		createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+			1, ctx->msaaSamples, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.pickIdImage[v], &rendererState.pickIdImageAlloc[v], false);
+		rendererState.pickIdView[v] = createImageView(ctx->device, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+		{
+			printf("Failed to transition picking id image layout (view %u)!\n", v);
+		}
 	}
 
 	// Single-sample HDR resolve target, one per view per frame: resolve destination
 	// (COLOR_ATTACHMENT) for that view's MSAA HDR pass, and composite source (SAMPLED). Not
 	// transient — the composite reads it back. Seeded to SHADER_READ_ONLY; recordCommandBuffer
-	// re-transitions per frame. The shared MSAA color above is reused across views sequentially.
+	// re-transitions per frame. Sized to the view's extent (the composite samples it 1:1).
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
 			ViewResources* vr = &rendererState.frames[i].views[v];
-			createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+			createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
 				1, VK_SAMPLE_COUNT_1_BIT, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 						VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->hdrColorImage, &vr->hdrColorAlloc, false);
 			vr->hdrColorView = createImageView(ctx->device, vr->hdrColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
