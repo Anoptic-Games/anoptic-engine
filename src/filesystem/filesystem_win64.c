@@ -85,12 +85,15 @@ struct ano_file {
 };
 
 // Output: handle opened FILE_APPEND_DATA, or NULL on failure. OPEN_ALWAYS creates if absent.
+// FILE_SHARE_DELETE gives POSIX unlink parity: another process (or a test) may remove/replace
+// the log file while we hold it open, as it can on Linux/macOS.
 ano_file *ano_fs_open_append(const char *path)
 {
     if (path == NULL)
         return NULL;
 
-    HANDLE handle = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
+    HANDLE handle = CreateFileA(path, FILE_APPEND_DATA,
+                                FILE_SHARE_READ | FILE_SHARE_DELETE, NULL,
                                 OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (handle == INVALID_HANDLE_VALUE)
         return NULL;

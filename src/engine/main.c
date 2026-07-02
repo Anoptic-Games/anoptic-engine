@@ -4,8 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Core includes (compiled in both graphical and headless builds)
-#include <mimalloc.h>
-#include <mimalloc-override.h>
+#include <anoptic_memory.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>

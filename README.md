@@ -17,7 +17,7 @@ git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 - **Events**: Enable interactions between different systems via a generalized event bus.
 - **Vulkan Renderer**: GPU-driven Vulkan backend, run on a dedicated render thread that owns all GPU resources and the renderable slot space. Meshlet rendering via `VK_EXT_mesh_shader` on modern hardware, with an automatic vertex-shader fallback for devices that lack the extension (see [Rendering Compatibility](#rendering-compatibility)). Per-entity GPU buffers grow dynamically, so entity count is not capped by a fixed ceiling.
 - **Custom Allocators**: Uses mimalloc for a fast global allocator implementation, as well as several special-purpose local allocators.
-- **Platform Compatibility**: Built and tested for full feature parity on both Linux and Windows.
+- **Platform Compatibility**: Built and tested for full feature parity on Linux, macOS, and Windows.
 - **Networking**: Built-in networking support for p2p or authoritative server.
 
 ### Installation
@@ -34,23 +34,17 @@ See [Editor Setup](#editor-setup).
 
 ### Building
 
-Both `build.sh` (Linux/macOS) and `build.bat` (Windows) take a single numeric argument
-selecting the build profile. Output goes to `build/<label>/`, and assets from `assets/`
-are copied there automatically.
+Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat` (Windows). Run it with no arguments and it prints the available build profiles. The rundown:
 
-| Arg | Label        | Description                                              | Output dir         |
-|-----|--------------|----------------------------------------------------------|--------------------|
-| `1` | Release      | Optimized build                                          | `build/Release/`   |
-| `2` | Debug        | Debug build (validation layers on)                       | `build/Debug/`     |
-| `3` | Tests        | Debug build + run the CTest suite                        | `build/Tests/`     |
-| `4` | Tests-ASan   | Tests with AddressSanitizer + UBSan                      | `build/Tests-ASan/`|
-| `5` | Tests-TSan   | Tests with ThreadSanitizer                               | `build/Tests-TSan/`|
-| `6` | Headless     | Core + tests with the Vulkan renderer disabled           | `build/Headless/`  |
+- **Release** — the optimized (`-O3`) engine build.
+- **Debug** — debug build, Vulkan validation layers on.
+- **Tests** — Debug build + the full CTest suite.
+- **Sanitizer tests** — the same suite under AddressSanitizer/UBSan or ThreadSanitizer.
+- **Headless** — core + tests with the renderer disabled entirely.
+- **Release tests** — the CTest suite at `-O3`; the one to use for benchmarks.
 
-```bash
-./build.sh 2        # Debug build
-./build.sh 3        # build + run all tests
-```
+Output goes to `build/<label>/`, and assets from `assets/` are copied there automatically.
+`assets/` is gitignored. The demo scene and the Vulkan tests load `viking_room.gltf` (the vulkan-tutorial viking room) and `GlassHurricaneCandleHolder.gltf` (Khronos [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)) plus their textures from it — populate it before running the engine or the full test suite.
 
 These map to the following CMake options, which can also be passed directly:
 `-DANOPTIC_TESTS=ON` (build the test suite), `-DANOPTIC_HEADLESS=ON` (omit the renderer,
@@ -73,8 +67,7 @@ Additional guidance:
 - [Microsoft Documentation](https://learn.microsoft.com/en-us/vcpkg/users/platforms/mingw)
 - [CLion Configuration](https://www.jetbrains.com/help/clion/quick-tutorial-on-configuring-clion-on-windows.html#clang-mingw)
 
-Once Mingw-w64 is installed with `clang` working on your system, run `build.bat <arg>`
-from the repository root using the same argument table above.
+Once Mingw-w64 is installed with `clang` working on your system, run `build.bat` from the repository root; its usage mirrors `build.sh`.
 
 ### Editor / LSP Setup
 
@@ -102,19 +95,14 @@ On VSCode, install the [clangd extension](https://marketplace.visualstudio.com/i
 
 ### Tests
 
-`./build.sh 3` builds and runs the full suite via CTest. The suite covers the platform
-layer (`anoptic_time`, `anoptic_logging`), the mesh pipeline (`anoptic_meshoptimizer`),
-and the Vulkan backend (`anotest_vk_lifecycle`, `anotest_vk_components`,
-`anotest_vk_compliance_layers`, `anotest_vk_memory`, `anotest_vk_sync`). The Vulkan tests
-create a real device, so they need a Vulkan-capable driver (a software rasterizer such as
-lavapipe is sufficient). To run a subset directly:
+The Tests profile of the build script builds and runs the full suite via CTest. The suite covers the platform layer (`anoptic_time`, `anoptic_logging`, `anoptic_memory`, plus the `anotest_logfuzz` logger fuzzer), the mesh pipeline (`anoptic_meshoptimizer`), the logic/render transport (`anoptic_render_bridge`, `anoptic_render_slots`), and the Vulkan backend (`anotest_vk_lifecycle`, `anotest_vk_components`, `anotest_vk_compliance_layers`, `anotest_vk_memory`, `anotest_vk_sync`). The Vulkan tests create a real device, so they need a Vulkan-capable driver (a software rasterizer such as lavapipe is sufficient). To run a subset directly:
 
 ```bash
 ctest --test-dir build/Tests --output-on-failure -R anotest_vk
 ```
 
-Use profiles `4`/`5` to run the same suite under AddressSanitizer or ThreadSanitizer, and
-`6` for a headless build that skips the renderer entirely.
+The sanitizer profiles run the same suite under AddressSanitizer or ThreadSanitizer, and the Headless profile skips the renderer entirely. The sanitizer profiles are Linux/macOS-only: MinGW clang on Windows supports neither TSan nor a working ASan against ucrt. 
+The logger benchmark (`anotest_logbench`) and the allocator easter egg (`anotest_chariots`) are built but disabled in CTest; run them by hand, from a Release-tests build — Debug numbers are ~2x pessimistic.
 
 ### Rendering Compatibility
 
@@ -138,8 +126,7 @@ hardware:
 ANO_FORCE_NO_MESH_SHADER=1 ./build/Debug/anopticengine
 ```
 
-The startup log prints which path is active, e.g. `Enabling 3 device extensions (mesh
-shader: yes)`. See `PLANS_COMPATIBILITY.md` for the full design.
+The startup log prints which path is active, e.g. `Enabling 3 device extensions (mesh shader: yes)`. See the Rendering Philosophy section of `docs/notes.md` for the full design.
 
 ### Architecture
 
@@ -161,9 +148,7 @@ motion (orbit/spin) is sent once as parameters and animated entirely on the GPU,
 costs zero per-frame bridge traffic. Per-entity GPU buffers grow on demand in
 chunk-aligned steps, dropping any fixed entity ceiling.
 
-The full design lives in `docs/artifacts/ECS.md` (logic side) and
-`docs/artifacts/VK_BACKEND_INTEROP.md` (render side); `docs/notes.md` has the broader
-architecture and build sequence.
+A broader design specification lives in `docs/` (see the "ECS ↔ render bridge" section under Current State in `notes.md`), along with the full architecture and build sequence.
 
 ### More
 

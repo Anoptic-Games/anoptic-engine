@@ -136,9 +136,9 @@ The two paths differ only in the geometry stage and the indirect command format.
 
 The first real slice of the simulation/render split now exists in code. The engine runs the authoritative simulation and the non-authoritative renderer as **two parallel worlds on separate threads**, joined by two bounded lock-free SPSC rings. This is the first production deployment of the lock-free concurrency principle (§2) outside the logger — and it is genuinely lock-free today (the SPSC ring is acquire/release on head/tail, no CAS, with the producer's `tail` and consumer's `head` on separate cache lines to avoid false sharing). Design of record: `docs/artifacts/ECS.md` (logic side) and `docs/artifacts/VK_BACKEND_INTEROP.md` (render side).
 
-- **ECS module** (`anoptic_ecs.h`, `src/ecs/`): entities are generational `(index, generation)` handles; components live in chunked sparse-set stores with swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and flushed at a tick boundary, so iteration is stable. The store allocates from a caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
+- **ECS module** (`anoptic_ecs.h`, `src/ecs/`) *(since removed from the tree pending a proper rebuild — see `src/src.md`; the design stands)*: entities are generational `(index, generation)` handles; components live in chunked sparse-set stores with swap-and-pop removal. Structural mutation (create/destroy/add/remove) is deferred and flushed at a tick boundary, so iteration is stable. The store allocates from a caller-provided mimalloc heap. The ECS knows nothing about Vulkan or GPU slots.
 
-- **The bridge** (`anoptic_render_bridge.h`, `src/render_bridge/`): one ring carries `RenderCommand`s (logic → render), the other `RenderEvent`s (render → logic). The logic master is the sole command producer (it emits after the parallel update stage settles, so ordering is total); the render master is the sole event producer. The command protocol is `CREATE / UPDATE / DESTROY / BULK_CREATE`, with an `UPDATE` carrying a field-bit mask so one message can fold several discrete changes — the literal expression of the "≤1 message per entity per tick" invariant.
+- **The bridge** (private `src/render_bridge/render_bridge.h`; public command protocol in `include/anoptic_render.h`): one ring carries `RenderCommand`s (logic → render), the other `RenderEvent`s (render → logic). The logic master is the sole command producer (it emits after the parallel update stage settles, so ordering is total); the render master is the sole event producer. The command protocol is `CREATE / UPDATE / DESTROY / BULK_CREATE`, with an `UPDATE` carrying a field-bit mask so one message can fold several discrete changes — the literal expression of the "≤1 message per entity per tick" invariant.
 
 - **Render-side slot authority** (`src/vulkan_backend/render_slots.h`): the renderer is the *sole* authority over GPU memory and the physical slot space. The logic world names renderables by a stable logical `render_id`; the renderer privately maps `render_id → GPU slot`. Slots are **stable and may contain holes** — the cull pass already compacts visible work, so a dead slot costs one skipped compute invocation and zero draw cost. This deleted the entire defragmentation/remap machinery the early drafts assumed. Slot reuse is **frame-gated**: a `DESTROY` quarantines the slot until all frames in flight retire, then a `REVENT_SLOT_RETIRED` lets the ECS recycle the id.
 
@@ -146,7 +146,7 @@ The first real slice of the simulation/render split now exists in code. The engi
 
 - **Dynamic chunked GPU capacity**: the per-entity (slot-indexed) GPU buffers start at an initial capacity and grow on demand in chunk-aligned, geometrically-doubling steps — dropping the former hard `maxEntities = 10000` ceiling. Growth recreates the buffers larger and re-points the descriptor sets; the shader and descriptor *layouts* never change. Because the GPU allocator is a bump arena (no per-allocation free), growth is reallocate-and-copy and the old region is reclaimed only on teardown — geometric growth bounds the waste to ~the final size. Material and light palettes scale on their own axis (distinct-element-keyed).
 
-- **The thread split**: `main.c` is the logic/ECS master and the sole command producer; it spawns the render master via `ano_thread_create`. The render thread owns all Vulkan *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation, teardown), drains the command ring each frame, and applies each transition across all frames in flight. Coordination is three atomics, with shutdown ordered so the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real two-stage tick and `DisplayState` graphics-extract that will replace the stand-in producer currently living in `main.c`.
+- **The thread split**: `main.c` runs the render world on the main thread — GLFW pins window/event handling there (mandatory on macOS) — owning all Vulkan *and* all GLFW (init, the frame loop including `glfwPollEvents`, swapchain recreation, teardown), and spawns the logic/ECS master (`anoLogicThreadMain`) via `ano_thread_create` as the sole command producer. The render side drains the command ring each frame and applies each transition across all frames in flight. Coordination is three atomics, with shutdown ordered so the producer quiesces before the bridge is destroyed. *Not yet materialized:* the real two-stage tick and `DisplayState` graphics-extract that will replace the stand-in producer currently living in `main.c`.
 
 **Memory system (foundational):**
 - mimalloc as global allocator with override
@@ -155,13 +155,12 @@ The first real slice of the simulation/render split now exists in code. The engi
 - Hugepage reservation tested and validated
 - Scoped heap experiments in `ano_strings.c` (the "mem_chariot" tests)
 
-**Logger (partially built):**
-- Async queue-based architecture (enqueue on hot path, flush on cold path)
-- 5 log levels (DEBUG, INFO, WARN, ERROR, FATAL)
-- Immediate mode for fatal/debug-now messages
-- Mutex-based synchronization (placeholder for lock-free version)
-- File output path declared but not wired up; flusher thread not implemented
-- Buffer drain logic exists but file writes are commented out
+**Logger (done — Step 1 shipped 2026-06-24; see `docs/logger.md` and TODO.md):**
+- Lock-free MPSC ring (variable-length records, CAS reserve, lap-counter reclaim) with an owned drain thread; `ano_log_flush` is a synchronous inline pass
+- 5 log levels (DEBUG, INFO, WARN, ERROR, FATAL); immediate mode for fatal/debug-now messages
+- Eager (~48 ns) and deferred (~22 ns) formatting strategies; file output + `ano_log_output_dir` wired
+- Validated via TLA+/TLC, TSan, the `anotest_logfuzz` no-loss fuzzer, and the `anotest_logbench` benchmark
+- The Step 1 audit below describes the old mutex version; it stays as the record that drove the rewrite
 
 **High-resolution timing module (`anoptic_time.h`):**
 - Emulator-grade precision timestamps sourced from the highest-resolution monotonic clocks available on each platform: `CLOCK_MONOTONIC` on Linux, `QueryPerformanceCounter` / `QueryPerformanceFrequency` on Windows
@@ -169,23 +168,23 @@ The first real slice of the simulation/render split now exists in code. The engi
 - `cached_performance_frequency` is `_Atomic` for thread-safe lazy initialization
 - `ano_busywait`: tight spinloop on the monotonic clock for sub-microsecond waits where OS sleep granularity is too coarse, with `MAX_BUSYWAIT_NS` safety cap
 - `ano_sleep` (Linux): `clock_nanosleep` with `CLOCK_MONOTONIC` and `EINTR` retry loop
-- `ano_sleep` (Windows): currently falls back to `Sleep()` (millisecond granularity, 15.6ms default). Upgrade to emulator-grade precision is Step 3 in the build sequence.
+- `ano_sleep` (Windows): per-thread high-resolution waitable timer (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`, Win10 1803+) for the coarse wait plus an `ano_busywait` spin tail (Step 3, done; verified green on a real Windows host 2026-07-02).
 - Separate NTP timestamp stub for future network time synchronization
 - Full API: `ano_timestamp_raw` (ns), `ano_timestamp_us`, `ano_timestamp_ms`, `ano_timestamp_unix` (UTC), `ano_busywait` (spinlock), `ano_sleep` (OS-scheduled)
 
 **Platform abstraction:**
-- Separate implementations for Linux and Windows (memory, time, filesystem)
+- Separate implementations for Linux, Windows, and macOS (memory, time, filesystem)
 - Cross-compilation support via CMake toolchain files (Clang targeting MinGW-w64)
 
 **Build system:**
 - CMake with platform-specific toolchain files
 - Release, Debug, and Test build configurations
-- Build scripts for Linux (`build.sh`) and Windows (`build.bat`)
+- Build scripts for Linux/macOS (`build.sh`) and Windows (`build.bat`)
 
 ### What Exists (in the architect's head, not yet materialized)
 
 - Complete arena hierarchy (process > level > frame > scratch > pool)
-- Lock-free MPSC queue design for the logger and event bus (the SPSC bridge ring is the first lock-free primitive actually shipped — see the ECS↔render bridge above)
+- Lock-free MPSC queue design for the event bus (the logger's MPSC ring and the SPSC bridge ring have both shipped — see above)
 - ~~ECS architecture and component storage layout~~ — now in code (generational handles + chunked sparse-set stores); the two-stage parallel tick and graphics-extract are still to be built
 - Event bus for inter-system communication
 - Scoped resolution algorithms for multi-scale simulation

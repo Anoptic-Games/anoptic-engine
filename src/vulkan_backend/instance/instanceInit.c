@@ -8,8 +8,7 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
-#include <mimalloc.h>
-#include <mimalloc-override.h>
+#include <anoptic_memory.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN

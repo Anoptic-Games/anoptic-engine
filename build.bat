@@ -43,8 +43,8 @@ if "%1"=="1" (
     set EXTRA_FLAGS=-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON
     set RUN_TESTS=1
 ) else if "%1"=="7" (
-    :: Release (-O3) build with CTest enabled: optimized test + benchmark runs. Option 1 is the same
-    :: -O3 full engine build without tests. Use this, NOT 3, to benchmark the logger (3 is Debug -O0).
+    rem Release (-O3) build with CTest enabled: optimized test + benchmark runs. Option 1 is the same
+    rem -O3 full engine build without tests. Use this, NOT 3, to benchmark the logger (3 is Debug -O0).
     set BUILD_LABEL=RelTests
     set CMAKE_CONFIG=Release
     set TOOLCHAIN_FILE=release_clang-windows-x64-mingw.cmake
@@ -77,6 +77,16 @@ if errorlevel 1 exit /b 1
 :: Build the project
 cmake --build ./build/%BUILD_LABEL%
 if errorlevel 1 exit /b 1
+
+:: Conditionally copy assets if they exist (parity with build.sh)
+if exist assets (
+    echo Copying assets to build directory...
+    xcopy /e /y /q assets "build\%BUILD_LABEL%\" >nul
+    if "%RUN_TESTS%"=="1" (
+        if not exist "build\%BUILD_LABEL%\tests" mkdir "build\%BUILD_LABEL%\tests"
+        xcopy /e /y /q assets "build\%BUILD_LABEL%\tests\" >nul
+    )
+)
 
 :: Run the test suite
 if "%RUN_TESTS%"=="1" ctest --test-dir ./build/%BUILD_LABEL% --output-on-failure
