@@ -19,8 +19,9 @@
 // all producers and a final flush, the summed line count across both output files must equal the
 // total enqueued. Mismatch -> non-zero exit with a clear message.
 //
-// Deterministic by default: fixed srand seed, fixed thread count, a few thousand iterations each, a
-// few seconds wall. argv[1] overrides the per-thread iteration count for a longer soak.
+// Deterministic by default: fixed per-thread seeds (templates/rng.h), fixed thread count, a few
+// thousand iterations each, a few seconds wall. argv[1] overrides the per-thread iteration count
+// for a longer soak.
 // The harness's own cross-thread state is all atomic. The output-dir swap closes the old file handle
 // (mi_free) on a producer thread; TSan sees that cross-thread free race with mimalloc's thread-local
 // heap teardown when another producer exits. That race lives inside mimalloc's abandoned-page protocol,
@@ -31,22 +32,14 @@
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
+#include "templates/rng.h"      // per-thread deterministic xorshift
+#include "templates/scratch.h"  // scratch dirs + line-count oracle
+
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(_WIN32)
-#include <direct.h>
-static void make_dir(const char *p) { _mkdir(p); }
-static void remove_dir(const char *p) { _rmdir(p); }
-#else
-#include <sys/stat.h>
-#include <unistd.h>
-static void make_dir(const char *p) { mkdir(p, 0777); }
-static void remove_dir(const char *p) { rmdir(p); }
-#endif
 
 // Suppress only mimalloc's thread-teardown frames (see the file banner). Matching either side of a race
 // suppresses the report, and the logger's own logic never goes through these, so its races stay visible.
@@ -64,10 +57,7 @@ const char *__tsan_default_suppressions(void)
 #  endif
 #endif
 
-// CMake points ANO_TEST_OUTDIR at this test's build tree, so scratch dirs never land in the caller's CWD.
-#ifndef ANO_TEST_OUTDIR
-#define ANO_TEST_OUTDIR "."
-#endif
+// CMake points ANO_TEST_OUTDIR at this test's build tree (fallback "." in templates/scratch.h).
 #define DIR_A      ANO_TEST_OUTDIR "/anolog_fuzz"
 #define PATH_A     ANO_TEST_OUTDIR "/anolog_fuzz/anoptic.log"
 #define DIR_B      ANO_TEST_OUTDIR "/anolog_fuzz_alt"
@@ -83,44 +73,23 @@ static _Atomic int      g_worker_fail;
 static _Atomic bool     g_stop;
 static int              g_iters = DEFAULT_ITERS;
 
-// Per-thread xorshift, no shared RNG state (rand() is not thread-safe). Seeded deterministically.
-static inline uint32_t xs(uint32_t *s)
-{
-    uint32_t x = *s;
-    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-    return (*s = x);
-}
-
-// Build a NUL-terminated random string of length [1,MAX_CONTENT] from printable bytes only, never
-// '\n' or '\0' (so one record stays one line and strlen/line-count stay honest).
-static size_t make_content(char *buf, uint32_t *s)
-{
-    size_t len = 1 + xs(s) % MAX_CONTENT;
-    for (size_t i = 0; i < len; i++) {
-        // printable ASCII 0x20..0x7e, excluding nothing dangerous (no '\n'/'\0' in that range).
-        buf[i] = (char)(0x20 + xs(s) % (0x7e - 0x20 + 1));
-    }
-    buf[len] = '\0';
-    return len;
-}
-
 // One enqueue through the deferred formatter, via a FIXED literal fmt + correctly-typed randomized
 // args. Each case pairs a literal with args of exactly the right type -- never a random fmt. Returns
 // nothing; the caller counts it. Pick is chosen at random per call.
-static void formatter_case(uint32_t *s)
+static void formatter_case(test_rng *s)
 {
-    int      i  = (int)xs(s) - (int)0x40000000; // full signed range
-    unsigned u  = xs(s);
-    long long ll = ((long long)xs(s) << 31) ^ xs(s);
-    unsigned long long ull = ((unsigned long long)xs(s) << 32) | xs(s);
-    int      w  = (int)(xs(s) % 12);            // width 0..11
-    int      pr = (int)(xs(s) % 8);             // precision 0..7
-    double   d  = (double)(int)xs(s) / (double)(1 + xs(s) % 1000);
-    int      ch = 0x21 + (int)(xs(s) % 0x5d);         // printable char arg
+    int      i  = (int)rng_next(s) - (int)0x40000000; // full signed range
+    unsigned u  = rng_next(s);
+    long long ll = ((long long)rng_next(s) << 31) ^ rng_next(s);
+    unsigned long long ull = ((unsigned long long)rng_next(s) << 32) | rng_next(s);
+    int      w  = (int)rng_below(s, 12);              // width 0..11
+    int      pr = (int)rng_below(s, 8);               // precision 0..7
+    double   d  = (double)(int)rng_next(s) / (double)(1 + rng_below(s, 1000));
+    int      ch = 0x21 + (int)rng_below(s, 0x5d);     // printable char arg
     static const char *strs[] = { "alpha", "", "x", "spanning-sample", "0xZZ" };
-    const char *sv = strs[xs(s) % (sizeof strs / sizeof strs[0])];
+    const char *sv = strs[rng_below(s, sizeof strs / sizeof strs[0])];
 
-    switch (xs(s) % 18) {
+    switch (rng_below(s, 18)) {
     case 0:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt d=%d", i); break;
     case 1:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt u=%u", u); break;
     case 2:  ano_log_enqueue(LOG_WARN,  __FILE_NAME__, __LINE__, "fmt x=%x", u); break;
@@ -146,22 +115,22 @@ static const log_types_t LEVELS[] = { LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR }
 
 static void *producer(void *arg)
 {
-    uint32_t s = 0x1000 + (uint32_t)(intptr_t)arg * 2654435761u; // deterministic per-thread seed
-    if (s == 0) s = 1;
+    // Deterministic per-thread seed, no shared RNG state.
+    test_rng s = rng_make(0x1000 + (uint32_t)(intptr_t)arg * 2654435761u);
     char content[MAX_CONTENT + 1];
     uint64_t local = 0;
 
     for (int it = 0; it < g_iters && !atomic_load_explicit(&g_stop, memory_order_relaxed); it++) {
-        uint32_t pick = xs(&s) % 100;
-        log_types_t lvl = LEVELS[xs(&s) % (sizeof LEVELS / sizeof LEVELS[0])];
+        uint32_t pick = rng_below(&s, 100);
+        log_types_t lvl = LEVELS[rng_below(&s, sizeof LEVELS / sizeof LEVELS[0])];
 
         if (pick < 2) {
             // Occasional output-dir swap between two valid dirs. Records still all land in one of the
             // two files we sum, so the oracle holds. This call itself enqueues nothing.
-            ano_log_output_dir((xs(&s) & 1) ? DIR_A : DIR_B);
+            ano_log_output_dir((rng_next(&s) & 1) ? DIR_A : DIR_B);
         } else if (pick < 5) {
             // Occasional immediate (FATAL/sync path). emit_one writes exactly one file line.
-            make_content(content, &s);
+            rng_fill_printable(&s, content, 1, MAX_CONTENT);
             ano_log_immediate(lvl, __FILE_NAME__, __LINE__, "%s", content);
             local++;
         } else if (pick < 45) {
@@ -170,7 +139,7 @@ static void *producer(void *arg)
             local++;
         } else {
             // Variable-length random CONTENT, logged safely as "%s".
-            make_content(content, &s);
+            rng_fill_printable(&s, content, 1, MAX_CONTENT);
             if (ano_log_enqueue(lvl, __FILE_NAME__, __LINE__, "%s", content) < 0)
                 atomic_fetch_add(&g_worker_fail, 1);   // never expected: 0 or 1 only
             local++;
@@ -182,26 +151,12 @@ static void *producer(void *arg)
 
 static void *flusher(void *arg)
 {
-    uint32_t s = 0xBEEF ^ (uint32_t)(intptr_t)arg;
-    if (s == 0) s = 1;
+    test_rng s = rng_make(0xBEEF ^ (uint32_t)(intptr_t)arg);
     while (!atomic_load_explicit(&g_stop, memory_order_relaxed)) {
         ano_log_flush();
-        ano_sleep(50 + xs(&s) % 400);   // short random interval, 50..449 us
+        ano_sleep(50 + rng_below(&s, 400));   // short random interval, 50..449 us
     }
     return NULL;
-}
-
-// Count '\n' in a file, 0 if absent/unreadable. The output appends exactly one '\n' per record.
-static uint64_t count_lines(const char *path)
-{
-    FILE *f = fopen(path, "rb");
-    if (f == NULL) return 0;
-    uint64_t n = 0;
-    int c;
-    while ((c = fgetc(f)) != EOF)
-        if (c == '\n') n++;
-    fclose(f);
-    return n;
 }
 
 int main(int argc, char **argv)
@@ -210,10 +165,8 @@ int main(int argc, char **argv)
         int v = atoi(argv[1]);
         if (v > 0) g_iters = v;
     }
-    srand(1234567u);   // fixed seed: deterministic by default (unused beyond determinism intent)
-
-    make_dir(DIR_A);
-    make_dir(DIR_B);
+    scratch_make_dir(DIR_A);
+    scratch_make_dir(DIR_B);
     remove(PATH_A);
     remove(PATH_B);
 
@@ -251,7 +204,7 @@ int main(int argc, char **argv)
 
     ano_log_cleanup();
 
-    uint64_t lines = count_lines(PATH_A) + count_lines(PATH_B);
+    uint64_t lines = scratch_count_lines(PATH_A) + scratch_count_lines(PATH_B);
 
     printf("logfuzz: producers=%d iters=%d enqueued=%llu lines=%llu\n",
            PRODUCERS, g_iters, (unsigned long long)enq, (unsigned long long)lines);
@@ -259,8 +212,8 @@ int main(int argc, char **argv)
     // Counted above; drop the files and directories so a manual run leaves nothing behind.
     remove(PATH_A);
     remove(PATH_B);
-    remove_dir(DIR_A);
-    remove_dir(DIR_B);
+    scratch_remove_dir(DIR_A);
+    scratch_remove_dir(DIR_B);
 
     if (wfail != 0) {
         fprintf(stderr, "logfuzz: FAIL: %d enqueue call(s) returned an unexpected error code\n", wfail);

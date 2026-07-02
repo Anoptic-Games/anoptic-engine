@@ -69,6 +69,12 @@ int ano_thread_cond_wait(anothread_cond_t *conditionVariable, anothread_mutex_t 
     return pthread_cond_wait(conditionVariable, external_mutex);
 }
 
+int ano_thread_cond_timedwait(anothread_cond_t *conditionVariable, anothread_mutex_t *external_mutex,
+                              const struct timespec *abstime) {
+
+    return pthread_cond_timedwait(conditionVariable, external_mutex, abstime);
+}
+
 int  ano_thread_cond_signal(anothread_cond_t *conditionVariable) {
 
     return pthread_cond_signal(conditionVariable);
