@@ -31,7 +31,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
 } global;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO { mat4 transforms[]; } transformBuf;
-// NOTE: set 0 binding 12 is now LightPoseSSBO in the live globalSetLayout (flat.frag/transmission.frag).
+// NOTE: set 0 binding 12 is now LightRuntimeSSBO in the live globalSetLayout (flat.frag/transmission.frag).
 // This decal skeleton is inert (no compiled pipeline), so there is no conflict yet — but renumber this
 // to a free binding (>= 13) when PIPELINE_DECAL is actually wired against globalSetLayout.
 layout(set = 0, binding = 12) readonly buffer DecalSSBO    { DecalRecord decals[]; } decalBuf;

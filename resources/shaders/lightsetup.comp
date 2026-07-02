@@ -1,11 +1,11 @@
 #version 450
 
-// Per-light world-pose precompute. One invocation per light: resolve the light's world position and
-// world forward direction from its driving entity transform ONCE per frame, so the fragment passes no
-// longer reload the 64B mat4 + recompute lightPos/lightForward per fragment per light (the dominant
-// avoidable cost in flat.frag / transmission.frag). Runs after update.comp+scatter finalize the live
-// transforms and before the geometry passes. The math is bit-identical to the old inline derivation in
-// flat.frag / transmission.frag / shadowsetup.comp, so the value every consumer sees is unchanged.
+// Per-light fragment runtime precompute. One invocation per light: resolve the light's world position
+// and forward direction from its driving entity transform, AND pack the rest of the light's per-fragment
+// working set (premultiplied radiance, range, cone cosines, type) into ONE 64B record. The fragment
+// passes then do a single load per light instead of the old 80B LightData + 32B pose (and the 64B mat4
+// reload + derivation is gone entirely). Runs after update.comp+scatter finalize the live transforms and
+// before the geometry passes. All values are bit-identical to the old inline fragment code.
 
 layout(local_size_x = 64) in;
 
@@ -35,14 +35,17 @@ layout(set = 0, binding = 1) readonly buffer LightSSBO {
     LightData lights[];
 };
 
-// Output: world pose per light. worldPos.xyz = world position; worldDir.xyz = normalized world forward
-// (light travel direction). .w lanes reserved. Consumed by flat.frag / transmission.frag (set 0).
-struct LightPose {
-    vec4 worldPos;
-    vec4 worldDir;
+// Per-light fragment runtime set, consumed by flat.frag / transmission.frag (their set 0 binding 12).
+// One 64B record holding everything the froxel light loop needs. Layout MUST match the LightRuntime
+// mirror in flat.frag / transmission.frag.
+struct LightRuntime {
+    vec4 posRange;   // xyz = world position,  w = range
+    vec4 dirType;    // xyz = world forward,    w = float(type)
+    vec4 radInner;   // xyz = color*intensity,  w = innerConeCos
+    vec4 outer;      // x   = outerConeCos,     yzw reserved
 };
-layout(set = 0, binding = 2) writeonly buffer LightPoseSSBO {
-    LightPose poses[];
+layout(set = 0, binding = 2) writeonly buffer LightRuntimeSSBO {
+    LightRuntime entries[];
 };
 
 layout(push_constant) uniform Push {
@@ -57,12 +60,14 @@ void main() {
 
     LightData light = lights[i];
     mat4 lx = transforms[light.transformIndex];
-    // Identical derivation to flat.frag:293-295 / shadowsetup.comp:125-127. Disabled lights are still
-    // written (harmless); the froxel light-cull already excludes them from the fragment loop.
+    // Identical derivation to the old flat.frag / shadowsetup.comp:125-127. Disabled lights are still
+    // written (harmless); the froxel light-cull excludes them from the fragment loop.
     vec3 worldPos = (lx * vec4(light.localOffset, 1.0)).xyz;
     vec3 aim = dot(light.localDir, light.localDir) > 0.0 ? light.localDir : vec3(0.0, 0.0, -1.0); // zero -> -Z
     vec3 worldDir = normalize(mat3(lx) * aim);
 
-    poses[i].worldPos = vec4(worldPos, 0.0);
-    poses[i].worldDir = vec4(worldDir, 0.0);
+    entries[i].posRange = vec4(worldPos, light.range);
+    entries[i].dirType  = vec4(worldDir, float(light.type));
+    entries[i].radInner = vec4(light.color * light.intensity, light.innerConeCos); // premultiplied radiance
+    entries[i].outer    = vec4(light.outerConeCos, 0.0, 0.0, 0.0);
 }

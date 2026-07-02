@@ -176,14 +176,14 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	clusterIndexLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	clusterIndexLayoutBinding.pImmutableSamplers = NULL;
 
-	// 12: per-light world pose (worldPos/worldDir), precomputed by lightsetup.comp. Fragment-only:
-	// replaces the per-fragment transform reload + derivation in flat.frag / transmission.frag.
-	VkDescriptorSetLayoutBinding lightPoseLayoutBinding = {};
-	lightPoseLayoutBinding.binding = 12;
-	lightPoseLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lightPoseLayoutBinding.descriptorCount = 1;
-	lightPoseLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	lightPoseLayoutBinding.pImmutableSamplers = NULL;
+	// 12: per-light LightRuntime record (world pose + color*intensity + range/cone/type), precomputed by
+	// lightsetup.comp. Fragment-only: replaces the per-fragment LightData load + transform derivation.
+	VkDescriptorSetLayoutBinding lightRuntimeLayoutBinding = {};
+	lightRuntimeLayoutBinding.binding = 12;
+	lightRuntimeLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	lightRuntimeLayoutBinding.descriptorCount = 1;
+	lightRuntimeLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	lightRuntimeLayoutBinding.pImmutableSamplers = NULL;
 
 	VkDescriptorSetLayoutBinding bindings[13] = {
 		uboLayoutBinding,
@@ -198,7 +198,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		instanceDataLayoutBinding,
 		clusterCountLayoutBinding,
 		clusterIndexLayoutBinding,
-		lightPoseLayoutBinding
+		lightRuntimeLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
@@ -850,7 +850,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     // Compute Light-setup Pipeline: per-light world pose (worldPos/worldDir) precompute, so the
     // fragment passes stop reloading the 64B transform + re-deriving lightPos/lightForward per fragment.
-    // 0: TransformSSBO (in)  1: LightSSBO (in)  2: LightPoseSSBO (out). Push constant: light count.
+    // 0: TransformSSBO (in)  1: LightSSBO (in)  2: LightRuntimeSSBO (out, 64B/light). Push constant: light count.
     VkDescriptorSetLayoutBinding lightsetupBindings[3] = {};
     for (uint32_t b = 0; b < 3; ++b) {
         lightsetupBindings[b].binding = b;

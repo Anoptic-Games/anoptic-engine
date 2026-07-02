@@ -127,38 +127,22 @@ bool lightUsesShadowMap(uint lightType, uint mode) {
     return lightType != LIGHT_TYPE_POINT; // ANO_LIGHTING_HYBRID
 }
 
-struct LightData {
-    vec3  color;
-    float intensity;
-    float range;
-    float innerConeCos;
-    float outerConeCos;
-    uint  type;
-    uint  transformIndex;
-    uint  enabled;
-    uint  pad0;
-    uint  pad1;
-    vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
-    uint  pad2;
-    vec3  localDir;    // model-space aim; world fwd = normalize(mat3(transforms[transformIndex]) * localDir)
-    uint  pad3;
+// The fragment no longer reads raw LightData (binding 8) or the transform buffer (binding 1): lightsetup.comp
+// consumes those once per frame and hands the fragment a packed LightRuntime record (binding 12, below).
+// Both bindings remain in the shared globalSetLayout for the geometry stage / other passes.
+
+// Per-light fragment runtime set, precomputed once per frame by lightsetup.comp: world pose +
+// premultiplied radiance + range/cone/type packed into one 64B record. Layout MUST match LightRuntime
+// in lightsetup.comp / flat.frag.
+struct LightRuntime {
+    vec4 posRange;   // xyz world position, w range
+    vec4 dirType;    // xyz world forward,  w float(type)
+    vec4 radInner;   // xyz color*intensity, w innerConeCos
+    vec4 outer;      // x outerConeCos, yzw reserved
 };
-
-layout(set = 0, binding = 1) readonly buffer TransformSSBO {
-    mat4 transforms[];
-} transformBuf;
-
-layout(set = 0, binding = 8) readonly buffer LightSSBO {
-    LightData lights[];
-} lightBuf;
-
-// Per-light world pose, precomputed once per frame by lightsetup.comp (bit-identical to the old inline
-// derivation): worldPos.xyz world position, worldDir.xyz normalized world forward. Replaces the former
-// per-fragment 64B transform reload + matrix derivation. Indexed by the same light row as lightBuf.
-struct LightPose { vec4 worldPos; vec4 worldDir; };
-layout(set = 0, binding = 12) readonly buffer LightPoseSSBO {
-    LightPose poses[];
-} lightPoseBuf;
+layout(set = 0, binding = 12) readonly buffer LightRuntimeSSBO {
+    LightRuntime entries[];
+} lightRuntimeBuf;
 
 // Open-ended per-entity instance channel (matches flat.frag). packed[0] = RGBA8
 // tint, packed[1] = flags (bit 0 enables tint), packed[2..3]/params reserved.
@@ -304,30 +288,30 @@ void main() {
 
     for (uint c = 0u; c < clusterCount; c++) {
         uint i = clusterIndexBuf.clusterLightIndices[lightListBase + c];
-        LightData light = lightBuf.lights[i];
-        if (light.enabled == 0u) {
-            continue;
-        }
-
-        // World placement precomputed once per frame by lightsetup.comp (was a per-fragment 64B mat4
-        // reload + lightPos/lightForward derivation here; the result is bit-identical). Many lights can
-        // still share one parent slot at distinct positions (audit 4.7 multi-light).
-        LightPose pose = lightPoseBuf.poses[i];
-        vec3 lightPos = pose.worldPos.xyz;
-        vec3 lightForward = pose.worldDir.xyz;
+        // Single 64B runtime load per light (lightsetup.comp precomputed it): world pose, premultiplied
+        // radiance, range/cone/type. Replaces the old 80B LightData + 32B pose loads + transform derivation.
+        // The froxel light-cull already excludes disabled lights, so no enabled check is needed here.
+        LightRuntime lr = lightRuntimeBuf.entries[i];
+        vec3 lightPos = lr.posRange.xyz;
+        vec3 lightForward = lr.dirType.xyz;
+        float lightRange = lr.posRange.w;
+        uint lightType = uint(lr.dirType.w);
+        vec3 lightRadiance = lr.radInner.xyz; // color * intensity (premultiplied)
+        float innerConeCos = lr.radInner.w;
+        float outerConeCos = lr.outer.x;
 
         vec3 L;
         float attenuation;
-        if (light.type == LIGHT_TYPE_DIRECTIONAL) {
+        if (lightType == LIGHT_TYPE_DIRECTIONAL) {
             L = -lightForward;        // surface -> light (opposite the travel direction)
             attenuation = 1.0;
         } else {
             vec3 toLight = lightPos - fragWorldPos;
             float dist = length(toLight);
             L = toLight / max(dist, 0.0001);
-            attenuation = getRangeAttenuation(light.range, dist);
-            if (light.type == LIGHT_TYPE_SPOT) {
-                attenuation *= getSpotAttenuation(lightForward, L, light.innerConeCos, light.outerConeCos);
+            attenuation = getRangeAttenuation(lightRange, dist);
+            if (lightType == LIGHT_TYPE_SPOT) {
+                attenuation *= getSpotAttenuation(lightForward, L, innerConeCos, outerConeCos);
             }
         }
 
@@ -346,17 +330,17 @@ void main() {
 
         // si is read only when the light can actually shadow this frame; otherwise the SSBO load is dead.
         float shadowFactor = 1.0;
-        if (lightUsesShadowMap(light.type, global.lightingMode)) {
+        if (lightUsesShadowMap(lightType, global.lightingMode)) {
             ShadowLightInfo si = shadowInfoBuf.info[i];
             if (si.castsShadow != 0u && si.frustumCount > 0u) {
-                if (light.type == LIGHT_TYPE_POINT)
+                if (lightType == LIGHT_TYPE_POINT)
                     shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
                 else
                     shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
             }
         }
 
-        vec3 radiance = light.color * light.intensity * attenuation * shadowFactor;
+        vec3 radiance = lightRadiance * attenuation * shadowFactor;
         accumulatedDirect += calculatePBRDirect(baseColor.rgb, metallic, roughness, normal, V, L, transmission) * radiance;
     }
 

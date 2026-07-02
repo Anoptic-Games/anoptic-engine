@@ -2858,15 +2858,15 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
     return true;
 }
 
-// Per-light world pose (vec4 worldPos + vec4 worldDir = 32B/light). ×MAX_FRAMES_IN_FLIGHT DEVICE_LOCAL,
-// written by lightsetup.comp each frame and read by the fragment passes — same storage class as the
-// transform buffer, so it reuses TransformBuffer (mapped[] stays NULL for device-local). Fixed at the
-// light palette capacity (never grown, like lightBuffer).
-bool createLightPoseBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxLights, VkMemoryPropertyFlags props) {
+// Per-light fragment runtime record (LightRuntime = 4x vec4 = 64B/light: pose + color*intensity +
+// range/cone/type). ×MAX_FRAMES_IN_FLIGHT DEVICE_LOCAL, written by lightsetup.comp each frame and read by
+// the fragment passes — same storage class as the transform buffer, so it reuses TransformBuffer (mapped[]
+// stays NULL for device-local). Fixed at the light palette capacity (never grown, like lightBuffer).
+bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxLights, VkMemoryPropertyFlags props) {
     buf->capacity = maxLights;
     buf->count = 0;
 
-    VkDeviceSize bufferSize = (VkDeviceSize)(sizeof(float) * 8u) * maxLights; // vec4 worldPos + vec4 worldDir
+    VkDeviceSize bufferSize = (VkDeviceSize)(sizeof(float) * 16u) * maxLights; // 4x vec4 LightRuntime = 64B
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         VkBufferCreateInfo bufferInfo = {};
@@ -3498,7 +3498,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createStreamBuffers(&ctx, &rendererState, STREAM_CAPACITY) ||
 	    !createMaterialBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
 	    !createLightBuffer(&ctx, &rendererState, PALETTE_CAPACITY) ||
-	    !createLightPoseBuffer(&ctx, &rendererState.lightPoseBuffer, PALETTE_CAPACITY,
+	    !createLightRuntimeBuffer(&ctx, &rendererState.lightRuntimeBuffer, PALETTE_CAPACITY,
 	                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
 	    !createIndirectDrawBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createCullingBuffers(&ctx, &rendererState, maxEntities) ||
