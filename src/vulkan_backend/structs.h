@@ -928,6 +928,7 @@ typedef struct PerFrameResources
     VkDescriptorSet     cullSet;
     VkDescriptorSet     updateSet;
     VkDescriptorSet     scatterSet;
+    VkDescriptorSet     lightsetupSet;  // per-light world-pose precompute (transforms+lights in, LightPose out)
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -1009,6 +1010,7 @@ typedef struct RendererState
     TransformStreamBuffer   transformStream;
     MaterialBuffer          materialBuffer;
     SlotUpload              lightBuffer;            // ×1 device-local + delta staging (palette)
+    TransformBuffer         lightPoseBuffer;        // ×3 DEVICE_LOCAL, lightsetup.comp writes per-light world pose (vec4 worldPos + vec4 worldDir) each frame
     IndirectDrawBuffer      indirectBuffer;
     BindlessTextureArray    bindlessTextures;
 
@@ -1020,6 +1022,7 @@ typedef struct RendererState
     VkDescriptorSetLayout   scatterSetLayout;
     VkDescriptorSetLayout   lightcullSetLayout; // clustered-forward light assignment pass
     VkDescriptorSetLayout   shadowSetupSetLayout; // shadowsetup compute pass (per-shadow-frustum viewProj build)
+    VkDescriptorSetLayout   lightsetupSetLayout; // per-light world-pose precompute pass
 
     // Dynamic shadow pass (audit 4.7; moment shadow maps). Renders the optimized 4-moment encoding
     // (color) of the nearest occluder into the shadow atlas array. Standalone pipeline (not a

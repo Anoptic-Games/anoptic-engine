@@ -14,6 +14,9 @@ struct DecalRecord {
     uint flags;
 };
 
+// NOTE: set 0 binding 12 is now LightPoseSSBO in the live globalSetLayout (flat.frag/transmission.frag).
+// This decal skeleton is inert (no compiled pipeline); renumber to a free binding (>= 13) when
+// PIPELINE_DECAL is actually wired against globalSetLayout.
 layout(set = 0, binding = 12) readonly buffer DecalSSBO { DecalRecord decals[]; } decalBuf;
 layout(set = 1, binding = 0) uniform sampler2DArray decalAtlas; // decal texture layers
 

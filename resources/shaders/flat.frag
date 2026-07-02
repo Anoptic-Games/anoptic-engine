@@ -156,6 +156,14 @@ layout(set = 0, binding = 8) readonly buffer LightSSBO {
     LightData lights[];
 } lightBuf;
 
+// Per-light world pose, precomputed once per frame by lightsetup.comp (bit-identical to the old inline
+// derivation): worldPos.xyz world position, worldDir.xyz normalized world forward. Replaces the former
+// per-fragment 64B transform reload + matrix derivation. Indexed by the same light row as lightBuf.
+struct LightPose { vec4 worldPos; vec4 worldDir; };
+layout(set = 0, binding = 12) readonly buffer LightPoseSSBO {
+    LightPose poses[];
+} lightPoseBuf;
+
 // Open-ended per-entity instance channel. packed[0] = RGBA8 tint, packed[1] = flag
 // bits (bit 0 enables tint), packed[2..3]/params reserved. All-zero == inert.
 const uint INST_FLAG_TINT = 1u;
@@ -287,12 +295,12 @@ void main() {
             continue;
         }
 
-        // Derive world placement from the light's driving entity transform + its local offset, so
-        // many lights can share one parent slot at distinct positions (audit 4.7 multi-light).
-        mat4 lightXform = transformBuf.transforms[light.transformIndex];
-        vec3 lightPos = (lightXform * vec4(light.localOffset, 1.0)).xyz;
-        vec3 aim = dot(light.localDir, light.localDir) > 0.0 ? light.localDir : vec3(0.0, 0.0, -1.0); // zero -> -Z
-        vec3 lightForward = normalize(mat3(lightXform) * aim); // model-space aim; default == old -lx[2]
+        // World placement precomputed once per frame by lightsetup.comp (was a per-fragment 64B mat4
+        // reload + lightPos/lightForward derivation here; the result is bit-identical). Many lights can
+        // still share one parent slot at distinct positions (audit 4.7 multi-light).
+        LightPose pose = lightPoseBuf.poses[i];
+        vec3 lightPos = pose.worldPos.xyz;
+        vec3 lightForward = pose.worldDir.xyz;
 
         vec3 L;
         float attenuation;

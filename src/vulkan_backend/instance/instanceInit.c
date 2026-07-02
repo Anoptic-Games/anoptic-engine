@@ -1741,8 +1741,9 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
 	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets. Transparency sort (audit 4.7) adds
 	// cull binding 10 (1 SSBO, the sort-key buffer) — the +1 in the shared term below.
+	// global now 12 SSBOs/view (binding 12 = per-light world pose, LightPose); + lightsetup set (3 SSBO) shared.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (15u * ANO_VIEW_COUNT + 16u + 7u + 1u);
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1762,7 +1763,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolInfo.pPoolSizes = poolSize;
 	// + 2 blur sets/frame on top of (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2),
 	// + ANO_VIEW_COUNT*ANO_MAX_HIZ_MIPS Hi-Z build sets/frame (one per mip per view, review 4.9 step 3).
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 8u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS);
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 9u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS); // +1 shared set: lightsetup
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1897,6 +1898,25 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].scatterSet = scatterSetsTemp[i];
+
+    VkDescriptorSetLayout lightsetupLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        lightsetupLayouts[i] = rendererState.lightsetupSetLayout;
+    }
+    VkDescriptorSetAllocateInfo lightsetupAllocInfo = {};
+    lightsetupAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    lightsetupAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    lightsetupAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    lightsetupAllocInfo.pSetLayouts = lightsetupLayouts;
+
+    VkDescriptorSet lightsetupSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &lightsetupAllocInfo, lightsetupSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate lightsetup descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].lightsetupSet = lightsetupSetsTemp[i];
 
     VkDescriptorSetLayout lightcullLayouts[PERVIEW_SETS];
     for (int i = 0; i < PERVIEW_SETS; ++i)
@@ -2240,7 +2260,12 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		instanceDataInfo.offset = 0;
 		instanceDataInfo.range = sizeof(AnoInstanceData) * rendererState.instanceDataBuffer.capacity;
 
-		VkWriteDescriptorSet descriptorWrites[10] = {};
+		VkDescriptorBufferInfo lightPoseInfo = {};
+		lightPoseInfo.buffer = rendererState.lightPoseBuffer.buffer[i]; // ×3 device-local, lightsetup.comp output
+		lightPoseInfo.offset = 0;
+		lightPoseInfo.range = (VkDeviceSize)(sizeof(float) * 8u) * rendererState.lightPoseBuffer.capacity; // 32B/light
+
+		VkWriteDescriptorSet descriptorWrites[11] = {};
 
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = rendererState.frames[i].views[0].globalSet;
@@ -2327,14 +2352,24 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[9].descriptorCount = 1;
 		descriptorWrites[9].pBufferInfo = &instanceDataInfo;
 
-		// Global set is per view (audit 4.8): bindings 1-9 are shared scene SSBOs (same buffer
+		// Binding 12: per-light world pose (lightsetup.comp output). Per frame (same buffer[i] for
+		// every view), so it is written here alongside the shared scene SSBOs, not in the cluster path.
+		descriptorWrites[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[10].dstSet = rendererState.frames[i].views[0].globalSet;
+		descriptorWrites[10].dstBinding = 12;
+		descriptorWrites[10].dstArrayElement = 0;
+		descriptorWrites[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[10].descriptorCount = 1;
+		descriptorWrites[10].pBufferInfo = &lightPoseInfo;
+
+		// Global set is per view (audit 4.8): bindings 1-9 + 12 are shared scene SSBOs (same buffer
 		// for every view); binding 0 rebinds to each view's camera UBO. Bindings 10/11 (cluster
 		// lists) are written separately by updateClusterDescriptorSets.
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
 			bufferInfo.buffer = rendererState.frames[i].views[v].uniformBuffer;
-			for (int k = 0; k < 10; k++) descriptorWrites[k].dstSet = rendererState.frames[i].views[v].globalSet;
-			vkUpdateDescriptorSets(ctx->device, 10, descriptorWrites, 0, NULL);
+			for (int k = 0; k < 11; k++) descriptorWrites[k].dstSet = rendererState.frames[i].views[v].globalSet;
+			vkUpdateDescriptorSets(ctx->device, 11, descriptorWrites, 0, NULL);
 		}
 		// Shared compute sets below that need a GlobalUBO use view 0 (time/deltaTime are
 		// view-independent): restore bufferInfo after the per-view writes left it at the last view.
@@ -2476,6 +2511,22 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         scatterWrites[2].pBufferInfo = &ssboInfo; // same TransformSSBO update writes
 
         vkUpdateDescriptorSets(ctx->device, 3, scatterWrites, 0, NULL);
+
+        // Light-setup set: transforms (in, buffer[i]) + lights (in, device) -> per-light world pose (out, buffer[i]).
+        VkWriteDescriptorSet lightsetupWrites[3] = {};
+        for (int j = 0; j < 3; ++j) {
+            lightsetupWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lightsetupWrites[j].dstSet = rendererState.frames[i].lightsetupSet;
+            lightsetupWrites[j].dstBinding = (uint32_t)j;
+            lightsetupWrites[j].dstArrayElement = 0;
+            lightsetupWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            lightsetupWrites[j].descriptorCount = 1;
+        }
+        lightsetupWrites[0].pBufferInfo = &ssboInfo;      // TransformSSBO (buffer[i])
+        lightsetupWrites[1].pBufferInfo = &lightInfo;     // LightSSBO (device)
+        lightsetupWrites[2].pBufferInfo = &lightPoseInfo; // LightPoseSSBO (buffer[i], out)
+
+        vkUpdateDescriptorSets(ctx->device, 3, lightsetupWrites, 0, NULL);
 	}
 }
 
@@ -2801,6 +2852,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	{
 		if(rendererState.transformBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
+		if(rendererState.lightPoseBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.lightPoseBuffer.buffer[i], NULL);
 		// initialTransform/motion/instanceData are SlotUploads now (destroyed below).
 		if(rendererState.transformStream.slotBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformStream.slotBuffer[i], NULL);

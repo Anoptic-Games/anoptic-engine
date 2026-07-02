@@ -125,7 +125,7 @@ if(Vulkan_FOUND)
         # Shared GLSL includes (#include): not compiled standalone, but every shader rebuilds when one
         # changes so the shadow CDF math can't silently desync from a stale .spv.
         set(SHADER_INCLUDES ${SHADER_DIR}/shadow_cdf.glsl ${SHADER_DIR}/shadow_sample.glsl)
-        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.frag tonemap.vert tonemap.frag)
+        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.frag tonemap.vert tonemap.frag)
             add_custom_command(
                     OUTPUT  ${SHADER_DIR}/${shader}.spv
                     COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${SHADER_DIR}/${shader} -o ${SHADER_DIR}/${shader}.spv

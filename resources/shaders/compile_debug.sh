@@ -23,8 +23,8 @@ echo "Using glslangValidator: $glslang"
 # Define the shaders to compile
 shaders=(
     flat.mesh flat.vert flat.frag transmission.frag additive.frag 
-    cull.comp tpsort.comp update.comp scatter.comp lightcull.comp 
-    shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.frag 
+    cull.comp tpsort.comp update.comp scatter.comp lightcull.comp
+    lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.frag
     tonemap.vert tonemap.frag
 )
 
