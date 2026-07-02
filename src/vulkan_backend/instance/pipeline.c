@@ -10,6 +10,7 @@
 #include "pipelines/additive.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 #include <vulkan/vulkan.h>
 
@@ -713,15 +714,25 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     if (!loadFile(hizShaderPath, &hizShaderCode)) return false;
     VkShaderModule hizShaderModule = createShaderModule(ctx->device, &hizShaderCode);
 
-    VkSpecializationMapEntry hizSpecMap = { .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
+    // Two spec constants: id 0 isReduce, id 1 msaaSamples (reduce source sample count, baked so the
+    // per-sample fetch loop unrolls; VkSampleCountFlagBits enum values equal the counts). msaaSamples
+    // was set in pickPhysicalDevice, before this function runs.
+    struct HizSpecData { VkBool32 isReduce; int32_t msaaSamples; };
+    VkSpecializationMapEntry hizSpecMap[2] = {
+        { .constantID = 0, .offset = offsetof(struct HizSpecData, isReduce),    .size = sizeof(VkBool32) },
+        { .constantID = 1, .offset = offsetof(struct HizSpecData, msaaSamples), .size = sizeof(int32_t)  },
+    };
     for (uint32_t impl = 0; impl < 2; impl++)
     {
-        VkBool32 isReduce = (impl == 0u) ? VK_TRUE : VK_FALSE; // [0] reduce, [1] downsample
+        struct HizSpecData hizSpecData = {
+            .isReduce    = (impl == 0u) ? VK_TRUE : VK_FALSE, // [0] reduce, [1] downsample
+            .msaaSamples = (int32_t)ctx->msaaSamples,
+        };
         VkSpecializationInfo hizSpec = {};
-        hizSpec.mapEntryCount = 1;
-        hizSpec.pMapEntries = &hizSpecMap;
-        hizSpec.dataSize = sizeof(VkBool32);
-        hizSpec.pData = &isReduce;
+        hizSpec.mapEntryCount = 2;
+        hizSpec.pMapEntries = hizSpecMap;
+        hizSpec.dataSize = sizeof(hizSpecData);
+        hizSpec.pData = &hizSpecData;
 
         VkComputePipelineCreateInfo hizPipeInfo = {};
         hizPipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
