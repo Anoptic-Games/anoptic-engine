@@ -1741,7 +1741,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
 	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets. Transparency sort (audit 4.7) adds
 	// cull binding 10 (1 SSBO, the sort-key buffer) — the +1 in the shared term below.
-	// global now 12 SSBOs/view (binding 12 = per-light world pose, LightPose); + lightsetup set (3 SSBO) shared.
+	// global now 12 SSBOs/view (binding 12 = per-light LightRuntime record); + lightsetup set (3 SSBO) shared.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
@@ -2260,10 +2260,10 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		instanceDataInfo.offset = 0;
 		instanceDataInfo.range = sizeof(AnoInstanceData) * rendererState.instanceDataBuffer.capacity;
 
-		VkDescriptorBufferInfo lightPoseInfo = {};
-		lightPoseInfo.buffer = rendererState.lightPoseBuffer.buffer[i]; // ×3 device-local, lightsetup.comp output
-		lightPoseInfo.offset = 0;
-		lightPoseInfo.range = (VkDeviceSize)(sizeof(float) * 8u) * rendererState.lightPoseBuffer.capacity; // 32B/light
+		VkDescriptorBufferInfo lightRuntimeInfo = {};
+		lightRuntimeInfo.buffer = rendererState.lightRuntimeBuffer.buffer[i]; // ×3 device-local, lightsetup.comp output
+		lightRuntimeInfo.offset = 0;
+		lightRuntimeInfo.range = (VkDeviceSize)(sizeof(float) * 16u) * rendererState.lightRuntimeBuffer.capacity; // 64B/light (LightRuntime)
 
 		VkWriteDescriptorSet descriptorWrites[11] = {};
 
@@ -2360,7 +2360,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[10].dstArrayElement = 0;
 		descriptorWrites[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		descriptorWrites[10].descriptorCount = 1;
-		descriptorWrites[10].pBufferInfo = &lightPoseInfo;
+		descriptorWrites[10].pBufferInfo = &lightRuntimeInfo;
 
 		// Global set is per view (audit 4.8): bindings 1-9 + 12 are shared scene SSBOs (same buffer
 		// for every view); binding 0 rebinds to each view's camera UBO. Bindings 10/11 (cluster
@@ -2524,7 +2524,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         }
         lightsetupWrites[0].pBufferInfo = &ssboInfo;      // TransformSSBO (buffer[i])
         lightsetupWrites[1].pBufferInfo = &lightInfo;     // LightSSBO (device)
-        lightsetupWrites[2].pBufferInfo = &lightPoseInfo; // LightPoseSSBO (buffer[i], out)
+        lightsetupWrites[2].pBufferInfo = &lightRuntimeInfo; // LightRuntimeSSBO (buffer[i], out)
 
         vkUpdateDescriptorSets(ctx->device, 3, lightsetupWrites, 0, NULL);
 	}
@@ -2852,8 +2852,8 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	{
 		if(rendererState.transformBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
-		if(rendererState.lightPoseBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.lightPoseBuffer.buffer[i], NULL);
+		if(rendererState.lightRuntimeBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.lightRuntimeBuffer.buffer[i], NULL);
 		// initialTransform/motion/instanceData are SlotUploads now (destroyed below).
 		if(rendererState.transformStream.slotBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformStream.slotBuffer[i], NULL);

@@ -928,7 +928,7 @@ typedef struct PerFrameResources
     VkDescriptorSet     cullSet;
     VkDescriptorSet     updateSet;
     VkDescriptorSet     scatterSet;
-    VkDescriptorSet     lightsetupSet;  // per-light world-pose precompute (transforms+lights in, LightPose out)
+    VkDescriptorSet     lightsetupSet;  // per-light runtime precompute (transforms+lights in, LightRuntime out)
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -1010,7 +1010,7 @@ typedef struct RendererState
     TransformStreamBuffer   transformStream;
     MaterialBuffer          materialBuffer;
     SlotUpload              lightBuffer;            // ×1 device-local + delta staging (palette)
-    TransformBuffer         lightPoseBuffer;        // ×3 DEVICE_LOCAL, lightsetup.comp writes per-light world pose (vec4 worldPos + vec4 worldDir) each frame
+    TransformBuffer         lightRuntimeBuffer;     // ×3 DEVICE_LOCAL, lightsetup.comp writes the per-light fragment runtime record (64B: pose + color*intensity + range/cone/type) each frame
     IndirectDrawBuffer      indirectBuffer;
     BindlessTextureArray    bindlessTextures;
 
