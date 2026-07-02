@@ -3,8 +3,7 @@
 
 #include "ano_GltfParser.h"
 #include <string.h>
-#include <mimalloc.h>
-#include <mimalloc-override.h>
+#include <anoptic_memory.h>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>

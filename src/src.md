@@ -9,7 +9,7 @@ Other subdirectories within ``src/`` are for the various submodules
 
 ## Directory Structure
 
-Each module follows the platform-abstraction convention (see the root `CLAUDE.md`):
+Each module follows the platform-abstraction convention (see `docs/docs.md`):
 a public interface lives in `include/anoptic_<mod>.h` (exposing only `ano_*()`
 declarations and platform-agnostic types), while `src/<mod>/` holds the
 implementation — a common `<mod>.c` plus, where needed, per-platform files

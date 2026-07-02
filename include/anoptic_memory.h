@@ -6,6 +6,7 @@
 #define ANOPTICENGINE_ANOPTIC_MEMORY_H
 
 #include <stddef.h> // for size_t
+#include <stdlib.h> // before mimalloc-override.h: MinGW declares _msize/_aligned_msize
 #include <mimalloc.h>
 #if !defined(__APPLE__)
 #include <malloc.h> // is this ever necessary if we supply mimalloc-override.h?

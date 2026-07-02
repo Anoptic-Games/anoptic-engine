@@ -6,8 +6,7 @@
 
 #include <stdio.h>
 #include <vulkan/vulkan.h>
-#include <mimalloc.h>
-#include <mimalloc-override.h>
+#include <anoptic_memory.h>
 
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/gpu_alloc.h"

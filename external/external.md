@@ -7,14 +7,20 @@ The `external/` directory stores third-party source libraries and dependencies f
 Typical layout:
 ```
 external/
-├── glfw/           # GLFW for windowing and input
+├── cgltf/          # glTF 2.0 parsing (submodule)
+├── freetype/       # Font rasterization for the text stack (submodule)
+├── glfw/           # GLFW for windowing and input (submodule)
 ├── jsmn/           # Minimal JSON parsing library
 ├── stb/            # Single-header libraries for various uses
-├── mimalloc/       # Microsoft's optimized global memory allocator
+├── mimalloc/       # Microsoft's optimized global memory allocator (submodule)
 └── {...}           # Other third-party libraries or tools
 ```
 
 ## Purpose of Each Subdirectory
+
+- **`cgltf/`**: [cgltf](https://github.com/jkuhlmann/cgltf) - A single-header glTF 2.0 loader/writer.
+
+- **`freetype/`**: [FreeType](https://freetype.org/) - Font rasterization, used by the text/SDF stack.
 
 - **`glfw/`**: [glfw](https://www.glfw.org/) - A library for OpenGL, Vulkan contexts, and basic I/O.
 

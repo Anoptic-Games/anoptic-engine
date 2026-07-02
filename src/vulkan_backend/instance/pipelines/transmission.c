@@ -2,7 +2,7 @@
  *
  * SPDX-License-Identifier: LGPL-3.0 */
 
-#include <mimalloc-override.h>
+#include <anoptic_memory.h>
 #include "transmission.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include <stdio.h>
