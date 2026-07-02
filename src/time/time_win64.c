@@ -11,7 +11,7 @@
 #define WINVER       0x0A00
 #endif
 #include "anoptic_time.h"
-#include <Windows.h>
+#include <windows.h>
 #include <time.h>
 #include <errno.h>
 #include <stdatomic.h>
