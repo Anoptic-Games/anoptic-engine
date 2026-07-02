@@ -246,7 +246,7 @@ static const RenderPassDef g_framePasses[] = {
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // EQUAL-test against the pre-pass depth
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
         .depthBarrierBefore     = true,                             // wait on the pre-pass depth writes
-        .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
+        .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
     },
     // 5. Transmissive geometry (depth-sorted "over" lane)
     {
@@ -258,10 +258,13 @@ static const RenderPassDef g_framePasses[] = {
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // test against opaque depth (no write)
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // additive pass below loads this depth
-        .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
+        .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
     },
     // 6. Additive glows (order-independent ONE/ONE). Drawn last so glows composite on top; depth-
     //    tested against opaque depth (hidden behind solids) but no depth write, so layers all add.
+    //    As the LAST color pass it carries the view's ONLY MSAA->HDR resolve (review finding 5):
+    //    the MSAA surface persists across opaque/transmission/additive (LOAD + STORE), so
+    //    resolving in every pass just rewrote the same texels three times.
     {
         .type                   = PASS_GRAPHICS,
         .prototype              = PIPELINE_ADDITIVE,
@@ -856,8 +859,10 @@ void recordCommandBuffer(uint32_t imageIndex)
             color[0].imageView = rendererState.colorView[v]; // this view's MSAA color
             color[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             color[0].resolveMode = pass->resolveMode;
-            color[0].resolveImageView = vr->hdrColorView; // resolve into this view's HDR target
-            color[0].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            if (pass->resolveMode != VK_RESOLVE_MODE_NONE) {
+                color[0].resolveImageView = vr->hdrColorView; // resolve into this view's HDR target
+                color[0].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
             color[0].loadOp = pass->colorLoadOp;
             color[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             color[0].clearValue = clearColor;
