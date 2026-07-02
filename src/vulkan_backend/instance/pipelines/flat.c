@@ -57,11 +57,18 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 		PBR_FEATURE_ALPHA_MODE_BLEND |
 		PBR_FEATURE_DOUBLE_SIDED;   // rasterizer uses cullMode NONE, so all geometry is double-sided
 
-	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
+	// Load shaders: mesh shader on capable devices, vertex shader on the fallback. The depth
+	// pre-pass variant (index 2) uses the ANO_DEPTH_ONLY compile of the same source (position
+	// only, no user attributes) — invariant gl_Position in both keeps clip depth bit-identical,
+	// which the opaque variant's EQUAL test requires.
 	struct Buffer geomShaderCode;
 	char geomShaderPath[256];
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
 	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
+
+	struct Buffer depthGeomShaderCode;
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat_depth.mesh" : "flat_depth.vert");
+	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
 	char fragShaderPath[256];
@@ -69,6 +76,7 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	if (!loadFile(fragShaderPath, &fragShaderCode)) return false;
 
 	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
+	VkShaderModule depthGeomShaderModule = createShaderModule(ctx->device, &depthGeomShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
 	VkPipelineShaderStageCreateInfo geomShaderStageInfo = {};
@@ -235,11 +243,15 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
 
-	// Depth pre-pass variant (index 2): the exact same geometry (mesh/vertex) stage as the opaque
-	// variant with the fragment stage stripped and no color attachments, so it only lays down the
-	// nearest depth. depthWrite ON + LESS. Reusing the identical geometry module guarantees bit-
-	// identical clip-space depth, which the opaque variant's EQUAL test above relies on. Runs first
-	// (g_framePasses) so the heavy lighting shader shades each visible pixel exactly once.
+	// Depth pre-pass variant (index 2): the ANO_DEPTH_ONLY geometry stage (no user attributes ->
+	// ~3.5x less ISBE per meshlet, the frame's top warp-launch limiter) with the fragment stage
+	// stripped and no color attachments, so it only lays down the nearest depth. depthWrite ON +
+	// LESS. Same-source compile + invariant gl_Position guarantees bit-identical clip-space depth,
+	// which the opaque variant's EQUAL test above relies on. Runs first (g_framePasses) so the
+	// heavy lighting shader shades each visible pixel exactly once.
+	VkPipelineShaderStageCreateInfo depthGeomStageInfo = geomShaderStageInfo;
+	depthGeomStageInfo.module = depthGeomShaderModule;
+
 	VkPipelineDepthStencilStateCreateInfo prepassDepth = depthStencil;
 	prepassDepth.depthWriteEnable = VK_TRUE;
 	prepassDepth.depthCompareOp = VK_COMPARE_OP_LESS;
@@ -255,8 +267,8 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 
 	VkGraphicsPipelineCreateInfo prepassInfo = pipelineInfo; // inherit shared raster/viewport/msaa/layout
 	prepassInfo.pNext = &prepassRendering;
-	prepassInfo.stageCount = 1;                  // geometry stage only; no fragment shader
-	prepassInfo.pStages = &geomShaderStageInfo;
+	prepassInfo.stageCount = 1;                  // depth-only geometry stage; no fragment shader
+	prepassInfo.pStages = &depthGeomStageInfo;
 	prepassInfo.pDepthStencilState = &prepassDepth;
 	prepassInfo.pColorBlendState = &prepassBlend;
 
@@ -266,9 +278,11 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	proto->implementations[2].blendEnable = VK_FALSE;
 
 	ano_aligned_free(geomShaderCode.data);
+	ano_aligned_free(depthGeomShaderCode.data);
 	ano_aligned_free(fragShaderCode.data);
 
 	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, depthGeomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
 
 	return true;

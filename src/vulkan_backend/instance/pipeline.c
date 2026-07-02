@@ -1121,7 +1121,8 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
-// Dynamic shadow depth pipeline (audit 4.7). Reuses the FLAT geometry stage (flat.mesh/flat.vert)
+// Dynamic shadow depth pipeline (audit 4.7). Uses the depth-only FLAT geometry variant
+// (flat_depth.mesh/flat_depth.vert = ANO_DEPTH_ONLY compile, position-only outputs)
 // with the shadowPass specialization constant set, so the depth render projects by a shadow
 // frustum's viewProj into the single-sample shadow atlas. No color attachment; depth bias on to
 // suppress acne. Reuses the FLAT pipeline layout (sets 0/1/2 + the 2-uint push). Also creates the
@@ -1153,9 +1154,12 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	bool useMesh = ctx->deviceCapabilities.meshShader;
 	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
+	// Depth-only geometry variant (ANO_DEPTH_ONLY compile of flat.mesh/flat.vert): position-only
+	// outputs — the shadow render consumes no attributes, and slimming the ISBE payload here is a
+	// direct occupancy win on the caster geometry. shadow_depth.frag declares no inputs to match.
 	struct Buffer geomCode, fragCode;
 	char path[256];
-	snprintf(path, sizeof(path), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
+	snprintf(path, sizeof(path), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat_depth.mesh" : "flat_depth.vert");
 	if (!loadFile(path, &geomCode)) return false;
 	snprintf(path, sizeof(path), "%s/resources/shaders/shadow_depth.frag.spv", PROJECT_ROOT);
 	if (!loadFile(path, &fragCode)) return false;

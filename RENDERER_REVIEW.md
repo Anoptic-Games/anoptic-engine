@@ -58,7 +58,7 @@ Key global metrics (`profile/analysis.yaml`):
 | L1TEX / L2 hit rate | 65.9% / 71.0% | mediocre; consistent with 8×MSAA + dependent buffer chains |
 | Shader-profiler "Unattributed" bucket | 20.0% of samples, 96% MISC | samples landing outside any resident shader — consistent with barrier drains |
 
-## 3. Finding 1 — shadow pass synchronization architecture (largest single win)
+## 3. Finding 1 — shadow pass synchronization architecture (largest single win) - ADDRESSED
 
 `recordCommandBuffer` (src/vulkan_backend/vulkanMaster.c:510–708) drives the layered
 Power-CDF shadow pass as: per frustum s in 0..41 — transition that frustum's two atlas
@@ -161,7 +161,21 @@ COLOR→COLOR barrier. Per-view MSAA attachments (or rendering both views into l
 one MSAA array image in one pass set) would let the two views' raster overlap — relevant
 once view 1 is cheap (finding 6).
 
-## 5. Finding 3 — full-fat mesh shader on depth-only passes (top occupancy limiter)
+## 5. Finding 3 — full-fat mesh shader on depth-only passes (top occupancy limiter) - ADDRESSED
+
+Measured outcome (2026-07-03, after finding 1 landed): ANO_DEPTH_ONLY compiles of
+flat.mesh/flat.vert (invariant gl_Position, no user outputs) wired into the prepass and
+shadow pipelines; shadow_depth.frag inputs slimmed to match. Validation-clean on both
+geometry paths, no EQUAL-test speckle. Gain: lighting region −0.09 ms median (phase-
+aligned A/B), shadow region unchanged — far below the estimate. Interpretation: the
+24.6% ISBE launch stall was a symptom of the barrier-serialized regime (each isolated
+micro-pass ramped occupancy from zero, so launch-side stalls dominated); with the
+serialization gone, the depth passes are bounded by the mesh shader's input-side loads
+(the LGSB-bound getLocalIndex byte-decode and AoS vertex pulls below) and fixed-function
+raster, not by output allocation. The change is kept — strictly less ISBE/register/
+attribute traffic, and the prerequisite for task-shader culling — but the remaining
+levers re-rank: PiP resolution (finding 6) and MSAA policy (finding 5) are now the
+largest wall-clock items, then async overlap (finding 2), then the mesh input loads.
 
 `flat.mesh` writes five user attribute streams per vertex — `fragNormal` (vec3),
 `fragTexCoord` (vec2), `outMaterialIndex` (flat uint), `fragWorldPos` (vec3),
@@ -357,7 +371,7 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 | # | Change | Complexity | Est. gain |
 |---|---|---|---|
 | 1 | Batch shadow barriers, per-frustum depth slices, layered blur passes | Medium (localized in vulkanMaster.c + one image + blur shader layer index) | 0.7–1.2 ms |
-| 2 | Slim depth-only mesh module (wire flat_depth) for prepass + shadow | Low-medium (new module + 2 pipeline variants) | 0.5–1.0 ms, rises after #1 |
+| 2 | Slim depth-only mesh module (wire flat_depth) for prepass + shadow | LANDED 2026-07-03 | measured ~0.1 ms (ISBE premise died with #1; see finding 3 note) |
 | 3 | Render PiP view at inset resolution | Low-medium (per-view extents plumbed through images, viewports, lightcull, Hi-Z) | 0.8–1.1 ms |
 | 4 | MSAA: setting + 4× default; pick id off the 8× path; resolve once | Low | 0.3–0.8 ms |
 | 5 | Hi-Z build off critical path (end of frame or async queue) | Low (reorder) / Medium (async + timeline semaphore) | 0.3–0.5 ms |

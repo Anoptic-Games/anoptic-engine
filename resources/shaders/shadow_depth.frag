@@ -8,17 +8,13 @@
 // geometry paths. The depth attachment (test on) keeps the nearest occluder per texel; the box prefilter
 // then averages these one-hots into per-band (coverage, coverage*meanDepth).
 //
-// It still declares the same fragment-input interface flat.vert / flat.mesh output (locations 0-4), even
-// though it ignores every value: an unconsumed geometry-stage output is only a spec "performance warning",
-// but at least one driver dropped the vertex stage's rasterizer output entirely on a stage-interface
-// mismatch, leaving the map empty on the ANO_FORCE_NO_MESH_SHADER=1 fallback. Matching inputs link identically.
+// The geometry stage is now the ANO_DEPTH_ONLY compile of flat.mesh / flat.vert, which emits NO
+// user outputs — so this stage declares no inputs and the interfaces match exactly on both
+// geometry paths. (History: when the fat modules fed this pass, the inputs had to be declared to
+// mirror locations 0-4, because one driver dropped the vertex stage's rasterizer output entirely
+// on a stage-interface mismatch. Matched-empty linkage avoids both the mismatch and the dead ISBE
+// payload.)
 #include "shadow_cdf.glsl"
-
-layout(location = 0) in vec3 inNormal;
-layout(location = 1) in vec2 inTexCoord;
-layout(location = 2) flat in uint inMaterialIndex;
-layout(location = 3) in vec3 inWorldPos;
-layout(location = 4) flat in uint inEntityIndex;
 
 layout(location = 0) out vec4 outSubA; // bands 0/1: (cov0,M0,cov1,M1)
 layout(location = 1) out vec4 outSubB; // bands 2/3: (cov2,M2,cov3,M3)

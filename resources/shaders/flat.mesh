@@ -144,11 +144,23 @@ layout(constant_id = 0) const bool shadowPass = false;
 struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; } shadowBuf;
 
+// EQUAL-test contract: the depth pre-pass runs the ANO_DEPTH_ONLY compile of this same source
+// (position-only outputs, ~3.5x less ISBE per meshlet) and the opaque pass EQUAL-tests against
+// the depth it wrote — the two compiles MUST produce bit-identical clip positions. invariant on
+// gl_Position pins the position codegen in both variants; sharing one source keeps the
+// expression tree identical. The shadow render also uses the depth-only variant (no equality
+// coupling there; gl_FragCoord.z feeds the CDF encode within the same rasterization).
+out gl_MeshPerVertexEXT {
+    invariant vec4 gl_Position;
+} gl_MeshVerticesEXT[];
+
+#ifndef ANO_DEPTH_ONLY
 layout(location = 0) out vec3 fragNormal[];
 layout(location = 1) out vec2 fragTexCoord[];
 layout(location = 2) flat out uint outMaterialIndex[];
 layout(location = 3) out vec3 fragWorldPos[];
 layout(location = 4) flat out uint outEntityIndex[]; // slot index -> per-entity instance channel
+#endif
 
 uint getLocalIndex(uint baseByteOffset, uint triangleOffset, uint t, uint vertexInTriangle) {
     uint byteOffset = baseByteOffset + triangleOffset + t * 3 + vertexInTriangle;
@@ -264,7 +276,9 @@ void main() {
     // strided vertex loop. Inverse-transpose is correct under non-uniform / negative / sheared
     // scale; equals mat3(model) for rotation + uniform scale. docs/math_conventions.md.
     mat4 model = transformBuf.transforms[entityIndex];
+#ifndef ANO_DEPTH_ONLY
     mat3 normalMatrix = transpose(inverse(mat3(model)));
+#endif
 
     // Load vertices (strided loop to handle arbitrary vertex count)
     for (uint i = ti; i < vertexCount; i += 64) {
@@ -273,19 +287,21 @@ void main() {
 
         PackedVertex v = vertexBuf.vertices[globalVertexIdx];
         vec3 position = vec3(v.px, v.py, v.pz);
-        vec3 normal   = vec3(v.nx, v.ny, v.nz);
-        vec2 texCoord = vec2(v.u, v.v);
 
         vec4 worldPos = model * vec4(position, 1.0);
         gl_MeshVerticesEXT[i].gl_Position = shadowPass
             ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
             : (global.proj * global.view * worldPos);
 
+#ifndef ANO_DEPTH_ONLY
+        vec3 normal   = vec3(v.nx, v.ny, v.nz);
+        vec2 texCoord = vec2(v.u, v.v);
         fragNormal[i] = normalMatrix * normal;
         fragTexCoord[i] = texCoord;
         outMaterialIndex[i] = materialIndex;
         fragWorldPos[i] = worldPos.xyz;
         outEntityIndex[i] = entityIndex;
+#endif
     }
 
     // Load triangles (strided loop to handle arbitrary primitive count up to 126)
