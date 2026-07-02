@@ -234,6 +234,7 @@ typedef struct VulkanSettings
 {
 	char* preferredDevice; // Physical GPU to use for rendering
 	uint32_t preferredMode;	// Frame present mode
+	uint32_t preferredMsaa;	// MSAA sample count (2/4/8), clamped to device support; review finding 5
 } VulkanSettings;
 
 typedef struct MonitorInfo 

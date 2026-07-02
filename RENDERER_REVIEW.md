@@ -246,7 +246,17 @@ Levers, in order of leverage:
   `VK_KHR_pipeline_executable_properties` inspection + spilling experiment is the blunt
   instrument; measure, since spills trade LGSB for occupancy.
 
-## 7. Finding 5 — MSAA policy: maximum supported samples, everywhere
+## 7. Finding 5 — MSAA policy: maximum supported samples, everywhere - ADDRESSED
+
+Measured outcome (2026-07-03): preferredMsaa config (default 4×, requestMsaaSamples /
+getChosenMsaaSamples, ANO_MSAA env override for A/B, <2 clamps to 2) applied in
+getMaxUsableSampleCount; color resolves collapsed to one per view (opaque/transmission
+resolveMode NONE, additive AVERAGE — the MSAA surface already persisted across the three
+passes). Mode-matched A/B at 2560×1368 SHADOWMAP: lighting 1.72→1.28 ms, total 2.82→2.28
+ms (−19%); swapchain-class VRAM another −370 MiB. Validation-clean; 4× visually clean.
+NOT taken here: per-view sample counts (rasterizationSamples is baked pipeline state —
+needs duplicate pipeline sets) and the pick-id restructure (at 4× with one resolve its
+remaining cost didn't justify the plumbing; revisit if a capture shows the id resolve).
 
 `getMaxUsableSampleCount` picks the highest common sample count and `initVulkan` uses it
 unconditionally (instanceInit.c:629–641, 742) — 8× on this class of hardware. Every
@@ -383,7 +393,7 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 | 1 | Batch shadow barriers, per-frustum depth slices, layered blur passes | Medium (localized in vulkanMaster.c + one image + blur shader layer index) | 0.7–1.2 ms |
 | 2 | Slim depth-only mesh module (wire flat_depth) for prepass + shadow | LANDED 2026-07-03 | measured ~0.1 ms (ISBE premise died with #1; see finding 3 note) |
 | 3 | Render PiP view at inset resolution | LANDED 2026-07-03 | measured 1.07 ms + 372 MiB VRAM (see finding 6 note) |
-| 4 | MSAA: setting + 4× default; pick id off the 8× path; resolve once | Low | 0.3–0.8 ms |
+| 4 | MSAA: setting + 4× default; resolve once (pick-id restructure deferred) | LANDED 2026-07-03 | measured 0.53 ms + 370 MiB VRAM (see finding 5 note) |
 | 5 | Hi-Z build off critical path (end of frame or async queue) | Low (reorder) / Medium (async + timeline semaphore) | 0.3–0.5 ms |
 | 6 | Backface culling on opaque/prepass/shadow | Low (pipeline state; verify Sponza winding) | 0.2–0.5 ms of depth-only raster |
 | 7 | Single shared shadow atlas + dirty-frustum reuse | Medium-high (lifetime + invalidation rules) | up to ~1.5 ms steady-state static; ~700 MB VRAM |

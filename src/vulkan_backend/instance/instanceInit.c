@@ -637,6 +637,20 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 	                          & physicalDeviceProperties.limits.framebufferDepthSampleCounts
 	                          & physicalDeviceProperties.limits.sampledImageDepthSampleCounts
 	                          & vk12.framebufferIntegerColorSampleCounts;
+
+	// MSAA policy (review finding 5): honor the configured preference instead of the device max —
+	// the unconditional max (8x on desktop) taxed every raster pass in both views with ~2x the
+	// sample work of 4x for marginal visual return. Preference is clamped to what the device
+	// supports; below 2 is raised to 2 (the 1x no-resolve path is not built). ANO_MSAA overrides
+	// for A/B testing without a rebuild.
+	uint32_t preferred = getChosenMsaaSamples();
+	const char* msaaEnv = getenv("ANO_MSAA");
+	if (msaaEnv) preferred = (uint32_t)atoi(msaaEnv);
+	if (preferred < 2u) { printf("MSAA preference %u below minimum, using 2x\n", preferred); preferred = 2u; }
+	VkSampleCountFlags mask = 0;
+	for (uint32_t s = 2u; s <= preferred && s <= 64u; s <<= 1) mask |= s; // sample flags are their counts
+	counts &= mask;
+
 	if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
 	if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
 	if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
