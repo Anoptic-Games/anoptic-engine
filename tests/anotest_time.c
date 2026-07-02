@@ -170,6 +170,39 @@ static int testResolution(void) {
     return fails;
 }
 
+/* Timebase granularity: the smallest nonzero step ano_timestamp_ticks can resolve, in ns. Raw QPC on
+ * many Windows hosts steps in 100ns, too coarse to order log records stamped in the same window; the
+ * calibrated rdtsc timebase resolves far finer. Assert sub-100ns so a regression back to raw QPC (or
+ * any equally coarse clock) fails here. Linux CLOCK_MONOTONIC and macOS 24MHz mach ticks both clear it. */
+#define GRAIN_SAMPLES 200000
+#define GRAIN_MAX_NS  100
+
+static int testGranularity(void) {
+    printf("\nTesting timebase granularity (smallest resolvable step)\n");
+
+    uint64_t minDelta = UINT64_MAX;
+    uint64_t prev = ano_timestamp_ticks();
+    for (int i = 0; i < GRAIN_SAMPLES; i++) {
+        uint64_t now = ano_timestamp_ticks();
+        uint64_t d = now - prev;    // monotonic counter, so the delta never underflows
+        prev = now;
+        if (d != 0 && d < minDelta)
+            minDelta = d;
+    }
+    if (minDelta == UINT64_MAX) {
+        printf("  [FAIL] timestamp never advanced across %d samples\n", GRAIN_SAMPLES);
+        return 1;
+    }
+
+    uint64_t grainNs = ano_ticks_to_ns(minDelta);
+    int ok = grainNs < GRAIN_MAX_NS;
+    printf("  [%s] min step = %" PRIu64 " ticks = %" PRIu64 " ns (need < %d ns)\n",
+           ok ? "PASS" : "FAIL", minDelta, grainNs, GRAIN_MAX_NS);
+    if (!ok)
+        printf("         ^ timebase too coarse (raw 10 MHz QPC steps in 100 ns); expected a finer clock\n");
+    return ok ? 0 : 1;
+}
+
 int main() {
 
     int status = 0;
@@ -185,6 +218,12 @@ int main() {
     status = testTimeStamps();
     if (status != 0) {
         printf("anoptic_time.h: timestamp error.\n");
+        return -1;
+    }
+
+    /* Granularity Test: assert the timebase resolves finer than raw QPC's 100ns grain */
+    if (testGranularity() != 0) {
+        printf("\nanoptic_time.h: timebase granularity too coarse.\n");
         return -1;
     }
 

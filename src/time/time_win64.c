@@ -18,58 +18,178 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+// rdtsc is x86 only; on ARM64 Windows this whole timebase falls back to QPC.
+#if defined(__x86_64__) || defined(_M_X64)
+#define ANO_TSC_ARCH 1
+#include <intrin.h>   // __rdtsc, __cpuid, _mm_lfence
+#endif
+
 
 /* Precision Timestamps */
 
-// cache the performance frequency (acquired only once)
+// Two monotonic timebases on Windows. QPC is portable but coarse: on many hosts it ticks at 10 MHz, a
+// 100 ns step, so records stamped inside the same 100 ns window can't be ordered -- coarser than
+// Linux/macOS. On x86-64 with an invariant TSC (constant rate across P-states, idle, and cores) rdtsc
+// is a sub-nanosecond register read, giving the logger fine cross-thread ordering. We use rdtsc when
+// available and fall back to QPC otherwise (no invariant TSC, or a non-x86 Windows build). The choice
+// is resolved once and frozen, so ano_timestamp_ticks and ano_ticks_to_ns always share one timebase.
+
+// QPC frequency (counts/second), cached once. The QPC path uses it directly; the TSC path uses it as
+// the calibration reference.
 static _Atomic uint64_t cachedPerfFreq = 0;
 
-int initialize_performance_frequency() {
-
+static uint64_t query_perf_freq(void) {
+    uint64_t f = atomic_load_explicit(&cachedPerfFreq, memory_order_relaxed);
+    if (f)
+        return f;
     LARGE_INTEGER tmp;
-    if (QueryPerformanceFrequency(&tmp) == 0) {
-        // Handle error
-        printf("Failed to query performance frequency.");
-        return -1;
-    }
-    cachedPerfFreq = tmp.QuadPart;
-
-    #ifdef DEBUG_BUILD
-    printf("\nPerformance Frequency: %llu\n\n", cachedPerfFreq);
-    #endif
-
-    return 0;
+    if (QueryPerformanceFrequency(&tmp) == 0 || tmp.QuadPart <= 0)
+        return 0;   // never fails on WinXP+; callers treat 0 as a hard clock error
+    f = (uint64_t)tmp.QuadPart;
+    atomic_store_explicit(&cachedPerfFreq, f, memory_order_relaxed);
+    return f;
 }
 
-// Bare QPC counter, no conversion. The frequency divide is deferred to ano_ticks_to_ns.
-uint64_t ano_timestamp_ticks() {
+#ifdef ANO_TSC_ARCH
 
+// Resolved timebase, decided once by resolve_clock and never changed.
+enum { CLOCK_UNSET = 0, CLOCK_TSC = 1, CLOCK_QPC = 2 };
+static _Atomic int      g_clockMode  = CLOCK_UNSET;
+static _Atomic int      g_clockElect = 0;    // one-time election guard for resolve_clock
+static _Atomic uint64_t cachedTscHz  = 0;    // calibrated invariant-TSC frequency (TSC mode only)
+
+// Invariant TSC: CPUID leaf 0x80000007, EDX bit 8. Only then does rdtsc advance at a constant rate
+// independent of frequency scaling and idle, i.e. is usable as a clock.
+static bool have_invariant_tsc(void) {
+    int r[4];
+    __cpuid(r, 0x80000000);              // max extended leaf in EAX
+    if ((unsigned)r[0] < 0x80000007u)
+        return false;
+    __cpuid(r, 0x80000007);
+    return (r[3] & (1 << 8)) != 0;       // EDX[8] = Invariant TSC
+}
+
+// rdtsc bracketed by lfence so the read can't drift past neighbouring instructions during
+// calibration. The hot path (ano_timestamp_ticks) uses a plain rdtsc: a few instructions of skew
+// there is far below the ordering grain we care about, and the fences aren't free.
+static inline uint64_t rdtsc_fenced(void) {
+    _mm_lfence();
+    uint64_t t = __rdtsc();
+    _mm_lfence();
+    return t;
+}
+
+#define ANO_TSC_CAL_MS 4u   // per-sample window; the ratio is measured against ACTUAL elapsed QPC, so
+                            // Sleep jitter and mid-window preemption don't bias it (both clocks advance
+                            // in real time regardless)
+
+// One TSC-frequency measurement: elapsed TSC over elapsed QPC, scaled by the QPC frequency.
+static uint64_t sample_tsc_hz(uint64_t qf) {
+    LARGE_INTEGER q0, q1;
+    QueryPerformanceCounter(&q0);
+    uint64_t t0 = rdtsc_fenced();
+    Sleep(ANO_TSC_CAL_MS);
+    uint64_t t1 = rdtsc_fenced();
+    QueryPerformanceCounter(&q1);
+
+    uint64_t dq = (uint64_t)(q1.QuadPart - q0.QuadPart);
+    uint64_t dt = t1 - t0;
+    if (dq == 0 || dt == 0)
+        return 0;
+    // tscHz = dt / (dq / qf) = dt * qf / dq. 128-bit product so a fast CPU or wide window can't overflow.
+    return (uint64_t)(((unsigned __int128)dt * qf) / dq);
+}
+
+// Calibrate the TSC frequency: median of three samples rejects a one-off preemption outlier.
+static uint64_t calibrate_tsc_hz(void) {
+    uint64_t qf = query_perf_freq();
+    if (qf == 0)
+        return 0;
+    uint64_t s[3];
+    for (int i = 0; i < 3; i++)
+        s[i] = sample_tsc_hz(qf);
+    if (s[0] > s[1]) { uint64_t t = s[0]; s[0] = s[1]; s[1] = t; }
+    if (s[1] > s[2]) { uint64_t t = s[1]; s[1] = s[2]; s[2] = t; }
+    if (s[0] > s[1]) { uint64_t t = s[0]; s[0] = s[1]; s[1] = t; }
+    return s[1];
+}
+
+// Decide the timebase once. One thread wins the election and resolves; concurrent callers wait for
+// the published mode. Calibration costs ~12 ms of Sleep, paid once at the first timestamp.
+static void resolve_clock(void) {
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_clockElect, &expected, 1)) {
+        while (atomic_load_explicit(&g_clockMode, memory_order_acquire) == CLOCK_UNSET)
+            Sleep(0);
+        return;
+    }
+    int mode = CLOCK_QPC;
+    if (have_invariant_tsc()) {
+        uint64_t hz = calibrate_tsc_hz();
+        if (hz >= 100000000ull && hz <= 100000000000ull) {   // 100 MHz .. 100 GHz sanity band
+            atomic_store_explicit(&cachedTscHz, hz, memory_order_relaxed);
+            mode = CLOCK_TSC;
+        }
+    }
+    query_perf_freq();   // ensure the QPC frequency is cached for the fallback path
+
+    #ifdef DEBUG_BUILD
+    printf("\nTimebase: %s", mode == CLOCK_TSC ? "invariant TSC" : "QPC");
+    if (mode == CLOCK_TSC)
+        printf(" @ %llu Hz", (unsigned long long)atomic_load_explicit(&cachedTscHz, memory_order_relaxed));
+    printf(" (QPC %llu Hz)\n\n", (unsigned long long)query_perf_freq());
+    #endif
+
+    atomic_store_explicit(&g_clockMode, mode, memory_order_release);   // publishes cachedTscHz too
+}
+
+static inline int clock_mode(void) {
+    int m = atomic_load_explicit(&g_clockMode, memory_order_acquire);
+    if (m == CLOCK_UNSET) {
+        resolve_clock();
+        m = atomic_load_explicit(&g_clockMode, memory_order_acquire);
+    }
+    return m;
+}
+
+#endif // ANO_TSC_ARCH
+
+// Bare monotonic counter, no conversion. rdtsc (a register read) when the TSC is usable, else the raw
+// QPC count. The frequency divide is deferred to ano_ticks_to_ns.
+uint64_t ano_timestamp_ticks() {
+#ifdef ANO_TSC_ARCH
+    if (clock_mode() == CLOCK_TSC)
+        return __rdtsc();
+#endif
     LARGE_INTEGER tmp;
-    if(QueryPerformanceCounter(&tmp) == 0) {
+    if (QueryPerformanceCounter(&tmp) == 0) {
         printf("Error getting Windows performance Counter.");
         return UINT64_MAX; // Indicate an error occurred.
     }
     return (uint64_t)tmp.QuadPart;
 }
 
-// Convert raw QPC counts (value or delta) to nanoseconds, overflow-safe via the cached frequency.
+// Convert raw counts (value or delta) to nanoseconds, overflow-safe via the resolved timebase.
 uint64_t ano_ticks_to_ns(uint64_t ticks) {
 
-    // Cache the performance frequency on first run.
-    if(cachedPerfFreq == 0) {
-        if (initialize_performance_frequency() != 0) {
-            printf("Exiting due to error with fetching performance frequency.");
-            return UINT64_MAX; // Indicate an error occurred
-        }
-    }
+    uint64_t freq;
+#ifdef ANO_TSC_ARCH
+    freq = (clock_mode() == CLOCK_TSC)
+               ? atomic_load_explicit(&cachedTscHz, memory_order_relaxed)
+               : query_perf_freq();
+#else
+    freq = query_perf_freq();
+#endif
+    if (freq == 0)
+        return UINT64_MAX;   // clock error
 
     // Split into two parts to scale without overflow.
-    uint64_t largePart = ticks / cachedPerfFreq;    // Seconds
-    uint64_t smallPart = ticks % cachedPerfFreq;    // Sub-seconds
+    uint64_t largePart = ticks / freq;    // Seconds
+    uint64_t smallPart = ticks % freq;    // Sub-seconds
 
     // Recombine the two parts.
-    smallPart = smallPart * 1000000000LL / cachedPerfFreq;
-    return smallPart + (largePart * 1000000000LL);
+    smallPart = smallPart * 1000000000ULL / freq;
+    return smallPart + (largePart * 1000000000ULL);
 }
 
 uint64_t ano_timestamp_raw() {
