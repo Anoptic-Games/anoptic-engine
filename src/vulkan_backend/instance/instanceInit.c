@@ -508,6 +508,13 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	capabilities.depthMaxResolve = (dsResolve.supportedDepthResolveModes & VK_RESOLVE_MODE_MAX_BIT) != 0;
 	if (getenv("ANO_FORCE_NO_DEPTH_RESOLVE")) capabilities.depthMaxResolve = false;
 
+	// Vertex-stage gl_Layer (shadowblur.vert): the layered single-pass shadow blur needs it; the
+	// fallback renders per-layer views. Both vk1.2 features are required because glslang may emit
+	// either the ShaderLayer (SPIR-V 1.5) or ShaderViewportIndexLayerEXT capability for gl_Layer.
+	// Test hook forces the per-layer fallback on capable hardware.
+	capabilities.shaderOutputLayer = features12.shaderOutputLayer && features12.shaderOutputViewportIndex;
+	if (getenv("ANO_FORCE_NO_SHADER_OUTPUT_LAYER")) capabilities.shaderOutputLayer = false;
+
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
 	capabilities.graphics = indices.graphicsPresent;
@@ -826,6 +833,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingVariableDescriptorCount = queryFeatures12.descriptorBindingVariableDescriptorCount;
 	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
 	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
+	// Vertex-stage gl_Layer for the layered shadow blur (mirrors populateCapabilities: both
+	// features cover whichever SPIR-V capability glslang emitted for gl_Layer).
+	features12.shaderOutputLayer = queryFeatures12.shaderOutputLayer;
+	features12.shaderOutputViewportIndex = queryFeatures12.shaderOutputViewportIndex;
 
 	// Mirror populateCapabilities: the fallback path activates when the feature is
 	// absent or the test override forces it off.
@@ -2932,7 +2943,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightIndexBuffer, NULL);
 		}
 		// Dynamic shadow resources (audit 4.7 MSM): per-frame frustum buffer + moment atlas + blur
-		// temp + transient depth + their views.
+		// temp + their views. (The transient caster depth is shared, destroyed after this loop.)
 		ShadowResources* sh = &rendererState.frames[i].shadow;
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
 		if (sh->arrayView) vkDestroyImageView(ctx->device, sh->arrayView, NULL);
@@ -2944,11 +2955,14 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			if (sh->layerView[s]) vkDestroyImageView(ctx->device, sh->layerView[s], NULL);
 			if (sh->tempLayerView[s]) vkDestroyImageView(ctx->device, sh->tempLayerView[s], NULL);
 		}
-		if (sh->depthView) vkDestroyImageView(ctx->device, sh->depthView, NULL);
 		if (sh->atlasImage) vkDestroyImage(ctx->device, sh->atlasImage, NULL);
 		if (sh->tempImage) vkDestroyImage(ctx->device, sh->tempImage, NULL);
-		if (sh->depthImage) vkDestroyImage(ctx->device, sh->depthImage, NULL);
 	}
+	// Shared transient caster depth (one slice per shadow frustum, single instance across frames).
+	for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+		if (rendererState.shadowDepthSliceView[s]) vkDestroyImageView(ctx->device, rendererState.shadowDepthSliceView[s], NULL);
+	}
+	if (rendererState.shadowDepthImage) vkDestroyImage(ctx->device, rendererState.shadowDepthImage, NULL);
 	// Shadow config mirror (the render-thread CPU copy; the device buffers are SlotUploads destroyed below).
 	if (rendererState.shadowCfgMirror) { free(rendererState.shadowCfgMirror); rendererState.shadowCfgMirror = NULL; }
 
