@@ -270,7 +270,17 @@ the additive pass (loadOp LOAD on the MSAA surface between passes, resolve only 
 last) would also drop two of the three per-view resolves; transmission/additive draw so
 few pixels that per-pass resolve is nearly pure overhead.
 
-## 8. Finding 6 — the PiP view renders at full resolution
+## 8. Finding 6 — the PiP view renders at full resolution - ADDRESSED
+
+Measured outcome (2026-07-03): viewExtent[v] plumbed through image creation (per-view
+depth/HDR/Hi-Z/depth-resolve AND per-view MSAA color+id — the shared-attachment coupling
+barrier between views is gone), viewports/renderAreas, per-view UBO screen dims + aspect,
+per-view Hi-Z dims in the cull UBO, and the resize path. Phase-aligned A/B at 2560×1368:
+lighting 2.80→1.78 ms median (−36%), composite 0.060→0.040 ms, frame total 3.90→2.83 ms
+(−27%); swapchain-class VRAM −372 MiB net. Bonus effects: view 1's screen-area cull and
+LOD thresholds now operate in inset pixels (coarser LODs, fewer triangles), and the inset
+composites 1:1 instead of 3:1-minified (sharper). Validation-clean including a live
+resize; shadows and inset visually correct.
 
 All ViewResources — depth, HDR color, Hi-Z pyramid, pick-resolve — are created at
 swapchain extent for every view (instanceInit.c:1596–1763), every per-view pass sets
@@ -372,7 +382,7 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 |---|---|---|---|
 | 1 | Batch shadow barriers, per-frustum depth slices, layered blur passes | Medium (localized in vulkanMaster.c + one image + blur shader layer index) | 0.7–1.2 ms |
 | 2 | Slim depth-only mesh module (wire flat_depth) for prepass + shadow | LANDED 2026-07-03 | measured ~0.1 ms (ISBE premise died with #1; see finding 3 note) |
-| 3 | Render PiP view at inset resolution | Low-medium (per-view extents plumbed through images, viewports, lightcull, Hi-Z) | 0.8–1.1 ms |
+| 3 | Render PiP view at inset resolution | LANDED 2026-07-03 | measured 1.07 ms + 372 MiB VRAM (see finding 6 note) |
 | 4 | MSAA: setting + 4× default; pick id off the 8× path; resolve once | Low | 0.3–0.8 ms |
 | 5 | Hi-Z build off critical path (end of frame or async queue) | Low (reorder) / Medium (async + timeline semaphore) | 0.3–0.5 ms |
 | 6 | Backface culling on opaque/prepass/shadow | Low (pipeline state; verify Sponza winding) | 0.2–0.5 ms of depth-only raster |

@@ -825,27 +825,8 @@ void recordCommandBuffer(uint32_t imageIndex)
                 0, 1, &lcBarrier, 0, NULL, 0, NULL);
         }
 
-        // The MSAA color + id targets are shared and reused across views sequentially: order view
-        // v's writes after view v-1's resolve read of each. Both need the same COLOR->COLOR barrier.
-        if (v > 0) {
-            VkImageMemoryBarrier msaaReuse[2] = {};
-            for (int b = 0; b < 2; b++) {
-                msaaReuse[b].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                msaaReuse[b].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                msaaReuse[b].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                msaaReuse[b].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                msaaReuse[b].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                msaaReuse[b].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                msaaReuse[b].subresourceRange.levelCount = 1;
-                msaaReuse[b].subresourceRange.layerCount = 1;
-                msaaReuse[b].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-                msaaReuse[b].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-            }
-            msaaReuse[0].image = rendererState.colorImage;
-            msaaReuse[1].image = rendererState.pickIdImage; // shared MSAA id attachment (audit 3.1)
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                0, 0, NULL, 0, NULL, 2, msaaReuse);
-        }
+        // MSAA color + id targets are PER VIEW (review finding 6): no attachment is shared across
+        // views, so no inter-view reuse barrier — the views' raster is free to overlap.
 
         for (int p = 0; p < (int)(sizeof(g_framePasses)/sizeof(g_framePasses[0])); p++) {
             const RenderPassDef* pass = &g_framePasses[p];
@@ -872,7 +853,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             // color[0] = HDR; color[1] = R32_UINT picking id (only the opaque pass declares 2).
             VkRenderingAttachmentInfo color[2] = {};
             color[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            color[0].imageView = rendererState.colorView; // shared MSAA color
+            color[0].imageView = rendererState.colorView[v]; // this view's MSAA color
             color[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             color[0].resolveMode = pass->resolveMode;
             color[0].resolveImageView = vr->hdrColorView; // resolve into this view's HDR target
@@ -886,7 +867,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 // sentinel. Integer formats MUST resolve SAMPLE_ZERO (never AVERAGE). Only view 0
                 // resolves to a readable single-sample target; other views render then discard it.
                 color[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                color[1].imageView = rendererState.pickIdView;
+                color[1].imageView = rendererState.pickIdView[v];
                 color[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                 color[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
                 color[1].clearValue.color.uint32[0] = 0xFFFFFFFFu;
@@ -913,7 +894,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             VkRenderingInfo renderingInfo = {};
             renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
             renderingInfo.renderArea.offset = (VkOffset2D){0, 0};
-            renderingInfo.renderArea.extent = rendererState.imageExtent;
+            renderingInfo.renderArea.extent = rendererState.viewExtent[v];
             renderingInfo.layerCount = 1;
             renderingInfo.colorAttachmentCount = pass->colorAttachmentCount;
             renderingInfo.pColorAttachments = color;
@@ -927,15 +908,15 @@ void recordCommandBuffer(uint32_t imageIndex)
             VkViewport viewport = {};
             viewport.x = 0.0f;
             viewport.y = 0.0f;
-            viewport.width = (float)(rendererState.imageExtent.width);
-            viewport.height = (float)(rendererState.imageExtent.height);
+            viewport.width = (float)(rendererState.viewExtent[v].width);
+            viewport.height = (float)(rendererState.viewExtent[v].height);
             viewport.minDepth = 0.0f;
             viewport.maxDepth = 1.0f;
             vkCmdSetViewport(cmd, 0, 1, &viewport);
 
             VkRect2D scissor = {};
             scissor.offset = (VkOffset2D){0, 0};
-            scissor.extent = rendererState.imageExtent;
+            scissor.extent = rendererState.viewExtent[v];
             vkCmdSetScissor(cmd, 0, 1, &scissor);
 
             // This view's global set selects its camera UBO + froxel light lists.
@@ -1077,7 +1058,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 rDepth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;      // MSAA depth not needed after resolve
                 VkRenderingInfo rInfo = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO };
                 rInfo.renderArea.offset = (VkOffset2D){0, 0};
-                rInfo.renderArea.extent = rendererState.imageExtent;
+                rInfo.renderArea.extent = rendererState.viewExtent[v];
                 rInfo.layerCount = 1;
                 rInfo.colorAttachmentCount = 0;
                 rInfo.pDepthAttachment = &rDepth;
@@ -1138,17 +1119,17 @@ void recordCommandBuffer(uint32_t imageIndex)
             // between mips so mip k-1's writes are visible to mip k's reads. PC matches hiz.comp's block.
             VkPipelineLayout hizLayout = rendererState.prototypes[PIPELINE_COMPUTE_HIZ].layout;
             for (uint32_t m = 0; m < vr->hizMipCount; m++) {
-                uint32_t dstW = rendererState.hizWidth  >> m; if (dstW < 1u) dstW = 1u;
-                uint32_t dstH = rendererState.hizHeight >> m; if (dstH < 1u) dstH = 1u;
+                uint32_t dstW = vr->hizWidth  >> m; if (dstW < 1u) dstW = 1u;
+                uint32_t dstH = vr->hizHeight >> m; if (dstH < 1u) dstH = 1u;
                 struct { int32_t srcMip, pad, dstW, dstH, srcW, srcH; } pc;
                 pc.srcMip = (int32_t)m - 1; pc.pad = 0;
                 pc.dstW = (int32_t)dstW; pc.dstH = (int32_t)dstH;
                 if (m == 0u) {
-                    pc.srcW = (int32_t)rendererState.imageExtent.width;
-                    pc.srcH = (int32_t)rendererState.imageExtent.height;
+                    pc.srcW = (int32_t)rendererState.viewExtent[v].width;
+                    pc.srcH = (int32_t)rendererState.viewExtent[v].height;
                 } else {
-                    uint32_t sw = rendererState.hizWidth  >> (m - 1u); if (sw < 1u) sw = 1u;
-                    uint32_t sh = rendererState.hizHeight >> (m - 1u); if (sh < 1u) sh = 1u;
+                    uint32_t sw = vr->hizWidth  >> (m - 1u); if (sw < 1u) sw = 1u;
+                    uint32_t sh = vr->hizHeight >> (m - 1u); if (sh < 1u) sh = 1u;
                     pc.srcW = (int32_t)sw; pc.srcH = (int32_t)sh;
                 }
                 uint32_t impl = (m == 0u) ? 0u : 1u;
@@ -1369,9 +1350,9 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         // terms the cull needs (screen radius from proj00/proj11, ZO nearest-depth from proj22/proj32).
         memcpy(ubo->prevViewProj[v], state->prevViewProj[v], sizeof(mat4));   // last frame's viewProj
         memcpy(state->prevViewProj[v], ubo->views[v].viewProj, sizeof(mat4)); // save this frame's for next
-        ubo->hizParams[v][0] = (float)state->hizWidth;
-        ubo->hizParams[v][1] = (float)state->hizHeight;
-        ubo->hizParams[v][2] = state->hizEnable[v] ? (float)state->hizMipCount : 0.0f;
+        ubo->hizParams[v][0] = (float)state->frames[frameIndex].views[v].hizWidth;
+        ubo->hizParams[v][1] = (float)state->frames[frameIndex].views[v].hizHeight;
+        ubo->hizParams[v][2] = state->hizEnable[v] ? (float)state->frames[frameIndex].views[v].hizMipCount : 0.0f;
         ubo->hizParams[v][3] = 0.0f;
         ubo->hizProj[v][0] = viewUbo->proj[0][0];
         ubo->hizProj[v][1] = viewUbo->proj[1][1];

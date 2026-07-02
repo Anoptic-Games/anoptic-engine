@@ -877,13 +877,16 @@ typedef struct ViewResources
     // frame. hizSampledView covers all mips (downsample reads mip k-1; the cull samples it next frame);
     // hizMipViews[k] is a single-mip storage view the build writes via imageStore. hizSets[k] is the
     // per-mip compute descriptor set (single-image binding avoids storage-image-array dynamic indexing,
-    // an unenabled feature). hizMipCount mips are live; dims are state->hizWidth/Height (shared).
+    // an unenabled feature). hizMipCount mips are live; dims are per view (half this view's extent —
+    // views render at their own resolution, review finding 6).
     VkImage             hizImage;
     GpuAllocation       hizAlloc;
     VkImageView         hizSampledView;
     VkImageView         hizMipViews[ANO_MAX_HIZ_MIPS];
     VkDescriptorSet     hizSets[ANO_MAX_HIZ_MIPS];
     uint32_t            hizMipCount;
+    uint32_t            hizWidth;
+    uint32_t            hizHeight;
 
     // Clustered-forward froxel light lists for this view (device-local, written by this view's
     // light-cull dispatch, read by its fragment passes). Per view: each frustum bins lights
@@ -952,22 +955,28 @@ typedef struct RendererState
     // written only on the render thread, so plain floats (no atomics).
     float                   cursorX, cursorY;
 
-    // GPU id-buffer picking (audit 3.1): shared MSAA R32_UINT id attachment (mirrors colorImage),
+    // GPU id-buffer picking (audit 3.1): per-view MSAA R32_UINT id attachment (mirrors colorImage),
     // resolved per frame for view 0. lastPickRenderId de-dupes REVENT_PICK_RESULT (emit on change).
-    VkImage                 pickIdImage;
-    GpuAllocation           pickIdImageAlloc;
-    VkImageView             pickIdView;
+    VkImage                 pickIdImage[ANO_VIEW_COUNT];
+    GpuAllocation           pickIdImageAlloc[ANO_VIEW_COUNT];
+    VkImageView             pickIdView[ANO_VIEW_COUNT];
     uint32_t                lastPickRenderId;
 
     // Swapchain
     VkSwapchainKHR          swapChain;
     VkFormat                imageFormat;
     VkExtent2D              imageExtent;
+    // Per-view render extent (review finding 6): view 0 renders at the swapchain extent; auxiliary
+    // views render at their composite inset size (W/3 x H/3, matching the tonemap placement) so a
+    // 1/9-area inset stops paying full-resolution pixel cost. Filled wherever imageExtent is set.
+    VkExtent2D              viewExtent[ANO_VIEW_COUNT];
     uint32_t                imageCount;
     VkImage*                images;
-    VkImage                 colorImage;
-    GpuAllocation           colorImageAlloc;
-    VkImageView             colorView;
+    // Per-view MSAA color target (transient, resolved into that view's hdrColorImage). Per view —
+    // not shared — so views need no inter-view reuse barrier and can size to their own extent.
+    VkImage                 colorImage[ANO_VIEW_COUNT];
+    GpuAllocation           colorImageAlloc[ANO_VIEW_COUNT];
+    VkImageView             colorView[ANO_VIEW_COUNT];
     uint32_t                viewCount;
     VkImageView*            views;
 
@@ -999,12 +1008,10 @@ typedef struct RendererState
     // Hi-Z occlusion pyramid build (review 4.9 step 3). The pipeline lives in prototypes[
     // PIPELINE_COMPUTE_HIZ] (two implementations: [0]=reduce MSAA depth->mip0, [1]=downsample mip->mip,
     // selected by the isReduce spec constant). hizSetLayout is the shared per-mip compute set layout
-    // (sampler2D pyramid, r32f storage mip, sampler2DMS depth). Base pyramid dims are half the swapchain
-    // extent; hizMipCount mips. Recreated with the swapchain.
+    // (sampler2D pyramid, r32f storage mip, sampler2DMS depth). Pyramid dims/mips are per view
+    // (ViewResources.hizWidth/hizHeight/hizMipCount — half that view's extent). Recreated with the
+    // swapchain.
     VkDescriptorSetLayout   hizSetLayout;
-    uint32_t                hizWidth;
-    uint32_t                hizHeight;
-    uint32_t                hizMipCount;
 
     // Geometry
     GeometryPool            globalGeometryPool;
