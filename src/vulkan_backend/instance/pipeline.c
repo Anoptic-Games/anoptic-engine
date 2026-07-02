@@ -714,6 +714,21 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     if (!loadFile(hizShaderPath, &hizShaderCode)) return false;
     VkShaderModule hizShaderModule = createShaderModule(ctx->device, &hizShaderCode);
 
+    // Avenue 1: when depth MAX-resolve is supported, BOTH Hi-Z pipelines use the RESOLVED_DEPTH build so
+    // binding 2 is a single-sample sampler2D (the reduce reads the resolved depth; the downsample never
+    // samples binding 2 but must declare the same type + the layout the bound single-sample view provides,
+    // so both bind the resolve view — see updateHiZDescriptorSets). Without resolve support both use the
+    // base sampler2DMS module. Load the variant only when it will actually be used.
+    struct Buffer hizResolveCode = {0};
+    VkShaderModule hizResolveModule = VK_NULL_HANDLE;
+    if (ctx->deviceCapabilities.depthMaxResolve)
+    {
+        char hizResolvePath[256];
+        snprintf(hizResolvePath, sizeof(hizResolvePath), "%s/resources/shaders/hiz_resolve.comp.spv", PROJECT_ROOT);
+        if (!loadFile(hizResolvePath, &hizResolveCode)) return false;
+        hizResolveModule = createShaderModule(ctx->device, &hizResolveCode);
+    }
+
     // Two spec constants: id 0 isReduce, id 1 msaaSamples (reduce source sample count, baked so the
     // per-sample fetch loop unrolls; VkSampleCountFlagBits enum values equal the counts). msaaSamples
     // was set in pickPhysicalDevice, before this function runs.
@@ -739,7 +754,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
         hizPipeInfo.layout = state->prototypes[PIPELINE_COMPUTE_HIZ].layout;
         hizPipeInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         hizPipeInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        hizPipeInfo.stage.module = hizShaderModule;
+        hizPipeInfo.stage.module = (hizResolveModule != VK_NULL_HANDLE) ? hizResolveModule : hizShaderModule;
         hizPipeInfo.stage.pName = "main";
         hizPipeInfo.stage.pSpecializationInfo = &hizSpec;
 
@@ -749,6 +764,11 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     ano_aligned_free(hizShaderCode.data);
     vkDestroyShaderModule(ctx->device, hizShaderModule, NULL);
+    if (hizResolveModule != VK_NULL_HANDLE)
+    {
+        ano_aligned_free(hizResolveCode.data);
+        vkDestroyShaderModule(ctx->device, hizResolveModule, NULL);
+    }
 
     // Compute Transparency-Sort Pipeline (audit 4.7). Reuses the cull descriptor set layout (it
     // operates on the same indirect / drawCount / compacted / sortKeys buffers); one workgroup per

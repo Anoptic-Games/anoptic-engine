@@ -499,6 +499,15 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	// Test hook: force the vertex-shader fallback path on mesh-capable hardware.
 	if (getenv("ANO_FORCE_NO_MESH_SHADER")) capabilities.meshShader = false;
 
+	// Depth-resolve MAX support (avenue 1): a PROPERTY, not a feature. supportedDepthResolveModes must
+	// include SAMPLE_ZERO but MAX is optional; when present the Hi-Z build resolves depth to single-sample
+	// (farthest sample) so the reduce reads 1 sample/texel. Test hook forces the per-sample MSAA fallback.
+	VkPhysicalDeviceDepthStencilResolveProperties dsResolve = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES };
+	VkPhysicalDeviceProperties2 props2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dsResolve };
+	vkGetPhysicalDeviceProperties2(device, &props2);
+	capabilities.depthMaxResolve = (dsResolve.supportedDepthResolveModes & VK_RESOLVE_MODE_MAX_BIT) != 0;
+	if (getenv("ANO_FORCE_NO_DEPTH_RESOLVE")) capabilities.depthMaxResolve = false;
+
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
 	capabilities.graphics = indices.graphicsPresent;
@@ -1092,6 +1101,18 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
                 vr->depthImage = VK_NULL_HANDLE;
             }
 
+            // Avenue 1: single-sample depth-resolve target (memory owned by swapchainAllocator).
+            if (vr->depthResolveView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->depthResolveView, NULL);
+                vr->depthResolveView = VK_NULL_HANDLE;
+            }
+            if (vr->depthResolveImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->depthResolveImage, NULL);
+                vr->depthResolveImage = VK_NULL_HANDLE;
+            }
+
             // Hi-Z pyramid (review 4.9 step 3): destroy the per-mip + sampled views and the image.
             // hizAlloc.memory is owned by swapchainAllocator (no manual vkFreeMemory), like depthAlloc.
             for (uint32_t m = 0; m < vr->hizMipCount; m++)
@@ -1588,6 +1609,28 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 			{
 				printf("Failed to transition depth buffer layout for frame %d view %u!\n", i, v);
 				return false;
+			}
+
+			// Avenue 1 (review 4.9 step 3): single-sample MAX-resolve target for the Hi-Z reduce, only
+			// when supported. Same format/aspect as depthImage, one sample. Resting layout is
+			// DEPTH_ATTACHMENT (the build resolves into it, flips it to SHADER_READ for the reduce, back).
+			if (ctx->deviceCapabilities.depthMaxResolve)
+			{
+				if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width,
+					state->imageExtent.height, 1, VK_SAMPLE_COUNT_1_BIT, state->depthFormat,
+					VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+								 &vr->depthResolveImage, &vr->depthResolveAlloc, false))
+				{
+					printf("Failed to create depth-resolve resource for frame %d view %u!\n", i, v);
+					return false;
+				}
+				vr->depthResolveView = createImageView(ctx->device, vr->depthResolveImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthResolveImage, depthFormat,
+										  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
+				{
+					printf("Failed to transition depth-resolve layout for frame %d view %u!\n", i, v);
+					return false;
+				}
 			}
 		}
 	}
@@ -2164,7 +2207,14 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
             {
                 VkDescriptorImageInfo pyr = { .sampler = state->textureSampler, .imageView = vr->hizSampledView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
                 VkDescriptorImageInfo dst = { .imageView = vr->hizMipViews[m], .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-                VkDescriptorImageInfo dep = { .sampler = state->textureSampler, .imageView = vr->depthView, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                // Binding 2 = reduce depth source. When depthMaxResolve, ALL pipelines are the sampler2D
+                // (RESOLVED_DEPTH) variant, so bind the single-sample resolve view to EVERY mip: the reduce
+                // (mip 0) samples it; the downsample (m>0) never does, but validation treats binding 2 as
+                // statically used (spec-constant dead-branch elimination doesn't prune it), so its type
+                // (sampler2D <-> single-sample view) and layout (SHADER_READ, held across the whole build)
+                // must still match. Fallback: the MSAA depth (sampler2DMS), in SHADER_READ during the loop.
+                VkImageView depSrc = ctx->deviceCapabilities.depthMaxResolve ? vr->depthResolveView : vr->depthView;
+                VkDescriptorImageInfo dep = { .sampler = state->textureSampler, .imageView = depSrc, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
                 VkWriteDescriptorSet w[3] = {};
                 w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

@@ -997,20 +997,74 @@ void recordCommandBuffer(uint32_t imageIndex)
         // depth -> MAX reduction (farthest occluder). Depth -> SHADER_READ for the reduce and restored
         // to DEPTH_ATTACHMENT after, so next frame's geometry pass finds it in the expected layout.
         {
-            // depth DEPTH_ATTACHMENT -> SHADER_READ (the reduce reads it as a sampler2DMS)
-            VkImageMemoryBarrier depToRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            depToRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            depToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            depToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            depToRead.image = vr->depthImage;
-            depToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            depToRead.subresourceRange.levelCount = 1;
-            depToRead.subresourceRange.layerCount = 1;
-            depToRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            depToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0, 0, NULL, 0, NULL, 1, &depToRead);
+            // Reduce source setup. Avenue 1 (depthMaxResolve): fixed-function MAX-resolves this view's
+            // MSAA depth into the single-sample depthResolveImage (farthest sample = conservative
+            // occluder), which the reduce reads as a sampler2D (one fetch/texel). Fallback: transition the
+            // MSAA depth to SHADER_READ and read it per-sample (sampler2DMS).
+            if (ctx.deviceCapabilities.depthMaxResolve) {
+                // (A) order the geometry passes' depth writes before the resolve reads the MSAA depth
+                // (both use vr->depthImage as a depth attachment across separate rendering instances).
+                // Layout stays DEPTH_ATTACHMENT: the resolve reads it in place; the reduce never touches it.
+                VkImageMemoryBarrier depWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = vr->depthImage, .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                    .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 } };
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                    0, 0, NULL, 0, NULL, 1, &depWaw);
+
+                // Dedicated depth-resolve pass (no color, no draws): the store/resolve phase writes
+                // depthResolveImage. It rests in DEPTH_ATTACHMENT (seeded at creation, restored below),
+                // so no pre-transition is needed.
+                VkRenderingAttachmentInfo rDepth = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+                rDepth.imageView = vr->depthView;                       // MSAA source (in DEPTH_ATTACHMENT)
+                rDepth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                rDepth.resolveMode = VK_RESOLVE_MODE_MAX_BIT;
+                rDepth.resolveImageView = vr->depthResolveView;
+                rDepth.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                rDepth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                rDepth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;      // MSAA depth not needed after resolve
+                VkRenderingInfo rInfo = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO };
+                rInfo.renderArea.offset = (VkOffset2D){0, 0};
+                rInfo.renderArea.extent = rendererState.imageExtent;
+                rInfo.layerCount = 1;
+                rInfo.colorAttachmentCount = 0;
+                rInfo.pDepthAttachment = &rDepth;
+                vkCmdBeginRendering(cmd, &rInfo);
+                vkCmdEndRendering(cmd);
+
+                // (C) resolved depth DEPTH_ATTACHMENT -> SHADER_READ for the reduce.
+                VkImageMemoryBarrier resToRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                resToRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                resToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                resToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                resToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                resToRead.image = vr->depthResolveImage;
+                resToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                resToRead.subresourceRange.levelCount = 1;
+                resToRead.subresourceRange.layerCount = 1;
+                resToRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                resToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0, 0, NULL, 0, NULL, 1, &resToRead);
+            } else {
+                // depth DEPTH_ATTACHMENT -> SHADER_READ (the reduce reads it as a sampler2DMS)
+                VkImageMemoryBarrier depToRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                depToRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                depToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                depToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                depToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                depToRead.image = vr->depthImage;
+                depToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                depToRead.subresourceRange.levelCount = 1;
+                depToRead.subresourceRange.layerCount = 1;
+                depToRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                depToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0, 0, NULL, 0, NULL, 1, &depToRead);
+            }
 
             // pyramid (all mips) -> GENERAL for the storage writes. oldLayout is the resting SHADER_READ
             // (not UNDEFINED): srcStage=COMPUTE makes this rewrite wait, in submission order, on a prior
@@ -1079,19 +1133,37 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &pyrToRead);
 
-            VkImageMemoryBarrier depRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            depRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            depRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            depRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            depRestore.image = vr->depthImage;
-            depRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            depRestore.subresourceRange.levelCount = 1;
-            depRestore.subresourceRange.layerCount = 1;
-            depRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            depRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                0, 0, NULL, 0, NULL, 1, &depRestore);
+            if (ctx.deviceCapabilities.depthMaxResolve) {
+                // Avenue 1: the MSAA depthImage was never moved (it stayed a depth attachment); restore the
+                // resolved depth SHADER_READ -> DEPTH_ATTACHMENT instead, for next frame's resolve write.
+                VkImageMemoryBarrier resRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                resRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                resRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                resRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                resRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                resRestore.image = vr->depthResolveImage;
+                resRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                resRestore.subresourceRange.levelCount = 1;
+                resRestore.subresourceRange.layerCount = 1;
+                resRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                resRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                    0, 0, NULL, 0, NULL, 1, &resRestore);
+            } else {
+                VkImageMemoryBarrier depRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                depRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                depRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                depRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                depRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                depRestore.image = vr->depthImage;
+                depRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                depRestore.subresourceRange.levelCount = 1;
+                depRestore.subresourceRange.layerCount = 1;
+                depRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                depRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                    0, 0, NULL, 0, NULL, 1, &depRestore);
+            }
         }
     }
 
