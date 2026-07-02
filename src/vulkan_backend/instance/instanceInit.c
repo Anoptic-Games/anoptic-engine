@@ -2887,7 +2887,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
 		if (sh->arrayView) vkDestroyImageView(ctx->device, sh->arrayView, NULL);
 		if (sh->tempArrayView) vkDestroyImageView(ctx->device, sh->tempArrayView, NULL);
-		for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+		// layerView/tempLayerView are sized ANO_SHADOW_ATLAS_LAYERS (2 sublayers/frustum after the layered
+		// Power CDF rewrite) and creation fills all of them: destroy the same count, not the old per-frustum
+		// count, or the [FRUSTUM_COUNT, ATLAS_LAYERS) views leak at device teardown.
+		for (uint32_t s = 0; s < ANO_SHADOW_ATLAS_LAYERS; s++) {
 			if (sh->layerView[s]) vkDestroyImageView(ctx->device, sh->layerView[s], NULL);
 			if (sh->tempLayerView[s]) vkDestroyImageView(ctx->device, sh->tempLayerView[s], NULL);
 		}
