@@ -60,11 +60,18 @@ layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadow
 // strip the level bits to recover the entity index for the transform / material lookup.
 #define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
 
+// EQUAL-test contract (mirrors flat.mesh): the depth pre-pass runs the ANO_DEPTH_ONLY compile of
+// this source and the opaque pass EQUAL-tests against its depth — invariant pins the position
+// codegen so both compiles produce bit-identical clip positions.
+invariant gl_Position;
+
+#ifndef ANO_DEPTH_ONLY
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) flat out uint outMaterialIndex;
 layout(location = 3) out vec3 fragWorldPos;
 layout(location = 4) flat out uint outEntityIndex; // slot index -> per-entity instance channel
+#endif
 
 void main() {
     // Same entity lookup as flat.mesh, but Metal/MoltenVK has no DrawIndex builtin so
@@ -77,19 +84,19 @@ void main() {
     // i.e. the global vertex index into the shared vertex mega-buffer.
     PackedVertex v = vertexBuf.vertices[gl_VertexIndex];
     vec3 position = vec3(v.px, v.py, v.pz);
-    vec3 normal   = vec3(v.nx, v.ny, v.nz);
-    vec2 texCoord = vec2(v.u, v.v);
 
     mat4 model = transformBuf.transforms[entityIndex];
     vec4 worldPos = model * vec4(position, 1.0);
 
     gl_Position      = shadowPass ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
                                   : (global.proj * global.view * worldPos);
+#ifndef ANO_DEPTH_ONLY
     // Inverse-transpose normal matrix: correct under non-uniform / negative / sheared scale.
     // Equals mat3(model) for rotation + uniform scale (the common case). docs/math_conventions.md.
-    fragNormal       = transpose(inverse(mat3(model))) * normal;
-    fragTexCoord     = texCoord;
+    fragNormal       = transpose(inverse(mat3(model))) * vec3(v.nx, v.ny, v.nz);
+    fragTexCoord     = vec2(v.u, v.v);
     outMaterialIndex = entity.materialIndex;
     fragWorldPos     = worldPos.xyz;
     outEntityIndex   = entityIndex;
+#endif
 }

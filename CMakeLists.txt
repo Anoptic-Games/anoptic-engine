@@ -134,6 +134,20 @@ if(Vulkan_FOUND)
                     VERBATIM)
             list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${shader}.spv)
         endforeach()
+        # Depth-only geometry variants: second compiles of flat.mesh / flat.vert with ANO_DEPTH_ONLY
+        # (gl_Position only, no user attributes) for the depth pre-pass and the shadow atlas render.
+        # Same source as the full modules + invariant gl_Position = bit-identical clip depth, which
+        # the opaque pass's EQUAL test requires.
+        foreach(dshader IN ITEMS flat.mesh flat.vert)
+            string(REPLACE "flat." "flat_depth." dspv ${dshader})
+            add_custom_command(
+                    OUTPUT  ${SHADER_DIR}/${dspv}.spv
+                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DANO_DEPTH_ONLY ${SHADER_DIR}/${dshader} -o ${SHADER_DIR}/${dspv}.spv
+                    DEPENDS ${SHADER_DIR}/${dshader} ${SHADER_INCLUDES}
+                    COMMENT "glslc ${dshader} (ANO_DEPTH_ONLY) -> ${dspv}.spv"
+                    VERBATIM)
+            list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${dspv}.spv)
+        endforeach()
         # Hi-Z avenue 1: a second compile of hiz.comp with RESOLVED_DEPTH (reduce reads a single-sample
         # sampler2D of the MAX-resolved depth). Loaded for the reduce pipeline only when the device
         # supports VK_RESOLVE_MODE_MAX_BIT; the default hiz.comp.spv stays the per-sample MSAA fallback.
