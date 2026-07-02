@@ -88,6 +88,9 @@ typedef struct RenderPassDef
     VkClearValue            colorClear;
     VkClearValue            depthClear;
     VkResolveModeFlagBits   resolveMode;
+    // Emit a depth write->read barrier (LATE->EARLY fragment tests) on this view's depth image before
+    // this pass begins. Set on the opaque pass so its EQUAL test waits on the depth pre-pass's writes.
+    bool                    depthBarrierBefore;
 
     // Compute-only:
     uint32_t                dispatchX, dispatchY, dispatchZ;
