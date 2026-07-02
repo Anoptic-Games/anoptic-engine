@@ -163,8 +163,9 @@ The first real slice of the simulation/render split now exists in code. The engi
 - The Step 1 audit below describes the old mutex version; it stays as the record that drove the rewrite
 
 **High-resolution timing module (`anoptic_time.h`):**
-- Emulator-grade precision timestamps sourced from the highest-resolution monotonic clocks available on each platform: `CLOCK_MONOTONIC` on Linux, `QueryPerformanceCounter` / `QueryPerformanceFrequency` on Windows
-- Windows implementation uses overflow-safe QPC-to-nanosecond conversion: splits counter into seconds and sub-seconds before scaling, avoiding uint64_t overflow on long-running machines. Same technique used by Yuzu/Ryujinx emulator timing code.
+- Best-in-class precision timestamps sourced from the highest-resolution monotonic clocks available on each platform: `CLOCK_MONOTONIC` on Linux, invariant TSC (rdtsc) with a QPC fallback on Windows, mach timebase on macOS
+- Windows timebase (Step 1 follow-up, 2026-07-03): x86-64 uses rdtsc when the CPU reports an invariant TSC (CPUID 0x80000007 EDX[8]), calibrated against QPC (median of three ~4 ms Sleep-bracketed samples) so `ano_ticks_to_ns` converts correctly. This replaces a bare 10 MHz QPC (100 ns grain, too coarse to order log records stamped in the same window) with a sub-nanosecond counter. The timebase is resolved once and frozen so `ano_timestamp_ticks` and `ano_ticks_to_ns` never disagree; QPC remains the fallback on non-invariant-TSC or non-x86 Windows builds.
+- Windows implementation uses overflow-safe counter-to-nanosecond conversion: splits the counter into seconds and sub-seconds before scaling, avoiding uint64_t overflow on long-running machines. Same technique used by Yuzu/Ryujinx emulator timing code.
 - `cached_performance_frequency` is `_Atomic` for thread-safe lazy initialization
 - `ano_busywait`: tight spinloop on the monotonic clock for sub-microsecond waits where OS sleep granularity is too coarse, with `MAX_BUSYWAIT_NS` safety cap
 - `ano_sleep` (Linux): `clock_nanosleep` with `CLOCK_MONOTONIC` and `EINTR` retry loop
