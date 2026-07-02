@@ -327,14 +327,25 @@ void main() {
             continue;
         }
 
+        // A light facing away from the surface contributes exactly zero: calculatePBRDirect scales both its
+        // diffuse and specular by NdotL and has no light-from-behind term, so skip the shadow taps + BRDF
+        // before paying for them. nDotL is reused below as the shadow slope bias. (Revisit this gate if a
+        // real diffuse-transmission BTDF lobe, which is lit from behind, is ever added.)
+        float nDotL = max(dot(normal, L), 0.0);
+        if (nDotL <= 0.0) {
+            continue;
+        }
+
+        // si is read only when the light can actually shadow this frame; otherwise the SSBO load is dead.
         float shadowFactor = 1.0;
-        ShadowLightInfo si = shadowInfoBuf.info[i];
-        if (lightUsesShadowMap(light.type, global.lightingMode) && si.castsShadow != 0u && si.frustumCount > 0u) {
-            float nDotL = max(dot(normal, L), 0.0);
-            if (light.type == LIGHT_TYPE_POINT)
-                shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
-            else
-                shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
+        if (lightUsesShadowMap(light.type, global.lightingMode)) {
+            ShadowLightInfo si = shadowInfoBuf.info[i];
+            if (si.castsShadow != 0u && si.frustumCount > 0u) {
+                if (light.type == LIGHT_TYPE_POINT)
+                    shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
+                else
+                    shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
+            }
         }
 
         vec3 radiance = light.color * light.intensity * attenuation * shadowFactor;
