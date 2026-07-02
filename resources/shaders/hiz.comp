@@ -7,6 +7,9 @@
 // creation from ctx->msaaSamples: it replaces a runtime textureSamples() query so the per-sample
 // fetch loop unrolls and the fetches issue ahead of the max chain (was the dominant Long-Scoreboard
 // stall — one fetch drained per iteration with no memory-level parallelism).
+// Avenue 1: when the device supports VK_RESOLVE_MODE_MAX_BIT the build first hardware-resolves depth to
+// single-sample (farthest sample = conservative occluder), and this module is compiled a second time
+// with RESOLVED_DEPTH so the reduce reads a sampler2D (one fetch/texel) instead of the per-sample loop.
 // (srcMip+1) from mip srcMip. Per-mip descriptor sets bind the single destination mip as uMip, so
 // no storage-image-array dynamic indexing (an unenabled 1.0 feature) is required. R32F pyramid.
 
@@ -17,7 +20,11 @@ layout(constant_id = 1) const int  msaaSamples = 1;  // reduce source sample cou
 
 layout(set = 0, binding = 0) uniform sampler2D   uPyramid;            // downsample source (all mips)
 layout(set = 0, binding = 1, r32f) writeonly uniform image2D uMip;    // this mip's destination
+#ifdef RESOLVED_DEPTH
+layout(set = 0, binding = 2) uniform sampler2D   uDepth;              // reduce source (single-sample MAX-resolved depth)
+#else
 layout(set = 0, binding = 2) uniform sampler2DMS uDepth;              // reduce source (MSAA depth)
+#endif
 
 layout(push_constant) uniform PC {
     int   srcMip;     // mip to read for downsample (ignored by reduce; reduce reads full-res depth)
@@ -43,9 +50,23 @@ void main() {
 
     float maxd = 0.0;
     if (isReduce) {
-        // Common case (interior, no odd boundary) covers exactly 2x2 and stays in bounds, so the
-        // footprint AND sample loops all have compile-time bounds -> full unroll -> the 2*2*msaaSamples
-        // independent fetches issue before the max chain. Bit-identical to the general loop below.
+#ifdef RESOLVED_DEPTH
+        // Depth was MAX-resolved over samples by fixed-function hardware (avenue 1), so read one texel
+        // per source position (lod 0). Interior fast path gives the 2x2 footprint compile-time bounds.
+        if (!bx && !by) {
+            for (int y = 0; y < 2; ++y)
+                for (int x = 0; x < 2; ++x)
+                    maxd = max(maxd, texelFetch(uDepth, ivec2(x0 + x, y0 + y), 0).r);
+        } else {
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x)
+                    maxd = max(maxd, texelFetch(uDepth, ivec2(x, y), 0).r);
+        }
+#else
+        // Per-sample MSAA reduce (fallback when depth MAX-resolve is unsupported, avenue 2). Common case
+        // (interior, no odd boundary) covers exactly 2x2 and stays in bounds, so the footprint AND sample
+        // loops all have compile-time bounds -> full unroll -> the 2*2*msaaSamples fetches issue before the
+        // max chain. Bit-identical to the general loop below.
         if (!bx && !by) {
             for (int y = 0; y < 2; ++y)
                 for (int x = 0; x < 2; ++x)
@@ -57,6 +78,7 @@ void main() {
                     for (int s = 0; s < msaaSamples; ++s)
                         maxd = max(maxd, texelFetch(uDepth, ivec2(x, y), s).r);
         }
+#endif
     } else {
         for (int y = y0; y <= y1; ++y)
             for (int x = x0; x <= x1; ++x)

@@ -134,6 +134,16 @@ if(Vulkan_FOUND)
                     VERBATIM)
             list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${shader}.spv)
         endforeach()
+        # Hi-Z avenue 1: a second compile of hiz.comp with RESOLVED_DEPTH (reduce reads a single-sample
+        # sampler2D of the MAX-resolved depth). Loaded for the reduce pipeline only when the device
+        # supports VK_RESOLVE_MODE_MAX_BIT; the default hiz.comp.spv stays the per-sample MSAA fallback.
+        add_custom_command(
+                OUTPUT  ${SHADER_DIR}/hiz_resolve.comp.spv
+                COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DRESOLVED_DEPTH ${SHADER_DIR}/hiz.comp -o ${SHADER_DIR}/hiz_resolve.comp.spv
+                DEPENDS ${SHADER_DIR}/hiz.comp ${SHADER_INCLUDES}
+                COMMENT "glslc hiz.comp (RESOLVED_DEPTH) -> hiz_resolve.comp.spv"
+                VERBATIM)
+        list(APPEND SPV_OUTPUTS ${SHADER_DIR}/hiz_resolve.comp.spv)
         add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
     else()
         message(WARNING "glslc not found: using committed resources/shaders/*.spv (may be stale).")

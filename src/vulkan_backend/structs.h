@@ -161,6 +161,7 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 	bool int64;
 	bool drawIndirectCount;
 	bool meshShader;            // VK_EXT_mesh_shader present and meshShader feature usable; false selects the vertex-shader fallback path
+	bool depthMaxResolve;       // VK_RESOLVE_MODE_MAX_BIT in supportedDepthResolveModes: enables the Hi-Z single-sample depth-resolve path (else per-sample MSAA reduce)
 } DeviceCapabilities;
 
 typedef struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
@@ -851,6 +852,14 @@ typedef struct ViewResources
     VkImage             depthImage;
     GpuAllocation       depthAlloc;
     VkImageView         depthView;
+
+    // Single-sample MAX-resolved depth (avenue 1, review 4.9 step 3): populated only when
+    // deviceCapabilities.depthMaxResolve. A fixed-function VK_RESOLVE_MODE_MAX_BIT resolve of depthImage
+    // (farthest sample = conservative occluder) so the Hi-Z reduce reads one sample/texel instead of the
+    // per-sample sampler2DMS loop. NULL handles when unsupported (the reduce falls back to depthImage).
+    VkImage             depthResolveImage;
+    GpuAllocation       depthResolveAlloc;
+    VkImageView         depthResolveView;
 
     // HDR resolve target: this view's MSAA HDR color resolves here (single-sample), then the
     // composite/tonemap pass samples it to write the swapchain. Per view (the composite reads
