@@ -213,6 +213,19 @@ static const RenderPassDef g_framePasses[] = {
         .dispatchX  = 0,  // computed from cluster count at runtime
         .perView    = true,
     },
+    // 4a. Depth pre-pass (perView): the opaque geometry rendered depth-only (fragment stage stripped,
+    //     no color) to lay down the nearest depth. The opaque pass below then shades each visible pixel
+    //     exactly once via an EQUAL test, removing overdraw of the heavy lighting shader (the frame's
+    //     dominant cost). Same FLAT draw partition + geometry module -> bit-identical depth for EQUAL.
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_FLAT,
+        .implementationIndex    = 2,  // depth-only variant
+        .perView                = true,
+        .colorAttachmentCount   = 0,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // opaque + transmission load this depth
+    },
     // 4. Opaque geometry (perView: rendered once per view into that view's HDR target + depth)
     {
         .type                   = PASS_GRAPHICS,
@@ -221,8 +234,9 @@ static const RenderPassDef g_framePasses[] = {
         .perView                = true,
         .colorAttachmentCount   = 2,  // [0] HDR color, [1] R32_UINT picking id (audit 3.1)
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // EQUAL-test against the pre-pass depth
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
+        .depthBarrierBefore     = true,                             // wait on the pre-pass depth writes
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
     // 5. Transmissive geometry (depth-sorted "over" lane)
@@ -767,6 +781,19 @@ void recordCommandBuffer(uint32_t imageIndex)
         for (int p = 0; p < (int)(sizeof(g_framePasses)/sizeof(g_framePasses[0])); p++) {
             const RenderPassDef* pass = &g_framePasses[p];
             if (pass->type != PASS_GRAPHICS) continue;
+
+            // Depth write->read hazard: the opaque pass EQUAL-tests the depth the pre-pass just wrote
+            // into this same image. Order the pre-pass's writes before this pass's reads/tests.
+            if (pass->depthBarrierBefore) {
+                VkImageMemoryBarrier depthWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = vr->depthImage, .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 } };
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                    0, 0, NULL, 0, NULL, 1, &depthWaw);
+            }
 
             VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
             VkClearValue clearDepth = {};

@@ -45,8 +45,8 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	}
 
 	proto->type = PIPELINE_FLAT;
-	proto->implementationCount = 2;
-	proto->implementations = calloc(2, sizeof(PipelineImplementation));
+	proto->implementationCount = 3;
+	proto->implementations = calloc(3, sizeof(PipelineImplementation));
 	proto->supportedFeatures = 
 		PBR_FEATURE_BASE_COLOR_FACTOR | 
 		PBR_FEATURE_BASE_COLOR_TEXTURE | 
@@ -158,11 +158,14 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	dynamicState.dynamicStateCount = 2;
 	dynamicState.pDynamicStates = dynamicStates;
 
+	// Opaque variant (index 0) reads the depth pre-pass result: test EQUAL against the pre-pass depth
+	// with NO depth write, so each visible pixel is shaded exactly once (the pre-pass, index 2, already
+	// laid down the nearest depth). The pre-pass itself uses depthWrite ON + LESS (built further below).
 	VkPipelineDepthStencilStateCreateInfo depthStencil = {};
 	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 	depthStencil.depthTestEnable = VK_TRUE;
-	depthStencil.depthWriteEnable = VK_TRUE;
-	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+	depthStencil.depthWriteEnable = VK_FALSE;
+	depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.minDepthBounds = 0.0f;
 	depthStencil.maxDepthBounds = 1.0f;
@@ -207,15 +210,17 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	pipelineInfo.renderPass = VK_NULL_HANDLE;
 	pipelineInfo.subpass = 0;
 
-	// Opaque variant (index 0)
+	// Opaque variant (index 0): EQUAL test, no depth write (the pre-pass owns depth).
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) return false;
 	proto->implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	proto->implementations[0].depthWrite = VK_TRUE;
+	proto->implementations[0].depthWrite = VK_FALSE;
 	proto->implementations[0].blendEnable = VK_FALSE;
 
 	// Blended variant (index 1). Bound by no g_framePass today, but must stay a valid 2-attachment
-	// pipeline; mask off the id write so transparent-flat is non-pickable if ever bound.
+	// pipeline; mask off the id write so transparent-flat is non-pickable if ever bound. Restore LESS
+	// (the opaque variant above switched the shared state to EQUAL for the pre-pass).
 	depthStencil.depthWriteEnable = VK_FALSE;
+	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 	colorBlendAttachment->blendEnable = VK_TRUE;
 	colorBlendAttachment->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
 	colorBlendAttachment->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -229,6 +234,36 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	proto->implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
+
+	// Depth pre-pass variant (index 2): the exact same geometry (mesh/vertex) stage as the opaque
+	// variant with the fragment stage stripped and no color attachments, so it only lays down the
+	// nearest depth. depthWrite ON + LESS. Reusing the identical geometry module guarantees bit-
+	// identical clip-space depth, which the opaque variant's EQUAL test above relies on. Runs first
+	// (g_framePasses) so the heavy lighting shader shades each visible pixel exactly once.
+	VkPipelineDepthStencilStateCreateInfo prepassDepth = depthStencil;
+	prepassDepth.depthWriteEnable = VK_TRUE;
+	prepassDepth.depthCompareOp = VK_COMPARE_OP_LESS;
+
+	VkPipelineColorBlendStateCreateInfo prepassBlend = {};
+	prepassBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	prepassBlend.attachmentCount = 0;
+
+	VkPipelineRenderingCreateInfo prepassRendering = {};
+	prepassRendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	prepassRendering.colorAttachmentCount = 0;
+	prepassRendering.depthAttachmentFormat = depthFormat;
+
+	VkGraphicsPipelineCreateInfo prepassInfo = pipelineInfo; // inherit shared raster/viewport/msaa/layout
+	prepassInfo.pNext = &prepassRendering;
+	prepassInfo.stageCount = 1;                  // geometry stage only; no fragment shader
+	prepassInfo.pStages = &geomShaderStageInfo;
+	prepassInfo.pDepthStencilState = &prepassDepth;
+	prepassInfo.pColorBlendState = &prepassBlend;
+
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &prepassInfo, NULL, &proto->implementations[2].pipeline) != VK_SUCCESS) return false;
+	proto->implementations[2].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	proto->implementations[2].depthWrite = VK_TRUE;
+	proto->implementations[2].blendEnable = VK_FALSE;
 
 	ano_aligned_free(geomShaderCode.data);
 	ano_aligned_free(fragShaderCode.data);
