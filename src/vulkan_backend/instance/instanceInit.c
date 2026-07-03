@@ -3087,8 +3087,12 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		if (rendererState.shadowDepthSliceView[s]) vkDestroyImageView(ctx->device, rendererState.shadowDepthSliceView[s], NULL);
 	}
 	if (rendererState.shadowDepthImage) vkDestroyImage(ctx->device, rendererState.shadowDepthImage, NULL);
-	// Mover bookkeeping (review finding 8).
-	if (rendererState.slotMotion) { free(rendererState.slotMotion); rendererState.slotMotion = NULL; }
+	// Mover bookkeeping + swept-exposure mirrors (review finding 8).
+	if (rendererState.slotMotion)   { free(rendererState.slotMotion);   rendererState.slotMotion = NULL; }
+	if (rendererState.slotBasePose) { free(rendererState.slotBasePose); rendererState.slotBasePose = NULL; }
+	if (rendererState.slotMeshIdx)  { free(rendererState.slotMeshIdx);  rendererState.slotMeshIdx = NULL; }
+	if (rendererState.slotMoverIdx) { free(rendererState.slotMoverIdx); rendererState.slotMoverIdx = NULL; }
+	if (rendererState.movers)       { free(rendererState.movers);       rendererState.movers = NULL; }
 	// Shadow config mirror (the render-thread CPU copy; the device buffers are SlotUploads destroyed below).
 	if (rendererState.shadowCfgMirror) { free(rendererState.shadowCfgMirror); rendererState.shadowCfgMirror = NULL; }
 

@@ -101,6 +101,7 @@
 #define ANO_SHADOW_RT_POINT_COUNT  2u  // runtime point casters (6 frustums each)
 #define ANO_SHADOW_RT_FRUSTUM_COUNT (ANO_SHADOW_RT_SINGLE_COUNT + ANO_SHADOW_RT_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // 16
 #define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_STATIC_FRUSTUM_COUNT + ANO_SHADOW_RT_FRUSTUM_COUNT) // 42 (static 26 + runtime 16)
+_Static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 frustum bitmask");
 #define ANO_SHADOW_RT_SINGLE_BASE ANO_SHADOW_STATIC_FRUSTUM_COUNT                          // single-pool first slot (26)
 #define ANO_SHADOW_RT_POINT_BASE  (ANO_SHADOW_RT_SINGLE_BASE + ANO_SHADOW_RT_SINGLE_COUNT) // point-pool first slot (30)
 #define ANO_SHADOW_NONE          0xFFFFFFFFu // "no shadow frustum" sentinel (ShadowLightInfo.baseFrustum / rowShadowBase)
@@ -576,6 +577,32 @@ typedef struct LightRegistry
     LightRowQuarantine *quarantine;
     uint32_t   quarantineCount, quarantineCapacity;
 } LightRegistry;
+
+// Swept-bound motion exposure (review finding 8, deferred half). A parametric mover's trajectory is
+// a closed form, so ONE world-space sphere bounds its mesh for ALL time; a shadow frustum needs
+// re-rendering only while some mover's sphere reaches its light's influence volume (or its light
+// itself rides a mover). Movers with no finite bound (LINEAR/STREAMED, degenerate params, or
+// ANO_FORCE_NO_SWEPT) count into moverUnboundedCount, which restores the old blanket epoch. All
+// bookkeeping is render-thread-only and command-driven — counts change when commands change motion/
+// pose/mesh or the caster set, never per frame. See the mover_* / shadow_volume_* helpers.
+typedef struct MoverBound
+{
+    uint32_t slot;              // owning entity slot
+    uint32_t unbounded;         // 1 = no finite trajectory bound (counted in moverUnboundedCount)
+    float    center[3];         // world sphere containing the slot's mesh over its WHOLE trajectory
+    float    radius;
+    uint64_t exposeMask;        // bit s = this mover exposes frustum s (kept in sync with shadowExposed)
+    AnoMotionDescriptor motion; // retained so a teleport / mesh swap can recompute the bound
+} MoverBound;
+
+typedef struct ShadowCasterVolume
+{
+    uint32_t parentSlot;        // slot driving the light (ANO_RENDER_SLOT_UNMAPPED = no caster here)
+    float    offset[3];         // light's localOffset in parent model space (recompute input)
+    float    range;             // light range as attached; <= 0 = unbounded
+    float    center[3];         // cached world influence sphere (parent BASE pose x offset)
+    float    radius;            // < 0 = unbounded volume (directional / range <= 0): any mover exposes
+} ShadowCasterVolume;
 
 typedef struct LightBuffer
 {
@@ -1091,20 +1118,37 @@ typedef struct RendererState
     VkImageView             shadowTempLayerView[ANO_SHADOW_ATLAS_LAYERS]; // blur-X render targets
 
     // Dirty-frustum cache state (review finding 8). A frustum re-renders when its layer is invalid
-    // (never built, or its light attached/detached/changed) or a conservative global epoch fires:
-    // any entity-mutating command, streamed transforms this frame, or ANY live parametric mover
-    // (per-slot motion bookkeeping below — GPU-side animation moves casters and lights the CPU
-    // cannot see). Camera-driven LOD drift is deliberately NOT an invalidation source: cached
-    // layers keep their render-time LOD until something else dirties them (bounded, silhouette-
-    // only staleness). shadowCacheMode: 0 = normal, 1 = every frame dirty (ANO_FORCE_NO_SHADOW_CACHE,
-    // the pre-cache behavior), 2 = freeze (ANO_SHADOW_CACHE_FREEZE: only never-built layers render —
-    // the steady-state ceiling a fully static scene would reach).
+    // (never built, or its light attached/detached/changed), a conservative global epoch fires
+    // (any entity-mutating command, streamed transforms this frame, or a mover with no finite
+    // trajectory bound), or swept motion exposure holds it dirty: a parametric mover whose whole-
+    // trajectory sphere reaches its light volume, or a light riding a mover (shadowExposed /
+    // shadowVolume below). Camera-driven LOD drift is deliberately NOT an invalidation source:
+    // cached layers keep their render-time LOD until something else dirties them (bounded,
+    // silhouette-only staleness). shadowCacheMode: 0 = normal, 1 = every frame dirty
+    // (ANO_FORCE_NO_SHADOW_CACHE, the pre-cache behavior), 2 = freeze (ANO_SHADOW_CACHE_FREEZE:
+    // only never-built layers render — the steady-state ceiling a fully static scene would reach).
     uint32_t                shadowCacheMode;
     bool                    shadowLayerValid[ANO_SHADOW_FRUSTUM_COUNT];
     bool                    shadowGlobalDirty;  // set by apply-path scene mutations; consumed each record
     uint8_t*                slotMotion;         // per-slot: non-static motion descriptor installed
     uint32_t                slotMotionCap;
     uint32_t                motionActiveCount;  // live slots with non-static motion
+
+    // Swept-bound motion exposure (finding 8, deferred half — see MoverBound above). The SlotUpload
+    // device copies are not host-readable, so base pose + mesh index are mirrored CPU-side at every
+    // staging site; mover/caster records derive from the mirrors at command time. All arrays are
+    // [slotMotionCap], grown in lockstep by ensureEntityCapacity.
+    mat4*                   slotBasePose;       // CPU mirror of staged base poses
+    uint32_t*               slotMeshIdx;        // CPU mirror of staged mesh indices (NO_MESH_INDEX default)
+    uint32_t*               slotMoverIdx;       // slot -> movers[] row, ANO_RENDER_SLOT_UNMAPPED if none
+    MoverBound*             movers;             // compact live movers
+    uint32_t                moverCount;
+    uint32_t                moverCap;
+    uint32_t                moverUnboundedCount;// movers with no finite bound -> blanket epoch fallback
+    bool                    sweptExposure;      // ANO_FORCE_NO_SWEPT clears: every mover counts unbounded
+    bool                    sweptPoisoned;      // mover-array growth failed: permanent blanket fallback
+    ShadowCasterVolume      shadowVolume[ANO_SHADOW_FRUSTUM_COUNT];
+    uint32_t                shadowExposed[ANO_SHADOW_FRUSTUM_COUNT]; // movers whose bound reaches the volume
 
     // Shadow config: per-frustum (which light/face/active) + per-light (where its maps live). Both
     // are SlotUpload (×1 device + delta staging) so the runtime caster lifecycle can mutate them
