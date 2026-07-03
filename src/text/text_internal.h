@@ -57,6 +57,12 @@ uint32_t ano_utf8_next(const char *s, uint32_t len, uint32_t *consumed);
 // ---------------------------------------------------------------------------------------------
 // Reference rasterization (FONT_RENDER.md step 3).
 
+// Unclamped coverage sum for one em-space window (position wx/wy, size w/h, em units)
+// of one glyph's curve stream -- the reference rasterizer's inner loop, exposed so the
+// GPU comparison harness can evaluate the shader's exact windows. Pure, any thread.
+float ano_text_window_sum(const uint32_t *pts, const AnoGlyphEntry *g, float wx, float wy,
+                          float w, float h);
+
 // CPU reference rasterizer: scalar float mirror of the GPU coverage shader (stream
 // grammar walk, the paper's clamped trapezoid integration, per-glyph [0,1] clamp, no
 // gamma). Grid follows FreeType bitmap conventions: row 0 is the TOP row; pixel (r,c)

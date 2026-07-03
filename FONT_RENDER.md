@@ -345,7 +345,19 @@ re-ABIs.
    static; frame totals unchanged. New TU src/vulkan_backend/text_raster.c; stub
    textraster.comp gates on instanceCount==0 with the full interface live.)
 6. `textraster.comp` via the in-frame fallback path first (sync-trivial): static string on
-   screen, screenshot-compare against the reference rasterizer.
+   screen, screenshot-compare against the reference rasterizer. (Done: coverage math is a
+   statement-for-statement GLSL port of text_raster_ref.c; workgroup = 8×8 tile, 64 lanes
+   cooperatively cull instances in 64-chunks into a shared verdict mask — order-preserving
+   for the premultiplied over-blend — with an any-hit flag so empty tiles skip the scan,
+   and untouched pixels skip the imageStore (the clear already wrote transparent). Demo:
+   126 instances, 3 torture lines covering all 95 glyphs at 36 px, shaped once into every
+   frame slot. Screenshot-compare via ANO_TEXT_OPAQUE (flags bit 0 = opaque backdrop) vs an
+   offline harness that mirrors the shader loop over the exported ano_text_window_sum: RMS
+   0.034/255 over the full 2560×1368 canvas, max 2.11/255, zero pixels past 4/255 — inside
+   the sRGB-roundtrip + UNORM8 envelope. Validation-clean; suite 15/15. Cost in-frame,
+   release, busy desktop: composite 0.09→0.25 ms, total ≈ +0.15 ms; before the empty-tile
+   skips it was +0.5 ms — the remaining cost is the degenerate one-big-list gather, and
+   real per-tile binning stays the step-8 lever if the stat screen needs it.)
 7. Async lane: `textTimeline`, text CB, submit + graphics wait, `ANO_FORCE_NO_ASYNC_TEXT`
    A/B, validation-clean in both modes, freeze-methodology timing.
 8. Demo: profile-line mirror at print cadence, record before/after frame numbers here.
