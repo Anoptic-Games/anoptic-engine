@@ -349,8 +349,10 @@ static int format_deferred(char *out, int cap, log_types_t level, const char *bl
         if (rem <= 1) break;
 
         int wrote = 0;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wformat-nonliteral"
+// GCC spelling: honored by both gcc and clang (clang aliases GCC diagnostic
+// pragmas); the clang spelling is invisible to gcc, whose -Werror build breaks.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
         switch (c) {
         case 'd': case 'i':
             if (lng >= 2)      { long long v; memcpy(&v, b, 8); b += 8; wrote = snprintf(p, (size_t)rem, spec, v); }
@@ -370,7 +372,7 @@ static int format_deferred(char *out, int cap, log_types_t level, const char *bl
                     wrote = snprintf(p, (size_t)rem, spec, s); } break;
         default: break;
         }
-#pragma clang diagnostic pop
+#pragma GCC diagnostic pop
         if (wrote < 0) wrote = 0;
         if (wrote > rem - 1) wrote = rem - 1;   // snprintf truncated to rem-1 chars plus its NUL
         p += wrote;
