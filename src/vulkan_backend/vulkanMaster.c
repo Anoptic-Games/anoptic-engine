@@ -645,32 +645,54 @@ void recordCommandBuffer(uint32_t imageIndex)
         VkClearValue clearDepth = {}; clearDepth.depthStencil.depth = 1.0f;
         VkClearValue clearMRT[2] = { clearStats, clearStats }; // both sublayers
 
-        // Frustums rendered this frame: active (spare/runtime-freed slots skip) and shadow-mapped
-        // under the lighting mode (a layer carried by radiance cascades renders no caster). Skipped
-        // layers still ride the whole-array layout transitions (the sampled array views stay
-        // uniformly SHADER_READ) but hold undefined stats no shader ever reads. maxSub bounds the
-        // layered blur's layerCount to the used prefix.
-        bool activeS[ANO_SHADOW_FRUSTUM_COUNT];
-        uint32_t activeCount = 0u, maxSub = 0u;
+        // Frustums rendered this frame (review finding 8): active (spare/runtime-freed slots skip),
+        // shadow-mapped under the lighting mode (a layer carried by radiance cascades renders no
+        // caster), and DIRTY — the shared atlas persists per-frustum content, so a clean frustum
+        // skips its depth render + blur and its layers just ride the whole-array transitions
+        // (content-preserving). Dirty = layer invalid (never built, or its light attached/detached/
+        // changed — scoped hooks) or a conservative epoch: scene mutation staged this frame,
+        // streamed transforms, or any live parametric mover (GPU-side animation moves casters and
+        // lights the CPU cannot see). A clean layer stays consistent with this frame's frustumBuffer
+        // because its light is unchanged: shadowsetup rewrote the identical viewProj. Cached layers
+        // keep their render-time LOD (camera-driven LOD drift does not invalidate; bounded
+        // silhouette staleness). Freeze mode renders only never-built layers (the static-scene
+        // ceiling); force-dirty pins the pre-cache behavior. When nothing renders, the whole region
+        // — all four phase barriers included — is skipped: the atlas rests in SHADER_READ.
+        // maxSub bounds the layered blur's layerCount to the rendered prefix.
+        bool epochDirty = rendererState.shadowCacheMode == 1u
+                       || (rendererState.shadowCacheMode == 0u
+                           && (rendererState.shadowGlobalDirty
+                               || rendererState.motionActiveCount > 0u
+                               || rendererState.transformStream.count[rendererState.frameIndex] > 0u));
+        if (epochDirty)
+            for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) rendererState.shadowLayerValid[s] = false;
+        rendererState.shadowGlobalDirty = false;
+
+        bool renderS[ANO_SHADOW_FRUSTUM_COUNT];
+        uint32_t renderCount = 0u, maxSub = 0u;
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
-            activeS[s] = shadowCfgs[s].active && lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode);
-            if (activeS[s]) { activeCount++; maxSub = (s + 1u) * ANO_SHADOW_ATLAS_SUBLAYERS; }
+            bool active = shadowCfgs[s].active && lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode);
+            renderS[s] = active && !rendererState.shadowLayerValid[s];
+            if (renderS[s]) { renderCount++; maxSub = (s + 1u) * ANO_SHADOW_ATLAS_SUBLAYERS; }
         }
 
-        // Phase barrier 1: atlas + temp UNDEFINED -> COLOR (whole arrays, contents discarded; slot
-        // reuse is fence-guarded), transient depth UNDEFINED -> DEPTH_ATTACHMENT (whole array). The
-        // depth image is shared across frames in flight, so the EARLY|LATE source scope orders the
-        // prior frame's slice use — the cross-frame WAR the per-frame fence doesn't cover (same
-        // pattern as the Hi-Z pyramid rewrite below).
-        {
+        // Phase barrier 1: atlas SHADER_READ -> COLOR (whole array, CONTENT PRESERVED — clean
+        // frustums keep their layers; dirty ones re-render with loadOp CLEAR), temp UNDEFINED ->
+        // COLOR (blur intermediate, content never crosses frames), transient depth UNDEFINED ->
+        // DEPTH_ATTACHMENT (whole array). All three are shared across frames in flight: the
+        // FRAGMENT source scope orders prior in-flight frames' atlas/temp reads (lighting frags,
+        // blur) and EARLY|LATE the prior depth-slice use — the cross-frame WARs the per-frame
+        // fence doesn't cover (same pattern as the Hi-Z pyramid rewrite below).
+        if (renderCount > 0u) {
             VkImageMemoryBarrier pre[3];
             pre[0] = (VkImageMemoryBarrier){ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = sh->atlasImage, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .image = rendererState.shadowAtlasImage, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
             pre[1] = pre[0];
-            pre[1].image = sh->tempImage;
+            pre[1].image = rendererState.shadowTempImage;
+            pre[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // discard: repopulated by blur-X each use
             pre[2] = (VkImageMemoryBarrier){ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -679,14 +701,14 @@ void recordCommandBuffer(uint32_t imageIndex)
                 .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                 .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, ANO_SHADOW_FRUSTUM_COUNT } };
             vkCmdPipelineBarrier(cmd,
-                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                 0, 0, NULL, 0, NULL, 3, pre);
         }
 
         // --- Phase 1: per-frustum depth render (MRT into the frustum's two sublayers) ---
         // Disjoint targets across frustums: no inter-pass barriers, the renders may overlap.
-        if (activeCount > 0u) {
+        if (renderCount > 0u) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowPipeline);
             vkCmdSetViewport(cmd, 0, 1, &shVp);
             vkCmdSetScissor(cmd, 0, 1, &shSc);
@@ -707,13 +729,13 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
             for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
-                if (!activeS[s]) continue;
+                if (!renderS[s]) continue;
                 uint32_t subBase = s * ANO_SHADOW_ATLAS_SUBLAYERS; // first of the frustum's 2 contiguous sublayers
 
                 VkRenderingAttachmentInfo colorAtt[ANO_SHADOW_ATLAS_SUBLAYERS];
                 for (uint32_t a = 0; a < ANO_SHADOW_ATLAS_SUBLAYERS; a++)
                     colorAtt[a] = (VkRenderingAttachmentInfo){ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                        .imageView = sh->layerView[subBase + a], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        .imageView = rendererState.shadowAtlasLayerView[subBase + a], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         .resolveMode = VK_RESOLVE_MODE_NONE, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = clearMRT[a] };
                 VkRenderingAttachmentInfo depthAtt = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -749,13 +771,13 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
 
         // Phase barrier 2: whole atlas COLOR -> SHADER_READ for the blur-X sample — the only
-        // ordering the depth renders need. Inactive layers ride along so the sampled array view
-        // sees one uniform layout.
-        {
+        // ordering the depth renders need. Clean/inactive layers ride along (content preserved) so
+        // the sampled array view sees one uniform layout.
+        if (renderCount > 0u) {
             VkImageMemoryBarrier toRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = sh->atlasImage, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .image = rendererState.shadowAtlasImage, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
                 .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -775,14 +797,14 @@ void recordCommandBuffer(uint32_t imageIndex)
         // The push spans both stages: shadowblur.vert reads layer, shadowblur.frag reads dir+layer
         // (the fallback vertex stage reads nothing; the range still covers it).
         const VkShaderStageFlags blurPcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        for (int pass = 0; pass < 2; pass++) {
-            VkImageView     dstArr = pass == 0 ? sh->tempArrayView : sh->arrayView;
-            VkImageView*    dstLyr = pass == 0 ? sh->tempLayerView : sh->layerView;
+        for (int pass = 0; renderCount > 0u && pass < 2; pass++) {
+            VkImageView     dstArr = pass == 0 ? rendererState.shadowTempArrayView : rendererState.shadowAtlasArrayView;
+            VkImageView*    dstLyr = pass == 0 ? rendererState.shadowTempLayerView : rendererState.shadowAtlasLayerView;
             VkDescriptorSet srcSet = pass == 0 ? sh->blurAtlasSet : sh->blurTempSet; // src = atlas (X) / temp (Y)
             bpc.dir[0] = pass == 0 ? invDim : 0.0f;
             bpc.dir[1] = pass == 0 ? 0.0f   : invDim;
 
-            if (activeCount > 0u) {
+            {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.shadowBlurPipeline);
                 vkCmdSetViewport(cmd, 0, 1, &shVp);
                 vkCmdSetScissor(cmd, 0, 1, &shSc);
@@ -801,7 +823,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                         .layerCount = maxSub, .colorAttachmentCount = 1, .pColorAttachments = &bColor };
                     vkCmdBeginRendering(cmd, &bri);
                     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
-                        if (!activeS[s]) continue;
+                        if (!renderS[s]) continue;
                         for (uint32_t sub = 0; sub < ANO_SHADOW_ATLAS_SUBLAYERS; sub++) {
                             bpc.layer = (int32_t)(s * ANO_SHADOW_ATLAS_SUBLAYERS + sub);
                             vkCmdPushConstants(cmd, rendererState.shadowBlurLayout, blurPcStages, 0, sizeof(bpc), &bpc);
@@ -810,10 +832,10 @@ void recordCommandBuffer(uint32_t imageIndex)
                     }
                     vkCmdEndRendering(cmd);
                 } else {
-                    // Fallback: one single-layer pass per active sublayer, still no interleaved
+                    // Fallback: one single-layer pass per rendered sublayer, still no interleaved
                     // barriers (the win was never the pass count; it was the stage-global drains).
                     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
-                        if (!activeS[s]) continue;
+                        if (!renderS[s]) continue;
                         for (uint32_t sub = 0; sub < ANO_SHADOW_ATLAS_SUBLAYERS; sub++) {
                             uint32_t ss = s * ANO_SHADOW_ATLAS_SUBLAYERS + sub;
                             VkRenderingAttachmentInfo bColor = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -841,13 +863,13 @@ void recordCommandBuffer(uint32_t imageIndex)
                 xy[0] = (VkImageMemoryBarrier){ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = sh->tempImage, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    .image = rendererState.shadowTempImage, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
                     .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
                 xy[1] = (VkImageMemoryBarrier){ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = sh->atlasImage, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                    .image = rendererState.shadowAtlasImage, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
                     .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                     .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
                 vkCmdPipelineBarrier(cmd,
@@ -855,17 +877,21 @@ void recordCommandBuffer(uint32_t imageIndex)
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                     0, 0, NULL, 0, NULL, 2, xy);
             } else {
-                // Phase barrier 4: atlas COLOR -> SHADER_READ for the lighting frags.
+                // Phase barrier 4: atlas COLOR -> SHADER_READ (its rest state) for the lighting frags.
                 VkImageMemoryBarrier fin = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = sh->atlasImage, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    .image = rendererState.shadowAtlasImage, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
                     .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     0, 0, NULL, 0, NULL, 1, &fin);
             }
         }
+
+        // Rendered layers are now faithful to their light + this frame's scene.
+        for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
+            if (renderS[s]) rendererState.shadowLayerValid[s] = true;
     }
 
     ano_ts(cmd, ANO_TS_AFTER_SHADOW);
@@ -1823,6 +1849,17 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
                       cmdStride * newCap * ano_draw_partition_count(), 0) &&
         growBufferSet(state->culling.sortKeysBuffer, state->culling.sortKeysAllocs, ssbo, devProps,
                       (VkDeviceSize)sizeof(float) * (VkDeviceSize)ANO_VIEW_COUNT * newCap, 0);
+    // Mover bookkeeping must track every slot (review finding 8): grow in lockstep or fail the create.
+    if (ok) {
+        uint8_t* nm = (uint8_t*)realloc(state->slotMotion, newCap);
+        if (nm) {
+            memset(nm + state->slotMotionCap, 0, newCap - state->slotMotionCap);
+            state->slotMotion = nm;
+            state->slotMotionCap = newCap;
+        } else {
+            ok = false;
+        }
+    }
     if (!ok) {
         printf("Fatal: entity capacity growth %u -> %u failed (GPU out of memory?).\n", oldCap, newCap);
         return false;
@@ -2137,6 +2174,29 @@ static void shadow_frustum_free(RendererState* st, uint32_t base) {
 }
 
 // Attach a runtime shadow caster: allocate a frustum block, stage its per-frustum config (active=1)
+// Invalidate a frustum block's cached atlas layers (review finding 8): its light was (re)attached,
+// detached, or its fields changed, so the persistent content no longer matches. NONE/no-op safe.
+static void shadow_layers_invalidate(RendererState* st, uint32_t base, uint32_t count) {
+    if (base == ANO_SHADOW_NONE) return;
+    for (uint32_t f = 0; f < count && base + f < ANO_SHADOW_FRUSTUM_COUNT; f++)
+        st->shadowLayerValid[base + f] = false;
+}
+
+// Per-slot mover bookkeeping (review finding 8): while any live slot carries a non-static motion
+// descriptor, GPU-side animation can move casters and lights the CPU never sees, so the shadow
+// cache treats every frustum dirty each frame. Balanced across create/update/destroy/recycle
+// (destroy untracks with ANO_MOTION_STATIC); slotMotionCap always matches the slot capacity
+// (ensureEntityCapacity grows it or fails the create).
+static void shadow_track_motion(RendererState* st, uint32_t slot, uint32_t motionType) {
+    if (slot >= st->slotMotionCap) return;
+    uint8_t on = motionType != (uint32_t)ANO_MOTION_STATIC ? 1u : 0u;
+    if (st->slotMotion[slot] != on) {
+        st->slotMotion[slot] = on;
+        if (on) st->motionActiveCount++;
+        else if (st->motionActiveCount) st->motionActiveCount--;
+    }
+}
+
 // + this light's per-light info (castsShadow=1, base, count) through the SlotUploads + the CPU mirror,
 // and record the base on the registry row so detach can free it. Past budget it stages NON-casting info
 // (castsShadow=0) and stays shadowless — this is load-bearing: detach deliberately doesn't re-stage
@@ -2159,6 +2219,7 @@ static void shadow_caster_attach(RendererState* st, uint32_t lightPalIdx, uint32
         st->shadowCfgMirror[base + f] = c;
         slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
     }
+    shadow_layers_invalidate(st, base, blockSize); // recycled block: prior caster's cached layers are stale
     ShadowLightInfo si = { .castsShadow = 1u, .baseFrustum = base, .frustumCount = blockSize, .pad = 0u };
     slot_upload_stage(&st->shadowInfo, frameIndex, lightPalIdx, &si);
 }
@@ -2177,6 +2238,7 @@ static void shadow_caster_detach(RendererState* st, uint32_t regRow, uint32_t fr
         st->shadowCfgMirror[base + f] = c;
         slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
     }
+    shadow_layers_invalidate(st, base, blockSize); // freed block: content is the departed caster's
     shadow_frustum_free(st, base);
     st->lightRegistry.rowShadowBase[regRow] = ANO_SHADOW_NONE;
 }
@@ -2228,6 +2290,8 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             uint32_t slot = render_slots_alloc(&state->slots, cmd.render_id);
             if (slot == ANO_RENDER_SLOT_UNMAPPED) break; // unexpected: drop rather than corrupt
             stage_command_fields(state, &cmd, slot, frameIndex); // stages the light photometrics if present
+            shadow_track_motion(state, slot, cmd.motion.type);
+            state->shadowGlobalDirty = true; // caster set changed (review finding 8)
             // A create-with-light that casts gets a static-region shadow frustum (logic owns scene
             // lights now). Bounded to the static region, matching the light-staging guard above.
             if (cmd.light_index < ANO_STATIC_LIGHT_COUNT && cmd.light.castsShadow)
@@ -2237,8 +2301,12 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
 
         case RCMD_UPDATE: {
             uint32_t slot = render_slots_resolve(&state->slots, cmd.render_id);
-            if (slot != ANO_RENDER_SLOT_UNMAPPED)
+            if (slot != ANO_RENDER_SLOT_UNMAPPED) {
                 stage_command_fields(state, &cmd, slot, frameIndex);
+                if (cmd.fields & RFIELD_ANIM)
+                    shadow_track_motion(state, slot, cmd.motion.type);
+                state->shadowGlobalDirty = true; // transform/mesh/motion may move a caster (finding 8)
+            }
             break;
         }
 
@@ -2246,6 +2314,8 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             uint32_t slot = render_slots_resolve(&state->slots, cmd.render_id);
             if (slot != ANO_RENDER_SLOT_UNMAPPED) {
                 stage_command_fields(state, &cmd, slot, frameIndex);     // dead-mark
+                shadow_track_motion(state, slot, (uint32_t)ANO_MOTION_STATIC); // untrack before recycle
+                state->shadowGlobalDirty = true; // caster set changed (review finding 8)
                 cascade_detach_lights(state, cmd.render_id, frameIndex); // disable lights riding this slot
                 render_slots_retire(&state->slots, cmd.render_id, state->globalFrame);
             }
@@ -2266,12 +2336,14 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
                 slot_upload_stage(&state->initialTransformBuffer, frameIndex, slot, &b->transforms[e]);
                 slot_upload_stage(&state->motionBuffer, frameIndex, slot, &b->motion[e]);
+                shadow_track_motion(state, slot, b->motion[e].type);
                 // Batch carries no instance data; clear it so a recycled slot drops the prior
                 // occupant's tint/flags and renders inert.
                 slot_upload_stage(&state->instanceDataBuffer, frameIndex, slot, &inert);
                 uint32_t ent[2] = { b->mesh[e], b->material[e] };
                 slot_upload_stage(&state->culling.entity, frameIndex, slot, ent);
             }
+            state->shadowGlobalDirty = true; // caster set changed (review finding 8)
             free_owned_bulk(&cmd);
             break;
         }
@@ -2285,8 +2357,10 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
                 if (u->fields & RFIELD_TRANSFORM)
                     slot_upload_stage(&state->initialTransformBuffer, frameIndex, slot, &u->transforms[e]);
-                if (u->fields & RFIELD_ANIM)
+                if (u->fields & RFIELD_ANIM) {
                     slot_upload_stage(&state->motionBuffer, frameIndex, slot, &u->motion[e]);
+                    shadow_track_motion(state, slot, u->motion[e].type);
+                }
                 if (u->fields & RFIELD_USERDATA)
                     slot_upload_stage(&state->instanceDataBuffer, frameIndex, slot, &u->instance_data[e]);
                 if (u->fields & RFIELD_MESH_MAT) {
@@ -2294,6 +2368,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                     slot_upload_stage(&state->culling.entity, frameIndex, slot, ent);
                 }
             }
+            state->shadowGlobalDirty = true; // casters may have moved/changed (review finding 8)
             free_owned_bulk(&cmd);
             break;
         }
@@ -2307,9 +2382,11 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 uint32_t slot = render_slots_resolve(&state->slots, rid);
                 if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
                 slot_upload_stage(&state->culling.entity, frameIndex, slot, dead);
+                shadow_track_motion(state, slot, (uint32_t)ANO_MOTION_STATIC); // untrack before recycle
                 cascade_detach_lights(state, rid, frameIndex); // disable lights riding this slot
                 render_slots_retire(&state->slots, rid, state->globalFrame);
             }
+            state->shadowGlobalDirty = true; // caster set changed (review finding 8)
             free_owned_bulk(&cmd);
             break;
         }
@@ -2369,6 +2446,10 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 ShadowLightInfo si = {0}; // castsShadow == 0
                 slot_upload_stage(&state->shadowInfo, frameIndex, row, &si);
             }
+            // Changed fields on a staying caster (offset/direction/cone/range) stale its cached
+            // layers (review finding 8); the attach/detach transitions above already invalidated.
+            shadow_layers_invalidate(state, state->lightRegistry.rowShadowBase[regRow],
+                mir->type == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u);
             break;
         }
 
@@ -2605,6 +2686,7 @@ float ano_render_get_view_cull_threshold(uint32_t view) {
 void ano_render_set_view_lod_threshold(uint32_t view, float pixels) {
     if (view >= ANO_VIEW_COUNT) return;
     rendererState.lodPixelThreshold[view] = (pixels > 0.0f) ? pixels : 0.0f;
+    if (view == 0u) rendererState.shadowGlobalDirty = true; // shadow LOD tracks view 0 (finding 8)
 }
 
 float ano_render_get_view_lod_threshold(uint32_t view) {
@@ -2619,6 +2701,7 @@ float ano_render_get_view_lod_threshold(uint32_t view) {
 void ano_render_set_lod_bias(int32_t bias) {
     int32_t lim = (int32_t)ANO_MAX_LOD;
     rendererState.lodBias = bias < -lim ? -lim : (bias > lim ? lim : bias);
+    rendererState.shadowGlobalDirty = true; // cached shadow layers hold the old LOD (finding 8)
 }
 
 int32_t ano_render_get_lod_bias(void) {
@@ -2634,6 +2717,7 @@ int32_t ano_render_get_lod_bias(void) {
 void ano_render_set_shadow_lod_bias(int32_t bias) {
     int32_t lim = (int32_t)ANO_MAX_LOD;
     rendererState.shadowLodBias = bias < 0 ? 0 : (bias > lim ? lim : bias);
+    rendererState.shadowGlobalDirty = true; // cached shadow layers hold the old LOD (finding 8)
 }
 
 int32_t ano_render_get_shadow_lod_bias(void) {
@@ -2675,11 +2759,11 @@ static void ano_print_profiling(void) {
     double tex  = (double)allocator_used_bytes(&textureAllocator)   / MiB;
     double swap = (double)allocator_used_bytes(&swapchainAllocator) / MiB;
     double stg  = (double)allocator_used_bytes(&stagingAllocator)   / MiB;
-    // CDF stats atlas + blur temp (both RGBA16_UNORM = 8 B/texel, ATLAS_LAYERS = 2 sublayers/frustum) +
-    // the single-layer transient nearest-occluder depth (D32 = 4 B/texel), all x MAX_FRAMES_IN_FLIGHT.
-    double atlas = (double)(((VkDeviceSize)ANO_SHADOW_ATLAS_LAYERS * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 8u * 2u
-                            + (VkDeviceSize)ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u)
-                            * MAX_FRAMES_IN_FLIGHT) / MiB;
+    // CDF stats atlas + blur temp (both RGBA16_UNORM = 8 B/texel, ATLAS_LAYERS = 2 sublayers/frustum)
+    // + the per-frustum transient nearest-occluder depth array (D32 = 4 B/texel). ONE shared instance
+    // of each across frames in flight (review finding 8).
+    double atlas = (double)((VkDeviceSize)ANO_SHADOW_ATLAS_LAYERS * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 8u * 2u
+                            + (VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u) / MiB;
 
     printf("[profile mode=%s] GPU ms: upload=%.3f compute=%.3f shadow=%.3f lighting=%.3f composite=%.3f total=%.3f"
            " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f\n",
@@ -2970,6 +3054,7 @@ static void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_
         st->shadowCfgMirror[base + f] = c;
         slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
     }
+    shadow_layers_invalidate(st, base, blockSize); // fresh static block: render before first sample
     ShadowLightInfo si = { .castsShadow = 1u, .baseFrustum = base, .frustumCount = blockSize, .pad = 0u };
     slot_upload_stage(&st->shadowInfo, frameIndex, lightIdx, &si);
     st->shadowFrustumNext += blockSize;
@@ -2978,6 +3063,12 @@ static void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_
 
 bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     (void)ctx;
+    // Mover bookkeeping for the shadow cache (review finding 8): per-slot non-static-motion flags,
+    // grown alongside the slot table by ensureEntityCapacity.
+    state->slotMotion = (uint8_t*)calloc(maxEntities, 1u);
+    if (!state->slotMotion) return false;
+    state->slotMotionCap = maxEntities;
+    state->motionActiveCount = 0u;
     // ×1 device-local + delta staging. Fresh slots are written by their CREATE before being
     // read (a slot is < slotHighWater only after allocation), so no host-side zero-fill is needed.
     return slot_upload_create(&state->motionBuffer, maxEntities, sizeof(AnoMotionDescriptor), SLOT_STAGING_INIT);
@@ -3242,14 +3333,19 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         sh->frustumAlloc = gpu_alloc(&gpuAllocator, bmr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (sh->frustumAlloc.memory == VK_NULL_HANDLE) return false;
         vkBindBufferMemory(ctx->device, sh->frustumBuffer, sh->frustumAlloc.memory, sh->frustumAlloc.offset);
+    }
 
-        // CDF-stats atlas + blur-temp: both RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS layers (2 MRT
-        // sublayers per frustum = 4 depth bands), single-sample, color-rendered + sampled. atlasImage holds
-        // the final (blurred) per-band (coverage,M); tempImage is the separable-blur intermediate.
-        VkImage* momentImgs[2]   = { &sh->atlasImage, &sh->tempImage };
-        GpuAllocation* momentAl[2] = { &sh->atlasAlloc, &sh->tempAlloc };
-        VkImageView* momentArr[2] = { &sh->arrayView, &sh->tempArrayView };
-        VkImageView* momentLyr[2] = { sh->layerView, sh->tempLayerView };
+    // CDF-stats atlas + blur-temp: both RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS layers (2 MRT
+    // sublayers per frustum = 4 depth bands), single-sample, color-rendered + sampled. The atlas holds
+    // the final (blurred) per-band (coverage,M); temp is the separable-blur intermediate. ONE instance
+    // across frames in flight (review finding 8): content persists so clean frustums skip re-render.
+    // Both seeded to SHADER_READ — the atlas's rest state — so a first frame with nothing dirty (or
+    // the whole-array preserve transition) never sees UNDEFINED.
+    {
+        VkImage* momentImgs[2]     = { &state->shadowAtlasImage, &state->shadowTempImage };
+        GpuAllocation* momentAl[2] = { &state->shadowAtlasAlloc, &state->shadowTempAlloc };
+        VkImageView* momentArr[2]  = { &state->shadowAtlasArrayView, &state->shadowTempArrayView };
+        VkImageView* momentLyr[2]  = { state->shadowAtlasLayerView, state->shadowTempLayerView };
         for (int m = 0; m < 2; m++) {
             VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
             iinfo.imageType = VK_IMAGE_TYPE_2D;
@@ -3283,10 +3379,29 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
                 lv.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, s, 1 };
                 if (vkCreateImageView(ctx->device, &lv, NULL, &momentLyr[m][s]) != VK_SUCCESS) return false;
             }
-        }
 
-        // Layout handled per-frame in recordCommandBuffer (UNDEFINED->COLOR->SHADER_READ).
+            // Seed ALL layers to SHADER_READ (transitionImageLayout spans only layer 0).
+            VkCommandBuffer seedCmd = beginSingleTimeCommands(ctx);
+            VkImageMemoryBarrier seed = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = *momentImgs[m], .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
+            vkCmdPipelineBarrier(seedCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 0, NULL, 0, NULL, 1, &seed);
+            endSingleTimeCommands(ctx, seedCmd);
+        }
     }
+
+    // Dirty-frustum cache state (review finding 8): every layer starts invalid (renders on first
+    // activation); env hooks pin the pre-cache always-dirty behavior or freeze for the static-scene
+    // ceiling. Mover bookkeeping (slotMotion) is allocated by createMotionBuffer.
+    state->shadowCacheMode = getenv("ANO_FORCE_NO_SHADOW_CACHE") ? 1u
+                           : getenv("ANO_SHADOW_CACHE_FREEZE")   ? 2u : 0u;
+    for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) state->shadowLayerValid[s] = false;
+    state->shadowGlobalDirty = false;
+    if (state->shadowCacheMode)
+        printf("Shadow cache: %s\n", state->shadowCacheMode == 1u ? "OFF (every frame dirty)" : "FREEZE");
 
     // Transient nearest-occluder depth (never sampled): ONE image shared across frames in flight,
     // one slice per shadow frustum so the per-frustum depth renders are mutually independent (no
