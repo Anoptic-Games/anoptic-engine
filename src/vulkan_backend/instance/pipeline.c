@@ -437,6 +437,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	}
 
 	state->prototypes[PIPELINE_FLAT].descriptorLayout = state->bindlessTextures.layout;
+	state->prototypes[PIPELINE_FLAT_TWOSIDED].descriptorLayout = state->bindlessTextures.layout;
 	state->prototypes[PIPELINE_TRANSMISSION].descriptorLayout = state->bindlessTextures.layout;
 	state->prototypes[PIPELINE_ADDITIVE].descriptorLayout = state->bindlessTextures.layout;
 
@@ -451,6 +452,11 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 {
 	if (!ano_pipeline_flat_init(ctx, state, &state->prototypes[PIPELINE_FLAT]))
+	{
+		return false;
+	}
+
+	if (!ano_pipeline_flat_twosided_init(ctx, state, &state->prototypes[PIPELINE_FLAT_TWOSIDED]))
 	{
 		return false;
 	}
@@ -1190,7 +1196,9 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkPipelineRasterizationStateCreateInfo rasterizer = {};
 	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-	rasterizer.cullMode = VK_CULL_MODE_NONE;       // demo geometry is double-sided
+	// NONE stays (review finding 7): each frustum has ONE shadow partition mixing both sidedness
+	// lanes' casters, and a doubleSided caster (curtains, foliage) culled here would drop its shadow.
+	rasterizer.cullMode = VK_CULL_MODE_NONE;
 	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.lineWidth = 1.0f;
 	// No rasterizer depth bias: MSM acne suppression lives in the moment bias (alpha) + a sample-time

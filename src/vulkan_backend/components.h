@@ -19,6 +19,9 @@ typedef enum PipelineType
     PIPELINE_UI,                // UI overlay (future)
     PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects (depth-sorted "over" lane)
     PIPELINE_ADDITIVE,          // Order-independent additive (ONE/ONE) glows: stars, engine fire, weapon FX
+    PIPELINE_FLAT_TWOSIDED,     // Opaque flat WITHOUT backface culling: glTF doubleSided materials (review
+                                // finding 7). Same shaders/layout as PIPELINE_FLAT; cullMode NONE. Material-
+                                // carried types must stay below 16 (the drawSlotOf map — see components.c).
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
     PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass (Path B)

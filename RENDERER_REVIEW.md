@@ -332,7 +332,25 @@ territory and another reason the slim mesh path matters. Estimated recovery: 0.8
 Per-view extents also unlock per-view MSAA (finding 5) and de-coupling the shared MSAA
 attachments (finding 2).
 
-## 9. Finding 7 — no backface or cluster culling in the raster path
+## 9. Finding 7 — no backface or cluster culling in the raster path - ADDRESSED (backface half)
+
+Measured outcome (2026-07-03): a fourth draw lane, PIPELINE_FLAT_TWOSIDED (slot 3), carries
+opaque glTF doubleSided materials (parser routes them: 3 of Sponza's 25, all of the viking
+room's) with cullMode NONE, and the main flat lane switches to CULL_MODE_BACK — per-material
+sidedness via the existing partition registry rather than dynamic state or a mid-draw split.
+The lane is the flat builder run twice (shared code, own layout; the culled lane stops
+advertising PBR_FEATURE_DOUBLE_SIDED); g_framePasses gains a two-sided depth pre-pass +
+opaque pass (LOAD ops; the pick-id attachment now takes the pass's loadOp so the second
+opaque pass stops clearing the first's ids — both lanes resolve, last wins, keeping both
+pickable). frontFace stays COUNTER_CLOCKWISE: the transform chain classifies glTF fronts
+as front under it (verified — no holes; flat.frag's gl_FrontFacing flip depends on it).
+The material-carried enum values must stay below 16 (drawSlotOf map); the compute types
+past 15 never appear in materials. Shadow pipeline keeps NONE: each frustum has ONE mixed-
+sidedness shadow partition, and culling there would hole doubleSided casters' shadows.
+Measured (debug, SHADOWMAP medians vs same-session baseline): lighting 1.138 → 1.038 ms,
+total 2.172 → 2.049 ms (−5.7%); static-scene ceiling (shadow-cache freeze) 1.306 → 1.182 ms.
+Validation-clean (the pre-existing independentBlend VUID now fires ×2 more — the flat
+builder runs twice). Remaining from this finding: the task-shader cluster cull below.
 
 `rasterizer.cullMode = VK_CULL_MODE_NONE` in both the flat family (flat.c:113) and the
 shadow pipeline (pipeline.c:1189 region), so every pass rasterizes both faces of every
@@ -445,7 +463,7 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 | 3 | Render PiP view at inset resolution | LANDED 2026-07-03 | measured 1.07 ms + 372 MiB VRAM (see finding 6 note) |
 | 4 | MSAA: setting + 4× default; resolve once (pick-id restructure deferred) | LANDED 2026-07-03 | measured 0.53 ms + 370 MiB VRAM (see finding 5 note) |
 | 5 | Hi-Z build off critical path (end of frame or async queue) | LANDED 2026-07-03 (async queue + timelines) | measured ~0.06 ms — chain already shrunk by #3/#4; occlusion consumer now ~free (see finding 2 note) |
-| 6 | Backface culling on opaque/prepass/shadow | Low (pipeline state; verify Sponza winding) | 0.2–0.5 ms of depth-only raster |
+| 6 | Backface culling on opaque/prepass/shadow | LANDED 2026-07-03 (two-sided lane; shadow stays NONE — mixed partition) | measured −0.12 ms total, lighting −0.10 (see finding 7 note) |
 | 7 | Single shared shadow atlas + dirty-frustum reuse | LANDED 2026-07-03 | measured −672 MiB; static-scene ceiling: shadow 0.867 → 0.001 ms, total −40% (freeze-verified; this demo's movers keep it all-dirty — see finding 8 note) |
 | 8 | Async lightcull, merged prelude barriers, drawCount-only fill, lightcull pose reuse | Low each | 0.1–0.2 ms + scalability |
 | 9 | flat.frag register diet + packed interpolants | Medium (measure per step) | raises PS occupancy; frame gain realized with #1/#2 |

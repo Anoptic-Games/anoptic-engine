@@ -13,14 +13,16 @@
 // not PIPELINE_TYPE_COUNT — sizes the indirect / drawCount / compacted-index buffers and the
 // cull UBO draw-slot map. See components.h for the rationale.
 const PipelineType ano_draw_pipelines[] = {
-    PIPELINE_FLAT,          // slot 0: opaque flat-shaded geometry
+    PIPELINE_FLAT,          // slot 0: opaque flat-shaded geometry (backface-culled; review finding 7)
     PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission (depth-sorted "over" lane)
     PIPELINE_ADDITIVE,      // slot 2: order-independent additive glows (ONE/ONE; no sort, no shadow)
+    PIPELINE_FLAT_TWOSIDED, // slot 3: opaque doubleSided materials (same shaders as slot 0, cullMode NONE)
 };
 
-// The cull UBO map (CullUBO.drawSlotOf) is indexed by a material's raw PipelineType, so it
-// must span the whole enum; it is stored as uvec4[4] in cull.comp, hence the 16-slot bound.
-_Static_assert(PIPELINE_TYPE_COUNT <= 16, "drawSlotOf map (CullUBO/cull.comp) holds 16 entries");
+// The cull UBO map (CullUBO.drawSlotOf) is indexed by a MATERIAL's pipelineType and is stored as
+// uvec4[4] in cull.comp: every material-carried (drawing) type must sit below 16. Types past 15
+// (compute passes) never appear in a material and map to no slot.
+_Static_assert(PIPELINE_FLAT_TWOSIDED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
 
 // out: number of drawing pipeline types == per-camera-view draw-slot stride.
 uint32_t ano_draw_pipeline_count(void) {
