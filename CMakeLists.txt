@@ -59,6 +59,19 @@ set(MI_OVERRIDE OFF)
 set(MI_BUILD_TESTS OFF)
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/mimalloc EXCLUDE_FROM_ALL)
 
+# FreeType submodule: TTF outline/metrics parsing for the text stack (FONT_RENDER.md).
+# Optional codecs and HarfBuzz are cut -- plain glyf parsing needs none of them; disabling
+# zlib selects FreeType's vendored copy, so no system library gets picked up. CACHE FORCE
+# rather than plain set(): freetype pins policies to 3.12, where option() clobbers normal
+# variables (CMP0077 OLD). EXCLUDE_FROM_ALL suppresses its install() rules as above.
+set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+set(FT_ENABLE_ERROR_STRINGS ON CACHE BOOL "" FORCE)
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/freetype EXCLUDE_FROM_ALL)
+
 # pthreads everywhere: native on Linux, winpthreads on MinGW
 find_package(Threads REQUIRED)
 
@@ -85,6 +98,8 @@ target_include_directories(anoptic_core PUBLIC
 )
 
 target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
+# PRIVATE by design: no FreeType type crosses include/anoptic_text.h (module rule).
+target_link_libraries(anoptic_core PRIVATE freetype)
 
 # Explicit POSIX feature-test macro for clock_gettime etc.
 if(UNIX)
@@ -110,6 +125,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 
 # Renderer (default on).
