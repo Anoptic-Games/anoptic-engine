@@ -24,7 +24,12 @@
  *     the per-glyph clamp is load-bearing for BOTH overlap forms this font ships --
  *     separate overlapping contours ('# $ + f t') and self-overlapping single
  *     contours with winding-2 pockets ('H 8 @') -- while clean glyphs (incl. '%',
- *     whose audit flag was a bbox false positive) stay in [~1, 1.1).
+ *     whose audit flag was a bbox false positive) stay in [~1, 1.1);
+ *   - the v0 shaper (step 4): strict UTF-8 decode (overlong/surrogate/range/resync
+ *     cases), golden layout over the Geist bake -- exact pen advances, blank glyphs
+ *     advancing without emitting, newline/CR handling, out-of-range gap, cap
+ *     truncation vs total count, bitwise run continuation via penOut, measure
+ *     extents, and the 48-byte GPU ABI offsets of AnoGlyphInstance.
  * Requires resources/fonts/Geist staged next to the binary (tests/CMakeLists.txt).
  * Exit 0 == pass; failures print what broke. */
 
@@ -409,6 +414,85 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Shaper v0.
+
+static void test_utf8(void)
+{
+    uint32_t n = 0;
+    CHECK(ano_utf8_next("A", 1, &n) == 'A' && n == 1, "ascii decodes");
+    CHECK(ano_utf8_next("\xC3\xA9", 2, &n) == 0xE9 && n == 2, "2-byte sequence");
+    CHECK(ano_utf8_next("\xE2\x82\xAC", 3, &n) == 0x20AC && n == 3, "3-byte sequence");
+    CHECK(ano_utf8_next("\xF0\x9F\x99\x82", 4, &n) == 0x1F642 && n == 4, "4-byte sequence");
+    CHECK(ano_utf8_next("\xC0\x80", 2, &n) == 0xFFFD && n == 2, "overlong rejected, consumed");
+    CHECK(ano_utf8_next("\xED\xA0\x80", 3, &n) == 0xFFFD && n == 3, "surrogate rejected");
+    CHECK(ano_utf8_next("\xF4\x90\x80\x80", 4, &n) == 0xFFFD && n == 4, "past U+10FFFF rejected");
+    CHECK(ano_utf8_next("\xC3", 1, &n) == 0xFFFD && n == 1, "truncated tail resyncs by one");
+    CHECK(ano_utf8_next("\xC3\x41", 2, &n) == 0xFFFD && n == 1, "broken continuation resyncs by one");
+    CHECK(ano_utf8_next("\xFF", 1, &n) == 0xFFFD && n == 1, "invalid lead byte");
+    CHECK(ano_utf8_next("\x80", 1, &n) == 0xFFFD && n == 1, "stray continuation byte");
+}
+
+static void test_shaper(const AnoFontBake *b)
+{
+    const float S = 32.0f;
+    const float org[2] = { 100.0f, 200.0f };
+    const float col[4] = { 1.0f, 0.5f, 0.25f, 1.0f };
+    AnoGlyphInstance inst[8];
+
+    CHECK(ano_text_shape(b, "AV", 2, S, org, col, NULL, 0, NULL) == 2, "count mode needs no buffer");
+    uint32_t n = ano_text_shape(b, "AV", 2, S, org, col, inst, 8, NULL);
+    CHECK(n == 2, "AV emits two instances");
+    CHECK(inst[0].origin[0] == org[0] && inst[0].origin[1] == org[1], "first glyph at the origin");
+    float expX = org[0] + b->glyphs['A' - 32].advance * S; // mirrors the shaper's op order
+    CHECK(inst[1].origin[0] == expX && inst[1].origin[1] == org[1], "advance is exact");
+    CHECK(inst[0].glyphID == 'A' - 32 && inst[1].glyphID == 'V' - 32, "directory slots");
+    CHECK(inst[0].inv[0] == 1.0f / S && inst[0].inv[1] == 0.0f && inst[0].inv[2] == 0.0f
+              && inst[0].inv[3] == -1.0f / S,
+          "v0 inverse is scale plus y-flip only");
+    CHECK(inst[0].color[1] == 0.5f && inst[0].flags == 0, "color copied, flags clear");
+
+    n = ano_text_shape(b, "A B", 3, S, org, col, inst, 8, NULL);
+    CHECK(n == 2, "space emits nothing");
+    expX = org[0] + b->glyphs['A' - 32].advance * S;
+    expX += b->glyphs[0].advance * S; // slot 0 = space
+    CHECK(inst[1].origin[0] == expX, "space still advances the pen");
+
+    float pen[2] = { 0 };
+    n = ano_text_shape(b, "A\r\nB", 4, S, org, col, inst, 8, pen);
+    CHECK(n == 2, "CRLF emits two glyphs");
+    CHECK(inst[1].origin[0] == org[0] && inst[1].origin[1] == org[1] + b->lineHeight * S,
+          "newline returns x to origin and steps one line down");
+    CHECK(pen[0] == org[0] + b->glyphs['B' - 32].advance * S && pen[1] == inst[1].origin[1],
+          "penOut lands after the last glyph");
+
+    // Splitting a run at any point and continuing from penOut is bitwise identical.
+    AnoGlyphInstance whole[2], second[1];
+    ano_text_shape(b, "AB", 2, S, org, col, whole, 2, NULL);
+    ano_text_shape(b, "A", 1, S, org, col, inst, 8, pen);
+    ano_text_shape(b, "B", 1, S, pen, col, second, 1, NULL);
+    CHECK(memcmp(&whole[1], &second[0], sizeof(AnoGlyphInstance)) == 0,
+          "run continuation via penOut is exact");
+
+    CHECK(ano_text_shape(b, "ABC", 3, S, org, col, inst, 1, NULL) == 3,
+          "cap truncates writes, not the reported need");
+
+    n = ano_text_shape(b, "A\xC3\xA9" "B", 4, S, org, col, inst, 8, NULL);
+    CHECK(n == 2, "unbaked codepoint emits nothing");
+    expX = org[0] + b->glyphs['A' - 32].advance * S;
+    expX += ANO_TEXT_GAP_EM * S;
+    CHECK(inst[1].origin[0] == expX, "unbaked codepoint leaves the documented gap");
+
+    float w = -1.0f, h = -1.0f;
+    ano_text_measure(b, "AB\nA", 4, S, &w, &h);
+    float lineAB = b->glyphs['A' - 32].advance * S;
+    lineAB += b->glyphs['B' - 32].advance * S;
+    CHECK(w == lineAB, "measure width is the widest line");
+    CHECK(h == (2.0f * b->lineHeight) * S, "measure height covers both lines");
+    ano_text_measure(b, "", 0, S, &w, &h);
+    CHECK(w == 0.0f && h == 0.0f, "empty text measures zero");
+}
+
+// ---------------------------------------------------------------------------------------------
 
 int main(void)
 {
@@ -416,6 +500,7 @@ int main(void)
     test_half();
     test_quad_split();
     test_cubic();
+    test_utf8();
 
     CHECK(ano_fs_chdir_gamepath(), "chdir to the exe directory (staged font root)");
     CHECK(ano_text_init() == 0, "init for bake tests");
@@ -437,6 +522,7 @@ int main(void)
     CHECK(ano_text_font_bake(geist, 32, 126, heapA, &bake) == 0, "ASCII bake succeeds");
     validate_bake(&bake);
     test_reference_raster(geist, &bake);
+    test_shaper(&bake);
 
     // Determinism: a second bake is bit-identical (double math, fixed iteration order).
     AnoFontBake again = { 0 };

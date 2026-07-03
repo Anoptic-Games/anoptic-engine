@@ -47,6 +47,14 @@ int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm,
                        AnoQuad *out, int maxOut);
 
 // ---------------------------------------------------------------------------------------------
+// Shaping internals.
+
+// Decodes the next codepoint from s[0..len), len >= 1. Strict: overlongs, surrogates,
+// and values past U+10FFFF yield U+FFFD. *consumed always advances (structurally valid
+// sequences consume fully, garbage consumes 1 byte) so scanning cannot stall.
+uint32_t ano_utf8_next(const char *s, uint32_t len, uint32_t *consumed);
+
+// ---------------------------------------------------------------------------------------------
 // Reference rasterization (FONT_RENDER.md step 3).
 
 // CPU reference rasterizer: scalar float mirror of the GPU coverage shader (stream

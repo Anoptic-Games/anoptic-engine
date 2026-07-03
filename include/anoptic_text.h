@@ -16,6 +16,7 @@
 #ifndef ANOPTICENGINE_ANOPTIC_TEXT_H
 #define ANOPTICENGINE_ANOPTIC_TEXT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "anoptic_memory.h"
@@ -93,5 +94,56 @@ typedef struct AnoFontBake {
 // Returns 0 on success, EINVAL (bad handle/range/args), ENOMEM, or EIO (face error).
 int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCodepoint,
                        mi_heap_t *heap, AnoFontBake *out);
+
+// ---------------------------------------------------------------------------------------------
+// Shaping (v0): UTF-8 -> positioned glyph instances, pure functions over a bake.
+//
+// Unlike load/bake, shaping touches no parser state: it may run on ANY thread, over
+// any bake, concurrently. This is the logic-side entry point -- game code shapes text
+// into instance arrays and ships them to the renderer as plain data.
+//
+// AnoGlyphInstance is the GPU ABI, one std430 SSBO element per glyph. Field order is
+// chosen so a GLSL `vec4 inv; vec4 color; vec2 origin; uint glyphID; uint flags;`
+// declaration lands on identical offsets (0/16/32/40/44, stride 48).
+//   inv     -- 2x2 pixel->em inverse as rows: em.x = dot(inv.xy, d), em.y = dot(inv.zw, d)
+//              with d = pixel - origin. Scale, the screen-y-down vs em-y-up flip, and
+//              future skew/rotation all fold here; v0 emits (1/size, 0, 0, -1/size).
+//   color   -- premultiplied linear RGBA.
+//   origin  -- this glyph's baseline pen position, screen pixels, y-down.
+//   glyphID -- directory slot in the bake the run was shaped against.
+//   flags   -- reserved (f32-curve escape, effects).
+
+typedef struct AnoGlyphInstance {
+    float    inv[4];
+    float    color[4];
+    float    origin[2];
+    uint32_t glyphID;
+    uint32_t flags;
+} AnoGlyphInstance;
+
+static_assert(sizeof(AnoGlyphInstance) == 48, "GPU ABI: 48-byte std430 element");
+static_assert(offsetof(AnoGlyphInstance, color) == 16 && offsetof(AnoGlyphInstance, origin) == 32
+                  && offsetof(AnoGlyphInstance, glyphID) == 40,
+              "GPU ABI: GLSL-compatible offsets");
+
+// Pen advance, in em, for codepoints the bake has no slot for (visible gap, no tofu).
+#define ANO_TEXT_GAP_EM 0.5f
+
+// Shapes UTF-8 bytes into glyph instances at sizePx pixels per em, the pen starting at
+// origin (screen pixels, y-down baseline). Writes up to cap instances to out; returns
+// the TOTAL count the text needs (size with out=NULL, cap=0). Blank glyphs (space,
+// missing) advance the pen without emitting; '\n' returns the pen to origin[0] and
+// steps one lineHeight down; '\r' is ignored; codepoints outside the bake's range
+// advance ANO_TEXT_GAP_EM; malformed UTF-8 is consumed byte-wise as out-of-range.
+// penOut (optional, 2 floats) receives the final pen so runs can continue seamlessly
+// (e.g. a color change mid-line passes penOut as the next call's origin).
+uint32_t ano_text_shape(const AnoFontBake *bake, const char *utf8, uint32_t len,
+                        float sizePx, const float origin[2], const float color[4],
+                        AnoGlyphInstance *out, uint32_t cap, float *penOut);
+
+// Measures without emitting: width = the widest line's pen advance, height = started
+// line count times line height (a trailing '\n' starts a line), both in pixels.
+void ano_text_measure(const AnoFontBake *bake, const char *utf8, uint32_t len,
+                      float sizePx, float *width, float *height);
 
 #endif
