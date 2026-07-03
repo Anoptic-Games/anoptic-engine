@@ -1,6 +1,7 @@
 {
-  # Anoptic Engine dev environments. Two build targets, selected by shell:
+  # Anoptic Engine dev environments + a buildable package. Targets, by command:
   #
+  #   nix build                  # headless engine binary, one shot -> ./result/bin
   #   nix develop                # Linux-native clang: headless build, tests, ASan/TSan
   #   nix develop .#windows      # MinGW-w64 clang cross: Windows .exe from WSL/Linux
   #
@@ -18,10 +19,20 @@
     # Pinned to the same rev as the pylon system flake so the (large) mingw cross
     # toolchain is shared from the store instead of rebuilt. Advance deliberately.
     nixpkgs.url = "github:NixOS/nixpkgs/b5aa0fbd538984f6e3d201be0005b4463d8b09f8";
+
+    # `src = self` gives the superproject git tree WITHOUT submodule contents, so
+    # the package injects the ones it compiles from pinned inputs instead. The
+    # headless build links only mimalloc-static; the renderer's submodules (glfw,
+    # cgltf, freetype) are not needed until there is a packaged renderer target.
+    # Rev == the gitlink recorded at external/mimalloc; bump both together.
+    mimalloc-src = {
+      url = "github:microsoft/mimalloc/02a2f5df9d7d46d30263b83832eebeeab62dc5fe";
+      flake = false;
+    };
   };
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, mimalloc-src }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -113,6 +124,53 @@
             echo "[anoptic] Windows target — $($CC --version | head -1)"
             echo "[anoptic] configure with: cmake \$cmakeFlags -G Ninja -S . -B build/Windows"
           '';
+        };
+      };
+
+      # ---- Buildable package: headless engine -------------------------------
+      # `nix build` -> a runnable console engine in one shot, no dev shell, no
+      # manual cmake. HEADLESS only, on purpose: the renderer bakes
+      # PROJECT_ROOT=<source dir> into the binary to find shaders/assets at
+      # runtime (root CMakeLists), which is a build-sandbox path that won't
+      # exist post-install. The headless path uses no assets, so it is the one
+      # target that is self-contained today. A packaged renderer waits on the
+      # resource manager owning asset paths (relative to the exe, not baked).
+      packages.${system}.default = pkgs.clangStdenv.mkDerivation {
+        pname = "anopticengine";
+        version = "0.0.1";
+        src = self;
+
+        nativeBuildInputs = with pkgs; [
+          cmake
+          ninja
+          pkg-config
+        ];
+        hardeningDisable = fortifyOff;
+
+        # external/mimalloc is a gitlink -- empty in `self`. Drop the pinned
+        # source in before configure (writable: the store copy is read-only).
+        postUnpack = ''
+          rm -rf source/external/mimalloc
+          cp -r ${mimalloc-src} source/external/mimalloc
+          chmod -R u+w source/external/mimalloc
+        '';
+
+        cmakeFlags = [
+          "-DANOPTIC_HEADLESS=ON"
+          "-DCMAKE_BUILD_TYPE=Release"
+        ];
+
+        # The engine target has no install() rule of its own (only vendored
+        # mimalloc does), so place the binary by hand.
+        installPhase = ''
+          runHook preInstall
+          install -Dm755 anopticengine $out/bin/anopticengine
+          runHook postInstall
+        '';
+
+        meta = {
+          description = "Anoptic Engine — headless console build";
+          mainProgram = "anopticengine";
         };
       };
 

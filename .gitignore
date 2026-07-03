@@ -107,6 +107,9 @@ build
 build/
 build/*
 build-*/
+# Nix build output symlinks (nix build -> ./result)
+result
+result-*
 CMakeFiles
 CMakeFiles/
 CMakeCache.txt

@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "mimalloc-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1777501344,
+        "narHash": "sha256-7wJ6IE6WXuIFmuuM1W5TawC4LYjhc18aYlaujnOXyx4=",
+        "owner": "microsoft",
+        "repo": "mimalloc",
+        "rev": "02a2f5df9d7d46d30263b83832eebeeab62dc5fe",
+        "type": "github"
+      },
+      "original": {
+        "owner": "microsoft",
+        "repo": "mimalloc",
+        "rev": "02a2f5df9d7d46d30263b83832eebeeab62dc5fe",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1782723713,
@@ -18,6 +35,7 @@
     },
     "root": {
       "inputs": {
+        "mimalloc-src": "mimalloc-src",
         "nixpkgs": "nixpkgs"
       }
     }
