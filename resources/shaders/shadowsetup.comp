@@ -1,0 +1,170 @@
+#version 450
+
+// Per-shadow-frustum light-space view-projection + frustum-plane build (audit 4.7 shadows).
+// One invocation per shadow frustum: reads the frustum's config (which light + cube face) and the
+// light's live GPU transform, builds the light-space viewProj, and extracts its 6 frustum planes.
+// Output feeds the cull pass (planes), the depth render (viewProj), and the fragment sampler
+// (viewProj) — all from one GPU-derived source, so no CPU readback of GPU-animated light positions.
+
+layout(local_size_x = 64) in;
+
+// Must match the structs.h constants (DIR=1 + SPOT=1 + POINT=4*6).
+#define ANO_SHADOW_FRUSTUM_COUNT 42u // must match structs.h (static 26 + runtime 16)
+#define ANO_SHADOW_ORTHO_EXTENT  20.0
+#define LIGHT_TYPE_DIRECTIONAL 0u
+#define LIGHT_TYPE_POINT       1u
+#define LIGHT_TYPE_SPOT        2u
+
+struct ShadowFrustumConfig { uint lightIndex; uint lightType; uint faceIndex; uint live; }; // 'live' = C struct's 'active' ('active' is a GLSL reserved word)
+
+struct LightData {
+    vec3  color; float intensity;
+    float range; float innerConeCos; float outerConeCos; uint type;
+    uint  transformIndex; uint enabled; uint pad0; uint pad1;
+    vec3  localOffset; uint pad2; // model-space offset (audit 4.7); shadow eye uses it too
+    vec3  localDir; uint pad3;    // model-space aim (audit 4.7 fanned spots); shadow eye looks along it
+};
+
+// CullView: viewProj + 6 planes (matches structs.h CullView / cull.comp's shadow read).
+struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+
+layout(set = 0, binding = 0) readonly buffer ShadowConfigSSBO { ShadowFrustumConfig configs[]; };
+layout(set = 0, binding = 1) readonly buffer TransformSSBO   { mat4 transforms[]; };
+layout(set = 0, binding = 2) readonly buffer LightSSBO       { LightData lights[]; };
+layout(set = 0, binding = 3) writeonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
+
+// Right-handed lookAt, column-major (projects worldPos via M*worldPos), matching flat.vert's
+// effective proj*view convention so the extracted planes agree with the CPU camera planes.
+mat4 lookAtRH(vec3 eye, vec3 center, vec3 up) {
+    vec3 f = normalize(center - eye);
+    vec3 s = normalize(cross(f, up));
+    vec3 u = cross(s, f);
+    mat4 m = mat4(1.0);
+    m[0][0] = s.x; m[1][0] = s.y; m[2][0] = s.z;
+    m[0][1] = u.x; m[1][1] = u.y; m[2][1] = u.z;
+    m[0][2] = -f.x; m[1][2] = -f.y; m[2][2] = -f.z;
+    m[3][0] = -dot(s, eye); m[3][1] = -dot(u, eye); m[3][2] = dot(f, eye);
+    return m;
+}
+
+// Orthographic, right-handed, Vulkan depth [0,1] (glm orthoRH_ZO).
+mat4 orthoRH_ZO(float l, float r, float b, float t, float n, float f) {
+    mat4 m = mat4(0.0);
+    m[0][0] = 2.0 / (r - l);
+    m[1][1] = 2.0 / (t - b);
+    m[2][2] = -1.0 / (f - n);
+    m[3][0] = -(r + l) / (r - l);
+    m[3][1] = -(t + b) / (t - b);
+    m[3][2] = -n / (f - n);
+    m[3][3] = 1.0;
+    return m;
+}
+
+// Perspective, right-handed, Vulkan depth [0,1] (glm perspectiveRH_ZO). NO Y-flip: the moment write
+// (flat.vert/.mesh) and the fragment reproject (sampleShadowCDF) share this matrix, so any flip
+// cancels; matches orthoRH_ZO's non-flipped convention (positive m[1][1]). Used for spot + point.
+mat4 perspectiveRH_ZO(float fovy, float aspect, float n, float f) {
+    float t = tan(fovy * 0.5);
+    mat4 m = mat4(0.0);
+    m[0][0] = 1.0 / (aspect * t);
+    m[1][1] = 1.0 / t;
+    m[2][2] = f / (n - f);
+    m[2][3] = -1.0;
+    m[3][2] = -(f * n) / (f - n);
+    return m;
+}
+
+// Cube-face basis (face -> view forward + up), faces 0..5 = +X,-X,+Y,-Y,+Z,-Z. MUST match the
+// dominant-axis face selection in flat.frag/transmission.frag (cubeFaceIndex). +/-Y use a Z up so
+// lookAtRH's cross(forward, up) stays non-degenerate.
+void cubeFaceBasis(uint face, out vec3 fwd, out vec3 up) {
+    if      (face == 0u) { fwd = vec3( 1, 0, 0); up = vec3(0, 1, 0); } // +X
+    else if (face == 1u) { fwd = vec3(-1, 0, 0); up = vec3(0, 1, 0); } // -X
+    else if (face == 2u) { fwd = vec3( 0, 1, 0); up = vec3(0, 0,-1); } // +Y
+    else if (face == 3u) { fwd = vec3( 0,-1, 0); up = vec3(0, 0, 1); } // -Y
+    else if (face == 4u) { fwd = vec3( 0, 0, 1); up = vec3(0, 1, 0); } // +Z
+    else                 { fwd = vec3( 0, 0,-1); up = vec3(0, 1, 0); } // -Z
+}
+
+// Gribb-Hartmann: the 6 frustum planes are the ROWS of the clip matrix (row3 +/- row{0,1,2}),
+// in world space. In column-major GLSL, row i of m is column i of transpose(m); extracting the
+// columns of m directly (m[3] +/- m[i]) would yield the TRANSPOSED frustum, which mismatches the
+// rendered/sampled viewProj and wrongly culls off-center casters. Transposing first matches the
+// CPU extractFrustumPlanes convention, so cull tests shadow + camera frustums identically.
+void extractPlanes(mat4 m, out vec4 planes[6]) {
+    mat4 t = transpose(m);
+    planes[0] = t[3] + t[0]; // left
+    planes[1] = t[3] - t[0]; // right
+    planes[2] = t[3] + t[1]; // bottom
+    planes[3] = t[3] - t[1]; // top
+    planes[4] = t[2];        // near (Vulkan [0,1]: clip.z >= 0 is row2 alone, not row3+row2)
+    planes[5] = t[3] - t[2]; // far
+    for (int i = 0; i < 6; ++i) {
+        float len = length(planes[i].xyz);
+        if (len > 0.0) planes[i] /= len;
+    }
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= ANO_SHADOW_FRUSTUM_COUNT) return;
+
+    ShadowFrustumConfig cfg = configs[i];
+    if (cfg.live == 0u) {
+        // Spare / runtime-freed frustum: write reject-all planes so cull emits nothing into this
+        // partition (the record loop also skips it). viewProj is unused. Prevents the headroom slots
+        // (which default to lightIndex 0 / type DIRECTIONAL) from spuriously rendering light 0.
+        shadowFrustums[i].viewProj = mat4(0.0);
+        for (int p = 0; p < 6; ++p) shadowFrustums[i].frustumPlanes[p] = vec4(0.0, 0.0, 0.0, -1e30);
+        return;
+    }
+    LightData L = lights[cfg.lightIndex];
+    mat4 lx = transforms[L.transformIndex];
+    // Shadow eye uses the light's local offset too (audit 4.7), so an offset light's shadow map is
+    // built around the same world position the fragment shades + cube-face-picks from — no mismatch.
+    vec3 lightPos = (lx * vec4(L.localOffset, 1.0)).xyz;
+    vec3 aim = dot(L.localDir, L.localDir) > 0.0 ? L.localDir : vec3(0.0, 0.0, -1.0); // zero -> -Z
+    vec3 lightForward = normalize(mat3(lx) * aim); // model-space aim; default == old -lx[2]
+
+    mat4 viewProj;
+    if (cfg.lightType == LIGHT_TYPE_DIRECTIONAL) {
+        // Orthographic box centred on the world origin, looking along the light's travel direction.
+        vec3 toLight = -lightForward;                  // surface -> light
+        vec3 up = abs(toLight.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        float e = ANO_SHADOW_ORTHO_EXTENT;
+        float dist = e + 1.0;                          // eye just outside the cube so the near plane stays > 0
+        mat4 view = lookAtRH(toLight * dist, vec3(0.0), up);
+        // Depth slab tight on the cube ([dist-e, dist+e]), NOT out to a far horizon. The scene fits the
+        // ±e cube, so it now spans almost the whole [0,1] depth range and the 16-bit moments keep their
+        // variance -> the 4MSM solve stays stable. The previous far = dist + 2e crushed a short scene
+        // (an overhead sun over Sponza is only ~12 m deep in what was an 80 m range) into a sliver of the
+        // moment range; the solve went degenerate and the light-bleed clamp then read the deepest surface
+        // — the courtyard floor — as shadowed. Keeping the slab tight is what lets the floor resolve lit.
+        mat4 proj = orthoRH_ZO(-e, e, -e, e, dist - e, dist + e);
+        viewProj = proj * view;
+    } else if (cfg.lightType == LIGHT_TYPE_SPOT) {
+        // Perspective from the light, looking along its forward. fovy spans the full outer cone
+        // (2 * outer half-angle) plus a 10% margin so the round cone + PCF taps stay inside the
+        // square map; capped below 180 deg. near floored to keep perspective-z precision usable.
+        vec3 up = abs(lightForward.y) > 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        mat4 view = lookAtRH(lightPos, lightPos + lightForward, up);
+        float fovy = min(2.0 * acos(clamp(L.outerConeCos, -1.0, 1.0)) * 1.1, radians(170.0));
+        float far  = max(L.range, 0.1);
+        float near = max(far * 0.005, 0.02);
+        viewProj = perspectiveRH_ZO(fovy, 1.0, near, far) * view;
+    } else { // LIGHT_TYPE_POINT
+        // One of 6 cube faces (cfg.faceIndex), 90 deg fovy so the faces tile all directions cleanly
+        // for the fragment's dominant-axis face pick. Eye at the light.
+        vec3 fwd, up;
+        cubeFaceBasis(cfg.faceIndex, fwd, up);
+        mat4 view = lookAtRH(lightPos, lightPos + fwd, up);
+        float far  = max(L.range, 0.1);
+        float near = max(far * 0.005, 0.02);
+        viewProj = perspectiveRH_ZO(radians(90.0), 1.0, near, far) * view;
+    }
+
+    shadowFrustums[i].viewProj = viewProj;
+    vec4 planes[6];
+    extractPlanes(viewProj, planes);
+    for (int p = 0; p < 6; ++p) shadowFrustums[i].frustumPlanes[p] = planes[p];
+}

@@ -1,0 +1,108 @@
+#version 450
+
+// Transparency back-to-front sort (audit 4.7). One workgroup per camera view sorts that view's
+// transmission partition's compacted draws by descending depth key (farthest first), so the "over"
+// blend in the transmission graphics pass composites back-to-front instead of in the arbitrary
+// atomic-append order cull.comp produced. Reorders the indirect commands + compacted entity indices
+// in lockstep; on the vertex-fallback path it also rewrites each command's firstInstance to its new
+// ordinal (the mesh path keys off gl_DrawID = buffer position, so it needs no rewrite).
+//
+// Single-workgroup bitonic sort in shared memory. SORT_CAP bounds the per-view transmission draws
+// that get sorted; any excess (drawCount > SORT_CAP) keeps its arbitrary order appended after the
+// sorted block — graceful degradation, never corruption. SORT_CAP=256 fits the 16 KiB guaranteed
+// shared-memory floor (8 KiB used). Reuses the cull descriptor set + the useMeshShader spec constant.
+
+layout(local_size_x = 256) in;
+
+#define ANO_VIEW_COUNT 2u
+const uint  SORT_CAP = 256u;       // power of two; per-view transmission draws sorted (see note)
+const uint  MAX_CMD_WORDS = 5u;    // VkDrawIndexedIndirectCommand (fallback); mesh path uses 3
+const float NEG_SENTINEL = -3.4e38; // sorts pad entries last (real keys = clip.w > 0 for visible geom)
+
+// constant_id 1: useMeshShader — selects the indirect command stride, matching cull.comp.
+layout(constant_id = 1) const bool useMeshShader = true;
+
+struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+layout(set = 0, binding = 0) uniform CullUBO {
+    CullView views[ANO_VIEW_COUNT];
+    uint  viewCount;
+    uint  entityCount;
+    uint  maxEntities;
+    uint  drawSlotCount;
+    uvec4 drawSlotOf[4];
+    uvec4 specialSlots; // .y = transmission (sorted) draw slot
+};
+
+layout(set = 0, binding = 5) buffer IndirectBuffer { uint indirectData[]; };
+layout(set = 0, binding = 6) buffer DrawCount { uint drawCounts[]; };
+layout(set = 0, binding = 7) buffer CompactedEntityIndices { uint entityIndices[]; };
+layout(set = 0, binding = 10) readonly buffer SortKeys { float sortKeys[]; };
+
+shared float skey[SORT_CAP];
+shared uint  sperm[SORT_CAP];                // permutation: original position within the partition
+shared uint  sentity[SORT_CAP];              // entity id at original position
+shared uint  scmd[SORT_CAP * MAX_CMD_WORDS]; // command words at original position
+
+void main() {
+    uint view = gl_WorkGroupID.x;
+    if (view >= viewCount) return;
+
+    uint transSlot = specialSlots.y;
+    if (transSlot == 0xFFFFFFFFu) return; // no transmission lane present
+
+    uint partIdx = view * drawSlotCount + transSlot;
+    uint n = drawCounts[partIdx];
+    if (n <= 1u) return; // nothing to reorder
+
+    uint capN = min(n, SORT_CAP);
+    uint base = partIdx * maxEntities;
+    uint keyBase = view * maxEntities;
+    uint stride = useMeshShader ? 3u : 5u;
+    uint lid = gl_LocalInvocationID.x;
+
+    // Load original entries (key, entity id, command words) into shared; pad to SORT_CAP with a
+    // sentinel key so the padding sorts to the tail and leaves [0,capN) holding the real draws.
+    for (uint i = lid; i < SORT_CAP; i += 256u) {
+        if (i < capN) {
+            skey[i] = sortKeys[keyBase + i];
+            sperm[i] = i;
+            sentity[i] = entityIndices[base + i];
+            for (uint w = 0u; w < stride; ++w)
+                scmd[i * MAX_CMD_WORDS + w] = indirectData[(base + i) * stride + w];
+        } else {
+            skey[i] = NEG_SENTINEL;
+            sperm[i] = i;
+        }
+    }
+    barrier();
+
+    // Bitonic sort, descending by key (carries the permutation index).
+    for (uint k = 2u; k <= SORT_CAP; k <<= 1u) {
+        for (uint j = k >> 1u; j > 0u; j >>= 1u) {
+            for (uint i = lid; i < SORT_CAP; i += 256u) {
+                uint ixj = i ^ j;
+                if (ixj > i) {
+                    bool dir = ((i & k) == 0u);
+                    // descending: keep the larger key at the lower index in an ascending-direction block
+                    if ((skey[i] < skey[ixj]) == dir) {
+                        float tk = skey[i];  skey[i]  = skey[ixj];  skey[ixj]  = tk;
+                        uint  tp = sperm[i]; sperm[i] = sperm[ixj]; sperm[ixj] = tp;
+                    }
+                }
+            }
+            barrier();
+        }
+    }
+
+    // Scatter sorted order back to global. Output position p takes the entry whose original position
+    // is sperm[p]; sperm[0..capN) is a permutation of [0,capN) (sentinels sorted to [capN,SORT_CAP)).
+    // Reads come from shared, writes go to global position p — no read/write hazard on the buffers.
+    for (uint p = lid; p < capN; p += 256u) {
+        uint src = sperm[p];
+        entityIndices[base + p] = sentity[src];
+        for (uint w = 0u; w < stride; ++w)
+            indirectData[(base + p) * stride + w] = scmd[src * MAX_CMD_WORDS + w];
+        if (!useMeshShader)
+            indirectData[(base + p) * stride + 4u] = p; // firstInstance = post-sort ordinal
+    }
+}

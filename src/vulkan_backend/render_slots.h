@@ -48,6 +48,11 @@ typedef struct RenderSlotTable
     uint32_t             *logicalToSlot;
     uint32_t              logicalCapacity;
 
+    // slot -> render_id (the inverse of logicalToSlot, ANO_RENDER_SLOT_UNMAPPED == free).
+    // Sized slotCapacity, maintained O(1) on alloc/retire. Lets the picking readback turn a
+    // slot sampled from the id-buffer back into a render_id every frame without a scan.
+    uint32_t             *slotToLogical;
+
     // Free-list stack of reusable physical slots (holes below the high-water mark).
     uint32_t             *freeSlots;
     uint32_t              freeCount;
@@ -94,6 +99,10 @@ void render_slots_set_capacity(RenderSlotTable *table, uint32_t newCapacity);
 // out: the physical slot mapped to `render_id`, or ANO_RENDER_SLOT_UNMAPPED.
 uint32_t render_slots_resolve(const RenderSlotTable *table, uint32_t render_id);
 
+// out: the render_id occupying physical `slot`, or ANO_RENDER_SLOT_UNMAPPED if the slot is free,
+//      quarantined, or out of range. The inverse of render_slots_resolve (used by picking).
+uint32_t render_slots_render_id_of(const RenderSlotTable *table, uint32_t slot);
+
 // Begins retirement of `render_id`'s slot (after its dead-mark has propagated to
 // all frame buffers): unmaps the id and quarantines the slot with
 // safeFrame = currentFrame + framesInFlight. Does NOT free the slot yet.
@@ -107,5 +116,15 @@ void render_slots_retire(RenderSlotTable *table, uint32_t render_id, uint64_t cu
 //      later call (no silent drop).
 uint32_t render_slots_collect_retired(RenderSlotTable *table, uint64_t currentFrame,
                                        uint32_t *out_render_ids, uint32_t max);
+
+// Lowers slotHighWater past any trailing run of free slots, shrinking the cull/animation
+// dispatch bound (entityCount) without VRAM change. Only slots already on the free-list are
+// peeled — those are quarantine-expired (no in-flight reader) and unmapped — so NO live slot
+// moves and slot indices stay stable (consistent with the no-defrag design). Fragmentation
+// below a live slot is left in place; a contiguous bulk despawn at the top is reclaimed
+// wholesale. Reaches slotHighWater == 0 when every slot is free (epoch reset). Costs an
+// O(freeCount log freeCount) sort, so call it only when the free-list just changed.
+// out: number of slots reclaimed from the dispatch bound (0 if the top slot is live).
+uint32_t render_slots_compact(RenderSlotTable *table);
 
 #endif // ANO_RENDER_SLOTS_H

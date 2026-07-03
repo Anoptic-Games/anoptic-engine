@@ -34,6 +34,32 @@ typedef struct GlobalUBO
 	uint32_t frameCount;
 	uint32_t lightCount;   // number of active lights in the light SSBO (set 0, binding 8)
 	float cameraPos[4];    // world-space camera position (xyz; w unused), avoids per-fragment inverse(view)
+	// Clustered-forward froxel grid (see LIGHTING_SCALE.md). near/far + screen size map a
+	// fragment to its froxel; the light-cull pass and the fragment shader must agree on these.
+	// Two std140 16-byte rows; keep this tail in sync with every GlobalUBO GLSL mirror.
+	float cameraNear;          // row: 160
+	float cameraFar;           //      164
+	float screenWidth;         //      168
+	float screenHeight;        //      172
+	uint32_t clusterDimX;      // row: 176
+	uint32_t clusterDimY;      //      180
+	uint32_t clusterDimZ;      //      184
+	uint32_t maxLightsPerCluster; //   188  (== ANO_CLUSTER_MAX_LIGHTS)
+	// Lighting/RC control row (RADIANCE_CASCADES.md). std140 16-byte row at offset 192; mirror
+	// in the GlobalUBO declarations that read it (flat.frag, transmission.frag, lightcull.comp).
+	uint32_t lightingMode;     // row: 192  (AnoLightingMode)
+	uint32_t debugView;        //      196  (RC debug visualization; 0 = off)
+	uint32_t pad0;             //      200
+	uint32_t pad1;             //      204
+	// Task-shader meshlet cull tail (review priority 10), read ONLY by flat.task (its GlobalUBO
+	// mirror declares the full struct; every other shader declares a prefix and is unaffected).
+	// updateCullingBuffers writes these per view with the SAME values as the entity cull's
+	// CullUBO: planes from the same extraction, prevViewProj/hizParams/hizProj with the same
+	// lag-slot + warmup gating. All 16-aligned at offset 208; std140 matches C layout exactly.
+	float frustumPlanes[6][4]; // row: 208  this view's world-space frustum planes
+	mat4  prevViewProj;        //      304  reprojection for the meshlet Hi-Z test
+	float hizParams[4];        //      368  {pyramid baseW, baseH, mipCount (0 = off), 0}
+	float hizProj[4];          //      384  {proj00, proj11, proj22, proj32}
 } GlobalUBO;
 
 
@@ -63,6 +89,10 @@ void multiplyMat4(mat4 result, const mat4 a, const mat4 b);
 
 // Extracts the 6 frustum planes from a view-projection matrix
 void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj);
+
+// Inverts a 4x4 matrix (general cofactor method). out = m^-1. Returns false (out untouched) if m is
+// singular. Layout-agnostic: out is m^-1 in the same storage convention as m.
+bool invertMat4(mat4 out, const mat4 m);
 
 
 #endif

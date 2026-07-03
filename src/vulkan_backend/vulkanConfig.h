@@ -22,6 +22,10 @@ bool requestDevice(char* deviceName);
 // Sets the passed value as the preffered frame presentation mode. If a matching index is found during swapchain creation, it will be used
 bool requestPresentMode(VkPresentModeKHR presentMode);
 
+// Sets the preferred MSAA sample count (2/4/8). Clamped to device support at init; values
+// below 2 are raised to 2 (the 1x no-MSAA path is not built). !TODO must be set before initVulkan
+bool requestMsaaSamples(uint32_t samples);
+
 // Sets the desired resolution for window creation/update
 bool setResolution(Dimensions2D dimensions);
 
@@ -41,6 +45,9 @@ char* getChosenDevice();
 
 // Ditto but for the present mode
 VkPresentModeKHR getChosenPresentMode();
+
+// Ditto but for the preferred MSAA sample count
+uint32_t getChosenMsaaSamples();
 
 // You get the idea
 Dimensions2D getChosenResolution();
