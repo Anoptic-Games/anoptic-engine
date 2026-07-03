@@ -12,30 +12,37 @@
 
 #define MAXPATH 256
 
+// The game's directory name inside the platform's idiomatic user-data location.
+// Windows: `%APPDATA%\ANO_GAME_NAME`  Linux: `~/.ANO_GAME_NAME`  macOS: `~/Library/Application Support/ANO_GAME_NAME`
+// Callers lay out Config/, Saves/, etc. inside it.
+#define ANO_GAME_NAME "anoptic"
+
+// A filesystem path as a value. 
+// str is always NUL-terminated (hand it to syscalls and fopen directly); 
+// length counts the bytes before the NUL. length == 0 means the path could not be resolved.
+// For string manipulation, borrow it: anostr_view(p.str, p.length), valid while p lives.
 typedef struct {
     uint16_t length;
-    char* pathString; // Managed by user.
-} filepath; // User is expected to manage the lifetime of this struct.
+    char str[MAXPATH];
+} ano_fspath;
 
 // Game Executable Directory Path
-// - Directory the executable is in.
+// - Directory the executable is in, no file name, no trailing separator.
 // - Assets, binaries, expansions.
 // - Thread-safe -- computed fresh per call, no shared state, no dirname().
-// Input: none.
-// Output: filepath whose pathString is heap for the caller to free.
-//      {0, NULL} if the path could not be resolved.
-filepath ano_fs_gamepath();
-
+// Output: the path by value; length == 0 if it could not be resolved or exceeds MAXPATH - 1.
+ano_fspath ano_fs_gamepath(void);
 
 // Save Data Path
 // - User Profiles
 // - Savegames
 // - Settings
 // - Log Files
-// Input: none.
-// Output: filepath whose pathString is heap for the caller to free.
-//      {0, NULL} if the path could not be resolved.
-filepath ano_fs_userpath();
+// Creates the directory if absent, so a non-empty result is ready to write into.
+// Thread-safe.
+// Output: the path by value
+// length == 0 if the user-data root could not be resolved or the directory could not be created.
+ano_fspath ano_fs_userpath(void);
 
 // Change Working Directory to Game Executable
 // Input: none.

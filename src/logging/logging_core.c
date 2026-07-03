@@ -216,13 +216,19 @@ static int capture_deferred(char *out, int cap, const char *file, int line, cons
         if (*f != '%') continue;
         ++f;
         if (*f == '%') continue;
+        int prec = -1;  // %s must honor precision AT CAPTURE: %.*s bytes need not be NUL-terminated
         while (*f == '-' || *f == '+' || *f == ' ' || *f == '#' || *f == '0') ++f;   // flags
         if (*f == '*') { int w = va_arg(ap, int); if (p + 4 > end) return -1; memcpy(p, &w, 4); p += 4; ++f; }
         else while (*f >= '0' && *f <= '9') ++f;                                       // width
         if (*f == '.') {                                                              // precision
             ++f;
-            if (*f == '*') { int pr = va_arg(ap, int); if (p + 4 > end) return -1; memcpy(p, &pr, 4); p += 4; ++f; }
-            else while (*f >= '0' && *f <= '9') ++f;
+            if (*f == '*') {
+                int pr = va_arg(ap, int); if (p + 4 > end) return -1; memcpy(p, &pr, 4); p += 4; ++f;
+                if (pr >= 0) prec = pr;   // negative = as if omitted (C11 7.21.6.1)
+            } else {
+                prec = 0;
+                while (*f >= '0' && *f <= '9') { prec = prec * 10 + (*f - '0'); ++f; }
+            }
         }
         int lng = 0;                                                                 // length modifier
         if (*f == 'L') return -1;                                                     // long double: eager
@@ -249,7 +255,8 @@ static int capture_deferred(char *out, int cap, const char *file, int line, cons
             if (lng) return -1;                                                       // wide string: eager
             const char *s = va_arg(ap, const char *);
             if (s == NULL) s = "(null)";
-            size_t sl = strlen(s); if (sl > 0xffffu) sl = 0xffffu;
+            size_t sl = prec >= 0 ? strnlen(s, (size_t)prec) : strlen(s);
+            if (sl > 0xffffu) sl = 0xffffu;
             if (p + 2 + (ptrdiff_t)sl + 1 > end) return -1;
             uint16_t sl16 = (uint16_t)sl; memcpy(p,&sl16,2); p += 2;
             memcpy(p, s, sl); p += sl; *p++ = '\0';                                    // NUL for the drain snprintf
@@ -752,11 +759,9 @@ int ano_log_init(void)
     g_anchorUnixNs = (uint64_t)ano_timestamp_unix() * 1000000000ull;
 
     // Default output file is in the game directory.
-    filepath dir = ano_fs_gamepath();
-    if (dir.pathString != NULL) {
-        g_outFile = open_log(dir.pathString);
-        mi_free(dir.pathString);
-    }
+    ano_fspath dir = ano_fs_gamepath();
+    if (dir.length > 0)
+        g_outFile = open_log(dir.str);
     select_output();    // bind g_persist/g_syncOut/g_haveFile to the chosen output
 
     atomic_store_explicit(&g_initialized, true, memory_order_release);

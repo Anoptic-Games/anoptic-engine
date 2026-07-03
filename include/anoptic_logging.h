@@ -49,7 +49,6 @@ void ano_log_immediate(log_types_t log_type, const char* sourceFile, int lineNum
 // Open dir/anoptic.log as the output file (a per-run UTC-stamped name is deferred). Returns 0 on
 // success; -1 if the directory is invalid or could not be opened, in which case a previously open
 // output file is kept. With no output file set, records still drain to console.
-// Should probably use a filepath type from anoptic_filesystem.h
 int ano_log_output_dir(const char* directoryPath);
 
 // Runtime severity gate: enqueues below min are refused with one relaxed load.

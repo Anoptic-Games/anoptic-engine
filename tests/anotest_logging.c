@@ -11,6 +11,7 @@
 // its file contents are deterministic. The final case leaves a human-readable log for inspection.
 
 #include <anoptic_logging.h>
+#include <anoptic_strings.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
@@ -221,6 +222,16 @@ static int test_deferred_formatting(void)
     DCHK("D55:[%#.0x]", 0);                                // alt-form hex zero = "" (prefix suppressed)
     DCHK("D56:[%-*.*s]", 10, 3, "abcdef");                 // width + precision on string
     DCHK("D57:[%*d]", 0, 42);                              // '*' width 0 = no width
+
+    // anostr_t values through %.*s + anostr_fmt (anoptic_strings.h): the capture must read
+    // exactly len bytes -- the inline variant's bytes are NOT NUL-terminated at len.
+    anostr_t sInl = anostr_lit("inline-val!!");                 // 12 B, inline, no NUL after
+    anostr_t sLng = anostr_lit("a-string-longer-than-twelve");  // 27 B, long variant
+    DCHK("D58:[%.*s]", anostr_fmt(sInl));
+    DCHK("D59:[%.*s]", anostr_fmt(sLng));
+    DCHK("D60:[%32.*s]", anostr_fmt(sLng));                     // width + '*' precision combined
+    DCHK("D61:[%.*s]", anostr_fmt(anostr_empty()));
+    DCHK("D62:[%.*s]", anostr_fmt(anostr_slice(sLng, 2, 8)));   // a sliced value logs too
 
 #undef DCHK
     ano_log_flush();

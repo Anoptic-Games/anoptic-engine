@@ -9,19 +9,21 @@
 
 #include <mach-o/dyld.h>   // _NSGetExecutablePath
 #include <unistd.h>        // chdir, write, fsync, close
-#include <stdlib.h>        // realpath
+#include <stdio.h>         // snprintf
+#include <stdlib.h>        // realpath, getenv
 #include <string.h>        // strlen, memcpy
 #include <limits.h>        // PATH_MAX
 #include <fcntl.h>         // open, O_*
-#include <errno.h>         // errno, EINTR
+#include <sys/stat.h>      // mkdir
+#include <errno.h>         // errno, EINTR, EEXIST
 #include <mimalloc.h>
 
-// Output: directory of the running executable, no file name.
-// pathString is mi_malloc'd for the caller to free. {0, NULL} on failure.
+// Output: directory of the running executable, no file name, by value.
+// length == 0 on failure or a path that does not fit MAXPATH - 1.
 // The split is hand-rolled because dirname() is not portably reentrant.
-filepath ano_fs_gamepath()
+ano_fspath ano_fs_gamepath(void)
 {
-    filepath result = { .length = 0, .pathString = NULL };
+    ano_fspath result = {0};
 
     char raw[PATH_MAX];
     uint32_t size = sizeof(raw);
@@ -39,11 +41,31 @@ filepath ano_fs_gamepath()
     if (len > 1)
         len--; // drop the trailing slash -- but keep "/" for the root
 
-    result.pathString = mi_malloc(len + 1);
-    if (result.pathString == NULL)
+    if (len >= MAXPATH)
+        return result; // does not fit the value type
+    memcpy(result.str, resolved, len);
+    result.str[len] = '\0';
+    result.length = (uint16_t)len;
+    return result;
+}
+
+// ~/Library/Application Support/anoptic, created if absent (the Factorio convention).
+// The Library/Application Support parent always exists on macOS; only the leaf is created.
+ano_fspath ano_fs_userpath(void)
+{
+    ano_fspath result = {0};
+
+    const char *home = getenv("HOME");
+    if (home == NULL || home[0] == '\0')
         return result;
-    memcpy(result.pathString, resolved, len);
-    result.pathString[len] = '\0';
+
+    int len = snprintf(result.str, MAXPATH, "%s/Library/Application Support/" ANO_GAME_NAME, home);
+    if (len < 0 || len >= MAXPATH)
+        return (ano_fspath){0};
+
+    if (mkdir(result.str, 0755) != 0 && errno != EEXIST)
+        return (ano_fspath){0};
+
     result.length = (uint16_t)len;
     return result;
 }
@@ -52,12 +74,8 @@ filepath ano_fs_gamepath()
 // resolve regardless of launch directory.
 bool ano_fs_chdir_gamepath(void)
 {
-    filepath dir = ano_fs_gamepath();
-    if (dir.pathString == NULL)
-        return false;
-    bool ok = dir.length > 0 && chdir(dir.pathString) == 0;
-    mi_free(dir.pathString);
-    return ok;
+    ano_fspath dir = ano_fs_gamepath();
+    return dir.length > 0 && chdir(dir.str) == 0;
 }
 
 

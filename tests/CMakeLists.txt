@@ -15,6 +15,28 @@ target_compile_definitions(anotest_logging PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURR
 add_test(NAME anoptic_logging COMMAND anotest_logging)
 set_tests_properties(anoptic_logging PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
 
+# Testing for ``anoptic_filesystem.h`` (ano_fspath values, game/user paths, append-file API).
+# Note: the userpath check creates the real per-user game directory and one probe file in it
+# (removed on exit) -- that is the function's actual contract, so it is tested for real.
+add_executable(anotest_filesystem anotest_filesystem.c)
+target_link_libraries(anotest_filesystem PRIVATE anoptic_core)
+target_compile_definitions(anotest_filesystem PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME anoptic_filesystem COMMAND anotest_filesystem)
+set_tests_properties(anoptic_filesystem PROPERTIES TIMEOUT 30 LABELS "unit")
+
+# Testing for ``anoptic_strings.h`` (the 16-byte value type, builder, keep, slicing)
+add_executable(anotest_strings anotest_strings.c)
+target_link_libraries(anotest_strings PRIVATE anoptic_core)
+add_test(NAME anoptic_strings COMMAND anotest_strings)
+set_tests_properties(anoptic_strings PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
+# String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
+# Built so it cannot rot, DISABLED in ctest -- run ./anotest_strbench by hand from a -O3 build.
+add_executable(anotest_strbench anotest_strbench.c)
+target_link_libraries(anotest_strbench PRIVATE anoptic_core)
+add_test(NAME anoptic_strbench COMMAND anotest_strbench)
+set_tests_properties(anoptic_strbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
 # Testing for mesh optimizer
 add_executable(anotest_meshoptimizer anotest_meshoptimizer.c)
 target_link_libraries(anotest_meshoptimizer PRIVATE anoptic_core m)
