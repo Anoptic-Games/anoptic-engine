@@ -117,7 +117,31 @@ which has been tried. The blur kernel itself is near-optimal and should not be t
 the choreography around it is the problem. Likewise the depth-render serialization
 through the shared transient depth has never been on the table before.
 
-## 4. Finding 2 — zero asynchronous execution
+## 4. Finding 2 — zero asynchronous execution - PARTIALLY ADDRESSED (Hi-Z build)
+
+Measured outcome (2026-07-03, Hi-Z portion): the pyramid build now records into a per-frame
+compute CB and runs on a dedicated compute-family queue. findQueueFamilies previously
+first-fit the graphics family for compute, so `ctx.computeQueue` aliased the graphics
+queue — it now prefers a compute-only family (NVIDIA exposes one) and the gate detects
+aliasing. Ordering is two timeline semaphores: the compute build waits gfxTimeline ==
+its frame's submit ordinal (depth resolves done), the ordinal+2 graphics submit waits
+hizTimeline at COMPUTE|EARLY_FRAGMENT_TESTS before its cull — so the build overlaps the
+NEXT frame's graphics and the cull consumes a lag-2 pyramid (descriptor slot, reprojection
+history ring, and a post-recreate warmup gate all follow the lag). The pyramid and
+depth-resolve images are CONCURRENT-shared between the two families; graphics keeps the
+fixed-function MAX depth resolve and the resolve target's layout flips (its rest state
+becomes SHADER_READ), so the compute CB needs no graphics-only stages. Gate:
+timelineSemaphore + depthMaxResolve + distinct compute family; ANO_FORCE_NO_ASYNC_HIZ
+pins the in-frame build, ANO_HIZ_ON enables view 0's occlusion test from startup (the H
+key, headlessly). Measured (debug, phase-matched over 72 print windows, SHADOWMAP):
+lighting −0.065 ms, total −0.054 ms. The chain is far cheaper than the trace's 0.4–0.5 ms
+estimate because findings 5/6 already shrank it (half-res pyramid, inset view 1,
+single-sample MAX-resolve reduce, 4×MSAA); the structural win is that enabling the
+occlusion consumer now costs ~nothing on the graphics timeline, and the compute-queue +
+timeline infrastructure exists for the lightcull overlap below. Validation-clean in all
+six configurations (async/sync × occlusion on/off, forced fallback reduce, release).
+Remaining from this finding: lightcull overlap (item 2), split submits (item 3), prelude
+barrier merging.
 
 `createLogicalDevice` requests graphics, compute, transfer, and present queues
 (instanceInit.c:751–916), but the frame uses only `ctx.graphicsQueue`
@@ -147,7 +171,8 @@ overlaps frame N's tail. Recommended order of adoption:
 1. Move the Hi-Z build (both views) to the end of the frame or, better, onto
    `ctx.computeQueue`, synchronized with a timeline semaphore signaled after the last
    depth-writing pass and waited by next frame's cull. It leaves the critical path
-   entirely; the per-mip barrier chain stops blocking raster.
+   entirely; the per-mip barrier chain stops blocking raster. (LANDED — see measured
+   outcome above; end-of-submit signal + lag-2 pyramid instead of a mid-frame split.)
 2. Run each view's lightcull on the compute queue during the shadow region (its inputs —
    lightsetup output + camera UBO — are ready before shadows start; its consumer is that
    view's opaque pass).
@@ -390,11 +415,11 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 
 | # | Change | Complexity | Est. gain |
 |---|---|---|---|
-| 1 | Batch shadow barriers, per-frustum depth slices, layered blur passes | Medium (localized in vulkanMaster.c + one image + blur shader layer index) | 0.7–1.2 ms |
+| 1 | Batch shadow barriers, per-frustum depth slices, layered blur passes | LANDED 2026-07-02 | measured: shadow region 1.98 → 0.83–0.95 ms (see finding 1 note) |
 | 2 | Slim depth-only mesh module (wire flat_depth) for prepass + shadow | LANDED 2026-07-03 | measured ~0.1 ms (ISBE premise died with #1; see finding 3 note) |
 | 3 | Render PiP view at inset resolution | LANDED 2026-07-03 | measured 1.07 ms + 372 MiB VRAM (see finding 6 note) |
 | 4 | MSAA: setting + 4× default; resolve once (pick-id restructure deferred) | LANDED 2026-07-03 | measured 0.53 ms + 370 MiB VRAM (see finding 5 note) |
-| 5 | Hi-Z build off critical path (end of frame or async queue) | Low (reorder) / Medium (async + timeline semaphore) | 0.3–0.5 ms |
+| 5 | Hi-Z build off critical path (end of frame or async queue) | LANDED 2026-07-03 (async queue + timelines) | measured ~0.06 ms — chain already shrunk by #3/#4; occlusion consumer now ~free (see finding 2 note) |
 | 6 | Backface culling on opaque/prepass/shadow | Low (pipeline state; verify Sponza winding) | 0.2–0.5 ms of depth-only raster |
 | 7 | Single shared shadow atlas + dirty-frustum reuse | Medium-high (lifetime + invalidation rules) | up to ~1.5 ms steady-state static; ~700 MB VRAM |
 | 8 | Async lightcull, merged prelude barriers, drawCount-only fill, lightcull pose reuse | Low each | 0.1–0.2 ms + scalability |

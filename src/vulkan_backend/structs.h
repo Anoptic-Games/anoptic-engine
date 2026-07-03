@@ -163,6 +163,7 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 	bool meshShader;            // VK_EXT_mesh_shader present and meshShader feature usable; false selects the vertex-shader fallback path
 	bool depthMaxResolve;       // VK_RESOLVE_MODE_MAX_BIT in supportedDepthResolveModes: enables the Hi-Z single-sample depth-resolve path (else per-sample MSAA reduce)
 	bool shaderOutputLayer;     // vk1.2 shaderOutputLayer(+ViewportIndex): vertex-stage gl_Layer, enables the single-pass layered shadow blur (else per-layer passes)
+	bool timelineSemaphore;     // vk1.2 timelineSemaphore: cross-queue ordering for the async Hi-Z build (review finding 2)
 } DeviceCapabilities;
 
 typedef struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each
@@ -915,8 +916,11 @@ typedef struct PerFrameResources
     VkFence             frameFence;
     bool                frameSubmitted;
 
-    // Command recording
+    // Command recording. computeCommandBuffer holds the async Hi-Z pyramid build (review finding
+    // 2): allocated from computeCommandPool (dedicated compute family), submitted to
+    // ctx.computeQueue after the graphics submit, NULL when asyncHiz is off.
     VkCommandBuffer     commandBuffer;
+    VkCommandBuffer     computeCommandBuffer;
 
     // Per-pass GPU timestamps (RADIANCE_CASCADES.md profiling harness). One pool per frame in
     // flight: reset + written during record, read back after this slot's fence next time round.
@@ -1134,12 +1138,28 @@ typedef struct RendererState
     // ano_render_set_shadow_lod_bias (the test scene's ; and ' keys); default ANO_SHADOW_LOD_BIAS_DEFAULT
     // (0 = exact match). Only affects meshes with LOD chains.
     int32_t                 shadowLodBias;
-    // Hi-Z occlusion (review 4.9 step 3). prevViewProj holds last frame's viewProj per view (CPU
-    // snapshot, published into CullUBO.prevViewProj so the cull reprojects into the pyramid it samples).
+    // Hi-Z occlusion (review 4.9 step 3). viewProjHist[slot] holds the viewProj each frame slot was
+    // recorded with; updateCullingBuffers publishes the slot matching the pyramid the cull samples
+    // (lag 1 sync, lag 2 async — review finding 2) into CullUBO.prevViewProj for reprojection.
     // hizEnable is the per-view runtime toggle (0 = off, the default): updateCullingBuffers publishes
     // mipCount only when enabled, so the occlusion test is inert until ano_render_set_view_hiz_enable.
-    mat4                    prevViewProj[ANO_VIEW_COUNT];
+    mat4                    viewProjHist[MAX_FRAMES_IN_FLIGHT][ANO_VIEW_COUNT];
     uint32_t                hizEnable[ANO_VIEW_COUNT];
+
+    // Async Hi-Z build (review finding 2): the pyramid reduce/downsample chain runs on the dedicated
+    // compute queue, overlapping the next frame's graphics; the cull consumes a lag-2 pyramid.
+    // Ordering is two timelines — gfxTimeline counts graphics submits (waited by that frame's build:
+    // depth resolves done), hizTimeline counts builds (waited by the ordinal+2 graphics submit before
+    // its cull/depth stages, host-waited before this slot's compute CB is re-recorded). Values are the
+    // 1-based submit ordinal, monotonic across swapchain recreates (frame fences/slots are not).
+    // hizValidOrdinal gates the occlusion test off until every sampled pyramid slot has been built
+    // at the current resolution (set by createHiZResources). Gate: asyncHiz (set once at init).
+    bool                    asyncHiz;
+    VkSemaphore             gfxTimeline;
+    VkSemaphore             hizTimeline;
+    uint64_t                timelineOrdinal;    // last submitted ordinal; the frame being recorded is +1
+    uint64_t                hizValidOrdinal;    // first ordinal whose cull may trust the sampled pyramids
+    VkCommandPool           computeCommandPool; // compute-family pool for the per-frame build CBs
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.
