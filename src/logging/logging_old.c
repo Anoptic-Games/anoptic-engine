@@ -236,11 +236,9 @@ int mtxlog_init(void)
     g_fullPolicy = MTXLOG_FULL_IMMEDIATE;
 
     // Default sink is the game directory.
-    filepath dir = ano_fs_gamepath();
-    if (dir.pathString != NULL) {
-        g_sink = open_log(dir.pathString);
-        mi_free(dir.pathString);
-    }
+    ano_fspath dir = ano_fs_gamepath();
+    if (dir.length > 0)
+        g_sink = open_log(dir.str);
 
     atomic_store(&g_initialized, true);
     return 0;

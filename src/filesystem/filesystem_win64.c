@@ -8,27 +8,25 @@
 #include "anoptic_filesystem.h"
 
 #include <stdio.h>
-#include <stdlib.h>       // malloc
+#include <stdlib.h>       // getenv
 #include <string.h>       // memcpy
-#include <direct.h>       // _chdir
+#include <direct.h>       // _chdir, _mkdir
+#include <errno.h>        // errno, EEXIST
 #include <windows.h>      // CreateFileA, WriteFile, FlushFileBuffers, CloseHandle
 #include <libloaderapi.h>
 #include <mimalloc.h>
 
-// Backs the user-data stub below -- the game path is queried fresh per call.
-static filepath gameUserPath;
-
 // Windows paths are UTF-16 underneath -- GetModuleFileNameA returns the ANSI form.
-// Output: directory of the running executable, no file name.
-// pathString is mi_malloc'd for the caller to free. {0, NULL} on failure.
-filepath ano_fs_gamepath() {
+// Output: directory of the running executable, no file name, by value.
+// length == 0 on failure or a path that does not fit MAXPATH - 1.
+ano_fspath ano_fs_gamepath(void) {
 
-    filepath result = {.length = 0, .pathString = NULL};
+    ano_fspath result = {0};
 
     char pathBuffer[MAX_PATH];
     DWORD len = GetModuleFileName(NULL, pathBuffer, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH)
-        return result; // failed or truncated (path >= MAX_PATH)
+    if (len == 0 || len >= MAX_PATH || len >= MAXPATH)
+        return result; // failed or truncated
 
     // Trim the executable file name, leaving its containing directory.
     while (len > 0 && pathBuffer[len - 1] != '\\' && pathBuffer[len - 1] != '/')
@@ -36,32 +34,29 @@ filepath ano_fs_gamepath() {
     if (len > 0)
         len--; // drop the trailing separator
 
-    result.pathString = mi_malloc((size_t)len + 1);
-    if (result.pathString == NULL)
-        return result;
-    memcpy(result.pathString, pathBuffer, len);
-    result.pathString[len] = '\0';
+    memcpy(result.str, pathBuffer, len);
+    result.str[len] = '\0';
     result.length = (uint16_t)len;
     return result;
 }
 
+// %APPDATA%\anoptic, created if absent (the Factorio convention). %APPDATA% is the roaming
+// user-data root and is set for every interactive session; no shell32 KnownFolder call needed.
+ano_fspath ano_fs_userpath(void) {
+    ano_fspath result = {0};
 
-// This is meant to be a persisting user directory.
-// Eg: "C:\Users\Pyrus\Documents\anoptic" or "...\My Games\anoptic", etc.
-filepath ano_fs_userpath() {
-
-    // Still a stub -- no user directory is resolved yet.
-    // Return the {0, NULL} "unresolved" form rather than deref the unset static.
-    filepath result = {.length = 0, .pathString = NULL};
-    if (gameUserPath.pathString == NULL)
+    const char *appdata = getenv("APPDATA");
+    if (appdata == NULL || appdata[0] == '\0')
         return result;
 
-    // mi_malloc to match ano_fs_gamepath and the mi_free the caller is expected to use.
-    result.pathString = mi_malloc((size_t)gameUserPath.length + 1);
-    if (result.pathString == NULL)
-        return result; // {0, NULL} on OOM
-    memcpy(result.pathString, gameUserPath.pathString, (size_t)gameUserPath.length + 1);
-    result.length = gameUserPath.length;
+    int len = snprintf(result.str, MAXPATH, "%s\\" ANO_GAME_NAME, appdata);
+    if (len < 0 || len >= MAXPATH)
+        return (ano_fspath){0};
+
+    if (_mkdir(result.str) != 0 && errno != EEXIST)
+        return (ano_fspath){0};
+
+    result.length = (uint16_t)len;
     return result;
 }
 
@@ -69,12 +64,8 @@ filepath ano_fs_userpath() {
 // Sets CWD to ano_fs_gamepath() so relative asset loads resolve regardless of launch directory.
 bool ano_fs_chdir_gamepath(void)
 {
-    filepath dir = ano_fs_gamepath();
-    if (dir.pathString == NULL)
-        return false;
-    bool ok = dir.length > 0 && _chdir(dir.pathString) == 0;
-    mi_free(dir.pathString);
-    return ok;
+    ano_fspath dir = ano_fs_gamepath();
+    return dir.length > 0 && _chdir(dir.str) == 0;
 }
 
 
