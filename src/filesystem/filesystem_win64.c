@@ -16,7 +16,11 @@
 #include <libloaderapi.h>
 #include <mimalloc.h>
 
-// Windows paths are UTF-16 underneath -- GetModuleFileNameA returns the ANSI form.
+// Windows paths are UTF-16 underneath -- the explicit -A form returns the active-codepage
+// transcoding, so an install directory with characters outside that codepage comes back
+// mangled and downstream opens fail. Known debt owed to the Resource Manager work
+// (docs/resourcesmg.md Part I): move to GetModuleFileNameW + UTF-8. Calling the -A form
+// explicitly (not the TCHAR macro) so a future -DUNICODE cannot silently break the build.
 // Output: directory of the running executable, no file name, by value.
 // length == 0 on failure or a path that does not fit MAXPATH - 1.
 ano_fspath ano_fs_gamepath(void) {
@@ -24,15 +28,18 @@ ano_fspath ano_fs_gamepath(void) {
     ano_fspath result = {0};
 
     char pathBuffer[MAX_PATH];
-    DWORD len = GetModuleFileName(NULL, pathBuffer, MAX_PATH);
+    DWORD len = GetModuleFileNameA(NULL, pathBuffer, MAX_PATH);
     if (len == 0 || len >= MAX_PATH || len >= MAXPATH)
         return result; // failed or truncated
 
     // Trim the executable file name, leaving its containing directory.
     while (len > 0 && pathBuffer[len - 1] != '\\' && pathBuffer[len - 1] != '/')
         len--;
-    if (len > 0)
-        len--; // drop the trailing separator
+    // Drop the trailing separator -- but keep it for a drive root: "C:" alone is a
+    // DRIVE-RELATIVE path (the CWD on drive C), whereas "C:\" is the root itself.
+    // Mirrors the POSIX implementations keeping "/" for an exe at filesystem root.
+    if (len > 3)
+        len--;
 
     memcpy(result.str, pathBuffer, len);
     result.str[len] = '\0';
