@@ -79,6 +79,11 @@ void createColorResources(VulkanContext* ctx);
 // Creates a depth image and view for the current swapchain
 bool createDepthResources(VulkanContext* ctx, RendererState* state);
 
+// Hi-Z occlusion pyramid (review 4.9 step 3): per-view half-res R32F depth pyramids, recreated with
+// the swapchain. updateHiZDescriptorSets rebinds the per-mip compute sets to the (re)created views.
+bool createHiZResources(VulkanContext* ctx, RendererState* state);
+void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state);
+
 // Creates the descriptor pool
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state);
 
@@ -89,6 +94,15 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state);
 
 // Updates UBO descriptor sets to point to their corresponding uniform buffers
 void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state);
+
+// (Re)binds each frame's tonemap set to its HDR resolve view; rerun after a swapchain resize
+void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state);
+
+// Binds the clustered-forward froxel buffers (global set 10/11 + light-cull set); init-only
+void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state);
+
+// Binds the dynamic shadow sets (shadowsetup compute set + shadow geom/sampling set 2); init-only
+void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state);
 
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties);

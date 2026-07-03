@@ -15,20 +15,25 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache);
 
-	// Mesh stage on capable devices, vertex stage on the fallback path.
+	// Mesh stage on capable devices, vertex stage on the fallback path. Task meshlet cull
+	// (review priority 10): frustum + Hi-Z only — cullMode NONE means backfaces are visible,
+	// so the normal-cone test stays off for this lane.
 	bool useMesh = ctx->deviceCapabilities.meshShader;
+	bool useTask = state->taskCull;
 	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// 2. Setup layout
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = geometryStage;
+	pushConstantRange.stageFlags = geometryStage | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	pushConstantRange.offset = 0;
-	pushConstantRange.size = sizeof(uint32_t);
+	pushConstantRange.size = 2u * sizeof(uint32_t); // transformBaseOffset + shadowFrustumIndex
 
+	// Set 2 = dynamic shadows (audit 4.7): fragment samples the shadow atlas (transparent geometry
+	// receives shadows too). Matches flat's layout.
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 2;
-	VkDescriptorSetLayout setLayouts[2] = {state->globalSetLayout, proto->descriptorLayout};
+	pipelineLayoutInfo.setLayoutCount = 3;
+	VkDescriptorSetLayout setLayouts[3] = {state->globalSetLayout, proto->descriptorLayout, state->shadowGeomSetLayout};
 	pipelineLayoutInfo.pSetLayouts = setLayouts;
 	pipelineLayoutInfo.pushConstantRangeCount = 1;
 	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
@@ -58,7 +63,8 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
 	struct Buffer geomShaderCode;
 	char geomShaderPath[256];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT,
+		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
 	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
@@ -68,6 +74,12 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 
 	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+
+	VkShaderModule taskModule = VK_NULL_HANDLE;
+	TaskStageStorage taskStore;
+	VkPipelineShaderStageCreateInfo taskStageInfo = {};
+	if (useTask && !ano_pipeline_task_stage(ctx, VK_FALSE, VK_FALSE, &taskStore, &taskModule, &taskStageInfo))
+		return false;
 
 	VkPipelineShaderStageCreateInfo geomShaderStageInfo = {};
 	geomShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -81,7 +93,9 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	fragShaderStageInfo.module = fragShaderModule;
 	fragShaderStageInfo.pName = "main";
 
-	VkPipelineShaderStageCreateInfo shaderStages[] = {geomShaderStageInfo, fragShaderStageInfo};
+	VkPipelineShaderStageCreateInfo shaderStages[3] = {taskStageInfo, geomShaderStageInfo, fragShaderStageInfo};
+	VkPipelineShaderStageCreateInfo* stageList = useTask ? shaderStages : &shaderStages[1];
+	uint32_t stageListCount = useTask ? 3u : 2u;
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -161,7 +175,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	depthStencil.maxDepthBounds = 1.0f;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkFormat colorFormat = state->imageFormat;
+	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT; // geometry renders into the HDR target, not the swapchain
 	VkFormat depthFormat = state->depthFormat;
 
 	VkPipelineRenderingCreateInfo renderingInfo = {};
@@ -183,8 +197,8 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineInfo.pNext = &renderingInfo;
-	pipelineInfo.stageCount = 2;
-	pipelineInfo.pStages = shaderStages;
+	pipelineInfo.stageCount = stageListCount;
+	pipelineInfo.pStages = stageList;
 	pipelineInfo.pVertexInputState = useMesh ? NULL : &vertexInputInfo;
 	pipelineInfo.pInputAssemblyState = useMesh ? NULL : &inputAssembly;
 	pipelineInfo.pViewportState = &viewportState;
@@ -224,6 +238,8 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 
 	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
+	if (taskModule != VK_NULL_HANDLE)
+		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
 	return true;
 }

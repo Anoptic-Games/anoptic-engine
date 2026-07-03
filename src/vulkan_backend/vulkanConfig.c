@@ -9,7 +9,9 @@
 
 // Static parameters
 																// "Nothing selected" value
-static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = 0b111111111};
+// preferredMsaa: 4x default (review finding 5) — the visual sweet spot; the old behavior
+// (unconditional device max, 8x on desktop) taxed every raster pass with ~2x the sample work.
+static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = 0b111111111, .preferredMsaa = 4};
 
 static WindowParameters windowParameters = {.width = 800, .height = 600, .monitorIndex = -1, .borderless = false};
 
@@ -26,6 +28,12 @@ bool requestDevice(char* deviceName)
 bool requestPresentMode(VkPresentModeKHR presentMode)
 {
 	vulkanSettings.preferredMode = presentMode;
+	return true;
+}
+
+bool requestMsaaSamples(uint32_t samples)
+{
+	vulkanSettings.preferredMsaa = samples;
 	return true;
 }
 
@@ -58,6 +66,11 @@ char* getChosenDevice()
 VkPresentModeKHR getChosenPresentMode()
 {
 	return vulkanSettings.preferredMode;
+}
+
+uint32_t getChosenMsaaSamples()
+{
+	return vulkanSettings.preferredMsaa;
 }
 
 Dimensions2D getChosenResolution()

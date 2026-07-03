@@ -11,8 +11,9 @@
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
 
-// Forward declaration for internal recursive instantiation
-static void instantiate_node(ModelAsset* asset, uint32_t nodeIndex, mat4 parentTransform);
+// Forward declaration for the internal recursive flatten walk (model_flatten).
+static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
+                         AnoRenderableDesc* out, uint32_t cap, uint32_t* idx);
 
 ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 {
@@ -94,15 +95,22 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
-            outMesh->primitives[p].geometryPoolIndex = geometry_pool_upload(
-                &rendererState.globalGeometryPool, 
-                &stagingAllocator, 
-                ctx->device, 
-                ctx->queueFamilyIndices.transferFamily, 
-                ctx->transferQueue, 
-                vertices, vertexCount, 
-                indices, indexCount
+            // Upload as an LOD chain (review 4.9 step 2). geometryPoolIndex is the chain BASE; the
+            // chain length lives in the base mesh's metadata (cull reads it). ANO_DEFAULT_LOD_COUNT
+            // is 4, so LOD chains are on engine-wide (set it to 1 for a single full-detail level).
+            AnoLodConfig lodCfg = ano_lod_config_default(ANO_DEFAULT_LOD_COUNT);
+            uint32_t lodBase = 0u, lodProduced = 0u;
+            geometry_pool_upload_chain(
+                &rendererState.globalGeometryPool,
+                &stagingAllocator,
+                ctx->device,
+                ctx->queueFamilyIndices.transferFamily,
+                ctx->transferQueue,
+                vertices, vertexCount,
+                indices, indexCount,
+                &lodCfg, &lodBase, &lodProduced
             );
+            outMesh->primitives[p].geometryPoolIndex = lodBase;
             
             free(vertices);
             free(indices);
@@ -233,6 +241,21 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         }
     }
 
+    // Resolve texture URIs relative to the glTF's own directory. cgltf already does this for the .bin
+    // buffer, but createTextureImage takes a raw path, so a nested asset (e.g. sponza/.../glTF/Sponza.gltf
+    // whose images sit beside it) needs the prefix. A bare filename (no separator, e.g. "viking_room.gltf")
+    // yields an empty prefix -> the URI loads from the CWD exactly as before.
+    char baseDir[512];
+    {
+        const char* slash = strrchr(fileName, '/');
+        const char* bslash = strrchr(fileName, '\\');
+        if (bslash && (!slash || bslash > slash)) slash = bslash;
+        size_t dirLen = slash ? (size_t)(slash - fileName) + 1u : 0u;
+        if (dirLen >= sizeof(baseDir)) dirLen = sizeof(baseDir) - 1u;
+        memcpy(baseDir, fileName, dirLen);
+        baseDir[dirLen] = '\0';
+    }
+
     // 2. Upload Textures & Bind Materials
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
     VkBuffer* stagingBuffers = calloc(maxStaging, sizeof(VkBuffer));
@@ -250,9 +273,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 #ifdef DEBUG_BUILD
             printf("[GLTF DEBUG] Loading texture %zu: %s\n", t, tex->image->uri);
 #endif
+            char texPath[1024];
+            snprintf(texPath, sizeof(texPath), "%s%s", baseDir, tex->image->uri);
             bool success = createTextureImage(
-                ctx, textureCmd, &loadedImages[t], &loadedAllocs[t], 
-                &loadedTextures[t], (char*)tex->image->uri, false, 
+                ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],
+                &loadedTextures[t], texPath, false,
                 &stagingBuffers[stagingCount++]
             );
             textureLoaded[t] = success;
@@ -568,10 +593,19 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.emissiveStrength = (float)prim->material->emissive_strength.emissive_strength;
                     }
                     
-                    // Determine which pipeline prototype to use
+                    // Pipeline routing (audit 4.7 transparency lanes; review finding 7 sidedness):
+                    //   transmission/volume         -> PIPELINE_TRANSMISSION (depth-sorted "over" lane)
+                    //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE (order-independent ONE/ONE)
+                    //   opaque + doubleSided         -> PIPELINE_FLAT_TWOSIDED (cullMode NONE)
+                    //   otherwise                    -> PIPELINE_FLAT (opaque, backface-culled)
+                    // alphaMode 2 == BLEND (set above). The additive branch is exclusive of transmission.
                     uint32_t selectedPipeline = PIPELINE_FLAT;
                     if (supportedFeatures & (PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME)) {
                         selectedPipeline = PIPELINE_TRANSMISSION;
+                    } else if (matData.emissiveStrength > 1.0f || matData.alphaMode == 2u) {
+                        selectedPipeline = PIPELINE_ADDITIVE;
+                    } else if (matData.doubleSided) {
+                        selectedPipeline = PIPELINE_FLAT_TWOSIDED;
                     }
                     matData.pipelineType = selectedPipeline;
                 }
@@ -644,50 +678,39 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     return asset;
 }
 
-static void instantiate_node(ModelAsset* asset, uint32_t nodeIndex, mat4 parentTransform) {
-    ModelNode* node = &asset->nodes[nodeIndex];
-    
+// Walks the node subtree, appending one descriptor per mesh primitive. *idx counts ALL primitives
+// (so the caller learns the true total); a descriptor is written only while *idx < cap.
+static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
+                         AnoRenderableDesc* out, uint32_t cap, uint32_t* idx) {
+    const ModelNode* node = &asset->nodes[nodeIndex];
+
     mat4 worldTransform;
     multiplyMat4(worldTransform, parentTransform, node->localTransform);
-    
-    // If the node has a mesh, spawn a RenderEntity for each of its primitives
+
     if (node->meshIndex >= 0) {
-        ModelMesh* mesh = &asset->meshes[node->meshIndex];
-        
-        // Reallocate the entities array to fit new instances
-        uint32_t currentCount = rendererState.entityCount;
-        rendererState.entityCount += mesh->primitiveCount;
-        rendererState.entities = realloc(rendererState.entities, rendererState.entityCount * sizeof(RenderEntity));
-        
+        const ModelMesh* mesh = &asset->meshes[node->meshIndex];
         for (uint32_t p = 0; p < mesh->primitiveCount; p++) {
-            ModelPrimitive* prim = &mesh->primitives[p];
-            uint32_t entIdx = currentCount + p;
-            
-            rendererState.entities[entIdx].meshIndex = prim->geometryPoolIndex;
-            rendererState.entities[entIdx].materialIndex = prim->materialIndex;
-            rendererState.entities[entIdx].lightIndex = NO_LIGHT_INDEX; // mesh entities carry no light by default
-            
-            float* destMat = (float*)&rendererState.entities[entIdx].transform;
-            float* srcMat = (float*)&worldTransform;
-            for (int i = 0; i < 16; i++) {
-                destMat[i] = srcMat[i];
+            if (out && *idx < cap) {
+                out[*idx].mesh_index     = mesh->primitives[p].geometryPoolIndex;
+                out[*idx].material_index = mesh->primitives[p].materialIndex;
+                float* d = (float*)&out[*idx].transform;
+                float* s = (float*)&worldTransform;
+                for (int i = 0; i < 16; i++) d[i] = s[i];
             }
+            (*idx)++;
         }
     }
-    
-    // Recurse down children
-    for (uint32_t c = 0; c < node->childCount; c++) {
-        instantiate_node(asset, node->childIndices[c], worldTransform);
-    }
+
+    for (uint32_t c = 0; c < node->childCount; c++)
+        flatten_node(asset, node->childIndices[c], worldTransform, out, cap, idx);
 }
 
-void instantiate_model(ModelAsset* asset, mat4 rootTransform) {
-    if (!asset) return;
-    
-    // Start traversal from root nodes
-    for (uint32_t r = 0; r < asset->rootNodeCount; r++) {
-        instantiate_node(asset, asset->rootNodes[r], rootTransform);
-    }
+uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRenderableDesc* out, uint32_t cap) {
+    if (!asset) return 0u;
+    uint32_t idx = 0u;
+    for (uint32_t r = 0; r < asset->rootNodeCount; r++)
+        flatten_node(asset, asset->rootNodes[r], rootTransform, out, cap, &idx);
+    return idx;
 }
 
 PbrFeatureFlags ano_gltf_identify_material_features(const cgltf_material* material) {
