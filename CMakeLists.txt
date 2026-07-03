@@ -145,25 +145,52 @@ if(Vulkan_FOUND)
         message(WARNING "glslc not found: staging committed resources/shaders/*.spv (may be stale).")
     endif()
     set(SPV_OUTPUTS "")
-    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp)
+    # Shared GLSL includes (#include): not compiled standalone, but every shader rebuilds when one
+    # changes so the shadow CDF math can't silently desync from a stale .spv.
+    set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl)
+
+    # Compile <source> into ${SHADER_BIN_DIR}/<output>.spv with any extra glslc defines
+    # in ARGN; without glslc, stage the committed <output>.spv instead.
+    function(ano_add_shader output source)
         if(Vulkan_GLSLC_EXECUTABLE)
             add_custom_command(
-                    OUTPUT  ${SHADER_BIN_DIR}/${shader}.spv
+                    OUTPUT  ${SHADER_BIN_DIR}/${output}.spv
                     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
-                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${SHADER_SRC_DIR}/${shader} -o ${SHADER_BIN_DIR}/${shader}.spv
-                    DEPENDS ${SHADER_SRC_DIR}/${shader}
-                    COMMENT "glslc ${shader} -> ${shader}.spv"
+                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${ARGN} ${SHADER_SRC_DIR}/${source} -o ${SHADER_BIN_DIR}/${output}.spv
+                    DEPENDS ${SHADER_SRC_DIR}/${source} ${SHADER_INCLUDES}
+                    COMMENT "glslc ${source} ${ARGN} -> ${output}.spv"
                     VERBATIM)
         else()
             add_custom_command(
-                    OUTPUT  ${SHADER_BIN_DIR}/${shader}.spv
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SRC_DIR}/${shader}.spv ${SHADER_BIN_DIR}/${shader}.spv
-                    DEPENDS ${SHADER_SRC_DIR}/${shader}.spv
-                    COMMENT "staging committed ${shader}.spv (no glslc)"
+                    OUTPUT  ${SHADER_BIN_DIR}/${output}.spv
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SRC_DIR}/${output}.spv ${SHADER_BIN_DIR}/${output}.spv
+                    DEPENDS ${SHADER_SRC_DIR}/${output}.spv
+                    COMMENT "staging committed ${output}.spv (no glslc)"
                     VERBATIM)
         endif()
-        list(APPEND SPV_OUTPUTS ${SHADER_BIN_DIR}/${shader}.spv)
+        set(SPV_OUTPUTS ${SPV_OUTPUTS} ${SHADER_BIN_DIR}/${output}.spv PARENT_SCOPE)
+    endfunction()
+
+    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag)
+        ano_add_shader(${shader} ${shader})
     endforeach()
+    # Depth-only geometry variants: second compiles of flat.mesh / flat.vert with ANO_DEPTH_ONLY
+    # (gl_Position only, no user attributes) for the depth pre-pass and the shadow atlas render.
+    # Same source as the full modules + invariant gl_Position = bit-identical clip depth, which
+    # the opaque pass's EQUAL test requires.
+    ano_add_shader(flat_depth.mesh flat.mesh -DANO_DEPTH_ONLY)
+    ano_add_shader(flat_depth.vert flat.vert -DANO_DEPTH_ONLY)
+    # Task-launched mesh variants (review priority 10): ANO_TASK_CULL compiles of flat.mesh (color
+    # + depth-only) that read the meshlet index from flat.task's payload instead of gl_WorkGroupID.
+    # Loaded when RendererState.taskCull; the plain compiles above stay the direct-dispatch fallback.
+    ano_add_shader(flat_task.mesh flat.mesh -DANO_TASK_CULL)
+    ano_add_shader(flat_depth_task.mesh flat.mesh -DANO_TASK_CULL -DANO_DEPTH_ONLY)
+    # Hi-Z avenue 1: a second compile of hiz.comp with RESOLVED_DEPTH (reduce reads a single-sample
+    # sampler2D of the MAX-resolved depth). Loaded for the reduce pipeline only when the device
+    # supports VK_RESOLVE_MODE_MAX_BIT; the default hiz.comp.spv stays the per-sample MSAA fallback.
+    ano_add_shader(hiz_resolve.comp hiz.comp -DRESOLVED_DEPTH)
+
     add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
     # Everything that links anoptic_render loads these at runtime (engine AND the vk
     # tests), so the library itself carries the dependency edge -- a lone

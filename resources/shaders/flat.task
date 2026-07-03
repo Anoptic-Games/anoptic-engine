@@ -1,0 +1,238 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+
+// Task-shader meshlet culling (review priority 10). One task workgroup tests 32 meshlets of one
+// draw and launches mesh workgroups ONLY for the survivors — a culled cluster costs nothing, not
+// even a dispatch (the old in-mesh stopgap still paid the launch). Three tests, all conservative:
+//   frustum — meshlet bounding sphere vs the view's 6 planes (camera planes from the GlobalUBO
+//             tail, shadow planes from the frustum the draw renders: both CPU/GPU-extracted by the
+//             same convention as cull.comp's entity test);
+//   cone    — meshoptimizer normal-cone backface test (constant_id 1; enabled only on lanes whose
+//             materials are single-sided — the parser routes doubleSided elsewhere — and only for
+//             rigid model bases: non-uniform/sheared/mirrored transforms skip it, a perf miss,
+//             never a dropout);
+//   Hi-Z    — sphere reprojected against LAST frame's depth pyramid (same math + lag + warmup
+//             gating as cull.comp's entity isOccluded; hizParams.z==0 keeps it off, the default).
+// The shadow variant (constant_id 0) is frustum-only: one shadow partition mixes both sidedness
+// lanes (cone would hole doubleSided casters) and no shadow pyramid exists.
+// cull.comp sizes the indirect commands to match: groupCountX = ceil(meshletCount/32) when
+// CullUBO.taskParams.x is set (RendererState.taskCull), one workgroup per meshlet otherwise.
+
+layout(local_size_x = 32) in;
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4  view;
+    mat4  proj;
+    float time;
+    float deltaTime;
+    uint  frameCount;
+    uint  lightCount;
+    vec4  cameraPos;
+    float cameraNear;
+    float cameraFar;
+    float screenWidth;
+    float screenHeight;
+    uint  clusterDimX;
+    uint  clusterDimY;
+    uint  clusterDimZ;
+    uint  maxLightsPerCluster;
+    uint  lightingMode;
+    uint  debugView;
+    uint  pad0;
+    uint  pad1;
+    // Task-cull tail (mirrors vertex.h GlobalUBO; updateCullingBuffers writes it per view with
+    // the SAME plane extraction / reprojection values as the entity cull's CullUBO).
+    vec4  frustumPlanes[6];
+    mat4  prevViewProj;
+    vec4  hizParams;   // {pyramid baseW, baseH, mipCount (0 = test off), 0}
+    vec4  hizProj;     // {proj00, proj11, proj22, proj32}
+} g;
+
+layout(set = 0, binding = 1) readonly buffer TransformSSBO {
+    mat4 transforms[];
+} transformBuf;
+
+struct EntityInfo {
+    uint meshIndex;
+    uint materialIndex;
+};
+
+layout(set = 0, binding = 3) readonly buffer EntitySSBO {
+    EntityInfo entities[];
+} entityBuf;
+
+layout(set = 0, binding = 5, std430) readonly buffer IndexBuffer {
+    uint data[];
+} indexBuf;
+
+struct MeshData {
+    uint meshletCount;
+    uint meshletOffset;
+    uint uniqueVerticesOffset;
+    uint trianglesOffset;
+    uint vertexOffset;
+    uint classicIndexCount;
+    uint classicFirstIndex;
+    uint boundsOffset;       // byte offset of the 48B/meshlet bounds block (sphere + normal cone)
+    uint lodCount;
+};
+
+layout(set = 0, binding = 6, std430) readonly buffer MeshSSBO {
+    MeshData meshDrawData[];
+} meshBuf;
+
+layout(set = 0, binding = 7) readonly buffer CompactedEntityIndices {
+    uint entityIndices[];
+} compactedBuf;
+
+// This view's Hi-Z pyramid from `lag` frames back (updateHiZDescriptorSets binding 13 — the same
+// image the entity cull samples for this view, single sampler since the set is per view).
+layout(set = 0, binding = 13) uniform sampler2D hizPyramid;
+
+layout(push_constant) uniform PushConstants {
+    uint transformBaseOffset;
+    uint shadowFrustumIndex; // shadow variant: which frustum's planes cull this draw
+} pc;
+
+layout(constant_id = 0) const bool shadowPass = false;
+layout(constant_id = 1) const bool coneCull  = false;
+
+struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; } shadowBuf;
+
+#define ANO_LOD_LEVEL_SHIFT   29u
+#define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
+
+// Payload: the draw's compacted entry + the surviving meshlet indices (relative to the draw's
+// mesh). packedEntity is forwarded because gl_DrawID is UNDEFINED in a mesh stage behind a task
+// stage (VUID 09631) — the mesh shader decodes entity/LOD from here instead. MUST match the
+// ANO_TASK_CULL mirror in flat.mesh; 32 ids = one per task invocation, worst case all pass.
+taskPayloadSharedEXT struct TaskPayload {
+    uint packedEntity;
+    uint meshletIds[32];
+} OUT;
+
+shared uint sCount;
+
+// Meshlet sphere vs LAST frame's depth pyramid — cull.comp's entity isOccluded verbatim, single
+// view (this set's pyramid + the GlobalUBO tail). Conservative: clamped UVs, nearest sphere
+// depth, point-sampled MAX; false (keep) whenever the data is unusable.
+bool meshletOccluded(vec4 worldCenter, float worldRadius) {
+    vec4 clip = g.prevViewProj * worldCenter;
+    if (clip.w <= 0.0) return false;
+    float invW = 1.0 / clip.w;
+    vec2 ndcC = clip.xy * invW;
+    float rx = worldRadius * g.hizProj.x * invW;
+    float ry = worldRadius * abs(g.hizProj.y) * invW;
+    vec2 uvMin = clamp((ndcC - vec2(rx, ry)) * 0.5 + 0.5, 0.0, 1.0);
+    vec2 uvMax = clamp((ndcC + vec2(rx, ry)) * 0.5 + 0.5, 0.0, 1.0);
+    float spanX = (uvMax.x - uvMin.x) * g.hizParams.x;
+    float spanY = (uvMax.y - uvMin.y) * g.hizParams.y;
+    int lvl = int(clamp(ceil(log2(max(max(spanX, spanY), 1.0))), 0.0, g.hizParams.z - 1.0));
+    ivec2 ms = textureSize(hizPyramid, lvl);
+    ivec2 tmin = clamp(ivec2(uvMin * vec2(ms)), ivec2(0), ms - 1);
+    ivec2 tmax = clamp(ivec2(uvMax * vec2(ms)), ivec2(0), ms - 1);
+    float hizMax = max(
+        max(texelFetch(hizPyramid, tmin, lvl).r,
+            texelFetch(hizPyramid, ivec2(tmax.x, tmin.y), lvl).r),
+        max(texelFetch(hizPyramid, ivec2(tmin.x, tmax.y), lvl).r,
+            texelFetch(hizPyramid, tmax, lvl).r));
+    float nearW = clip.w - worldRadius;
+    if (nearW <= 0.0) return false;
+    float nearestNdc = (g.hizProj.z * (-nearW) + g.hizProj.w) / nearW;
+    return nearestNdc > hizMax;
+}
+
+void main() {
+    if (gl_LocalInvocationID.x == 0u) sCount = 0u;
+    barrier();
+
+    // Per-draw data. gl_DrawID is valid HERE but undefined in the mesh stage behind a task stage,
+    // so the compacted entry rides the payload for the mesh shader to decode.
+    uint packed = compactedBuf.entityIndices[pc.transformBaseOffset + gl_DrawID];
+    if (gl_LocalInvocationID.x == 0u) OUT.packedEntity = packed;
+    uint entityIndex = packed & ANO_ENTITY_INDEX_MASK;
+    uint lodLevel    = packed >> ANO_LOD_LEVEL_SHIFT;
+    uint meshIndex   = entityBuf.entities[entityIndex].meshIndex + lodLevel;
+    MeshData mData   = meshBuf.meshDrawData[meshIndex];
+
+    uint m = gl_WorkGroupID.x * 32u + gl_LocalInvocationID.x;
+    bool visible = m < mData.meshletCount;
+
+    if (visible) {
+        // 48B bounds record: sphere[4] + cone_apex/cutoff[4] + cone_axis/pad[4] floats.
+        uint boundsBase = (mData.boundsOffset / 4u) + m * 12u;
+        vec3 center = vec3(uintBitsToFloat(indexBuf.data[boundsBase + 0u]),
+                           uintBitsToFloat(indexBuf.data[boundsBase + 1u]),
+                           uintBitsToFloat(indexBuf.data[boundsBase + 2u]));
+        float radius = uintBitsToFloat(indexBuf.data[boundsBase + 3u]);
+
+        mat4 model = transformBuf.transforms[entityIndex];
+        vec4 worldCenter = model * vec4(center, 1.0);
+        // Same conservative world radius as cull.comp: largest basis-column scale.
+        float maxScale = max(max(length(model[0].xyz), length(model[1].xyz)), length(model[2].xyz));
+        float worldRadius = radius * maxScale;
+
+        // Frustum: sphere vs this draw's 6 planes (camera view or the draw's shadow frustum).
+        if (shadowPass) {
+            for (int i = 0; i < 6; i++) {
+                if (dot(shadowBuf.shadowFrustums[pc.shadowFrustumIndex].frustumPlanes[i], worldCenter) < -worldRadius) {
+                    visible = false;
+                    break;
+                }
+            }
+        } else {
+            for (int i = 0; i < 6; i++) {
+                if (dot(g.frustumPlanes[i], worldCenter) < -worldRadius) {
+                    visible = false;
+                    break;
+                }
+            }
+        }
+
+        // Normal-cone backface cull (single-sided camera lanes only), meshoptimizer's documented
+        // sphere-conservative form: fully backfacing iff
+        //   dot(center - eye, axis) >= cutoff * |center - eye| + radius,
+        // with cutoff = sin(normal spread) and cutoff == 1 for cones past a hemisphere (the RHS
+        // then always exceeds the LHS — never culls). The sphere term absorbs the meshlet's
+        // positional extent, so no apex is needed. Only sound under a RIGID model basis (rotation
+        // + uniform positive scale): under non-uniform scale, shear, or a mirrored basis neither
+        // the rotated axis nor the cutoff describes the world cone, so those instances skip —
+        // a perf miss, never a dropout.
+        if (coneCull && visible) {
+            mat3 basis = mat3(model);
+            float l0 = dot(basis[0], basis[0]);
+            float l1 = dot(basis[1], basis[1]);
+            float l2 = dot(basis[2], basis[2]);
+            bool uniformScale = abs(l0 - l1) <= 1e-3 * max(l0, l1) &&
+                                abs(l0 - l2) <= 1e-3 * max(l0, l2);
+            bool orthogonal   = abs(dot(basis[0], basis[1])) <= 1e-3 * sqrt(l0 * l1) &&
+                                abs(dot(basis[0], basis[2])) <= 1e-3 * sqrt(l0 * l2) &&
+                                abs(dot(basis[1], basis[2])) <= 1e-3 * sqrt(l1 * l2);
+            if (uniformScale && orthogonal && determinant(basis) > 0.0) {
+                float coneCutoff = uintBitsToFloat(indexBuf.data[boundsBase + 7u]);
+                vec3 coneAxis = vec3(uintBitsToFloat(indexBuf.data[boundsBase + 8u]),
+                                     uintBitsToFloat(indexBuf.data[boundsBase + 9u]),
+                                     uintBitsToFloat(indexBuf.data[boundsBase + 10u]));
+                vec3 axisWorld = normalize(basis * coneAxis); // normalize absorbs the uniform scale
+                vec3 toCenter  = worldCenter.xyz - g.cameraPos.xyz;
+                if (dot(toCenter, axisWorld) >= coneCutoff * length(toCenter) + worldRadius) {
+                    visible = false;
+                }
+            }
+        }
+
+        // Hi-Z occlusion (camera lanes, gated like the entity test: mipCount 0 = off).
+        if (!shadowPass && visible && g.hizParams.z >= 1.0) {
+            visible = !meshletOccluded(worldCenter, worldRadius);
+        }
+    }
+
+    // Compact survivors into the payload; launch one mesh workgroup per survivor.
+    if (visible) {
+        uint slot = atomicAdd(sCount, 1u);
+        OUT.meshletIds[slot] = m;
+    }
+    barrier();
+    EmitMeshTasksEXT(sCount, 1u, 1u);
+}

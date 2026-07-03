@@ -46,7 +46,7 @@ Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat`
 
 Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the
 binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
-`assets/` is gitignored. The demo scene and the Vulkan tests load `viking_room.gltf` (the vulkan-tutorial viking room) and `GlassHurricaneCandleHolder.gltf` (Khronos [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)) plus their textures from it — populate it before running the engine or the full test suite.
+`assets/` is gitignored. The demo scene and the Vulkan tests load `viking_room.gltf` (the vulkan-tutorial viking room) and `GlassHurricaneCandleHolder.gltf` (Khronos [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)) plus their textures from it — populate it before running the engine or the full test suite. The demo scene also loads Sponza as its environment if present at `assets/sponza/2.0/Sponza/glTF/Sponza.gltf` (Khronos [glTF-Sample-Models](https://github.com/KhronosGroup/glTF-Sample-Models)); it is optional — the engine logs a warning and continues without it (the viking room + candles still spawn as props) if it's missing.
 
 These map to the following CMake options, which can also be passed directly:
 `-DANOPTIC_TESTS=ON` (build the test suite), `-DANOPTIC_HEADLESS=ON` (omit the renderer,
