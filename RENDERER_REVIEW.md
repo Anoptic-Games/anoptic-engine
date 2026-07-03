@@ -456,6 +456,27 @@ per-frustum motion exposure via swept bounds (pointless in this scene — the mo
 overlap every light volume; matters for spatially partitioned worlds) and re-render
 budgets (staleness/matrix-drift policy).
 
+Swept-bound motion exposure landed 2026-07-03: the any-mover-dirties-everything epoch is
+replaced by per-frustum exposure. A parametric trajectory is a closed form, so one world
+sphere bounds a mover's mesh for ALL time, computed once at command time (spin = local
+sweep about the pinned position; orbit = revolve the static world sphere about the world
+axis; kepler = focus + apoapsis a(1+e); linear/streamed have no finite bound and fall back
+to the blanket epoch via moverUnboundedCount). Each caster frustum carries an influence
+volume (position + range sphere from the parent's base pose mirror; directional and
+range<=0 are unbounded); a frustum re-renders while a mover's sphere reaches its volume or
+its light itself rides a mover. The SlotUpload device copies are not host-readable, so
+base pose + mesh index gained CPU mirrors written at every staging site; caster volumes
+re-derive on teleport of their parent slot, movers re-bound on teleport/mesh swap, and all
+counts are command-driven (zero per-frame work beyond reading them). The profile line now
+prints the rendered-frustum average (frusta N/42). Measured (debug, same window size,
+interleaved): the stock demo is parity by construction — frusta 26.0/42 under both modes,
+shadow median 0.920 vs 0.932 ms, since every mover legitimately overlaps every light
+volume. With one static point light moved to the far end of the atrium (outside every
+trajectory bound), its 6 cube faces build once and stay cached: frusta 20.0/42 vs
+26.0/42 under ANO_FORCE_NO_SWEPT, shadow region 0.765 vs 0.950 ms (−19%), total 1.810 vs
+2.019 ms, visuals identical, validation-clean. Hook: ANO_FORCE_NO_SWEPT pins the blanket
+epoch. Still deferred: re-render budgets (staleness/matrix-drift policy).
+
 ShadowResources lives inside FrameResources (structs.h:746–764, 933), so the 512² ×
 84-layer RGBA16 atlas and its blur temp exist once per frame-in-flight: 176 MB × 2 images
 × 3 slots ≈ 1.05 GB of VRAM for shadow storage, of which two-thirds is stale copies. Every
