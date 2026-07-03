@@ -70,10 +70,12 @@ post-tonemap in LDR, which is what UI text wants.
 - Geist vendored at `resources/fonts/Geist/` — 18 static TrueType instances plus two
   variable-font TTFs. TrueType means quadratic outlines natively; the cubic→quad
   preprocessing stage is a no-op for this font (keep the hook for CFF/OTF later).
-- Audit of Geist-Regular ASCII 32..126 (fontTools, this scouting pass): 1609 monotone
-  segments total (954 quads + 655 lines), mean 16.9 per glyph, worst `@` at 63. Curve buffer
-  ≈ 13 KiB for the ASCII set; the full 974-glyph face lands in the low hundreds of KiB.
-  Whole-face baking at boot is milliseconds; no disk cache needed.
+- Audit of Geist-Regular ASCII 32..126 (fontTools, this scouting pass; corrected during
+  step 2 — the first pass missed composite glyphs `: ; \` i j`, which FreeType decomposes):
+  1654 monotone segments total (958 quads + 696 lines), mean 17.4 per glyph, worst `@` at
+  63. Measured baked stream: 3490 points ≈ 13.6 KiB for the ASCII set; the full 974-glyph
+  face lands in the low hundreds of KiB. Whole-face baking at boot is milliseconds; no
+  disk cache needed.
 - Geist has no legacy `kern` table. Kerning lives exclusively in GPOS PairPos subtables,
   formats 1 and 2 only (audited) — consequences in §6.2.
 - FreeType submodule populated at `external/freetype` (2.13.3+, `.gitmodules` entry exists),
@@ -308,7 +310,7 @@ re-ABIs.
    skeleton `src/text` module + `include/anoptic_text.h` compiling on all platforms.
 2. Bake path: decompose → monotone quads → winding/em normalize → f16 shared-vertex stream +
    directory. Unit tests: monotonicity and bbox==endpoints invariants, segment counts against
-   this report's audit numbers (1609 / ASCII), closed-contour area sanity.
+   this report's audit numbers (1654 / ASCII), closed-contour area sanity.
 3. CPU reference rasterizer: scalar mirror of the shader math; RMS-compare coverage against
    `FT_Render_Glyph` bitmaps for a probe set including the overlap glyphs (`# $ % + f t A g @`).
    This validates the coverage math and the clamp fix off-GPU before any Vulkan work.

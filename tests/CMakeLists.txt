@@ -29,9 +29,15 @@ target_link_libraries(anotest_strings PRIVATE anoptic_core)
 add_test(NAME anoptic_strings COMMAND anotest_strings)
 set_tests_properties(anoptic_strings PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
-# Testing for ``anoptic_text.h`` (module lifecycle over the FreeType backend; link-chain smoke)
+# Testing for ``anoptic_text.h`` (FreeType lifecycle; glyph-curve bake: stream grammar,
+# monotonicity, winding, and the FONT_RENDER.md audit-count oracle). Geist is staged next
+# to the binary; the test chdirs to its exe dir (gamepath) and loads it by relative path.
 add_executable(anotest_text anotest_text.c)
-target_link_libraries(anotest_text PRIVATE anoptic_core)
+target_link_libraries(anotest_text PRIVATE anoptic_core m)
+add_custom_command(TARGET anotest_text POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/resources/fonts/Geist ${CMAKE_CURRENT_BINARY_DIR}/resources/fonts/Geist
+        COMMENT "Staging Geist next to anotest_text"
+        VERBATIM)
 add_test(NAME anoptic_text COMMAND anotest_text)
 set_tests_properties(anoptic_text PROPERTIES TIMEOUT 30 LABELS "unit")
 
