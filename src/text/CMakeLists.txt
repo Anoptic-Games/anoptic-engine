@@ -1,0 +1,2 @@
+# Text module: platform-agnostic C over FreeType (linked PRIVATE in the root lists file).
+target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/text.c)

@@ -1,0 +1,327 @@
+# FONT_RENDER.md — Scanline Sweeper text: scouting report
+
+Scouting pass for GPU glyph rendering via the Scanline Sweeper technique
+(`docs/references/scanline_sweep.md`), tested against the current renderer. Verdict up front:
+the technique fits this renderer unusually well. The renderer already has every structural
+prerequisite — a dedicated async compute queue with four timeline lanes, a lag-0 async pass
+precedent (light-cull) whose sync shape is exactly what text needs, cross-queue CONCURRENT
+sharing helpers, a storage-image-then-sample precedent (Hi-Z), a dynamic-rendering composite
+stage with an obvious insertion point, and a staged-upload helper for the static curve data.
+No frame-graph surgery is required; the work is one new async lane plus one new core module.
+Friction points exist (§6) but all have known mitigations; two of them were found by auditing
+the actual font file and are worth reading before anything else is built.
+
+## 1. The technique, reduced to what shapes the integration
+
+Full summary in `docs/references/scanline_sweep.md`. The properties that drive design:
+
+- Coverage is computed analytically per pixel as a sum of signed trapezoid areas swept by
+  monotonic quadratic Béziers against the pixel's em-space window. No winding numbers, no
+  sample points, no SDF texture, no atlas. Anti-aliasing falls out of the math.
+- All curve data is static: cubic→quadratic (not needed for TrueType), split until x- and
+  y-monotonic, at which point bbox == endpoints and culling is trivial. Baked once per face,
+  never invalidated by scale, perspective, or orientation. This is the future-proofing: the
+  same buffers serve screen-space UI today and world-space decal/flat-geometry text later.
+- Curves live in storage buffers as binary16 pairs with shared-vertex compression (first
+  point implicit from the previous curve, sentinel resets). Memory bandwidth is the stated
+  bottleneck; the ASCII set of Geist-Regular measures ~13 KiB (§3), so ours is negligible.
+- Execution is a compute shader (recommended by the paper) or a pixel shader. The pixel
+  shader variant is what a future world-space text lane would use on quads; the compute
+  variant is the UI overlay lane built here.
+- One documented failure mode: overlapping same-winding contours break the area sum
+  (coverage denominator exceeds 1). This is live in our demo charset — see §6.1.
+
+## 2. Proposed architecture end-to-end
+
+Init (CPU, once per face): `src/text` loads `resources/fonts/Geist/static/Geist-Regular.ttf`
+through FreeType (`FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING`, font units, UPEM=1000),
+decomposes outlines via `FT_Outline_Decompose`, converts line segments to degenerate quads
+(p1 = midpoint — they fall into the shader's linear-fallback path naturally), splits quads at
+interior derivative extrema until monotonic, normalizes winding (`FT_Outline_Get_Orientation`)
+and coordinates to the em square, packs binary16 shared-vertex streams plus a glyph directory
+`{curveOffset, curveCount, bboxMin, bboxMax, advance}`. The renderer uploads both blobs once
+via `stagingTransfer` (`instanceInit.c:2729`) to device-local memory.
+
+Per frame (CPU, render thread for the PoC): format the profile stats into strings, shape them
+(UTF-8 → glyph ids → pen advances) into an `AnoGlyphInstance` array, bin instances into 16×16
+screen tiles, write instances + tile ranges into a per-frame host-visible buffer
+(`MAX_FRAMES_IN_FLIGHT`=3 slots, persistently mapped, same pattern as the uniform ring,
+`instanceInit.c:1436`). Shaping re-runs only when the text changes (stat cadence, §7); the
+per-frame cost is a ~16 KiB memcpy.
+
+Per frame (GPU, async): a text command buffer on the dedicated compute queue clears the
+overlay image and dispatches `textraster.comp` — one workgroup per screen tile, early-out on
+empty tiles, one thread per pixel. Each thread walks its tile's instance list; per instance it
+maps the pixel window into em space with the instance's prebaked inverse 2×2 (this is where
+scale, pan, skew, and rotation all fold in), walks the glyph's curves with monotone-bbox
+rejection, accumulates signed trapezoid areas per the paper's clamped single-root scheme,
+clamps coverage to [0,1] (the overlap fix, §6.1), applies the paper's gamma step, and
+src-over-accumulates premultiplied color in registers. One `imageStore` per covered pixel.
+
+Composite (GPU, graphics queue): the existing composite block (`vulkanMaster.c:1312-1370`,
+dynamic rendering straight onto the swapchain) gains one draw after the PiP inset loop,
+immediately before `vkCmdEndRendering` at `vulkanMaster.c:1369`: a bufferless fullscreen
+triangle (reuse `tonemap.vert`) sampling the overlay with fixed-function premultiplied blend
+(ONE, ONE_MINUS_SRC_ALPHA). Text therefore composites over everything including PiP views,
+post-tonemap in LDR, which is what UI text wants.
+
+## 3. What is already in the tree
+
+- Geist vendored at `resources/fonts/Geist/` — 18 static TrueType instances plus two
+  variable-font TTFs. TrueType means quadratic outlines natively; the cubic→quad
+  preprocessing stage is a no-op for this font (keep the hook for CFF/OTF later).
+- Audit of Geist-Regular ASCII 32..126 (fontTools, this scouting pass): 1609 monotone
+  segments total (954 quads + 655 lines), mean 16.9 per glyph, worst `@` at 63. Curve buffer
+  ≈ 13 KiB for the ASCII set; the full 974-glyph face lands in the low hundreds of KiB.
+  Whole-face baking at boot is milliseconds; no disk cache needed.
+- Geist has no legacy `kern` table. Kerning lives exclusively in GPOS PairPos subtables,
+  formats 1 and 2 only (audited) — consequences in §6.2.
+- FreeType submodule populated at `external/freetype` (2.13.3+, `.gitmodules` entry exists),
+  documented as intended for the text stack in `external/external.md:11`, but referenced by
+  no CMakeLists yet. Wiring recipe in §5.
+- `src/render/text/ano_RenderText.{c,h}` — a disabled, uncompiled SDF/atlas-era stub. Every
+  step of its rewrite plan (pixel sizes, atlas packing, bitmap staging, SDF) is obsolete
+  under this technique. Recommend deleting both files when the new module lands; nothing in
+  them transfers. The old `feature-render-text` salvage branch named in `docs/notes.md:290`
+  no longer exists on local or origin.
+- Reserved enum slots `PIPELINE_SDF_COMPOSITE` and `PIPELINE_UI` (`components.h:18-19`)
+  anticipate this work. The compute raster pass takes a new `PIPELINE_COMPUTE_TEXTRASTER`
+  slot; `PIPELINE_UI` stays reserved for the eventual in-world/UI draw lane (§9).
+- `anostr_t` (Step 4) shipped; `docs/TODO.md:28` explicitly gates the UTF meaning layer on
+  "until the text renderer forces it". This is the forcing event, but only a minimal UTF-8
+  decoder is needed (§4), not the full layer.
+
+## 4. New module: `src/text` + the minimal shaper
+
+Layout per module convention: public `include/anoptic_text.h` (no FreeType types leak;
+faces are opaque ids), implementation `src/text/` registered as a core module
+(`target_sources(anoptic_core ...)`, mirroring `src/time/CMakeLists.txt`). Core-side rather
+than render-side because shaping is exactly the thing the logic world will call when text
+blocks start arriving over the bridge. FreeType allocations route through a module-owned
+mi_heap via custom `FT_Memory` hooks (FreeType supports this first-class), keeping the
+arena discipline.
+
+Proposed public surface, PoC scope:
+
+    ano_text_init / ano_text_shutdown
+    ano_text_font_load(path)                  -> AnoFontId
+    ano_text_font_bake(font, &curveBlob, &directoryBlob, heap)   // GPU-agnostic byte blobs
+    ano_text_shape(font, utf8, len, sizePx, origin, color, heap) -> AnoGlyphInstance[]
+    ano_text_measure(font, utf8, len, sizePx) -> extents
+
+Shaper v0 (PoC): UTF-8 decode, cmap lookup (direct table for ASCII, binary search above),
+horizontal advances, `\n` line breaking with hhea baseline metrics. No kerning. That is
+sufficient for profile lines. Shaper v1: an in-house GPOS PairPos reader — the audit bounds
+this precisely at coverage formats 1/2, ClassDef formats 1/2, PairPos formats 1/2, roughly
+250 lines of table walking. Explicit non-goals, stated to prevent HarfBuzz-shaped creep:
+GSUB ligatures, mark attachment, bidi/RTL, complex scripts, hinting (the technique is
+unhinted analytic AA by design). If the game ever needs Arabic or Devanagari, that is a
+separate decision about a real shaping engine, not an extension of this module.
+
+## 5. Renderer integration map
+
+All anchors verified against current source this pass.
+
+New async lane (mirrors light-cull, the lag-0 precedent — not Hi-Z, which is lag-2 because
+it consumes the frame's own depth; text inputs are CPU-side so it has no GPU dependency
+at all):
+
+- `textTimeline` semaphore next to `lcTimeline` (`structs.h:1267`), created in
+  `createSyncObjects` (`instanceInit.c:2869-2891` block).
+- Per-frame `textCommandBuffer` allocated from the existing `computeCommandPool`
+  (`vulkanMaster.c:4437`), recorded each frame after the `frameFence` wait
+  (`vulkanMaster.c:3317`). Reuse is fence-safe by the same argument as
+  `lightcullCommandBuffer` (comment at `vulkanMaster.c:437-438`): its sole consumer is the
+  fence-tracked graphics submit of the same slot.
+- Submit on `ctx.computeQueue` adjacent to the lc submit (`vulkanMaster.c:3489-3507`), no
+  wait semaphores (host wrote the instance buffer before submit; the overlay WAR against the
+  3-frames-ago composite read is retired by the frameFence host wait), signaling
+  `textTimeline = ordinal`. Copy the lc failure fallback verbatim: on failed submit,
+  `vkSignalSemaphore` host-side to keep the timeline monotonic and non-deadlocking
+  (`vulkanMaster.c:3499-3507`).
+- Graphics submit gains one wait: `textTimeline == ordinal` at FRAGMENT_SHADER, appended to
+  the single-submit arrays (`vulkanMaster.c:3407-3424`) and to batch B of the split submit
+  (`vulkanMaster.c:3461-3481`). Timeline waits may be submitted before their signal — the lc
+  lane already relies on this (comment at `vulkanMaster.c:3440-3442`).
+- Overlay layout flips inside the text CB with `VK_QUEUE_FAMILY_IGNORED` barriers, semaphores
+  carrying the cross-queue memory dependency — the Hi-Z pyramid pattern
+  (`vulkanMaster.c:349-361, 396-408`).
+- Fallback path, mandatory: when no dedicated compute family exists (`findQueueFamilies`
+  fallback, `instanceInit.c:439-448`) or `ANO_FORCE_NO_ASYNC_TEXT` is set, record clear +
+  dispatch into the main CB just before the composite block with a COMPUTE→FRAGMENT barrier —
+  the lc in-frame precedent (`vulkanMaster.c:1092-1103`). Gate parses in `initVulkan` next to
+  the other toggles (`vulkanMaster.c:4349-4370`).
+
+Resources:
+
+- Overlay image ×MAX_FRAMES_IN_FLIGHT (per frame, not per view — it overlays the final
+  frame): swapchain extent, `R8G8B8A8_UNORM`, STORAGE|SAMPLED, `swapchainAllocator`, created
+  in `createColorResources` (`instanceInit.c:1777`), destroyed in `cleanupSwapChain`
+  (`instanceInit.c:1131`), descriptors rebound next to the `updateTonemapDescriptorSets` call
+  in `recreateSwapChain` (`instanceInit.c:1340`). ~40 MiB at 2560×1368 — see §6.6.
+- Curve + directory buffers: device-local, one-shot `stagingTransfer` at init, EXCLUSIVE
+  sharing (only one queue family ever reads them per boot mode, chosen at init — the
+  CONCURRENT helper `buffer_share_async_compute` at `vulkanMaster.c:1858` is not needed).
+- Instance/tile buffer: per-frame HOST_VISIBLE|COHERENT persistently mapped via
+  `createDataBuffer` (`instanceInit.c:1406`), uniform-ring pattern. No SlotUpload — the
+  buffer is rewritten wholesale at text-change cadence, there are no per-slot deltas.
+- Compute pipeline: new `PIPELINE_COMPUTE_TEXTRASTER` enum before `PIPELINE_TYPE_COUNT`
+  (`components.h`), created in `ano_vk_init_pipelines` following the lightcull recipe
+  (`pipeline.c:885-935`); compute types stay out of the draw registry by convention
+  (`components.h:44-50`). Descriptor set: curve SSBO, directory SSBO, instance/tile SSBO
+  (per-frame), overlay storage image (per-frame); pool sizes bumped at
+  `instanceInit.c:1855-1883`.
+- Overlay blend pipeline: bespoke handles next to `tonemapPipeline` (`structs.h:1039-1042`),
+  built like `ano_vk_init_tonemap` (`pipeline.c:1040`) plus one
+  `VkPipelineColorBlendAttachmentState` with premultiplied alpha; new `overlay.frag`, reuse
+  `tonemap.vert`. Recorded as one draw before `vkCmdEndRendering` at `vulkanMaster.c:1369`.
+- Shaders: `resources/shaders/textraster.comp`, `overlay.frag` appended to the foreach list
+  at `CMakeLists.txt:175` (glslc, vulkan1.2 target).
+- New code lives in a new TU `src/vulkan_backend/text_raster.c` rather than growing
+  `vulkanMaster.c` (4712 lines): record/submit/create helpers, with ~15 lines of hooks in
+  `drawFrame` and ~10 in the composite block.
+
+CMake / FreeType wiring (top level, not Vulkan-gated, since `src/text` is core):
+
+    set(FT_DISABLE_ZLIB ON)  set(FT_DISABLE_BZIP2 ON)  set(FT_DISABLE_PNG ON)
+    set(FT_DISABLE_HARFBUZZ ON)  set(FT_DISABLE_BROTLI ON)
+    add_subdirectory(external/freetype EXCLUDE_FROM_ALL)
+    target_link_libraries(anoptic_core PRIVATE freetype)
+
+mirroring the mimalloc/glfw pattern (`CMakeLists.txt:55-60, 123-125`). None of the disabled
+codecs are needed for plain TTF parsing.
+
+Latency budget: the paper logs 240 µs for large-coverage 1440p text on an RTX 2060. The demo
+overlay covers a few percent of the screen on a 3090; expect low tens of µs. It executes on
+the compute queue concurrently with the shadow/geometry region (~2 ms of graphics work) and
+is only awaited at the composite's fragment stage — same-frame data, fully hidden latency,
+same shape as light-cull. The async lane is nonetheless the right call: it future-proofs for
+full-viewport UI at the paper's cost class without ever touching the graphics critical path.
+
+## 6. Friction points
+
+1. Overlapping contours, confirmed in the demo charset. The paper's coverage sum breaks when
+   same-winding contours overlap. The audit found real overlaps in Geist-Regular ASCII:
+   `# $ % + f t` — and `$`, `%`, digits-adjacent glyphs appear in the profile lines
+   themselves. Mitigation: clamp per-glyph coverage to [0,1] at assembly. For solid overlaps
+   (crossing strokes) the clamp is exactly correct; the only residual error is in pixels
+   where two anti-aliased edges cross inside an overlap — sub-pixel corner softening,
+   invisible at text sizes. The paper's own alternatives (offline outline union, per-contour
+   evaluation) stay documented as escalation paths if artifacts show.
+2. Kerning is GPOS-only in this font. `FT_Get_Kerning` reads the legacy `kern` table and
+   returns zeros for Geist. PoC ships unkerned (profile lines are numeric/monospace-ish;
+   acceptable). Shaper v1 adds the in-house PairPos reader (§4) — do not burn time wiring
+   FreeType kerning APIs that cannot work here.
+3. Dedicated compute queue is not guaranteed (`findQueueFamilies` falls back to the graphics
+   family). Every async lane in this renderer carries an in-frame fallback recording site;
+   text is no exception and the pattern is mechanical (§5). Cost is a second, trivial
+   recording path, not a design fork — the shader and resources are identical.
+4. A third async lane raises the sync-surface area. The submit-failure timeline-signal
+   fallback, the fence-safety argument for CB reuse, and the wait-before-signal submission
+   order are all inherited invariants that must be replicated exactly; each has a verified
+   in-tree precedent cited in §5. This is copy-the-pattern work, but it is correctness-
+   critical copying.
+5. Multi-glyph pixel overlap forbids the naive per-glyph dispatch. Adjacent glyphs' bboxes
+   overlap (kerned pairs, italics) even when ink doesn't; independent per-glyph workgroups
+   doing read-modify-write on the overlay would race. The tile-gather design (§2) is
+   therefore load-bearing, not an optimization: each pixel is owned by exactly one thread,
+   which iterates all covering instances and blends in registers. Decided now so nobody
+   "simplifies" it later into a race.
+6. Overlay VRAM: full-res RGBA8 ×3 ≈ 40 MiB at 2560×1368. Acceptable against the several
+   hundred MiB reclaimed by the recent atlas/MSAA/PiP work. Shrink paths when the UI layer
+   gets real: dirty-
+   tile persistent overlay (×1 + budgeted re-raster, the shadow-cache philosophy) or a
+   half-float R8 coverage lane for monochrome text. Not PoC work.
+7. Gamma placement. The paper gamma-corrects coverage to produce alpha; the composite blends
+   onto an sRGB swapchain where fixed-function blending is linear-correct per spec. Apply
+   the paper's gamma exactly once and eyeball against FreeType's own rasterization — one
+   visual tuning session, flagged so it isn't debugged twice.
+8. binary16 curve precision: 2^-10 em quantum, validated by the paper on this exact font at
+   text sizes. A future world-space signage lane zooming a glyph to meters may want the f32
+   escape hatch (directory flag + fat buffer); noted, not built.
+9. FreeType license: FTL (BSD-style with attribution clause) — add the credit line to
+   third-party notices when it starts shipping in builds.
+
+## 7. Demo target: profile lines on-screen
+
+Source data: `ano_print_profiling` (`vulkanMaster.c:3231`) already averages GPU region times
+and VRAM per allocator, printing every `ANO_PROFILE_PRINT_INTERVAL` = 120 frames
+(`vulkanMaster.c:57`):
+
+    [profile mode=%s] GPU ms: upload=... compute=... shadow=... (frusta %.1f/%u)
+    lighting=... composite=... total=... | VRAM MiB: gpu=... tex=... swap=... staging=... | ...
+
+The demo mirrors exactly these fields on-screen: at each print tick, format the same values
+into 3-4 lines, shape at ~16 px into the instance buffer, top-left origin. Everything stays
+inside the render thread — the stats live there, so the PoC needs zero bridge traffic. This
+also means the demo exercises shaping, baking, raster, async sync, and composite blend with
+content that changes at a realistic cadence (numbers tick every 2 s) while the instance
+buffer re-uploads per frame, matching the eventual UI workload shape. (120 frames is a
+frame count, not wall time — a fraction of a second at demo framerates; make it a knob if the
+flicker rate annoys.) Toggles:
+`ANO_TEXT_OVERLAY` (demo on/off), `ANO_FORCE_NO_ASYNC_TEXT` (fallback lane A/B). Note the
+async lanes (hiz/lc/text) sit outside the graphics timestamp chain; text pass timing uses
+the established freeze/A-B methodology rather than a new `ANO_TS_*` slot for now.
+
+## 8. GlyphInstance ABI draft
+
+The user-sketched fields (glyphID, position, scale, color) extended to carry pan/skew/rotation
+without per-pixel transform cost — the shader gets the pixel→em inverse prebaked:
+
+    // std430, 48 B
+    typedef struct AnoGlyphInstance {
+        float    inv[4];      // 2x2 pixel->em inverse; scale, skew (pan-skew), rotation fold here
+        float    origin[2];   // screen-space baseline origin, pixels
+        float    color[4];    // premultiplied linear RGBA
+        uint32_t glyphID;     // glyph directory index
+        uint32_t flags;       // reserved (f32-curve escape, effects)
+    } AnoGlyphInstance;
+
+The forward transform exists only CPU-side, used for tile binning. Text-layout sub-buffers:
+the per-frame buffer is instance array + tile ranges; a block is a contiguous instance range
+`{first, count}` (PoC: one block). When the logic side starts producing text, blocks arrive
+over the bridge either as copy-at-submit bulk payloads (the `RCMD_BULK`/`bulk_owned` lifetime
+rules, `anoptic_render.h:334`) or through the zero-copy stream region
+(`ano_render_stream_begin/commit`) — transport choice deferred until the UI layer defines
+update rates; the ABI above is public in `anoptic_text.h` from day one so that path never
+re-ABIs.
+
+## 9. Future paths (explicitly out of PoC scope)
+
+- World-space text: the same curve/directory buffers evaluated in a fragment shader on
+  quads/decals — the paper's pixel-shader variant, where the dynamically-computed em-space
+  footprint gives perspective-correct AA with zero resource invalidation. Slots into the
+  reserved `PIPELINE_UI`/decal lanes as a material type when needed. Nothing in the PoC data
+  design blocks this; it is the reason the bake is projection-agnostic.
+- Dense-text scaling: the paper's scanline-partition/stripe acceleration with cooperative
+  shared-memory curve loads replaces the per-tile gather when full-page text appears.
+  Indirect dispatch over non-empty tiles is the intermediate step.
+- Variable fonts: Geist ships variable TTFs; `FT_Set_Var_Design_Coordinates` + re-bake per
+  named instance. Static instances suffice indefinitely for engine UI.
+- OTF/CFF faces: enable the cubic→quad stage (the hook exists in the bake path).
+- Glyph directory on demand: bake full ASCII eagerly, other codepoints lazily at shape time
+  (directory grows, curve buffer appends via the staged-upload path).
+
+## 10. Build sequence
+
+1. Wiring: FreeType into CMake (§5 recipe), delete `src/render/text/ano_RenderText.{c,h}`,
+   skeleton `src/text` module + `include/anoptic_text.h` compiling on all platforms.
+2. Bake path: decompose → monotone quads → winding/em normalize → f16 shared-vertex stream +
+   directory. Unit tests: monotonicity and bbox==endpoints invariants, segment counts against
+   this report's audit numbers (1609 / ASCII), closed-contour area sanity.
+3. CPU reference rasterizer: scalar mirror of the shader math; RMS-compare coverage against
+   `FT_Render_Glyph` bitmaps for a probe set including the overlap glyphs (`# $ % + f t A g @`).
+   This validates the coverage math and the clamp fix off-GPU before any Vulkan work.
+4. Shaper v0 (UTF-8, cmap, advances, newline) + golden layout tests.
+5. GPU plumbing, visually inert: buffers, overlay ×3 + resize path, descriptor sets, compute
+   pipeline, composite blend draw sampling a cleared overlay. Validation-clean.
+6. `textraster.comp` via the in-frame fallback path first (sync-trivial): static string on
+   screen, screenshot-compare against the reference rasterizer.
+7. Async lane: `textTimeline`, text CB, submit + graphics wait, `ANO_FORCE_NO_ASYNC_TEXT`
+   A/B, validation-clean in both modes, freeze-methodology timing.
+8. Demo: profile-line mirror at print cadence, record before/after frame numbers here.
+
+Rough scope: `src/text` ≈ 1000-1200 lines C (bake 400, shaper 300, tests 400),
+`textraster.comp` ≈ 300 lines GLSL, `text_raster.c` + hooks ≈ 600 lines. PoC total ≈ 2.5k
+lines, no new heavyweight dependencies (FreeType is parse-only at init; an in-house
+glyf/cmap/hmtx reader could even retire it later if the dependency ever chafes).
