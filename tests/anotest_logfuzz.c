@@ -165,6 +165,7 @@ int main(int argc, char **argv)
         int v = atoi(argv[1]);
         if (v > 0) g_iters = v;
     }
+    scratch_anchor_to_exe();   // scratch relative to this exe's dir, cross-platform
     scratch_make_dir(DIR_A);
     scratch_make_dir(DIR_B);
     remove(PATH_A);

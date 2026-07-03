@@ -14,6 +14,7 @@
 #include <anoptic_strings.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
+#include <anoptic_filesystem.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -34,8 +35,8 @@ static void  remove_dir(const char *p) { rmdir(p); }
 static char *cwd_str(char *b, size_t n) { return getcwd(b, n); }
 #endif
 
-// CMake points ANO_TEST_OUTDIR at this test's build tree (build/<cfg>/tests). Fallback "." only when
-// compiled outside the build, so scratch dirs never land in the caller's CWD.
+// Scratch paths are relative to the CWD, which main() anchors to this executable's own directory
+// (build/<cfg>/tests) via ano_fs_chdir_gamepath() -- cross-platform, unlike a baked build path.
 #ifndef ANO_TEST_OUTDIR
 #define ANO_TEST_OUTDIR "."
 #endif
@@ -1042,6 +1043,12 @@ static int test_premature_join_half(void)
 int main(void)
 {
     int failures = 0;
+
+    // Anchor scratch output to this executable's directory (cross-platform); before any file I/O.
+    if (!ano_fs_chdir_gamepath()) {
+        fprintf(stderr, "chdir to gamepath failed\n");
+        return 1;
+    }
 
     // Pre-init abuse: every entry point must be safe before ano_log_init.
     {

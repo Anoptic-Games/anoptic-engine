@@ -83,7 +83,11 @@ static void test_userpath(void)
 
 static void test_append_file_api(void)
 {
-    const char *dir = ANO_TEST_OUTDIR "/anotest_filesystem_scratch";
+    // Absolute scratch dir resolved from the executable's own location at runtime (not a baked
+    // build-machine path), so it holds even before test_gamepath() chdirs -- see main()'s note.
+    ano_fspath base = ano_fs_gamepath();
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s/anotest_filesystem_scratch", base.str);
     char path[512];
     snprintf(path, sizeof path, "%s/append.log", dir);
     scratch_make_dir(dir);
@@ -119,8 +123,9 @@ static void test_append_file_api(void)
 
 int main(void)
 {
-    // Scratch IO first: test_gamepath chdirs away from the launch CWD, and ANO_TEST_OUTDIR
-    // is what keeps the scratch anchored regardless -- run in this order to prove that too.
+    // Scratch IO first: test_gamepath chdirs away from the launch CWD. test_append_file_api
+    // resolves its scratch dir from ano_fs_gamepath() (absolute), so it stays anchored even
+    // before that chdir -- run in this order to prove that too.
     test_append_file_api();
     test_userpath();
     test_gamepath();
