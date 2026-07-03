@@ -61,19 +61,40 @@ static _Atomic bool g_stop;
 /* Helpers */
 
 // Read the whole file into a NUL-terminated heap buffer. Caller frees. NULL if unreadable.
+//
+// Reads in a grow-until-EOF loop rather than sizing the file with fseek(END)/ftell first. On a
+// remote or attribute-caching filesystem (NFS, SMB/CIFS, sshfs, or a WSL2 9P share reached from a
+// Windows exe over interop) a freshly opened read handle can see a STALE, short size for a file that
+// another handle just wrote and closed -- close-to-open coherence is a single-kernel/one-page-cache
+// guarantee, and those layers break it. A size-then-read would then silently truncate. Consuming
+// bytes until fread stops returning any reads whatever is actually delivered, independent of what
+// the cached metadata claims, and behaves identically on every local filesystem.
 static char *slurp(const char *path, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
     if (f == NULL) { if (out_len) *out_len = 0; return NULL; }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size < 0) { fclose(f); if (out_len) *out_len = 0; return NULL; }
-    char *buf = malloc((size_t)size + 1);
-    size_t got = fread(buf, 1, (size_t)size, f);
+
+    size_t cap = 8192, len = 0;
+    char *buf = malloc(cap);
+    if (buf == NULL) { fclose(f); if (out_len) *out_len = 0; return NULL; }
+
+    for (;;) {
+        if (len + 1 >= cap) {   // always keep one byte in reserve for the trailing NUL
+            size_t ncap = cap * 2;
+            char *nbuf = realloc(buf, ncap);
+            if (nbuf == NULL) { free(buf); fclose(f); if (out_len) *out_len = 0; return NULL; }
+            buf = nbuf;
+            cap = ncap;
+        }
+        size_t got = fread(buf + len, 1, cap - len - 1, f);
+        len += got;
+        if (got == 0) break;    // EOF or read error; ferror distinguishes them below
+    }
+
+    if (ferror(f)) { free(buf); fclose(f); if (out_len) *out_len = 0; return NULL; }
     fclose(f);
-    buf[got] = '\0';
-    if (out_len) *out_len = got;
+    buf[len] = '\0';
+    if (out_len) *out_len = len;
     return buf;
 }
 
