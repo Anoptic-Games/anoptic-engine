@@ -161,6 +161,7 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 	bool int64;
 	bool drawIndirectCount;
 	bool meshShader;            // VK_EXT_mesh_shader present and meshShader feature usable; false selects the vertex-shader fallback path
+	bool taskShader;            // VK_EXT_mesh_shader taskShader feature usable (implies meshShader); enables the per-meshlet task cull
 	bool depthMaxResolve;       // VK_RESOLVE_MODE_MAX_BIT in supportedDepthResolveModes: enables the Hi-Z single-sample depth-resolve path (else per-sample MSAA reduce)
 	bool shaderOutputLayer;     // vk1.2 shaderOutputLayer(+ViewportIndex): vertex-stage gl_Layer, enables the single-pass layered shadow blur (else per-layer passes)
 	bool timelineSemaphore;     // vk1.2 timelineSemaphore: cross-queue ordering for the async Hi-Z build (review finding 2)
@@ -705,6 +706,11 @@ typedef struct CullUBO
     mat4     prevViewProj[ANO_VIEW_COUNT];
     float    hizParams[ANO_VIEW_COUNT][4];
     float    hizProj[ANO_VIEW_COUNT][4];
+    // Task-shader meshlet cull (review priority 10): [0] != 0 sizes mesh-path indirect commands as
+    // ceil(meshletCount/32) TASK workgroups (flat.task launches survivors) instead of one mesh
+    // workgroup per meshlet. Mirrors RendererState.taskCull — the pipelines' stage set and this
+    // flag must flip together. std140 uvec4; [1..3] reserved.
+    uint32_t taskParams[4];
 } CullUBO;
 
 // std140 layout guards for the Hi-Z tail (review 4.9 step 3): a scalar before 16-aligned arrays is the
@@ -1203,6 +1209,14 @@ typedef struct RendererState
     bool                    asyncLc;
     VkSemaphore             preludeTimeline;
     VkSemaphore             lcTimeline;
+
+    // Task-shader meshlet cull (review priority 10): every mesh-drawing pipeline (flat both lanes
+    // + prepass impls, transmission, additive, shadow) carries a flat.task stage that frustum/
+    // cone/Hi-Z-culls 32 meshlets per workgroup and launches mesh workgroups for survivors only;
+    // cull.comp sizes indirect commands to match (CullUBO.taskParams). Decided once at init
+    // (meshShader && taskShader && !ANO_FORCE_NO_TASK) — layouts, pipelines, barriers, push-
+    // constant stage flags, and the cull UBO flag all key off it together.
+    bool                    taskCull;
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.

@@ -455,7 +455,16 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
         }
     }
 
-    // 2. Calculate Bounding Cone
+    // 2. Calculate Bounding Cone — meshoptimizer's convention, because the consumer (flat.task)
+    // culls with its documented sphere-conservative test:
+    //   dot(center - eye, axis) >= cutoff * |center - eye| + radius  =>  fully backfacing.
+    // For that inequality, cutoff must be sin(spread) = sqrt(1 - mindp^2) where mindp = the
+    // minimum dot(axis, triangle normal): the meshlet is backfacing from a direction iff every
+    // normal faces away, and the sphere term absorbs the positional spread. Cones spreading past
+    // a hemisphere (mindp <= 0) can NEVER be fully backfacing -> cutoff = 1 disables the test
+    // (dot/|v| <= 1 < 1 + r/|v|). The previous cutoff (mindp - 0.05, degrading toward -1 = "cull
+    // from almost everywhere") was the wrong convention entirely — curved meshlets wrongly culled
+    // while front-facing, which is why the in-mesh stopgap was disabled as broken.
     float avg_normal[3] = { 0.0f, 0.0f, 0.0f };
     float triangle_normals[256][3]; // Max 256 triangles
     size_t valid_normals = 0;
@@ -473,24 +482,30 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
 
         float edge1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
         float edge2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
-        
+
         float normal[3];
         cross_product(edge1, edge2, normal);
-        
+
         float len = sqrtf(dot_product(normal, normal));
         if (len > 1e-6f) {
-            // Keep the normal unnormalized when adding to avg_normal so it's weighted by triangle area
-            avg_normal[0] += normal[0];
-            avg_normal[1] += normal[1];
-            avg_normal[2] += normal[2];
-            
-            // Normalize for storing in the list (used for angle deviation cutoff)
+            // Average the NORMALIZED normals (meshopt convention): the axis tracks facing spread,
+            // not area, so one large wall triangle cannot swallow a fold's deviation.
             triangle_normals[valid_normals][0] = normal[0] / len;
             triangle_normals[valid_normals][1] = normal[1] / len;
             triangle_normals[valid_normals][2] = normal[2] / len;
+            avg_normal[0] += triangle_normals[valid_normals][0];
+            avg_normal[1] += triangle_normals[valid_normals][1];
+            avg_normal[2] += triangle_normals[valid_normals][2];
             valid_normals++;
         }
     }
+
+    // Defaults: degenerate meshlet (no valid normals) never cone-culls.
+    bounds.cone_axis[0] = 0.0f; bounds.cone_axis[1] = 0.0f; bounds.cone_axis[2] = 1.0f;
+    bounds.cone_cutoff = 1.0f;
+    bounds.cone_apex[0] = bounds.center[0];
+    bounds.cone_apex[1] = bounds.center[1];
+    bounds.cone_apex[2] = bounds.center[2];
 
     if (valid_normals > 0) {
         float avg_len = sqrtf(dot_product(avg_normal, avg_normal));
@@ -498,27 +513,15 @@ ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vert
             bounds.cone_axis[0] = avg_normal[0] / avg_len;
             bounds.cone_axis[1] = avg_normal[1] / avg_len;
             bounds.cone_axis[2] = avg_normal[2] / avg_len;
-        } else {
-            bounds.cone_axis[0] = 0.0f; bounds.cone_axis[1] = 0.0f; bounds.cone_axis[2] = 1.0f;
-        }
 
-        float min_dot = 1.0f;
-        for (size_t i = 0; i < valid_normals; ++i) {
-            float d = dot_product(bounds.cone_axis, triangle_normals[i]);
-            if (d < min_dot) min_dot = d;
-        }
+            float min_dot = 1.0f;
+            for (size_t i = 0; i < valid_normals; ++i) {
+                float d = dot_product(bounds.cone_axis, triangle_normals[i]);
+                if (d < min_dot) min_dot = d;
+            }
 
-        // Add a small epsilon to cutoff for safety, cap to max spread (backface culling invalid if < 0)
-        bounds.cone_cutoff = min_dot - 0.05f; 
-        if (bounds.cone_cutoff < -1.0f) bounds.cone_cutoff = -1.0f;
-        
-        // Apex is placed at the sphere center for culling.
-        bounds.cone_apex[0] = bounds.center[0];
-        bounds.cone_apex[1] = bounds.center[1];
-        bounds.cone_apex[2] = bounds.center[2];
-    } else {
-        bounds.cone_axis[0] = 0.0f; bounds.cone_axis[1] = 0.0f; bounds.cone_axis[2] = 1.0f;
-        bounds.cone_cutoff = -1.0f; // Invalid
+            bounds.cone_cutoff = min_dot <= 0.0f ? 1.0f : sqrtf(1.0f - min_dot * min_dot);
+        }
     }
 
     return bounds;

@@ -67,7 +67,7 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 	createInfo.pCode = (uint32_t *) code->data; // cursed
 	
 	VkShaderModule shaderModule;
-	if (vkCreateShaderModule(device, &createInfo, NULL, &shaderModule) != VK_SUCCESS) 
+	if (vkCreateShaderModule(device, &createInfo, NULL, &shaderModule) != VK_SUCCESS)
 	{
 		printf("Failed to create shader module!\n");
 		return NULL;
@@ -76,14 +76,46 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 	return shaderModule;
 }
 
+// Task meshlet-cull stage (review priority 10): loads flat.task and fills a TASK stage with the
+// lane's {shadowPass, coneCull} specialization. One shared module load per pipeline builder; the
+// caller destroys *outModule after pipeline creation. See pipeline.h for the storage contract.
+bool ano_pipeline_task_stage(VulkanContext* ctx, VkBool32 shadowPass, VkBool32 coneCull,
+                             TaskStageStorage* store, VkShaderModule* outModule,
+                             VkPipelineShaderStageCreateInfo* stage)
+{
+	struct Buffer code;
+	char path[256];
+	snprintf(path, sizeof(path), "%s/resources/shaders/flat.task.spv", PROJECT_ROOT);
+	if (!loadFile(path, &code)) return false;
+	*outModule = createShaderModule(ctx->device, &code);
+	ano_aligned_free(code.data);
+	if (*outModule == NULL) return false;
+
+	store->entries[0] = (VkSpecializationMapEntry){ .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
+	store->entries[1] = (VkSpecializationMapEntry){ .constantID = 1, .offset = sizeof(VkBool32), .size = sizeof(VkBool32) };
+	store->data[0] = shadowPass;
+	store->data[1] = coneCull;
+	store->spec = (VkSpecializationInfo){ .mapEntryCount = 2, .pMapEntries = store->entries,
+		.dataSize = sizeof(store->data), .pData = store->data };
+
+	*stage = (VkPipelineShaderStageCreateInfo){ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+		.stage = VK_SHADER_STAGE_TASK_BIT_EXT, .module = *outModule, .pName = "main",
+		.pSpecializationInfo = &store->spec };
+	return true;
+}
+
 
 bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 {
 	// The per-vertex geometry work runs in the mesh stage on capable devices and in
 	// the vertex stage on the fallback path. VK_SHADER_STAGE_MESH_BIT_EXT is invalid
 	// on devices without the extension, so the stage flag must track the active path.
-	VkShaderStageFlags geometryStage = ctx->deviceCapabilities.meshShader
-		? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+	// The task meshlet cull (review priority 10) reads a subset of these bindings ahead
+	// of the mesh stage; folding TASK into the shared flag keeps every mesh-path binding
+	// task-visible (surplus visibility on the few it doesn't read is legal and free).
+	VkShaderStageFlags geometryStage = (ctx->deviceCapabilities.meshShader
+		? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+		| (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
 	uboLayoutBinding.binding = 0;
@@ -186,7 +218,17 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	lightRuntimeLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	lightRuntimeLayoutBinding.pImmutableSamplers = NULL;
 
-	VkDescriptorSetLayoutBinding bindings[13] = {
+	// 13: this view's Hi-Z pyramid (lag slot's — same image the entity cull samples at its binding
+	// 11), for the task meshlet cull's occlusion test. Only present when the task path is on: the
+	// TASK stage flag is invalid without the mesh-shader extension.
+	VkDescriptorSetLayoutBinding hizPyramidLayoutBinding = {};
+	hizPyramidLayoutBinding.binding = 13;
+	hizPyramidLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	hizPyramidLayoutBinding.descriptorCount = 1;
+	hizPyramidLayoutBinding.stageFlags = VK_SHADER_STAGE_TASK_BIT_EXT;
+	hizPyramidLayoutBinding.pImmutableSamplers = NULL;
+
+	VkDescriptorSetLayoutBinding bindings[14] = {
 		uboLayoutBinding,
 		ssboLayoutBinding,
 		materialLayoutBinding,
@@ -199,12 +241,13 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		instanceDataLayoutBinding,
 		clusterCountLayoutBinding,
 		clusterIndexLayoutBinding,
-		lightRuntimeLayoutBinding
+		lightRuntimeLayoutBinding,
+		hizPyramidLayoutBinding
 	};
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 13;
+	layoutInfo.bindingCount = state->taskCull ? 14 : 13;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -352,9 +395,11 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
         return false;
 
     // shadow geometry/sampling set (set 2): 0 shadow frustum viewProjs (geometry depth pass +
-    // fragment sampling), 1 shadow atlas array (fragment), 2 per-light shadow info (fragment).
-    VkShaderStageFlags geomStage = ctx->deviceCapabilities.meshShader
-        ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+    // fragment sampling; + the task meshlet cull, which tests shadow draws against the frustum
+    // planes), 1 shadow atlas array (fragment), 2 per-light shadow info (fragment).
+    VkShaderStageFlags geomStage = (ctx->deviceCapabilities.meshShader
+        ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+        | (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
     VkDescriptorSetLayoutBinding geomBindings[3] = {};
     geomBindings[0].binding = 0;
     geomBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1158,6 +1203,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->shadowCache);
 
 	bool useMesh = ctx->deviceCapabilities.meshShader;
+	bool useTask = state->taskCull;
 	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// Depth-only geometry variant (ANO_DEPTH_ONLY compile of flat.mesh/flat.vert): position-only
@@ -1165,28 +1211,39 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	// direct occupancy win on the caster geometry. shadow_depth.frag declares no inputs to match.
 	struct Buffer geomCode, fragCode;
 	char path[256];
-	snprintf(path, sizeof(path), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat_depth.mesh" : "flat_depth.vert");
+	snprintf(path, sizeof(path), "%s/resources/shaders/%s.spv", PROJECT_ROOT,
+		useMesh ? (useTask ? "flat_depth_task.mesh" : "flat_depth.mesh") : "flat_depth.vert");
 	if (!loadFile(path, &geomCode)) return false;
 	snprintf(path, sizeof(path), "%s/resources/shaders/shadow_depth.frag.spv", PROJECT_ROOT);
 	if (!loadFile(path, &fragCode)) return false;
 	VkShaderModule geomModule = createShaderModule(ctx->device, &geomCode);
 	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
 
+	// Task meshlet cull (review priority 10), shadow variant: frustum-only against the draw's
+	// shadow frustum planes — one shadow partition mixes both sidedness lanes' casters (cone
+	// would hole doubleSided shadows) and no shadow Hi-Z exists.
+	VkShaderModule taskModule = VK_NULL_HANDLE;
+	TaskStageStorage taskStore;
+	VkPipelineShaderStageCreateInfo taskStageInfo = {};
+	if (useTask && !ano_pipeline_task_stage(ctx, VK_TRUE, VK_FALSE, &taskStore, &taskModule, &taskStageInfo))
+		return false;
+
 	// shadowPass = true (constant_id 0 in flat.mesh / flat.vert).
 	VkBool32 shadowPassTrue = VK_TRUE;
 	VkSpecializationMapEntry specEntry = { .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
 	VkSpecializationInfo specInfo = { .mapEntryCount = 1, .pMapEntries = &specEntry, .dataSize = sizeof(VkBool32), .pData = &shadowPassTrue };
 
-	VkPipelineShaderStageCreateInfo stages[2] = {};
-	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[0].stage = geometryStage;
-	stages[0].module = geomModule;
-	stages[0].pName = "main";
-	stages[0].pSpecializationInfo = &specInfo;
+	VkPipelineShaderStageCreateInfo stages[3] = {};
+	stages[0] = taskStageInfo; // leading slot; skipped when the task path is off
 	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	stages[1].module = fragModule;
+	stages[1].stage = geometryStage;
+	stages[1].module = geomModule;
 	stages[1].pName = "main";
+	stages[1].pSpecializationInfo = &specInfo;
+	stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[2].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	stages[2].module = fragModule;
+	stages[2].pName = "main";
 
 	VkPipelineViewportStateCreateInfo viewportState = {};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -1252,8 +1309,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineInfo.pNext = &renderingInfo;
-	pipelineInfo.stageCount = 2;
-	pipelineInfo.pStages = stages;
+	pipelineInfo.stageCount = useTask ? 3 : 2;
+	pipelineInfo.pStages = useTask ? stages : &stages[1];
 	pipelineInfo.pVertexInputState = useMesh ? NULL : &vertexInput;
 	pipelineInfo.pInputAssemblyState = useMesh ? NULL : &inputAssembly;
 	pipelineInfo.pViewportState = &viewportState;
@@ -1271,6 +1328,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	ano_aligned_free(fragCode.data);
 	vkDestroyShaderModule(ctx->device, geomModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragModule, NULL);
+	if (taskModule != VK_NULL_HANDLE)
+		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
 	if (r != VK_SUCCESS) { printf("Failed to create shadow depth pipeline!\n"); return false; }
 

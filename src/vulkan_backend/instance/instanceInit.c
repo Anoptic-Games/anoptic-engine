@@ -507,6 +507,9 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	capabilities.meshShader = meshShaderFeatures.meshShader;
 	// Test hook: force the vertex-shader fallback path on mesh-capable hardware.
 	if (getenv("ANO_FORCE_NO_MESH_SHADER")) capabilities.meshShader = false;
+	// Task (amplification) stage for the per-meshlet cull (review priority 10); only meaningful
+	// with the mesh path (the fallback vertex path has no meshlets to cull).
+	capabilities.taskShader = capabilities.meshShader && meshShaderFeatures.taskShader;
 
 	// Depth-resolve MAX support (avenue 1): a PROPERTY, not a feature. supportedDepthResolveModes must
 	// include SAMPLE_ZERO but MAX is optional; when present the Hi-Z build resolves depth to single-sample
@@ -2326,6 +2329,25 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
         cw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         cw.pImageInfo = hizImg;
         vkUpdateDescriptorSets(ctx->device, 1, &cw, 0, NULL);
+
+        // Global set binding 13 (review priority 10): the task meshlet cull samples the SAME lag
+        // slot's pyramid, one per view (the per-view set makes it a single sampler). Written for
+        // every frame slot x view so the statically-used binding is always valid; the test itself
+        // stays gated by GlobalUBO.hizParams.z. Only when the task layout carries the binding.
+        if (state->taskCull)
+        {
+            for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+            {
+                VkWriteDescriptorSet tw = {};
+                tw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                tw.dstSet = state->frames[i].views[v].globalSet;
+                tw.dstBinding = 13;
+                tw.descriptorCount = 1;
+                tw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                tw.pImageInfo = &hizImg[v];
+                vkUpdateDescriptorSets(ctx->device, 1, &tw, 0, NULL);
+            }
+        }
     }
 }
 

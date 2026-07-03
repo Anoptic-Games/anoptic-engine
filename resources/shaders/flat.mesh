@@ -133,6 +133,18 @@ layout(set = 0, binding = 7) readonly buffer CompactedEntityIndices {
     uint entityIndices[];
 } compactedBuf;
 
+#ifdef ANO_TASK_CULL
+// Task-launched variant (review priority 10): flat.task frustum/cone/Hi-Z-culls this draw's
+// meshlets and emits one mesh workgroup per SURVIVOR; the payload maps gl_WorkGroupID.x back to
+// the meshlet index AND carries the draw's compacted entry — gl_DrawID is UNDEFINED in a mesh
+// stage behind a task stage (VUID 09631), so the entity/LOD resolution reads packedEntity
+// instead. Layout MUST match flat.task's TaskPayload.
+taskPayloadSharedEXT struct TaskPayload {
+    uint packedEntity;
+    uint meshletIds[32];
+} IN;
+#endif
+
 layout(push_constant) uniform PushConstants {
     uint transformBaseOffset;
     uint shadowFrustumIndex; // depth pass only: which shadow frustum's viewProj to project by
@@ -171,8 +183,12 @@ uint getLocalIndex(uint baseByteOffset, uint triangleOffset, uint t, uint vertex
 }
 
 void main() {
-    uint drawId = gl_DrawID;
-    uint packed = compactedBuf.entityIndices[pc.transformBaseOffset + drawId];
+#ifdef ANO_TASK_CULL
+    // Forwarded by flat.task: gl_DrawID must not be read behind a task stage (VUID 09631).
+    uint packed = IN.packedEntity;
+#else
+    uint packed = compactedBuf.entityIndices[pc.transformBaseOffset + gl_DrawID];
+#endif
     uint entityIndex = packed & ANO_ENTITY_INDEX_MASK;
     uint lodLevel    = packed >> ANO_LOD_LEVEL_SHIFT;
 
@@ -191,76 +207,17 @@ void main() {
     uint uniqueVertOffsetUint   = uniqueVertOffsetBytes / 4;
     uint globalVertexBase       = vertexOffsetBytes / 32;
 
+    // Task-launched path: gl_WorkGroupID.x indexes the payload's survivor list (flat.task already
+    // frustum/cone/Hi-Z-culled this draw's meshlets — the old in-mesh cone-cull stopgap lives on
+    // there, canonically). Direct path: one workgroup per meshlet, cull.comp sized the dispatch.
+#ifdef ANO_TASK_CULL
+    uint m = IN.meshletIds[gl_WorkGroupID.x];
+#else
     uint m = gl_WorkGroupID.x;
+#endif
     if (m >= meshletCount) {
         return;
     }
-
-    // --- Per-meshlet backface cone culling -------------------------------------------
-    // STOPGAP placement. This rejects a meshlet whose normal cone is entirely backfacing
-    // before any vertex transform or primitive setup, by emitting zero outputs. NOTE that
-    // the mesh workgroup is still *dispatched* (the cull pass sets groupCountX =
-    // meshletCount); we only skip its work, not its launch.
-    //
-    // CANONICAL approach: move this test into a task (amplification) shader that runs
-    // ahead of the mesh stage and uses EmitMeshTasksEXT to launch mesh workgroups only
-    // for surviving meshlets — culled clusters then cost nothing, not even a dispatch.
-    // That requires a new pipeline stage + payload plumbing; deferred. Per-meshlet frustum
-    // culling (the sphere is in the same bounds struct) could also be added right here.
-    //
-    // The bounds block lives in indexBuf at mData.boundsOffset; each entry is the 48-byte
-    // ano_meshlet_bounds_gpu_t (sphere[4] + cone_apex/cutoff[4] + cone_axis/pad[4] floats).
-    // ssa: This is still broken. We'll just skip cone culling until we implement it properly
-    //      in task shaders.
-    /*
-    {
-        uint boundsBase = (mData.boundsOffset / 4u) + m * 12u;
-        vec3  coneApex   = vec3(uintBitsToFloat(indexBuf.data[boundsBase + 4u]),
-                                uintBitsToFloat(indexBuf.data[boundsBase + 5u]),
-                                uintBitsToFloat(indexBuf.data[boundsBase + 6u]));
-        float coneCutoff = uintBitsToFloat(indexBuf.data[boundsBase + 7u]);
-        vec3  coneAxis   = vec3(uintBitsToFloat(indexBuf.data[boundsBase + 8u]),
-                                uintBitsToFloat(indexBuf.data[boundsBase + 9u]),
-                                uintBitsToFloat(indexBuf.data[boundsBase + 10u]));
-
-        // Double-sided materials show both faces, so a backface cone never hides them.
-        bool singleSided = (materialBuf.materials[materialIndex].doubleSided == 0u);
-
-        mat4 model = transformBuf.transforms[entityIndex];
-
-        // meshoptimizer's cone (apex + axis + cutoff half-angle) is only sound under a
-        // RIGID model basis: rotation + uniform scale, non-mirrored. Under non-uniform
-        // scale, shear, or a mirrored (negative-determinant) basis, neither mat3(model)*axis
-        // nor the fixed cutoff describe the world-space cone, and the test wrongly culls
-        // in-view meshlets (e.g. mirrored / non-uniformly-scaled glTF nodes). So detect a
-        // rigid basis and only cone-cull then; non-rigid instances skip the cull — a
-        // performance miss, never a visual dropout. (The canonical fix is task-shader cone
-        // culling with a properly derived world cone; this gate keeps the stopgap honest.)
-        mat3 basis = mat3(model);
-        float l0 = dot(basis[0], basis[0]);
-        float l1 = dot(basis[1], basis[1]);
-        float l2 = dot(basis[2], basis[2]);
-        bool uniformScale = abs(l0 - l1) <= 1e-3 * max(l0, l1) &&
-                            abs(l0 - l2) <= 1e-3 * max(l0, l2);
-        bool orthogonal   = abs(dot(basis[0], basis[1])) <= 1e-3 * sqrt(l0 * l1) &&
-                            abs(dot(basis[0], basis[2])) <= 1e-3 * sqrt(l0 * l2) &&
-                            abs(dot(basis[1], basis[2])) <= 1e-3 * sqrt(l1 * l2);
-        bool rigid = uniformScale && orthogonal && determinant(basis) > 0.0;
-
-        // Transform cone into world space (normalize absorbs the uniform scale).
-        // meshoptimizer convention: fully backfacing (cull) when
-        //   dot(normalize(apex - camera), axis) >= cutoff.
-        // Degenerate cones get cutoff == 1, so the test is effectively never taken.
-        vec3 apexWorld = (model * vec4(coneApex, 1.0)).xyz;
-        vec3 axisWorld = normalize(basis * coneAxis);
-        vec3 viewDir   = normalize(apexWorld - global.cameraPos.xyz);
-        if (singleSided && rigid && dot(viewDir, axisWorld) >= coneCutoff) {
-            SetMeshOutputsEXT(0u, 0u);
-            return;
-        }
-    }
-    */
-    // ---------------------------------------------------------------------------------
 
     uint meshletIndex = meshletOffsetUint + m * 4;
     uint vertexOffset   = indexBuf.data[meshletIndex + 0];

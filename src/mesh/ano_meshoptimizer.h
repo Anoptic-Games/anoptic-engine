@@ -49,8 +49,10 @@ size_t ano_build_meshlets(ano_meshlet_t* meshlets, uint32_t* meshlet_vertices, u
                           size_t max_vertices, size_t max_triangles);
 
 /**
- * Computes the bounds for a specific meshlet using Ritter's bounding sphere algorithm for the sphere 
- * and average + max deviation for the cone.
+ * Computes the bounds for a specific meshlet: Ritter's bounding sphere, and a normal cone in
+ * meshoptimizer's convention — axis = normalized mean of triangle normals, cutoff = sin(max
+ * deviation), cutoff = 1 when the spread passes a hemisphere (never backface-culled). Consumed by
+ * flat.task's sphere-conservative test: dot(center-eye, axis) >= cutoff*|center-eye| + radius.
  */
 ano_meshlet_bounds_gpu_t ano_compute_meshlet_bounds(const uint32_t* meshlet_vertices, const uint8_t* meshlet_triangles,
                                                     size_t triangle_count, const float* vertex_positions,

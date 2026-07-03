@@ -47,6 +47,11 @@ layout(set = 0, binding = 0) uniform CullUBO {
     mat4 prevViewProj[ANO_VIEW_COUNT];
     vec4 hizParams[ANO_VIEW_COUNT];
     vec4 hizProj[ANO_VIEW_COUNT];
+    // Task-shader meshlet cull (review priority 10). x != 0: every mesh-drawing pipeline carries a
+    // task stage (flat.task, 32 meshlets per task workgroup), so emitDraw sizes groupCountX as
+    // ceil(meshletCount/32) task workgroups instead of one mesh workgroup per meshlet. Mirrors
+    // RendererState.taskCull; the two MUST agree or draws launch wrong-sized grids.
+    uvec4 taskParams;
 };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -216,7 +221,9 @@ uint emitDraw(uint partIdx, uint idx, MeshData mData, uint level) {
     uint destIdx = partIdx * maxEntities + writeIdx;
     if (useMeshShader) {
         uint b = destIdx * 3u;
-        indirectData[b + 0u] = mData.meshletCount; // groupCountX = one workgroup per meshlet
+        indirectData[b + 0u] = taskParams.x != 0u
+            ? (mData.meshletCount + 31u) / 32u     // task path: 32-meshlet task workgroups (flat.task)
+            : mData.meshletCount;                  // direct path: one mesh workgroup per meshlet
         indirectData[b + 1u] = 1u;
         indirectData[b + 2u] = 1u;
     } else {
