@@ -1,7 +1,9 @@
 {
-  # Anoptic Engine dev environments + a buildable package. Targets, by command:
+  # Anoptic Engine dev environments + buildable packages. Targets, by command:
   #
   #   nix build                  # headless engine binary, one shot -> ./result/bin
+  #   nix build .#renderer       # full Vulkan renderer binary + shaders (runs on a
+  #                              # real-GPU Linux host; WSL has no Linux Vulkan driver)
   #   nix develop                # Linux-native clang: headless build, tests, ASan/TSan
   #   nix develop .#windows      # MinGW-w64 clang cross: Windows .exe from WSL/Linux
   #
@@ -20,19 +22,27 @@
     # toolchain is shared from the store instead of rebuilt. Advance deliberately.
     nixpkgs.url = "github:NixOS/nixpkgs/b5aa0fbd538984f6e3d201be0005b4463d8b09f8";
 
-    # `src = self` gives the superproject git tree WITHOUT submodule contents, so
-    # the package injects the ones it compiles from pinned inputs instead. The
-    # headless build links only mimalloc-static; the renderer's submodules (glfw,
-    # cgltf, freetype) are not needed until there is a packaged renderer target.
-    # Rev == the gitlink recorded at external/mimalloc; bump both together.
+    # `src = self` gives the superproject git tree WITHOUT submodule contents, so the
+    # packages inject the ones they compile from pinned inputs instead. Each rev == the
+    # gitlink recorded in .gitmodules; bump both together. The headless build needs only
+    # mimalloc; the renderer adds glfw + cgltf. (external/freetype is a submodule too,
+    # but nothing in the build or source references it -- deliberately not an input.)
     mimalloc-src = {
       url = "github:microsoft/mimalloc/02a2f5df9d7d46d30263b83832eebeeab62dc5fe";
+      flake = false;
+    };
+    glfw-src = {
+      url = "github:glfw/glfw/7b6aead9fb88b3623e3b3725ebb42670cbe4c579";
+      flake = false;
+    };
+    cgltf-src = {
+      url = "github:jkuhlmann/cgltf/85cd62382dfea638278962690cf515023f33ed00";
       flake = false;
     };
   };
 
   outputs =
-    { self, nixpkgs, mimalloc-src }:
+    { self, nixpkgs, mimalloc-src, glfw-src, cgltf-src }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -56,10 +66,51 @@
 
       # Nixpkgs' cc-wrapper injects -D_FORTIFY_SOURCE, which errors under -O0
       # Debug builds: "_FORTIFY_SOURCE requires compiling with optimization".
+      # Dev shells only -- the packages build Release (-O3), where fortify is fine.
       fortifyOff = [
         "fortify"
         "fortify3"
       ];
+
+      # Drop a pinned submodule source into the unpacked tree (submodule contents are
+      # absent from `self`; the store copy is read-only, hence the chmod).
+      injectSubmodule = name: src: ''
+        rm -rf "$sourceRoot/external/${name}"
+        cp -r ${src} "$sourceRoot/external/${name}"
+        chmod -R u+w "$sourceRoot/external/${name}"
+      '';
+
+      # One derivation shape for both engine packages; the engine's own install()
+      # rules (root CMakeLists) place bin/anopticengine and, for the renderer,
+      # bin/resources/shaders -- the default installPhase just runs them.
+      mkEngine =
+        {
+          pname,
+          description,
+          headless,
+          extraNative ? [ ],
+          extraBuild ? [ ],
+          extraUnpack ? "",
+        }:
+        pkgs.clangStdenv.mkDerivation {
+          inherit pname;
+          version = "0.0.1";
+          src = self;
+
+          nativeBuildInputs = (with pkgs; [ cmake ninja pkg-config ]) ++ extraNative;
+          buildInputs = extraBuild;
+
+          postUnpack = injectSubmodule "mimalloc" mimalloc-src + extraUnpack;
+
+          cmakeFlags = [
+            "-DCMAKE_BUILD_TYPE=Release"
+          ] ++ pkgs.lib.optional headless "-DANOPTIC_HEADLESS=ON";
+
+          meta = {
+            inherit description;
+            mainProgram = "anopticengine";
+          };
+        };
     in
     {
       devShells.${system} = {
@@ -120,6 +171,11 @@
             # model) does not, so provide it explicitly for <pthread.h>.
             crossPkgs.windows.pthreads
           ];
+          # Runtime DLLs the produced exe imports (libmcfgthread-2, libwinpthread-1).
+          # The Windows host cannot resolve them from the nix store and a missing DLL
+          # fails SILENTLY over WSL interop, so the root CMakeLists stages every DLL
+          # in these directories next to the built binaries.
+          ANOPTIC_MINGW_DLL_DIRS = "${crossPkgs.windows.mcfgthreads}/bin;${crossPkgs.windows.pthreads}/bin";
           shellHook = ''
             echo "[anoptic] Windows target — $($CC --version | head -1)"
             echo "[anoptic] configure with: cmake \$cmakeFlags -G Ninja -S . -B build/Windows"
@@ -127,50 +183,51 @@
         };
       };
 
-      # ---- Buildable package: headless engine -------------------------------
-      # `nix build` -> a runnable console engine in one shot, no dev shell, no
-      # manual cmake. HEADLESS only, on purpose: the renderer bakes
-      # PROJECT_ROOT=<source dir> into the binary to find shaders/assets at
-      # runtime (root CMakeLists), which is a build-sandbox path that won't
-      # exist post-install. The headless path uses no assets, so it is the one
-      # target that is self-contained today. A packaged renderer waits on the
-      # resource manager owning asset paths (relative to the exe, not baked).
-      packages.${system}.default = pkgs.clangStdenv.mkDerivation {
-        pname = "anopticengine";
-        version = "0.0.1";
-        src = self;
-
-        nativeBuildInputs = with pkgs; [
-          cmake
-          ninja
-          pkg-config
-        ];
-        hardeningDisable = fortifyOff;
-
-        # external/mimalloc is a gitlink -- empty in `self`. Drop the pinned
-        # source in before configure (writable: the store copy is read-only).
-        postUnpack = ''
-          rm -rf source/external/mimalloc
-          cp -r ${mimalloc-src} source/external/mimalloc
-          chmod -R u+w source/external/mimalloc
-        '';
-
-        cmakeFlags = [
-          "-DANOPTIC_HEADLESS=ON"
-          "-DCMAKE_BUILD_TYPE=Release"
-        ];
-
-        # The engine target has no install() rule of its own (only vendored
-        # mimalloc does), so place the binary by hand.
-        installPhase = ''
-          runHook preInstall
-          install -Dm755 anopticengine $out/bin/anopticengine
-          runHook postInstall
-        '';
-
-        meta = {
+      # ---- Buildable packages -------------------------------------------------
+      # `nix build` -> a runnable engine in one shot, no dev shell, no manual cmake.
+      # Shaders resolve relative to the executable (loadFile / ano_fs_gamepath) and the
+      # engine's install() rules ship them next to it, so the renderer package is
+      # self-contained: bin/anopticengine + bin/resources/shaders. Test assets
+      # (assets/*.gltf) are gitignored -- absent from `self` -- so the packaged
+      # renderer aborts at the model load unless assets are provided beside the exe;
+      # the resource manager (docs/resourcesmg.md) owns the real fix for that.
+      packages.${system} = {
+        default = mkEngine {
+          pname = "anopticengine-headless";
           description = "Anoptic Engine — headless console build";
-          mainProgram = "anopticengine";
+          headless = true;
+        };
+
+        renderer = mkEngine {
+          pname = "anopticengine";
+          description = "Anoptic Engine — Vulkan renderer build";
+          headless = false;
+          # glslc compiles shaders at build time; wayland-scanner is a hard
+          # find_program requirement of the vendored glfw's Wayland backend.
+          extraNative = with pkgs; [
+            shaderc
+            wayland-scanner
+          ];
+          # glfw 3.4 builds BOTH Linux backends by default: X11 headers via
+          # find_package(X11) + per-header checks, Wayland via pkg-config
+          # (wayland-client/cursor/egl) + libxkbcommon. The protocol XMLs are
+          # vendored in glfw itself, so wayland-protocols is not needed.
+          # libGL: GLFW_INCLUDE_VULKAN does NOT suppress glfw3.h's <GL/gl.h>
+          # include (only GLFW_INCLUDE_NONE would), so the GL headers must exist
+          # even though the engine is pure Vulkan.
+          extraBuild = with pkgs; [
+            vulkan-headers
+            vulkan-loader
+            libGL
+            libx11
+            libxrandr
+            libxinerama
+            libxcursor
+            libxi
+            wayland
+            libxkbcommon
+          ];
+          extraUnpack = injectSubmodule "glfw" glfw-src + injectSubmodule "cgltf" cgltf-src;
         };
       };
 

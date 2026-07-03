@@ -94,6 +94,21 @@ set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;co
 
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
+    # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
+    # executables live HERE, not next to anopticengine -- so stage both into this
+    # directory too. Plain custom target: re-copies on every build, but that is six
+    # small .spv plus the dev assets, and it can never go stale.
+    add_custom_target(anoptic_test_resources ALL
+            COMMAND ${CMAKE_COMMAND} -E copy_directory ${SHADER_BIN_DIR} ${CMAKE_CURRENT_BINARY_DIR}/resources/shaders
+            COMMENT "Staging shaders (and assets, if present) into tests/"
+            VERBATIM)
+    add_dependencies(anoptic_test_resources anoptic_shaders)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
+        add_custom_command(TARGET anoptic_test_resources POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}
+                VERBATIM)
+    endif()
+
     # Render-side slot authority: pure logic, links anoptic_render but needs no GPU device.
     add_executable(anotest_render_slots anotest_render_slots.c)
     target_link_libraries(anotest_render_slots PRIVATE anoptic_render)
@@ -128,6 +143,13 @@ if(TARGET anoptic_render)
     # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
     set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
         DISABLED "$<CONFIG:Release>")
+
+    # A lone `--build --target anotest_vk_*` must still stage this directory's
+    # shaders/assets before the test can run.
+    foreach(vktest IN ITEMS anotest_render_slots anotest_vk_lifecycle anotest_vk_components
+            anotest_vk_compliance_layers anotest_vk_memory anotest_vk_sync)
+        add_dependencies(${vktest} anoptic_test_resources)
+    endforeach()
 else()
     message(WARNING
         "\n"

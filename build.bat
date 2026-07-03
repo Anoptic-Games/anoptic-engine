@@ -37,17 +37,13 @@ if "%1"=="1" (
     set EXTRA_FLAGS=-DANOPTIC_TESTS=ON
     set RUN_TESTS=1
 ) else if "%1"=="4" (
-    set BUILD_LABEL=Tests-ASan
-    set CMAKE_CONFIG=Debug
-    set TOOLCHAIN_FILE=tests_clang-windows-x64-mingw.cmake
-    set EXTRA_FLAGS=-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=asan
-    set RUN_TESTS=1
+    echo The sanitizer profiles are Linux/macOS-only: MinGW clang on Windows supports
+    echo neither TSan nor a working ASan against ucrt. Use build.sh 4/5 under WSL.
+    exit /b 1
 ) else if "%1"=="5" (
-    set BUILD_LABEL=Tests-TSan
-    set CMAKE_CONFIG=Debug
-    set TOOLCHAIN_FILE=tests_clang-windows-x64-mingw.cmake
-    set EXTRA_FLAGS=-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=tsan
-    set RUN_TESTS=1
+    echo The sanitizer profiles are Linux/macOS-only: MinGW clang on Windows supports
+    echo neither TSan nor a working ASan against ucrt. Use build.sh 4/5 under WSL.
+    exit /b 1
 ) else if "%1"=="6" (
     set BUILD_LABEL=Headless
     set CMAKE_CONFIG=Debug
@@ -68,8 +64,8 @@ if "%1"=="1" (
     echo     1 = Release ^(-O3 full engine build^)
     echo     2 = Debug
     echo     3 = Tests ^(Debug -O0, build + run CTest^)
-    echo     4 = Tests + AddressSanitizer/UBSan
-    echo     5 = Tests + ThreadSanitizer
+    echo     4 = Tests + AddressSanitizer/UBSan ^(Linux/macOS only -- use build.sh^)
+    echo     5 = Tests + ThreadSanitizer ^(Linux/macOS only -- use build.sh^)
     echo     6 = Headless tests ^(core + CTest, no renderer^)
     echo     7 = Release tests ^(-O3, build + run CTest^)
     exit /b 1
@@ -86,19 +82,10 @@ if not exist build\%BUILD_LABEL% mkdir build\%BUILD_LABEL%
 cmake -G "MinGW Makefiles" -DCMAKE_TOOLCHAIN_FILE="%TOOLCHAIN_PATH%" -DCMAKE_BUILD_TYPE=%CMAKE_CONFIG% %EXTRA_FLAGS% -S . -B ./build/%BUILD_LABEL%
 if errorlevel 1 exit /b 1
 
-:: Build the project
+:: Build the project. Shader + asset staging is owned by CMake (root CMakeLists /
+:: tests/CMakeLists) so every build flow gets it, not just this script.
 cmake --build ./build/%BUILD_LABEL%
 if errorlevel 1 exit /b 1
-
-:: Conditionally copy assets if they exist (parity with build.sh)
-if exist assets (
-    echo Copying assets to build directory...
-    xcopy /e /y /q assets "build\%BUILD_LABEL%\" >nul
-    if "%RUN_TESTS%"=="1" (
-        if not exist "build\%BUILD_LABEL%\tests" mkdir "build\%BUILD_LABEL%\tests"
-        xcopy /e /y /q assets "build\%BUILD_LABEL%\tests\" >nul
-    )
-)
 
 :: Run the test suite
 if "%RUN_TESTS%"=="1" ctest --test-dir ./build/%BUILD_LABEL% --output-on-failure
