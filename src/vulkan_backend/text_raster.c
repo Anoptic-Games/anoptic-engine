@@ -16,14 +16,15 @@
 #include "vulkan_backend/texture/texture.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <anoptic_filesystem.h>
 #include <anoptic_text.h>
 
 #define ANO_TEXT_FONT_REL "resources/fonts/Geist/static/Geist-Regular.ttf"
-// Frame-data capacity: 4096 glyph instances (48 B each) leaves headroom for tile lists
-// (step 6) in the same buffer. Rewritten wholesale at text-change cadence.
+// Frame-data capacity: ~21k glyph instances (48 B each), rewritten wholesale at
+// text-change cadence.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
 // Push-constant block shared with textraster.comp (16 B).
@@ -33,6 +34,32 @@ typedef struct TextRasterPush {
     uint32_t extentW;
     uint32_t extentH;
 } TextRasterPush;
+
+// TextRasterPush.flags bits (mirrored in textraster.comp).
+#define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop for the screenshot self-test
+
+// Step-6 demo: a static torture line set covering every baked codepoint, including all
+// known coverage-overlap glyphs (contour-pair # $ + f t and self-overlap H 8 @).
+static const char g_demoText[] =
+    "Anoptic Engine :: Scanline Sweeper v0\n"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz\n"
+    "0123456789 !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+#define ANO_TEXT_DEMO_SIZE_PX 36.0f
+static const float g_demoOrigin[2] = { 48.0f, 96.0f };
+
+// Shapes the demo text into every frame slot's mapped frame buffer (identical content,
+// so the in-flight copies never diverge) and records the instance count for the push.
+static void text_upload_demo(RendererState* state)
+{
+    const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    uint32_t cap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance);
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        count = ano_text_shape(&state->textBake, g_demoText, (uint32_t)(sizeof g_demoText - 1),
+                               ANO_TEXT_DEMO_SIZE_PX, g_demoOrigin, white,
+                               (AnoGlyphInstance*)state->frames[i].textFrameMapped, cap, NULL);
+    state->textInstanceCount = count < cap ? count : cap;
+}
 
 // Builds the compute raster prototype: 3 SSBOs (curves, directory, frame data) + 1
 // storage image (overlay), 16 B push. Mirrors the lightcull recipe.
@@ -255,9 +282,12 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
     }
 
-    printf("Text overlay: on (%u glyphs, %u curve points, %.1f KiB static)\n",
+    text_upload_demo(state);
+    state->textFlags = (getenv("ANO_TEXT_OPAQUE") != NULL) ? ANO_TEXT_RASTER_OPAQUE : 0u;
+
+    printf("Text overlay: on (%u glyphs, %u curve points, %.1f KiB static, %u instances)\n",
            state->textBake.glyphCount, state->textBake.pointCount,
-           (double)(curveBytes + glyphBytes) / 1024.0);
+           (double)(curveBytes + glyphBytes) / 1024.0, state->textInstanceCount);
     return true;
 }
 
@@ -416,9 +446,8 @@ void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t fram
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, NULL, 0, NULL, 1, &toCompute);
 
-    // Raster dispatch: 8x8 pixel tiles over the full overlay. Step-5 stub: instanceCount
-    // stays 0 (threads early-out), exercising the pipeline/sets for validation.
-    TextRasterPush push = { .instanceCount = 0, .flags = 0,
+    // Raster dispatch: 8x8 pixel tiles over the full overlay.
+    TextRasterPush push = { .instanceCount = state->textInstanceCount, .flags = state->textFlags,
                             .extentW = state->imageExtent.width, .extentH = state->imageExtent.height };
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                       state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].pipeline);

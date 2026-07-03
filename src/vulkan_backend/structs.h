@@ -1069,6 +1069,8 @@ typedef struct RendererState
     GpuAllocation           textGlyphAlloc;
     AnoFontBake             textBake;
     mi_heap_t*              textHeap;
+    uint32_t                textInstanceCount; // instances shaped into every frame slot
+    uint32_t                textFlags;         // TextRasterPush.flags (bit 0 = opaque self-test)
 
     // Hi-Z occlusion pyramid build (review 4.9 step 3). The pipeline lives in prototypes[
     // PIPELINE_COMPUTE_HIZ] (two implementations: [0]=reduce MSAA depth->mip0, [1]=downsample mip->mip,

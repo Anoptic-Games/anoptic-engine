@@ -99,8 +99,9 @@ static inline float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >>
 
 // Unclamped coverage sum for one em-space window: walks the glyph's stream once,
 // accumulating every curve's signed swept area, normalized by the window area.
-static float window_sum(const uint32_t *pts, const AnoGlyphEntry *g, float wx, float wy,
-                        float w, float h)
+// Non-static: the GPU comparison harness evaluates arbitrary windows through it.
+float ano_text_window_sum(const uint32_t *pts, const AnoGlyphEntry *g, float wx, float wy,
+                          float w, float h)
 {
     uint32_t i = g->pointOffset;
     float p0x = half_lo(pts[i]) - wx, p0y = half_hi(pts[i]) - wy;
@@ -141,7 +142,7 @@ void ano_text_raster_ref(const uint32_t *points, const AnoGlyphEntry *glyph,
             for (int c = 0; c < width; c++)
             {
                 float wx = (float)(left + c) * invS;
-                float sum = window_sum(points, glyph, wx, wy, invS, invS);
+                float sum = ano_text_window_sum(points, glyph, wx, wy, invS, invS);
                 maxSum = fmaxf(maxSum, sum);
                 // Per-glyph clamp: the overlap fix (FONT_RENDER.md 6.1). No gamma here.
                 out[r * width + c] = (uint8_t)(clampf(sum, 0.0f, 1.0f) * 255.0f + 0.5f);

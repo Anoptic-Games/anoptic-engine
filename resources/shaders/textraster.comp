@@ -1,13 +1,12 @@
 #version 450
 
-// Scanline Sweeper glyph coverage raster (FONT_RENDER.md). Consumes the baked curve
-// stream + glyph directory (anoptic_text.h grammar) and the per-frame glyph instances,
-// writing premultiplied coverage into the overlay image. One workgroup per 8x8 pixel
-// tile; screen y-down matches image rows.
-//
-// STEP-5 STUB: the full descriptor/push interface is live so the plumbing validates,
-// but instanceCount stays 0 until step 6 lands the per-pixel signed-area coverage math
-// here (reference implementation: src/text/text_raster_ref.c).
+// Scanline Sweeper glyph coverage raster (FONT_RENDER.md step 6): the GLSL port of
+// src/text/text_raster_ref.c, keeping its float32 op order so the CPU reference
+// predicts this shader to fma-contraction noise. One workgroup per 8x8 pixel tile;
+// the 64 lanes cooperatively cull instances against the tile in 64-instance chunks
+// (a shared verdict mask, not a compacted list, so blending keeps submission order),
+// then each in-extent pixel integrates the survivors and over-blends premultiplied
+// color into the overlay.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -37,23 +36,190 @@ layout(set = 0, binding = 3, rgba8) uniform writeonly image2D overlay;
 
 layout(push_constant) uniform TextRasterPush {
     uint  instanceCount;
-    uint  flags;
+    uint  flags;    // bit 0: opaque black backdrop (ANO_TEXT_OPAQUE self-test)
     uvec2 extent;
 } pc;
 
 const uint SENTINEL = 0x7C007C00u; // contour separator: both halves +inf
+const uint CHUNK = 64u;            // instances per cooperative cull round == wg size
 
-void main() {
+shared uint sHit[CHUNK]; // per-lane tile-cull verdict for the current chunk
+shared uint sAny;        // chunk had any hit: empty tiles skip the scan entirely
+
+// Single root of a monotone quadratic component hitting `target`, clamped to [0,1];
+// near-linear segments (baked lines' quadratic term is f16 noise) use the chord.
+// Caller guarantees c0 != c2.
+float solve_mono(float c0, float c1, float c2, float target)
+{
+    float span = c2 - c0;
+    float a = c0 - 2.0 * c1 + c2;
+    if (abs(a) <= 1e-2 * abs(span))
+        return clamp((target - c0) / span, 0.0, 1.0);
+    float b = 2.0 * (c1 - c0);
+    float d = max(b * b - 4.0 * a * (c0 - target), 0.0);
+    float t = (-b + (span < 0.0 ? -sqrt(d) : sqrt(d))) / (2.0 * a);
+    return clamp(t, 0.0, 1.0);
+}
+
+// Signed area swept between one monotone quad and the window's right edge, clipped to
+// the window [0,w]x[0,h]; curve coordinates arrive window-local. Statement-for-statement
+// mirror of curve_area() in text_raster_ref.c -- derivation commentary lives there.
+float curve_area(float x0, float y0, float x1, float y1, float x2, float y2,
+                 float w, float h)
+{
+    if (y0 == y2)
+        return 0.0;
+    if (max(y0, y2) <= 0.0 || min(y0, y2) >= h || min(x0, x2) >= w)
+        return 0.0;
+
+    if (x0 == x2)
+    {
+        float b = min(w, w - x0);
+        return (clamp(y2, 0.0, h) - clamp(y0, 0.0, h)) * b;
+    }
+
+    float t0 = solve_mono(y0, y1, y2, 0.0);
+    float t1 = solve_mono(y0, y1, y2, h);
+    if (t0 > t1)
+    {
+        float tmp = t0;
+        t0 = t1;
+        t1 = tmp;
+    }
+    float ta = clamp(solve_mono(x0, x1, x2, 0.0), t0, t1);
+    float tb = clamp(solve_mono(x0, x1, x2, w), t0, t1);
+    if (ta > tb)
+    {
+        float tmp = ta;
+        ta = tb;
+        tb = tmp;
+    }
+
+    float ax = x0 - 2.0 * x1 + x2, bx = 2.0 * (x1 - x0);
+    float ay = y0 - 2.0 * y1 + y2, by = 2.0 * (y1 - y0);
+    float xs = clamp((ax * t0 + bx) * t0 + x0, 0.0, w);
+    float ys = clamp((ay * t0 + by) * t0 + y0, 0.0, h);
+    float area = 0.0;
+    float ends[3] = float[3](ta, tb, t1);
+    for (int k = 0; k < 3; k++)
+    {
+        float te = ends[k];
+        float xe = clamp((ax * te + bx) * te + x0, 0.0, w);
+        float ye = clamp((ay * te + by) * te + y0, 0.0, h);
+        area += (ye - ys) * (2.0 * w - xs - xe) * 0.5;
+        xs = xe;
+        ys = ye;
+    }
+    return area;
+}
+
+// Unclamped coverage sum for one em-space window at wpos, size wdim: one stream walk
+// (grammar in anoptic_text.h), normalized by window area. Mirrors ano_text_window_sum().
+float window_sum(GlyphEntry g, vec2 wpos, vec2 wdim)
+{
+    uint i = g.pointOffset;
+    vec2 p0 = unpackHalf2x16(points[i]) - wpos;
+    i++;
+    float area = 0.0;
+    for (uint c = 0u; c < g.curveCount; c++)
+    {
+        if (points[i] == SENTINEL) // contour restart
+        {
+            i++;
+            p0 = unpackHalf2x16(points[i]) - wpos;
+            i++;
+        }
+        vec2 p1 = unpackHalf2x16(points[i]) - wpos;
+        i++;
+        vec2 p2 = unpackHalf2x16(points[i]) - wpos;
+        i++;
+        area += curve_area(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, wdim.x, wdim.y);
+        p0 = p2;
+    }
+    return area / (wdim.x * wdim.y);
+}
+
+// Screen-rect corners (relative to the instance origin) -> em-space box under the
+// instance's pixel->em transform. Exact for v0's axis-aligned transforms; the bbox
+// of the footprint parallelogram under future skew/rotation.
+void em_box(vec4 inv, vec2 rMin, vec2 rMax, out vec2 lo, out vec2 hi)
+{
+    vec2 c10 = vec2(rMax.x, rMin.y);
+    vec2 c01 = vec2(rMin.x, rMax.y);
+    vec2 e00 = vec2(dot(inv.xy, rMin), dot(inv.zw, rMin));
+    vec2 e11 = vec2(dot(inv.xy, rMax), dot(inv.zw, rMax));
+    vec2 e10 = vec2(dot(inv.xy, c10), dot(inv.zw, c10));
+    vec2 e01 = vec2(dot(inv.xy, c01), dot(inv.zw, c01));
+    lo = min(min(e00, e11), min(e10, e01));
+    hi = max(max(e00, e11), max(e10, e01));
+}
+
+// Can instance idx's glyph touch the screen rect [rMin,rMax]? The reject is exact:
+// closed contours telescope to zero for windows fully left or right of the bbox.
+bool box_hits(uint idx, vec2 rMin, vec2 rMax)
+{
+    GlyphInstance gi = instances[idx];
+    GlyphEntry g = glyphs[gi.glyphID];
+    if (g.curveCount == 0u)
+        return false;
+    vec2 lo, hi;
+    em_box(gi.inv, rMin - gi.origin, rMax - gi.origin, lo, hi);
+    return lo.x < g.bboxMax.x && hi.x > g.bboxMin.x && lo.y < g.bboxMax.y && hi.y > g.bboxMin.y;
+}
+
+// Premultiplied contribution of one instance at the pixel [pixTL, pixTL+1): per-glyph
+// coverage clamp (the overlap fix, FONT_RENDER.md 6.1) times instance color.
+vec4 shade_instance(uint idx, vec2 pixTL)
+{
+    GlyphInstance gi = instances[idx];
+    GlyphEntry g = glyphs[gi.glyphID];
+    vec2 lo, hi;
+    em_box(gi.inv, pixTL - gi.origin, (pixTL + 1.0) - gi.origin, lo, hi);
+    if (lo.x >= g.bboxMax.x || hi.x <= g.bboxMin.x || lo.y >= g.bboxMax.y || hi.y <= g.bboxMin.y)
+        return vec4(0.0);
+    float cov = clamp(window_sum(g, lo, hi - lo), 0.0, 1.0);
+    return gi.color * cov;
+}
+
+void main()
+{
     uvec2 px = gl_GlobalInvocationID.xy;
-    if (px.x >= pc.extent.x || px.y >= pc.extent.y || pc.instanceCount == 0u)
-        return;
+    bool valid = px.x < pc.extent.x && px.y < pc.extent.y;
+    vec2 pixTL = vec2(px);
+    vec2 tMin = vec2(gl_WorkGroupID.xy * 8u);
+    vec2 tMax = min(tMin + 8.0, vec2(pc.extent));
 
-    // Step 6 lands the coverage math. The reads below keep every binding statically
-    // used so validation covers the full interface; unreachable while the stub gates
-    // on instanceCount == 0.
-    GlyphInstance gi = instances[0];
-    GlyphEntry ge = glyphs[gi.glyphID];
-    if (ge.curveCount == 0u || points[ge.pointOffset] == SENTINEL)
+    vec4 acc = vec4(0.0);
+    for (uint base = 0u; base < pc.instanceCount; base += CHUNK)
+    {
+        if (gl_LocalInvocationIndex == 0u)
+            sAny = 0u;
+        barrier();
+        uint i = base + gl_LocalInvocationIndex;
+        uint hit = (i < pc.instanceCount && box_hits(i, tMin, tMax)) ? 1u : 0u;
+        sHit[gl_LocalInvocationIndex] = hit;
+        if (hit != 0u)
+            atomicOr(sAny, 1u);
+        barrier();
+        if (valid && sAny != 0u)
+        {
+            for (uint j = 0u; j < CHUNK; j++)
+            {
+                if (sHit[j] != 0u)
+                {
+                    vec4 src = shade_instance(base + j, pixTL);
+                    acc = src + acc * (1.0 - src.a);
+                }
+            }
+        }
+        barrier(); // sHit/sAny are rewritten next chunk
+    }
+
+    if (!valid)
         return;
-    imageStore(overlay, ivec2(px), gi.color);
+    if ((pc.flags & 1u) != 0u)
+        acc.a = 1.0; // opaque self-test: black backdrop, text rgb already premultiplied
+    else if (acc == vec4(0.0))
+        return; // untouched pixel: the pre-dispatch clear already wrote transparent
+    imageStore(overlay, ivec2(px), acc);
 }
