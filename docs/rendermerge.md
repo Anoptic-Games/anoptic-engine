@@ -291,7 +291,7 @@ identical to this branch's pre-merge state).
 - [ ] Route the validation callback + renderer error paths through the logger (§5.1)
 - [ ] `snapshotVersion`/`viewStateVersion` → `_Alignas(ANO_THREAD_LINE)` (§5.2)
 - [ ] Linux (Nix) + macOS build/test pass; fallback-path run via `ANO_FORCE_NO_MESH_SHADER=1` (§5.4)
-- [ ] Add Sponza to the README asset instructions (§5.5)
+- [x] Add Sponza to the README asset instructions (§5.5)
 - [ ] Fix `anotest_logging.c` format-string widths for Windows (§5.6)
 - [ ] Restore or repoint `docs/artifacts/*` references (§5.6)
 - [ ] Move audit files to `docs/artifacts/`, decide `profile/`'s home (§6.2, §6.3)
