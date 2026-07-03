@@ -361,9 +361,39 @@ territory and another reason the slim mesh path matters. Estimated recovery: 0.8
 Per-view extents also unlock per-view MSAA (finding 5) and de-coupling the shared MSAA
 attachments (finding 2).
 
-## 9. Finding 7 — no backface or cluster culling in the raster path - ADDRESSED (backface half)
+## 9. Finding 7 — no backface or cluster culling in the raster path - ADDRESSED
 
-Measured outcome (2026-07-03): a fourth draw lane, PIPELINE_FLAT_TWOSIDED (slot 3), carries
+Measured outcome (2026-07-03, cluster half / priority 10): every mesh-drawing pipeline (flat
+both lanes + their depth pre-passes, transmission, additive, shadow) now carries a flat.task
+stage — one 32-wide task workgroup tests 32 meshlets of its draw and EmitMeshTasksEXT-launches
+mesh workgroups for the survivors only, so a culled cluster costs nothing, not even a dispatch.
+Three tests, all conservative: meshlet bounding sphere vs the view's frustum planes (camera
+planes republished per view into a GlobalUBO tail only flat.task declares; shadow draws test
+their own frustum's planes from the existing set-2 buffer), the meshoptimizer normal-cone
+backface test (spec-constant per lane: ON only for the BACK-culled flat lane — the parser
+routes doubleSided elsewhere — and only under a rigid model basis), and the meshlet-sphere
+Hi-Z occlusion test (identical math, lag and warmup gating to the entity cull's; rides the
+same H / ANO_HIZ_ON toggle, so default off). cull.comp sizes mesh commands as
+ceil(meshletCount/32) task workgroups when CullUBO.taskParams.x is set. Two findings from the
+landing: (1) gl_DrawID is UNDEFINED in a mesh stage behind a task stage (validation VUID
+09631) — the task shader forwards the draw's compacted entry through the payload instead;
+(2) the per-meshlet cone DATA was the real reason the old in-mesh stopgap was "still broken":
+ano_compute_meshlet_bounds stored cutoff = mindot − 0.05, degrading toward "cull from almost
+everywhere" for curved meshlets (front-facing curtain folds vanished), where the consuming
+convention needs cutoff = sin(spread) degrading to 1 = never cull. Rewritten to meshoptimizer's
+convention, and the shader uses the documented sphere-conservative form
+(dot(center−eye, axis) >= cutoff·|center−eye| + radius) — no apex, safe for the whole sphere.
+Measured (debug, interleaved A/B vs ANO_FORCE_NO_TASK, busy-desktop session): neutral to
++0.03 ms in this demo — its draw count is dominated by 1–6-meshlet shadow micro-draws that pay
+the task stage without meshlets to cull; the win case (frustum-straddling and back-facing
+clusters of LARGE meshes, occlusion at meshlet granularity) is exactly the million-entity /
+dense-scene end-state this exists for. Validation-clean (pre-existing independentBlend VUID
+only), correct at multiple mover phases with and without ANO_HIZ_ON, release-clean. Gate:
+meshShader && taskShader && !ANO_FORCE_NO_TASK.
+
+Earlier measured outcome (backface half):
+
+(2026-07-03): a fourth draw lane, PIPELINE_FLAT_TWOSIDED (slot 3), carries
 opaque glTF doubleSided materials (parser routes them: 3 of Sponza's 25, all of the viking
 room's) with cullMode NONE, and the main flat lane switches to CULL_MODE_BACK — per-material
 sidedness via the existing partition registry rather than dynamic state or a mid-draw split.
@@ -379,7 +409,8 @@ sidedness shadow partition, and culling there would hole doubleSided casters' sh
 Measured (debug, SHADOWMAP medians vs same-session baseline): lighting 1.138 → 1.038 ms,
 total 2.172 → 2.049 ms (−5.7%); static-scene ceiling (shadow-cache freeze) 1.306 → 1.182 ms.
 Validation-clean (the pre-existing independentBlend VUID now fires ×2 more — the flat
-builder runs twice). Remaining from this finding: the task-shader cluster cull below.
+builder runs twice). Remaining from this finding: none — the task-shader cluster cull
+landed 2026-07-03 (measured outcome above).
 
 `rasterizer.cullMode = VK_CULL_MODE_NONE` in both the flat family (flat.c:113) and the
 shadow pipeline (pipeline.c:1189 region), so every pass rasterizes both faces of every
@@ -500,7 +531,7 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 | 7 | Single shared shadow atlas + dirty-frustum reuse | LANDED 2026-07-03 | measured −672 MiB; static-scene ceiling: shadow 0.867 → 0.001 ms, total −40% (freeze-verified; this demo's movers keep it all-dirty — see finding 8 note) |
 | 8 | Async lightcull, merged prelude barriers, drawCount-only fill, lightcull pose reuse | LANDED 2026-07-03 (compute-queue lightcull + prelude/main split submit) | measured −0.05 ms total + prelude 0.11→0.07; async split neutral here, scales with lights×froxels×views; ceiling 1.182→1.129 (see finding 2 note) |
 | 9 | flat.frag register diet + packed interpolants | Medium (measure per step) | raises PS occupancy; frame gain realized with #1/#2 |
-| 10 | Task-shader cluster cull (cone + frustum + Hi-Z per meshlet) | High | large at scale; the million-entity end-state |
+| 10 | Task-shader cluster cull (cone + frustum + Hi-Z per meshlet) | LANDED 2026-07-03 (flat.task on every mesh-drawing pipeline; broken cone bounds fixed to the meshopt convention) | measured neutral–+0.03 ms in this micro-draw-dominated demo; the scale lever for dense scenes (see finding 7 note) |
 
 Sequencing note: 1 → 2 → 6 all attack the same shadow+prepass block and are independent
 of each other's code paths; 3 and 4 are independent and can land any time; 5 and 8 are

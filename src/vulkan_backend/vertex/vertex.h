@@ -51,6 +51,15 @@ typedef struct GlobalUBO
 	uint32_t debugView;        //      196  (RC debug visualization; 0 = off)
 	uint32_t pad0;             //      200
 	uint32_t pad1;             //      204
+	// Task-shader meshlet cull tail (review priority 10), read ONLY by flat.task (its GlobalUBO
+	// mirror declares the full struct; every other shader declares a prefix and is unaffected).
+	// updateCullingBuffers writes these per view with the SAME values as the entity cull's
+	// CullUBO: planes from the same extraction, prevViewProj/hizParams/hizProj with the same
+	// lag-slot + warmup gating. All 16-aligned at offset 208; std140 matches C layout exactly.
+	float frustumPlanes[6][4]; // row: 208  this view's world-space frustum planes
+	mat4  prevViewProj;        //      304  reprojection for the meshlet Hi-Z test
+	float hizParams[4];        //      368  {pyramid baseW, baseH, mipCount (0 = off), 0}
+	float hizProj[4];          //      384  {proj00, proj11, proj22, proj32}
 } GlobalUBO;
 
 

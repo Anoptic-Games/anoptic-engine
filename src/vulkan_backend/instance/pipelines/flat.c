@@ -20,15 +20,18 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache);
 
-	// Mesh stage on capable devices, vertex stage on the fallback path.
+	// Mesh stage on capable devices, vertex stage on the fallback path. The task meshlet cull
+	// (review priority 10) prepends a flat.task stage to every mesh-path variant.
 	bool useMesh = ctx->deviceCapabilities.meshShader;
+	bool useTask = state->taskCull;
 	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// 2. Setup layout
 	// Push: transformBaseOffset + shadowFrustumIndex (the latter used only by the depth-pass
-	// shadow variant; the camera variant leaves it unread).
+	// shadow variant; the camera variant leaves it unread). The task stage resolves its draw from
+	// the same push, so its flag joins the range (vkCmdPushConstants must match exactly).
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = geometryStage;
+	pushConstantRange.stageFlags = geometryStage | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = 2u * sizeof(uint32_t);
 
@@ -69,11 +72,13 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	// which the opaque variant's EQUAL test requires.
 	struct Buffer geomShaderCode;
 	char geomShaderPath[256];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT,
+		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
 	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
 
 	struct Buffer depthGeomShaderCode;
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat_depth.mesh" : "flat_depth.vert");
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT,
+		useMesh ? (useTask ? "flat_depth_task.mesh" : "flat_depth.mesh") : "flat_depth.vert");
 	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
@@ -84,6 +89,16 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	VkShaderModule depthGeomShaderModule = createShaderModule(ctx->device, &depthGeomShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+
+	// Task meshlet-cull stage: cone culling only on the BACK-culled lane (the parser routes every
+	// doubleSided material to the TWOSIDED lane, whose backfaces are visible by definition).
+	VkShaderModule taskModule = VK_NULL_HANDLE;
+	TaskStageStorage taskStore;
+	VkPipelineShaderStageCreateInfo taskStageInfo = {};
+	if (useTask && !ano_pipeline_task_stage(ctx, VK_FALSE,
+			cullMode == VK_CULL_MODE_BACK_BIT ? VK_TRUE : VK_FALSE,
+			&taskStore, &taskModule, &taskStageInfo))
+		return false;
 
 	VkPipelineShaderStageCreateInfo geomShaderStageInfo = {};
 	geomShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -97,7 +112,10 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	fragShaderStageInfo.module = fragShaderModule;
 	fragShaderStageInfo.pName = "main";
 
-	VkPipelineShaderStageCreateInfo shaderStages[] = {geomShaderStageInfo, fragShaderStageInfo};
+	// [task,] geom, frag — the task slot leads so both stage lists can share one array.
+	VkPipelineShaderStageCreateInfo shaderStages[3] = {taskStageInfo, geomShaderStageInfo, fragShaderStageInfo};
+	VkPipelineShaderStageCreateInfo* colorStages = useTask ? shaderStages : &shaderStages[1];
+	uint32_t colorStageCount = useTask ? 3u : 2u;
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -212,8 +230,8 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineInfo.pNext = &renderingInfo;
-	pipelineInfo.stageCount = 2;
-	pipelineInfo.pStages = shaderStages;
+	pipelineInfo.stageCount = colorStageCount;
+	pipelineInfo.pStages = colorStages;
 	pipelineInfo.pVertexInputState = useMesh ? NULL : &vertexInputInfo;
 	pipelineInfo.pInputAssemblyState = useMesh ? NULL : &inputAssembly;
 	pipelineInfo.pViewportState = &viewportState;
@@ -257,8 +275,10 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	// LESS. Same-source compile + invariant gl_Position guarantees bit-identical clip-space depth,
 	// which the opaque variant's EQUAL test above relies on. Runs first (g_framePasses) so the
 	// heavy lighting shader shades each visible pixel exactly once.
-	VkPipelineShaderStageCreateInfo depthGeomStageInfo = geomShaderStageInfo;
-	depthGeomStageInfo.module = depthGeomShaderModule;
+	// [task,] depth-only geometry — no fragment shader. Same task module/spec as the color
+	// variants: the cull tests are projection-agnostic within a view.
+	VkPipelineShaderStageCreateInfo depthStages[2] = {taskStageInfo, geomShaderStageInfo};
+	depthStages[1].module = depthGeomShaderModule;
 
 	VkPipelineDepthStencilStateCreateInfo prepassDepth = depthStencil;
 	prepassDepth.depthWriteEnable = VK_TRUE;
@@ -275,8 +295,8 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 
 	VkGraphicsPipelineCreateInfo prepassInfo = pipelineInfo; // inherit shared raster/viewport/msaa/layout
 	prepassInfo.pNext = &prepassRendering;
-	prepassInfo.stageCount = 1;                  // depth-only geometry stage; no fragment shader
-	prepassInfo.pStages = &depthGeomStageInfo;
+	prepassInfo.stageCount = useTask ? 2 : 1;
+	prepassInfo.pStages = useTask ? depthStages : &depthStages[1];
 	prepassInfo.pDepthStencilState = &prepassDepth;
 	prepassInfo.pColorBlendState = &prepassBlend;
 
@@ -292,6 +312,8 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, depthGeomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
+	if (taskModule != VK_NULL_HANDLE)
+		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
 	return true;
 }

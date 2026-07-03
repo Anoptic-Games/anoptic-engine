@@ -125,7 +125,7 @@ if(Vulkan_FOUND)
         # Shared GLSL includes (#include): not compiled standalone, but every shader rebuilds when one
         # changes so the shadow CDF math can't silently desync from a stale .spv.
         set(SHADER_INCLUDES ${SHADER_DIR}/shadow_cdf.glsl ${SHADER_DIR}/shadow_sample.glsl)
-        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag)
+        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag)
             add_custom_command(
                     OUTPUT  ${SHADER_DIR}/${shader}.spv
                     COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${SHADER_DIR}/${shader} -o ${SHADER_DIR}/${shader}.spv
@@ -147,6 +147,23 @@ if(Vulkan_FOUND)
                     COMMENT "glslc ${dshader} (ANO_DEPTH_ONLY) -> ${dspv}.spv"
                     VERBATIM)
             list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${dspv}.spv)
+        endforeach()
+        # Task-launched mesh variants (review priority 10): ANO_TASK_CULL compiles of flat.mesh (color
+        # + depth-only) that read the meshlet index from flat.task's payload instead of gl_WorkGroupID.
+        # Loaded when RendererState.taskCull; the plain compiles above stay the direct-dispatch fallback.
+        foreach(tshader IN ITEMS flat.mesh flat_depth.mesh)
+            string(REPLACE ".mesh" "_task.mesh" tspv ${tshader})
+            set(tdefs -DANO_TASK_CULL)
+            if(tshader STREQUAL "flat_depth.mesh")
+                set(tdefs -DANO_TASK_CULL -DANO_DEPTH_ONLY)
+            endif()
+            add_custom_command(
+                    OUTPUT  ${SHADER_DIR}/${tspv}.spv
+                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${tdefs} ${SHADER_DIR}/flat.mesh -o ${SHADER_DIR}/${tspv}.spv
+                    DEPENDS ${SHADER_DIR}/flat.mesh ${SHADER_INCLUDES}
+                    COMMENT "glslc flat.mesh (${tdefs}) -> ${tspv}.spv"
+                    VERBATIM)
+            list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${tspv}.spv)
         endforeach()
         # Hi-Z avenue 1: a second compile of hiz.comp with RESOLVED_DEPTH (reduce reads a single-sample
         # sampler2D of the MAX-resolved depth). Loaded for the reduce pipeline only when the device

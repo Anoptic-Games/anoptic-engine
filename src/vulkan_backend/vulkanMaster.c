@@ -503,12 +503,14 @@ void recordCommandBuffer(uint32_t imageIndex)
         for (int u = 0; u < 7; u++) if (ups[u]->staged[fi]) { any = true; break; }
         if (any) {
             // These buffers are only ever read by the shader stages below: compute (update/cull/
-            // lightcull), the geometry stage (entity buffer), and fragment (instance data + lights).
-            // So both the WAR (pre) and the visibility (post) scopes are exactly that stage set, not
-            // ALL_COMMANDS. The pre barrier's first scope still reaches prior submissions on this
-            // single queue, so earlier frames' shader reads finish before the copy overwrites.
+            // lightcull), the geometry stage (entity buffer; + task when the meshlet cull is on),
+            // and fragment (instance data + lights). So both the WAR (pre) and the visibility
+            // (post) scopes are exactly that stage set, not ALL_COMMANDS. The pre barrier's first
+            // scope still reaches prior submissions on this single queue, so earlier frames'
+            // shader reads finish before the copy overwrites.
             VkPipelineStageFlags shaderStages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
                 | (ctx.deviceCapabilities.meshShader ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+                | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0)
                 | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             VkMemoryBarrier pre = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                 .srcAccessMask = VK_ACCESS_SHADER_READ_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
@@ -560,11 +562,12 @@ void recordCommandBuffer(uint32_t imageIndex)
                     0, 1, &fillBarrier, 0, NULL, 0, NULL);
 
                 // Hi-Z occlusion (review 4.9 step 3): the cull samples binding 11 = the PREVIOUS frame-
-                // in-flight slot's pyramids (built last frame). Order that build's writes before this
-                // cull reads them (no layout change — they rest in SHADER_READ). First frame: the prev
-                // slot was never built but is seeded to SHADER_READ, so the barrier is a harmless no-op.
-                // Async build (review finding 2): the writes happened on the compute queue; this
-                // submit's hizTimeline wait already made them visible, so no barrier is recorded.
+                // in-flight slot's pyramids (built last frame); the task meshlet cull samples the same
+                // images per view (global set binding 13), so its stage joins the dst scope. Order that
+                // build's writes before those reads (no layout change — they rest in SHADER_READ). First
+                // frame: the prev slot was never built but is seeded to SHADER_READ, so the barrier is a
+                // harmless no-op. Async build (review finding 2): the writes happened on the compute
+                // queue; the submit's hizTimeline wait carries them instead (its stage set gains TASK).
                 if (!rendererState.asyncHiz) {
                     uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
                     VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
@@ -581,7 +584,9 @@ void recordCommandBuffer(uint32_t imageIndex)
                         hizRead[v].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
                         hizRead[v].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
                     }
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                            | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
                         0, 0, NULL, 0, NULL, ANO_VIEW_COUNT, hizRead);
                 }
             }
@@ -628,11 +633,13 @@ void recordCommandBuffer(uint32_t imageIndex)
             if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
                 // ONE barrier for lightsetup + shadowsetup (mutually independent: disjoint writes, no
                 // cross-reads, adjacent in the pass table — lightsetup emits none below). Shadow
-                // frustums feed the cull (compute), the depth render (mesh/vertex), and the fragment
+                // frustums feed the cull (compute), the depth render (mesh/vertex; + the task meshlet
+                // cull, which tests shadow draws against the frustum planes), and the fragment
                 // sampler; the light runtime feeds the light-cull (compute) and the fragment passes
                 // (set 0 binding 12). Union: COMPUTE | geom | FRAGMENT.
-                VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
-                    ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+                VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
+                    ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+                    | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
                 memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -646,12 +653,14 @@ void recordCommandBuffer(uint32_t imageIndex)
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else {
                 // The cull pass feeds the indirect commands (DRAW_INDIRECT) and the compacted/entity
-                // SSBOs read by the geometry stage (mesh or vertex) AND the transparency-sort compute
+                // SSBOs read by the geometry stage (mesh or vertex; + the task meshlet cull, which
+                // resolves its draw from the compacted indices) AND the transparency-sort compute
                 // pass (tpsort), which reads the compacted draws + depth keys and rewrites the
                 // transmission partition. So the barrier reaches COMPUTE as well as DRAW_INDIRECT|geom,
                 // and dst includes SHADER_WRITE (tpsort overwrites cull's writes — WAW).
-                VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
-                    ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+                VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
+                    ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+                    | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
                 memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -714,7 +723,9 @@ void recordCommandBuffer(uint32_t imageIndex)
         ShadowResources* sh = &rendererState.frames[rendererState.frameIndex].shadow;
         bool useMeshS = ctx.deviceCapabilities.meshShader;
         uint32_t maxDrawsS = rendererState.indirectBuffer.capacity;
-        VkShaderStageFlags pcStageS = useMeshS ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+        // Must equal the pipeline layout's push range flags exactly (task stage reads the same push).
+        VkShaderStageFlags pcStageS = (useMeshS ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+            | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
         const ShadowFrustumConfig* shadowCfgs = rendererState.shadowCfgMirror; // render-thread mirror (device copy not host-readable)
 
         VkViewport shVp = { 0.0f, 0.0f, (float)ANO_SHADOW_DIM, (float)ANO_SHADOW_DIM, 0.0f, 1.0f };
@@ -988,9 +999,11 @@ void recordCommandBuffer(uint32_t imageIndex)
         vkCmdDispatch(cmd, ANO_VIEW_COUNT, 1, 1); // one workgroup per camera view
 
         // Sort writes (compacted indices + indirect commands) -> the geometry stage's indirect +
-        // SSBO reads in the per-view transmission pass below.
-        VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
-            ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+        // SSBO reads in the per-view transmission pass below (task stage included: it resolves the
+        // reordered compacted indices per draw).
+        VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
+            ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+            | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
         VkMemoryBarrier sortBarrier = {};
         sortBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         sortBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1159,7 +1172,9 @@ void recordCommandBuffer(uint32_t imageIndex)
                 uint32_t partition = v * drawSlotCount + slot;
                 uint32_t baseOffset = partition * rendererState.culling.maxEntities;
                 bool useMesh = ctx.deviceCapabilities.meshShader;
-                VkShaderStageFlags pcStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+                // Must equal the layout's push range flags exactly (task stage reads the same push).
+                VkShaderStageFlags pcStage = (useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+                    | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, pcStage, 0, sizeof(uint32_t), &baseOffset);
 
                 VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
@@ -1570,6 +1585,13 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         ubo->hizProj[v][1] = viewUbo->proj[1][1];
         ubo->hizProj[v][2] = viewUbo->proj[2][2];
         ubo->hizProj[v][3] = viewUbo->proj[3][2];
+        // Task-shader meshlet cull tail (review priority 10): flat.task culls per view with the
+        // SAME planes/reprojection/gating the entity cull uses, republished into this view's
+        // GlobalUBO (only flat.task declares the tail; every other shader reads a prefix).
+        memcpy(viewUbo->frustumPlanes, ubo->views[v].frustumPlanes, sizeof(viewUbo->frustumPlanes));
+        memcpy(viewUbo->prevViewProj, ubo->prevViewProj[v], sizeof(mat4));
+        memcpy(viewUbo->hizParams, ubo->hizParams[v], sizeof(viewUbo->hizParams));
+        memcpy(viewUbo->hizProj, ubo->hizProj[v], sizeof(viewUbo->hizProj));
         // Publish the active light count to each view's fragment stage.
         viewUbo->lightCount = state->lightBuffer.count;
         // Publish the runtime lighting mode + debug selector (RADIANCE_CASCADES.md). The fragment
@@ -1611,6 +1633,13 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     ubo->specialSlots[1] = ano_draw_slot_of(PIPELINE_TRANSMISSION);
     ubo->specialSlots[2] = ANO_NO_DRAW_SLOT;
     ubo->specialSlots[3] = ANO_NO_DRAW_SLOT;
+
+    // Task-shader meshlet cull (review priority 10): tells emitDraw to size mesh-path commands as
+    // ceil(meshletCount/32) task workgroups. Must track the pipelines' stage set (taskCull).
+    ubo->taskParams[0] = state->taskCull ? 1u : 0u;
+    ubo->taskParams[1] = 0u;
+    ubo->taskParams[2] = 0u;
+    ubo->taskParams[3] = 0u;
 
     // The EntitySSBO (mesh/material per slot) is seeded once at init and mutated
     // sparsely through the command bridge (render_apply_commands) — no per-frame
@@ -3029,8 +3058,11 @@ void drawFrame()
 		VkSubmitInfo submitInfo = {};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		VkSemaphore waitSemaphores[2] = {rendererState.frames[rendererState.frameIndex].imageAvailable, rendererState.hizTimeline};
+		// The task meshlet cull samples the async-built pyramids too (global set binding 13), so
+		// its stage joins the hizTimeline wait when active.
 		VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT};
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0)};
 		uint64_t waitValues[2] = {0, hizWaitValue};
 		VkTimelineSemaphoreSubmitInfo timelineValues = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
 			.waitSemaphoreValueCount = 2, .pWaitSemaphoreValues = waitValues,
@@ -3081,8 +3113,12 @@ void drawFrame()
 
 		VkSemaphore bWaitSems[3] = { rendererState.frames[rendererState.frameIndex].imageAvailable,
 			rendererState.hizTimeline, rendererState.lcTimeline };
+		// hizTimeline @ EARLY_FRAG (depth-resolve WAR) + TASK when the meshlet cull samples the
+		// async-built pyramids in this submit's geometry passes (global set binding 13).
 		VkPipelineStageFlags bWaitStages[3] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT };
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT };
 		uint64_t bWaitValues[3] = { 0, hizWaitValue, ordinal };
 		VkTimelineSemaphoreSubmitInfo bTimeline = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
 			.waitSemaphoreValueCount = 3, .pWaitSemaphoreValues = bWaitValues,
@@ -3943,6 +3979,15 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// decided before buffer creation (CONCURRENT sharing) and createSyncObjects (timelines).
 	rendererState.asyncLc = rendererState.asyncHiz && !getenv("ANO_FORCE_NO_ASYNC_LC");
 	printf("Async light-cull: %s\n", rendererState.asyncLc ? "on (split submit, overlaps shadows)" : "off (in-frame)");
+
+	// Task-shader meshlet cull gate (review priority 10). Flips together: the TASK stage in every
+	// mesh-drawing pipeline + its layouts/pushes/barriers, and cull.comp's indirect groupCountX
+	// convention (CullUBO.taskParams). ANO_FORCE_NO_TASK pins direct mesh dispatch for A/B. Must be
+	// decided before the descriptor layouts and pipelines are built.
+	rendererState.taskCull = ctx.deviceCapabilities.meshShader
+	                      && ctx.deviceCapabilities.taskShader
+	                      && !getenv("ANO_FORCE_NO_TASK");
+	printf("Task meshlet cull: %s\n", rendererState.taskCull ? "on (frustum+cone, Hi-Z with occlusion toggle)" : "off (direct mesh dispatch)");
 
     // Mesh-shader entry points only exist on the mesh path. The fallback path draws
     // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
