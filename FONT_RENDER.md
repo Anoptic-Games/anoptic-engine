@@ -106,13 +106,20 @@ arena discipline.
 Proposed public surface, PoC scope:
 
     ano_text_init / ano_text_shutdown
-    ano_text_font_load(path)                  -> AnoFontId
-    ano_text_font_bake(font, &curveBlob, &directoryBlob, heap)   // GPU-agnostic byte blobs
-    ano_text_shape(font, utf8, len, sizePx, origin, color, heap) -> AnoGlyphInstance[]
-    ano_text_measure(font, utf8, len, sizePx) -> extents
+    ano_text_font_load(path)                              -> AnoFontId
+    ano_text_font_bake(font, firstCp, lastCp, heap, &out) // GPU-ready blobs in caller heap
+    ano_text_shape(bake, utf8, len, sizePx, origin, color, out, cap, penOut) -> count
+    ano_text_measure(bake, utf8, len, sizePx, &w, &h)
 
-Shaper v0 (PoC): UTF-8 decode, cmap lookup (direct table for ASCII, binary search above),
-horizontal advances, `\n` line breaking with hhea baseline metrics. No kerning. That is
+Load/bake are bound to the module thread (FreeType underneath); shape/measure are pure
+functions over the immutable bake — no parser state, callable from ANY thread. That split
+is the logic-side enabler: game code shapes into instance arrays wherever it runs, and the
+caller-buffer signature writes straight into a mapped per-frame buffer with zero
+allocation. penOut chains runs (color changes mid-line) bitwise-exactly.
+
+Shaper v0 (PoC, built in step 4): strict UTF-8 decode (overlongs/surrogates rejected,
+byte-wise resync), cmap-by-range lookup against the bake, horizontal advances, `\n`/`\r`
+handling, out-of-range codepoints advance a visible ANO_TEXT_GAP_EM. No kerning. That is
 sufficient for profile lines. Shaper v1: an in-house GPOS PairPos reader — the audit bounds
 this precisely at coverage formats 1/2, ClassDef formats 1/2, PairPos formats 1/2, roughly
 250 lines of table walking. Explicit non-goals, stated to prevent HarfBuzz-shaped creep:
@@ -273,16 +280,22 @@ the established freeze/A-B methodology rather than a new `ANO_TS_*` slot for now
 ## 8. GlyphInstance ABI draft
 
 The user-sketched fields (glyphID, position, scale, color) extended to carry pan/skew/rotation
-without per-pixel transform cost — the shader gets the pixel→em inverse prebaked:
+without per-pixel transform cost — the shader gets the pixel→em inverse prebaked. Final ABI
+(shipped in `anoptic_text.h`, step 4); field order differs from the original sketch so a GLSL
+`vec4 inv; vec4 color; vec2 origin; uint glyphID; uint flags;` declaration lands on identical
+std430 offsets (0/16/32/40/44, stride 48 — a vec4 at offset 24 would have misaligned):
 
-    // std430, 48 B
+    // std430, 48 B; static_asserts pin the offsets
     typedef struct AnoGlyphInstance {
-        float    inv[4];      // 2x2 pixel->em inverse; scale, skew (pan-skew), rotation fold here
-        float    origin[2];   // screen-space baseline origin, pixels
+        float    inv[4];      // 2x2 pixel->em inverse, rows; scale, the screen-y-down vs
+                              // em-y-up flip, and future skew/rotation fold here
         float    color[4];    // premultiplied linear RGBA
+        float    origin[2];   // baseline pen position, screen pixels, y-down
         uint32_t glyphID;     // glyph directory index
         uint32_t flags;       // reserved (f32-curve escape, effects)
     } AnoGlyphInstance;
+
+The v0 shaper emits inv = (1/size, 0, 0, −1/size); em = inv · (pixel − origin).
 
 The forward transform exists only CPU-side, used for tile binning. Text-layout sub-buffers:
 the per-frame buffer is instance array + tile ranges; a block is a contiguous instance range
@@ -321,7 +334,10 @@ re-ABIs.
    coverage math and the clamp fix off-GPU before any Vulkan work. (Done: 13 probes at
    64 px/em, worst RMS 2.71/255, worst per-pixel 53/255 on winding-pocket AA boundaries;
    surfaced the self-overlap form now recorded in §6.1.)
-4. Shaper v0 (UTF-8, cmap, advances, newline) + golden layout tests.
+4. Shaper v0 (UTF-8, cmap, advances, newline) + golden layout tests. (Done: pure over the
+   bake, any-thread; AnoGlyphInstance ABI finalized with GLSL-aligned field order; goldens
+   cover exact advances, blanks, CRLF, gap, cap-vs-count, bitwise penOut continuation,
+   measure.)
 5. GPU plumbing, visually inert: buffers, overlay ×3 + resize path, descriptor sets, compute
    pipeline, composite blend draw sampling a cleared overlay. Validation-clean.
 6. `textraster.comp` via the in-frame fallback path first (sync-trivial): static string on
