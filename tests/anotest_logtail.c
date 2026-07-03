@@ -99,6 +99,8 @@ static bench_stats run_point(int producers, uint64_t *buf)
 
 int main(int argc, char **argv)
 {
+    scratch_anchor_to_exe();   // scratch relative to this exe's dir, cross-platform
+
     if (argc > 1) {
         int v = atoi(argv[1]);
         if (v > 0) g_msgs = v;

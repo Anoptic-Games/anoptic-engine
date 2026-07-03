@@ -252,6 +252,7 @@ static result measure(const logger_api *api)
 
 int main(void)
 {
+    scratch_anchor_to_exe();   // scratch relative to this exe's dir, cross-platform
     scratch_make_dir(BENCH_DIR);
 
     printf("Anoptic logger benchmark -- ring (lock-free MPSC) vs mutex baseline\n");

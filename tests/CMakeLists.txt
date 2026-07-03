@@ -7,11 +7,11 @@ add_test(NAME anoptic_time COMMAND anotest_time)
 set_tests_properties(anoptic_time PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Testing for ``anoptic_logging.h``
-# ANO_TEST_OUTDIR anchors the test's scratch dirs to its own build tree, so output never lands in
-# the caller's CWD even when the binary is run by hand from the repo root.
+# Scratch dirs are anchored at runtime to the test exe's own directory (ano_fs_chdir_gamepath in
+# main / scratch_anchor_to_exe), so output never lands in the caller's CWD and a cross-built exe
+# writes to a valid path on its own OS -- no compile-time build path is baked in.
 add_executable(anotest_logging anotest_logging.c)
 target_link_libraries(anotest_logging PRIVATE anoptic_core)
-target_compile_definitions(anotest_logging PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME anoptic_logging COMMAND anotest_logging)
 set_tests_properties(anoptic_logging PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
 
@@ -20,7 +20,6 @@ set_tests_properties(anoptic_logging PROPERTIES TIMEOUT 60 LABELS "unit;concurre
 # (removed on exit) -- that is the function's actual contract, so it is tested for real.
 add_executable(anotest_filesystem anotest_filesystem.c)
 target_link_libraries(anotest_filesystem PRIVATE anoptic_core)
-target_compile_definitions(anotest_filesystem PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME anoptic_filesystem COMMAND anotest_filesystem)
 set_tests_properties(anoptic_filesystem PROPERTIES TIMEOUT 30 LABELS "unit")
 
@@ -65,7 +64,6 @@ set_tests_properties(anoptic_chariots PROPERTIES DISABLED TRUE LABELS "optional;
 # run ./anotest_logbench by hand.
 add_executable(anotest_logbench anotest_logbench.c ${CMAKE_SOURCE_DIR}/src/logging/logging_old.c)
 target_include_directories(anotest_logbench PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_compile_definitions(anotest_logbench PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(anotest_logbench PRIVATE anoptic_core)
 add_test(NAME anoptic_logbench COMMAND anotest_logbench)
 set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
@@ -74,7 +72,6 @@ set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;
 # rdtsc tick source -- the percentile complement to anotest_logbench's means. Built so it cannot
 # rot, DISABLED in ctest -- run ./anotest_logtail by hand.
 add_executable(anotest_logtail anotest_logtail.c)
-target_compile_definitions(anotest_logtail PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(anotest_logtail PRIVATE anoptic_core)
 add_test(NAME anoptic_logtail COMMAND anotest_logtail)
 set_tests_properties(anoptic_logtail PROPERTIES DISABLED TRUE LABELS "optional;bench")
@@ -85,7 +82,6 @@ set_tests_properties(anoptic_logtail PROPERTIES DISABLED TRUE LABELS "optional;b
 # so the summed output line count must equal the total enqueued. Deterministic and fast by default
 # (fixed seed, ~few seconds); pass an iteration count as argv[1] for a longer soak.
 add_executable(anotest_logfuzz anotest_logfuzz.c)
-target_compile_definitions(anotest_logfuzz PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(anotest_logfuzz PRIVATE anoptic_core)
 add_test(NAME anoptic_logfuzz COMMAND anotest_logfuzz)
 set_tests_properties(anoptic_logfuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;concurrency")
