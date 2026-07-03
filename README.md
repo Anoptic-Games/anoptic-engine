@@ -147,28 +147,6 @@ ANO_FORCE_NO_MESH_SHADER=1 ./build/Debug/anopticengine
 
 The startup log prints which path is active, e.g. `Enabling 3 device extensions (mesh shader: yes)`. See the Rendering Philosophy section of `docs/notes.md` for the full design.
 
-### Architecture
-
-The engine runs the simulation and the renderer as **two parallel worlds on
-separate threads**, connected by two bounded lock-free SPSC rings:
-
-- **Logic / ECS master** (the `main` thread): the authoritative world. Holds entities
-  (generational handles) and components (chunked sparse-set stores), and is the *sole
-  producer* of render commands.
-- **Render master** (its own thread): a non-authoritative view that owns all Vulkan
-  state, all GLFW windowing, and the physical GPU slot space. It is the *sole consumer*
-  of commands and the *sole producer* of events (e.g. slot-retirement notifications).
-
-The logic world names each renderable by a stable logical `render_id`; the renderer
-privately maps `render_id -> GPU slot`, so it can place and grow GPU data without the
-logic world ever seeing a slot. Only **discrete** transitions cross the bridge (spawn,
-despawn, teleport, mesh/material swap, light change). **Continuous** GPU-parameterized
-motion (orbit/spin) is sent once as parameters and animated entirely on the GPU, so it
-costs zero per-frame bridge traffic. Per-entity GPU buffers grow on demand in
-chunk-aligned steps, dropping any fixed entity ceiling.
-
-A broader design specification lives in `docs/` (see the "ECS ↔ render bridge" section under Current State in `notes.md`), along with the full architecture and build sequence.
-
 ### More
 
 Check out the `.md` files in each subdirectory for more information on a given module.
