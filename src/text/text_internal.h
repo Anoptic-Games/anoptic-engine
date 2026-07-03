@@ -46,4 +46,27 @@ int ano_quad_split_monotone(const AnoQuad *q, AnoQuad out[3]);
 int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm,
                        AnoQuad *out, int maxOut);
 
+// ---------------------------------------------------------------------------------------------
+// Reference rasterization (FONT_RENDER.md step 3).
+
+// CPU reference rasterizer: scalar float mirror of the GPU coverage shader (stream
+// grammar walk, the paper's clamped trapezoid integration, per-glyph [0,1] clamp, no
+// gamma). Grid follows FreeType bitmap conventions: row 0 is the TOP row; pixel (r,c)
+// covers the em window x in [(left+c)/S, (left+c+1)/S), y in [(top-r-1)/S, (top-r)/S)
+// with S = pixelsPerEm and the baseline pen origin at pixel-grid (0,0). out receives
+// width*rows coverage bytes, row-major. maxSumOut (optional) reports the largest
+// UNCLAMPED coverage sum seen -- values > 1 expose overlapping same-winding contours.
+void ano_text_raster_ref(const uint32_t *points, const AnoGlyphEntry *glyph,
+                         float pixelsPerEm, int left, int top, int width, int rows,
+                         uint8_t *out, float *maxSumOut);
+
+// Ground truth for the reference rasterizer: renders one codepoint through FreeType's
+// own anti-aliased rasterizer (linear 8-bit coverage, unhinted) at pixelsPerEm. Copies
+// the bitmap tightly into buf (capacity cap) and outputs its dimensions and bearings
+// (FT conventions: left/top relative to the baseline pen origin). Returns 0 on
+// success, EINVAL/EIO/ENOMEM(-style) on failure. Runs on the module thread.
+int ano_text_ref_ft_render(AnoFontId font, uint32_t codepoint, uint32_t pixelsPerEm,
+                           uint8_t *buf, uint32_t cap, int *width, int *rows,
+                           int *left, int *top);
+
 #endif

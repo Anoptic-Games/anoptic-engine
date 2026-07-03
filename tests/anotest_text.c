@@ -17,7 +17,14 @@
  *     fill-right winding (chord shoelace: 'H' negative; 'O' outer negative + hole
  *     positive), per-glyph and total curve counts pinned to the FONT_RENDER.md audit
  *     oracle (1654 total, '@' 63, space 0), advance/metrics sanity, EINVAL/ENOMEM
- *     argument contract, and bit-identical determinism across two bakes.
+ *     argument contract, and bit-identical determinism across two bakes;
+ *   - the CPU reference rasterizer (step 3, the scalar mirror of the GPU shader)
+ *     against FT_Render_Glyph ground truth on the same pixel grid at 64 px/em:
+ *     per-glyph RMS and max coverage error, plus the unclamped-peak oracle proving
+ *     the per-glyph clamp is load-bearing for BOTH overlap forms this font ships --
+ *     separate overlapping contours ('# $ + f t') and self-overlapping single
+ *     contours with winding-2 pockets ('H 8 @') -- while clean glyphs (incl. '%',
+ *     whose audit flag was a bbox false positive) stay in [~1, 1.1).
  * Requires resources/fonts/Geist staged next to the binary (tests/CMakeLists.txt).
  * Exit 0 == pass; failures print what broke. */
 
@@ -321,6 +328,87 @@ static void validate_bake(const AnoFontBake *b)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Reference rasterizer vs FreeType ground truth.
+
+#define REF_SCALE 64u      // px per em: big enough that curve detail matters
+#define REF_DIM   160      // per-glyph buffer side; comfortably above any 64px glyph
+
+// The unclamped-peak oracle, measured on this font. Coverage exceeding 1 comes in TWO
+// forms, both neutralized by the per-glyph clamp: separate same-winding contours
+// overlapping ('# $ + f t', the scouting audit's set minus '%' -- a bbox-proxy false
+// positive, its ink never overlaps), and single contours that SELF-overlap ('H 8 @':
+// Geist draws stems and crossbars as overlapping strokes joined by diagonal jogs,
+// leaving winding-2 pockets; found by this test, invisible to the contour-pair audit).
+// Note the paper's per-contour-evaluation fallback would NOT fix the self-overlap
+// form; the clamp handles both. Clean glyphs must also REACH unity (solid interiors).
+static const struct {
+    char  g;
+    float lo, hi;
+} peakOracle[] = {
+    { '#', 1.5f, 2.1f }, { '$', 1.5f, 2.1f }, { '+', 1.5f, 2.1f },
+    { 'f', 1.5f, 2.1f }, { 't', 1.5f, 2.1f },                      // contour overlaps
+    { 'H', 1.5f, 2.1f }, { '8', 1.4f, 2.1f }, { '@', 1.2f, 2.1f }, // self-overlaps
+    { '%', 0.9f, 1.1f }, { 'A', 0.9f, 1.1f }, { 'g', 0.9f, 1.1f },
+    { 'O', 0.9f, 1.1f }, { 'i', 0.9f, 1.1f },                      // clean
+};
+
+static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
+{
+    static uint8_t truth[REF_DIM * REF_DIM];
+    static uint8_t ours[REF_DIM * REF_DIM];
+
+    double worstRms = 0.0;
+    int    worstMax = 0;
+    for (size_t p = 0; p < sizeof peakOracle / sizeof *peakOracle; p++)
+    {
+        uint32_t cp = (uint32_t)peakOracle[p].g;
+        int fw = 0, fr = 0, fl = 0, ft = 0;
+        int rc = ano_text_ref_ft_render(font, cp, REF_SCALE, truth, sizeof truth,
+                                        &fw, &fr, &fl, &ft);
+        CHECK(rc == 0, "FreeType ground-truth render succeeds");
+        if (rc != 0)
+            continue;
+        CHECK(fw > 5 && fr > 10 && fw <= REF_DIM && fr <= REF_DIM,
+              "ground-truth bitmap has sane dimensions");
+
+        float maxSum = 0.0f;
+        ano_text_raster_ref(b->points, &b->glyphs[cp - b->firstCodepoint], (float)REF_SCALE,
+                            fl, ft, fw, fr, ours, &maxSum);
+
+        double se = 0.0;
+        int maxd = 0;
+        for (int i = 0; i < fw * fr; i++)
+        {
+            int d = (int)ours[i] - (int)truth[i];
+            se += (double)d * d;
+            if (d < 0)
+                d = -d;
+            if (d > maxd)
+                maxd = d;
+        }
+        double rms = sqrt(se / (fw * fr));
+        printf("ref '%c': %2dx%2d rms=%5.2f max=%3d unclamped-peak=%.3f\n",
+               peakOracle[p].g, fw, fr, rms, maxd, (double)maxSum);
+        if (rms > worstRms)
+            worstRms = rms;
+        if (maxd > worstMax)
+            worstMax = maxd;
+
+        // Coverage agreement with FreeType (also an exact-area rasterizer). Observed
+        // worst on this font: rms 2.71, max 53 -- the max sits on winding-2 pocket
+        // boundaries where clamped coverage and the nonzero fill rule diverge for one
+        // AA pixel. Thresholds leave margin for FP/platform variance only.
+        CHECK(rms <= 4.0, "coverage RMS within threshold of FreeType");
+        CHECK(maxd <= 64, "per-pixel coverage deviation bounded");
+
+        CHECK(maxSum >= peakOracle[p].lo, "unclamped peak reaches its expected class");
+        CHECK(maxSum <= peakOracle[p].hi, "unclamped peak bounded (no runaway winding)");
+    }
+    printf("ref worst: rms=%.2f max=%d over %zu probes\n", worstRms, worstMax,
+           sizeof peakOracle / sizeof *peakOracle);
+}
+
+// ---------------------------------------------------------------------------------------------
 
 int main(void)
 {
@@ -348,6 +436,7 @@ int main(void)
 
     CHECK(ano_text_font_bake(geist, 32, 126, heapA, &bake) == 0, "ASCII bake succeeds");
     validate_bake(&bake);
+    test_reference_raster(geist, &bake);
 
     // Determinism: a second bake is bit-identical (double math, fixed iteration order).
     AnoFontBake again = { 0 };
