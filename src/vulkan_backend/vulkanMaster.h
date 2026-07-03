@@ -34,8 +34,8 @@ extern uint32_t g_ValidationErrors;
 
 // --- Render world / logic producer ------------------------------------------
 // The public engine<->renderer contract — initVulkan / unInitVulkan ("a celebration") /
-// drawFrame / anoShouldClose, the opaque AnoRenderBridge, anoRenderBridge(),
-// anoRenderEntity0Mesh() and ano_render_submit() — is declared in <anoptic_render.h>
+// drawFrame / anoShouldClose, the opaque AnoRenderBridge, anoRenderBridge(), the asset-query API
+// (anoRenderAssetPrimitives etc.) and ano_render_submit() — is declared in <anoptic_render.h>
 // (included above), and defined here in vulkanMaster.c.
 // GLFW pins window + event handling to the process main thread (mandatory on macOS),
 // so the render world (all Vulkan + GLFW: initVulkan, the frame loop, unInitVulkan)

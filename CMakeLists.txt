@@ -123,15 +123,59 @@ if(Vulkan_FOUND)
     if(Vulkan_GLSLC_EXECUTABLE)
         set(SHADER_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
         set(SPV_OUTPUTS "")
-        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp)
+        # Shared GLSL includes (#include): not compiled standalone, but every shader rebuilds when one
+        # changes so the shadow CDF math can't silently desync from a stale .spv.
+        set(SHADER_INCLUDES ${SHADER_DIR}/shadow_cdf.glsl ${SHADER_DIR}/shadow_sample.glsl)
+        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag)
             add_custom_command(
                     OUTPUT  ${SHADER_DIR}/${shader}.spv
                     COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${SHADER_DIR}/${shader} -o ${SHADER_DIR}/${shader}.spv
-                    DEPENDS ${SHADER_DIR}/${shader}
+                    DEPENDS ${SHADER_DIR}/${shader} ${SHADER_INCLUDES}
                     COMMENT "glslc ${shader} -> ${shader}.spv"
                     VERBATIM)
             list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${shader}.spv)
         endforeach()
+        # Depth-only geometry variants: second compiles of flat.mesh / flat.vert with ANO_DEPTH_ONLY
+        # (gl_Position only, no user attributes) for the depth pre-pass and the shadow atlas render.
+        # Same source as the full modules + invariant gl_Position = bit-identical clip depth, which
+        # the opaque pass's EQUAL test requires.
+        foreach(dshader IN ITEMS flat.mesh flat.vert)
+            string(REPLACE "flat." "flat_depth." dspv ${dshader})
+            add_custom_command(
+                    OUTPUT  ${SHADER_DIR}/${dspv}.spv
+                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DANO_DEPTH_ONLY ${SHADER_DIR}/${dshader} -o ${SHADER_DIR}/${dspv}.spv
+                    DEPENDS ${SHADER_DIR}/${dshader} ${SHADER_INCLUDES}
+                    COMMENT "glslc ${dshader} (ANO_DEPTH_ONLY) -> ${dspv}.spv"
+                    VERBATIM)
+            list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${dspv}.spv)
+        endforeach()
+        # Task-launched mesh variants (review priority 10): ANO_TASK_CULL compiles of flat.mesh (color
+        # + depth-only) that read the meshlet index from flat.task's payload instead of gl_WorkGroupID.
+        # Loaded when RendererState.taskCull; the plain compiles above stay the direct-dispatch fallback.
+        foreach(tshader IN ITEMS flat.mesh flat_depth.mesh)
+            string(REPLACE ".mesh" "_task.mesh" tspv ${tshader})
+            set(tdefs -DANO_TASK_CULL)
+            if(tshader STREQUAL "flat_depth.mesh")
+                set(tdefs -DANO_TASK_CULL -DANO_DEPTH_ONLY)
+            endif()
+            add_custom_command(
+                    OUTPUT  ${SHADER_DIR}/${tspv}.spv
+                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${tdefs} ${SHADER_DIR}/flat.mesh -o ${SHADER_DIR}/${tspv}.spv
+                    DEPENDS ${SHADER_DIR}/flat.mesh ${SHADER_INCLUDES}
+                    COMMENT "glslc flat.mesh (${tdefs}) -> ${tspv}.spv"
+                    VERBATIM)
+            list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${tspv}.spv)
+        endforeach()
+        # Hi-Z avenue 1: a second compile of hiz.comp with RESOLVED_DEPTH (reduce reads a single-sample
+        # sampler2D of the MAX-resolved depth). Loaded for the reduce pipeline only when the device
+        # supports VK_RESOLVE_MODE_MAX_BIT; the default hiz.comp.spv stays the per-sample MSAA fallback.
+        add_custom_command(
+                OUTPUT  ${SHADER_DIR}/hiz_resolve.comp.spv
+                COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 -DRESOLVED_DEPTH ${SHADER_DIR}/hiz.comp -o ${SHADER_DIR}/hiz_resolve.comp.spv
+                DEPENDS ${SHADER_DIR}/hiz.comp ${SHADER_INCLUDES}
+                COMMENT "glslc hiz.comp (RESOLVED_DEPTH) -> hiz_resolve.comp.spv"
+                VERBATIM)
+        list(APPEND SPV_OUTPUTS ${SHADER_DIR}/hiz_resolve.comp.spv)
         add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
     else()
         message(WARNING "glslc not found: using committed resources/shaders/*.spv (may be stale).")

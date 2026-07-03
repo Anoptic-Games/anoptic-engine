@@ -46,7 +46,9 @@ static void test_meshlet_bounds_calculation() {
     assert(fabs(bounds.cone_axis[0] - 0.0f) < 1e-4f);
     assert(fabs(bounds.cone_axis[1] - 0.0f) < 1e-4f);
     assert(fabs(bounds.cone_axis[2] - 1.0f) < 1e-4f);
-    assert(bounds.cone_cutoff > 0.0f); // Should be 1.0f - epsilon
+    // meshopt convention: cutoff = sin(max normal deviation). One flat triangle
+    // has zero spread -> cutoff == 0 (cullable from the whole back hemisphere).
+    assert(bounds.cone_cutoff >= 0.0f && bounds.cone_cutoff < 1e-4f);
 }
 
 static void test_degenerate_triangles() {
@@ -238,12 +240,363 @@ static void test_vertex_cache_optimization() {
     assert(found_t1 && found_t2);
 }
 
+// Every output triangle must reference in-range, distinct vertices (no degenerates).
+static void validate_indices(const uint32_t* idx, size_t count, uint32_t vertex_count) {
+    assert(count % 3 == 0);
+    for (size_t t = 0; t < count; t += 3) {
+        uint32_t a = idx[t], b = idx[t+1], c = idx[t+2];
+        assert(a < vertex_count && b < vertex_count && c < vertex_count);
+        assert(a != b && b != c && a != c);
+    }
+}
+
+static void test_simplify_scale() {
+    printf("Running test_simplify_scale...\n");
+
+    // Largest axis extent: x spans 2, y spans 1, z spans 0 -> 2.
+    float positions[] = {
+        0.0f, 0.0f, 0.0f,
+        2.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f
+    };
+    float scale = ano_simplify_scale(positions, 3, sizeof(float) * 3);
+    assert(fabs(scale - 2.0f) < 1e-5f);
+
+    assert(ano_simplify_scale(positions, 0, sizeof(float) * 3) == 0.0f);
+}
+
+static void test_simplify_passthrough() {
+    printf("Running test_simplify_passthrough...\n");
+
+    // target_index_count >= index_count returns the input unchanged.
+    uint32_t indices[] = { 0, 1, 2 };
+    float positions[] = { 0.0f,0.0f,0.0f, 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f };
+    uint32_t out[3] = { 99, 99, 99 };
+    float err = -1.0f;
+
+    size_t r = ano_simplify(out, indices, 3, positions, 3, sizeof(float) * 3, 3, 0.01f, &err);
+    assert(r == 3);
+    assert(out[0] == 0 && out[1] == 1 && out[2] == 2);
+    assert(err == 0.0f);
+
+    // Passthrough still drops degenerate (coincident-position) triangles: one real + one with two
+    // corners at the same position, target >= index_count -> only the real triangle survives.
+    uint32_t dindices[] = { 0, 1, 2,  0, 3, 1 };  // vertex 3 coincides with vertex 0
+    float dpositions[] = { 0.0f,0.0f,0.0f, 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,0.0f };
+    uint32_t dout[6];
+    size_t dr = ano_simplify(dout, dindices, 6, dpositions, 4, sizeof(float) * 3, 6, 0.01f, NULL);
+    assert(dr == 3);
+    validate_indices(dout, dr, 4);
+}
+
+static void test_simplify_degenerate_input() {
+    printf("Running test_simplify_degenerate_input...\n");
+
+    // One real triangle + two index-degenerate triangles: must terminate and emit a valid mesh.
+    uint32_t indices[] = { 0, 1, 2,  2, 2, 3,  3, 4, 3 };
+    float positions[] = {
+        0.0f,0.0f,0.0f, 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 1.0f,1.0f,0.0f, 2.0f,2.0f,0.0f
+    };
+    uint32_t out[9];
+
+    size_t r = ano_simplify(out, indices, 9, positions, 5, sizeof(float) * 3, 3, 0.5f, NULL);
+    validate_indices(out, r, 5);
+    assert(r == 3); // only the one non-degenerate triangle survives
+}
+
+// Build an n x n grid of vertices in the z=0 plane, two triangles per cell (CCW, +Z normals).
+static size_t build_grid(uint32_t n, float* positions, uint32_t* indices) {
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            positions[(y*n+x)*3+0] = (float)x;
+            positions[(y*n+x)*3+1] = (float)y;
+            positions[(y*n+x)*3+2] = 0.0f;
+        }
+    size_t k = 0;
+    for (uint32_t y = 0; y < n - 1; ++y)
+        for (uint32_t x = 0; x < n - 1; ++x) {
+            uint32_t i00 = y*n+x, i10 = y*n+x+1, i01 = (y+1)*n+x, i11 = (y+1)*n+x+1;
+            indices[k++] = i00; indices[k++] = i10; indices[k++] = i11;
+            indices[k++] = i00; indices[k++] = i11; indices[k++] = i01;
+        }
+    return k;
+}
+
+static void test_simplify_grid() {
+    printf("Running test_simplify_grid...\n");
+
+    enum { N = 8 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    size_t ic = build_grid(N, positions, indices);
+
+    size_t target = (ic / 2 / 3) * 3;  // ~50%
+    uint32_t out[(N-1)*(N-1)*2*3];
+    float err = -1.0f;
+
+    size_t r = ano_simplify(out, indices, ic, positions, N*N, sizeof(float) * 3, target, 0.05f, &err);
+
+    assert(r % 3 == 0);
+    assert(r > 0 && r < ic);   // reduced, non-empty
+    assert(r <= target);       // flat mesh: the count budget is reached
+    validate_indices(out, r, N*N);
+    assert(err >= 0.0f && err < 0.1f); // a perfectly flat grid simplifies at ~zero error
+
+    // The contract allows destination == indices (in-place).
+    size_t r2 = ano_simplify(indices, indices, ic, positions, N*N, sizeof(float) * 3, target, 0.05f, NULL);
+    assert(r2 == r);
+    validate_indices(indices, r2, N*N);
+}
+
+static void test_simplify_error_budget() {
+    printf("Running test_simplify_error_budget...\n");
+
+    // A curved (bumpy) grid: unlike a flat grid, collapses carry real quadric error, so target_error
+    // actually binds. This exercises the error-accumulation path the flat-grid test cannot.
+    enum { N = 10 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    for (uint32_t y = 0; y < N; ++y)
+        for (uint32_t x = 0; x < N; ++x) {
+            positions[(y*N+x)*3+0] = (float)x;
+            positions[(y*N+x)*3+1] = (float)y;
+            positions[(y*N+x)*3+2] = 0.6f * sinf((float)x * 0.9f) * cosf((float)y * 0.9f);
+        }
+    size_t ic = 0;
+    for (uint32_t y = 0; y < N - 1; ++y)
+        for (uint32_t x = 0; x < N - 1; ++x) {
+            uint32_t i00 = y*N+x, i10 = y*N+x+1, i01 = (y+1)*N+x, i11 = (y+1)*N+x+1;
+            indices[ic++] = i00; indices[ic++] = i10; indices[ic++] = i11;
+            indices[ic++] = i00; indices[ic++] = i11; indices[ic++] = i01;
+        }
+
+    size_t target = (ic / 4 / 3) * 3;  // 25%
+    uint32_t out_g[(N-1)*(N-1)*2*3], out_s[(N-1)*(N-1)*2*3];
+    float err_g = -1.0f, err_s = -1.0f;
+
+    // Generous budget reaches the count target; tiny budget stops short to preserve the shape.
+    size_t rg = ano_simplify(out_g, indices, ic, positions, N*N, sizeof(float)*3, target, 1.0f, &err_g);
+    size_t rs = ano_simplify(out_s, indices, ic, positions, N*N, sizeof(float)*3, target, 1e-4f, &err_s);
+
+    validate_indices(out_g, rg, N*N);
+    validate_indices(out_s, rs, N*N);
+    assert(rg <= target);          // generous: count budget binds
+    assert(rs > target);           // strict: error budget binds first, stays above the count target
+    assert(rg < ic && rs < ic);    // both still reduce
+    assert(err_g >= 0.0f && err_s >= 0.0f);
+}
+
+// Longest edge over an index buffer, in object units. Helper for the guard regression below.
+static float max_edge_len(const uint32_t* idx, size_t r, const float* pos) {
+    float mx = 0.0f;
+    for (size_t t = 0; t < r; t += 3)
+        for (int e = 0; e < 3; ++e) {
+            const float* a = &pos[idx[t + e]*3];
+            const float* b = &pos[idx[t + (e + 1) % 3]*3];
+            float dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2];
+            float d = sqrtf(dx*dx + dy*dy + dz*dz);
+            if (d > mx) mx = d;
+        }
+    return mx;
+}
+
+// Guarded path (ano_simplify_ex, edge_len_factor > 0): the in-plane growth cap must stop a coplanar
+// "bridge" triangle — the Sponza courtyard-floor pathology. A coarse flat grid decimated hard bridges
+// corner-to-corner with the guard OFF (a single triangle spanning most of the model, longer than any
+// real edge); with the guard ON no surviving edge may span the surface, even if that means the count
+// target is missed. Fails if the guard is ever removed (guarded output would then bridge like the
+// unguarded one). Thresholds have wide margins over the measured 1.18-1.41x (off) / <=0.35x (on).
+static void test_simplify_guard_bridge() {
+    printf("Running test_simplify_guard_bridge...\n");
+
+    enum { N = 12 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    size_t ic = build_grid(N, positions, indices);
+    float extent = ano_simplify_scale(positions, N*N, sizeof(float)*3);
+    size_t target = (ic / 8 / 3) * 3;  // decimate hard (~1/8) so an unguarded collapse bridges
+
+    uint32_t guard_off[(N-1)*(N-1)*2*3], guard_on[(N-1)*(N-1)*2*3];
+    size_t r_off = ano_simplify_ex(guard_off, indices, ic, positions, N*N, sizeof(float)*3,
+                                   target, 0.05f, 0.0f, NULL);
+    size_t r_on  = ano_simplify_ex(guard_on, indices, ic, positions, N*N, sizeof(float)*3,
+                                   target, 0.05f, ANO_SIMPLIFY_EDGE_FACTOR_DEFAULT, NULL);
+    validate_indices(guard_off, r_off, N*N);
+    validate_indices(guard_on,  r_on,  N*N);
+
+    // Guard OFF reproduces the pathology: a triangle edge spanning most of the model.
+    assert(max_edge_len(guard_off, r_off, positions) > 0.75f * extent);
+    // Guard ON: no surviving edge spans the surface, yet the mesh still coarsens.
+    assert(max_edge_len(guard_on, r_on, positions) < 0.5f * extent);
+    assert(r_on > 0 && r_on < ic);
+}
+
+// Max radius sqrt(x^2+z^2) over output vertices at height y >= ymin. Helper for the pillar test.
+static float max_radius_above(const uint32_t* idx, size_t r, const float* pos, float ymin) {
+    float mx = 0.0f;
+    for (size_t i = 0; i < r; ++i) {
+        const float* p = &pos[idx[i]*3];
+        if (p[1] >= ymin) { float rad = sqrtf(p[0]*p[0] + p[2]*p[2]); if (rad > mx) mx = rad; }
+    }
+    return mx;
+}
+
+// True if any two output triangles share the same unordered vertex set (a doubled / non-manifold face).
+static int has_dup_face(const uint32_t* idx, size_t r) {
+    size_t nt = r / 3;
+    for (size_t i = 0; i < nt; ++i) {
+        uint32_t a0=idx[i*3], a1=idx[i*3+1], a2=idx[i*3+2];
+        if (a0>a1){uint32_t t=a0;a0=a1;a1=t;} if (a1>a2){uint32_t t=a1;a1=a2;a2=t;} if (a0>a1){uint32_t t=a0;a0=a1;a1=t;}
+        for (size_t j = i+1; j < nt; ++j) {
+            uint32_t b0=idx[j*3], b1=idx[j*3+1], b2=idx[j*3+2];
+            if (b0>b1){uint32_t t=b0;b0=b1;b1=t;} if (b1>b2){uint32_t t=b1;b1=b2;b2=t;} if (b0>b1){uint32_t t=b0;b0=b1;b1=t;}
+            if (a0==b0 && a1==b1 && a2==b2) return 1;
+        }
+    }
+    return 0;
+}
+
+// T1: the disable path (edge_len_factor <= 0) must reproduce ano_simplify exactly, forever.
+static void test_simplify_guard_byte_identity() {
+    printf("Running test_simplify_guard_byte_identity...\n");
+    enum { N = 10 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    for (uint32_t y = 0; y < N; ++y)
+        for (uint32_t x = 0; x < N; ++x) {
+            positions[(y*N+x)*3+0] = (float)x;
+            positions[(y*N+x)*3+1] = (float)y;
+            positions[(y*N+x)*3+2] = 0.6f * sinf((float)x * 0.9f) * cosf((float)y * 0.9f);
+        }
+    size_t ic = 0;
+    for (uint32_t y = 0; y < N - 1; ++y)
+        for (uint32_t x = 0; x < N - 1; ++x) {
+            uint32_t i00=y*N+x, i10=y*N+x+1, i01=(y+1)*N+x, i11=(y+1)*N+x+1;
+            indices[ic++]=i00; indices[ic++]=i10; indices[ic++]=i11;
+            indices[ic++]=i00; indices[ic++]=i11; indices[ic++]=i01;
+        }
+    size_t target = (ic / 4 / 3) * 3;
+    uint32_t a[(N-1)*(N-1)*2*3], b[(N-1)*(N-1)*2*3];
+    size_t r0 = ano_simplify_ex(a, indices, ic, positions, N*N, sizeof(float)*3, target, 0.05f, 0.0f, NULL);
+    size_t r1 = ano_simplify(b, indices, ic, positions, N*N, sizeof(float)*3, target, 0.05f, NULL);
+    assert(r0 == r1);
+    assert(memcmp(a, b, r0 * sizeof(uint32_t)) == 0);
+}
+
+// T4: the new guards must not gut decimation of a flat surface. At a gentle 1/2 target the growth cap
+// is inert, and every guard is provably a no-op on a planar mesh, so guarded == unguarded (count).
+static void test_simplify_flat_not_gutted() {
+    printf("Running test_simplify_flat_not_gutted...\n");
+    enum { N = 20 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    size_t ic = build_grid(N, positions, indices);
+    size_t target = (ic / 2 / 3) * 3;   // gentle 1/2, cap-inert
+    uint32_t off[(N-1)*(N-1)*2*3], on[(N-1)*(N-1)*2*3];
+    size_t r_off = ano_simplify_ex(off, indices, ic, positions, N*N, sizeof(float)*3, target, 0.05f, 0.0f, NULL);
+    size_t r_on  = ano_simplify_ex(on,  indices, ic, positions, N*N, sizeof(float)*3, target, 0.05f, 8.0f, NULL);
+    assert(r_on < ic);            // still decimates
+    // Guards must not gut planar decimation. Not bit-inert: the unguarded run may
+    // overshoot one collapse past the target (a collapse retires 2 triangles at once),
+    // so allow one triangle of slack instead of exact equality.
+    assert(r_on <= target);       // reaches the requested budget
+    assert(r_on <= r_off + 3);    // within one triangle of the unguarded result
+    validate_indices(on, r_on, N*N);
+}
+
+// T3: a narrow concave trench must not be bridged (bounds the longest edge; link/drift add margin).
+static void test_simplify_concave_trench() {
+    printf("Running test_simplify_concave_trench...\n");
+    enum { N = 16 };
+    float positions[N*N*3];
+    uint32_t indices[(N-1)*(N-1)*2*3];
+    size_t ic = build_grid(N, positions, indices);   // flat z=0
+    for (uint32_t x = 0; x < N; ++x) positions[((N/2)*N+x)*3+2] = -1.5f;   // push middle row into a V
+    float extent = ano_simplify_scale(positions, N*N, sizeof(float)*3);
+    size_t target = (ic / 8 / 3) * 3;
+    uint32_t out[(N-1)*(N-1)*2*3];
+    size_t r = ano_simplify_ex(out, indices, ic, positions, N*N, sizeof(float)*3, target, 0.05f, 8.0f, NULL);
+    validate_indices(out, r, N*N);
+    assert(r > 0 && r < ic);
+    assert(max_edge_len(out, r, positions) < 0.5f * extent);
+}
+
+// T2: smoke test — the guards must produce a VALID decimation of a closed faceted pillar (cap fans ->
+// manifold ecnt==2 rim edges) and not destroy its rim silhouette. HONEST SCOPE: a clean thick cylinder
+// is already rim-preserved by the base QEM wall-plane quadric (verified: ef=0 and ef=8 both keep
+// topRadius==R here), so this does NOT isolate the feature-slide guard vs baseline. The decisive
+// vanishing-pillar fix (thin / non-manifold Sponza pillars) is RenderDoc-verified, not synthetically
+// reproducible on a clean manifold. This locks that the guard code itself stays valid and rim-safe.
+static void test_simplify_pillar_silhouette() {
+    printf("Running test_simplify_pillar_silhouette...\n");
+    enum { N = 16 };
+    const float PI = 3.14159265358979f, R = 1.0f, H = 8.0f;
+    // layout: topRing[i]=i, botRing[i]=N+i, topCenter=2N, botCenter=2N+1, skirt=2N+2..2N+4
+    float pos[(2*N+5)*3];
+    uint32_t idx[(2*N + N + N + 1)*3];
+    for (uint32_t i = 0; i < N; ++i) {
+        float th = 2.0f*PI*(float)i/(float)N, cx = R*cosf(th), cz = R*sinf(th);
+        pos[i*3+0]=cx; pos[i*3+1]=H; pos[i*3+2]=cz;               // top ring
+        pos[(N+i)*3+0]=cx; pos[(N+i)*3+1]=0.0f; pos[(N+i)*3+2]=cz; // bottom ring
+    }
+    pos[(2*N)*3+0]=0; pos[(2*N)*3+1]=H; pos[(2*N)*3+2]=0;         // top center
+    pos[(2*N+1)*3+0]=0; pos[(2*N+1)*3+1]=0; pos[(2*N+1)*3+2]=0;   // bottom center
+    pos[(2*N+2)*3+0]=100; pos[(2*N+2)*3+1]=0; pos[(2*N+2)*3+2]=0; // far skirt (blows up extent)
+    pos[(2*N+3)*3+0]=101; pos[(2*N+3)*3+1]=0; pos[(2*N+3)*3+2]=0;
+    pos[(2*N+4)*3+0]=100; pos[(2*N+4)*3+1]=0; pos[(2*N+4)*3+2]=1;
+    size_t k = 0;
+    for (uint32_t i = 0; i < N; ++i) {
+        uint32_t j = (i+1)%N;
+        idx[k++]=N+i; idx[k++]=i;   idx[k++]=j;      // side tri 1
+        idx[k++]=N+i; idx[k++]=j;   idx[k++]=N+j;    // side tri 2
+        idx[k++]=2*N; idx[k++]=j;   idx[k++]=i;      // top cap fan
+        idx[k++]=2*N+1; idx[k++]=N+i; idx[k++]=N+j;  // bottom cap fan
+    }
+    idx[k++]=2*N+2; idx[k++]=2*N+3; idx[k++]=2*N+4;  // skirt
+    size_t ic = k, vc = 2*N+5;
+    size_t target = (ic / 8 / 3) * 3;
+    uint32_t out[(2*N + N + N + 1)*3], out0[(2*N + N + N + 1)*3];
+    size_t r_on  = ano_simplify_ex(out,  idx, ic, pos, vc, sizeof(float)*3, target, 2.0f, 8.0f, NULL);
+    size_t r_off = ano_simplify_ex(out0, idx, ic, pos, vc, sizeof(float)*3, target, 2.0f, 0.0f, NULL);
+    validate_indices(out, r_on, vc);
+    assert(r_on > 0 && r_on < ic);                         // decimated the redundant vertical strips
+    assert(max_radius_above(out, r_on, pos, 0.8f*H) >= 0.9f*R);  // rim silhouette preserved (not a cone)
+    assert(r_on >= r_off);                                 // feature preservation keeps >= as many tris
+}
+
+// T5: near-flat closed tetrahedron (+ far skirt) where feature/fold/drift all PASS, so ONLY the link +
+// tetra exclusion can stop v->j from emitting a doubled (non-manifold) face. Regression for the F1 fix.
+static void test_simplify_tetra_link() {
+    printf("Running test_simplify_tetra_link...\n");
+    float pos[7*3] = {
+        0.0f,0.0f,0.0f,   1.0f,0.0f,0.0f,   0.5f,0.866f,0.0f,   0.5f,0.289f,0.06f,  // near-flat tetra
+        100.0f,0.0f,0.0f, 101.0f,0.0f,0.0f, 100.0f,0.0f,1.0f                          // far skirt
+    };
+    uint32_t idx[5*3] = { 0,1,2,  0,3,1,  1,3,2,  2,3,0,  4,5,6 };
+    size_t ic = 15, vc = 7;
+    uint32_t out[5*3];
+    size_t r = ano_simplify_ex(out, idx, ic, pos, vc, sizeof(float)*3, 9u, 2.0f, 8.0f, NULL);
+    validate_indices(out, r, vc);
+    assert(!has_dup_face(out, r));   // link + tetra exclusion: no non-manifold doubled face emitted
+}
+
 int main() {
     test_meshlet_bounds_calculation();
     test_degenerate_triangles();
     test_meshlet_limits();
     test_bounds_checks();
     test_vertex_cache_optimization();
+    test_simplify_scale();
+    test_simplify_passthrough();
+    test_simplify_degenerate_input();
+    test_simplify_grid();
+    test_simplify_error_budget();
+    test_simplify_guard_bridge();
+    test_simplify_guard_byte_identity();
+    test_simplify_flat_not_gutted();
+    test_simplify_concave_trench();
+    test_simplify_pillar_silhouette();
+    test_simplify_tetra_link();
     printf("All tests passed successfully!\n");
     return 0;
 }

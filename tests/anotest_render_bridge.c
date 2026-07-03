@@ -74,7 +74,7 @@ static void *consumer_fn(void *arg)
         if (c.mesh_index != mesh_of(next) || c.material_index != material_of(next))
             ctx->payload_err++;
         next++;
-        RenderEvent e = { .kind = REVENT_SLOT_RETIRED, .render_id = c.render_id };
+        RenderEvent e = { .kind = REVENT_SLOT_RETIRED, .u.render_id = c.render_id };
         while (!ano_render_emit_event(ctx->b, &e)) { /* event ring full: spin */ }
     }
     ctx->received = next;
@@ -124,7 +124,7 @@ int main(void)
     for (uint32_t next = 0; next < ITEMS; ) {
         RenderEvent e;
         if (!ano_render_poll_event(&bridge, &e)) continue;
-        if (e.render_id != next) evt_order_err++;
+        if (e.u.render_id != next) evt_order_err++;
         next++;
     }
 

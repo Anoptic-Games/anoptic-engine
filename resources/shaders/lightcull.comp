@@ -1,0 +1,145 @@
+#version 450
+
+// Clustered-forward light assignment. One invocation per froxel: reconstruct the froxel's
+// view-space AABB, test every active light's bounding sphere against it, and write the froxel's
+// light index list + count. The fragment shader then loops only its froxel's lights. See
+// LIGHTING_SCALE.md. Brute force O(clusters x lights) — fine for thousands of lights; a coarse
+// pre-pass is a future optimization.
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4  view;
+    mat4  proj;
+    float time;
+    float deltaTime;
+    uint  frameCount;
+    uint  lightCount;
+    vec4  cameraPos;
+    float cameraNear;
+    float cameraFar;
+    float screenWidth;
+    float screenHeight;
+    uint  clusterDimX;
+    uint  clusterDimY;
+    uint  clusterDimZ;
+    uint  maxLightsPerCluster;
+    uint  lightingMode;   // AnoLightingMode (RADIANCE_CASCADES.md); unused here, kept in std140 sync
+    uint  debugView;
+    uint  pad0;
+    uint  pad1;
+} g;
+
+// Per-light world pose precomputed by lightsetup.comp (its binding 2). Reading posRange here
+// replaces the old transforms[] mat4 load + multiply per froxel per light — the pass's worst
+// latency line in the profile. Layout MUST match lightsetup.comp / flat.frag / transmission.frag.
+struct LightRuntime {
+    vec4 posRange;   // xyz = world position,  w = range
+    vec4 dirType;    // xyz = world forward,    w = float(type)
+    vec4 radInner;   // xyz = color*intensity,  w = innerConeCos
+    vec4 outer;      // x   = outerConeCos,     yzw reserved
+};
+layout(set = 0, binding = 1) readonly buffer LightRuntimeSSBO {
+    LightRuntime runtime[];
+};
+
+const uint LIGHT_TYPE_DIRECTIONAL = 0u;
+
+struct LightData {
+    vec3  color;
+    float intensity;
+    float range;
+    float innerConeCos;
+    float outerConeCos;
+    uint  type;
+    uint  transformIndex;
+    uint  enabled;
+    uint  pad0;
+    uint  pad1;
+    vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
+    uint  pad2;
+    vec3  localDir;    // unused here (binning is position+range); present so the struct stride matches
+    uint  pad3;
+};
+
+layout(set = 0, binding = 2) readonly buffer LightSSBO {
+    LightData lights[];
+};
+
+// offset implicit = clusterIdx * maxLightsPerCluster
+layout(set = 0, binding = 3) writeonly buffer ClusterCountSSBO {
+    uint clusterLightCount[];
+};
+layout(set = 0, binding = 4) writeonly buffer ClusterIndexSSBO {
+    uint clusterLightIndices[];
+};
+
+bool sphereAabb(vec3 c, float r, vec3 bmin, vec3 bmax) {
+    vec3 d = max(bmin - c, vec3(0.0)) + max(c - bmax, vec3(0.0));
+    return dot(d, d) <= r * r;
+}
+
+void main() {
+    uint clusterIdx = gl_GlobalInvocationID.x;
+    uint total = g.clusterDimX * g.clusterDimY * g.clusterDimZ;
+    if (clusterIdx >= total) {
+        return;
+    }
+
+    uint cx = clusterIdx % g.clusterDimX;
+    uint cy = (clusterIdx / g.clusterDimX) % g.clusterDimY;
+    uint cz = clusterIdx / (g.clusterDimX * g.clusterDimY);
+
+    // Log-distributed view-space Z slice (negative: camera looks down -Z).
+    float zNear = -g.cameraNear * pow(g.cameraFar / g.cameraNear, float(cz)      / float(g.clusterDimZ));
+    float zFar  = -g.cameraNear * pow(g.cameraFar / g.cameraNear, float(cz + 1u) / float(g.clusterDimZ));
+
+    // Screen-tile NDC bounds.
+    float ndcMinX = (float(cx)      / float(g.clusterDimX)) * 2.0 - 1.0;
+    float ndcMaxX = (float(cx + 1u) / float(g.clusterDimX)) * 2.0 - 1.0;
+    float ndcMinY = (float(cy)      / float(g.clusterDimY)) * 2.0 - 1.0;
+    float ndcMaxY = (float(cy + 1u) / float(g.clusterDimY)) * 2.0 - 1.0;
+
+    // view.x = ndc.x * (-z) / proj00, view.y = ndc.y * (-z) / proj11. Min/max over all 8 corners
+    // handles any projection sign (e.g. a Y-flipped proj11) without special-casing.
+    float p00 = g.proj[0][0];
+    float p11 = g.proj[1][1];
+    float zs[2] = float[2](zNear, zFar);
+    float xs[2] = float[2](ndcMinX, ndcMaxX);
+    float ys[2] = float[2](ndcMinY, ndcMaxY);
+
+    vec3 bmin = vec3(1e30);
+    vec3 bmax = vec3(-1e30);
+    for (int zi = 0; zi < 2; ++zi) {
+        for (int xi = 0; xi < 2; ++xi) {
+            for (int yi = 0; yi < 2; ++yi) {
+                float z = zs[zi];
+                vec3 p = vec3(xs[xi] * (-z) / p00, ys[yi] * (-z) / p11, z);
+                bmin = min(bmin, p);
+                bmax = max(bmax, p);
+            }
+        }
+    }
+
+    uint count = 0u;
+    uint base = clusterIdx * g.maxLightsPerCluster;
+    for (uint i = 0u; i < g.lightCount; ++i) {
+        LightData L = lights[i];
+        if (L.enabled == 0u) {
+            continue;
+        }
+
+        bool include;
+        if (L.type == LIGHT_TYPE_DIRECTIONAL || L.range <= 0.0) {
+            include = true; // unbounded: relevant to every froxel
+        } else {
+            vec3 viewPos = (g.view * vec4(runtime[i].posRange.xyz, 1.0)).xyz;
+            include = sphereAabb(viewPos, L.range, bmin, bmax);
+        }
+
+        if (include && count < g.maxLightsPerCluster) {
+            clusterLightIndices[base + count] = i;
+            count++;
+        }
+    }
+    clusterLightCount[clusterIdx] = count;
+}
