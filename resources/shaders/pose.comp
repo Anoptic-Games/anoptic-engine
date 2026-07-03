@@ -1,0 +1,61 @@
+#version 450
+
+// SKELETON — not in the CMakeLists shader manifest, not loaded by any pipeline.
+// Documents the skinned-mesh POSE PRE-PASS: the sibling of update.comp that builds
+// the bone palette for every VISIBLE skinned instance. All skinning cost lives here;
+// the draw stage (skinned.mesh) only fetches the result.
+//
+// Per visible skinned instance (one invocation):
+//   1. sample its clip(s) at (global.time - clipStartPhase), cross-fading A->B;
+//   2. walk the skeleton parent-first (bones stored in topological order) to get
+//      world bone transforms;
+//   3. multiply by each bone's inverse-bind matrix;
+//   4. write boneCount matrices into the compacted palette region for this instance.
+// Cost is O(visible skinned bones), never O(entities). One thread per instance keeps
+// occupancy high with a cheap serial chain; a parallel skeleton scan is premature.
+//
+// To activate: add to the manifest, create the PIPELINE_SKINNED prototype's compute
+// sibling, dispatch it after cull (which assigns each surviving skinned instance its
+// compacted palette base) and before the skinned draw.
+
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PushConstants {
+    uint visibleSkinnedCount;
+} pc;
+
+// {rigId, clipA, clipB, blendStart, blendDuration, clipStartPhase} — mirrors
+// SkinInstanceState (structs.h), sparse over skinned slots, compacted for the pass.
+struct SkinInstanceState {
+    uint  rigId;
+    uint  clipA;
+    uint  clipB;
+    float blendStart;
+    float blendDuration;
+    float clipStartPhase;
+};
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4  view;
+    mat4  proj;
+    float time;
+    float deltaTime;
+    uint  frameCount;
+    uint  lightCount;
+    vec4  cameraPos;
+} global;
+
+layout(set = 0, binding = 1) readonly  buffer SkinStateSSBO  { SkinInstanceState instances[]; } skinBuf;
+// Static rig assets (skeleton parent table, inverse-bind, clip keyframe tracks),
+// shared across instances and indexed by rigId — declared by the real pass.
+// layout(set = 0, binding = 2) readonly buffer RigSSBO   { ... } rigBuf;
+// layout(set = 0, binding = 3) readonly buffer ClipSSBO  { ... } clipBuf;
+layout(set = 0, binding = 4) writeonly buffer BonePaletteSSBO { mat4 palette[]; } paletteBuf;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.visibleSkinnedCount) return;
+
+    // SKELETON: sample clip -> parent-first skeleton walk -> * inverse-bind ->
+    // paletteBuf.palette[paletteBase + bone]. No-op until the rig/clip buffers land.
+}

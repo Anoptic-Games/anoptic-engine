@@ -4,8 +4,8 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 /**
- * @file anoptic_memalign.h
- * @brief Platform-agnostic memory management API for the Anoptic Engine.
+ * @file anoptic_collections.h
+ * @brief Lock-free collections interface for the Anoptic Engine.
  */
 
 // include guard

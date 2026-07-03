@@ -3,10 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// macOS libpthread provides no spinlocks or barriers. This file fills that gap
-// with C23 atomics (lock-free; no pthread_mutex, per the engine's concurrency
-// rules) and supplies the spin/barrier ano_ wrappers — the Darwin counterpart to
-// the !__APPLE__ sections of threads.c.
+// macOS libpthread has no spinlocks or barriers.
+// Fill the gap with C23 atomics that stay lock-free, no pthread_mutex, per engine rules.
+// Darwin counterpart to the !__APPLE__ sections of threads.c.
+
+#if defined(__APPLE__)
 
 #include "threads_macos.h"
 #include <errno.h>
@@ -35,7 +36,7 @@ int pthread_spin_lock(pthread_spinlock_t *lock) {
     while (!atomic_compare_exchange_weak_explicit(lock, &expected, 1,
                                                   memory_order_acquire,
                                                   memory_order_relaxed)) {
-        expected = 0;   // CAS writes the seen value back into expected on failure
+        expected = 0;   // CAS wrote the seen value back on failure
     }
     return 0;
 }
@@ -145,3 +146,5 @@ int ano_thread_barrier_destroy(anothread_barrier_t *barrier) {
 
     return pthread_barrier_destroy(barrier);
 }
+
+#endif // __APPLE__

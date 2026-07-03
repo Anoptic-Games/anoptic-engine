@@ -3,65 +3,143 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+#if defined(_WIN32)
+
 #include "anoptic_filesystem.h"
 
 #include <stdio.h>
-#include <stdlib.h>       // malloc
-#include <string.h>       // strcpy, strlen
-#include <direct.h>       // _chdir
+#include <stdlib.h>       // getenv
+#include <string.h>       // memcpy
+#include <direct.h>       // _chdir, _mkdir
+#include <errno.h>        // errno, EEXIST
+#include <windows.h>      // CreateFileA, WriteFile, FlushFileBuffers, CloseHandle
 #include <libloaderapi.h>
 #include <mimalloc.h>
 
-// Backs the user-data stub below; the game path is queried fresh per call.
-static filepath game_user_path;
+// Windows paths are UTF-16 underneath -- the explicit -A form returns the active-codepage
+// transcoding, so an install directory with characters outside that codepage comes back
+// mangled and downstream opens fail. Known debt owed to the Resource Manager work
+// (docs/resourcesmg.md Part I): move to GetModuleFileNameW + UTF-8. Calling the -A form
+// explicitly (not the TCHAR macro) so a future -DUNICODE cannot silently break the build.
+// Output: directory of the running executable, no file name, by value.
+// length == 0 on failure or a path that does not fit MAXPATH - 1.
+ano_fspath ano_fs_gamepath(void) {
 
-// Windows paths are UTF-16 underneath; GetModuleFileNameA returns the ANSI form.
-// Output: directory of the running executable (no file name); pathString is
-// mi_malloc'd for the caller to free. {0, NULL} on failure.
-filepath ano_fs_gamepath() {
-
-    filepath result = {.length = 0, .pathString = NULL};
+    ano_fspath result = {0};
 
     char pathBuffer[MAX_PATH];
-    DWORD len = GetModuleFileName(NULL, pathBuffer, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH)
-        return result; // failed, or truncated (path length >= MAX_PATH)
+    DWORD len = GetModuleFileNameA(NULL, pathBuffer, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH || len >= MAXPATH)
+        return result; // failed or truncated
 
     // Trim the executable file name, leaving its containing directory.
     while (len > 0 && pathBuffer[len - 1] != '\\' && pathBuffer[len - 1] != '/')
         len--;
-    if (len > 0)
-        len--; // drop the trailing separator
+    // Drop the trailing separator -- but keep it for a drive root: "C:" alone is a
+    // DRIVE-RELATIVE path (the CWD on drive C), whereas "C:\" is the root itself.
+    // Mirrors the POSIX implementations keeping "/" for an exe at filesystem root.
+    if (len > 3)
+        len--;
 
-    result.pathString = mi_malloc((size_t)len + 1);
-    if (result.pathString == NULL)
-        return result;
-    memcpy(result.pathString, pathBuffer, len);
-    result.pathString[len] = '\0';
+    memcpy(result.str, pathBuffer, len);
+    result.str[len] = '\0';
     result.length = (uint16_t)len;
     return result;
 }
 
+// %APPDATA%\anoptic, created if absent (the Factorio convention). %APPDATA% is the roaming
+// user-data root and is set for every interactive session; no shell32 KnownFolder call needed.
+ano_fspath ano_fs_userpath(void) {
+    ano_fspath result = {0};
 
-// This is meant to be a persisting user directory. 
-// Eg: "C:\Users\Pyrus\Documents\anoptic" or "...\My Games\anoptic", etc.
-filepath ano_fs_userpath() {
+    const char *appdata = getenv("APPDATA");
+    if (appdata == NULL || appdata[0] == '\0')
+        return result;
 
-    // Right now it's a stub that harmlessly does nothing.
-    filepath result = {.pathString = malloc(game_user_path.length + 1), .length = game_user_path.length};
-    strcpy(result.pathString, game_user_path.pathString);
+    int len = snprintf(result.str, MAXPATH, "%s\\" ANO_GAME_NAME, appdata);
+    if (len < 0 || len >= MAXPATH)
+        return (ano_fspath){0};
+
+    if (_mkdir(result.str) != 0 && errno != EEXIST)
+        return (ano_fspath){0};
+
+    result.length = (uint16_t)len;
     return result;
 }
 
-// Inputs: none. Output: bool, true on success.
-// Points the working directory at the directory holding the running executable so
-// CWD-relative asset loads resolve regardless of where the binary was launched from.
+// Input: none. Output: true on success.
+// Sets CWD to ano_fs_gamepath() so relative asset loads resolve regardless of launch directory.
 bool ano_fs_chdir_gamepath(void)
 {
-    filepath dir = ano_fs_gamepath();
-    if (dir.pathString == NULL)
-        return false;
-    bool ok = dir.length > 0 && _chdir(dir.pathString) == 0;
-    mi_free(dir.pathString);
-    return ok;
+    ano_fspath dir = ano_fs_gamepath();
+    return dir.length > 0 && _chdir(dir.str) == 0;
 }
+
+
+/* Append-only file sink (Win32). The opaque handle wraps a single file HANDLE. */
+
+struct ano_file {
+    HANDLE handle;
+};
+
+// Output: handle opened FILE_APPEND_DATA, or NULL on failure. OPEN_ALWAYS creates if absent.
+// FILE_SHARE_DELETE gives POSIX unlink parity: another process (or a test) may remove/replace
+// the log file while we hold it open, as it can on Linux/macOS.
+ano_file *ano_fs_open_append(const char *path)
+{
+    if (path == NULL)
+        return NULL;
+
+    HANDLE handle = CreateFileA(path, FILE_APPEND_DATA,
+                                FILE_SHARE_READ | FILE_SHARE_DELETE, NULL,
+                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle == INVALID_HANDLE_VALUE)
+        return NULL;
+
+    ano_file *file = mi_malloc(sizeof *file);
+    if (file == NULL) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    file->handle = handle;
+    return file;
+}
+
+// Output: 0 once all bytes are written, -1 on error. Chunks past the DWORD count limit.
+int ano_fs_write(ano_file *file, const void *data, size_t length)
+{
+    if (file == NULL || (data == NULL && length != 0))
+        return -1;
+
+    const char *cursor = data;
+    size_t remaining = length;
+    while (remaining > 0) {
+        DWORD chunk = remaining > 0x7fffffff ? 0x7fffffff : (DWORD)remaining;
+        DWORD written = 0;
+        if (!WriteFile(file->handle, cursor, chunk, &written, NULL))
+            return -1;
+        cursor += written;
+        remaining -= written;
+    }
+    return 0;
+}
+
+// Output: 0 on success, -1 on error.
+int ano_fs_sync(ano_file *file)
+{
+    if (file == NULL)
+        return -1;
+    return FlushFileBuffers(file->handle) ? 0 : -1;
+}
+
+// Output: 0 on success, -1 on error. The handle is freed either way.
+int ano_fs_close(ano_file *file)
+{
+    if (file == NULL)
+        return -1;
+    int rc = CloseHandle(file->handle) ? 0 : -1;
+    mi_free(file);
+    return rc;
+}
+
+#endif // _WIN32

@@ -1,102 +1,52 @@
 # TODO
 
-## P0 — macOS: GLFW must run on the main thread — DONE
+The macOS Vulkan bring-up epic is done and merged to `main` (PR #62). This file is reset to the engine build sequence from `docs/notes.md` ("What Needs to Be Built", bottom-up dependency order). Terse here. The full spec, current-state audits, and rationale live in notes.md. Current branch: `feature-string-redux` (Step 4).
 
-The renderer ran on a spawned thread (commit 21c5f1d) that owned GLFW. On macOS this aborted in
-Cocoa during window creation, before Vulkan device selection: AppKit forbids window and menu-bar
-setup off the main thread. Worse, even past that abort the surface (CAMetalLayer) was created on the
-render thread, so it was never wired to the visible NSView — the window showed no draw surface at all.
+## Step 1 -- High-performance logger  ✅ DONE (2026-06-24)
 
-Fixed by adopting client-engine `9edaea8` ("render lives on main thread, everything else gets child
-threads"): the whole render world — `initVulkan`, `glfwPollEvents`, `drawFrame`, `unInitVulkan`, and
-crucially `createSurface` — now runs on the main thread (`main()`), so the CAMetalLayer attaches on
-the thread that owns the window. The logic/ECS master (`anoLogicThreadMain`) is spun to a child thread
-as the sole bridge producer. `initVulkan` runs synchronously before the producer starts, so the old
-readiness handshake (`g_renderPhase`/`anoRenderIsReady`) and the `anoRenderThreadMain` entry point are
-gone. Not `#ifdef`-gated: render-on-main is correct on every platform, mandatory only on macOS.
+Lock-free MPSC ring (variable-length, cache-line-granular; CAS reserve with a full-check; lap-counter reclaim with no zeroing) and an owned consumer drain thread; `ano_log_flush` is a synchronous inline pass. Caller-side bare-ticks timestamp, divisions deferred to drain. Two formatting strategies: eager (hand-rolled prefix + `fast_format`, ~48 ns) and deferred (capture pointers + typed args, render at drain, ~22 ns). Output file + `ano_log_output_dir` wired. Public header `include/anoptic_logging.h`, impl `src/logging/`. Validated four ways: TLA+/TLC + a Haskell model (`scratch/logger/`, gitignored), TSan-clean, byte-for-byte format battery + the `anotest_logfuzz` no-loss fuzzer, and the benchmark (`anotest_logbench`, run from `build.sh 7`). Design `docs/logger.md`; per-function line-count justification `docs/logger_explained.md`. The first module exercising atomics + threads together; instruments everything after.
 
-This supersedes the earlier window-ownership-split attempt (`anoRenderCreateWindow`/`PollWindow`/
-`DestroyWindow`, idempotent window creation, `_Atomic framebufferResized`) — those were reverted.
+### Step 1 follow-ups -- logger optimizations (2026-07-02, first Windows bench)
 
-Kept on top of `9edaea8`: the bindless sampler clamp (pipeline.c, below).
+Tail-latency work (wake the drainer on the empty→nonempty transition instead of the fixed park, adaptive full-ring backoff) landed in `logging_core.c`. Large-record throttling (raise `ANO_LOG_RING_BYTES` / size-tiered ring) deferred: not the log-line workload, no loss today.
 
-Verified on Apple M1 / MoltenVK with `ANO_FORCE_NO_MESH_SHADER=1` and validation forced on: the run
-clears the Cocoa abort, completes `initVulkan` (device selected, both glTF assets parsed, textures
-uploaded, "Instance creation complete!"), zero validation errors, and the main-thread render loop
-sustains ~20-44% CPU in `drawFrame`. Visible-pixels confirmation by the user is the remaining gate.
-Note: run from build/<cfg>/ — asset paths are CWD-relative and `build.sh` copies assets into the build dir.
+**Windows tick grain.** ✅ DONE (2026-07-03). QPC on this host is 10 MHz (100 ns step), coarser than Linux/macOS, so records stamped within a 100 ns window were unorderable at drain. Added a calibrated invariant-TSC (rdtsc) timebase for x86-64 Windows in `src/time/time_win64.c`: CPUID 0x80000007 EDX[8] gates it, frequency calibrated against QPC (median of three ~4 ms Sleep-bracketed samples), timebase resolved once and frozen so `ano_timestamp_ticks`/`ano_ticks_to_ns` always agree; QPC fallback on non-invariant-TSC or non-x86 builds. On the 5950X the clock resolves to invariant TSC @ ~3.4 GHz — `anotest_time`'s new granularity assertion measures a 1-tick (sub-ns) step vs the old 100 ns, and the sleep/busywait sweeps tightened accordingly. Full suite green on `build.bat 3`.
 
-## macOS bring-up verification (P0 unblocked)
+## Step 2 -- Dependency update  ✅ DONE (2026-06-24)
+Bumped glfw `3.3-781` master → tag **3.4**, mimalloc `v2.1.2` → tag **v2.3.2** (submodule pointers); stb_image.h v2.28 → **v2.30** (vendored). jsmn already byte-identical to upstream master (no change). Held mimalloc on the v2.x line: v3.3.2 exists and is upstream-"recommended" but is a major redesign, deferred as a deliberate separate bump. API audit (researched + adversarially verified): no source-level breakage for any symbol we use across all four. mimalloc revalidated via `anotest_memory` (heaps, `mi_heap_zalloc_aligned`, `LOCALHEAPATTR`→`ano_heap_release`, huge-page probe, `mimalloc-override.h` global override all pass on v2.3.2). Tests 10/10 on `build.sh 7`. Benchmarks (3+ iterations before/after) show no regression: enqueue latency flat ~24 ns, throughput within run-to-run variance. Full report: `scratch/bench/2026-06-24-deps.md`. Two macOS/MoltenVK items to eyeball after the glfw 3.4 bump on a Retina display: HiDPI framebuffer scaling and the no-op `glfwMakeContextCurrent` under GLFW_NO_API.
 
-- DONE. Device selection picks the MoltenVK GPU and takes the vertex fallback: the run logs
-  `DeviceCount: 1`, `Enabling 3 device extensions (mesh shader: no)`.
-- H2: no `firstInstance` validation error was observed on M1 / MoltenVK across a full render loop
-  with validation on (MoltenVK reports `drawIndirectFirstInstance`). The latent gap remains: still
-  require `drawIndirectFirstInstance` in `isDeviceSuitable` when the mesh path is absent, or drop the
-  `firstInstance` trick, so a device lacking it fails suitability instead of mis-drawing. (Commit 3.)
-- TODO. Confirm the render-bridge SPSC ring uses acquire/release ordering on submit/drain, not
-  relaxed (correctness on weakly ordered ARM / Apple Silicon). (Commit 2.)
+## Step 3 -- Windows high-resolution timing  ✅ DONE (2026-06-24, unverified on host)
+`ano_sleep` rewritten in `src/time/time_win64.c`: per-thread hi-res `CreateWaitableTimerExW` (CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, Win10 1803+) for the coarse wait, then an `ano_busywait` spin tail for the sub-ms remainder; coarse `Sleep` fallback only if the timer can't be created. Targets 1803+ (2018), so no legacy `timeBeginPeriod` path and no winmm. errno-parity returns (0 / positive errno) like the Unix backends. Timer handle closed at thread exit via an FLS destructor (no leak under transient job threads). `_WIN32_WINNT` pinned; MSVC <17.5 C-atomics guarded. Designed via a 3-way panel and adversarially reviewed. NOTE: cannot be compiled on the macOS dev host (Windows-only TU, excluded from the mac build) — needs a Windows build + a tick-jitter measurement to close out. Update 2026-07-02: compiled and green on the real Windows host (Ryzen 9 5950X, Win11 26200) — `anoptic_time` passes in Debug and Release runs of the full suite.
 
-  As such, 
 
-  ## Commit 1: COMPLETED
-  Get the window visibly working on MacOS. The Viking Room should be visibly rendered to the user, ask for user confirmation.
+## Step 4 -- ano_strings  (current branch)
 
-  DONE — user confirmed the Viking Room renders visibly on Apple M1 / MoltenVK. The engine builds
-  Release, completes init validation-clean, and the main-thread render loop sustains drawFrame.
-  Also landed on top: the CWD trap fix (resurrected the dead `src/filesystem` module; `ano_fs_gamepath`
-  resolves the executable directory on all three platforms, manual thread-safe split, no dirname();
-  `ano_fs_chdir_gamepath()` called at startup so assets resolve from any launch directory).
+First cut landed 2026-07-03, per the 2026-07-02 pick (`string_progress.md` §6 items 1+6+3+4 as one move). `include/anoptic_strings.h` + `src/strings/ano_strings.c`: the Design C 16-byte German-string value (`anostr_t`, ≤12 B inline / 4-byte prefix, canonical form + 0x00 padding so equal inline strings are bit-identical and `eq` is two u64 compares), Design B demoted to the builder `{ptr,len,cap,heap}` behind `anostr_freeze()` — one public string type, not two. `anostr_keep(heap, s)` is the whole lifetime ceremony (identity on inline, copy on long; target heap must be caller-owned — mimalloc heaps are single-writer). Slice clamps and re-canonicalizes: ≤12 B slices copy to inline, longer ones borrow the backing bytes. Prefix stored as raw bytes, bswap32 at compare time, so the layout is endianness-free. Also: FNV-1a 64 `anostr_hash`, `anostr_to_cstr` bridge, `anostr_lit`/`anostr_view`. `uint32_t` len is the one documented exception to the size_t rule (the 16-byte layout demands it; constructors reject longer input). Tests: `anotest_strings` (round-trips, order/hash incl. embedded NUL, slice borrow vs copy, keep-across-heap-death, builder growth/consumption/overflow refusal, randomized soak) green on `build.bat 3` and `7`; `anotest_strbench` on the 5950X (-O3) shows the in-register prefix path winning random 32 B compares ~3.5x over memcmp (1.5 vs 5.3 ns mean), with the shared-16 B-prefix adversarial case paying a modest tax — the columnar-scan claim holds. NOTE: the 2024 `feature-strings` branch no longer exists on local or origin (no archive tag either) — nothing to recover; the salvage record in `string_progress.md` §E is the surviving spec of it.
 
-  Prerequisite — DONE. The bindless texture array was hardcoded to 4096 at pipeline.c:253 and never
-  clamped to device limits. Apple M1 / MoltenVK caps update-after-bind samplers at 1024, so
-  `vkCreatePipelineLayout` violated VUID-VkPipelineLayoutCreateInfo-descriptorType-03022 and
-  -pSetLayouts-03036 — the cause of the two failing tests (`anotest_vk_compliance_layers`,
-  `anotest_vk_sync`). Fixed: `ano_vk_init_material_layouts` queries
-  `VkPhysicalDeviceDescriptorIndexingProperties` and clamps `maxTextures` to the min of the relevant
-  update-after-bind sampler/sampled-image limits (a combined image sampler counts against both). Both
-  tests are green; the run logs `maxTextures = 1024 (device update-after-bind limit 1024)`.
+Second cut (same day): the byte-level ops and the runtime identity table, since every piece was trivial on top of the value type. `src/strings/` is now three TUs behind the one header (shared constructors in `ano_strings_internal.h`): `ano_strings_ops.c` — `anostr_find` (memchr-hopping, `ANOSTR_NPOS`), `anostr_concat`/`anostr_join` (one exact-size allocation, none when the result fits inline), and a zero-allocation `anostr_split` iterator (empty pieces preserved, ≤12 B pieces re-canonicalize inline, longer pieces borrow the source per I4); `ano_strings_intern.c` — `anostr_intern_t`, the §5.5 runtime interning table (open addressing over cached FNV hashes, dense u32 `anostr_sym` ids, canonical copies `keep`'d into the table's heap, no destroy function — dies with the heap; single-mutator, same rule as the heap under it) with `anostr_dedupe` returning bit-identical values, backed by a new `a.ptr == b.ptr` fast path in `anostr_eq`. Also same-day: `anoptic_filesystem.h` reworked — `filepath` (heap, caller-frees) replaced by the `ano_fspath` 256-byte value type (paths are OS-bounded so the inline case is total; NUL-terminated for syscalls), and `ano_fs_userpath` implemented for real on all three platforms (Factorio convention: `%APPDATA%\anoptic`, `~/.anoptic`, `~/Library/Application Support/anoptic`; `ANO_GAME_NAME` constant in the header; creates the directory, so non-empty ⇒ ready to write into). New `anotest_filesystem`; `anotest_strings` extended (find/join/split/intern incl. growth + bit-identity). Suite 14/14 green on `build.bat 3`. Full `filepath`→`anostr_t` migration for path *manipulation* explicitly deferred to the VFS/async-I/O layer (see `string_progress.md` §A5).
 
-  ## Commit 2: COMPLETED
-  Verify ordering. Platform-specific setup may be needed, in which case we should inline the ifdef for now, and make a note that the platform-agnostic pattern in src/ should be followed in a later refactor.
+Remaining for Step 4: §6.2 ambient frame-arena mechanics (thread-local push/pop, destroy-per-tick, ASan poisoning — engine infrastructure, also serves glTF/JSON scratch); §6.7 compile-time `_sid` hashed ids (independent of the runtime intern table above, adopt any time); the UTF meaning layer stays deferred until the text renderer forces it (§6.9).
 
-  SPSC ring ordering — VERIFIED CORRECT, no change needed. The inlined push/pop in
-  anoptic_render_bridge.h follow the canonical Lamport/Vyukov discipline:
-   - push (producer): loads its own `tail` relaxed (sole writer), loads the consumer's `head` acquire,
-     writes the payload, publishes `tail` with release.
-   - pop (consumer): loads its own `head` relaxed (sole writer), loads the producer's `tail` acquire,
-     reads the payload, publishes `head` with release.
-  The two relaxed loads are self-owned-cursor reads — the intended optimization, not a gap. Every
-  cross-thread edge is acquire/release, giving two synchronizes-with relations, both present:
-   1. payload visibility: producer slot-writes -> release(tail) -> acquire(tail) -> consumer reads.
-   2. no-overwrite: consumer slot-reads -> release(head) -> acquire(head) -> producer overwrite (one
-      lap later). On arm64 these lower to stlr/ldar — the correct barriers for Apple Silicon.
-  No ifdef was needed: stdatomic acquire/release is portable, so there is no platform-specific
-  ordering setup to inline. Empirically sealed: anotest_render_bridge (producer + consumer + main,
-  100k items through capacity-16 wrapping rings; checks FIFO order, payload tearing, event order)
-  passes clean under TSan on arm64 — full suite 11/11, 0 races (build.sh 5, 2026-06-20).
+## Step 5 -- Lock-free collections
 
-  Resize-path GLFW concurrency — RESOLVED by the P0 render-on-main inversion; NOT a live issue. All
-  three `recreateSwapChain` call sites are inside `drawFrame` (vulkanMaster.c:784/804/868), which runs
-  on the main thread — the same thread as `glfwPollEvents` (main.c:220). The logic thread never touches
-  GLFW. The earlier worry assumed a separate render thread calling
-  `glfwGetFramebufferSize`/`glfwWaitEvents` concurrently with the event pump; that thread no longer
-  exists, so the two are serialized on one thread. Stale concern, struck.
+Phase A: classic Michael & Scott queue + bounded MPMC ring (Vyukov-style), tested and benchmarked as baselines. Phase B (experimental): cache-line-striped structures. Make the 64-byte coherency unit the unit of ownership transfer (claim a stripe via `fetch_add`, fill with plain stores, publish via release commit flag; no per-item CAS). Open problems + design in notes.md.
 
-  Loose end (out of Commit 2 scope, noted): the events ring (render -> logic, emitted at
-  vulkanMaster.c:745) has no consumer yet — `ano_render_poll_event` is never called outside the test,
-  so events accumulate to capacity, then emit returns false and they are dropped. Not an ordering bug
-  (the SPSC contract holds); an unfinished consumer. Wire REVENT_SLOT_RETIRED drain into the logic
-  master when the real DisplayState graphics-extract lands.
+## Step 6 -- Resource management
 
-  ## Commit 3:
-  Purge anoptic_ecs.h and anoptic_render_bridge.h as they're illegal include/ entries. 
-  All functions anoptic_render_bridge.h actually surfaces to be used by main() (if any), should be cleanly designed signatures in anoptic_render.h. Everything else needs to be moved to and linked inside src/ as an implementation detail. 
+Per Game Engine Architecture. (notes.md also lists a parallel "additional data structures as needed": build structures alongside the features that use them. `stb_ds` is an acceptable prototyping stopgap.)
 
-  anoptic_ecs.h seems to be entirely garbage so we can probably get rid of it and its tests.
+## Step 7 -- Renderer rewrite
 
-  ## Commit 4:
-  List and systematically work through every validation error that comes up.
+Full Vulkan rewrite as a proper subsystem: scratch arenas, the real logger, the event bus. v1 scope: one render pass, one pipeline, geometry on screen, event-bus-driven. No PBR, rasterization only. `stb_image` retained for textures.
 
-  ## Commit 5: 
-  Ask user merge to main via PR, once parity across all platforms is achieved. So resolve any merge conflicts ahead of time.
+## Step 8 -- Event bus + input
+
+Global, thread-agnostic event bus (possibly two: monotonic per-item for ordered events like input, cache-line-striped for high-throughput bulk events). GLFW callbacks enqueue input. The game loop dequeues. Clean producer/consumer boundary. Also serves future physics.
+
+## Step 9 -- Main game loop + first visual output
+
+Integration milestone (v0.1): input moves the camera, the event bus carries it, simulation updates transforms, the renderer draws, all allocated from frame arenas and all logged. A sphere on screen through the full pipeline. Proof every layer works together.
+
+## Later -- DEBUG_TRACE (crash trace)
+
+Sibling of the logger, distinct module. Same `rte_ring` skeleton + 16-byte marker, opposite durability policy: ring `mmap`'d to a file and never zeroed, so the last-N records survive the process and a debugger or the next boot reads them straight out of the mapping. The logger zeroes drained lines and reuses in place, so at a crash its ring is half-gone. Captures last-N before a fault. Survival/order over throughput. See `.claude/profiler-and-trace.md` (also covers the `anoptic_profiler.h` throughput sibling and the shared-ring-vs-per-producer ownership question that lands before Step 5).

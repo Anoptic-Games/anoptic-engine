@@ -1,5 +1,15 @@
 #version 450
 
+// GPU animation pass. Derives every slot's live transform from its per-slot motion
+// descriptor and the global clock, so continuous motion costs zero per-tick bridge
+// traffic — only a discrete change of trajectory re-sends a descriptor. Dispatched
+// over all entities; writes transforms[idx], read next by the cull pass.
+//
+// Motion is evaluated at t = global.time - motion.epoch, so a producer re-bases a
+// trajectory simply by restamping epoch + base pose. Arbitrary CPU/physics-driven
+// motion has no closed form and is NOT handled here; it arrives via the streamed
+// scatter path (ANO_MOTION_STREAMED, future) which overwrites these slots.
+
 layout(local_size_x = 256) in;
 
 layout(set = 0, binding = 0) uniform GlobalUBO {
@@ -16,8 +26,19 @@ layout(set = 0, binding = 1) buffer TransformSSBO {
     mat4 transforms[];
 };
 
-layout(set = 0, binding = 2) readonly buffer AngularVelocitySSBO {
-    vec4 angularVelocities[]; // vec4 for alignment (xyz = axis*speed, w = orbit flag)
+// Matches AnoMotionDescriptor (anoptic_render.h): std430
+// { uint type; uint flags; float epoch; float pad; vec4 p0; vec4 p1; }, 48 bytes.
+struct MotionDescriptor {
+    uint  type;
+    uint  flags;
+    float epoch;
+    float pad;
+    vec4  p0;
+    vec4  p1;
+};
+
+layout(set = 0, binding = 2) readonly buffer MotionSSBO {
+    MotionDescriptor motions[];
 };
 
 layout(set = 0, binding = 3) readonly buffer InitialTransformSSBO {
@@ -28,12 +49,19 @@ layout(push_constant) uniform PushConstants {
     uint entityCount;
 } pc;
 
+// AnoMotionType
+const uint MOTION_STATIC = 0u;
+const uint MOTION_SPIN   = 1u;
+const uint MOTION_ORBIT  = 2u;
+const uint MOTION_LINEAR = 3u;
+const uint MOTION_KEPLER = 4u;
+
 mat4 rotationMatrix(vec3 axis, float angle) {
     axis = normalize(axis);
     float s = sin(angle);
     float c = cos(angle);
     float oc = 1.0 - c;
-    
+
     return mat4(
         oc * axis.x * axis.x + c,           oc * axis.x * axis.y + axis.z * s,  oc * axis.z * axis.x - axis.y * s,  0.0,
         oc * axis.x * axis.y - axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z + axis.x * s,  0.0,
@@ -42,24 +70,52 @@ mat4 rotationMatrix(vec3 axis, float angle) {
     );
 }
 
+// Elementary rotations for assembling a Keplerian orbit from its elements.
+mat3 rotZ(float a) { float s = sin(a), c = cos(a); return mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0); }
+mat3 rotX(float a) { float s = sin(a), c = cos(a); return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c); }
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= pc.entityCount) return;
 
-    vec3 angVel = angularVelocities[idx].xyz;
-    float speed = length(angVel);
+    MotionDescriptor m = motions[idx];
+    mat4 base = initialTransforms[idx];
+    float t = global.time - m.epoch;
 
-    if (speed > 0.001) {
-        // Absolute rotation from global time
-        mat4 absRot = rotationMatrix(angVel, speed * global.time);
-        
-        // Check if global orbit is enabled (w component)
-        if (angularVelocities[idx].w > 0.5) {
-            transforms[idx] = absRot * initialTransforms[idx];
-        } else {
-            transforms[idx] = initialTransforms[idx] * absRot;
+    if (m.type == MOTION_SPIN) {
+        // Rotate in the body's local frame: base * R (post-multiply).
+        float speed = length(m.p0.xyz);
+        transforms[idx] = speed > 1e-4 ? base * rotationMatrix(m.p0.xyz, speed * t) : base;
+    } else if (m.type == MOTION_ORBIT) {
+        // Revolve the whole pose about a world axis: R * base (pre-multiply).
+        float speed = length(m.p0.xyz);
+        transforms[idx] = speed > 1e-4 ? rotationMatrix(m.p0.xyz, speed * t) * base : base;
+    } else if (m.type == MOTION_LINEAR) {
+        // Constant-velocity drift of the base position.
+        mat4 outm = base;
+        outm[3].xyz += m.p0.xyz * t;
+        transforms[idx] = outm;
+    } else if (m.type == MOTION_KEPLER) {
+        // Elements: p0 = (a, e, inclination, longAscNode); p1 = (argPeriapsis, M0, meanMotion, _).
+        float a = m.p0.x, e = m.p0.y, inc = m.p0.z, raan = m.p0.w;
+        float argp = m.p1.x, M0 = m.p1.y, n = m.p1.z;
+
+        // Solve Kepler's equation E - e*sin(E) = M for eccentric anomaly (Newton).
+        float M = M0 + n * t;
+        float E = M;
+        for (int k = 0; k < 5; ++k) {
+            E = E - (E - e * sin(E) - M) / (1.0 - e * cos(E));
         }
+
+        // Position in the orbital plane (focus at origin), then orient by the elements.
+        vec3 posPlane = vec3(a * (cos(E) - e), a * sqrt(max(1.0 - e * e, 0.0)) * sin(E), 0.0);
+        vec3 pos = rotZ(raan) * rotX(inc) * rotZ(argp) * posPlane;
+
+        // Base translation is the focus (central body); keep base orientation/scale.
+        mat4 outm = base;
+        outm[3].xyz = base[3].xyz + pos;
+        transforms[idx] = outm;
     } else {
-        transforms[idx] = initialTransforms[idx];
+        transforms[idx] = base; // MOTION_STATIC and unknown types
     }
 }

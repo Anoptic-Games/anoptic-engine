@@ -13,14 +13,24 @@
 
 /* Precision Timestamps */
 
-// High resolution relative timestamps from this local machine.
-uint64_t ano_timestamp_raw() {
+// The Linux monotonic clock already reports nanoseconds, so the counter IS the ns value.
+uint64_t ano_timestamp_ticks() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
         perror("clock_gettime");
         return UINT64_MAX; // Indicate an error occurred.
     }
     return (uint64_t)(ts.tv_sec * 1000000000LL) + ts.tv_nsec;
+}
+
+// Linux ticks are already nanoseconds: identity.
+uint64_t ano_ticks_to_ns(uint64_t ticks) {
+    return ticks;
+}
+
+// High resolution relative timestamps from this local machine.
+uint64_t ano_timestamp_raw() {
+    return ano_timestamp_ticks();
 }
 
 // return ano_timestamp_raw, but scaled to microseconds.
@@ -50,16 +60,29 @@ uint32_t ano_timestamp_ms() {
 
 // Unix UTC timestamp.
 int64_t ano_timestamp_unix() {
-    time_t current_time;
-    current_time = time(NULL);
+    time_t currentTime;
+    currentTime = time(NULL);
 
     // Error handling
-    if (current_time == (time_t)-1) {
+    if (currentTime == (time_t)-1) {
         perror("time()");
         return INT64_MIN; // Out-of-range sentinel value
     }
 
-    return (int64_t)current_time;
+    return (int64_t)currentTime;
+}
+
+// Convert a Unix timestamp to broken-down local civil time.
+ano_datetime ano_localtime(int64_t unix_seconds) {
+    time_t t = (time_t)unix_seconds;
+    struct tm tm;
+    if (localtime_r(&t, &tm) == NULL)
+        return (ano_datetime){0};
+
+    return (ano_datetime){
+        .year = tm.tm_year + 1900, .month = tm.tm_mon + 1, .day = tm.tm_mday,
+        .hour = tm.tm_hour, .minute = tm.tm_min, .second = tm.tm_sec,
+    };
 }
 
 // Network Time Protocol-adjusted timestamp. NOT guaranteed monotonic.
@@ -78,12 +101,12 @@ int ano_busywait(uint64_t ns) {
         return -1; // failure
     }
 
-    uint64_t start_time = ano_timestamp_raw();
-    uint64_t end_time;
+    uint64_t startTime = ano_timestamp_raw();
+    uint64_t endTime;
 
     do {
-        end_time = ano_timestamp_raw();
-    } while (end_time - start_time < ns);
+        endTime = ano_timestamp_raw();
+    } while (endTime - startTime < ns);
 
     return 0; // success
 }

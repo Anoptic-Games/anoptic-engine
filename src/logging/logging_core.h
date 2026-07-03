@@ -3,41 +3,32 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+// Private tuning constants for the lock-free ring logger (logging_core.c).
+
 #ifndef ANOPTICENGINE_LOGGING_CORE_H
 #define ANOPTICENGINE_LOGGING_CORE_H
 
 #include <anoptic_logging.h>
-#include <stdarg.h>
+#include <anoptic_memory.h>   // ANO_CACHE_LINE (the cache-line / ring reservation grain)
 
-//f1 + f2
-// Builds a log string from all component parts.
-// Returns: length of resulting string
-int build_log_string(char* output, int maxLen, log_types_t log_type, const char* fileName,
-                     int lineNumber,const char* format, va_list args);
+// A stored line plus the wall-clock prefix total 4096 bytes. ANO_LOG_MSG_MAX is the stored cap.
+// ANO_LOG_TIME_RESV is the prefix budget. A max-size entry spans ceil((16 + MSG_MAX) / ANO_CL) <= 64 lines.
+#define ANO_LOG_TIME_RESV 16u                          // budget for the "HH:MM:SS " prefix
+#define ANO_LOG_MSG_MAX   (4096u - ANO_LOG_TIME_RESV)  // stored line, stored + prefix = 4096
 
-//f3
-// Adds a log string to the shared buffer.
-// Returns: status code (0 = success, anything else = failure)
-int enqueue_log_string(int len, const char* string);
+// Ring capacity in BYTES, a power of two, so the byte size matches on every platform. The line size does
+// not (64 on x86-64, 128 on Apple Silicon), so a fixed line count would drift. Aligned to a power of two
+// so the ring sits in one self-sized region: page-allocator, Windows cache-view, Linux large-folio,
+// hugepage at 2 MiB. Override -DANO_LOG_RING_BYTES to experiment from 64 KiB to 2 MiB. Line count derives.
+#ifndef ANO_LOG_RING_BYTES
+#define ANO_LOG_RING_BYTES (2u * 1024u * 1024u)        // default 2 MiB: hits the hugepage-aligned path
+#endif                                                 //   below, and a bigger drain batch amortizes write()
+#define ANO_LOG_RING_LINES (ANO_LOG_RING_BYTES / ANO_CACHE_LINE)
+#define ANO_LOG_RING_ALIGN (ANO_LOG_RING_BYTES < (2u << 20) ? ANO_LOG_RING_BYTES : (2u << 20))
 
-/*
-//f4
-void enqueue_cleanup();
+_Static_assert((ANO_LOG_RING_BYTES & (ANO_LOG_RING_BYTES - 1)) == 0, "ring bytes must be a power of two");
+_Static_assert(ANO_LOG_RING_LINES >= 64, "ring must hold at least one max-size entry (64 lines)");
 
-//f5
-int check_log_data();
-*/
-
-//f6
-void aggregate_log_strings();
-
-//f7
-// Writes logData to targetFile.
-// Expects logData to already be fully formatted.
-// if logData consists of several messages, they should be concatenated.
-int write_to_log_file(const char* logData, const char* fileName);
-
-// Don't make this more complicated than it needs to be. Singleton for now.
-int write_all_buffered();
+#define ANO_LOG_FILENAME "anoptic.log"
 
 #endif //ANOPTICENGINE_LOGGING_CORE_H

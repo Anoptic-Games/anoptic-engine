@@ -16,6 +16,15 @@ else()
   message(FATAL_ERROR "64-bit compiler REQUIRED.")
 endif()
 
+# Single-config generators default to an EMPTY build type, which is neither Debug nor
+# Release: no DEBUG_BUILD/RELEASE_BUILD define, no optimization flags, validation layers
+# compiled out while the layer-asserting vk tests stay enabled. Pick Release explicitly
+# so a bare `cmake -S . -B build` is a real configuration.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    message(STATUS "No CMAKE_BUILD_TYPE given; defaulting to Release.")
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 # Enable C23 standard with GNU extensions (gnu23).
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -40,24 +49,26 @@ elseif(NOT ANOPTIC_SANITIZE STREQUAL "")
     message(FATAL_ERROR "ANOPTIC_SANITIZE must be 'asan', 'tsan', or empty (got '${ANOPTIC_SANITIZE}')")
 endif()
 
-# Mimalloc submodule directory and definitions
+# Mimalloc submodule directory and definitions.
+# EXCLUDE_FROM_ALL also suppresses mimalloc's unconditional install() rules, which would
+# otherwise ship vendor headers/libs alongside (previously: instead of) the engine.
 set(MI_BUILD_OBJECT OFF)
 set(MI_BUILD_SHARED OFF)
 set(MI_BUILD_STATIC ON)
 set(MI_OVERRIDE OFF)
 set(MI_BUILD_TESTS OFF)
-add_subdirectory(${CMAKE_SOURCE_DIR}/external/mimalloc)
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/mimalloc EXCLUDE_FROM_ALL)
 
 # pthreads everywhere: native on Linux, winpthreads on MinGW
 find_package(Threads REQUIRED)
 
 # Add headers into targets so IDEs parse them
-file(GLOB HEADER_SOURCES
+file(GLOB HEADER_SOURCES CONFIGURE_DEPENDS
         "./include/*.h"
 )
 
 # Doing the same for single-header external dependencies
-file(GLOB EXTERNAL_SOURCES
+file(GLOB EXTERNAL_SOURCES CONFIGURE_DEPENDS
         "./external/jsmn/*.h"
         "./external/stb/*.h"
 )
@@ -96,6 +107,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
@@ -106,35 +118,84 @@ if(NOT ANOPTIC_HEADLESS)
 endif()
 
 if(Vulkan_FOUND)
-    add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw)
+    # GLFW as a vendored subproject: never generate its install/docs targets, or
+    # `cmake --install` ships GLFW headers/libs alongside the engine.
+    set(GLFW_INSTALL OFF)
+    set(GLFW_BUILD_DOCS OFF)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw EXCLUDE_FROM_ALL)
 
     # anoptic_render library
     add_library(anoptic_render STATIC "")
     target_link_libraries(anoptic_render PUBLIC anoptic_core glfw Vulkan::Vulkan)
-    target_compile_definitions(anoptic_render PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
 
     # Renderer module subdirectories
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-    # Shaders: compile at build time so .spv don't silently desync from source.
-    # If glslc is absent, fallback to existing .spv (which may be stale).
-    if(Vulkan_GLSLC_EXECUTABLE)
-        set(SHADER_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
-        set(SPV_OUTPUTS "")
-        foreach(shader IN ITEMS flat.mesh flat.vert flat.frag transmission.frag cull.comp update.comp)
-            add_custom_command(
-                    OUTPUT  ${SHADER_DIR}/${shader}.spv
-                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${SHADER_DIR}/${shader} -o ${SHADER_DIR}/${shader}.spv
-                    DEPENDS ${SHADER_DIR}/${shader}
-                    COMMENT "glslc ${shader} -> ${shader}.spv"
-                    VERBATIM)
-            list(APPEND SPV_OUTPUTS ${SHADER_DIR}/${shader}.spv)
-        endforeach()
-        add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
-    else()
-        message(WARNING "glslc not found: using committed resources/shaders/*.spv (may be stale).")
+    # Shaders: compile at build time so .spv don't silently desync from source; if glslc
+    # is absent, fall back to the committed .spv (which may be stale). Outputs land in
+    # the BUILD tree (<build>/resources/shaders, i.e. next to the engine binary, where
+    # loadFile resolves them exe-relative) -- never in the source tree: source-tree
+    # outputs get deleted by `clean`, race across sibling build dirs, and fail outright
+    # on read-only checkouts (nix). Refresh the committed fallbacks explicitly with
+    # resources/shaders/compile.sh when shader source changes.
+    set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
+    set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
+    if(NOT Vulkan_GLSLC_EXECUTABLE)
+        message(WARNING "glslc not found: staging committed resources/shaders/*.spv (may be stale).")
     endif()
+    set(SPV_OUTPUTS "")
+    # Shared GLSL includes (#include): not compiled standalone, but every shader rebuilds when one
+    # changes so the shadow CDF math can't silently desync from a stale .spv.
+    set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl)
+
+    # Compile <source> into ${SHADER_BIN_DIR}/<output>.spv with any extra glslc defines
+    # in ARGN; without glslc, stage the committed <output>.spv instead.
+    function(ano_add_shader output source)
+        if(Vulkan_GLSLC_EXECUTABLE)
+            add_custom_command(
+                    OUTPUT  ${SHADER_BIN_DIR}/${output}.spv
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
+                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${ARGN} ${SHADER_SRC_DIR}/${source} -o ${SHADER_BIN_DIR}/${output}.spv
+                    DEPENDS ${SHADER_SRC_DIR}/${source} ${SHADER_INCLUDES}
+                    COMMENT "glslc ${source} ${ARGN} -> ${output}.spv"
+                    VERBATIM)
+        else()
+            add_custom_command(
+                    OUTPUT  ${SHADER_BIN_DIR}/${output}.spv
+                    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SRC_DIR}/${output}.spv ${SHADER_BIN_DIR}/${output}.spv
+                    DEPENDS ${SHADER_SRC_DIR}/${output}.spv
+                    COMMENT "staging committed ${output}.spv (no glslc)"
+                    VERBATIM)
+        endif()
+        set(SPV_OUTPUTS ${SPV_OUTPUTS} ${SHADER_BIN_DIR}/${output}.spv PARENT_SCOPE)
+    endfunction()
+
+    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag)
+        ano_add_shader(${shader} ${shader})
+    endforeach()
+    # Depth-only geometry variants: second compiles of flat.mesh / flat.vert with ANO_DEPTH_ONLY
+    # (gl_Position only, no user attributes) for the depth pre-pass and the shadow atlas render.
+    # Same source as the full modules + invariant gl_Position = bit-identical clip depth, which
+    # the opaque pass's EQUAL test requires.
+    ano_add_shader(flat_depth.mesh flat.mesh -DANO_DEPTH_ONLY)
+    ano_add_shader(flat_depth.vert flat.vert -DANO_DEPTH_ONLY)
+    # Task-launched mesh variants (review priority 10): ANO_TASK_CULL compiles of flat.mesh (color
+    # + depth-only) that read the meshlet index from flat.task's payload instead of gl_WorkGroupID.
+    # Loaded when RendererState.taskCull; the plain compiles above stay the direct-dispatch fallback.
+    ano_add_shader(flat_task.mesh flat.mesh -DANO_TASK_CULL)
+    ano_add_shader(flat_depth_task.mesh flat.mesh -DANO_TASK_CULL -DANO_DEPTH_ONLY)
+    # Hi-Z avenue 1: a second compile of hiz.comp with RESOLVED_DEPTH (reduce reads a single-sample
+    # sampler2D of the MAX-resolved depth). Loaded for the reduce pipeline only when the device
+    # supports VK_RESOLVE_MODE_MAX_BIT; the default hiz.comp.spv stays the per-sample MSAA fallback.
+    ano_add_shader(hiz_resolve.comp hiz.comp -DRESOLVED_DEPTH)
+
+    add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
+    # Everything that links anoptic_render loads these at runtime (engine AND the vk
+    # tests), so the library itself carries the dependency edge -- a lone
+    # `--build --target anotest_vk_lifecycle` can no longer run against stale shaders.
+    add_dependencies(anoptic_render anoptic_shaders)
 elseif(NOT ANOPTIC_HEADLESS)
     message(WARNING "Vulkan SDK not found: building anoptic_core + tests only (use -DANOPTIC_HEADLESS=ON for a console engine).")
 endif()
@@ -144,20 +205,48 @@ endif()
 # isn't built. Tests don't touch main.c and are unaffected either way.
 if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
     add_executable(anopticengine ./src/engine/main.c)
-    target_compile_definitions(anopticengine PRIVATE -DPROJECT_ROOT="${CMAKE_SOURCE_DIR}")
     target_compile_options(anopticengine PRIVATE
             "$<$<CONFIG:Debug>:-O0;-g>"
             "$<$<CONFIG:Release>:-O3>")
     if(Vulkan_FOUND)
         target_link_libraries(anopticengine PRIVATE anoptic_render)
-        if(TARGET anoptic_shaders)
-            add_dependencies(anopticengine anoptic_shaders)
+
+        # Stage test assets (glTF/textures; gitignored, dev-machine-only) next to the
+        # binary so the CWD-relative model loads work from any build flow -- previously
+        # only build.sh/build.bat copied these, so a direct cmake build had none.
+        if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
+            add_custom_command(TARGET anopticengine POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:anopticengine>
+                    COMMENT "Staging assets/ next to anopticengine"
+                    VERBATIM)
         endif()
     else()
         target_link_libraries(anopticengine PRIVATE anoptic_core)
     endif()
-    # Platform filesystem helpers (executable-dir resolution) compiled into the engine.
-    add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
+
+    # Install story: the exe with resources/ next to it. loadFile resolves shaders
+    # relative to the executable, so bin/ + bin/resources/shaders is self-contained.
+    # (Test assets are gitignored and deliberately NOT installed.)
+    install(TARGETS anopticengine RUNTIME DESTINATION bin)
+    if(Vulkan_FOUND)
+        install(DIRECTORY ${SHADER_BIN_DIR} DESTINATION bin/resources)
+    endif()
+endif()
+
+# MinGW cross builds: stage the toolchain's runtime DLLs (mcfgthread, winpthreads)
+# next to the binaries -- the Windows host cannot resolve them from the nix store, and
+# a missing DLL fails SILENTLY over WSL interop. The Nix .#windows shell exports the
+# search dirs (semicolon-separated = a CMake list); the MSYS2 path never sets the
+# variable and finds its DLLs on PATH (clang64\bin) instead.
+if(WIN32 AND CMAKE_CROSSCOMPILING AND DEFINED ENV{ANOPTIC_MINGW_DLL_DIRS})
+    set(ANO_DLL_DIRS "$ENV{ANOPTIC_MINGW_DLL_DIRS}")
+    foreach(dlldir IN LISTS ANO_DLL_DIRS)
+        file(GLOB ANO_RUNTIME_DLLS ${dlldir}/*.dll)
+        file(COPY ${ANO_RUNTIME_DLLS} DESTINATION ${CMAKE_BINARY_DIR})
+        if(ANOPTIC_TESTS)
+            file(COPY ${ANO_RUNTIME_DLLS} DESTINATION ${CMAKE_BINARY_DIR}/tests)
+        endif()
+    endforeach()
 endif()
 
 # CTest integration

@@ -1,0 +1,56 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+
+// SKELETON — not in the CMakeLists shader manifest, not loaded by any pipeline.
+// Documents the skinned-mesh DRAW STAGE (PIPELINE_SKINNED). It is flat.mesh plus a
+// bone-palette fetch: deform each vertex by its 4 weighted bone matrices, then the
+// fragment stage is identical to flat.frag (same material/PBR/instance-channel path).
+//
+// Key separations that keep the rigid fast path untouched:
+//   - per-vertex joints+weights are a PARALLEL vertex stream (binding 10 here), bound
+//     only for this pipeline; the 32 B rigid vertex never grows;
+//   - the bone palette (binding 11) is the visible-compacted output of pose.comp;
+//   - skinned meshes use a conservative animated bound and skip meshlet cone cull
+//     (a static cone is unsound under deformation).
+//
+// To activate: add to the manifest + a PIPELINE_SKINNED prototype + a g_framePasses
+// entry. Bindings 0-9 match the graphics globalSetLayout (so the shared set binds).
+
+layout(local_size_x = 64) in;
+layout(triangles, max_vertices = 64, max_primitives = 126) out;
+
+layout(set = 0, binding = 0) uniform GlobalUBO {
+    mat4  view;
+    mat4  proj;
+    float time;
+    float deltaTime;
+    uint  frameCount;
+    uint  lightCount;
+    vec4  cameraPos;
+} global;
+
+layout(set = 0, binding = 1) readonly buffer TransformSSBO { mat4 transforms[]; } transformBuf;
+
+struct PackedVertex { float px, py, pz; float nx, ny, nz; float u, v; };
+layout(set = 0, binding = 4, std430) readonly buffer VertexBuffer { PackedVertex vertices[]; } vertexBuf;
+
+// Parallel skin-attribute stream: 4 joint indices + 4 weights per vertex, allocated
+// only for skinned meshes. Indexed in lockstep with the geometry vertex stream.
+struct SkinVertex { uvec4 joints; vec4 weights; };
+layout(set = 0, binding = 10, std430) readonly buffer SkinVertexBuffer { SkinVertex skin[]; } skinBuf;
+
+// Visible-compacted bone matrices from pose.comp; paletteBase comes per-instance.
+layout(set = 0, binding = 11, std430) readonly buffer BonePaletteSSBO { mat4 palette[]; } paletteBuf;
+
+layout(location = 0) out vec3 fragNormal[];
+layout(location = 1) out vec2 fragTexCoord[];
+layout(location = 2) flat out uint outMaterialIndex[];
+layout(location = 3) out vec3 fragWorldPos[];
+layout(location = 4) flat out uint outEntityIndex[];
+
+void main() {
+    // SKELETON: for each vertex, skinned =
+    //   sum_k weights[k] * palette[paletteBase + joints[k]] * vec4(position, 1);
+    // then transform by transforms[entitySlot] and emit exactly like flat.mesh.
+    SetMeshOutputsEXT(0u, 0u);
+}

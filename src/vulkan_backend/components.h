@@ -17,11 +17,51 @@ typedef enum PipelineType
     PIPELINE_PARTICLE,          // Point-sprite / billboard particles
     PIPELINE_SDF_COMPOSITE,     // SDF raymarching compositing pass (future)
     PIPELINE_UI,                // UI overlay (future)
-    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects
+    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects (depth-sorted "over" lane)
+    PIPELINE_ADDITIVE,          // Order-independent additive (ONE/ONE) glows: stars, engine fire, weapon FX
+    PIPELINE_FLAT_TWOSIDED,     // Opaque flat WITHOUT backface culling: glTF doubleSided materials (review
+                                // finding 7). Same shaders/layout as PIPELINE_FLAT; cullMode NONE. Material-
+                                // carried types must stay below 16 (the drawSlotOf map — see components.c).
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
+    PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass (Path B)
+    PIPELINE_COMPUTE_TPSORT,    // transparency back-to-front sort of the "over" lane (compute, never draws)
+    // --- Skeletons: enum slots reserved so the per-type buffers (indirect/drawCount/
+    // compacted indices) and the prototype table size for them, but no pipeline is
+    // created and no g_framePasses entry drives them yet. See render_bridge.h notes
+    // and resources/shaders/{decal,skinned,pose}.* for the planned shape.
+    PIPELINE_DECAL,             // (skeleton) projected / UV-overlay decal draw stream
+    PIPELINE_SKINNED,           // (skeleton) skinned-mesh draw stream (own vertex stage + bone palette)
+    PIPELINE_COMPUTE_LIGHTCULL, // clustered-forward froxel light assignment (compute, never draws)
+    PIPELINE_COMPUTE_SHADOWSETUP, // per-shadow-frustum light-space viewProj + frustum-plane build (compute, never draws)
+    PIPELINE_COMPUTE_LIGHTSETUP, // per-light world pose (worldPos/worldDir) precompute (compute, never draws)
+    PIPELINE_COMPUTE_HIZ,       // hierarchical-Z depth pyramid build for occlusion cull (compute, never draws)
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
 } PipelineType;
+
+// Draw partitions (render config). cull.comp compacts visible draws into per-pipeline
+// partitions of the indirect / drawCount / compacted-index buffers, indexed by draw slot.
+// Only pipeline types that actually emit draws get a partition: the COMPUTE_* passes never
+// draw and PARTICLE / SDF_COMPOSITE / UI / DECAL / SKINNED are unimplemented skeletons, so
+// sizing by PIPELINE_TYPE_COUNT would reserve — and vkCmdFillBuffer-zero every frame — most
+// of the per-slot GPU footprint as permanently-idle VRAM (the dominant cost at a million
+// entities). This list is the single source of truth: order defines the slot index, length
+// defines the partition count the buffers and the cull UBO map size to. To add a drawing
+// pipeline, append it here and give it a g_framePasses entry; nothing else resizes by hand.
+#define ANO_NO_DRAW_SLOT 0xFFFFFFFFu
+
+extern const PipelineType ano_draw_pipelines[]; // drawing pipeline types, in slot order
+uint32_t ano_draw_pipeline_count(void);         // number of drawing types == per-camera-view draw-slot stride
+uint32_t ano_draw_slot_of(PipelineType type);   // enum -> draw slot, ANO_NO_DRAW_SLOT if it never draws
+
+// Total compacted-draw partitions across the indirect / drawCount / compacted buffers. Camera views
+// each get every draw slot (partition = view*drawSlotCount + slot, range [0, ANO_VIEW_COUNT*
+// drawSlotCount)); each shadow frustum gets a SINGLE slot-0 partition (ANO_VIEW_COUNT*drawSlotCount
+// + s) because the shadow depth render only ever rasterizes the opaque caster slot. Reserving every
+// draw slot per shadow frustum (the old ano_draw_pipeline_count()*ANO_FRUSTUM_COUNT sizing) made each
+// new draw lane cost 26 permanently-idle, frame-zeroed shadow partitions — the dominant VRAM waste at
+// a million entities. This is the single sizing source for those three buffers and their cull map.
+uint32_t ano_draw_partition_count(void);
 
 typedef enum PassType
 {
@@ -34,6 +74,10 @@ typedef struct RenderPassDef
     PassType            type;
     PipelineType        prototype;              // which pipeline prototype to bind
     uint32_t            implementationIndex;    // which variant (opaque, transparent, etc.)
+    // Recorded once per view (audit 4.8) vs once per frame. Per-view passes (light-cull, the
+    // geometry passes) run inside the view loop binding that view's sets/targets; view-independent
+    // passes (update, scatter, cull) run once before it. cull is single-pass multi-frustum.
+    bool                perView;
 
     // Graphics-only:
     uint32_t                colorAttachmentCount;
@@ -48,6 +92,9 @@ typedef struct RenderPassDef
     VkClearValue            colorClear;
     VkClearValue            depthClear;
     VkResolveModeFlagBits   resolveMode;
+    // Emit a depth write->read barrier (LATE->EARLY fragment tests) on this view's depth image before
+    // this pass begins. Set on the opaque pass so its EQUAL test waits on the depth pre-pass's writes.
+    bool                    depthBarrierBefore;
 
     // Compute-only:
     uint32_t                dispatchX, dispatchY, dispatchZ;

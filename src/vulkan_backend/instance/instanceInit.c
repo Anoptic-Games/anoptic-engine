@@ -8,8 +8,8 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
-#include <mimalloc.h>
-#include <mimalloc-override.h>
+#include <math.h>
+#include <anoptic_memory.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -45,13 +45,117 @@ void enumerateMonitors(Monitors* monitors) // Instance creation helper
 	}
 }
 
+static void forward_input(const AnoInputEvent* ie); // defined below; the resize callback forwards too
+
 static void framebufferResizeCallback(GLFWwindow* window, int width, int height) // Called by GLFW on window resize, not part of instance creation but related
 {
 	static uint32_t count = 0;
 	// VulkanContext* ctx = glfwGetWindowUserPointer(window);
 	printf("Resize: %d\n", count);
 	count++;
-	rendererState.framebufferResized = true;
+	rendererState.framebufferResized = true; // swapchain recreate stays render-owned
+	// Also forward to logic so it learns the new aspect (for UI / cursor interpretation).
+	AnoInputEvent ie = { .kind = ANO_INPUT_FRAMEBUFFER_RESIZE,
+	                     .u.resize = { (uint32_t)width, (uint32_t)height } };
+	forward_input(&ie);
+}
+
+// Slots of the events ring reserved for LOSSLESS render->logic facts (slot retirement, batch acks).
+// Input is best-effort and shares the one ring with those facts, so it must never fill the ring's
+// last slots and starve them: input is dropped once free space falls to this margin (audit 4.11).
+#define ANO_INPUT_RING_RESERVE 256u
+
+// Forward one input sample to the logic master over the events ring (audit 4.11). All GLFW input
+// flows through here. Render must NOT block (it shares the thread with glfwPollEvents), so input is
+// best-effort: it is dropped (never blocks, never overruns the lossless reserve) when the ring is
+// near full. The reserved headroom guarantees a same-frame REVENT_SLOT_RETIRED still has room.
+static void forward_input(const AnoInputEvent* ie)
+{
+	AnoSpscRing* r = &rendererState.bridge.events;
+	if (!r->buffer) return; // ring not built yet (a window-creation-time callback); nothing to forward
+	uint32_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed); // render is the sole producer
+	uint32_t head = atomic_load_explicit(&r->head, memory_order_acquire);
+	if ((tail - head) + ANO_INPUT_RING_RESERVE > r->mask) return; // keep headroom for lossless facts
+	RenderEvent ev = { .kind = REVENT_INPUT, .u.input = *ie };
+	(void)ano_render_emit_event(&rendererState.bridge, &ev); // room checked above
+}
+
+// GLFW input callbacks: build one AnoInputEvent and forward it. GLFW codes are passed verbatim (the
+// keymap layer is the game's). The cursor callback also caches the position for the picking readback.
+static void cursorPosCallback(GLFWwindow* window, double x, double y)
+{
+	(void)window;
+	rendererState.cursorX = (float)x;
+	rendererState.cursorY = (float)y;
+	AnoInputEvent ie = { .kind = ANO_INPUT_CURSOR_POS, .u.cursor = { (float)x, (float)y } };
+	forward_input(&ie);
+}
+static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_MOUSE_BUTTON, .u.button = { button, action, mods } };
+	forward_input(&ie);
+}
+static void scrollCallback(GLFWwindow* window, double dx, double dy)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_SCROLL, .u.scroll = { (float)dx, (float)dy } };
+	forward_input(&ie);
+}
+static void windowFocusCallback(GLFWwindow* window, int focused)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_FOCUS, .u.focus = { focused } };
+	forward_input(&ie);
+}
+static void charCallback(GLFWwindow* window, unsigned int codepoint)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_CHAR, .u.ch = { codepoint } };
+	forward_input(&ie);
+}
+
+// L cycles the lighting mode: shadow maps -> hybrid (RC point + shadow-mapped dir/spot) ->
+// radiance cascades. Edge-triggered on press so one keystroke advances one mode. The setter just
+// updates the render state; updateCullingBuffers publishes it into the GlobalUBO. See AnoLightingMode
+// and docs/artifacts/RADIANCE_CASCADES.md. Runs on the main (render) thread alongside the frame loop.
+// These L/H/[]/;' keys stay render-side dev tooling (they tune render-thread-only state); the same
+// keystrokes are ALSO forwarded to logic, which today consumes only the camera-control keys.
+static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+	(void)window;
+	AnoInputEvent ie = { .kind = ANO_INPUT_KEY, .u.key = { key, scancode, action, mods } };
+	forward_input(&ie);
+	if (key == GLFW_KEY_L && action == GLFW_PRESS) {
+		AnoLightingMode next = (AnoLightingMode)(((uint32_t)ano_render_get_lighting_mode() + 1u) % (uint32_t)ANO_LIGHTING_MODE_COUNT);
+		ano_render_set_lighting_mode(next);
+		static const char* const names[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RADIANCE_CASCADES" };
+		printf("Lighting mode: %s\n", names[next]);
+	}
+	// LOD bias inspection (review 4.9 step 2): [ biases finer, ] coarser. Repeats while held so the
+	// scene can be swept from finest to coarsest; a large bias pins every LOD-chain mesh to one end.
+	if ((key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET) &&
+	    (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+		int32_t bias = ano_render_get_lod_bias() + (key == GLFW_KEY_RIGHT_BRACKET ? 1 : -1);
+		ano_render_set_lod_bias(bias);
+		printf("LOD bias: %+d\n", ano_render_get_lod_bias());
+	}
+	// Shadow-caster LOD offset inspection (review 4.9 step 2, revised): ; finer shadows, ' coarser.
+	// Shadows track the view-0 LOD by default (offset 0); this trades shadow cost against silhouette
+	// quality live by biasing RELATIVE to that matched level (0 = exact match with the visible mesh).
+	if ((key == GLFW_KEY_SEMICOLON || key == GLFW_KEY_APOSTROPHE) &&
+	    (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+		int32_t bias = ano_render_get_shadow_lod_bias() + (key == GLFW_KEY_APOSTROPHE ? 1 : -1);
+		ano_render_set_shadow_lod_bias(bias);
+		printf("Shadow LOD bias: %+d\n", ano_render_get_shadow_lod_bias());
+	}
+	// Hi-Z occlusion toggle (review 4.9 step 3): H flips the main view's GPU occlusion cull on/off for
+	// A/B inspection (default off). With it on, entities fully behind nearer geometry stop drawing.
+	if (key == GLFW_KEY_H && action == GLFW_PRESS) {
+		bool on = !ano_render_get_view_hiz_enable(0u);
+		ano_render_set_view_hiz_enable(0u, on);
+		printf("Hi-Z occlusion (view 0): %s\n", on ? "ON" : "OFF");
+	}
 }
 
 GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a GLFW window, necessary for instance creation but general in scope
@@ -95,6 +199,14 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	
 	glfwSetWindowUserPointer(window, &rendererState);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+	// All input flows to the logic master via the events ring (audit 4.11). GLFW pins these to the
+	// render thread; each callback forwards one AnoInputEvent.
+	glfwSetKeyCallback(window, keyCallback);            // also tunes render-side debug state (L/H/[]/;')
+	glfwSetMouseButtonCallback(window, mouseButtonCallback);
+	glfwSetCursorPosCallback(window, cursorPosCallback);
+	glfwSetScrollCallback(window, scrollCallback);
+	glfwSetWindowFocusCallback(window, windowFocusCallback);
+	glfwSetCharCallback(window, charCallback);
 
 	return window;
 }
@@ -309,9 +421,13 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
 	// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
-	// This may be changed in the future, specifically to allow compute tasks to work on the next frame without impacting rendering.
 	// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
 	//!TODO Implement these as required further into development
+	// Compute is the exception (review finding 2): prefer a DEDICATED compute family (compute
+	// without graphics) so ctx.computeQueue is a distinct queue the driver schedules concurrently
+	// with raster (async Hi-Z). Falls back to the first compute-capable family — usually the
+	// graphics family, i.e. the very same queue, which the async gate detects and disables on.
+	bool haveDedicatedCompute = false;
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here
 		if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && indices.graphicsPresent == false)
@@ -320,11 +436,16 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 			indices.graphicsPresent = true;
 			//printf("Graphics: %d\n", i);
 		}
-		if ((queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && indices.computePresent == false)
+		if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT)
 		{
-			indices.computeFamily = i;
-			indices.computePresent = true;
-			//printf("Compute: %d\n", i);
+			bool dedicated = (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0;
+			if (indices.computePresent == false || (dedicated && !haveDedicatedCompute))
+			{
+				indices.computeFamily = i;
+				indices.computePresent = true;
+				haveDedicatedCompute = dedicated;
+				//printf("Compute: %d\n", i);
+			}
 		}
 		if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && indices.transferPresent == false)
 		{
@@ -385,6 +506,28 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	capabilities.meshShader = meshShaderFeatures.meshShader;
 	// Test hook: force the vertex-shader fallback path on mesh-capable hardware.
 	if (getenv("ANO_FORCE_NO_MESH_SHADER")) capabilities.meshShader = false;
+	// Task (amplification) stage for the per-meshlet cull (review priority 10); only meaningful
+	// with the mesh path (the fallback vertex path has no meshlets to cull).
+	capabilities.taskShader = capabilities.meshShader && meshShaderFeatures.taskShader;
+
+	// Depth-resolve MAX support (avenue 1): a PROPERTY, not a feature. supportedDepthResolveModes must
+	// include SAMPLE_ZERO but MAX is optional; when present the Hi-Z build resolves depth to single-sample
+	// (farthest sample) so the reduce reads 1 sample/texel. Test hook forces the per-sample MSAA fallback.
+	VkPhysicalDeviceDepthStencilResolveProperties dsResolve = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES };
+	VkPhysicalDeviceProperties2 props2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dsResolve };
+	vkGetPhysicalDeviceProperties2(device, &props2);
+	capabilities.depthMaxResolve = (dsResolve.supportedDepthResolveModes & VK_RESOLVE_MODE_MAX_BIT) != 0;
+	if (getenv("ANO_FORCE_NO_DEPTH_RESOLVE")) capabilities.depthMaxResolve = false;
+
+	// Vertex-stage gl_Layer (shadowblur.vert): the layered single-pass shadow blur needs it; the
+	// fallback renders per-layer views. Both vk1.2 features are required because glslang may emit
+	// either the ShaderLayer (SPIR-V 1.5) or ShaderViewportIndexLayerEXT capability for gl_Layer.
+	// Test hook forces the per-layer fallback on capable hardware.
+	capabilities.shaderOutputLayer = features12.shaderOutputLayer && features12.shaderOutputViewportIndex;
+	if (getenv("ANO_FORCE_NO_SHADER_OUTPUT_LAYER")) capabilities.shaderOutputLayer = false;
+
+	// Timeline semaphores (vk1.2): cross-queue ordering for the async Hi-Z build (review finding 2).
+	capabilities.timelineSemaphore = features12.timelineSemaphore;
 
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
@@ -489,10 +632,39 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 
 VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 {
-	VkPhysicalDeviceProperties physicalDeviceProperties;
-	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &physicalDeviceProperties); // Cached properties should be preferentially used
+	// framebufferIntegerColorSampleCounts lives in VkPhysicalDeviceVulkan12Properties (a 1.2 property),
+	// not base limits, so query it via properties2 (core since 1.1; the instance targets 1.3).
+	VkPhysicalDeviceVulkan12Properties vk12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
+	VkPhysicalDeviceProperties2 physicalDeviceProperties2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vk12 };
+	vkGetPhysicalDeviceProperties2(ctx->physicalDevice, &physicalDeviceProperties2);
+	VkPhysicalDeviceProperties physicalDeviceProperties = physicalDeviceProperties2.properties;
 
-	VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+	// The per-view depth target is now ALSO sampled (Hi-Z occlusion pyramid, review 4.9 step 3), so the
+	// chosen count must satisfy sampledImageDepthSampleCounts too: the spec permits it to be a strict
+	// subset of framebufferDepthSampleCounts, which would otherwise trip VUID-VkImageCreateInfo-samples-02258
+	// when the depth image is created with SAMPLED_BIT. No-op where sampled depth matches the framebuffer.
+	// Likewise the picking id attachment (audit 3.1) is an INTEGER color format (R32_UINT) MSAA target,
+	// governed by framebufferIntegerColorSampleCounts — which the spec also permits to be a strict subset
+	// of framebufferColorSampleCounts — so fold it in too, or the shared MSAA id image trips the same VUID
+	// on hardware where integer-color MSAA is narrower. No-op where it matches the framebuffer count.
+	VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts
+	                          & physicalDeviceProperties.limits.framebufferDepthSampleCounts
+	                          & physicalDeviceProperties.limits.sampledImageDepthSampleCounts
+	                          & vk12.framebufferIntegerColorSampleCounts;
+
+	// MSAA policy (review finding 5): honor the configured preference instead of the device max —
+	// the unconditional max (8x on desktop) taxed every raster pass in both views with ~2x the
+	// sample work of 4x for marginal visual return. Preference is clamped to what the device
+	// supports; below 2 is raised to 2 (the 1x no-resolve path is not built). ANO_MSAA overrides
+	// for A/B testing without a rebuild.
+	uint32_t preferred = getChosenMsaaSamples();
+	const char* msaaEnv = getenv("ANO_MSAA");
+	if (msaaEnv) preferred = (uint32_t)atoi(msaaEnv);
+	if (preferred < 2u) { printf("MSAA preference %u below minimum, using 2x\n", preferred); preferred = 2u; }
+	VkSampleCountFlags mask = 0;
+	for (uint32_t s = 2u; s <= preferred && s <= 64u; s <<= 1) mask |= s; // sample flags are their counts
+	counts &= mask;
+
 	if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
 	if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
 	if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
@@ -644,6 +816,11 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	// Vertex fallback path packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
 	// (read as gl_InstanceIndex), which requires this feature for a nonzero value in an indirect draw.
 	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
+	// The opaque pass renders two color attachments with different per-attachment state
+	// ([0] HDR blends, [1] R32_UINT picking id never blends and masks differently), which
+	// the spec only allows with independentBlend (VUID-VkPipelineColorBlendStateCreateInfo-
+	// pAttachments-00605). Universally supported on desktop hardware.
+	deviceFeatures.independentBlend = features2.features.independentBlend;
 
 	// We'll have 4 unique queues at the very most
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
@@ -689,6 +866,12 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingVariableDescriptorCount = queryFeatures12.descriptorBindingVariableDescriptorCount;
 	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
 	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
+	// Vertex-stage gl_Layer for the layered shadow blur (mirrors populateCapabilities: both
+	// features cover whichever SPIR-V capability glslang emitted for gl_Layer).
+	features12.shaderOutputLayer = queryFeatures12.shaderOutputLayer;
+	features12.shaderOutputViewportIndex = queryFeatures12.shaderOutputViewportIndex;
+	// Async Hi-Z ordering (review finding 2); mirrors populateCapabilities.
+	features12.timelineSemaphore = queryFeatures12.timelineSemaphore;
 
 	// Mirror populateCapabilities: the fallback path activates when the feature is
 	// absent or the test override forces it off.
@@ -929,6 +1112,15 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
     state->swapChain = swapChain;
     state->imageFormat = chosenFormat.format;
     state->imageExtent = chosenExtent;
+    // Per-view render extents (review finding 6): view 0 fills the swapchain; auxiliary views
+    // render at their composite inset size — the SAME W/3 x H/3 integer math the tonemap composite
+    // uses for placement, so the inset samples its source 1:1 instead of minifying 3:1.
+    state->viewExtent[0] = chosenExtent;
+    for (uint32_t v = 1; v < ANO_VIEW_COUNT; v++) {
+        uint32_t iw = chosenExtent.width / 3u;  if (iw < 1u) iw = 1u;
+        uint32_t ih = chosenExtent.height / 3u; if (ih < 1u) ih = 1u;
+        state->viewExtent[v] = (VkExtent2D){ iw, ih };
+    }
     state->imageCount = imageCount;
     state->images = swapChainImages;
 
@@ -947,47 +1139,121 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     state->views = NULL;
     state->viewCount = 0;
 
-    // Destroy depth image views
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+    // Destroy per-view depth views + images
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        if (state->frames[i].depthView != VK_NULL_HANDLE)
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
         {
-            vkDestroyImageView(ctx->device, state->frames[i].depthView, NULL);
-            state->frames[i].depthView = VK_NULL_HANDLE;
+            ViewResources* vr = &state->frames[i].views[v];
+            if (vr->depthView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->depthView, NULL);
+                vr->depthView = VK_NULL_HANDLE;
+            }
+            if (vr->depthImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->depthImage, NULL);
+                vr->depthImage = VK_NULL_HANDLE;
+            }
+
+            // Avenue 1: single-sample depth-resolve target (memory owned by swapchainAllocator).
+            if (vr->depthResolveView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->depthResolveView, NULL);
+                vr->depthResolveView = VK_NULL_HANDLE;
+            }
+            if (vr->depthResolveImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->depthResolveImage, NULL);
+                vr->depthResolveImage = VK_NULL_HANDLE;
+            }
+
+            // Hi-Z pyramid (review 4.9 step 3): destroy the per-mip + sampled views and the image.
+            // hizAlloc.memory is owned by swapchainAllocator (no manual vkFreeMemory), like depthAlloc.
+            for (uint32_t m = 0; m < vr->hizMipCount; m++)
+            {
+                if (vr->hizMipViews[m] != VK_NULL_HANDLE)
+                {
+                    vkDestroyImageView(ctx->device, vr->hizMipViews[m], NULL);
+                    vr->hizMipViews[m] = VK_NULL_HANDLE;
+                }
+            }
+            if (vr->hizSampledView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->hizSampledView, NULL);
+                vr->hizSampledView = VK_NULL_HANDLE;
+            }
+            if (vr->hizImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->hizImage, NULL);
+                vr->hizImage = VK_NULL_HANDLE;
+            }
+            vr->hizMipCount = 0;
         }
     }
 
-    // Destroy depth images
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+
+    // Per-view MSAA color + picking-id attachments (memory backed by swapchainAllocator, reset below).
+    for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
     {
-        if (state->frames[i].depthImage != VK_NULL_HANDLE)
+        if (state->colorView[v])
         {
-            vkDestroyImage(ctx->device, state->frames[i].depthImage, NULL);
-            state->frames[i].depthImage = VK_NULL_HANDLE;
+            vkDestroyImageView(ctx->device, state->colorView[v], NULL);
+            state->colorView[v] = VK_NULL_HANDLE;
+        }
+        if (state->colorImage[v] != VK_NULL_HANDLE)
+        {
+            vkDestroyImage(ctx->device, state->colorImage[v], NULL);
+            state->colorImage[v] = VK_NULL_HANDLE;
+        }
+        state->colorImageAlloc[v].memory = VK_NULL_HANDLE;
+
+        if (state->pickIdView[v] != VK_NULL_HANDLE)
+        {
+            vkDestroyImageView(ctx->device, state->pickIdView[v], NULL);
+            state->pickIdView[v] = VK_NULL_HANDLE;
+        }
+        if (state->pickIdImage[v] != VK_NULL_HANDLE)
+        {
+            vkDestroyImage(ctx->device, state->pickIdImage[v], NULL);
+            state->pickIdImage[v] = VK_NULL_HANDLE;
+        }
+        state->pickIdImageAlloc[v].memory = VK_NULL_HANDLE;
+    }
+
+    // Destroy per-view HDR resolve targets (memory backed by swapchainAllocator, reset below)
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            ViewResources* vr = &state->frames[i].views[v];
+            if (vr->hdrColorView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->hdrColorView, NULL);
+                vr->hdrColorView = VK_NULL_HANDLE;
+            }
+            if (vr->hdrColorImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->hdrColorImage, NULL);
+                vr->hdrColorImage = VK_NULL_HANDLE;
+            }
+            vr->hdrColorAlloc.memory = VK_NULL_HANDLE;
+
+            // Picking id resolve target (view 0 only; the rest stay VK_NULL_HANDLE).
+            if (vr->pickIdResolveView != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(ctx->device, vr->pickIdResolveView, NULL);
+                vr->pickIdResolveView = VK_NULL_HANDLE;
+            }
+            if (vr->pickIdResolveImage != VK_NULL_HANDLE)
+            {
+                vkDestroyImage(ctx->device, vr->pickIdResolveImage, NULL);
+                vr->pickIdResolveImage = VK_NULL_HANDLE;
+            }
+            vr->pickIdResolveAlloc.memory = VK_NULL_HANDLE;
         }
     }
 
-
-    // Free color image
-    if (state->colorImage != VK_NULL_HANDLE)
-    {
-        vkDestroyImage(ctx->device, state->colorImage, NULL);
-        state->colorImage = VK_NULL_HANDLE;
-    }
-
-    // Free color image memory (managed by swapchainAllocator, so no manual vkFreeMemory)
-    if (state->colorImageAlloc.memory != VK_NULL_HANDLE)
-    {
-        state->colorImageAlloc.memory = VK_NULL_HANDLE;
-    }
-
-    // Destroy color image view
-    if (state->colorView) 
-    {
-        vkDestroyImageView(ctx->device, state->colorView, NULL);
-        state->colorView = VK_NULL_HANDLE;
-    }
-    
     // Do NOT destroy the swapchain here because recreateSwapChain needs oldSwapChain
     if (state->images != NULL) {
         free(state->images);
@@ -1053,14 +1319,29 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	createColorResources(ctx);
 
 	createDepthResources(ctx, &rendererState);
-	if (rendererState.frames[0].depthView == NULL)
+	if (rendererState.frames[0].views[0].depthView == NULL)
 	{
 		printf("Depth resources re-creation error, exiting!\n");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
 
+	// Hi-Z pyramid (review 4.9 step 3): recreate at the new (half) resolution, then rebind its
+	// per-mip sets to the new pyramid + depth views (mirrors the tonemap-set rebind below).
+	if (!createHiZResources(ctx, &rendererState))
+	{
+		printf("Hi-Z resources re-creation error, exiting!\n");
+		cleanupVulkan(ctx);
+		exit(1);
+	}
+	updateHiZDescriptorSets(ctx, &rendererState);
+
+	// The per-view HDR resolve views were recreated above; rebind the tonemap sets to them.
+	updateTonemapDescriptorSets(ctx, &rendererState);
+
 	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
+	if (rendererState.computeCommandPool != VK_NULL_HANDLE)
+		vkResetCommandPool(ctx->device, rendererState.computeCommandPool, 0); // async Hi-Z build CBs (idle-waited above)
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
 	{
 		vkResetFences(ctx->device, 1, &(rendererState.frames[i].frameFence));
@@ -1156,17 +1437,21 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 { // Central to init, specific to perspective uniforms (world translation, rotation and projection)
 	VkDeviceSize bufferSize = sizeof(GlobalUBO);
 
+	// One camera UBO per view per frame: each view has its own view/proj/froxel params.
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		GpuAllocation alloc;
-		if (!createDataBuffer(ctx, &gpuAllocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			 &(rendererState.frames[i].uniformBuffer), &alloc)) 
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
-			printf("Failed to create uniform buffer!");
-			return false;
+			GpuAllocation alloc;
+			if (!createDataBuffer(ctx, &gpuAllocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				 &(rendererState.frames[i].views[v].uniformBuffer), &alloc))
+			{
+				printf("Failed to create uniform buffer!");
+				return false;
+			}
+
+			rendererState.frames[i].views[v].uniformMapped = alloc.mapped;
 		}
-		
-		rendererState.frames[i].uniformMapped = alloc.mapped;
 	}
 
 	return true;
@@ -1200,31 +1485,75 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 
 	float deltaTime = (time - oldTime) / 1000000.0f;
 	float elapsedTime = (time - startTime) / 1000000.0f;
-	
-	state->uboData.time = elapsedTime;
-	state->uboData.deltaTime = deltaTime;
-	state->uboData.frameCount = frameCount++;
 
-	float eye[] = {0.0f, 0.9f, 3.5f};  // Move camera up and back
-	float center[] = {0.0f, 0.15f, 0.0f}; // Camera looks at the origin
-	float up[] = {0.0f, 1.0f, 0.0f};  // World is unflipped
+	float centerDefault[] = {0.0f, 0.15f, 0.0f}; // default look target (scene origin)
+	float upDefault[]     = {0.0f, 1.0f, 0.0f};  // world is unflipped
+	float fovDefault      = 45.0f;               // degrees
 
-	lookAt(state->uboData.view, eye, center, up);
-
-	// Publish the camera world position so the fragment stage doesn't have to
-	// recover it via a per-fragment inverse(view).
-	state->uboData.cameraPos[0] = eye[0];
-	state->uboData.cameraPos[1] = eye[1];
-	state->uboData.cameraPos[2] = eye[2];
-	state->uboData.cameraPos[3] = 1.0f;
-
-	float fov = 45.0f; // Field of View in degrees
-	float aspect = (float)state->imageExtent.width / (float)state->imageExtent.height;
+	// Shared projection params. Each view renders at its OWN extent (view 0 = swapchain, insets =
+	// W/3 x H/3, review finding 6): aspect + froxel screen size come from viewExtent[v] below. The
+	// renderer always owns the projection (aspect/near/far); logic only supplies the view-0 pose.
 	float near = 0.1f;
 	float far = 100.0f;
-	perspective(state->uboData.proj, fov, aspect, near, far);
-	
-	memcpy(state->frames[state->frameIndex].uniformMapped, &(state->uboData), sizeof(GlobalUBO));
+
+	// View 0 is the gameplay camera the logic master owns (audit 4.11): use its published pose if it
+	// has published one, else fall back to the built-in camera (no first-frame regression, no init
+	// handshake). View 1 stays the orbiting inset demo (audit 4.8).
+	AnoViewState vs;
+	bool haveVs = ano_render_acquire_view(&state->bridge, &vs);
+
+	for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+	{
+		GlobalUBO* u = &state->uboData[v];
+		u->time = elapsedTime;
+		u->deltaTime = deltaTime;
+		u->frameCount = frameCount;
+
+		float eye[3], center[3], up[3], fov;
+		if (v == 0 && haveVs) {
+			for (int k = 0; k < 3; k++) { eye[k] = vs.eye[k]; center[k] = vs.center[k]; up[k] = vs.up[k]; }
+			fov = vs.fovYDeg;
+		} else if (v == 0) {
+			eye[0] = 0.0f; eye[1] = 0.9f; eye[2] = 3.5f;   // main fallback: up and back
+			for (int k = 0; k < 3; k++) { center[k] = centerDefault[k]; up[k] = upDefault[k]; }
+			fov = fovDefault;
+		} else {
+			// Inset: orbit the scene at a higher angle so the feed is obviously live + distinct.
+			float a = elapsedTime * 0.5f;
+			float r = 4.0f;
+			eye[0] = r * sinf(a);
+			eye[1] = 2.5f;
+			eye[2] = r * cosf(a);
+			for (int k = 0; k < 3; k++) { center[k] = centerDefault[k]; up[k] = upDefault[k]; }
+			fov = fovDefault;
+		}
+
+		lookAt(u->view, eye, center, up);
+
+		// Publish the camera world position so the fragment stage doesn't have to
+		// recover it via a per-fragment inverse(view).
+		u->cameraPos[0] = eye[0];
+		u->cameraPos[1] = eye[1];
+		u->cameraPos[2] = eye[2];
+		u->cameraPos[3] = 1.0f;
+
+		float aspect = (float)state->viewExtent[v].width / (float)state->viewExtent[v].height;
+		perspective(u->proj, fov, aspect, near, far);
+
+		// Clustered-forward froxel params: near/far + THIS VIEW's render extent (the light-cull
+		// pass and the fragment shader reconstruct froxels from these), and the fixed grid dims.
+		u->cameraNear = near;
+		u->cameraFar = far;
+		u->screenWidth = (float)state->viewExtent[v].width;
+		u->screenHeight = (float)state->viewExtent[v].height;
+		u->clusterDimX = ANO_CLUSTER_X;
+		u->clusterDimY = ANO_CLUSTER_Y;
+		u->clusterDimZ = ANO_CLUSTER_Z;
+		u->maxLightsPerCluster = ANO_CLUSTER_MAX_LIGHTS;
+
+		memcpy(state->frames[state->frameIndex].views[v].uniformMapped, u, sizeof(GlobalUBO));
+	}
+	frameCount++;
 
 	oldTime = time;
 
@@ -1308,59 +1637,250 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 	}
 	state->depthFormat = depthFormat;
 
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) 
+	// One depth target per view per frame: each view's frustum has its own visibility/depth.
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if (!createImage(ctx, &swapchainAllocator, state->imageExtent.width, 
-			state->imageExtent.height, 1, ctx->msaaSamples, state->depthFormat, 
-			VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
-						 &state->frames[i].depthImage, &state->frames[i].depthAlloc, false))
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
-			printf("Failed to create depth resource for frame %d!\n", i);
-			return false;
-		}
+			ViewResources* vr = &state->frames[i].views[v];
+			// SAMPLED_BIT (review 4.9 step 3): the Hi-Z reduce pass reads this MSAA depth via a
+			// sampler2DMS to build the occlusion pyramid mip 0. Sized to the VIEW's extent.
+			if (!createImage(ctx, &swapchainAllocator, state->viewExtent[v].width,
+				state->viewExtent[v].height, 1, ctx->msaaSamples, state->depthFormat,
+				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+							 &vr->depthImage, &vr->depthAlloc, false))
+			{
+				printf("Failed to create depth resource for frame %d view %u!\n", i, v);
+				return false;
+			}
 
-		state->frames[i].depthView = createImageView(ctx->device, 
-																	  state->frames[i].depthImage, 
-																	  depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+			vr->depthView = createImageView(ctx->device, vr->depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
-		if(!transitionImageLayout(ctx, VK_NULL_HANDLE, state->frames[i].depthImage, depthFormat, 
-								  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
-		{
-			printf("Failed to transition depth buffer layout for frame %d!\n", i);
-			return false;
+			if(!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthImage, depthFormat,
+									  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
+			{
+				printf("Failed to transition depth buffer layout for frame %d view %u!\n", i, v);
+				return false;
+			}
+
+			// Avenue 1 (review 4.9 step 3): single-sample MAX-resolve target for the Hi-Z reduce, only
+			// when supported. Same format/aspect as depthImage, one sample. Sync build: rests in
+			// DEPTH_ATTACHMENT (the build resolves into it, flips it to SHADER_READ for the reduce,
+			// back). Async build (review finding 2): the reduce runs on the compute queue, so it rests
+			// in SHADER_READ instead (graphics flips it to DEPTH_ATTACHMENT for its resolve write and
+			// back before signaling) and is CONCURRENT-shared with the compute family.
+			if (ctx->deviceCapabilities.depthMaxResolve)
+			{
+				uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
+				if (!createImageShared(ctx, &swapchainAllocator, state->viewExtent[v].width,
+					state->viewExtent[v].height, 1, VK_SAMPLE_COUNT_1_BIT, state->depthFormat,
+					VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+								 &vr->depthResolveImage, &vr->depthResolveAlloc, false,
+								 shareFamilies, state->asyncHiz ? 2u : 0u))
+				{
+					printf("Failed to create depth-resolve resource for frame %d view %u!\n", i, v);
+					return false;
+				}
+				vr->depthResolveView = createImageView(ctx->device, vr->depthResolveImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthResolveImage, depthFormat,
+										  VK_IMAGE_LAYOUT_UNDEFINED,
+										  state->asyncHiz ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+										                  : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
+				{
+					printf("Failed to transition depth-resolve layout for frame %d view %u!\n", i, v);
+					return false;
+				}
+			}
 		}
 	}
 	return true;
 }
 
+// Hi-Z occlusion pyramid resources (review 4.9 step 3). One half-res R32F mip chain per view per
+// frame-in-flight, built each frame from that view's MSAA depth (recordCommandBuffer) and sampled by
+// the cull next frame. STORAGE (imageStore per mip) + SAMPLED (downsample reads mip k-1; cull reads
+// the pyramid). Each image gets an all-mip sampled view + one single-mip storage view per level. Base
+// dims are half the swapchain extent; recreated with the swapchain. Per-mip descriptor sets are
+// allocated/written later (they need the layout + pool). No initial layout transition: the build
+// transitions UNDEFINED->GENERAL each frame (it fully rewrites every mip).
+bool createHiZResources(VulkanContext* ctx, RendererState* state)
+{
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+		{
+			// Per-view pyramid: half the VIEW's render extent (views render at their own
+			// resolution, review finding 6), so mip counts differ per view.
+			uint32_t w = (state->viewExtent[v].width  + 1u) / 2u; if (w < 1u) w = 1u;
+			uint32_t h = (state->viewExtent[v].height + 1u) / 2u; if (h < 1u) h = 1u;
+			uint32_t mips = 1u;
+			for (uint32_t m = (w > h) ? w : h; m > 1u; m >>= 1) ++mips;
+			if (mips > ANO_MAX_HIZ_MIPS) mips = ANO_MAX_HIZ_MIPS;
+
+			ViewResources* vr = &state->frames[i].views[v];
+			vr->hizWidth = w;
+			vr->hizHeight = h;
+			vr->hizMipCount = mips;
+			// Async build (review finding 2): written by the compute queue, sampled by the graphics
+			// queue's cull -> CONCURRENT between the two families (no ownership-transfer pairs).
+			uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
+			if (!createImageShared(ctx, &swapchainAllocator, w, h, mips, VK_SAMPLE_COUNT_1_BIT,
+				VK_FORMAT_R32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				&vr->hizImage, &vr->hizAlloc, false,
+				shareFamilies, state->asyncHiz ? 2u : 0u))
+			{
+				printf("Failed to create Hi-Z image for frame %u view %u!\n", i, v);
+				return false;
+			}
+
+			vr->hizSampledView = createImageView(ctx->device, vr->hizImage, VK_FORMAT_R32_SFLOAT,
+												 VK_IMAGE_ASPECT_COLOR_BIT, mips);
+
+			for (uint32_t m = 0; m < mips; m++)
+			{
+				VkImageViewCreateInfo iv = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+				iv.image = vr->hizImage;
+				iv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+				iv.format = VK_FORMAT_R32_SFLOAT;
+				iv.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				iv.subresourceRange.baseMipLevel = m;
+				iv.subresourceRange.levelCount = 1;
+				iv.subresourceRange.baseArrayLayer = 0;
+				iv.subresourceRange.layerCount = 1;
+				if (vkCreateImageView(ctx->device, &iv, NULL, &vr->hizMipViews[m]) != VK_SUCCESS)
+				{
+					printf("Failed to create Hi-Z mip view %u (frame %u view %u)!\n", m, i, v);
+					return false;
+				}
+			}
+
+			// Seed every pyramid to SHADER_READ so the first frames' cull (which samples not-yet-built
+			// previous-slot pyramids, review 4.9 step 3) reads a valid layout. The per-frame build re-
+			// transitions UNDEFINED->GENERAL (discarding), so this initial state is harmless.
+			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hizImage, VK_FORMAT_R32_SFLOAT,
+									   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips))
+			{
+				printf("Failed to transition Hi-Z image for frame %u view %u!\n", i, v);
+				return false;
+			}
+		}
+	}
+
+	// Warmup gate (review finding 2): the cull samples the pyramid built `lag` submits earlier, so
+	// after any (re)creation the first `lag` frames would sample seeded garbage. updateCullingBuffers
+	// forces hizParams.z = 0 (test off) for ordinals below this.
+	state->hizValidOrdinal = state->timelineOrdinal + 1u + (state->asyncHiz ? 2u : 1u);
+	return true;
+}
+
 void createColorResources(VulkanContext* ctx) //TODO: This probably should be generalized later?
 {
-	VkFormat colorFormat = rendererState.imageFormat;
+	// Geometry renders into an HDR float MSAA target (was the swapchain LDR format), so
+	// many-light dynamic range is preserved; a fullscreen tonemap pass encodes to the
+	// swapchain afterwards. The MSAA targets stay transient (resolved, never stored) and are
+	// PER VIEW (review finding 6): each is sized to its view's extent, and the views stop
+	// sharing an attachment — no inter-view reuse barrier, so their raster may overlap.
+	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT;
 
-	createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
-		1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage, &rendererState.colorImageAlloc, false);
-	rendererState.colorView = createImageView(ctx->device, rendererState.colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-	
-	if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+	for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 	{
-		printf("Failed to transition color image layout!\n");
+		createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+			1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage[v], &rendererState.colorImageAlloc[v], false);
+		rendererState.colorView[v] = createImageView(ctx->device, rendererState.colorImage[v], colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+
+		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage[v], colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+		{
+			printf("Failed to transition color image layout (view %u)!\n", v);
+		}
+
+		// MSAA picking-id attachment (audit 3.1): mirrors the MSAA color above (transient,
+		// resolved for view 0, discarded elsewhere). Per view like the color target: the opaque
+		// pipeline always declares both attachments, so every view needs one at its own extent.
+		createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+			1, ctx->msaaSamples, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.pickIdImage[v], &rendererState.pickIdImageAlloc[v], false);
+		rendererState.pickIdView[v] = createImageView(ctx->device, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+		{
+			printf("Failed to transition picking id image layout (view %u)!\n", v);
+		}
+	}
+
+	// Single-sample HDR resolve target, one per view per frame: resolve destination
+	// (COLOR_ATTACHMENT) for that view's MSAA HDR pass, and composite source (SAMPLED). Not
+	// transient — the composite reads it back. Seeded to SHADER_READ_ONLY; recordCommandBuffer
+	// re-transitions per frame. Sized to the view's extent (the composite samples it 1:1).
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+		{
+			ViewResources* vr = &rendererState.frames[i].views[v];
+			createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+				1, VK_SAMPLE_COUNT_1_BIT, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+						VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->hdrColorImage, &vr->hdrColorAlloc, false);
+			vr->hdrColorView = createImageView(ctx->device, vr->hdrColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hdrColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
+			{
+				printf("Failed to transition HDR resolve image layout!\n");
+			}
+
+			// Picking id resolve target: view 0 only (the gameplay view). Single-sample R32_UINT,
+			// the SAMPLE_ZERO resolve destination of the shared MSAA id image, then a TRANSFER_SRC
+			// for the cursor-texel copy. Resting layout COLOR_ATTACHMENT_OPTIMAL (the resolve layout).
+			if (v == 0)
+			{
+				createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+					1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+							VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->pickIdResolveImage, &vr->pickIdResolveAlloc, false);
+				vr->pickIdResolveView = createImageView(ctx->device, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
+				{
+					printf("Failed to transition picking id resolve image layout!\n");
+				}
+			}
+		}
 	}
 }
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
-	VkDescriptorPoolSize poolSize[2] = {};
+	// Per-view sets (global, light-cull, tonemap) scale by ANO_VIEW_COUNT; the view-independent
+	// sets (cull, update, scatter) are one per frame. Counts below are per frame, times margin.
+	//   UBO/frame:     global(1) + light-cull(1) per view, + cull(1) + update(1) shared
+	//   SSBO/frame:    global(11: bindings 1-11) + light-cull(4) per view, + cull(8)+update(3)+scatter(2) shared
+	//   SAMPLER/frame: tonemap(1) per view
+	//   sets/frame:    (global+light-cull+tonemap) per view + cull+update+scatter shared
+	VkDescriptorPoolSize poolSize[5] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 3;
+	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u);
+	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
+	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets. Transparency sort (audit 4.7) adds
+	// cull binding 10 (1 SSBO, the sort-key buffer) — the +1 in the shared term below.
+	// global now 12 SSBOs/view (binding 12 = per-light LightRuntime record); + lightsetup set (3 SSBO) shared.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 19; // SSBO/frame: 8 global (bindings 1-8) + 8 cull (bindings 1-8) + 3 update (sync w/ set layouts)
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u);
+	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
+	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	// Per frame: ANO_VIEW_COUNT tonemap + the +4 = shadow atlas (geomSet) + blurAtlasSet + blurTempSet
+	// + 1 spare (inherited margin). Actual use is ANO_VIEW_COUNT+3; +4 keeps a one-descriptor cushion.
+	// Hi-Z (review 4.9 step 3) adds: 2 sampled bindings (pyramid + depth) per per-mip build set
+	// (2 * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS/frame), plus the cull set's binding 11 occlusion pyramids
+	// (ANO_VIEW_COUNT samplers/frame).
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + ANO_VIEW_COUNT);
+	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame.
+	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSize[4].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = 2;
+	poolInfo.poolSizeCount = 5;
 	poolInfo.pPoolSizes = poolSize;
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 4; // safe margin
+	// + 2 blur sets/frame on top of (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2),
+	// + ANO_VIEW_COUNT*ANO_MAX_HIZ_MIPS Hi-Z build sets/frame (one per mip per view, review 4.9 step 3).
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 9u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS); // +1 shared set: lightsetup
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -1413,8 +1933,12 @@ bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state)
 
 bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 { // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
-	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+	// Global, light-cull and tonemap sets are per view per frame (each binds that view's
+	// camera UBO / froxel lists / HDR target); cull, update and scatter are one per frame.
+	enum { PERVIEW_SETS = MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT };
+
+	VkDescriptorSetLayout layouts[PERVIEW_SETS];
+	for (int i = 0; i < PERVIEW_SETS; ++i)
 	{
 		layouts[i] = rendererState.globalSetLayout;
 	}
@@ -1422,16 +1946,18 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.pNext = NULL;
 	allocInfo.descriptorPool = rendererState.globalDescriptorPool;
-	allocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+	allocInfo.descriptorSetCount = (uint32_t)PERVIEW_SETS;
 	allocInfo.pSetLayouts = layouts;
 
-		VkDescriptorSet globalSetsTemp[MAX_FRAMES_IN_FLIGHT];
+		VkDescriptorSet globalSetsTemp[PERVIEW_SETS];
 	if (vkAllocateDescriptorSets(ctx->device, &allocInfo, globalSetsTemp) != VK_SUCCESS)
 	{
         printf("Failed to allocate global descriptor sets!\n");
 		return false;
 	}
-	for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].globalSet = globalSetsTemp[i];
+	for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++)
+		for(uint32_t v=0; v<ANO_VIEW_COUNT; v++)
+			rendererState.frames[i].views[v].globalSet = globalSetsTemp[i*ANO_VIEW_COUNT + v];
 
     VkDescriptorSetLayout cullLayouts[MAX_FRAMES_IN_FLIGHT];
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
@@ -1471,7 +1997,362 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].updateSet = updateSetsTemp[i];
 
+    VkDescriptorSetLayout scatterLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        scatterLayouts[i] = rendererState.scatterSetLayout;
+    }
+    VkDescriptorSetAllocateInfo scatterAllocInfo = {};
+    scatterAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    scatterAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    scatterAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    scatterAllocInfo.pSetLayouts = scatterLayouts;
+
+    VkDescriptorSet scatterSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &scatterAllocInfo, scatterSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate scatter descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].scatterSet = scatterSetsTemp[i];
+
+    VkDescriptorSetLayout lightsetupLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        lightsetupLayouts[i] = rendererState.lightsetupSetLayout;
+    }
+    VkDescriptorSetAllocateInfo lightsetupAllocInfo = {};
+    lightsetupAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    lightsetupAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    lightsetupAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT);
+    lightsetupAllocInfo.pSetLayouts = lightsetupLayouts;
+
+    VkDescriptorSet lightsetupSetsTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &lightsetupAllocInfo, lightsetupSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate lightsetup descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].lightsetupSet = lightsetupSetsTemp[i];
+
+    VkDescriptorSetLayout lightcullLayouts[PERVIEW_SETS];
+    for (int i = 0; i < PERVIEW_SETS; ++i)
+    {
+        lightcullLayouts[i] = rendererState.lightcullSetLayout;
+    }
+    VkDescriptorSetAllocateInfo lightcullAllocInfo = {};
+    lightcullAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    lightcullAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    lightcullAllocInfo.descriptorSetCount = (uint32_t)PERVIEW_SETS;
+    lightcullAllocInfo.pSetLayouts = lightcullLayouts;
+
+    VkDescriptorSet lightcullSetsTemp[PERVIEW_SETS];
+    if (vkAllocateDescriptorSets(ctx->device, &lightcullAllocInfo, lightcullSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate light-cull descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++)
+        for(uint32_t v=0; v<ANO_VIEW_COUNT; v++)
+            rendererState.frames[i].views[v].lightcullSet = lightcullSetsTemp[i*ANO_VIEW_COUNT + v];
+
+    // Tonemap set (one per view per frame): samples that view's HDR resolve target. The image
+    // view is (re)bound by updateTonemapDescriptorSets, which also runs after a swapchain resize
+    // since the per-view hdrColorView handles change there.
+    VkDescriptorSetLayout tonemapLayouts[PERVIEW_SETS];
+    for (int i = 0; i < PERVIEW_SETS; ++i)
+    {
+        tonemapLayouts[i] = rendererState.tonemapSetLayout;
+    }
+    VkDescriptorSetAllocateInfo tonemapAllocInfo = {};
+    tonemapAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    tonemapAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    tonemapAllocInfo.descriptorSetCount = (uint32_t)PERVIEW_SETS;
+    tonemapAllocInfo.pSetLayouts = tonemapLayouts;
+
+    VkDescriptorSet tonemapSetsTemp[PERVIEW_SETS];
+    if (vkAllocateDescriptorSets(ctx->device, &tonemapAllocInfo, tonemapSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate tonemap descriptor sets!\n");
+        return false;
+    }
+    for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) {
+        for(uint32_t v=0; v<ANO_VIEW_COUNT; v++)
+            rendererState.frames[i].views[v].tonemapSet = tonemapSetsTemp[i*ANO_VIEW_COUNT + v];
+    }
+
+    // Hi-Z build sets (review 4.9 step 3): one per mip per view per frame. Allocate the max mip count
+    // (ANO_MAX_HIZ_MIPS) so a resize to a higher-res pyramid never reallocates; updateHiZDescriptorSets
+    // writes only the live hizMipCount. The image views are (re)bound there (they change on resize).
+    VkDescriptorSetLayout hizLayouts[MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS];
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS; ++i)
+        hizLayouts[i] = rendererState.hizSetLayout;
+    VkDescriptorSetAllocateInfo hizAllocInfo = {};
+    hizAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    hizAllocInfo.descriptorPool = rendererState.globalDescriptorPool;
+    hizAllocInfo.descriptorSetCount = (uint32_t)(MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS);
+    hizAllocInfo.pSetLayouts = hizLayouts;
+    VkDescriptorSet hizSetsTemp[MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS];
+    if (vkAllocateDescriptorSets(ctx->device, &hizAllocInfo, hizSetsTemp) != VK_SUCCESS)
+    {
+        printf("Failed to allocate Hi-Z descriptor sets!\n");
+        return false;
+    }
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+            for (uint32_t m = 0; m < ANO_MAX_HIZ_MIPS; m++)
+                rendererState.frames[i].views[v].hizSets[m] =
+                    hizSetsTemp[(i * ANO_VIEW_COUNT + v) * ANO_MAX_HIZ_MIPS + m];
+
+    // Shadow sets (audit 4.7): one shadowsetup set + one shadow geom/sampling set per frame.
+    VkDescriptorSetLayout setupLayouts[MAX_FRAMES_IN_FLIGHT], geomLayouts[MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { setupLayouts[i] = rendererState.shadowSetupSetLayout; geomLayouts[i] = rendererState.shadowGeomSetLayout; }
+    VkDescriptorSetAllocateInfo setupAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = MAX_FRAMES_IN_FLIGHT, .pSetLayouts = setupLayouts };
+    VkDescriptorSet setupTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &setupAlloc, setupTemp) != VK_SUCCESS) { printf("Failed to allocate shadowsetup sets!\n"); return false; }
+    VkDescriptorSetAllocateInfo geomAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = MAX_FRAMES_IN_FLIGHT, .pSetLayouts = geomLayouts };
+    VkDescriptorSet geomTemp[MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &geomAlloc, geomTemp) != VK_SUCCESS) { printf("Failed to allocate shadow geom sets!\n"); return false; }
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { rendererState.frames[i].shadow.setupSet = setupTemp[i]; rendererState.frames[i].shadow.geomSet = geomTemp[i]; }
+
+    // Moment-blur source sets (audit 4.7 MSM): two per frame (blur-X reads atlas, blur-Y reads temp).
+    VkDescriptorSetLayout blurLayouts[2 * MAX_FRAMES_IN_FLIGHT];
+    for (int i = 0; i < 2 * MAX_FRAMES_IN_FLIGHT; ++i) blurLayouts[i] = rendererState.shadowBlurSetLayout;
+    VkDescriptorSetAllocateInfo blurAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = 2 * MAX_FRAMES_IN_FLIGHT, .pSetLayouts = blurLayouts };
+    VkDescriptorSet blurTemp[2 * MAX_FRAMES_IN_FLIGHT];
+    if (vkAllocateDescriptorSets(ctx->device, &blurAlloc, blurTemp) != VK_SUCCESS) { printf("Failed to allocate shadow blur sets!\n"); return false; }
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        rendererState.frames[i].shadow.blurAtlasSet = blurTemp[2 * i + 0];
+        rendererState.frames[i].shadow.blurTempSet  = blurTemp[2 * i + 1];
+    }
+
 	return true;
+}
+
+// Binds the clustered-forward froxel buffers: global set bindings 10/11 (fragment reads) and
+// the light-cull compute set bindings 0-4 (in: UBO/light-runtime/lights, out: count/index). The
+// cluster buffers are fixed-size and not extent-dependent, so this runs once at init only.
+void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    // Per view per frame: each view's froxel lists + camera UBO. transforms/lights are shared.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            ViewResources* vr = &state->frames[i].views[v];
+            VkDescriptorBufferInfo countInfo = { vr->clusterLightCountBuffer, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo indexInfo = { vr->clusterLightIndexBuffer, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo uboInfo   = { vr->uniformBuffer, 0, VK_WHOLE_SIZE };
+            // Binding 1 is the precomputed per-light world pose (lightsetup.comp output), not the raw
+            // transforms: lightcull reads posRange instead of re-deriving the pose per froxel per light.
+            VkDescriptorBufferInfo poseInfo  = { state->lightRuntimeBuffer.buffer[i], 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo lightInfo = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
+
+            VkWriteDescriptorSet writes[7] = {};
+            // Global set: 10 = cluster light count, 11 = cluster light index (fragment-read).
+            writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[0].dstSet = vr->globalSet;
+            writes[0].dstBinding = 10;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[0].pBufferInfo = &countInfo;
+            writes[1] = writes[0];
+            writes[1].dstBinding = 11;
+            writes[1].pBufferInfo = &indexInfo;
+            // Light-cull set: 0 UBO, 1 light runtime (pose), 2 lights, 3 count(out), 4 index(out).
+            writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[2].dstSet = vr->lightcullSet;
+            writes[2].dstBinding = 0;
+            writes[2].descriptorCount = 1;
+            writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[2].pBufferInfo = &uboInfo;
+            writes[3] = writes[2];
+            writes[3].dstBinding = 1;
+            writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[3].pBufferInfo = &poseInfo;
+            writes[4] = writes[3];
+            writes[4].dstBinding = 2;
+            writes[4].pBufferInfo = &lightInfo;
+            writes[5] = writes[3];
+            writes[5].dstBinding = 3;
+            writes[5].pBufferInfo = &countInfo;
+            writes[6] = writes[3];
+            writes[6].dstBinding = 4;
+            writes[6].pBufferInfo = &indexInfo;
+
+            vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
+        }
+    }
+}
+
+// Points each frame's tonemap set at its current HDR resolve view. Separate from
+// updateUboDescriptorSets because it must also run after a swapchain resize, where the
+// per-frame hdrColorView handles are destroyed and recreated.
+// Binds the dynamic shadow sets (audit 4.7), per frame: the shadowsetup compute set (config +
+// transforms + lights in, frustums out) and the shadow geom/sampling set (frustum viewProjs, the
+// depth atlas array sampler, per-light info). Cluster buffers / config are fixed, so init-only.
+void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        ShadowResources* sh = &state->frames[i].shadow;
+        VkDescriptorBufferInfo cfgI  = { state->shadowConfig.device, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo xfI   = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo ltI   = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo frI   = { sh->frustumBuffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorBufferInfo infoI = { state->shadowInfo.device, 0, VK_WHOLE_SIZE };
+        // Atlas + blur temp are single shared images (review finding 8); every frame's sets bind them.
+        VkDescriptorImageInfo  atI   = { state->shadowSampler, state->shadowAtlasArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo  tmI   = { state->shadowSampler, state->shadowTempArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+        VkWriteDescriptorSet w[9] = {};
+        // shadowsetup set (0 config, 1 transforms, 2 lights, 3 frustums-out) — all storage.
+        for (int j = 0; j < 4; ++j) {
+            w[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[j].dstSet = sh->setupSet;
+            w[j].dstBinding = (uint32_t)j;
+            w[j].descriptorCount = 1;
+            w[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        }
+        w[0].pBufferInfo = &cfgI; w[1].pBufferInfo = &xfI; w[2].pBufferInfo = &ltI; w[3].pBufferInfo = &frI;
+
+        // shadow geom/sampling set (0 frustum viewProjs, 1 atlas array sampler, 2 per-light info).
+        w[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[4].dstSet = sh->geomSet; w[4].dstBinding = 0; w[4].descriptorCount = 1;
+        w[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[4].pBufferInfo = &frI;
+        w[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[5].dstSet = sh->geomSet; w[5].dstBinding = 1; w[5].descriptorCount = 1;
+        w[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[5].pImageInfo = &atI;
+        w[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[6].dstSet = sh->geomSet; w[6].dstBinding = 2; w[6].descriptorCount = 1;
+        w[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[6].pBufferInfo = &infoI;
+
+        // moment-blur source sets: blurAtlasSet samples the atlas (X pass), blurTempSet the temp (Y pass).
+        w[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[7].dstSet = sh->blurAtlasSet; w[7].dstBinding = 0; w[7].descriptorCount = 1;
+        w[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[7].pImageInfo = &atI;
+        w[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[8].dstSet = sh->blurTempSet; w[8].dstBinding = 0; w[8].descriptorCount = 1;
+        w[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[8].pImageInfo = &tmI;
+
+        vkUpdateDescriptorSets(ctx->device, 9, w, 0, NULL);
+    }
+}
+
+void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    // Per view per frame: the composite samples each view's HDR resolve into its destination rect.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            ViewResources* vr = &state->frames[i].views[v];
+            VkDescriptorImageInfo imageInfo = {};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = vr->hdrColorView;
+            imageInfo.sampler = state->textureSampler;
+
+            VkWriteDescriptorSet write = {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = vr->tonemapSet;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &imageInfo;
+            vkUpdateDescriptorSets(ctx->device, 1, &write, 0, NULL);
+        }
+    }
+}
+
+// (Re)bind each per-mip Hi-Z build set (review 4.9 step 3); rerun after a swapchain resize since the
+// pyramid + depth views change. Per set: binding 0 = the pyramid all-mip sampled view (downsample
+// reads mip srcMip), 1 = this mip's r32f storage dest, 2 = this view's MSAA depth (reduce source).
+// The pyramid is sampled and stored in GENERAL layout during the build; the depth is in SHADER_READ.
+// texelFetch ignores sampler state, so the shared textureSampler serves both sampled bindings. Only
+// the live hizMipCount mips are written (the rest stay allocated but unused).
+void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            ViewResources* vr = &state->frames[i].views[v];
+            for (uint32_t m = 0; m < vr->hizMipCount; m++)
+            {
+                VkDescriptorImageInfo pyr = { .sampler = state->textureSampler, .imageView = vr->hizSampledView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+                VkDescriptorImageInfo dst = { .imageView = vr->hizMipViews[m], .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
+                // Binding 2 = reduce depth source. When depthMaxResolve, ALL pipelines are the sampler2D
+                // (RESOLVED_DEPTH) variant, so bind the single-sample resolve view to EVERY mip: the reduce
+                // (mip 0) samples it; the downsample (m>0) never does, but validation treats binding 2 as
+                // statically used (spec-constant dead-branch elimination doesn't prune it), so its type
+                // (sampler2D <-> single-sample view) and layout (SHADER_READ, held across the whole build)
+                // must still match. Fallback: the MSAA depth (sampler2DMS), in SHADER_READ during the loop.
+                VkImageView depSrc = ctx->deviceCapabilities.depthMaxResolve ? vr->depthResolveView : vr->depthView;
+                VkDescriptorImageInfo dep = { .sampler = state->textureSampler, .imageView = depSrc, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+
+                VkWriteDescriptorSet w[3] = {};
+                w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[0].dstSet = vr->hizSets[m]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+                w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &pyr;
+                w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[1].dstSet = vr->hizSets[m]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+                w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &dst;
+                w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[2].dstSet = vr->hizSets[m]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+                w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &dep;
+                vkUpdateDescriptorSets(ctx->device, 3, w, 0, NULL);
+            }
+        }
+    }
+
+    // Cull set binding 11 (review 4.9 step 3): each frame's cull samples the pyramid built `lag`
+    // submits earlier — lag 1 (previous slot) for the in-frame build, lag 2 for the async compute-
+    // queue build (review finding 2: the build overlaps the NEXT frame's graphics, so the freshest
+    // complete pyramid at cull time is two slots back). Resting layout is SHADER_READ (the build
+    // leaves it there; createHiZResources seeds it). texelFetch in the cull ignores the sampler, so
+    // textureSampler is fine. Re-run on resize.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        uint32_t lag = state->asyncHiz ? 2u : 1u;
+        uint32_t prev = (i + MAX_FRAMES_IN_FLIGHT - lag) % MAX_FRAMES_IN_FLIGHT;
+        VkDescriptorImageInfo hizImg[ANO_VIEW_COUNT];
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+        {
+            hizImg[v].sampler = state->textureSampler;
+            hizImg[v].imageView = state->frames[prev].views[v].hizSampledView;
+            hizImg[v].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        VkWriteDescriptorSet cw = {};
+        cw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw.dstSet = state->frames[i].cullSet;
+        cw.dstBinding = 11;
+        cw.descriptorCount = ANO_VIEW_COUNT;
+        cw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        cw.pImageInfo = hizImg;
+        vkUpdateDescriptorSets(ctx->device, 1, &cw, 0, NULL);
+
+        // Global set binding 13 (review priority 10): the task meshlet cull samples the SAME lag
+        // slot's pyramid, one per view (the per-view set makes it a single sampler). Written for
+        // every frame slot x view so the statically-used binding is always valid; the test itself
+        // stays gated by GlobalUBO.hizParams.z. Only when the task layout carries the binding.
+        if (state->taskCull)
+        {
+            for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+            {
+                VkWriteDescriptorSet tw = {};
+                tw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                tw.dstSet = state->frames[i].views[v].globalSet;
+                tw.dstBinding = 13;
+                tw.descriptorCount = 1;
+                tw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                tw.pImageInfo = &hizImg[v];
+                vkUpdateDescriptorSets(ctx->device, 1, &tw, 0, NULL);
+            }
+        }
+    }
 }
 
 
@@ -1483,7 +2364,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		VkDescriptorBufferInfo bufferInfo = {};
-		bufferInfo.buffer = rendererState.frames[i].uniformBuffer;
+		bufferInfo.buffer = rendererState.frames[i].views[0].uniformBuffer; // rebound per view below; view 0 for the shared compute sets
 		bufferInfo.offset = 0;
 		bufferInfo.range = sizeof(GlobalUBO);
 
@@ -1507,26 +2388,36 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		indexBufferInfo.offset = 0;
 		indexBufferInfo.range = rendererState.globalGeometryPool.indexCapacity;
 
-		uint32_t maxMeshes = 1024;
+		uint32_t maxMeshes = ANO_MAX_MESHES; // must match createCullingBuffers' buffer sizing
 		VkDescriptorBufferInfo globalMeshInfo = {};
 		globalMeshInfo.buffer = rendererState.culling.meshDataBuffer[i];
 		globalMeshInfo.offset = 0;
-		globalMeshInfo.range = sizeof(uint32_t) * 4 * maxMeshes;
+		globalMeshInfo.range = sizeof(uint32_t) * 9 * maxMeshes; // MeshData is 9 u32/slot (== buffer stride)
 
 		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
 		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
 		compactedEntityIndicesInfo.offset = 0;
-		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+		compactedEntityIndicesInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_partition_count();
 
 		VkDescriptorBufferInfo lightInfo = {};
-		lightInfo.buffer = rendererState.lightBuffer.buffer[i];
+		lightInfo.buffer = rendererState.lightBuffer.device;        // ×1 device-local (SlotUpload)
 		lightInfo.offset = 0;
 		lightInfo.range = sizeof(LightData) * rendererState.lightBuffer.capacity;
 
-		VkWriteDescriptorSet descriptorWrites[9] = {};
+		VkDescriptorBufferInfo instanceDataInfo = {};
+		instanceDataInfo.buffer = rendererState.instanceDataBuffer.device;  // ×1 device-local (SlotUpload)
+		instanceDataInfo.offset = 0;
+		instanceDataInfo.range = sizeof(AnoInstanceData) * rendererState.instanceDataBuffer.capacity;
+
+		VkDescriptorBufferInfo lightRuntimeInfo = {};
+		lightRuntimeInfo.buffer = rendererState.lightRuntimeBuffer.buffer[i]; // ×3 device-local, lightsetup.comp output
+		lightRuntimeInfo.offset = 0;
+		lightRuntimeInfo.range = (VkDeviceSize)(sizeof(float) * 16u) * rendererState.lightRuntimeBuffer.capacity; // 64B/light (LightRuntime)
+
+		VkWriteDescriptorSet descriptorWrites[11] = {};
 
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[0].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[0].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[0].dstBinding = 0;   // Corresponds to binding in shader.
 		descriptorWrites[0].dstArrayElement = 0;
 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1534,7 +2425,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[0].pBufferInfo = &bufferInfo;
 
 		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[1].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[1].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[1].dstBinding = 1;
 		descriptorWrites[1].dstArrayElement = 0;
 		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1542,7 +2433,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[1].pBufferInfo = &ssboInfo;
 
 		descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[2].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[2].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[2].dstBinding = 2;
 		descriptorWrites[2].dstArrayElement = 0;
 		descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1550,12 +2441,12 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[2].pBufferInfo = &materialInfo;
 
 		VkDescriptorBufferInfo entityInfo = {};
-		entityInfo.buffer = rendererState.culling.entityBuffer[i];
+		entityInfo.buffer = rendererState.culling.entity.device;   // ×1 device-local (SlotUpload)
 		entityInfo.offset = 0;
 		entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
 
 		descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[3].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[3].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[3].dstBinding = 3;
 		descriptorWrites[3].dstArrayElement = 0;
 		descriptorWrites[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1563,7 +2454,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[3].pBufferInfo = &entityInfo;
 
 		descriptorWrites[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[4].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[4].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[4].dstBinding = 4;
 		descriptorWrites[4].dstArrayElement = 0;
 		descriptorWrites[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1571,7 +2462,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[4].pBufferInfo = &vertexBufferInfo;
 
 		descriptorWrites[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[5].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[5].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[5].dstBinding = 5;
 		descriptorWrites[5].dstArrayElement = 0;
 		descriptorWrites[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1579,7 +2470,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[5].pBufferInfo = &indexBufferInfo;
 
 		descriptorWrites[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[6].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[6].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[6].dstBinding = 6;
 		descriptorWrites[6].dstArrayElement = 0;
 		descriptorWrites[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1587,7 +2478,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[6].pBufferInfo = &globalMeshInfo;
 
 		descriptorWrites[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[7].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[7].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[7].dstBinding = 7;
 		descriptorWrites[7].dstArrayElement = 0;
 		descriptorWrites[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1595,14 +2486,43 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[7].pBufferInfo = &compactedEntityIndicesInfo;
 
 		descriptorWrites[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[8].dstSet = rendererState.frames[i].globalSet;
+		descriptorWrites[8].dstSet = rendererState.frames[i].views[0].globalSet;
 		descriptorWrites[8].dstBinding = 8;
 		descriptorWrites[8].dstArrayElement = 0;
 		descriptorWrites[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		descriptorWrites[8].descriptorCount = 1;
 		descriptorWrites[8].pBufferInfo = &lightInfo;
 
-		vkUpdateDescriptorSets(ctx->device, 9, descriptorWrites, 0, NULL);
+		descriptorWrites[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[9].dstSet = rendererState.frames[i].views[0].globalSet;
+		descriptorWrites[9].dstBinding = 9;
+		descriptorWrites[9].dstArrayElement = 0;
+		descriptorWrites[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[9].descriptorCount = 1;
+		descriptorWrites[9].pBufferInfo = &instanceDataInfo;
+
+		// Binding 12: per-light world pose (lightsetup.comp output). Per frame (same buffer[i] for
+		// every view), so it is written here alongside the shared scene SSBOs, not in the cluster path.
+		descriptorWrites[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		descriptorWrites[10].dstSet = rendererState.frames[i].views[0].globalSet;
+		descriptorWrites[10].dstBinding = 12;
+		descriptorWrites[10].dstArrayElement = 0;
+		descriptorWrites[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		descriptorWrites[10].descriptorCount = 1;
+		descriptorWrites[10].pBufferInfo = &lightRuntimeInfo;
+
+		// Global set is per view (audit 4.8): bindings 1-9 + 12 are shared scene SSBOs (same buffer
+		// for every view); binding 0 rebinds to each view's camera UBO. Bindings 10/11 (cluster
+		// lists) are written separately by updateClusterDescriptorSets.
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
+		{
+			bufferInfo.buffer = rendererState.frames[i].views[v].uniformBuffer;
+			for (int k = 0; k < 11; k++) descriptorWrites[k].dstSet = rendererState.frames[i].views[v].globalSet;
+			vkUpdateDescriptorSets(ctx->device, 11, descriptorWrites, 0, NULL);
+		}
+		// Shared compute sets below that need a GlobalUBO use view 0 (time/deltaTime are
+		// view-independent): restore bufferInfo after the per-view writes left it at the last view.
+		bufferInfo.buffer = rendererState.frames[i].views[0].uniformBuffer;
 
         // Update cull sets
         VkDescriptorBufferInfo cullUboInfo = {};
@@ -1613,7 +2533,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo meshDataInfo = {};
         meshDataInfo.buffer = rendererState.culling.meshDataBuffer[i];
         meshDataInfo.offset = 0;
-        meshDataInfo.range = sizeof(uint32_t) * 8 * maxMeshes;
+        meshDataInfo.range = sizeof(uint32_t) * 9 * maxMeshes; // MeshData is 9 u32/slot (== buffer stride)
 
         VkDescriptorBufferInfo meshBoundsInfo = {};
         meshBoundsInfo.buffer = rendererState.culling.meshBoundsBuffer[i];
@@ -1623,25 +2543,43 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        indirectInfo.range = sizeof(VkDrawMeshTasksIndirectCommandEXT) * rendererState.indirectBuffer.capacity * PIPELINE_TYPE_COUNT;
+        // Range MUST use the same max command stride createIndirectDrawBuffer allocated with: the
+        // vertex fallback writes VkDrawIndexedIndirectCommand (20B) > mesh's VkDrawMeshTasksIndirectCommandEXT
+        // (12B). A mesh-stride range under-covers the buffer, leaving the high (shadow) partitions outside
+        // the descriptor — the cull's OOB writes are dropped and the fallback casts no shadows.
+        VkDeviceSize indirectCmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+            ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+        indirectInfo.range = indirectCmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count();
 
         VkDescriptorBufferInfo countInfo = {};
         countInfo.buffer = rendererState.culling.drawCountBuffer[i];
         countInfo.offset = 0;
-        countInfo.range = sizeof(uint32_t) * PIPELINE_TYPE_COUNT;
+        countInfo.range = sizeof(uint32_t) * ano_draw_partition_count();
 
         VkDescriptorBufferInfo compactedEntityIndicesCullInfo = {};
         compactedEntityIndicesCullInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
         compactedEntityIndicesCullInfo.offset = 0;
-        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * PIPELINE_TYPE_COUNT;
+        compactedEntityIndicesCullInfo.range = sizeof(uint32_t) * rendererState.culling.maxEntities * ano_draw_partition_count();
 
         VkDescriptorBufferInfo materialCullInfo = {};
         materialCullInfo.buffer = rendererState.materialBuffer.buffer[i];
         materialCullInfo.offset = 0;
         materialCullInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
 
-        VkWriteDescriptorSet cullWrites[9] = {};
-        for(int j=0; j<9; ++j) {
+        // Binding 9: the GPU-built shadow frustums (audit 4.7), per frame.
+        VkDescriptorBufferInfo shadowFrustumCullInfo = {};
+        shadowFrustumCullInfo.buffer = rendererState.frames[i].shadow.frustumBuffer;
+        shadowFrustumCullInfo.offset = 0;
+        shadowFrustumCullInfo.range = VK_WHOLE_SIZE;
+
+        // Binding 10: per-draw depth keys (transparency sort). Camera partitions only.
+        VkDescriptorBufferInfo sortKeysCullInfo = {};
+        sortKeysCullInfo.buffer = rendererState.culling.sortKeysBuffer[i];
+        sortKeysCullInfo.offset = 0;
+        sortKeysCullInfo.range = sizeof(float) * (VkDeviceSize)ANO_VIEW_COUNT * rendererState.culling.maxEntities;
+
+        VkWriteDescriptorSet cullWrites[11] = {};
+        for(int j=0; j<11; ++j) {
             cullWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             cullWrites[j].dstSet = rendererState.frames[i].cullSet;
             cullWrites[j].dstBinding = j;
@@ -1660,17 +2598,19 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         cullWrites[6].pBufferInfo = &countInfo;
         cullWrites[7].pBufferInfo = &compactedEntityIndicesCullInfo;
         cullWrites[8].pBufferInfo = &materialCullInfo;
+        cullWrites[9].pBufferInfo = &shadowFrustumCullInfo;
+        cullWrites[10].pBufferInfo = &sortKeysCullInfo;
 
-        vkUpdateDescriptorSets(ctx->device, 9, cullWrites, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 11, cullWrites, 0, NULL);
 
         // Update Compute Descriptor Sets
-        VkDescriptorBufferInfo angularVelInfo = {};
-        angularVelInfo.buffer = rendererState.angularVelocityBuffer.buffer[i];
-        angularVelInfo.offset = 0;
-        angularVelInfo.range = sizeof(Vector4) * rendererState.angularVelocityBuffer.capacity;
+        VkDescriptorBufferInfo motionInfo = {};
+        motionInfo.buffer = rendererState.motionBuffer.device;     // ×1 device-local (SlotUpload)
+        motionInfo.offset = 0;
+        motionInfo.range = sizeof(AnoMotionDescriptor) * rendererState.motionBuffer.capacity;
 
         VkDescriptorBufferInfo initialTransformInfo = {};
-        initialTransformInfo.buffer = rendererState.initialTransformBuffer.buffer[i];
+        initialTransformInfo.buffer = rendererState.initialTransformBuffer.device; // ×1 device-local (SlotUpload)
         initialTransformInfo.offset = 0;
         initialTransformInfo.range = sizeof(mat4) * rendererState.initialTransformBuffer.capacity;
 
@@ -1687,10 +2627,55 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 
         updateWrites[0].pBufferInfo = &bufferInfo; // GlobalUBO
         updateWrites[1].pBufferInfo = &ssboInfo;   // TransformSSBO
-        updateWrites[2].pBufferInfo = &angularVelInfo;
+        updateWrites[2].pBufferInfo = &motionInfo; // MotionSSBO
         updateWrites[3].pBufferInfo = &initialTransformInfo;
 
         vkUpdateDescriptorSets(ctx->device, 4, updateWrites, 0, NULL);
+
+        // Scatter set (streamed transforms): 0 resolved slots (per-frame), 1 the xform
+        // ring (DYNAMIC — range is one slice; recordCommandBuffer selects the published
+        // slice by dynamic offset), 2 the live transform buffer it scatters into.
+        VkDescriptorBufferInfo streamSlotInfo = {};
+        streamSlotInfo.buffer = rendererState.transformStream.slotBuffer[i];
+        streamSlotInfo.offset = 0;
+        streamSlotInfo.range = sizeof(uint32_t) * rendererState.transformStream.capacity;
+
+        VkDescriptorBufferInfo streamXformInfo = {};
+        streamXformInfo.buffer = rendererState.transformStream.xformRing;
+        streamXformInfo.offset = 0;                                       // dynamic offset added at bind
+        streamXformInfo.range = rendererState.transformStream.sliceStride; // one slice
+
+        VkWriteDescriptorSet scatterWrites[3] = {};
+        for (int j = 0; j < 3; ++j) {
+            scatterWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            scatterWrites[j].dstSet = rendererState.frames[i].scatterSet;
+            scatterWrites[j].dstBinding = (uint32_t)j;
+            scatterWrites[j].dstArrayElement = 0;
+            scatterWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            scatterWrites[j].descriptorCount = 1;
+        }
+        scatterWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+        scatterWrites[0].pBufferInfo = &streamSlotInfo;
+        scatterWrites[1].pBufferInfo = &streamXformInfo;
+        scatterWrites[2].pBufferInfo = &ssboInfo; // same TransformSSBO update writes
+
+        vkUpdateDescriptorSets(ctx->device, 3, scatterWrites, 0, NULL);
+
+        // Light-setup set: transforms (in, buffer[i]) + lights (in, device) -> per-light world pose (out, buffer[i]).
+        VkWriteDescriptorSet lightsetupWrites[3] = {};
+        for (int j = 0; j < 3; ++j) {
+            lightsetupWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lightsetupWrites[j].dstSet = rendererState.frames[i].lightsetupSet;
+            lightsetupWrites[j].dstBinding = (uint32_t)j;
+            lightsetupWrites[j].dstArrayElement = 0;
+            lightsetupWrites[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            lightsetupWrites[j].descriptorCount = 1;
+        }
+        lightsetupWrites[0].pBufferInfo = &ssboInfo;      // TransformSSBO (buffer[i])
+        lightsetupWrites[1].pBufferInfo = &lightInfo;     // LightSSBO (device)
+        lightsetupWrites[2].pBufferInfo = &lightRuntimeInfo; // LightRuntimeSSBO (buffer[i], out)
+
+        vkUpdateDescriptorSets(ctx->device, 3, lightsetupWrites, 0, NULL);
 	}
 }
 
@@ -1838,9 +2823,18 @@ bool createCommandBuffer(VulkanContext* ctx, RendererState* state)
 
 	for (uint32_t i =0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if (vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].commandBuffer)) != VK_SUCCESS) 
+		if (vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].commandBuffer)) != VK_SUCCESS)
 		{
 			printf("Failed to allocate command buffers!\n");
+			return false;
+		}
+		// Async light-cull (review finding 2 remainder): the frame's uploads + shared compute
+		// prelude record into their own CB, submitted ahead of the main one so the compute-queue
+		// light-cull can start off its completion signal.
+		if (state->asyncLc
+			&& vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].preludeCommandBuffer)) != VK_SUCCESS)
+		{
+			printf("Failed to allocate prelude command buffers!\n");
 			return false;
 		}
 	}
@@ -1867,6 +2861,81 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 			return false;
 		}
 	}
+
+	// Async Hi-Z timelines (review finding 2): gfxTimeline counts graphics submits (waited by that
+	// frame's compute build), hizTimeline counts builds (waited by the ordinal+2 graphics submit +
+	// the host before CB reuse). Both start at 0; ordinals are 1-based, so the first frames' waits
+	// (clamped to 0) pass immediately.
+	if (state->asyncHiz)
+	{
+		VkSemaphoreTypeCreateInfo timelineInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+			.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0 };
+		VkSemaphoreCreateInfo timelineSem = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timelineInfo };
+		if (vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->gfxTimeline) != VK_SUCCESS ||
+			vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->hizTimeline) != VK_SUCCESS)
+		{
+			printf("Failed to create async Hi-Z timeline semaphores!\n");
+			return false;
+		}
+		// Async light-cull (finding 2 remainder): preludeTimeline counts prelude submits (waited by
+		// that frame's light-cull), lcTimeline counts light-culls (waited by the same frame's main
+		// submit at FRAGMENT_SHADER, the next frame's prelude at TRANSFER, and the host before CB
+		// reuse). Same 1-based ordinal scheme as the Hi-Z pair.
+		if (state->asyncLc &&
+			(vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->preludeTimeline) != VK_SUCCESS ||
+			 vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->lcTimeline) != VK_SUCCESS))
+		{
+			printf("Failed to create async light-cull timeline semaphores!\n");
+			return false;
+		}
+	}
+
+	// GPU timestamp profiling (RADIANCE_CASCADES.md §8). One query pool of ANO_TS_COUNT timestamps
+	// per frame in flight. Gated on the graphics queue family's timestampValidBits + a usable period;
+	// when unsupported the whole timing path is a no-op and rendering is unaffected.
+	{
+		VkPhysicalDeviceProperties props;
+		vkGetPhysicalDeviceProperties(ctx->physicalDevice, &props);
+		state->timestampPeriodNs = props.limits.timestampPeriod;
+
+		uint32_t qfCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalDevice, &qfCount, NULL);
+		VkQueueFamilyProperties qfProps[qfCount];
+		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalDevice, &qfCount, qfProps);
+		uint32_t gf = ctx->queueFamilyIndices.graphicsFamily;
+		state->timestampValidBits = (gf < qfCount) ? qfProps[gf].timestampValidBits : 0u;
+		if (state->timestampPeriodNs <= 0.0f) state->timestampValidBits = 0u;
+
+		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			state->frames[i].timestampPool = VK_NULL_HANDLE;
+			if (state->timestampValidBits) {
+				VkQueryPoolCreateInfo qpi = {};
+				qpi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+				qpi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+				qpi.queryCount = ANO_TS_COUNT;
+				if (vkCreateQueryPool(ctx->device, &qpi, NULL, &state->frames[i].timestampPool) != VK_SUCCESS) {
+					printf("Failed to create timestamp query pool; profiling disabled.\n");
+					state->timestampValidBits = 0u; // disable profiling, keep rendering
+				}
+			}
+		}
+	}
+
+	// Picking readback buffers (audit 3.1): one tiny host-visible|coherent buffer per frame in
+	// flight, persistently mapped. The view-0 id texel under the cursor is copied here each frame and
+	// read after this slot's fence; backed by the persistent gpuAllocator so they survive swapchain
+	// recreate. Seeded to the no-hit sentinel so a pre-first-submission read maps to NO_PICK.
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		if (!createDataBuffer(ctx, &gpuAllocator, sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				&state->frames[i].pickReadback, &state->frames[i].pickReadbackAlloc)) {
+			printf("Failed to create picking readback buffer!\n");
+			return false;
+		}
+		state->frames[i].pickReadbackMapped = state->frames[i].pickReadbackAlloc.mapped;
+		*state->frames[i].pickReadbackMapped = 0xFFFFFFFFu;
+	}
+	state->lastPickRenderId = ANO_RENDER_NO_PICK;
 
 	return true;
 }
@@ -1969,18 +3038,17 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	{
 		if(rendererState.transformBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
-		if(rendererState.initialTransformBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.initialTransformBuffer.buffer[i], NULL);
-		if(rendererState.angularVelocityBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.angularVelocityBuffer.buffer[i], NULL);
+		if(rendererState.lightRuntimeBuffer.buffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.lightRuntimeBuffer.buffer[i], NULL);
+		// initialTransform/motion/instanceData are SlotUploads now (destroyed below).
+		if(rendererState.transformStream.slotBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.transformStream.slotBuffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
-		if(rendererState.lightBuffer.buffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.lightBuffer.buffer[i], NULL);
+		// lightBuffer is a SlotUpload now (destroyed below).
 		if(rendererState.indirectBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.indirectBuffer.buffer[i], NULL);
-		if(rendererState.culling.entityBuffer[i])
-			vkDestroyBuffer(ctx->device, rendererState.culling.entityBuffer[i], NULL);
+		// culling.entity is a SlotUpload now (destroyed below).
 		if(rendererState.culling.meshDataBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.meshDataBuffer[i], NULL);
 		if(rendererState.culling.meshBoundsBuffer[i])
@@ -1989,15 +3057,73 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.culling.drawCountBuffer[i], NULL);
 		if(rendererState.culling.compactedEntityIndicesBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.compactedEntityIndicesBuffer[i], NULL);
+		if(rendererState.culling.sortKeysBuffer[i])
+			vkDestroyBuffer(ctx->device, rendererState.culling.sortKeysBuffer[i], NULL);
 		if(rendererState.culling.ubo.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.ubo.buffer[i], NULL);
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+			if(rendererState.frames[i].views[v].clusterLightCountBuffer)
+				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightCountBuffer, NULL);
+			if(rendererState.frames[i].views[v].clusterLightIndexBuffer)
+				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightIndexBuffer, NULL);
+		}
+		// Dynamic shadow resources (audit 4.7): per-frame frustum buffer. (The atlas/blur-temp and
+		// the transient caster depth are shared single instances, destroyed after this loop.)
+		ShadowResources* sh = &rendererState.frames[i].shadow;
+		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
 	}
+	// Shared shadow images (review finding 8: one atlas + blur temp across frames in flight) + the
+	// transient caster depth. layerView/tempLayerView are sized ANO_SHADOW_ATLAS_LAYERS (2 sublayers/
+	// frustum): destroy that count, not the per-frustum count, or the tail views leak.
+	if (rendererState.shadowAtlasArrayView) vkDestroyImageView(ctx->device, rendererState.shadowAtlasArrayView, NULL);
+	if (rendererState.shadowTempArrayView) vkDestroyImageView(ctx->device, rendererState.shadowTempArrayView, NULL);
+	for (uint32_t s = 0; s < ANO_SHADOW_ATLAS_LAYERS; s++) {
+		if (rendererState.shadowAtlasLayerView[s]) vkDestroyImageView(ctx->device, rendererState.shadowAtlasLayerView[s], NULL);
+		if (rendererState.shadowTempLayerView[s]) vkDestroyImageView(ctx->device, rendererState.shadowTempLayerView[s], NULL);
+	}
+	if (rendererState.shadowAtlasImage) vkDestroyImage(ctx->device, rendererState.shadowAtlasImage, NULL);
+	if (rendererState.shadowTempImage) vkDestroyImage(ctx->device, rendererState.shadowTempImage, NULL);
+	for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
+		if (rendererState.shadowDepthSliceView[s]) vkDestroyImageView(ctx->device, rendererState.shadowDepthSliceView[s], NULL);
+	}
+	if (rendererState.shadowDepthImage) vkDestroyImage(ctx->device, rendererState.shadowDepthImage, NULL);
+	// Mover bookkeeping + swept-exposure mirrors (review finding 8).
+	if (rendererState.slotMotion)   { free(rendererState.slotMotion);   rendererState.slotMotion = NULL; }
+	if (rendererState.slotBasePose) { free(rendererState.slotBasePose); rendererState.slotBasePose = NULL; }
+	if (rendererState.slotMeshIdx)  { free(rendererState.slotMeshIdx);  rendererState.slotMeshIdx = NULL; }
+	if (rendererState.slotMoverIdx) { free(rendererState.slotMoverIdx); rendererState.slotMoverIdx = NULL; }
+	if (rendererState.movers)       { free(rendererState.movers);       rendererState.movers = NULL; }
+	// Shadow config mirror (the render-thread CPU copy; the device buffers are SlotUploads destroyed below).
+	if (rendererState.shadowCfgMirror) { free(rendererState.shadowCfgMirror); rendererState.shadowCfgMirror = NULL; }
+
+	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
+	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the
+	// gpu allocator; here we destroy the VkBuffer handles and free the region arrays.)
+	{
+		SlotUpload* ups[7] = { &rendererState.initialTransformBuffer, &rendererState.motionBuffer,
+			&rendererState.instanceDataBuffer, &rendererState.lightBuffer, &rendererState.culling.entity,
+			&rendererState.shadowConfig, &rendererState.shadowInfo };
+		for (uint32_t u = 0; u < 7; u++) {
+			if (ups[u]->device) vkDestroyBuffer(ctx->device, ups[u]->device, NULL);
+			for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+				if (ups[u]->staging[i]) vkDestroyBuffer(ctx->device, ups[u]->staging[i], NULL);
+				if (ups[u]->regions[i]) free(ups[u]->regions[i]);
+			}
+		}
+	}
+
+	// Single (non-per-frame) streamed-transform ring.
+	if(rendererState.transformStream.xformRing)
+		vkDestroyBuffer(ctx->device, rendererState.transformStream.xformRing, NULL);
 
 	for (uint32_t i = 0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if(rendererState.frames[i].uniformBuffer)
+		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
-			vkDestroyBuffer(ctx->device, rendererState.frames[i].uniformBuffer, NULL);
+			if(rendererState.frames[i].views[v].uniformBuffer)
+			{
+				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].uniformBuffer, NULL);
+			}
 		}
 	}
 
@@ -2020,6 +3146,16 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		{
 			vkDestroyFence(ctx->device, rendererState.frames[i].frameFence, NULL);
 		}
+		if (rendererState.frames[i].timestampPool)
+		{
+			vkDestroyQueryPool(ctx->device, rendererState.frames[i].timestampPool, NULL);
+		}
+		if (rendererState.frames[i].pickReadback)
+		{
+			// Memory is owned by the persistent gpuAllocator (freed when it is destroyed); just the handle here.
+			vkDestroyBuffer(ctx->device, rendererState.frames[i].pickReadback, NULL);
+			rendererState.frames[i].pickReadback = VK_NULL_HANDLE;
+		}
 
 	}
 
@@ -2027,7 +3163,30 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.commandPool != NULL)
 	{
 		vkDestroyCommandPool(ctx->device, rendererState.commandPool, NULL);
-	}	
+	}
+
+	// Async Hi-Z objects (review finding 2); NULL when asyncHiz was off.
+	if (rendererState.computeCommandPool != NULL)
+	{
+		vkDestroyCommandPool(ctx->device, rendererState.computeCommandPool, NULL);
+	}
+	if (rendererState.gfxTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.gfxTimeline, NULL);
+	}
+	if (rendererState.hizTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.hizTimeline, NULL);
+	}
+	// Async light-cull timelines (finding 2 remainder); NULL when asyncLc was off.
+	if (rendererState.preludeTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.preludeTimeline, NULL);
+	}
+	if (rendererState.lcTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.lcTimeline, NULL);
+	}
 
 
 

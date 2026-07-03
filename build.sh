@@ -50,15 +50,26 @@ case $1 in
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON"
     run_tests=1
     ;;
+  7)
+    # Release (-O3) build with CTest enabled: optimized test + benchmark runs. Option 1 is the same
+    # -O3 full engine build without tests. Use this, NOT 3, to benchmark the logger -- 3 is a Debug
+    # (-O0) build and reports ~2x pessimistic numbers.
+    build_type="Release"
+    build_dir="RelTests"
+    toolchain_file="clang-linux-x64.cmake"
+    extra_flags="-DANOPTIC_TESTS=ON"
+    run_tests=1
+    ;;
   *)
     echo "Usage: $0 <build_type>"
     echo "  where <build_type> is one of:"
-    echo "    1 = Release"
+    echo "    1 = Release (-O3 full engine build)"
     echo "    2 = Debug"
-    echo "    3 = Tests (build + run CTest)"
+    echo "    3 = Tests (Debug -O0, build + run CTest)"
     echo "    4 = Tests + AddressSanitizer/UBSan"
     echo "    5 = Tests + ThreadSanitizer"
     echo "    6 = Headless tests (core + CTest, no renderer)"
+    echo "    7 = Release tests (-O3, build + run CTest)"
     exit 1
     ;;
 esac
@@ -88,20 +99,9 @@ mkdir -p ./build/${build_dir}
 # Configure the build
 cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
 
-# Build the project
+# Build the project. Shader + asset staging is owned by CMake (root CMakeLists /
+# tests/CMakeLists) so every build flow gets it, not just this script.
 cmake --build ./build/${build_dir}
-
-# Conditionally copy assets if they exist
-if [ -d "./assets" ]; then
-    echo "Copying assets to build directory..."
-    cp -r ./assets/* ./build/${build_dir}/
-    
-    # If building tests, ensure assets are in the tests working directory as well
-    if [ ${run_tests} -eq 1 ]; then
-        mkdir -p ./build/${build_dir}/tests
-        cp -r ./assets/* ./build/${build_dir}/tests/
-    fi
-fi
 
 # Run the test suite
 if [ ${run_tests} -eq 1 ]; then

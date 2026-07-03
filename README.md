@@ -17,13 +17,14 @@ git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 - **Events**: Enable interactions between different systems via a generalized event bus.
 - **Vulkan Renderer**: GPU-driven Vulkan backend, run on a dedicated render thread that owns all GPU resources and the renderable slot space. Meshlet rendering via `VK_EXT_mesh_shader` on modern hardware, with an automatic vertex-shader fallback for devices that lack the extension (see [Rendering Compatibility](#rendering-compatibility)). Per-entity GPU buffers grow dynamically, so entity count is not capped by a fixed ceiling.
 - **Custom Allocators**: Uses mimalloc for a fast global allocator implementation, as well as several special-purpose local allocators.
-- **Platform Compatibility**: Built and tested for full feature parity on both Linux and Windows.
+- **Platform Compatibility**: Built and tested for full feature parity on Linux, macOS, and Windows.
 - **Networking**: Built-in networking support for p2p or authoritative server.
 
 ### Installation
 
-All builds of Anoptic Engine require `clang 17+`, `CMake`, `glslc`, and the `Vulkan SDK`.
-The engine is C23 and is compiled exclusively with Clang; other toolchains are not supported.
+Renderer builds of Anoptic Engine require `clang 17+`, `CMake`, `glslc`, and the `Vulkan SDK`.
+Headless builds (`-DANOPTIC_HEADLESS=ON`, and the Nix packages below) need only clang + CMake.
+The engine is C23 and is developed with Clang; the Nix Windows cross shell uses MinGW gcc.
 
 Acquire a copy of the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), version 1.3.2 or later.
 
@@ -34,23 +35,18 @@ See [Editor Setup](#editor-setup).
 
 ### Building
 
-Both `build.sh` (Linux/macOS) and `build.bat` (Windows) take a single numeric argument
-selecting the build profile. Output goes to `build/<label>/`, and assets from `assets/`
-are copied there automatically.
+Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat` (Windows). Run it with no arguments and it prints the available build profiles. The rundown:
 
-| Arg | Label        | Description                                              | Output dir         |
-|-----|--------------|----------------------------------------------------------|--------------------|
-| `1` | Release      | Optimized build                                          | `build/Release/`   |
-| `2` | Debug        | Debug build (validation layers on)                       | `build/Debug/`     |
-| `3` | Tests        | Debug build + run the CTest suite                        | `build/Tests/`     |
-| `4` | Tests-ASan   | Tests with AddressSanitizer + UBSan                      | `build/Tests-ASan/`|
-| `5` | Tests-TSan   | Tests with ThreadSanitizer                               | `build/Tests-TSan/`|
-| `6` | Headless     | Core + tests with the Vulkan renderer disabled           | `build/Headless/`  |
+- **Release** — the optimized (`-O3`) engine build.
+- **Debug** — debug build, Vulkan validation layers on.
+- **Tests** — Debug build + the full CTest suite.
+- **Sanitizer tests** — the same suite under AddressSanitizer/UBSan or ThreadSanitizer.
+- **Headless** — core + tests with the renderer disabled entirely.
+- **Release tests** — the CTest suite at `-O3`; the one to use for benchmarks.
 
-```bash
-./build.sh 2        # Debug build
-./build.sh 3        # build + run all tests
-```
+Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the
+binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
+`assets/` is gitignored. The demo scene and the Vulkan tests load `viking_room.gltf` (the vulkan-tutorial viking room) and `GlassHurricaneCandleHolder.gltf` (Khronos [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)) plus their textures from it — populate it before running the engine or the full test suite. The demo scene also loads Sponza as its environment if present at `assets/sponza/2.0/Sponza/glTF/Sponza.gltf` (Khronos [glTF-Sample-Models](https://github.com/KhronosGroup/glTF-Sample-Models)); it is optional — the engine logs a warning and continues without it (the viking room + candles still spawn as props) if it's missing.
 
 These map to the following CMake options, which can also be passed directly:
 `-DANOPTIC_TESTS=ON` (build the test suite), `-DANOPTIC_HEADLESS=ON` (omit the renderer,
@@ -58,23 +54,64 @@ skips the Vulkan probe — useful for CI without a GPU), and
 `-DANOPTIC_SANITIZE=asan|tsan` (instrument test builds).
 
 **Shaders** are compiled to SPIR-V automatically at build time via `glslc` (the
-`anoptic_shaders` target), so `.spv` files never silently desync from their source. If
-`glslc` is not found, the committed `resources/shaders/*.spv` are used as-is (and may be
-stale). `resources/shaders/compile.sh` remains available for compiling them by hand.
+`anoptic_shaders` target) into `build/<label>/resources/shaders/` — next to the binary,
+where the engine resolves them relative to its own executable. If `glslc` is not found,
+the committed `resources/shaders/*.spv` are staged there as-is (and may be stale).
+`resources/shaders/compile.sh` regenerates those committed fallbacks by hand.
+
+`cmake --install` produces a self-contained tree: `bin/anopticengine` plus
+`bin/resources/shaders/`. The engine runs from any working directory.
 
 #### Building on Windows
 
 Make sure you have `CMake` installed and in your path: https://cmake.org/install/.
 
 Have a copy of the `Mingw-w64` toolkit in your path.
-We recommend [MSYS2](https://www.msys2.org/) with the [mingw-w64-x64_64-clang](https://packages.msys2.org/package/mingw-w64-x86_64-clang) package. 
+We recommend [MSYS2](https://www.msys2.org/)'s **CLANG64** environment with the
+[mingw-w64-clang-x86_64-clang](https://packages.msys2.org/package/mingw-w64-clang-x86_64-clang)
+package (`clang64\bin` — this is what `build.bat` looks for). The engine needs the UCRT
+C runtime for C11 `timespec_get`; the legacy MINGW64/msvcrt environment will not link.
 
 Additional guidance:
 - [Microsoft Documentation](https://learn.microsoft.com/en-us/vcpkg/users/platforms/mingw)
 - [CLion Configuration](https://www.jetbrains.com/help/clion/quick-tutorial-on-configuring-clion-on-windows.html#clang-mingw)
 
-Once Mingw-w64 is installed with `clang` working on your system, run `build.bat <arg>`
-from the repository root using the same argument table above.
+Once Mingw-w64 is installed with `clang` working on your system, run `build.bat` from the repository root; its usage mirrors `build.sh`.
+
+#### Building under WSL / Nix
+
+The flake is the primary Nix entry point (`shell.nix` remains as a thin legacy shell):
+
+```bash
+nix develop --command ./build.sh 6    # Linux clang shell: headless build + non-GPU tests
+nix develop --command ./build.sh 5    # ThreadSanitizer (Linux only)
+nix build                             # one-shot headless package -> ./result/bin
+nix build .#renderer                  # one-shot Vulkan renderer package (binary + shaders)
+```
+
+WSL has no Linux Vulkan driver, so the renderer runs there only as a **Windows** exe.
+Two ways to build one:
+
+1. **Nix cross shell** (`nix develop .#windows`) — the whole MinGW-w64 (gcc, ucrt64)
+   toolchain, Vulkan import lib, and glslc come from Nix; no MSYS2 or Windows Vulkan SDK
+   needed. Do **not** pass the `cmake/platforms/*-mingw.cmake` toolchain files here (they
+   are for the MSYS2 path); the shell exports the cross setup as `$cmakeFlags`:
+
+   ```bash
+   nix develop .#windows
+   cmake $cmakeFlags -G Ninja -DCMAKE_BUILD_TYPE=Release -S . -B build/Windows
+   cmake --build build/Windows
+   build/Windows/anopticengine.exe      # runs on the Windows host via interop
+   ```
+
+2. **MSYS2 clang + Windows Vulkan SDK** (no Nix) — the `build.bat` path:
+
+   ```bash
+   cmd.exe /c build.bat 1                                  # -> build\Release\anopticengine.exe
+   ( cd build/Release && PATH="/mnt/c/msys64/clang64/bin:$PATH" ./anopticengine.exe )
+   ```
+
+   The MSYS2 build needs `clang64\bin` on `PATH` to find its runtime DLLs.
 
 ### Editor / LSP Setup
 
@@ -102,19 +139,19 @@ On VSCode, install the [clangd extension](https://marketplace.visualstudio.com/i
 
 ### Tests
 
-`./build.sh 3` builds and runs the full suite via CTest. The suite covers the platform
-layer (`anoptic_time`, `anoptic_logging`), the mesh pipeline (`anoptic_meshoptimizer`),
-and the Vulkan backend (`anotest_vk_lifecycle`, `anotest_vk_components`,
-`anotest_vk_compliance_layers`, `anotest_vk_memory`, `anotest_vk_sync`). The Vulkan tests
-create a real device, so they need a Vulkan-capable driver (a software rasterizer such as
-lavapipe is sufficient). To run a subset directly:
+The Tests profile of the build script builds and runs the full suite via CTest. The suite covers the platform layer (`anoptic_time`, `anoptic_logging`, `anoptic_memory`, plus the `anotest_logfuzz` logger fuzzer), the mesh pipeline (`anoptic_meshoptimizer`), the logic/render transport (`anoptic_render_bridge`, `anoptic_render_slots`), and the Vulkan backend (`anotest_vk_lifecycle`, `anotest_vk_components`, `anotest_vk_compliance_layers`, `anotest_vk_memory`, `anotest_vk_sync`). The Vulkan tests create a real device, so they need a Vulkan-capable driver (a software rasterizer such as lavapipe is sufficient). To run a subset directly:
 
 ```bash
 ctest --test-dir build/Tests --output-on-failure -R anotest_vk
 ```
 
-Use profiles `4`/`5` to run the same suite under AddressSanitizer or ThreadSanitizer, and
-`6` for a headless build that skips the renderer entirely.
+The sanitizer profiles run the same suite under AddressSanitizer or ThreadSanitizer, and the Headless profile skips the renderer entirely. The sanitizer profiles are Linux/macOS-only: MinGW clang on Windows supports neither TSan nor a working ASan against ucrt. 
+The logger benchmark (`anotest_logbench`) and the allocator easter egg (`anotest_chariots`) are built but disabled in CTest; run them by hand, from a Release-tests build — Debug numbers are ~2x pessimistic.
+
+### Profiling
+
+The switch to a multi-queue async approach is likely the cause of an Nsight deadlock error.
+To capture frame traces, try ANO_FORCE_NO_ASYNC_HIZ=1 ANO_FORCE_NO_ASYNC_LC=1.
 
 ### Rendering Compatibility
 
@@ -138,32 +175,7 @@ hardware:
 ANO_FORCE_NO_MESH_SHADER=1 ./build/Debug/anopticengine
 ```
 
-The startup log prints which path is active, e.g. `Enabling 3 device extensions (mesh
-shader: yes)`. See `PLANS_COMPATIBILITY.md` for the full design.
-
-### Architecture
-
-The engine runs the simulation and the renderer as **two parallel worlds on
-separate threads**, connected by two bounded lock-free SPSC rings:
-
-- **Logic / ECS master** (the `main` thread): the authoritative world. Holds entities
-  (generational handles) and components (chunked sparse-set stores), and is the *sole
-  producer* of render commands.
-- **Render master** (its own thread): a non-authoritative view that owns all Vulkan
-  state, all GLFW windowing, and the physical GPU slot space. It is the *sole consumer*
-  of commands and the *sole producer* of events (e.g. slot-retirement notifications).
-
-The logic world names each renderable by a stable logical `render_id`; the renderer
-privately maps `render_id -> GPU slot`, so it can place and grow GPU data without the
-logic world ever seeing a slot. Only **discrete** transitions cross the bridge (spawn,
-despawn, teleport, mesh/material swap, light change). **Continuous** GPU-parameterized
-motion (orbit/spin) is sent once as parameters and animated entirely on the GPU, so it
-costs zero per-frame bridge traffic. Per-entity GPU buffers grow on demand in
-chunk-aligned steps, dropping any fixed entity ceiling.
-
-The full design lives in `docs/artifacts/ECS.md` (logic side) and
-`docs/artifacts/VK_BACKEND_INTEROP.md` (render side); `docs/notes.md` has the broader
-architecture and build sequence.
+The startup log prints which path is active, e.g. `Enabling 3 device extensions (mesh shader: yes)`. See the Rendering Philosophy section of `docs/notes.md` for the full design.
 
 ### More
 

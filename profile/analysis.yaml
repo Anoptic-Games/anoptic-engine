@@ -1,0 +1,171 @@
+Range: "\"Frame 0\""
+RelativeFrameDuration: 1
+Rules:
+  - Name: FE Go-Idle Cycles Async Queue
+    Category: Wait for Idles
+    Explanation: "Go-Idle commands in an async-COMPUTE queue may be caused by changes of shader-visible descriptor heaps.  \nCopy commands in an async-COMPUTE queue from/to system memory (aka CPU memory) may produce a Go-Idle command."
+    Suggestion: "* Do not change the shader-visible descriptor heap (SetDescriptorHeaps with a different heap) in an async-COMPUTE queue.\n* Do not use DX12 Copy commands to copy from/to system memory in an async-COMPUTE queue, but:\n  - Use Dispatch commands to perform such copies, or\n  - Move such Copy commands to a DIRECT or async-COPY queue, or\n  - If possible, write directly to CPU-Visible VRAM using NVAPI (without using a DX12 Copy)."
+    RangeSpeedupFactor: 1.009417528248022
+    FrameGain: 0.47357123967373632
+    Metrics:
+      - Name: FE Cycles Stalled WFI Async Queue [%]
+        Id: fe__cycles_stalled_cmd_wfi_queue_async.avg.pct_of_peak_sustained_elapsed
+        Description: Number of cycles the Front End is stalled on Wait For Idle for an async queue
+        Value: 0.9330
+  - Name: GPU Engines Active [%]
+    Category: GPU Idle
+    Explanation: ""
+    Suggestion: ""
+    Metrics:
+      - Name: GR Cycles Active [%]
+        Id: gr__cycles_active.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of elapsed cycles where the Graphics/Compute Engine is active
+        Value: 82.6866
+      - Name: Engine Active Copy Async [%]
+        Id: gpu__engine_cycles_active_any_asyncce.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of elapsed cycles where an asynchronous Copy Engine is active (Copy in a COPY queue)
+        Value: 13.3121
+      - Name: Engine Active Copy Sync [%]
+        Id: gpu__engine_cycles_active_any_syncce.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of elapsed cycles where a synchronous Copy Engine is active (Copy in a DIRECT or COMPUTE queue)
+        Value: 0.7923
+  - Name: L1TEX L2 Hit Rates
+    Category: Hit Rates
+    Explanation: "If the L1TEX hit rate is poor, it causes more requests to go to the L2 cache.  \nIf the L2 hit rate is poor, it causes more requests to go to VRAM.  \nA poor L2 hit rate is typically caused by the working set size of the GPU workload exceeding the L2 cache capacity."
+    Suggestion: "If the L1TEX hit rate is poor, the following changes may help:\n- Enabling mipmapping and/or fetching coarser mip levels\n- Using a smaller texture format (e.g. FP16 depths instead of FP32)\n- Making adjacent pixels fetch closer texels in memory\n- For PSs, increasing the triangle size if some triangles are sub-pixel\n- For PSs, converting the PS to a CS and tweaking the thread group size\n- For CSs, increasing the thread group size (see SIGGRAPH 2020 talk: https://developer.nvidia.com/siggraph/2020/video/sigg01)\n- For CSs, if no async-compute queue is used, reducing the amount of allocated shared memory\nIf the L2 hit rate is poor:\n  \n  - For CSs with 2D thread groups, thread group ID swizzling may help (see https://developer.nvidia.com/blog/optimizing-compute-shaders-for-l2-locality-using-thread-group-id-swizzling/).\n  - In all cases, fetching 2D textures using a larger LOD bias (to fetch coarser mip levels) may help."
+    Metrics:
+      - Name: L1TEX Hit Rate [%]
+        Id: l1tex__t_sector_hit_rate.pct
+        Description: Percentage of L1TEX sector accesses that hit
+        Value: 77.5466
+      - Name: L2 Hit Rate [%]
+        Id: lts__t_sector_hit_rate.pct
+        Description: Percentage of total L2 sector accesses that hit
+        Value: 72.8169
+  - Name: Unit Throughputs
+    Category: Overview
+    Explanation: "The percentages of maximum throughput per GPU sub-unit or pipeline, sorted in decreasing order [Top 5].\nIf the top-SOL unit has a SOL% < 60%, the performance of this workload is latency-limited by that GPU unit.  \nIf the top-SOL unit has a SOL% > 80%, the performance of this workload is throughput-limited by that GPU unit.  \nSee https://developer.nvidia.com/blog/optimizing-vk-vkr-and-dx12-dxr-applications-using-nsight-graphics-gpu-trace-advanced-mode-metrics/"
+    Suggestion: ""
+    Metrics:
+      - Name: SM Inst Executed [%]
+        Id: sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle
+        Value: 28.7656
+      - Name: CROP Throughput [%]
+        Id: crop__throughput.avg.pct_of_peak_sustained_elapsed
+        Description: CROP throughput
+        Value: 24.7605
+      - Name: PROP Throughput [%]
+        Id: prop__throughput.avg.pct_of_peak_sustained_elapsed
+        Description: PROP throughput
+        Value: 20.7990
+      - Name: VRAM Throughput [%]
+        Id: dramc__throughput.avg.pct_of_peak_sustained_elapsed
+        Description: ""
+        Value: 20.1791
+      - Name: SM Pipe ALU [%]
+        Id: sm__inst_executed_pipe_alu_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle for the ALU pipe. The ALU pipe is responsible for execution of most bit manipulation and logic instructions (e.g. FP32 min/max). It also executes integer instructions, excluding IMAD and IMUL. On NVIDIA Ampere architecture chips, the ALU pipeline performs fast FP32-to-FP16 conversion.
+        Value: 18.3697
+  - Name: SM Warp Occupancy (HW)
+    Category: Overview
+    Explanation: "NVIDIA Ampere RTX GPUs have up to 48 warp slots per SM.  \nNVIDIA Turing RTX GPUS have up to 32 warp slots per SM.  \nSee https://developer.nvidia.com/blog/optimizing-vk-vkr-and-dx12-dxr-applications-using-nsight-graphics-gpu-trace-advanced-mode-metrics/ and https://www.gdcvault.com/browse/gdc-19/play/1026202."
+    Suggestion: "Do not worry about warp occupancy unless SM Instruction Throughput is low.  \nFewer than 4 warps on an SM is a starvation condition; launch bigger workloads.  \nHigher is not always better.  16 warps/SM is enough to fully hide math pipe latency.  \nThe following strategies may be used to increase the SM warp occupancy:\n- Reducing the SM warp launch stall reasons (see the SM Warp Occupancy section), typically register pressure\n- Overlapping this workload with an indepedendent SM workload by using an Asynchronous Compute queue (for DX12 or VK)\n- Reducing the number of DX12 ResouceBarriers or VK vkCmdPipelineBarrier commands"
+    Metrics:
+      - Name: Active Warps per Cycle All
+        Id: sm__warps_active.avg.per_cycle_elapsed
+        Description: Percentage of SM warp slots occupied by a resident warp
+        Value: 15.9455
+      - Name: Active Warps per Cycle VTG
+        Id: sm__warps_active_shader_vtg_realtime.avg.per_cycle_elapsed
+        Description: Active warp slots per cycle per SM for VS/HS/DS/GS shaders
+        Value: 0.3097
+      - Name: Active Warps per Cycle PS
+        Id: sm__warps_active_shader_ps_realtime.avg.per_cycle_elapsed
+        Description: Active warp slots per cycle per SM for Pixel Shaders
+        Value: 15.3000
+      - Name: Active Warps per Cycle CS
+        Id: sm__warps_active_shader_cs_realtime.avg.per_cycle_elapsed
+        Description: Active warp slots per cycle per SM for Compute Shaders
+        Value: 0.3358
+  - Name: PCIe Bytes
+    Category: PCIe
+    Explanation: ""
+    Suggestion: ""
+    Metrics:
+      - Name: PCIe Bytes Received by GPU
+        Id: pcie__read_bytes.sum
+        Description: Number of bytes of PCIe read data, at 512B granularity
+        Value: 3437757
+      - Name: PCIe Bytes Transmitted by GPU
+        Id: pcie__write_bytes.sum
+        Description: Number of bytes of PCIe write data, at 512B granularity
+        Value: 9075100
+  - Name: SM Warp Occupancy [%]
+    Category: SM Warp Occupancy
+    Explanation: "NVIDIA Ampere RTX GPUs have up to 48 warp slots per SM.  \nNVIDIA Turing RTX GPUs have up to 32 warp slots per SM.  \nNote: Increasing SM warp occupancy may not necessarily result in a performance gain.  \nSee https://developer.nvidia.com/blog/optimizing-vk-vkr-and-dx12-dxr-applications-using-nsight-graphics-gpu-trace-advanced-mode-metrics/ and https://www.gdcvault.com/browse/gdc-19/play/1026202."
+    Suggestion: "The following strategies may be used to increase the SM warp occupancy:  \n- Reducing the SM warp launch stall reasons (see the SM Warp Occupancy section), typically register pressure  \n- Overlapping this workload with an indepedendent SM workload by using an Asynchronous Compute queue (for DX12 or VK)  \n- Reducing the number of DX12 ResouceBarriers or VK vkCmdPipelineBarrier commands"
+    Metrics:
+      - Name: Active Warps per Cycle All [%]
+        Id: sm__warps_active.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM, normalized by the max warp slots per SM
+        Value: 33.2198
+      - Name: Active Warps per Cycle VTG [%]
+        Id: sm__warps_active_shader_vtg_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM for VS/HS/DS/GS shaders
+        Value: 0.6451
+      - Name: Active Warps per Cycle PS [%]
+        Id: sm__warps_active_shader_ps_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM for Pixel Shaders
+        Value: 31.8750
+      - Name: Active Warps per Cycle CS [%]
+        Id: sm__warps_active_shader_cs_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM for Compute Shaders
+        Value: 0.6997
+  - Name: SM Low Active Warps
+    Category: SM Warp Occupancy
+    Explanation: Less than 4 active warps per SM is a starving condition.
+    Suggestion: ""
+    Metrics:
+      - Name: Active Warps per Cycle All
+        Id: sm__warps_active.avg.per_cycle_elapsed
+        Description: Percentage of SM warp slots occupied by a resident warp
+        Value: 15.9455
+  - Name: SM Throughputs
+    Category: Throughputs
+    Explanation: "SM pipes on GA10X and AD10X:  \n- adu: Computed branches and indexed constants\n- alu: INT32 except multiply; FP32 comparison\n- cbu: Divergent branches and control flow\n- fma: FP32 mul/add, FP16 mul/add\n- fmaheavy: FP32 mul/add and INT32 multiply\n- fp64: FP64 mul/add\n- ipa: Pixel shader attribute interpolation\n- lsu: Global, local, shared memory, and misc\n- tensor: Tensor matrix multiply (FP16, INT8/4/1)\n- tex: Texture and surface memory\n- uniform: Warp-level scalar operations\n- xu: Transcendentals and float/int conversion"
+    Suggestion: Look at the top SM throughput metric and remove work from its associated pipe to get a speedup.
+    Metrics:
+      - Name: SM Inst Executed [%]
+        Id: sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle
+        Value: 28.7656
+      - Name: SM Pipe ALU [%]
+        Id: sm__inst_executed_pipe_alu_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle for the ALU pipe. The ALU pipe is responsible for execution of most bit manipulation and logic instructions (e.g. FP32 min/max). It also executes integer instructions, excluding IMAD and IMUL. On NVIDIA Ampere architecture chips, the ALU pipeline performs fast FP32-to-FP16 conversion.
+        Value: 18.3697
+      - Name: SM Pipe SFU [%]
+        Id: sm__inst_executed_pipe_xu_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle for the SFU pipe. The SFU/XU pipe can execute transcendental math operations (rsqrt, cos/sin, etc.) or int-to-float / float-to-int conversions.
+        Value: 11.7339
+      - Name: SM Pipe FMA Active [%]
+        Id: sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_elapsed
+        Description: Number of cycles where fma pipes were active
+        Value: 11.3953
+      - Name: SM Pipe FMA Heavy [%]
+        Id: smsp__inst_executed_pipe_fmaheavy.avg.pct_of_peak_sustained_elapsed
+        Description: ""
+        Value: 8.8118
+  - Name: Draw/Dispatch Commands
+    Category: Workload
+    Explanation: "Note: These metrics are measured in the GPU Front-End unit, and may exceed the number of API-level commands."
+    Suggestion: ""
+    Metrics:
+      - Name: Draw Started
+        Id: fe__draw_count.sum
+        Description: Number of Draw* or Clear commands sent to the Graphics/Compute engine
+        Value: 776
+      - Name: Dispatch Started
+        Id: gr__dispatch_count.sum
+        Description: Number of Dispatch* commands sent to the Graphics/Compute engine
+        Value: 28
