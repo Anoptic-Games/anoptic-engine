@@ -1,13 +1,13 @@
-# shell.nix -- Linux build toolchain for the Anoptic Engine under WSL/Nix.
+# shell.nix -- LEGACY Linux build shell (unpinned <nixpkgs>). Prefer the flake:
 #
-# Debian/WSL ships no C toolchain, so this shell provides clang, cmake and glslc for the
-# *native Linux* side of the engine: the headless build, the logger benchmark, the non-GPU
-# test suite, and the ASan/TSan sanitizer runs (which are Linux-only -- the MinGW/Windows
-# target supports neither, and TSan is how the lock-free logger/threads get validated).
+#   nix develop                      # same Linux clang shell, pinned nixpkgs
+#   nix develop .#windows            # MinGW-w64 cross shell (Windows exe from WSL)
+#   nix build / nix build .#renderer # one-shot packages
 #
+# Kept for nix-shell muscle memory only; it can desync from the flake's pinned rev.
 # WSL exposes no Linux Vulkan driver, so the renderer and the vk_* tests are NOT runnable
-# from a Linux WSL process. Build+run the Windows target for anything graphical -- that path
-# uses the native MSYS2 toolchain + Windows Vulkan SDK and needs no Nix (build.bat finds them).
+# from a Linux WSL process -- build the Windows target (flake .#windows shell, or the
+# no-Nix MSYS2 path via build.bat) for anything graphical.
 #
 #   nix-shell --run './build.sh 6'   # headless build + non-GPU test suite
 #   nix-shell --run './build.sh 5'   # ThreadSanitizer (Linux-only)

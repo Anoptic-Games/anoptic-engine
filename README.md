@@ -22,8 +22,9 @@ git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 
 ### Installation
 
-All builds of Anoptic Engine require `clang 17+`, `CMake`, `glslc`, and the `Vulkan SDK`.
-The engine is C23 and is compiled exclusively with Clang; other toolchains are not supported.
+Renderer builds of Anoptic Engine require `clang 17+`, `CMake`, `glslc`, and the `Vulkan SDK`.
+Headless builds (`-DANOPTIC_HEADLESS=ON`, and the Nix packages below) need only clang + CMake.
+The engine is C23 and is developed with Clang; the Nix Windows cross shell uses MinGW gcc.
 
 Acquire a copy of the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), version 1.3.2 or later.
 
@@ -43,7 +44,8 @@ Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat`
 - **Headless** — core + tests with the renderer disabled entirely.
 - **Release tests** — the CTest suite at `-O3`; the one to use for benchmarks.
 
-Output goes to `build/<label>/`, and assets from `assets/` are copied there automatically.
+Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the
+binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
 `assets/` is gitignored. The demo scene and the Vulkan tests load `viking_room.gltf` (the vulkan-tutorial viking room) and `GlassHurricaneCandleHolder.gltf` (Khronos [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)) plus their textures from it — populate it before running the engine or the full test suite.
 
 These map to the following CMake options, which can also be passed directly:
@@ -52,16 +54,23 @@ skips the Vulkan probe — useful for CI without a GPU), and
 `-DANOPTIC_SANITIZE=asan|tsan` (instrument test builds).
 
 **Shaders** are compiled to SPIR-V automatically at build time via `glslc` (the
-`anoptic_shaders` target), so `.spv` files never silently desync from their source. If
-`glslc` is not found, the committed `resources/shaders/*.spv` are used as-is (and may be
-stale). `resources/shaders/compile.sh` remains available for compiling them by hand.
+`anoptic_shaders` target) into `build/<label>/resources/shaders/` — next to the binary,
+where the engine resolves them relative to its own executable. If `glslc` is not found,
+the committed `resources/shaders/*.spv` are staged there as-is (and may be stale).
+`resources/shaders/compile.sh` regenerates those committed fallbacks by hand.
+
+`cmake --install` produces a self-contained tree: `bin/anopticengine` plus
+`bin/resources/shaders/`. The engine runs from any working directory.
 
 #### Building on Windows
 
 Make sure you have `CMake` installed and in your path: https://cmake.org/install/.
 
 Have a copy of the `Mingw-w64` toolkit in your path.
-We recommend [MSYS2](https://www.msys2.org/) with the [mingw-w64-x64_64-clang](https://packages.msys2.org/package/mingw-w64-x86_64-clang) package. 
+We recommend [MSYS2](https://www.msys2.org/)'s **CLANG64** environment with the
+[mingw-w64-clang-x86_64-clang](https://packages.msys2.org/package/mingw-w64-clang-x86_64-clang)
+package (`clang64\bin` — this is what `build.bat` looks for). The engine needs the UCRT
+C runtime for C11 `timespec_get`; the legacy MINGW64/msvcrt environment will not link.
 
 Additional guidance:
 - [Microsoft Documentation](https://learn.microsoft.com/en-us/vcpkg/users/platforms/mingw)
@@ -69,24 +78,40 @@ Additional guidance:
 
 Once Mingw-w64 is installed with `clang` working on your system, run `build.bat` from the repository root; its usage mirrors `build.sh`.
 
-#### Building under WSL (Nix)
+#### Building under WSL / Nix
 
-WSL has no C toolchain. `shell.nix` provides clang, cmake and `glslc` for the **Linux** build:
-
-```bash
-nix-shell --run './build.sh 6'   # headless build + non-GPU test suite
-nix-shell --run './build.sh 5'   # ThreadSanitizer (Linux only)
-```
-
-WSL has no Vulkan driver, so the renderer and `vk_*` tests need the **Windows target**. It builds
-with MSYS2 clang and the Windows Vulkan SDK (no Nix) and renders on the real GPU:
+The flake is the primary Nix entry point (`shell.nix` remains as a thin legacy shell):
 
 ```bash
-cmd.exe /c build.bat 1                                  # -> build\Release\anopticengine.exe
-( cd build/Release && PATH="/mnt/c/msys64/clang64/bin:$PATH" ./anopticengine.exe )
+nix develop --command ./build.sh 6    # Linux clang shell: headless build + non-GPU tests
+nix develop --command ./build.sh 5    # ThreadSanitizer (Linux only)
+nix build                             # one-shot headless package -> ./result/bin
+nix build .#renderer                  # one-shot Vulkan renderer package (binary + shaders)
 ```
 
-The MSYS2 build needs `clang64\bin` on `PATH` to find its runtime DLLs.
+WSL has no Linux Vulkan driver, so the renderer runs there only as a **Windows** exe.
+Two ways to build one:
+
+1. **Nix cross shell** (`nix develop .#windows`) — the whole MinGW-w64 (gcc, ucrt64)
+   toolchain, Vulkan import lib, and glslc come from Nix; no MSYS2 or Windows Vulkan SDK
+   needed. Do **not** pass the `cmake/platforms/*-mingw.cmake` toolchain files here (they
+   are for the MSYS2 path); the shell exports the cross setup as `$cmakeFlags`:
+
+   ```bash
+   nix develop .#windows
+   cmake $cmakeFlags -G Ninja -DCMAKE_BUILD_TYPE=Release -S . -B build/Windows
+   cmake --build build/Windows
+   build/Windows/anopticengine.exe      # runs on the Windows host via interop
+   ```
+
+2. **MSYS2 clang + Windows Vulkan SDK** (no Nix) — the `build.bat` path:
+
+   ```bash
+   cmd.exe /c build.bat 1                                  # -> build\Release\anopticengine.exe
+   ( cd build/Release && PATH="/mnt/c/msys64/clang64/bin:$PATH" ./anopticengine.exe )
+   ```
+
+   The MSYS2 build needs `clang64\bin` on `PATH` to find its runtime DLLs.
 
 ### Editor / LSP Setup
 

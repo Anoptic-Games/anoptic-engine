@@ -4,6 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include <anoptic_memory.h>
+#include <anoptic_filesystem.h>
 #include "pipeline.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
@@ -18,14 +19,33 @@
 
 // Utility functions
 
-// TODO: add a generalized function to loop over 
+// TODO: add a generalized function to loop over
 
-bool loadFile(const char* filename, struct Buffer* buffer) 
+// Open a shipped engine file named relative to the executable's own directory
+// ("resources/shaders/x.spv"). Resolving against ano_fs_gamepath() -- never the CWD or a
+// compile-time source path -- means the same binary works from the build tree, an
+// installed tree, and a nix store path alike; the build stages resources/ next to every
+// binary that loads them (root CMakeLists). Interim shim until the Resource Manager owns
+// asset paths (docs/resourcesmg.md).
+static FILE* openEngineFile(const char* relative)
 {
-	FILE* file = fopen(filename, "rb");
-	if (file == NULL) 
+	ano_fspath dir = ano_fs_gamepath();
+	if (dir.length == 0)
+		return NULL;
+
+	char path[MAXPATH + 128];
+	int n = snprintf(path, sizeof path, "%s/%s", dir.str, relative);
+	if (n < 0 || n >= (int)sizeof path)
+		return NULL;
+	return fopen(path, "rb");
+}
+
+bool loadFile(const char* filename, struct Buffer* buffer)
+{
+	FILE* file = openEngineFile(filename);
+	if (file == NULL)
 	{
-		fprintf(stderr, "Failed to open file: %s\n", filename);
+		fprintf(stderr, "Failed to open file (relative to the executable): %s\n", filename);
 		return false;
 	}
 
@@ -391,9 +411,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_UPDATE].supportedFeatures = PBR_FEATURE_NONE;
 
     struct Buffer updateShaderCode;
-    char updateShaderPath[256];
-    snprintf(updateShaderPath, sizeof(updateShaderPath), "%s/resources/shaders/update.comp.spv", PROJECT_ROOT);
-    if (!loadFile(updateShaderPath, &updateShaderCode)) return false;
+    if (!loadFile("resources/shaders/update.comp.spv", &updateShaderCode)) return false;
 
     VkShaderModule updateShaderModule = createShaderModule(ctx->device, &updateShaderCode);
 
@@ -438,9 +456,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_CULL].supportedFeatures = PBR_FEATURE_NONE;
 
     struct Buffer compShaderCode;
-    char compShaderPath[256];
-    snprintf(compShaderPath, sizeof(compShaderPath), "%s/resources/shaders/cull.comp.spv", PROJECT_ROOT);
-    if (!loadFile(compShaderPath, &compShaderCode)) return false;
+    if (!loadFile("resources/shaders/cull.comp.spv", &compShaderCode)) return false;
 
     VkShaderModule compShaderModule = createShaderModule(ctx->device, &compShaderCode);
 

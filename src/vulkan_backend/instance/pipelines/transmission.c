@@ -56,15 +56,14 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		PBR_FEATURE_DOUBLE_SIDED;   // rasterizer uses cullMode NONE, so all geometry is double-sided
 
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
+	// Paths are exe-relative; loadFile resolves them against ano_fs_gamepath().
 	struct Buffer geomShaderCode;
-	char geomShaderPath[256];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "%s/resources/shaders/%s.spv", PROJECT_ROOT, useMesh ? "flat.mesh" : "flat.vert");
+	char geomShaderPath[64];
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv", useMesh ? "flat.mesh" : "flat.vert");
 	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
-	char fragShaderPath[256];
-	snprintf(fragShaderPath, sizeof(fragShaderPath), "%s/resources/shaders/transmission.frag.spv", PROJECT_ROOT);
-	if (!loadFile(fragShaderPath, &fragShaderCode)) return false;
+	if (!loadFile("resources/shaders/transmission.frag.spv", &fragShaderCode)) return false;
 
 	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);

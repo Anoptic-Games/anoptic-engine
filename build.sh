@@ -99,20 +99,9 @@ mkdir -p ./build/${build_dir}
 # Configure the build
 cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
 
-# Build the project
+# Build the project. Shader + asset staging is owned by CMake (root CMakeLists /
+# tests/CMakeLists) so every build flow gets it, not just this script.
 cmake --build ./build/${build_dir}
-
-# Conditionally copy assets if they exist
-if [ -d "./assets" ]; then
-    echo "Copying assets to build directory..."
-    cp -r ./assets/* ./build/${build_dir}/
-    
-    # If building tests, ensure assets are in the tests working directory as well
-    if [ ${run_tests} -eq 1 ]; then
-        mkdir -p ./build/${build_dir}/tests
-        cp -r ./assets/* ./build/${build_dir}/tests/
-    fi
-fi
 
 # Run the test suite
 if [ ${run_tests} -eq 1 ]; then

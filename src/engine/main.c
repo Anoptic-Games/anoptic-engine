@@ -123,9 +123,9 @@ int main()
     mi_version();
 
     // Resolve assets relative to the executable, not the launch directory.
-    // Shaders already use PROJECT_ROOT so only the CWD-relative asset loads
-    // (glTF, textures) needed this.
-    // Interim shim until the Resource Manager owns asset paths.
+    // Shaders resolve against ano_fs_gamepath() directly (loadFile in pipeline.c);
+    // only the CWD-relative asset loads (glTF, textures) need this.
+    // Interim shim until the Resource Manager owns asset paths (docs/resourcesmg.md).
     if (!ano_fs_chdir_gamepath())
         printf("Warning: could not set the working directory to the executable's; "
                "assets will load relative to the current working directory.\n");

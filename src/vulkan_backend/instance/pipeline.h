@@ -20,7 +20,9 @@ struct Buffer
     char* data;
 };
 
-// Shader loading utilities shared by pipeline implementations
+// Shader loading utilities shared by pipeline implementations.
+// filename is relative to the executable's own directory ("resources/shaders/x.spv"),
+// never an absolute or CWD-relative path -- see openEngineFile in pipeline.c.
 bool loadFile(const char* filename, struct Buffer* buffer);
 VkShaderModule createShaderModule(VkDevice device, struct Buffer* code);
 
