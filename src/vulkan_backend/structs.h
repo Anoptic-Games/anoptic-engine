@@ -373,6 +373,7 @@ typedef struct SlotUpload
     VkBufferCopy*   regions[MAX_FRAMES_IN_FLIGHT];     // [stagingCap] dst regions queued this frame
     uint32_t        staged[MAX_FRAMES_IN_FLIGHT];      // entries queued for frame f (reset after flush)
     uint32_t        stagingCap;                        // entries per staging buffer (grows on demand)
+    bool            computeShared;                     // device buffer CONCURRENT gfx+compute (async light-cull reads it); grow preserves
 } SlotUpload;
 
 typedef struct MaterialData
@@ -909,9 +910,15 @@ typedef struct PerFrameResources
 
     // Command recording. computeCommandBuffer holds the async Hi-Z pyramid build (review finding
     // 2): allocated from computeCommandPool (dedicated compute family), submitted to
-    // ctx.computeQueue after the graphics submit, NULL when asyncHiz is off.
+    // ctx.computeQueue after the graphics submit, NULL when asyncHiz is off. Async light-cull
+    // (finding 2 remainder) splits the graphics frame: preludeCommandBuffer carries the uploads +
+    // shared compute prelude (submitted first, signals preludeTimeline), commandBuffer the rest;
+    // lightcullCommandBuffer holds both views' light-cull dispatches for ctx.computeQueue. Both
+    // NULL when asyncLc is off (single-CB frame, in-frame light-cull).
     VkCommandBuffer     commandBuffer;
     VkCommandBuffer     computeCommandBuffer;
+    VkCommandBuffer     preludeCommandBuffer;
+    VkCommandBuffer     lightcullCommandBuffer;
 
     // Per-pass GPU timestamps (RADIANCE_CASCADES.md profiling harness). One pool per frame in
     // flight: reset + written during record, read back after this slot's fence next time round.
@@ -1184,6 +1191,18 @@ typedef struct RendererState
     uint64_t                timelineOrdinal;    // last submitted ordinal; the frame being recorded is +1
     uint64_t                hizValidOrdinal;    // first ordinal whose cull may trust the sampled pyramids
     VkCommandPool           computeCommandPool; // compute-family pool for the per-frame build CBs
+
+    // Async light-cull (review finding 2 remainder): the per-view froxel binning runs on the same
+    // dedicated compute queue DURING this frame's shadow region. The graphics frame splits in two —
+    // the prelude submit (uploads + shared compute) signals preludeTimeline = ordinal, the light-cull
+    // submit waits it and signals lcTimeline = ordinal, and the main submit waits lcTimeline at
+    // FRAGMENT_SHADER (first consumer). The prelude also waits lcTimeline >= ordinal-1 at TRANSFER:
+    // the shared lightBuffer upload must not overwrite the PRIOR frame's compute-queue read (the
+    // in-queue reach-back barrier no longer covers it). lightBuffer/lightRuntime/cluster buffers are
+    // created CONCURRENT-shared between the two families. Gate: asyncLc (requires asyncHiz's infra).
+    bool                    asyncLc;
+    VkSemaphore             preludeTimeline;
+    VkSemaphore             lcTimeline;
 
     // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.

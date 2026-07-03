@@ -117,9 +117,38 @@ which has been tried. The blur kernel itself is near-optimal and should not be t
 the choreography around it is the problem. Likewise the depth-render serialization
 through the shared transient depth has never been on the table before.
 
-## 4. Finding 2 — zero asynchronous execution - PARTIALLY ADDRESSED (Hi-Z build)
+## 4. Finding 2 — zero asynchronous execution - ADDRESSED
 
-Measured outcome (2026-07-03, Hi-Z portion): the pyramid build now records into a per-frame
+Measured outcome (2026-07-03, remainder: async light-cull + split submits + priorities row 8):
+each view's froxel binning now runs on the dedicated compute queue DURING the shadow region.
+The graphics frame splits into two submits in one atomic vkQueueSubmit — prelude CB (uploads +
+update/scatter/lightsetup/shadowsetup/cull) signaling preludeTimeline, main CB (shadow region
+onward) — and the light-cull CB waits preludeTimeline and signals lcTimeline, waited by the main
+submit at FRAGMENT_SHADER (its first consumer). Two subtle hazards carried the design: the main
+submit's lcTimeline wait is submitted before its signal (legal for timelines), and the prelude
+gained a lcTimeline >= ordinal-1 wait at TRANSFER because the shared lightBuffer upload could
+otherwise overwrite the PRIOR frame's compute-queue read — the single-queue reach-back barrier
+cannot see the other queue. lightBuffer/lightRuntime/cluster buffers became CONCURRENT-shared
+between the families. Row 8's small items rode along: lightcull.comp reads lightsetup's
+precomputed posRange instead of re-deriving each light's world position per froxel (the pass's
+worst-latency line), lightsetup+shadowsetup share one prelude barrier (they are mutually
+independent), and the multi-MB whole-indirect-buffer fill is skipped on the drawIndirectCount
+path (nothing reads past the count; only the 184 B count buffer clears). Measured (debug,
+SHADOWMAP medians): the shared small items took the frame 2.049 -> ~2.0 ms and the prelude
+region 0.11 -> 0.072 ms; the async split itself is wall-clock neutral in this 5-light demo
+(lighting 1.015 -> 0.955 with the dispatches+barrier gone from the view loop, offset by a
+~0.04 ms inter-submit bubble the empty-shadow freeze run exposes) — its value is the overlap
+structure, which scales with froxel x light x view count, and the split-submit shape itself.
+Static-scene ceiling (shadow-cache freeze): 1.182 -> 1.129 ms. Frame pipelining is real: the
+async prelude's stamp span widens (0.061–0.189 ms) because submit A executes against the
+previous frame's tail. Validation-clean in async, ANO_FORCE_NO_ASYNC_LC, full-sync
+(ANO_FORCE_NO_ASYNC_HIZ), ANO_HIZ_ON, freeze, and release configurations. Not pursued:
+the 3-way split (prelude+shadow / views / post) and multi-threaded recording — CPU recording
+is nowhere near the frame limiter.
+
+Earlier measured outcome (Hi-Z half):
+
+(2026-07-03, Hi-Z portion): the pyramid build now records into a per-frame
 compute CB and runs on a dedicated compute-family queue. findQueueFamilies previously
 first-fit the graphics family for compute, so `ctx.computeQueue` aliased the graphics
 queue — it now prefers a compute-only family (NVIDIA exposes one) and the gate detects
@@ -140,8 +169,8 @@ single-sample MAX-resolve reduce, 4×MSAA); the structural win is that enabling 
 occlusion consumer now costs ~nothing on the graphics timeline, and the compute-queue +
 timeline infrastructure exists for the lightcull overlap below. Validation-clean in all
 six configurations (async/sync × occlusion on/off, forced fallback reduce, release).
-Remaining from this finding: lightcull overlap (item 2), split submits (item 3), prelude
-barrier merging.
+Remaining from this finding: none — lightcull overlap (item 2), split submits (item 3), and
+prelude barrier merging all landed 2026-07-03 (see the measured outcome above).
 
 `createLogicalDevice` requests graphics, compute, transfer, and present queues
 (instanceInit.c:751–916), but the frame uses only `ctx.graphicsQueue`
@@ -428,17 +457,21 @@ the per-frame-in-flight allocation is the structural blocker to land it.
   partition count (vulkanMaster.c:397–398), several MB against maxEntities=10000 × 46
   partitions — where only the drawCount buffer (184 B) actually needs zeroing on the
   indirect-count path; unwritten commands past the count are never read. Keep the full
-  fill only for the non-indirect-count fallback.
+  fill only for the non-indirect-count fallback. (ADDRESSED 2026-07-03: gated on
+  !drawIndirectCount; cull writes every field of appended commands and tpsort bounds by
+  drawCounts, so the count path never sees unwritten slots.)
 - lightcull.comp re-derives each light's world position per froxel per light via a
   transforms[] mat4 load and multiply (lightcull.comp:117–127) even though
   lightsetup.comp precomputed exactly this into LightRuntime for the fragment passes. It
   shows the worst warp latency in the profile (avg 26.7k cycles, LGSB 58%). Small in
   absolute terms (2 × ~0.03 ms) but a free 2× on a pass that will multiply with froxel
-  count and view count; read the precomputed pose instead.
+  count and view count; read the precomputed pose instead. (ADDRESSED 2026-07-03:
+  binding 1 is now the LightRuntime buffer; the froxel loop reads posRange.xyz.)
 - The compute prelude issues one full memory barrier per dispatch (5 serial stages);
   lightsetup+shadowsetup are independent and can share one barrier, and the prelude's
   barriers can name only the stages that actually consume each output (they mostly do
-  already).
+  already). (ADDRESSED 2026-07-03: lightsetup emits no barrier; shadowsetup's
+  COMPUTE|geom|FRAGMENT barrier covers both producers.)
 - `vulkanSettings.preferredMode` defaults to `0b111111111` (vulkanConfig.c:12), which
   matches no `VkPresentModeKHR`, so `chooseSwapPresentMode` silently falls back to FIFO.
   Works, but it means present mode is vsync-by-accident rather than by choice; pick an
@@ -465,7 +498,7 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 | 5 | Hi-Z build off critical path (end of frame or async queue) | LANDED 2026-07-03 (async queue + timelines) | measured ~0.06 ms — chain already shrunk by #3/#4; occlusion consumer now ~free (see finding 2 note) |
 | 6 | Backface culling on opaque/prepass/shadow | LANDED 2026-07-03 (two-sided lane; shadow stays NONE — mixed partition) | measured −0.12 ms total, lighting −0.10 (see finding 7 note) |
 | 7 | Single shared shadow atlas + dirty-frustum reuse | LANDED 2026-07-03 | measured −672 MiB; static-scene ceiling: shadow 0.867 → 0.001 ms, total −40% (freeze-verified; this demo's movers keep it all-dirty — see finding 8 note) |
-| 8 | Async lightcull, merged prelude barriers, drawCount-only fill, lightcull pose reuse | Low each | 0.1–0.2 ms + scalability |
+| 8 | Async lightcull, merged prelude barriers, drawCount-only fill, lightcull pose reuse | LANDED 2026-07-03 (compute-queue lightcull + prelude/main split submit) | measured −0.05 ms total + prelude 0.11→0.07; async split neutral here, scales with lights×froxels×views; ceiling 1.182→1.129 (see finding 2 note) |
 | 9 | flat.frag register diet + packed interpolants | Medium (measure per step) | raises PS occupancy; frame gain realized with #1/#2 |
 | 10 | Task-shader cluster cull (cone + frustum + Hi-Z per meshlet) | High | large at scale; the million-entity end-state |
 
