@@ -24,6 +24,7 @@
 #include "vulkan_backend/geometry.h"
 #include "vulkan_backend/render_slots.h"
 #include "render_bridge/render_bridge.h" // private transport; completes AnoRenderBridge + protocol
+#include <anoptic_text.h>                // AnoFontBake + AnoGlyphInstance (text overlay, FONT_RENDER.md)
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
@@ -976,6 +977,19 @@ typedef struct PerFrameResources
     VkDescriptorSet     scatterSet;
     VkDescriptorSet     lightsetupSet;  // per-light runtime precompute (transforms+lights in, LightRuntime out)
 
+    // Text overlay (FONT_RENDER.md step 5). The overlay image is the glyph raster target
+    // (compute-written GENERAL, composite-sampled SHADER_READ), swapchain-sized, recreated
+    // with the swapchain. textFrameBuffer is host-visible/mapped frame data (glyph
+    // instances now, tile lists later), rewritten wholesale when the text changes.
+    VkImage             textOverlayImage;
+    GpuAllocation       textOverlayAlloc;
+    VkImageView         textOverlayView;
+    VkBuffer            textFrameBuffer;
+    GpuAllocation       textFrameAlloc;
+    void*               textFrameMapped;
+    VkDescriptorSet     textRasterSet;   // curves + directory + frame data + storage image
+    VkDescriptorSet     textOverlaySet;  // tonemapSetLayout-shaped: sampled overlay for composite
+
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
 } PerFrameResources;
@@ -1040,6 +1054,21 @@ typedef struct RendererState
     VkPipelineLayout        tonemapLayout;
     VkDescriptorSetLayout   tonemapSetLayout;       // 1 combined-image-sampler (hdrColorView)
     VkPipelineCache         tonemapCache;
+
+    // Text overlay (FONT_RENDER.md). Glyph curves bake once (CPU blobs on textHeap, the
+    // shaping source) and upload once to device-local buffers. The raster pass lives in
+    // prototypes[PIPELINE_COMPUTE_TEXTRASTER]; the composite blend draw is bespoke and
+    // shares the tonemap set/pipeline layout (one sampled image). textOverlay gates all
+    // of it: env ANO_FORCE_NO_TEXT, or a font/bake init failure (non-fatal), turn it off.
+    bool                    textOverlay;
+    VkDescriptorSetLayout   textRasterSetLayout;
+    VkPipeline              textOverlayPipeline;
+    VkBuffer                textCurveBuffer;
+    GpuAllocation           textCurveAlloc;
+    VkBuffer                textGlyphBuffer;
+    GpuAllocation           textGlyphAlloc;
+    AnoFontBake             textBake;
+    mi_heap_t*              textHeap;
 
     // Hi-Z occlusion pyramid build (review 4.9 step 3). The pipeline lives in prototypes[
     // PIPELINE_COMPUTE_HIZ] (two implementations: [0]=reduce MSAA depth->mip0, [1]=downsample mip->mip,

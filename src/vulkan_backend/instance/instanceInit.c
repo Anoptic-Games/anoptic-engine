@@ -23,6 +23,7 @@ VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, 
 VkExtent2D chooseSwapExtent(VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window);
 
 #include "vulkan_backend/vulkanMaster.h"
+#include "vulkan_backend/text_raster.h"
 
 
 
@@ -1254,13 +1255,16 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
         }
     }
 
+    // Text overlay raster targets (memory backed by swapchainAllocator, reset below).
+    ano_vk_text_destroy_overlay(ctx, state);
+
     // Do NOT destroy the swapchain here because recreateSwapChain needs oldSwapChain
     if (state->images != NULL) {
         free(state->images);
         state->images = NULL;
     }
-    
-    
+
+
     gpu_alloc_reset(&swapchainAllocator);
 }
 
@@ -1338,6 +1342,9 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 
 	// The per-view HDR resolve views were recreated above; rebind the tonemap sets to them.
 	updateTonemapDescriptorSets(ctx, &rendererState);
+
+	// Text overlay images were recreated in createColorResources; rebind their sets.
+	ano_vk_text_update_sets(ctx, &rendererState);
 
 	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
 	if (rendererState.computeCommandPool != VK_NULL_HANDLE)
@@ -1842,6 +1849,10 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 			}
 		}
 	}
+
+	// Text overlay raster targets (FONT_RENDER.md step 5): per-frame, swapchain-sized;
+	// created here so the resize path recreates them with the other targets.
+	ano_vk_text_create_overlay(ctx, &rendererState);
 }
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
@@ -1859,8 +1870,10 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets. Transparency sort (audit 4.7) adds
 	// cull binding 10 (1 SSBO, the sort-key buffer) — the +1 in the shared term below.
 	// global now 12 SSBOs/view (binding 12 = per-light LightRuntime record); + lightsetup set (3 SSBO) shared.
+	// Text overlay (FONT_RENDER.md step 5) adds per frame: raster set (3 SSBO + 1 storage
+	// image) + overlay sample set (1 sampler), 2 extra sets.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u);
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u + 3u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1869,10 +1882,11 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	// Hi-Z (review 4.9 step 3) adds: 2 sampled bindings (pyramid + depth) per per-mip build set
 	// (2 * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS/frame), plus the cull set's binding 11 occlusion pyramids
 	// (ANO_VIEW_COUNT samplers/frame).
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + ANO_VIEW_COUNT);
-	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame.
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + ANO_VIEW_COUNT + 1u);
+	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame;
+	// + 1/frame: the text overlay raster destination.
 	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSize[4].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS;
+	poolSize[4].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + 1u);
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1880,7 +1894,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolInfo.pPoolSizes = poolSize;
 	// + 2 blur sets/frame on top of (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2),
 	// + ANO_VIEW_COUNT*ANO_MAX_HIZ_MIPS Hi-Z build sets/frame (one per mip per view, review 4.9 step 3).
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 9u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS); // +1 shared set: lightsetup
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 9u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + 2u); // +1 shared set: lightsetup; +2 text overlay
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
@@ -3072,6 +3086,10 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		ShadowResources* sh = &rendererState.frames[i].shadow;
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
 	}
+	// Text overlay (FONT_RENDER.md): frame-data + glyph curve/directory buffers, the CPU
+	// bake heap, and the FreeType backend. Pipelines die in ano_vk_cleanup_pipelines.
+	ano_vk_text_destroy(ctx, &rendererState);
+
 	// Shared shadow images (review finding 8: one atlas + blur temp across frames in flight) + the
 	// transient caster depth. layerView/tempLayerView are sized ANO_SHADOW_ATLAS_LAYERS (2 sublayers/
 	// frustum): destroy that count, not the per-frustum count, or the tail views leak.

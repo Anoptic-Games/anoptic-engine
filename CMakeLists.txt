@@ -188,7 +188,7 @@ if(Vulkan_FOUND)
         set(SPV_OUTPUTS ${SPV_OUTPUTS} ${SHADER_BIN_DIR}/${output}.spv PARENT_SCOPE)
     endfunction()
 
-    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag)
+    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag textraster.comp overlay.frag)
         ano_add_shader(${shader} ${shader})
     endforeach()
     # Depth-only geometry variants: second compiles of flat.mesh / flat.vert with ANO_DEPTH_ONLY
@@ -236,6 +236,12 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
                     COMMENT "Staging assets/ next to anopticengine"
                     VERBATIM)
         endif()
+
+        # Fonts resolve exe-relative like shaders (the text overlay bakes Geist at init).
+        add_custom_command(TARGET anopticengine POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/resources/fonts/Geist $<TARGET_FILE_DIR:anopticengine>/resources/fonts/Geist
+                COMMENT "Staging Geist next to anopticengine"
+                VERBATIM)
     else()
         target_link_libraries(anopticengine PRIVATE anoptic_core)
     endif()

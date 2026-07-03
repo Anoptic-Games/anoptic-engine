@@ -339,7 +339,11 @@ re-ABIs.
    cover exact advances, blanks, CRLF, gap, cap-vs-count, bitwise penOut continuation,
    measure.)
 5. GPU plumbing, visually inert: buffers, overlay ×3 + resize path, descriptor sets, compute
-   pipeline, composite blend draw sampling a cleared overlay. Validation-clean.
+   pipeline, composite blend draw sampling a cleared overlay. Validation-clean. (Done:
+   hardware-verified on the desktop — overlay-on, ANO_FORCE_NO_TEXT, two live resize cycles,
+   and WM-close teardown all validation-clean; init bakes 95 glyphs / 3490 points / 16.6 KiB
+   static; frame totals unchanged. New TU src/vulkan_backend/text_raster.c; stub
+   textraster.comp gates on instanceCount==0 with the full interface live.)
 6. `textraster.comp` via the in-frame fallback path first (sync-trivial): static string on
    screen, screenshot-compare against the reference rasterizer.
 7. Async lane: `textTimeline`, text CB, submit + graphics wait, `ANO_FORCE_NO_ASYNC_TEXT`

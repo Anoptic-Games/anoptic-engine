@@ -11,6 +11,7 @@
 
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/gpu_alloc.h"
+#include "vulkan_backend/text_raster.h"
 
 #define GLFW_INCLUDE_VULKAN
 
@@ -1309,6 +1310,10 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_LIGHTING);
 
+    // Text overlay raster (FONT_RENDER.md; in-frame path — step 7 moves it to the async
+    // compute lane): clear + dispatch + hand the overlay to the composite's fragment stage.
+    ano_vk_text_record(&rendererState, cmd, rendererState.frameIndex);
+
     // --- Composite: tonemap each view's HDR target onto the swapchain ---
     // View 0 fills the screen; auxiliary views composite as picture-in-picture insets along the
     // bottom-right. Each draw is the same ACES tonemap fullscreen triangle, scoped to its
@@ -1366,6 +1371,11 @@ void recordCommandBuffer(uint32_t imageIndex)
                 0, 1, &vr->tonemapSet, 0, NULL);
             vkCmdDraw(cmd, 3, 1, 0, 0); // fullscreen triangle, scoped by viewport+scissor
         }
+
+        // Text/UI overlay over everything (main view AND the PiP insets): one fullscreen
+        // premultiplied blend sampling the compute-rastered overlay (FONT_RENDER.md).
+        ano_vk_text_record_composite(&rendererState, cmd, rendererState.frameIndex);
+
         vkCmdEndRendering(cmd);
     }
 
@@ -4369,6 +4379,12 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	                      && !getenv("ANO_FORCE_NO_TASK");
 	printf("Task meshlet cull: %s\n", rendererState.taskCull ? "on (frustum+cone, Hi-Z with occlusion toggle)" : "off (direct mesh dispatch)");
 
+	// Text overlay gate (FONT_RENDER.md). Decided before createColorResources (overlay
+	// images ride the swapchain-sized target creation); a later font/bake init failure
+	// clears it again, non-fatally. ANO_FORCE_NO_TEXT pins it off for A/B.
+	rendererState.textOverlay = !getenv("ANO_FORCE_NO_TEXT");
+	printf("Text overlay: %s\n", rendererState.textOverlay ? "enabled (pending font init)" : "off (forced)");
+
     // Mesh-shader entry points only exist on the mesh path. The fallback path draws
     // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
     if (ctx.deviceCapabilities.meshShader) {
@@ -4515,6 +4531,11 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		unInitVulkan();
 		return false;
 	}
+
+	// Text overlay (FONT_RENDER.md step 5): font bake + glyph buffers + raster/blend
+	// pipelines. Shares the tonemap set/pipeline layout, so it must follow the tonemap
+	// init. Non-fatal: failure logs and turns the overlay off.
+	ano_vk_text_init(&ctx, &rendererState);
 
 	// Depth-only shadow pipeline + compare sampler (reuses the flat pipeline layout, so after pipelines).
 	if (!ano_vk_init_shadow(&ctx, &rendererState))
@@ -4688,6 +4709,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	updateHiZDescriptorSets(&ctx, &rendererState);
 	updateClusterDescriptorSets(&ctx, &rendererState);
 	updateShadowDescriptorSets(&ctx, &rendererState);
+	ano_vk_text_create_sets(&ctx, &rendererState);
 
 
 	if (!createCommandBuffer(&ctx, &rendererState))

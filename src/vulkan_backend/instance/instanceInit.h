@@ -119,6 +119,9 @@ void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer);
 // Copies data from one GPU buffer to another
 bool copyBuffer(VulkanContext* ctx, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
+// One-shot staged upload: host data -> transient staging buffer -> dstBuffer (device-local)
+bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize);
+
 // Creates a command buffer
 bool createCommandBuffer(VulkanContext* ctx, RendererState* state);
 
