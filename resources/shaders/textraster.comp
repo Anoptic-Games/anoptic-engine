@@ -1,0 +1,59 @@
+#version 450
+
+// Scanline Sweeper glyph coverage raster (FONT_RENDER.md). Consumes the baked curve
+// stream + glyph directory (anoptic_text.h grammar) and the per-frame glyph instances,
+// writing premultiplied coverage into the overlay image. One workgroup per 8x8 pixel
+// tile; screen y-down matches image rows.
+//
+// STEP-5 STUB: the full descriptor/push interface is live so the plumbing validates,
+// but instanceCount stays 0 until step 6 lands the per-pixel signed-area coverage math
+// here (reference implementation: src/text/text_raster_ref.c).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Mirrors AnoGlyphEntry (32 B).
+struct GlyphEntry {
+    uint  pointOffset;
+    uint  curveCount;
+    vec2  bboxMin;
+    vec2  bboxMax;
+    float advance;
+    uint  flags;
+};
+
+// Mirrors AnoGlyphInstance (48 B; offsets pinned by static_asserts in anoptic_text.h).
+struct GlyphInstance {
+    vec4 inv;     // 2x2 pixel->em inverse, rows: em = (dot(inv.xy,d), dot(inv.zw,d))
+    vec4 color;   // premultiplied linear RGBA
+    vec2 origin;  // baseline pen, screen pixels (y-down)
+    uint glyphID;
+    uint flags;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer CurvePoints { uint points[]; };
+layout(std430, set = 0, binding = 1) readonly buffer GlyphDirectory { GlyphEntry glyphs[]; };
+layout(std430, set = 0, binding = 2) readonly buffer FrameData { GlyphInstance instances[]; };
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D overlay;
+
+layout(push_constant) uniform TextRasterPush {
+    uint  instanceCount;
+    uint  flags;
+    uvec2 extent;
+} pc;
+
+const uint SENTINEL = 0x7C007C00u; // contour separator: both halves +inf
+
+void main() {
+    uvec2 px = gl_GlobalInvocationID.xy;
+    if (px.x >= pc.extent.x || px.y >= pc.extent.y || pc.instanceCount == 0u)
+        return;
+
+    // Step 6 lands the coverage math. The reads below keep every binding statically
+    // used so validation covers the full interface; unreachable while the stub gates
+    // on instanceCount == 0.
+    GlyphInstance gi = instances[0];
+    GlyphEntry ge = glyphs[gi.glyphID];
+    if (ge.curveCount == 0u || points[ge.pointOffset] == SENTINEL)
+        return;
+    imageStore(overlay, ivec2(px), gi.color);
+}

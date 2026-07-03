@@ -1428,6 +1428,18 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 		vkDestroyDescriptorSetLayout(ctx->device, state->tonemapSetLayout, NULL);
 		state->tonemapSetLayout = VK_NULL_HANDLE;
 	}
+	// Text overlay (FONT_RENDER.md): the bespoke composite blend pipeline + the raster set
+	// layout. The PIPELINE_COMPUTE_TEXTRASTER prototype is freed by the generic loop below.
+	if (state->textOverlayPipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(ctx->device, state->textOverlayPipeline, NULL);
+		state->textOverlayPipeline = VK_NULL_HANDLE;
+	}
+	if (state->textRasterSetLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(ctx->device, state->textRasterSetLayout, NULL);
+		state->textRasterSetLayout = VK_NULL_HANDLE;
+	}
 	// Hi-Z build set layout (review 4.9 step 3). Its PIPELINE_COMPUTE_HIZ prototype (layout/cache/2
 	// implementations) is freed by the generic prototype loop below.
 	if (state->hizSetLayout != VK_NULL_HANDLE)

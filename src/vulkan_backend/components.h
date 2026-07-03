@@ -36,6 +36,9 @@ typedef enum PipelineType
     PIPELINE_COMPUTE_SHADOWSETUP, // per-shadow-frustum light-space viewProj + frustum-plane build (compute, never draws)
     PIPELINE_COMPUTE_LIGHTSETUP, // per-light world pose (worldPos/worldDir) precompute (compute, never draws)
     PIPELINE_COMPUTE_HIZ,       // hierarchical-Z depth pyramid build for occlusion cull (compute, never draws)
+    PIPELINE_COMPUTE_TEXTRASTER,// Scanline Sweeper glyph coverage raster into the text overlay
+                                // (compute, never draws; FONT_RENDER.md). Appended last so no
+                                // existing enum value shifts.
     PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
 } PipelineType;
 
