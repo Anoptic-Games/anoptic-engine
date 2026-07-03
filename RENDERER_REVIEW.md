@@ -351,7 +351,32 @@ NONE for the blended lanes; two rasterization variants selected by material clas
 half (task-shader cluster cull with per-meshlet cone + frustum + Hi-Z tests, which
 remains the canonical design and also fixes the launch-per-culled-meshlet waste).
 
-## 10. Finding 8 — shadow atlas lifetime: triple-buffered, rebuilt from scratch
+## 10. Finding 8 — shadow atlas lifetime: triple-buffered, rebuilt from scratch - ADDRESSED
+
+Measured outcome (2026-07-03): the atlas + blur temp are now ONE shared instance on
+RendererState (the per-frame ShadowResources keeps only the frustum buffer + descriptor
+sets), resting in SHADER_READ with per-frustum content persisting across frames — gpu
+allocator 1195.8 → 523.8 MiB (−672 MiB, the two stale copies). On top of that, dirty-
+frustum tracking: a frustum re-renders only when its layer is invalid (never built, or
+its light attached/detached/changed — scoped hooks in shadow_caster_attach/detach,
+register_static_shadow, LIGHT_UPDATE) or a conservative epoch fires (any entity-mutating
+command, streamed transforms this frame, or any LIVE parametric mover — per-slot motion
+bookkeeping, since GPU-side animation moves casters and lights the CPU can't see). A
+clean frustum's layers ride the whole-array COLOR<->SHADER_READ transitions (content-
+preserving; the pre-barrier gained a FRAGMENT source scope for the cross-frame WAR); when
+nothing is dirty the entire region — all four phase barriers included — is skipped.
+Cached layers keep their render-time LOD (camera-driven LOD drift does not invalidate;
+LOD-knob setters do). Hooks: ANO_FORCE_NO_SHADOW_CACHE (pre-cache behavior),
+ANO_SHADOW_CACHE_FREEZE (only never-built layers render — the static-scene ceiling).
+Measured (debug, SHADOWMAP medians): default 2.172 ms vs force-off 2.154 ms — parity, as
+expected: this demo's spinning viking room + orbiting candles/point light sit inside
+every light's range, so every frustum is legitimately dirty every frame. The freeze run
+shows the steady-state ceiling a static scene reaches: shadow region 0.867 → 0.001 ms,
+total 2.17 → 1.31 ms (−40%), with the frozen shadows rendering correctly from the
+persistent atlas for thousands of frames. Validation-clean in all three modes. Deferred:
+per-frustum motion exposure via swept bounds (pointless in this scene — the movers
+overlap every light volume; matters for spatially partitioned worlds) and re-render
+budgets (staleness/matrix-drift policy).
 
 ShadowResources lives inside FrameResources (structs.h:746–764, 933), so the 512² ×
 84-layer RGBA16 atlas and its blur temp exist once per frame-in-flight: 176 MB × 2 images
@@ -421,7 +446,7 @@ gate each other (1 exposes 3; 5 and 6 multiply; 2 hides whatever remains).
 | 4 | MSAA: setting + 4× default; resolve once (pick-id restructure deferred) | LANDED 2026-07-03 | measured 0.53 ms + 370 MiB VRAM (see finding 5 note) |
 | 5 | Hi-Z build off critical path (end of frame or async queue) | LANDED 2026-07-03 (async queue + timelines) | measured ~0.06 ms — chain already shrunk by #3/#4; occlusion consumer now ~free (see finding 2 note) |
 | 6 | Backface culling on opaque/prepass/shadow | Low (pipeline state; verify Sponza winding) | 0.2–0.5 ms of depth-only raster |
-| 7 | Single shared shadow atlas + dirty-frustum reuse | Medium-high (lifetime + invalidation rules) | up to ~1.5 ms steady-state static; ~700 MB VRAM |
+| 7 | Single shared shadow atlas + dirty-frustum reuse | LANDED 2026-07-03 | measured −672 MiB; static-scene ceiling: shadow 0.867 → 0.001 ms, total −40% (freeze-verified; this demo's movers keep it all-dirty — see finding 8 note) |
 | 8 | Async lightcull, merged prelude barriers, drawCount-only fill, lightcull pose reuse | Low each | 0.1–0.2 ms + scalability |
 | 9 | flat.frag register diet + packed interpolants | Medium (measure per step) | raises PS occupancy; frame gain realized with #1/#2 |
 | 10 | Task-shader cluster cull (cone + frustum + Hi-Z per meshlet) | High | large at scale; the million-entity end-state |

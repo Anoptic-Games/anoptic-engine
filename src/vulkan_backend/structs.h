@@ -740,23 +740,14 @@ typedef struct ShadowLightInfo {
     uint32_t pad;
 } ShadowLightInfo;
 
-// Per-frame shadow state: the GPU-written frustum buffer and the moment atlas array. The atlas is a
-// RGBA16_UNORM 2D array (one layer per shadow frustum) of optimized 4-moment values; layerView[] are
-// per-layer color render targets, arrayView is the single sampled view (read by the lighting frags
-// and by the prefilter blur). tempImage is the separable-blur ping target (same shape); depthImage
-// is one transient depth buffer reused per layer to select the nearest occluder during the moment
-// render (cleared each layer, never sampled). blurAtlasSet/blurTempSet feed the blur pipeline.
+// Per-frame shadow state: the GPU-written frustum buffer + descriptor sets. The CDF-stats atlas
+// itself is a SINGLE shared instance on RendererState (review finding 8): per-frustum content
+// persists across frames so clean frustums skip their render+blur; the per-frame sets just bind
+// the shared views. frustumBuffer stays per-frame (shadowsetup rewrites it from that frame's light
+// data — identical for unchanged lights, so cached layers stay consistent with it).
 typedef struct ShadowResources {
     VkBuffer        frustumBuffer;   // CullView[ANO_SHADOW_FRUSTUM_COUNT], written by shadowsetup.comp
     GpuAllocation   frustumAlloc;
-    VkImage         atlasImage;      // RGBA16_UNORM 2D array, ANO_SHADOW_ATLAS_LAYERS layers (2/frustum)
-    GpuAllocation   atlasAlloc;
-    VkImageView     arrayView;       // sample view (2D array, color aspect)
-    VkImageView     layerView[ANO_SHADOW_ATLAS_LAYERS]; // per-sublayer color render targets (frustum s -> 2s,2s+1)
-    VkImage         tempImage;       // separable-blur intermediate (same format/extent/layers)
-    GpuAllocation   tempAlloc;
-    VkImageView     tempArrayView;   // blur-Y source (2D array)
-    VkImageView     tempLayerView[ANO_SHADOW_ATLAS_LAYERS]; // blur-X render targets
     VkDescriptorSet setupSet;        // shadowsetup.comp inputs/outputs
     VkDescriptorSet geomSet;         // moment render (flat.mesh / flat.vert) + frag sampling
     VkDescriptorSet blurAtlasSet;    // blur src = atlas array (X pass: atlas -> temp)
@@ -1068,6 +1059,39 @@ typedef struct RendererState
     VkImage                 shadowDepthImage;
     GpuAllocation           shadowDepthAlloc;
     VkImageView             shadowDepthSliceView[ANO_SHADOW_FRUSTUM_COUNT];
+
+    // CDF-stats shadow atlas + separable-blur temp: ONE instance across frames in flight (review
+    // finding 8 — the ×3 copies were rebuilt from UNDEFINED every frame, structurally blocking any
+    // temporal reuse). RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS layers (2 sublayers/frustum).
+    // The atlas rests in SHADER_READ between frames with per-frustum content persisting; a frame
+    // with dirty frustums flips the whole array COLOR<->SHADER_READ (transitions preserve content)
+    // and re-renders only the dirty ones. Cross-frame WARs (a prior in-flight frame's lighting/blur
+    // reads) ride the pre-barrier's FRAGMENT_SHADER source scope on the single in-order queue. The
+    // temp's content never crosses frames (still UNDEFINED-discarded per use).
+    VkImage                 shadowAtlasImage;
+    GpuAllocation           shadowAtlasAlloc;
+    VkImageView             shadowAtlasArrayView;                        // sampled by lighting frags + blur-X
+    VkImageView             shadowAtlasLayerView[ANO_SHADOW_ATLAS_LAYERS]; // per-sublayer render targets
+    VkImage                 shadowTempImage;
+    GpuAllocation           shadowTempAlloc;
+    VkImageView             shadowTempArrayView;                         // blur-Y source
+    VkImageView             shadowTempLayerView[ANO_SHADOW_ATLAS_LAYERS]; // blur-X render targets
+
+    // Dirty-frustum cache state (review finding 8). A frustum re-renders when its layer is invalid
+    // (never built, or its light attached/detached/changed) or a conservative global epoch fires:
+    // any entity-mutating command, streamed transforms this frame, or ANY live parametric mover
+    // (per-slot motion bookkeeping below — GPU-side animation moves casters and lights the CPU
+    // cannot see). Camera-driven LOD drift is deliberately NOT an invalidation source: cached
+    // layers keep their render-time LOD until something else dirties them (bounded, silhouette-
+    // only staleness). shadowCacheMode: 0 = normal, 1 = every frame dirty (ANO_FORCE_NO_SHADOW_CACHE,
+    // the pre-cache behavior), 2 = freeze (ANO_SHADOW_CACHE_FREEZE: only never-built layers render —
+    // the steady-state ceiling a fully static scene would reach).
+    uint32_t                shadowCacheMode;
+    bool                    shadowLayerValid[ANO_SHADOW_FRUSTUM_COUNT];
+    bool                    shadowGlobalDirty;  // set by apply-path scene mutations; consumed each record
+    uint8_t*                slotMotion;         // per-slot: non-static motion descriptor installed
+    uint32_t                slotMotionCap;
+    uint32_t                motionActiveCount;  // live slots with non-static motion
 
     // Shadow config: per-frustum (which light/face/active) + per-light (where its maps live). Both
     // are SlotUpload (×1 device + delta staging) so the runtime caster lifecycle can mutate them

@@ -2195,8 +2195,9 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo ltI   = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo frI   = { sh->frustumBuffer, 0, VK_WHOLE_SIZE };
         VkDescriptorBufferInfo infoI = { state->shadowInfo.device, 0, VK_WHOLE_SIZE };
-        VkDescriptorImageInfo  atI   = { state->shadowSampler, sh->arrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkDescriptorImageInfo  tmI   = { state->shadowSampler, sh->tempArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        // Atlas + blur temp are single shared images (review finding 8); every frame's sets bind them.
+        VkDescriptorImageInfo  atI   = { state->shadowSampler, state->shadowAtlasArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo  tmI   = { state->shadowSampler, state->shadowTempArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
         VkWriteDescriptorSet w[9] = {};
         // shadowsetup set (0 config, 1 transforms, 2 lights, 3 frustums-out) — all storage.
@@ -3018,27 +3019,28 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			if(rendererState.frames[i].views[v].clusterLightIndexBuffer)
 				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightIndexBuffer, NULL);
 		}
-		// Dynamic shadow resources (audit 4.7 MSM): per-frame frustum buffer + moment atlas + blur
-		// temp + their views. (The transient caster depth is shared, destroyed after this loop.)
+		// Dynamic shadow resources (audit 4.7): per-frame frustum buffer. (The atlas/blur-temp and
+		// the transient caster depth are shared single instances, destroyed after this loop.)
 		ShadowResources* sh = &rendererState.frames[i].shadow;
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
-		if (sh->arrayView) vkDestroyImageView(ctx->device, sh->arrayView, NULL);
-		if (sh->tempArrayView) vkDestroyImageView(ctx->device, sh->tempArrayView, NULL);
-		// layerView/tempLayerView are sized ANO_SHADOW_ATLAS_LAYERS (2 sublayers/frustum after the layered
-		// Power CDF rewrite) and creation fills all of them: destroy the same count, not the old per-frustum
-		// count, or the [FRUSTUM_COUNT, ATLAS_LAYERS) views leak at device teardown.
-		for (uint32_t s = 0; s < ANO_SHADOW_ATLAS_LAYERS; s++) {
-			if (sh->layerView[s]) vkDestroyImageView(ctx->device, sh->layerView[s], NULL);
-			if (sh->tempLayerView[s]) vkDestroyImageView(ctx->device, sh->tempLayerView[s], NULL);
-		}
-		if (sh->atlasImage) vkDestroyImage(ctx->device, sh->atlasImage, NULL);
-		if (sh->tempImage) vkDestroyImage(ctx->device, sh->tempImage, NULL);
 	}
-	// Shared transient caster depth (one slice per shadow frustum, single instance across frames).
+	// Shared shadow images (review finding 8: one atlas + blur temp across frames in flight) + the
+	// transient caster depth. layerView/tempLayerView are sized ANO_SHADOW_ATLAS_LAYERS (2 sublayers/
+	// frustum): destroy that count, not the per-frustum count, or the tail views leak.
+	if (rendererState.shadowAtlasArrayView) vkDestroyImageView(ctx->device, rendererState.shadowAtlasArrayView, NULL);
+	if (rendererState.shadowTempArrayView) vkDestroyImageView(ctx->device, rendererState.shadowTempArrayView, NULL);
+	for (uint32_t s = 0; s < ANO_SHADOW_ATLAS_LAYERS; s++) {
+		if (rendererState.shadowAtlasLayerView[s]) vkDestroyImageView(ctx->device, rendererState.shadowAtlasLayerView[s], NULL);
+		if (rendererState.shadowTempLayerView[s]) vkDestroyImageView(ctx->device, rendererState.shadowTempLayerView[s], NULL);
+	}
+	if (rendererState.shadowAtlasImage) vkDestroyImage(ctx->device, rendererState.shadowAtlasImage, NULL);
+	if (rendererState.shadowTempImage) vkDestroyImage(ctx->device, rendererState.shadowTempImage, NULL);
 	for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
 		if (rendererState.shadowDepthSliceView[s]) vkDestroyImageView(ctx->device, rendererState.shadowDepthSliceView[s], NULL);
 	}
 	if (rendererState.shadowDepthImage) vkDestroyImage(ctx->device, rendererState.shadowDepthImage, NULL);
+	// Mover bookkeeping (review finding 8).
+	if (rendererState.slotMotion) { free(rendererState.slotMotion); rendererState.slotMotion = NULL; }
 	// Shadow config mirror (the render-thread CPU copy; the device buffers are SlotUploads destroyed below).
 	if (rendererState.shadowCfgMirror) { free(rendererState.shadowCfgMirror); rendererState.shadowCfgMirror = NULL; }
 
