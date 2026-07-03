@@ -250,9 +250,21 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 #ifdef DEBUG_BUILD
             printf("[GLTF DEBUG] Loading texture %zu: %s\n", t, tex->image->uri);
 #endif
+            // Resolve the image URI against the glTF file's own directory, exactly as
+            // cgltf_load_buffers resolves .bin URIs (combine, then percent-decode the
+            // uri tail) -- both halves of a model share one base directory instead of
+            // textures silently depending on the process CWD.
+            char texPath[1024];
+            if (strlen(fileName) + strlen(tex->image->uri) + 1 >= sizeof texPath) {
+                printf("Texture URI too long, skipping: %s\n", tex->image->uri);
+                textureLoaded[t] = false;
+                continue;
+            }
+            cgltf_combine_paths(texPath, fileName, tex->image->uri);
+            cgltf_decode_uri(texPath + strlen(texPath) - strlen(tex->image->uri));
             bool success = createTextureImage(
-                ctx, textureCmd, &loadedImages[t], &loadedAllocs[t], 
-                &loadedTextures[t], (char*)tex->image->uri, false, 
+                ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],
+                &loadedTextures[t], texPath, false,
                 &stagingBuffers[stagingCount++]
             );
             textureLoaded[t] = success;
