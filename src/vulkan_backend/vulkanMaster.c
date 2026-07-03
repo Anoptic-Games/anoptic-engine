@@ -106,6 +106,17 @@ void unInitVulkan() // A celebration
 		}
     }
 
+	// Async Hi-Z (review finding 2): the compute submits are not fence-tracked; drain the last
+	// signaled ordinal before teardown destroys their pool/semaphores/images.
+	if (rendererState.asyncHiz && rendererState.hizTimeline != VK_NULL_HANDLE
+		&& ctx.device != VK_NULL_HANDLE && rendererState.timelineOrdinal > 0)
+	{
+		uint64_t last = rendererState.timelineOrdinal;
+		VkSemaphoreWaitInfo waitInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+			.semaphoreCount = 1, .pSemaphores = &rendererState.hizTimeline, .pValues = &last };
+		vkWaitSemaphores(ctx.device, &waitInfo, UINT64_MAX);
+	}
+
 	// ECS<->render bridge teardown. CPU-only; safe on a zeroed state (early-init
 	// failure) since the destroys guard NULL and the heap free is gated below.
 	ano_render_bridge_destroy(&rendererState.bridge);
@@ -290,6 +301,100 @@ static inline bool lightTypeShadowMapped(uint32_t lightType, uint32_t mode)
     return lightType != (uint32_t)LIGHT_TYPE_POINT; // ANO_LIGHTING_HYBRID
 }
 
+// Hi-Z pyramid chain for one view (review 4.9 step 3): pyramid mips -> GENERAL, reduce mip 0 from
+// the resolved (or MSAA) depth via the per-mip sets, MAX-downsample the chain, return the pyramid
+// to SHADER_READ for the cull. Inputs: cmd = target CB, vr = the view's resources for the frame
+// slot being recorded, viewExtent = the view's render extent (mip-0 source dims). Every barrier is
+// compute-stage only, so the same recording serves the in-frame graphics path and the async
+// compute CB (review finding 2). The pre-chain WAR (a prior frame's cull still sampling this slot)
+// is carried by srcStage=COMPUTE submission order in-frame, and by the compute submit's gfxTimeline
+// wait async — either way srcAccess 0: prior reads make nothing available.
+static void record_hiz_pyramid_chain(VkCommandBuffer cmd, ViewResources* vr, VkExtent2D viewExtent)
+{
+    // pyramid (all mips) -> GENERAL for the storage writes. oldLayout is the resting SHADER_READ
+    // (not UNDEFINED). The build overwrites every mip, so no contents are kept.
+    VkImageMemoryBarrier pyrToGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    pyrToGeneral.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    pyrToGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    pyrToGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pyrToGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pyrToGeneral.image = vr->hizImage;
+    pyrToGeneral.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    pyrToGeneral.subresourceRange.levelCount = vr->hizMipCount;
+    pyrToGeneral.subresourceRange.layerCount = 1;
+    pyrToGeneral.srcAccessMask = 0;                        // WAR: execution-only (prior reads make nothing available)
+    pyrToGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &pyrToGeneral);
+
+    // mip 0 = reduce (impl 0, resolved/MSAA depth); mip k = downsample (impl 1, mip k-1). One barrier
+    // between mips so mip k-1's writes are visible to mip k's reads. PC matches hiz.comp's block.
+    VkPipelineLayout hizLayout = rendererState.prototypes[PIPELINE_COMPUTE_HIZ].layout;
+    for (uint32_t m = 0; m < vr->hizMipCount; m++) {
+        uint32_t dstW = vr->hizWidth  >> m; if (dstW < 1u) dstW = 1u;
+        uint32_t dstH = vr->hizHeight >> m; if (dstH < 1u) dstH = 1u;
+        struct { int32_t srcMip, pad, dstW, dstH, srcW, srcH; } pc;
+        pc.srcMip = (int32_t)m - 1; pc.pad = 0;
+        pc.dstW = (int32_t)dstW; pc.dstH = (int32_t)dstH;
+        if (m == 0u) {
+            pc.srcW = (int32_t)viewExtent.width;
+            pc.srcH = (int32_t)viewExtent.height;
+        } else {
+            uint32_t sw = vr->hizWidth  >> (m - 1u); if (sw < 1u) sw = 1u;
+            uint32_t sh = vr->hizHeight >> (m - 1u); if (sh < 1u) sh = 1u;
+            pc.srcW = (int32_t)sw; pc.srcH = (int32_t)sh;
+        }
+        uint32_t impl = (m == 0u) ? 0u : 1u;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            rendererState.prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizLayout, 0, 1, &vr->hizSets[m], 0, NULL);
+        vkCmdPushConstants(cmd, hizLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        vkCmdDispatch(cmd, (dstW + 7u) / 8u, (dstH + 7u) / 8u, 1u);
+
+        if (m + 1u < vr->hizMipCount) {
+            VkMemoryBarrier mipBarrier = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &mipBarrier, 0, NULL, 0, NULL);
+        }
+    }
+
+    // pyramid -> SHADER_READ (the cull samples it; step B).
+    VkImageMemoryBarrier pyrToRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    pyrToRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    pyrToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    pyrToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pyrToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pyrToRead.image = vr->hizImage;
+    pyrToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    pyrToRead.subresourceRange.levelCount = vr->hizMipCount;
+    pyrToRead.subresourceRange.layerCount = 1;
+    pyrToRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    pyrToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &pyrToRead);
+}
+
+// Async Hi-Z build CB (review finding 2): both views' pyramid chains for this frame slot, recorded
+// fresh each frame (drawFrame host-waits hizTimeline before reuse). Submitted to ctx.computeQueue
+// after the graphics submit — waits gfxTimeline == this frame's ordinal (depth resolves done, prior
+// culls of the slots being rewritten retired), signals hizTimeline == the same ordinal (waited by
+// the ordinal+2 graphics submit). No depth barriers here: the resolved depth was flipped to
+// SHADER_READ on the graphics timeline before its signal, and semaphores carry the memory
+// dependency both ways.
+static void recordHiZCompute(uint32_t frameIndex)
+{
+    VkCommandBuffer cmd = rendererState.frames[frameIndex].computeCommandBuffer;
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+        ViewResources* vr = &rendererState.frames[frameIndex].views[v];
+        record_hiz_pyramid_chain(cmd, vr, rendererState.viewExtent[v]);
+    }
+    vkEndCommandBuffer(cmd);
+}
+
 void recordCommandBuffer(uint32_t imageIndex)
 {
 	VkCommandBufferBeginInfo beginInfo = {};
@@ -413,23 +518,27 @@ void recordCommandBuffer(uint32_t imageIndex)
                 // in-flight slot's pyramids (built last frame). Order that build's writes before this
                 // cull reads them (no layout change — they rest in SHADER_READ). First frame: the prev
                 // slot was never built but is seeded to SHADER_READ, so the barrier is a harmless no-op.
-                uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
-                VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
-                for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
-                    hizRead[v].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                    hizRead[v].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                    hizRead[v].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                    hizRead[v].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    hizRead[v].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    hizRead[v].image = rendererState.frames[hizPrevSlot].views[v].hizImage;
-                    hizRead[v].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                    hizRead[v].subresourceRange.levelCount = rendererState.frames[hizPrevSlot].views[v].hizMipCount;
-                    hizRead[v].subresourceRange.layerCount = 1;
-                    hizRead[v].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                    hizRead[v].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                // Async build (review finding 2): the writes happened on the compute queue; this
+                // submit's hizTimeline wait already made them visible, so no barrier is recorded.
+                if (!rendererState.asyncHiz) {
+                    uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
+                    VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
+                    for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+                        hizRead[v].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                        hizRead[v].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        hizRead[v].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        hizRead[v].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        hizRead[v].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        hizRead[v].image = rendererState.frames[hizPrevSlot].views[v].hizImage;
+                        hizRead[v].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                        hizRead[v].subresourceRange.levelCount = rendererState.frames[hizPrevSlot].views[v].hizMipCount;
+                        hizRead[v].subresourceRange.layerCount = 1;
+                        hizRead[v].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                        hizRead[v].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    }
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, 0, NULL, 0, NULL, ANO_VIEW_COUNT, hizRead);
                 }
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 0, NULL, 0, NULL, ANO_VIEW_COUNT, hizRead);
             }
 
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
@@ -1050,9 +1159,32 @@ void recordCommandBuffer(uint32_t imageIndex)
                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                     0, 0, NULL, 0, NULL, 1, &depWaw);
 
+                // Async build (review finding 2): the resolve target rests in SHADER_READ (the
+                // compute-queue reduce consumes it there), so flip it to DEPTH_ATTACHMENT for this
+                // frame's resolve write. srcStage EARLY_FRAGMENT_TESTS (srcAccess 0) chains this
+                // transition after the submit's hizTimeline wait — the same stage is in its
+                // pWaitDstStageMask — which carries the cross-queue WAR against the compute reduce
+                // that last read this slot's image. Sync path: it already rests in DEPTH_ATTACHMENT.
+                if (rendererState.asyncHiz) {
+                    VkImageMemoryBarrier resPre = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                    resPre.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    resPre.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    resPre.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    resPre.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    resPre.image = vr->depthResolveImage;
+                    resPre.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                    resPre.subresourceRange.levelCount = 1;
+                    resPre.subresourceRange.layerCount = 1;
+                    resPre.srcAccessMask = 0;              // WAR: execution-only
+                    resPre.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        0, 0, NULL, 0, NULL, 1, &resPre);
+                }
+
                 // Dedicated depth-resolve pass (no color, no draws): the store/resolve phase writes
-                // depthResolveImage. It rests in DEPTH_ATTACHMENT (seeded at creation, restored below),
-                // so no pre-transition is needed.
+                // depthResolveImage. It rests in DEPTH_ATTACHMENT (sync: seeded at creation, restored
+                // after each build; async: flipped above), so no further pre-transition is needed.
                 VkRenderingAttachmentInfo rDepth = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
                 rDepth.imageView = vr->depthView;                       // MSAA source (in DEPTH_ATTACHMENT)
                 rDepth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -1101,103 +1233,52 @@ void recordCommandBuffer(uint32_t imageIndex)
                     0, 0, NULL, 0, NULL, 1, &depToRead);
             }
 
-            // pyramid (all mips) -> GENERAL for the storage writes. oldLayout is the resting SHADER_READ
-            // (not UNDEFINED): srcStage=COMPUTE makes this rewrite wait, in submission order, on a prior
-            // frame's cull that may still be reading this slot via binding 11 (the slot is read one frame
-            // after it is built, then rewritten two frames later — a cross-frame WAR the per-frame fence
-            // doesn't cover, review 4.9 step 3). The build overwrites every mip, so no contents are kept.
-            VkImageMemoryBarrier pyrToGeneral = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            pyrToGeneral.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            pyrToGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-            pyrToGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            pyrToGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            pyrToGeneral.image = vr->hizImage;
-            pyrToGeneral.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            pyrToGeneral.subresourceRange.levelCount = vr->hizMipCount;
-            pyrToGeneral.subresourceRange.layerCount = 1;
-            pyrToGeneral.srcAccessMask = 0;                        // WAR: execution-only (prior reads make nothing available)
-            pyrToGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0, 0, NULL, 0, NULL, 1, &pyrToGeneral);
-
-            // mip 0 = reduce (impl 0, MSAA depth); mip k = downsample (impl 1, mip k-1). One barrier
-            // between mips so mip k-1's writes are visible to mip k's reads. PC matches hiz.comp's block.
-            VkPipelineLayout hizLayout = rendererState.prototypes[PIPELINE_COMPUTE_HIZ].layout;
-            for (uint32_t m = 0; m < vr->hizMipCount; m++) {
-                uint32_t dstW = vr->hizWidth  >> m; if (dstW < 1u) dstW = 1u;
-                uint32_t dstH = vr->hizHeight >> m; if (dstH < 1u) dstH = 1u;
-                struct { int32_t srcMip, pad, dstW, dstH, srcW, srcH; } pc;
-                pc.srcMip = (int32_t)m - 1; pc.pad = 0;
-                pc.dstW = (int32_t)dstW; pc.dstH = (int32_t)dstH;
-                if (m == 0u) {
-                    pc.srcW = (int32_t)rendererState.viewExtent[v].width;
-                    pc.srcH = (int32_t)rendererState.viewExtent[v].height;
-                } else {
-                    uint32_t sw = vr->hizWidth  >> (m - 1u); if (sw < 1u) sw = 1u;
-                    uint32_t sh = vr->hizHeight >> (m - 1u); if (sh < 1u) sh = 1u;
-                    pc.srcW = (int32_t)sw; pc.srcH = (int32_t)sh;
-                }
-                uint32_t impl = (m == 0u) ? 0u : 1u;
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    rendererState.prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].pipeline);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hizLayout, 0, 1, &vr->hizSets[m], 0, NULL);
-                vkCmdPushConstants(cmd, hizLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-                vkCmdDispatch(cmd, (dstW + 7u) / 8u, (dstH + 7u) / 8u, 1u);
-
-                if (m + 1u < vr->hizMipCount) {
-                    VkMemoryBarrier mipBarrier = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        0, 1, &mipBarrier, 0, NULL, 0, NULL);
-                }
-            }
-
-            // pyramid -> SHADER_READ (next frame's cull samples it; step B). Restore depth to
-            // DEPTH_ATTACHMENT for next frame's geometry pass.
-            VkImageMemoryBarrier pyrToRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-            pyrToRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-            pyrToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            pyrToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            pyrToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            pyrToRead.image = vr->hizImage;
-            pyrToRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            pyrToRead.subresourceRange.levelCount = vr->hizMipCount;
-            pyrToRead.subresourceRange.layerCount = 1;
-            pyrToRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            pyrToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0, 0, NULL, 0, NULL, 1, &pyrToRead);
-
-            if (ctx.deviceCapabilities.depthMaxResolve) {
-                // Avenue 1: the MSAA depthImage was never moved (it stayed a depth attachment); restore the
-                // resolved depth SHADER_READ -> DEPTH_ATTACHMENT instead, for next frame's resolve write.
-                VkImageMemoryBarrier resRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-                resRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                resRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                resRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                resRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                resRestore.image = vr->depthResolveImage;
-                resRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                resRestore.subresourceRange.levelCount = 1;
-                resRestore.subresourceRange.layerCount = 1;
-                resRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                resRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                    0, 0, NULL, 0, NULL, 1, &resRestore);
+            if (rendererState.asyncHiz) {
+                // Async build (review finding 2): the pyramid chain (record_hiz_pyramid_chain) is
+                // recorded into this frame's compute CB instead and runs on ctx.computeQueue once
+                // this submit signals gfxTimeline — overlapping the next frame's graphics rather
+                // than serializing between views here. The resolved depth stays SHADER_READ (its
+                // async rest state) for the compute reduce; the pre-resolve flip above returns it
+                // to DEPTH_ATTACHMENT when this slot comes round again.
             } else {
-                VkImageMemoryBarrier depRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-                depRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                depRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                depRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                depRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                depRestore.image = vr->depthImage;
-                depRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                depRestore.subresourceRange.levelCount = 1;
-                depRestore.subresourceRange.layerCount = 1;
-                depRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                depRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                    0, 0, NULL, 0, NULL, 1, &depRestore);
+                // In-frame build. The pre-chain WAR (srcStage=COMPUTE inside the helper) waits, in
+                // submission order, on a prior frame's cull that may still be reading this slot via
+                // binding 11 (read one frame after it is built, rewritten two frames later — a
+                // cross-frame WAR the per-frame fence doesn't cover, review 4.9 step 3).
+                record_hiz_pyramid_chain(cmd, vr, rendererState.viewExtent[v]);
+
+                // Restore depth to DEPTH_ATTACHMENT for next frame's geometry/resolve pass.
+                if (ctx.deviceCapabilities.depthMaxResolve) {
+                    // Avenue 1: the MSAA depthImage was never moved (it stayed a depth attachment); restore
+                    // the resolved depth SHADER_READ -> DEPTH_ATTACHMENT instead, for next frame's resolve.
+                    VkImageMemoryBarrier resRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                    resRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    resRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    resRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    resRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    resRestore.image = vr->depthResolveImage;
+                    resRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                    resRestore.subresourceRange.levelCount = 1;
+                    resRestore.subresourceRange.layerCount = 1;
+                    resRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    resRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        0, 0, NULL, 0, NULL, 1, &resRestore);
+                } else {
+                    VkImageMemoryBarrier depRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                    depRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    depRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    depRestore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    depRestore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    depRestore.image = vr->depthImage;
+                    depRestore.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                    depRestore.subresourceRange.levelCount = 1;
+                    depRestore.subresourceRange.layerCount = 1;
+                    depRestore.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    depRestore.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                        0, 0, NULL, 0, NULL, 1, &depRestore);
+                }
             }
         }
     }
@@ -1349,15 +1430,21 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         ubo->viewCullParams[v][1] = threshold * threshold;
         ubo->viewCullParams[v][2] = state->lodPixelThreshold[v]; // LOD level-1 onset (review 4.9 step 2)
         ubo->viewCullParams[v][3] = (float)state->lodBias;       // global LOD bias (debug/tuning), replicated per view
-        // Hi-Z occlusion (review 4.9 step 3): publish LAST frame's viewProj for reprojection (the cull
-        // samples the pyramid built last frame), then save this frame's for next. hizParams.z = mipCount
-        // only when this view's test is enabled (else 0 = off, the default). hizProj = the projection
-        // terms the cull needs (screen radius from proj00/proj11, ZO nearest-depth from proj22/proj32).
-        memcpy(ubo->prevViewProj[v], state->prevViewProj[v], sizeof(mat4));   // last frame's viewProj
-        memcpy(state->prevViewProj[v], ubo->views[v].viewProj, sizeof(mat4)); // save this frame's for next
+        // Hi-Z occlusion (review 4.9 step 3): publish the viewProj the sampled pyramid was rendered
+        // with, for reprojection — the slot `lag` frames back (1 = in-frame build, 2 = async build:
+        // review finding 2) — then save this frame's into its own slot. hizParams.z = mipCount only
+        // when this view's test is enabled AND past the post-(re)create warmup (hizValidOrdinal =
+        // every sampled slot rebuilt at the current resolution); else 0 = test off (the default).
+        // hizProj = the projection terms the cull needs (screen radius from proj00/proj11, ZO
+        // nearest-depth from proj22/proj32).
+        uint32_t hizLag = state->asyncHiz ? 2u : 1u;
+        uint32_t histSlot = (frameIndex + MAX_FRAMES_IN_FLIGHT - hizLag) % MAX_FRAMES_IN_FLIGHT;
+        bool hizWarm = state->timelineOrdinal + 1u >= state->hizValidOrdinal;
+        memcpy(ubo->prevViewProj[v], state->viewProjHist[histSlot][v], sizeof(mat4));
+        memcpy(state->viewProjHist[frameIndex][v], ubo->views[v].viewProj, sizeof(mat4));
         ubo->hizParams[v][0] = (float)state->frames[frameIndex].views[v].hizWidth;
         ubo->hizParams[v][1] = (float)state->frames[frameIndex].views[v].hizHeight;
-        ubo->hizParams[v][2] = state->hizEnable[v] ? (float)state->frames[frameIndex].views[v].hizMipCount : 0.0f;
+        ubo->hizParams[v][2] = (state->hizEnable[v] && hizWarm) ? (float)state->frames[frameIndex].views[v].hizMipCount : 0.0f;
         ubo->hizParams[v][3] = 0.0f;
         ubo->hizProj[v][0] = viewUbo->proj[0][0];
         ubo->hizProj[v][1] = viewUbo->proj[1][1];
@@ -2707,25 +2794,80 @@ void drawFrame()
 	recordCommandBuffer(imageIndex);
 
 	//updateUniformBuffer(&ctx, &rendererState);
-	
+
+	// Async Hi-Z (review finding 2): 1-based ordinal of THIS submit. Monotonic across swapchain
+	// recreates (unlike frame slots/fences), so timeline signal values never repeat.
+	uint64_t ordinal = rendererState.timelineOrdinal + 1u;
+	if (rendererState.asyncHiz)
+	{
+		// This slot's compute CB trails its graphics submit and is not covered by frameFence:
+		// host-wait its own prior signal (MAX_FRAMES_IN_FLIGHT ordinals back) before re-recording.
+		if (ordinal > (uint64_t)MAX_FRAMES_IN_FLIGHT)
+		{
+			uint64_t prior = ordinal - (uint64_t)MAX_FRAMES_IN_FLIGHT;
+			VkSemaphoreWaitInfo waitInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+				.semaphoreCount = 1, .pSemaphores = &rendererState.hizTimeline, .pValues = &prior };
+			vkWaitSemaphores(ctx.device, &waitInfo, UINT64_MAX);
+		}
+		recordHiZCompute(rendererState.frameIndex);
+	}
+
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	
-	VkSemaphore waitSemaphores[] = {rendererState.frames[rendererState.frameIndex].imageAvailable};
-	VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-	submitInfo.waitSemaphoreCount = 1;
+
+	// Graphics submit. Async Hi-Z adds a second wait — hizTimeline >= ordinal-2 at the cull's
+	// COMPUTE stage (the lag-2 pyramid it samples) | EARLY_FRAGMENT_TESTS (chain anchor for the
+	// depth-resolve WAR flip in recordCommandBuffer) — and a second signal, gfxTimeline = ordinal
+	// (waited by this frame's compute build). Values on binary semaphores are ignored per spec.
+	VkSemaphore waitSemaphores[2] = {rendererState.frames[rendererState.frameIndex].imageAvailable, rendererState.hizTimeline};
+	VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT};
+	uint64_t waitValues[2] = {0, ordinal > 2u ? ordinal - 2u : 0u};
+	VkSemaphore signalSemaphores[2] = {rendererState.frames[rendererState.frameIndex].renderFinished, rendererState.gfxTimeline};
+	uint64_t signalValues[2] = {0, ordinal};
+	VkTimelineSemaphoreSubmitInfo timelineValues = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+		.waitSemaphoreValueCount = 2, .pWaitSemaphoreValues = waitValues,
+		.signalSemaphoreValueCount = 2, .pSignalSemaphoreValues = signalValues };
+	if (rendererState.asyncHiz)
+		submitInfo.pNext = &timelineValues;
+	submitInfo.waitSemaphoreCount = rendererState.asyncHiz ? 2 : 1;
 	submitInfo.pWaitSemaphores = waitSemaphores;
 	submitInfo.pWaitDstStageMask = waitStages;
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &(rendererState.frames[rendererState.frameIndex].commandBuffer);
-	VkSemaphore signalSemaphores[] = {rendererState.frames[rendererState.frameIndex].renderFinished};
-	submitInfo.signalSemaphoreCount = 1;
+	submitInfo.signalSemaphoreCount = rendererState.asyncHiz ? 2 : 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
 	vkResetFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence)); // this goes here because multi-threading
-	if (vkQueueSubmit(ctx.graphicsQueue, 1, &submitInfo, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS) 
+	if (vkQueueSubmit(ctx.graphicsQueue, 1, &submitInfo, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS)
 	{
 		printf("Failed to submit draw command buffer!\n");
 		return;
+	}
+	rendererState.timelineOrdinal = ordinal;
+
+	// Async Hi-Z compute submit (review finding 2): waits this frame's graphics (gfxTimeline ==
+	// ordinal: depth resolves done, prior readers of the slots being rewritten retired), signals
+	// hizTimeline == ordinal for the ordinal+2 graphics submit. Executes during the NEXT frame's
+	// graphics on the dedicated queue — off the critical path.
+	if (rendererState.asyncHiz)
+	{
+		VkPipelineStageFlags hizWaitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		VkTimelineSemaphoreSubmitInfo hizValues = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.waitSemaphoreValueCount = 1, .pWaitSemaphoreValues = &ordinal,
+			.signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &ordinal };
+		VkSubmitInfo hizSubmit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &hizValues,
+			.waitSemaphoreCount = 1, .pWaitSemaphores = &rendererState.gfxTimeline, .pWaitDstStageMask = &hizWaitStage,
+			.commandBufferCount = 1, .pCommandBuffers = &rendererState.frames[rendererState.frameIndex].computeCommandBuffer,
+			.signalSemaphoreCount = 1, .pSignalSemaphores = &rendererState.hizTimeline };
+		if (vkQueueSubmit(ctx.computeQueue, 1, &hizSubmit, VK_NULL_HANDLE) != VK_SUCCESS)
+		{
+			// Keep the timeline monotonic so the ordinal+2 graphics wait cannot deadlock; a failed
+			// submit here is device-loss territory anyway.
+			printf("Failed to submit async Hi-Z command buffer!\n");
+			VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+				.semaphore = rendererState.hizTimeline, .value = ordinal };
+			vkSignalSemaphore(ctx.device, &signalInfo);
+		}
 	}
 
     // Presentation should happen *before* submitting commands for a new frame, so we're actually taking advantage of buffering
@@ -3212,8 +3354,12 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         state->cullPixelThreshold[v] = ANO_CULL_PIXEL_THRESHOLD_DEFAULT;
         state->lodPixelThreshold[v]  = ANO_LOD_PIXEL_THRESHOLD_DEFAULT;
         state->hizEnable[v] = 0u;                          // Hi-Z occlusion off by default (review 4.9 step 3)
-        memset(state->prevViewProj[v], 0, sizeof(mat4));   // first frame: zero matrix -> reprojection skipped
+        for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
+            memset(state->viewProjHist[f][v], 0, sizeof(mat4)); // first frames: zero matrix -> reprojection skipped
     }
+    // Test hook: enable view 0's occlusion test from startup (same effect as the H key) for
+    // headless A/B of the Hi-Z consumption path (in-frame lag-1 vs async lag-2, review finding 2).
+    if (getenv("ANO_HIZ_ON")) state->hizEnable[0] = 1u;
     state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // shadow LOD offset relative to view-0 LOD (0 = exact match)
     
     VkDeviceSize meshDataSize = sizeof(uint32_t) * 9 * maxMeshes; // MeshData: 9 u32 (8 + lodCount)
@@ -3459,6 +3605,20 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
+	// Async Hi-Z gate (review finding 2). Needs a compute queue on a family DISTINCT from graphics
+	// (findQueueFamilies prefers a dedicated one; same-family means the very same VkQueue — no
+	// overlap possible), timeline semaphores for the cross-queue ordering, and the single-sample MAX
+	// depth resolve (the raster resolve stays on graphics; only the pyramid reduce/downsample moves,
+	// so the compute CB never needs graphics-only stages). ANO_FORCE_NO_ASYNC_HIZ pins the in-frame
+	// build for A/B. Must be decided before depth/Hi-Z resources (sharing mode + rest layouts) and
+	// createSyncObjects (timelines) run.
+	rendererState.asyncHiz = ctx.deviceCapabilities.timelineSemaphore
+	                      && ctx.deviceCapabilities.depthMaxResolve
+	                      && ctx.queueFamilyIndices.computePresent
+	                      && ctx.queueFamilyIndices.computeFamily != ctx.queueFamilyIndices.graphicsFamily
+	                      && !getenv("ANO_FORCE_NO_ASYNC_HIZ");
+	printf("Async Hi-Z build: %s\n", rendererState.asyncHiz ? "on (dedicated compute queue)" : "off (in-frame)");
+
     // Mesh-shader entry points only exist on the mesh path. The fallback path draws
     // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
     if (ctx.deviceCapabilities.meshShader) {
@@ -3520,6 +3680,33 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		printf("Quitting init: command pool failure!\n");
 		unInitVulkan();
 		return false;
+	}
+
+	// Async Hi-Z build CBs (review finding 2): the graphics-family pool is invalid on the compute
+	// queue, so the per-frame build CBs come from their own compute-family pool.
+	if (rendererState.asyncHiz)
+	{
+		VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = ctx.queueFamilyIndices.computeFamily };
+		if (vkCreateCommandPool(ctx.device, &cpi, NULL, &rendererState.computeCommandPool) != VK_SUCCESS)
+		{
+			printf("Quitting init: compute command pool failure!\n");
+			unInitVulkan();
+			return false;
+		}
+		VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = rendererState.computeCommandPool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 };
+		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		{
+			if (vkAllocateCommandBuffers(ctx.device, &cai, &rendererState.frames[i].computeCommandBuffer) != VK_SUCCESS)
+			{
+				printf("Quitting init: compute command buffer allocation failure!\n");
+				unInitVulkan();
+				return false;
+			}
+		}
 	}
 
 	createColorResources(&ctx); // Make this a bool and add check

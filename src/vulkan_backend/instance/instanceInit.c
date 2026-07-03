@@ -422,9 +422,13 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
 	// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
-	// This may be changed in the future, specifically to allow compute tasks to work on the next frame without impacting rendering.
 	// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
 	//!TODO Implement these as required further into development
+	// Compute is the exception (review finding 2): prefer a DEDICATED compute family (compute
+	// without graphics) so ctx.computeQueue is a distinct queue the driver schedules concurrently
+	// with raster (async Hi-Z). Falls back to the first compute-capable family — usually the
+	// graphics family, i.e. the very same queue, which the async gate detects and disables on.
+	bool haveDedicatedCompute = false;
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here
 		if ((queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && indices.graphicsPresent == false)
@@ -433,11 +437,16 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 			indices.graphicsPresent = true;
 			//printf("Graphics: %d\n", i);
 		}
-		if ((queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && indices.computePresent == false)
+		if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT)
 		{
-			indices.computeFamily = i;
-			indices.computePresent = true;
-			//printf("Compute: %d\n", i);
+			bool dedicated = (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0;
+			if (indices.computePresent == false || (dedicated && !haveDedicatedCompute))
+			{
+				indices.computeFamily = i;
+				indices.computePresent = true;
+				haveDedicatedCompute = dedicated;
+				//printf("Compute: %d\n", i);
+			}
 		}
 		if ((queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && indices.transferPresent == false)
 		{
@@ -514,6 +523,9 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	// Test hook forces the per-layer fallback on capable hardware.
 	capabilities.shaderOutputLayer = features12.shaderOutputLayer && features12.shaderOutputViewportIndex;
 	if (getenv("ANO_FORCE_NO_SHADER_OUTPUT_LAYER")) capabilities.shaderOutputLayer = false;
+
+	// Timeline semaphores (vk1.2): cross-queue ordering for the async Hi-Z build (review finding 2).
+	capabilities.timelineSemaphore = features12.timelineSemaphore;
 
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
@@ -851,6 +863,8 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	// features cover whichever SPIR-V capability glslang emitted for gl_Layer).
 	features12.shaderOutputLayer = queryFeatures12.shaderOutputLayer;
 	features12.shaderOutputViewportIndex = queryFeatures12.shaderOutputViewportIndex;
+	// Async Hi-Z ordering (review finding 2); mirrors populateCapabilities.
+	features12.timelineSemaphore = queryFeatures12.timelineSemaphore;
 
 	// Mirror populateCapabilities: the fallback path activates when the feature is
 	// absent or the test override forces it off.
@@ -1319,6 +1333,8 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	updateTonemapDescriptorSets(ctx, &rendererState);
 
 	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
+	if (rendererState.computeCommandPool != VK_NULL_HANDLE)
+		vkResetCommandPool(ctx->device, rendererState.computeCommandPool, 0); // async Hi-Z build CBs (idle-waited above)
 	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
 	{
 		vkResetFences(ctx->device, 1, &(rendererState.frames[i].frameFence));
@@ -1641,21 +1657,28 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 			}
 
 			// Avenue 1 (review 4.9 step 3): single-sample MAX-resolve target for the Hi-Z reduce, only
-			// when supported. Same format/aspect as depthImage, one sample. Resting layout is
-			// DEPTH_ATTACHMENT (the build resolves into it, flips it to SHADER_READ for the reduce, back).
+			// when supported. Same format/aspect as depthImage, one sample. Sync build: rests in
+			// DEPTH_ATTACHMENT (the build resolves into it, flips it to SHADER_READ for the reduce,
+			// back). Async build (review finding 2): the reduce runs on the compute queue, so it rests
+			// in SHADER_READ instead (graphics flips it to DEPTH_ATTACHMENT for its resolve write and
+			// back before signaling) and is CONCURRENT-shared with the compute family.
 			if (ctx->deviceCapabilities.depthMaxResolve)
 			{
-				if (!createImage(ctx, &swapchainAllocator, state->viewExtent[v].width,
+				uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
+				if (!createImageShared(ctx, &swapchainAllocator, state->viewExtent[v].width,
 					state->viewExtent[v].height, 1, VK_SAMPLE_COUNT_1_BIT, state->depthFormat,
 					VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-								 &vr->depthResolveImage, &vr->depthResolveAlloc, false))
+								 &vr->depthResolveImage, &vr->depthResolveAlloc, false,
+								 shareFamilies, state->asyncHiz ? 2u : 0u))
 				{
 					printf("Failed to create depth-resolve resource for frame %d view %u!\n", i, v);
 					return false;
 				}
 				vr->depthResolveView = createImageView(ctx->device, vr->depthResolveImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthResolveImage, depthFormat,
-										  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
+										  VK_IMAGE_LAYOUT_UNDEFINED,
+										  state->asyncHiz ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+										                  : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
 				{
 					printf("Failed to transition depth-resolve layout for frame %d view %u!\n", i, v);
 					return false;
@@ -1691,10 +1714,14 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 			vr->hizWidth = w;
 			vr->hizHeight = h;
 			vr->hizMipCount = mips;
-			if (!createImage(ctx, &swapchainAllocator, w, h, mips, VK_SAMPLE_COUNT_1_BIT,
+			// Async build (review finding 2): written by the compute queue, sampled by the graphics
+			// queue's cull -> CONCURRENT between the two families (no ownership-transfer pairs).
+			uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
+			if (!createImageShared(ctx, &swapchainAllocator, w, h, mips, VK_SAMPLE_COUNT_1_BIT,
 				VK_FORMAT_R32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
 				VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				&vr->hizImage, &vr->hizAlloc, false))
+				&vr->hizImage, &vr->hizAlloc, false,
+				shareFamilies, state->asyncHiz ? 2u : 0u))
 			{
 				printf("Failed to create Hi-Z image for frame %u view %u!\n", i, v);
 				return false;
@@ -1732,6 +1759,11 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 			}
 		}
 	}
+
+	// Warmup gate (review finding 2): the cull samples the pyramid built `lag` submits earlier, so
+	// after any (re)creation the first `lag` frames would sample seeded garbage. updateCullingBuffers
+	// forces hizParams.z = 0 (test off) for ordinals below this.
+	state->hizValidOrdinal = state->timelineOrdinal + 1u + (state->asyncHiz ? 2u : 1u);
 	return true;
 }
 
@@ -2266,13 +2298,16 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
         }
     }
 
-    // Cull set binding 11 (review 4.9 step 3): each frame's cull samples the PREVIOUS frame-in-flight
-    // slot's pyramids (single-phase last-frame Hi-Z), so wire cullSet[i].binding11[v] to slot (i-1)'s
-    // view v pyramid. Resting layout is SHADER_READ (the build leaves it there; createHiZResources seeds
-    // it). texelFetch in the cull ignores the sampler, so textureSampler is fine. Re-run on resize.
+    // Cull set binding 11 (review 4.9 step 3): each frame's cull samples the pyramid built `lag`
+    // submits earlier — lag 1 (previous slot) for the in-frame build, lag 2 for the async compute-
+    // queue build (review finding 2: the build overlaps the NEXT frame's graphics, so the freshest
+    // complete pyramid at cull time is two slots back). Resting layout is SHADER_READ (the build
+    // leaves it there; createHiZResources seeds it). texelFetch in the cull ignores the sampler, so
+    // textureSampler is fine. Re-run on resize.
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        uint32_t prev = (i + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
+        uint32_t lag = state->asyncHiz ? 2u : 1u;
+        uint32_t prev = (i + MAX_FRAMES_IN_FLIGHT - lag) % MAX_FRAMES_IN_FLIGHT;
         VkDescriptorImageInfo hizImg[ANO_VIEW_COUNT];
         for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
         {
@@ -2789,6 +2824,23 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		}
 	}
 
+	// Async Hi-Z timelines (review finding 2): gfxTimeline counts graphics submits (waited by that
+	// frame's compute build), hizTimeline counts builds (waited by the ordinal+2 graphics submit +
+	// the host before CB reuse). Both start at 0; ordinals are 1-based, so the first frames' waits
+	// (clamped to 0) pass immediately.
+	if (state->asyncHiz)
+	{
+		VkSemaphoreTypeCreateInfo timelineInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+			.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0 };
+		VkSemaphoreCreateInfo timelineSem = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timelineInfo };
+		if (vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->gfxTimeline) != VK_SUCCESS ||
+			vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->hizTimeline) != VK_SUCCESS)
+		{
+			printf("Failed to create async Hi-Z timeline semaphores!\n");
+			return false;
+		}
+	}
+
 	// GPU timestamp profiling (RADIANCE_CASCADES.md §8). One query pool of ANO_TS_COUNT timestamps
 	// per frame in flight. Gated on the graphics queue family's timestampValidBits + a usable period;
 	// when unsupported the whole timing path is a no-op and rendering is unaffected.
@@ -3057,7 +3109,21 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.commandPool != NULL)
 	{
 		vkDestroyCommandPool(ctx->device, rendererState.commandPool, NULL);
-	}	
+	}
+
+	// Async Hi-Z objects (review finding 2); NULL when asyncHiz was off.
+	if (rendererState.computeCommandPool != NULL)
+	{
+		vkDestroyCommandPool(ctx->device, rendererState.computeCommandPool, NULL);
+	}
+	if (rendererState.gfxTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.gfxTimeline, NULL);
+	}
+	if (rendererState.hizTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.hizTimeline, NULL);
+	}
 
 
 

@@ -114,7 +114,9 @@ bool transitionImageLayout(VulkanContext* ctx, VkCommandBuffer cmd, VkImage imag
 		return false;
 	}
 
-	if (newLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+	// Aspect follows the FORMAT, not the target layout: a depth image seeded straight to
+	// SHADER_READ (async Hi-Z depth-resolve rest state) still needs the DEPTH aspect.
+	if (format == VK_FORMAT_D32_SFLOAT || hasStencilComponent(format))
 	{
 		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 
@@ -174,8 +176,9 @@ void copyBufferToImage(VulkanContext* ctx, VkCommandBuffer cmd, VkBuffer buffer,
 	if (cmd == VK_NULL_HANDLE) endSingleTimeCommands(ctx, commandBuffer);
 }
 
-bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
-				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16)
+bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
+				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16,
+				const uint32_t* shareFamilies, uint32_t shareFamilyCount)
 {
 	VkImageCreateInfo imageInfo = {};
 	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -191,9 +194,18 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	imageInfo.usage = usage;
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	// Two or more DISTINCT families (caller guarantees distinctness) -> CONCURRENT: contents stay
+	// valid across queues with no ownership-transfer barrier pairs (async Hi-Z crosses graphics <->
+	// compute every frame; review finding 2). Single/absent list keeps EXCLUSIVE.
+	if (shareFamilies != NULL && shareFamilyCount >= 2)
+	{
+		imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+		imageInfo.queueFamilyIndexCount = shareFamilyCount;
+		imageInfo.pQueueFamilyIndices = shareFamilies;
+	}
 	imageInfo.samples = numSamples;
 	imageInfo.flags = 0; // Optional
-	
+
 	if (vkCreateImage(ctx->device, &imageInfo, NULL, image) != VK_SUCCESS)
 	{
 		printf("Failed to create image!\n");
@@ -212,6 +224,13 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 	vkBindImageMemory(ctx->device, *image, imageAlloc->memory, imageAlloc->offset);
 
 	return true;
+}
+
+bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
+				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16)
+{
+	return createImageShared(ctx, allocator, width, height, mipLevels, numSamples, format,
+							 tiling, usage, properties, image, imageAlloc, flag16, NULL, 0);
 }
 
 bool generateMipmaps(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
