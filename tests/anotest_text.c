@@ -3,23 +3,43 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_text.h -- module lifecycle over the FreeType backend:
- *   - ano_text_version before init reports all zeros (no backend yet);
- *   - ano_text_init returns 0 and is idempotent (second call also 0);
- *   - the linked FreeType is the vendored submodule generation (2.13+), proving the
- *     static-link chain anoptic_core -> libfreetype.a actually resolves symbols;
- *   - ano_text_shutdown zeroes the version view, double shutdown is safe, and a full
- *     init -> shutdown -> init -> shutdown cycle works (heap + library rebuild cleanly).
+/* Coverage for anoptic_text.h -- module lifecycle, and the glyph-curve bake path:
+ *   - lifecycle: version zeros before init, idempotent init, linked FreeType is the
+ *     vendored 2.13+ submodule, clean shutdown / double shutdown / re-init;
+ *   - white-box bake math (via src include of text/text_internal.h): binary16 pack is
+ *     round-trip exact on representable values, RNE-accurate and monotone elsewhere,
+ *     clamps overflow to inf; monotone quad splitting yields chained sandwich-monotone
+ *     pieces (0/1/2-split cases); cubic->quad conversion preserves endpoints and stays
+ *     within tolerance on a circle arc;
+ *   - bake of Geist-Regular ASCII 32..126 against an independent decoder of the
+ *     documented stream grammar: contiguous glyph extents, bit-exact contour closure,
+ *     exact post-quantization monotone sandwich, directory bbox == decoded bbox,
+ *     fill-right winding (chord shoelace: 'H' negative; 'O' outer negative + hole
+ *     positive), per-glyph and total curve counts pinned to the FONT_RENDER.md audit
+ *     oracle (1654 total, '@' 63, space 0), advance/metrics sanity, EINVAL/ENOMEM
+ *     argument contract, and bit-identical determinism across two bakes.
+ * Requires resources/fonts/Geist staged next to the binary (tests/CMakeLists.txt).
  * Exit 0 == pass; failures print what broke. */
 
+#include <errno.h>
+#include <math.h>
 #include <stdio.h>
+#include <string.h>
 
+#include "anoptic_filesystem.h"
+#include "anoptic_memory.h"
 #include "anoptic_text.h"
+#include "text/text_internal.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
+
+#define FONT_PATH "resources/fonts/Geist/static/Geist-Regular.ttf"
+
+// ---------------------------------------------------------------------------------------------
+// Lifecycle.
 
 static void expect_version_zero(const char *when)
 {
@@ -29,10 +49,9 @@ static void expect_version_zero(const char *when)
     CHECK(maj == 0 && min == 0 && pat == 0, "version is all zeros without a live backend");
 }
 
-int main(void)
+static void test_lifecycle(void)
 {
     expect_version_zero("before init");
-
     CHECK(ano_text_init() == 0, "ano_text_init succeeds");
     CHECK(ano_text_init() == 0, "second init is an idempotent success");
 
@@ -50,6 +69,299 @@ int main(void)
     CHECK(ano_text_init() == 0, "re-init after shutdown succeeds");
     ano_text_version(&maj, &min, &pat);
     CHECK(maj == 2 && min >= 13, "re-initialized backend reports the same FreeType");
+    ano_text_shutdown();
+}
+
+// ---------------------------------------------------------------------------------------------
+// White-box: binary16 conversion.
+
+static void test_half(void)
+{
+    // Exactly representable values round-trip bit-perfectly.
+    const float exact[] = { 0.0f, 0.5f, 1.0f, -0.25f, 1.5f, -2.0f, 0.109375f, 65504.0f };
+    for (size_t i = 0; i < sizeof exact / sizeof *exact; i++)
+        CHECK(ano_half_unpack(ano_half_pack(exact[i])) == exact[i],
+              "representable value round-trips exactly");
+
+    // Coordinate-range values: relative error within one half ulp; order preserved.
+    float prev = -10.0f;
+    for (int k = 0; k <= 2000; k++)
+    {
+        float v  = (float)(k - 1000) / 333.0f; // [-3, 3], the em coordinate envelope
+        float rt = ano_half_unpack(ano_half_pack(v));
+        CHECK(fabsf(rt - v) <= fabsf(v) / 1024.0f + 1e-7f, "round-trip within half precision");
+        CHECK(rt >= prev, "quantization is monotone");
+        prev = rt;
+    }
+
+    CHECK(ano_half_pack(1e9f) == 0x7C00u, "overflow clamps to +inf");
+    CHECK(ano_half_pack(-1e9f) == 0xFC00u, "overflow clamps to -inf");
+    CHECK(ano_half_unpack(0x7C00u) > 3.0e38f, "+inf unpacks huge (sentinel is unmistakable)");
+    // Subnormal half territory survives the round trip too (never hit by coordinates).
+    float tiny = 3.0e-6f;
+    CHECK(fabsf(ano_half_unpack(ano_half_pack(tiny)) - tiny) < 1e-7f, "subnormal path sane");
+}
+
+// ---------------------------------------------------------------------------------------------
+// White-box: monotone splitting and cubic conversion.
+
+static void check_monotone_quad(const AnoQuad *q, const char *msg)
+{
+    const double e = 1e-9;
+    int ok = 1;
+    for (int axis = 0; axis < 2; axis++)
+    {
+        const double *c = axis ? q->y : q->x;
+        double lo = c[0] < c[2] ? c[0] : c[2];
+        double hi = c[0] < c[2] ? c[2] : c[0];
+        if (c[1] < lo - e || c[1] > hi + e)
+            ok = 0;
+    }
+    CHECK(ok, msg);
+}
+
+static void test_quad_split(void)
+{
+    AnoQuad out[3];
+
+    // Already monotone: passes through whole.
+    AnoQuad mono = { .x = { 0.0, 0.2, 1.0 }, .y = { 0.0, 0.5, 1.0 } };
+    CHECK(ano_quad_split_monotone(&mono, out) == 1, "monotone quad stays whole");
+
+    // Line-as-quad (exact midpoint control): both axes' quadratic term is exactly zero.
+    AnoQuad line = { .x = { 0.0, 1.0, 2.0 }, .y = { 0.25, 0.5, 0.75 } };
+    CHECK(ano_quad_split_monotone(&line, out) == 1, "degenerate line quad never splits");
+
+    // One y-extremum at t=0.5: two pieces sharing B(0.5) = (1,1).
+    AnoQuad arch = { .x = { 0.0, 1.0, 2.0 }, .y = { 0.0, 2.0, 0.0 } };
+    int n = ano_quad_split_monotone(&arch, out);
+    CHECK(n == 2, "single-extremum quad splits in two");
+    if (n == 2)
+    {
+        CHECK(fabs(out[0].x[2] - 1.0) < 1e-12 && fabs(out[0].y[2] - 1.0) < 1e-12,
+              "split lands on the curve apex");
+        CHECK(out[0].x[2] == out[1].x[0] && out[0].y[2] == out[1].y[0],
+              "pieces chain exactly");
+        check_monotone_quad(&out[0], "left piece is monotone");
+        check_monotone_quad(&out[1], "right piece is monotone");
+    }
+
+    // Extrema on both axes: three chained monotone pieces.
+    AnoQuad hook = { .x = { 0.0, 2.0, 1.0 }, .y = { 0.0, -1.0, 2.0 } };
+    n = ano_quad_split_monotone(&hook, out);
+    CHECK(n == 3, "two-extrema quad splits in three");
+    for (int i = 0; i < n; i++)
+        check_monotone_quad(&out[i], "each piece is monotone");
+    for (int i = 1; i < n; i++)
+        CHECK(out[i - 1].x[2] == out[i].x[0] && out[i - 1].y[2] == out[i].y[0],
+              "three pieces chain exactly");
+}
+
+static void test_cubic(void)
+{
+    // Kappa cubic approximating a unit quarter circle.
+    const double k = 0.5522847498307936;
+    double px[4] = { 1.0, 1.0, k, 0.0 };
+    double py[4] = { 0.0, k, 1.0, 1.0 };
+    AnoQuad q[32];
+    int n = ano_cubic_to_quads(px, py, 1e-3, q, 32);
+    printf("cubic quarter-circle -> %d quads at 1e-3 em tolerance\n", n);
+    CHECK(n >= 2 && n <= 32, "arc subdivides but respects the cap");
+    CHECK(q[0].x[0] == 1.0 && q[0].y[0] == 0.0, "first endpoint exact");
+    CHECK(q[n - 1].x[2] == 0.0 && q[n - 1].y[2] == 1.0, "last endpoint exact");
+    for (int i = 1; i < n; i++)
+        CHECK(q[i - 1].x[2] == q[i].x[0] && q[i - 1].y[2] == q[i].y[0], "quads chain exactly");
+    for (int i = 0; i < n; i++)
+        for (int s = 0; s <= 16; s++)
+        {
+            double t = s / 16.0, u = 1.0 - t;
+            double x = u * u * q[i].x[0] + 2 * u * t * q[i].x[1] + t * t * q[i].x[2];
+            double y = u * u * q[i].y[0] + 2 * u * t * q[i].y[1] + t * t * q[i].y[2];
+            CHECK(fabs(sqrt(x * x + y * y) - 1.0) < 3e-3, "arc stays within tolerance of the circle");
+        }
+    CHECK(ano_cubic_to_quads(px, py, 1e-3, q, 0) == -1, "maxOut < 1 is rejected");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bake validation: an independent decoder of the documented stream grammar.
+
+typedef struct DecodedGlyph {
+    float    minX, minY, maxX, maxY;
+    double   shoelace[8];  // chord shoelace per contour (CCW positive)
+    uint32_t contourCount;
+    uint32_t curves;
+} DecodedGlyph;
+
+static float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 0xFFFFu)); }
+static float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
+
+// Walks one glyph's stream range; checks grammar, closure, and the monotone sandwich.
+// Returns the stream index just past the glyph (== the next glyph's offset).
+static uint32_t decode_glyph(const uint32_t *pts, const AnoGlyphEntry *e, DecodedGlyph *d)
+{
+    memset(d, 0, sizeof *d);
+    d->minX = d->minY = 1e30f;
+    d->maxX = d->maxY = -1e30f;
+    uint32_t i = e->pointOffset;
+    if (e->curveCount == 0)
+        return i;
+
+    uint32_t startBits = pts[i];
+    CHECK(startBits != ANO_TEXT_POINT_SENTINEL, "glyph does not start with a sentinel");
+    float p0x = half_lo(pts[i]), p0y = half_hi(pts[i]);
+    uint32_t lastBits = startBits;
+    i++;
+    d->contourCount = 1;
+
+    for (uint32_t c = 0; c < e->curveCount; c++)
+    {
+        if (pts[i] == ANO_TEXT_POINT_SENTINEL)
+        {
+            CHECK(lastBits == startBits, "contour closes bit-exactly at a sentinel");
+            i++;
+            startBits = pts[i];
+            CHECK(startBits != ANO_TEXT_POINT_SENTINEL, "no doubled sentinel");
+            p0x = half_lo(pts[i]);
+            p0y = half_hi(pts[i]);
+            lastBits = startBits;
+            i++;
+            if (d->contourCount < 8)
+                d->contourCount++;
+        }
+        uint32_t u1 = pts[i++];
+        uint32_t u2 = pts[i++];
+        CHECK(u1 != ANO_TEXT_POINT_SENTINEL && u2 != ANO_TEXT_POINT_SENTINEL,
+              "curve points are never sentinels");
+        float p1x = half_lo(u1), p1y = half_hi(u1);
+        float p2x = half_lo(u2), p2y = half_hi(u2);
+
+        // Post-quantization monotone sandwich must hold EXACTLY (the bake clamps).
+        CHECK(p1x >= fminf(p0x, p2x) && p1x <= fmaxf(p0x, p2x), "control inside endpoints (x)");
+        CHECK(p1y >= fminf(p0y, p2y) && p1y <= fmaxf(p0y, p2y), "control inside endpoints (y)");
+
+        float xs[3] = { p0x, p1x, p2x }, ys[3] = { p0y, p1y, p2y };
+        for (int p = 0; p < 3; p++)
+        {
+            d->minX = fminf(d->minX, xs[p]);
+            d->maxX = fmaxf(d->maxX, xs[p]);
+            d->minY = fminf(d->minY, ys[p]);
+            d->maxY = fmaxf(d->maxY, ys[p]);
+        }
+        d->shoelace[d->contourCount - 1] += (double)p0x * p2y - (double)p2x * p0y;
+
+        p0x = p2x;
+        p0y = p2y;
+        lastBits = u2;
+        d->curves++;
+    }
+    CHECK(lastBits == startBits, "final contour closes bit-exactly");
+    return i;
+}
+
+static void validate_bake(const AnoFontBake *b)
+{
+    CHECK(b->glyphCount == 95, "ASCII 32..126 bakes 95 glyphs");
+    CHECK(b->upem == 1000, "Geist reports upem 1000");
+    CHECK(b->firstCodepoint == 32, "range echoed back");
+    CHECK(b->pointCount > 0 && b->points != NULL, "point stream exists");
+    CHECK(b->ascender > 0.0f && b->descender < 0.0f, "ascender above, descender below baseline");
+    CHECK(b->lineHeight > b->ascender - b->descender - 0.5f && b->lineHeight > 0.0f,
+          "line height sane");
+
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < b->glyphCount; i++)
+    {
+        const AnoGlyphEntry *e = &b->glyphs[i];
+        uint32_t next = (i + 1 < b->glyphCount) ? b->glyphs[i + 1].pointOffset : b->pointCount;
+        CHECK(e->pointOffset <= next && next <= b->pointCount, "offsets are ordered");
+        CHECK(e->flags == 0, "every ASCII codepoint exists in Geist");
+        CHECK(e->advance > 0.0f && e->advance < 2.0f, "advance is positive and sane");
+
+        DecodedGlyph d;
+        uint32_t end = decode_glyph(b->points, e, &d);
+        CHECK(end == next, "glyph stream extent is contiguous");
+        CHECK(d.curves == e->curveCount, "decoder consumed exactly curveCount curves");
+        if (e->curveCount > 0)
+        {
+            CHECK(d.minX == e->bboxMin[0] && d.minY == e->bboxMin[1]
+                      && d.maxX == e->bboxMax[0] && d.maxY == e->bboxMax[1],
+                  "directory bbox equals decoded bbox bit-exactly");
+            CHECK(d.minX > -1.0f && d.maxX < 2.0f && d.minY > -1.0f && d.maxY < 2.0f,
+                  "bbox within the em envelope");
+        }
+        total += e->curveCount;
+    }
+
+    // Audit oracle (FONT_RENDER.md section 3): counts measured on this exact font file
+    // by an independent fontTools implementation (with composite glyphs decomposed --
+    // ':',';','`','i','j' are components in Geist).
+    printf("bake: %u monotone curves across ASCII (audit oracle 1654), %u stream points\n",
+           total, b->pointCount);
+    CHECK(total == 1654, "total monotone curve count matches the fontTools audit");
+    if (total != 1654)
+        for (uint32_t i = 0; i < b->glyphCount; i++)
+            printf("  U+%04X '%c' curves=%u\n", b->firstCodepoint + i,
+                   (char)(b->firstCodepoint + i), b->glyphs[i].curveCount);
+    CHECK(b->glyphs[' ' - 32].curveCount == 0, "space is blank");
+    CHECK(b->glyphs['@' - 32].curveCount == 63, "'@' matches the audit worst case");
+
+    // Winding convention: fill-right => clockwise outers => negative chord shoelace.
+    DecodedGlyph H, O;
+    decode_glyph(b->points, &b->glyphs['H' - 32], &H);
+    CHECK(H.contourCount == 1, "'H' is a single contour");
+    CHECK(H.shoelace[0] < 0.0, "'H' winds clockwise (fill-right)");
+    decode_glyph(b->points, &b->glyphs['O' - 32], &O);
+    CHECK(O.contourCount == 2, "'O' is outer + hole");
+    if (O.contourCount == 2)
+    {
+        double a = O.shoelace[0], h = O.shoelace[1];
+        CHECK((a < 0.0) != (h < 0.0), "'O' contours wind oppositely");
+        CHECK(a + h < 0.0, "'O' outer dominates (net clockwise ink)");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+
+int main(void)
+{
+    test_lifecycle();
+    test_half();
+    test_quad_split();
+    test_cubic();
+
+    CHECK(ano_fs_chdir_gamepath(), "chdir to the exe directory (staged font root)");
+    CHECK(ano_text_init() == 0, "init for bake tests");
+
+    CHECK(ano_text_font_load("resources/fonts/does-not-exist.ttf") == 0,
+          "loading a missing file fails cleanly");
+    AnoFontId geist = ano_text_font_load(FONT_PATH);
+    CHECK(geist != 0, "Geist-Regular loads");
+
+    mi_heap_t *heapA LOCALHEAPATTR = mi_heap_new();
+    mi_heap_t *heapB LOCALHEAPATTR = mi_heap_new();
+    CHECK(heapA != NULL && heapB != NULL, "bake heaps");
+
+    AnoFontBake bake = { 0 };
+    CHECK(ano_text_font_bake(0, 32, 126, heapA, &bake) == EINVAL, "bad handle rejected");
+    CHECK(ano_text_font_bake(geist, 126, 32, heapA, &bake) == EINVAL, "reversed range rejected");
+    CHECK(ano_text_font_bake(geist, 32, 126, NULL, &bake) == EINVAL, "NULL heap rejected");
+
+    CHECK(ano_text_font_bake(geist, 32, 126, heapA, &bake) == 0, "ASCII bake succeeds");
+    validate_bake(&bake);
+
+    // Determinism: a second bake is bit-identical (double math, fixed iteration order).
+    AnoFontBake again = { 0 };
+    CHECK(ano_text_font_bake(geist, 32, 126, heapB, &again) == 0, "second bake succeeds");
+    CHECK(again.pointCount == bake.pointCount && again.glyphCount == bake.glyphCount,
+          "second bake has identical shape");
+    if (again.pointCount == bake.pointCount && again.glyphCount == bake.glyphCount)
+    {
+        CHECK(memcmp(again.points, bake.points, bake.pointCount * 4u) == 0,
+              "point streams are bit-identical");
+        CHECK(memcmp(again.glyphs, bake.glyphs, bake.glyphCount * sizeof(AnoGlyphEntry)) == 0,
+              "directories are bit-identical");
+    }
+
     ano_text_shutdown();
 
     if (failures == 0)

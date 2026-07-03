@@ -9,6 +9,7 @@
 // thread), never the global allocator. Design of record: FONT_RENDER.md.
 
 #include "anoptic_text.h"
+#include "text/text_internal.h"
 
 #include <errno.h>
 
@@ -21,9 +22,12 @@
 #include FT_SYSTEM_H
 #include FT_ERRORS_H
 
+#define ANO_TEXT_MAX_FONTS 8u
+
 static mi_heap_t           *g_textHeap;  // owns every FreeType allocation
 static struct FT_MemoryRec_ g_ftMemory;  // hook table handed to FT_New_Library
 static FT_Library           g_ftLibrary; // non-NULL <=> module initialized
+static FT_Face              g_faces[ANO_TEXT_MAX_FONTS]; // slot i <-> AnoFontId i+1
 
 // FT_Alloc_Func: route FreeType's malloc into the module heap.
 static void *text_ft_alloc(FT_Memory memory, long size)
@@ -82,11 +86,19 @@ int ano_text_init(void)
     return 0;
 }
 
-// Destroys the FreeType library first (clean teardown through the hooks), then the
-// module heap -- a wholesale page release; any straggler allocation dies with it.
+// Destroys faces then the FreeType library (clean teardown through the hooks), then
+// the module heap -- a wholesale page release; any straggler allocation dies with it.
 // Must run on the init thread.
 void ano_text_shutdown(void)
 {
+    for (uint32_t i = 0; i < ANO_TEXT_MAX_FONTS; i++)
+    {
+        if (g_faces[i] != NULL)
+        {
+            FT_Done_Face(g_faces[i]);
+            g_faces[i] = NULL;
+        }
+    }
     if (g_ftLibrary != NULL)
     {
         FT_Done_Library(g_ftLibrary);
@@ -111,4 +123,59 @@ void ano_text_version(int *major, int *minor, int *patch)
         *minor = min;
     if (patch != NULL)
         *patch = pat;
+}
+
+// Opens a scalable face into the first free registry slot. Returns its 1-based handle;
+// 0 on any failure (module down, bad path, bitmap-only face, registry full).
+// Invariant: must run on the init thread (FreeType allocates through the module heap).
+AnoFontId ano_text_font_load(const char *path)
+{
+    if (g_ftLibrary == NULL || path == NULL)
+        return 0;
+
+    uint32_t slot = ANO_TEXT_MAX_FONTS;
+    for (uint32_t i = 0; i < ANO_TEXT_MAX_FONTS; i++)
+    {
+        if (g_faces[i] == NULL)
+        {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == ANO_TEXT_MAX_FONTS)
+    {
+        ano_log_error("text: font registry full (%u faces), cannot load '%s'",
+                      ANO_TEXT_MAX_FONTS, path);
+        return 0;
+    }
+
+    FT_Face  face = NULL;
+    FT_Error err  = FT_New_Face(g_ftLibrary, path, 0, &face);
+    if (err != FT_Err_Ok)
+    {
+        const char *msg = FT_Error_String(err);
+        ano_log_error("text: FT_New_Face('%s') failed: %d (%s)", path, (int)err,
+                      msg ? msg : "?");
+        return 0;
+    }
+    if (!FT_IS_SCALABLE(face))
+    {
+        // The bake path consumes outlines only; bitmap strikes have no curves.
+        ano_log_error("text: '%s' is not a scalable outline face", path);
+        FT_Done_Face(face);
+        return 0;
+    }
+
+    g_faces[slot] = face;
+    ano_log_info("text: loaded '%s' (%ld glyphs, upem %u)", path, (long)face->num_glyphs,
+                 (unsigned)face->units_per_EM);
+    return slot + 1u;
+}
+
+// Internal: the FT_Face behind a handle as an opaque pointer; NULL when invalid.
+void *ano_text_face(AnoFontId font)
+{
+    if (font == 0 || font > ANO_TEXT_MAX_FONTS)
+        return NULL;
+    return g_faces[font - 1u];
 }
