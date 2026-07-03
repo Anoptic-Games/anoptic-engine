@@ -8,8 +8,12 @@
 #include <stdbool.h>
 #include "vulkan_backend/structs.h"
 
-// Initialize flat pipeline layout, cache, shaders, and variants (opaque and blended)
+// Initialize flat pipeline layout, cache, shaders, and variants (opaque and blended).
+// The main lane rasterizes with backface culling (review finding 7).
 bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto);
+
+// Ditto for the two-sided lane (cullMode NONE): opaque glTF doubleSided materials route here.
+bool ano_pipeline_flat_twosided_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto);
 
 // Clean up flat pipeline resources
 void ano_pipeline_flat_cleanup(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto);

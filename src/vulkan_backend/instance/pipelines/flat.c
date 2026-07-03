@@ -8,7 +8,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
+// Shared builder for the two opaque flat lanes (review finding 7): PIPELINE_FLAT rasterizes with
+// backface culling (glTF single-sided materials — the default — never need their backfaces), while
+// PIPELINE_FLAT_TWOSIDED keeps cullMode NONE for doubleSided materials (the parser routes them).
+// Identical shaders/layout/state otherwise, so depth stays EQUAL-compatible across both lanes.
+static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto,
+                                PipelineType type, VkCullModeFlags cullMode)
 {
 	// 1. Setup cache
 	VkPipelineCacheCreateInfo cacheInfo = {};
@@ -44,18 +49,19 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 		return false;
 	}
 
-	proto->type = PIPELINE_FLAT;
+	proto->type = type;
 	proto->implementationCount = 3;
 	proto->implementations = calloc(3, sizeof(PipelineImplementation));
-	proto->supportedFeatures = 
-		PBR_FEATURE_BASE_COLOR_FACTOR | 
-		PBR_FEATURE_BASE_COLOR_TEXTURE | 
-		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR | 
-		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE | 
+	proto->supportedFeatures =
+		PBR_FEATURE_BASE_COLOR_FACTOR |
+		PBR_FEATURE_BASE_COLOR_TEXTURE |
+		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR |
+		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE |
 		PBR_FEATURE_OCCLUSION_TEXTURE |
 		PBR_FEATURE_ALPHA_MODE_OPAQUE |
-		PBR_FEATURE_ALPHA_MODE_BLEND |
-		PBR_FEATURE_DOUBLE_SIDED;   // rasterizer uses cullMode NONE, so all geometry is double-sided
+		PBR_FEATURE_ALPHA_MODE_BLEND;
+	if (cullMode == VK_CULL_MODE_NONE)
+		proto->supportedFeatures |= PBR_FEATURE_DOUBLE_SIDED; // only the uncull(ed) lane renders backfaces
 
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback. The depth
 	// pre-pass variant (index 2) uses the ANO_DEPTH_ONLY compile of the same source (position
@@ -118,7 +124,9 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	rasterizer.rasterizerDiscardEnable = VK_FALSE;
 	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 	rasterizer.lineWidth = 1.0f;
-	rasterizer.cullMode = VK_CULL_MODE_NONE;
+	// frontFace stays COUNTER_CLOCKWISE on both lanes: the engine's full transform chain classifies
+	// glTF front faces as front under it (flat.frag's gl_FrontFacing normal flip depends on this).
+	rasterizer.cullMode = cullMode;
 	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.depthBiasEnable = VK_FALSE;
 	rasterizer.depthBiasConstantFactor = 0.0f;
@@ -286,6 +294,16 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
 
 	return true;
+}
+
+bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
+{
+	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT, VK_CULL_MODE_BACK_BIT);
+}
+
+bool ano_pipeline_flat_twosided_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
+{
+	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT_TWOSIDED, VK_CULL_MODE_NONE);
 }
 
 void ano_pipeline_flat_cleanup(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)

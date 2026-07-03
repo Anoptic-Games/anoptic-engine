@@ -246,6 +246,19 @@ static const RenderPassDef g_framePasses[] = {
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // opaque + transmission load this depth
     },
+    // 4b. Depth pre-pass, two-sided lane (review finding 7): the opaque doubleSided partition laid
+    //     down with cullMode NONE. LOADs 4a's depth (which CLEARed); the barrier orders 4a's writes
+    //     under this pass's LESS test.
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_FLAT_TWOSIDED,
+        .implementationIndex    = 2,  // depth-only variant
+        .perView                = true,
+        .colorAttachmentCount   = 0,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,
+        .depthBarrierBefore     = true,                             // wait on 4a's depth writes
+    },
     // 4. Opaque geometry (perView: rendered once per view into that view's HDR target + depth)
     {
         .type                   = PASS_GRAPHICS,
@@ -256,7 +269,22 @@ static const RenderPassDef g_framePasses[] = {
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // EQUAL-test against the pre-pass depth
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
-        .depthBarrierBefore     = true,                             // wait on the pre-pass depth writes
+        .depthBarrierBefore     = true,                             // wait on BOTH pre-passes' depth writes
+        .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
+    },
+    // 4c. Opaque two-sided lane (review finding 7): same shading as 4 with cullMode NONE, LOADing
+    //     4's color/id (4 CLEARed; its depth barrier already ordered both pre-passes, and EQUAL
+    //     assigns each pixel to exactly one lane). Both opaque passes resolve the picking id; the
+    //     LAST resolve — this one — is what ano_collect_pick reads, so both lanes stay pickable.
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_FLAT_TWOSIDED,
+        .implementationIndex    = 0,  // opaque variant
+        .perView                = true,
+        .colorAttachmentCount   = 2,
+        .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,
         .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
     },
     // 5. Transmissive geometry (depth-sorted "over" lane)
@@ -1009,7 +1037,8 @@ void recordCommandBuffer(uint32_t imageIndex)
                 color[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                 color[1].imageView = rendererState.pickIdView[v];
                 color[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                color[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                // CLEAR only with the first opaque pass; the two-sided lane LOADs its ids (finding 7).
+                color[1].loadOp = pass->colorLoadOp;
                 color[1].clearValue.color.uint32[0] = 0xFFFFFFFFu;
                 if (v == 0) {
                     color[1].resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
