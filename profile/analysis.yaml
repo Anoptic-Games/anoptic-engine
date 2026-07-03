@@ -1,126 +1,17 @@
 Range: "\"Frame 0\""
 RelativeFrameDuration: 1
 Rules:
-  - Name: VRAM Limited
-    Category: Throughputs
-    Explanation: "The VRAM is the physical GPU memory (aka GPU DRAM).  \nAll of the VRAM traffic goes through the L2 cache."
-    Suggestion: "Reducing the number of VRAM accesses should improve performance.  \nTry increasing the L1TEX and L2 cache hit rates.  \nTry reducing texture-format sizes.  \nGo to the L1TEX L2 section and look at the L2 Requests By Client."
-    RangeSpeedupFactor: 1.0789215582670617
-    FrameGain: 7.3148559932219364
-    Metrics:
-      - Name: VRAM Throughput [%]
-        Id: gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed
-        Description: GPU DRAM throughput
-        Value: 21.9373
-      - Name: L1TEX Hit Rate [%]
-        Id: l1tex__t_sector_hit_rate.pct
-        Description: Percentage of L1TEX sector accesses that hit
-        Value: 65.8742
-      - Name: L2 Hit Rate [%]
-        Id: lts__t_sector_hit_rate.pct
-        Description: Percentage of total L2 sector accesses that hit
-        Value: 70.9994
-      - Name: Warps Issue Stalled Long Scoreboard L1 [%]
-        Id: smsp__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a scoreboard dependency on a L1TEX (local, global, surface, tex) operation
-        Value: 5.5879
-      - Name: Warps Issue Stalled LG Throttle [%]
-        Id: smsp__warps_issue_stalled_lg_throttle.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a free entry in the LSU instruction queue (for Local and Global memory accesses)
-        Value: 0.0010
-      - Name: Warps Issue Stalled TEX Throttle [%]
-        Id: smsp__warps_issue_stalled_tex_throttle.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a free entry in the TEX instruction queue
-        Value: 1.7260
-  - Name: Warp Stalled by L1TEX Long Scoreboard
-    Category: SM Warp Latency
-    Explanation: "Percentage of cumulative warp cycles for warps waiting on a dependency on a memory read from:\n- textures or buffers (SRVs)\n- surfaces (UAVs or ROVs)\n- local or global memory"
-    Suggestion: "Go to the Input Dependency panel of the Shader Profiler and locate the most-expensive L1TEX load instructions.  \n* Try better hiding the latency of the L1TEX instructions:  \n  - With other math instructions: try hoisting L1TEX instructions (i.e.: prefetch: move the texture fetches so they happen earlier in the program)  \n  - With other L1TEX instructions: try batching likely hits (e.g. by grouping independent texture fetches in batches of 2 to 4 back-to-back instructions at the HLSL level)  \n  - Removing unnecessary control flow that prevents L1TEX instructions from being batched\n* Try reducing the latencies of the L1TEX instructions:  \n  - Consider using more compact texture formats and/or reducing texture sizes\n  - Consider using Buffer SRV Loads instead of Buffer UAV Loads  \n  - Consider removing indirections in buffer accesses to reduce chains of dependent loads\n  - If you are doing path tracing, consider disabling anisotropic filtering globally, as that should not degrade image quality"
-    RangeSpeedupFactor: 1.0591857799892801
-    FrameGain: 5.5878563616931443
-    Metrics:
-      - Name: Warps Issue Stalled Long Scoreboard L1 [%]
-        Id: smsp__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a scoreboard dependency on a L1TEX (local, global, surface, tex) operation
-        Value: 5.5879
-      - Name: L1TEX Hit Rate [%]
-        Id: l1tex__t_sector_hit_rate.pct
-        Description: Percentage of L1TEX sector accesses that hit
-        Value: 65.8742
-      - Name: L2 Hit Rate [%]
-        Id: lts__t_sector_hit_rate.pct
-        Description: Percentage of total L2 sector accesses that hit
-        Value: 70.9994
-  - Name: Warp Stalled by TEX Throttle
-    Category: SM Warp Latency
-    Explanation: "Percentage of cumulative warp cycles for warps stalled due to the TEX input queue being full.  \nThe SM texture pipeline forwards texture (SRV) and surface (UAV) instructions to the L1TEX unit's TEXIN stage.  \nOn GPUs where FP64 or Tensor pipelines are decoupled, the texture pipeline forwards those types of instructions, too."
-    Suggestion: "Go to the Shader Profiler and locate which HLSL instructions are getting most of the tex_throttle stalls.  \nTry sinking L1TEX instructions (i.e.: move the texture fetches within branches, to reduce the number of executed texture instructions).  \nTry reducing the latencies of the L1TEX instructions (see Warp Stalled by Long Scoreboard)."
-    RangeSpeedupFactor: 1.0175632180553318
-    FrameGain: 1.7260075584195067
-    Metrics:
-      - Name: Warps Issue Stalled TEX Throttle [%]
-        Id: smsp__warps_issue_stalled_tex_throttle.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a free entry in the TEX instruction queue
-        Value: 1.7260
-      - Name: L1TEX Hit Rate [%]
-        Id: l1tex__t_sector_hit_rate.pct
-        Description: Percentage of L1TEX sector accesses that hit
-        Value: 65.8742
-      - Name: L2 Hit Rate [%]
-        Id: lts__t_sector_hit_rate.pct
-        Description: Percentage of total L2 sector accesses that hit
-        Value: 70.9994
-  - Name: Warp Stalled by No Instruction
-    Category: SM Warp Latency
-    Explanation: Percentage of cumulative warp cycles for warps waiting to be selected for instruction fetch, or waiting on an instruction cache miss.
-    Suggestion: "Reducing the number of SASS instructions per shader may help (for instance, by not unrolling certain loops).  \nReducing the number of active shaders may help (for instance, by doing lighting in a raygen shader instead of in hit shaders).  \nReducing ray-latency divergence may help, for instance by using Shader Execution Reordering (SER).  \nNote: As long as the instructions that are never hit are in large chunks, they should not take up space in the SM instruction cache."
-    RangeSpeedupFactor: 1.0068920866140416
-    FrameGain: 0.68449108952859383
-    Metrics:
-      - Name: Warps Issue Stalled No Instruction [%]
-        Id: smsp__warps_issue_stalled_no_instruction.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting to be selected for instruction fetch, or waiting on an instruction cache miss
-        Value: 0.6845
-  - Name: Warp Stalled by MIO Throttle
-    Category: SM Warp Latency
-    Explanation: "Percentage of cumulative warp cycles for warps stalled due to the MIO input queue being full.  \nMIO throttle is a superset of LG (Local/Global Memory) throttle. See LG throttle.  \nOther types of instruction to MIO beyond LG include shared memory, shuffle, and indexed constant-buffer loads."
-    Suggestion: Go to the Shader Profiler and locate which HLSL instructions are getting most of the mio_throttle stalls.
-    RangeSpeedupFactor: 1.001391641961628
-    FrameGain: 0.13897079856807215
-    Metrics:
-      - Name: Warps Issue Stalled MIO Throttle MIO [%]
-        Id: smsp__warps_issue_stalled_mio_throttle_pipe_mio.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a free entry in the MIO instruction queue
-        Value: 0.1390
-  - Name: Warp Stalled by Immediate Cache Miss
-    Category: SM Warp Latency
-    Explanation: IMC-cache misses can originate from immediate-indexed constant-buffer loads or from bindless-header loads or texture-header loads.
-    Suggestion: "Go to the Shader Profiler and locate which HLSL instructions have most imc_miss stalls.  \nAvoiding frequent constant-buffer updates between draw/dispatch calls may help."
-    RangeSpeedupFactor: 1.0013552144899065
-    FrameGain: 0.13533803692197255
-    Metrics:
-      - Name: Warps Issue Stalled IMC Miss [%]
-        Id: smsp__warps_issue_stalled_imc_miss.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for an immediate constant cache (IMC) miss
-        Value: 0.1353
-  - Name: L2 Misses in System Memory
-    Category: PCIe
-    Explanation: "% of the L2 cycles with a pending miss in System Memory.  \nL2 misses to System Memory (aka CPU memory) have a much higher latency than misses to VRAM."
-    Suggestion: "On DX11: Changing DYNAMIC (system memory) resources to DEFAULT (VRAM) resources may help.  \nOn DX12: Changing UPLOAD heaps (or POOL_L0 heaps) to CPU-Visible VRAM (via NVAPI) may help. See https://developer.nvidia.com/blog/optimizing-dx12-resource-uploads-to-the-gpu-using-cpu-visible-vram/."
-    Metrics:
-      - Name: PCIe Throughput [%]
-        Id: pcie__throughput.avg.pct_of_peak_sustained_elapsed
-        Description: PCIe Throughput
-        Value: 0.4623
   - Name: FE Go-Idle Cycles Async Queue
     Category: Wait for Idles
     Explanation: "Go-Idle commands in an async-COMPUTE queue may be caused by changes of shader-visible descriptor heaps.  \nCopy commands in an async-COMPUTE queue from/to system memory (aka CPU memory) may produce a Go-Idle command."
     Suggestion: "* Do not change the shader-visible descriptor heap (SetDescriptorHeaps with a different heap) in an async-COMPUTE queue.\n* Do not use DX12 Copy commands to copy from/to system memory in an async-COMPUTE queue, but:\n  - Use Dispatch commands to perform such copies, or\n  - Move such Copy commands to a DIRECT or async-COPY queue, or\n  - If possible, write directly to CPU-Visible VRAM using NVAPI (without using a DX12 Copy)."
+    RangeSpeedupFactor: 1.009417528248022
+    FrameGain: 0.47357123967373632
     Metrics:
       - Name: FE Cycles Stalled WFI Async Queue [%]
         Id: fe__cycles_stalled_cmd_wfi_queue_async.avg.pct_of_peak_sustained_elapsed
         Description: Number of cycles the Front End is stalled on Wait For Idle for an async queue
-        Value: 0.0000
+        Value: 0.9330
   - Name: GPU Engines Active [%]
     Category: GPU Idle
     Explanation: ""
@@ -129,15 +20,15 @@ Rules:
       - Name: GR Cycles Active [%]
         Id: gr__cycles_active.avg.pct_of_peak_sustained_elapsed
         Description: Percentage of elapsed cycles where the Graphics/Compute Engine is active
-        Value: 40.3485
-      - Name: Engine Active Copy Sync [%]
-        Id: gpu__engine_cycles_active_any_syncce.avg.pct_of_peak_sustained_elapsed
-        Description: Percentage of elapsed cycles where a synchronous Copy Engine is active (Copy in a DIRECT or COMPUTE queue)
-        Value: 0.1407
+        Value: 82.6866
       - Name: Engine Active Copy Async [%]
         Id: gpu__engine_cycles_active_any_asyncce.avg.pct_of_peak_sustained_elapsed
         Description: Percentage of elapsed cycles where an asynchronous Copy Engine is active (Copy in a COPY queue)
-        Value: 0.0527
+        Value: 13.3121
+      - Name: Engine Active Copy Sync [%]
+        Id: gpu__engine_cycles_active_any_syncce.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of elapsed cycles where a synchronous Copy Engine is active (Copy in a DIRECT or COMPUTE queue)
+        Value: 0.7923
   - Name: L1TEX L2 Hit Rates
     Category: Hit Rates
     Explanation: "If the L1TEX hit rate is poor, it causes more requests to go to the L2 cache.  \nIf the L2 hit rate is poor, it causes more requests to go to VRAM.  \nA poor L2 hit rate is typically caused by the working set size of the GPU workload exceeding the L2 cache capacity."
@@ -146,118 +37,57 @@ Rules:
       - Name: L1TEX Hit Rate [%]
         Id: l1tex__t_sector_hit_rate.pct
         Description: Percentage of L1TEX sector accesses that hit
-        Value: 65.8742
+        Value: 77.5466
       - Name: L2 Hit Rate [%]
         Id: lts__t_sector_hit_rate.pct
         Description: Percentage of total L2 sector accesses that hit
-        Value: 70.9994
+        Value: 72.8169
   - Name: Unit Throughputs
     Category: Overview
     Explanation: "The percentages of maximum throughput per GPU sub-unit or pipeline, sorted in decreasing order [Top 5].\nIf the top-SOL unit has a SOL% < 60%, the performance of this workload is latency-limited by that GPU unit.  \nIf the top-SOL unit has a SOL% > 80%, the performance of this workload is throughput-limited by that GPU unit.  \nSee https://developer.nvidia.com/blog/optimizing-vk-vkr-and-dx12-dxr-applications-using-nsight-graphics-gpu-trace-advanced-mode-metrics/"
     Suggestion: ""
     Metrics:
-      - Name: VRAM Throughput [%]
-        Id: dramc__throughput.avg.pct_of_peak_sustained_elapsed
-        Description: ""
-        Value: 21.9373
+      - Name: SM Inst Executed [%]
+        Id: sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle
+        Value: 28.7656
       - Name: CROP Throughput [%]
         Id: crop__throughput.avg.pct_of_peak_sustained_elapsed
         Description: CROP throughput
-        Value: 20.0421
+        Value: 24.7605
       - Name: PROP Throughput [%]
         Id: prop__throughput.avg.pct_of_peak_sustained_elapsed
         Description: PROP throughput
-        Value: 15.8815
-      - Name: ZROP Throughput [%]
-        Id: zrop__throughput.avg.pct_of_peak_sustained_elapsed
-        Description: ZROP throughput
-        Value: 14.4018
-      - Name: RASTER Throughput [%]
-        Id: raster__throughput.avg.pct_of_peak_sustained_elapsed
-        Description: RASTER throughput
-        Value: 13.5784
-  - Name: SM Warp Occupancy [%]
+        Value: 20.7990
+      - Name: VRAM Throughput [%]
+        Id: dramc__throughput.avg.pct_of_peak_sustained_elapsed
+        Description: ""
+        Value: 20.1791
+      - Name: SM Pipe ALU [%]
+        Id: sm__inst_executed_pipe_alu_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle for the ALU pipe. The ALU pipe is responsible for execution of most bit manipulation and logic instructions (e.g. FP32 min/max). It also executes integer instructions, excluding IMAD and IMUL. On NVIDIA Ampere architecture chips, the ALU pipeline performs fast FP32-to-FP16 conversion.
+        Value: 18.3697
+  - Name: SM Warp Occupancy (HW)
     Category: Overview
-    Explanation: Average % of warp occupancy per shader type, extracted from shader profiler data.
-    Suggestion: ""
+    Explanation: "NVIDIA Ampere RTX GPUs have up to 48 warp slots per SM.  \nNVIDIA Turing RTX GPUS have up to 32 warp slots per SM.  \nSee https://developer.nvidia.com/blog/optimizing-vk-vkr-and-dx12-dxr-applications-using-nsight-graphics-gpu-trace-advanced-mode-metrics/ and https://www.gdcvault.com/browse/gdc-19/play/1026202."
+    Suggestion: "Do not worry about warp occupancy unless SM Instruction Throughput is low.  \nFewer than 4 warps on an SM is a starvation condition; launch bigger workloads.  \nHigher is not always better.  16 warps/SM is enough to fully hide math pipe latency.  \nThe following strategies may be used to increase the SM warp occupancy:\n- Reducing the SM warp launch stall reasons (see the SM Warp Occupancy section), typically register pressure\n- Overlapping this workload with an indepedendent SM workload by using an Asynchronous Compute queue (for DX12 or VK)\n- Reducing the number of DX12 ResouceBarriers or VK vkCmdPipelineBarrier commands"
     Metrics:
-      - Name: Warps Active Shader Pixel [%]
-        Id: tpc__warps_active_shader_pixel.avg.pct_of_peak_sustained_elapsed
-        Description: ""
-        Value: 20.5302
-      - Name: Warps Active Shader Mesh [%]
-        Id: tpc__warps_active_shader_mesh.avg.pct_of_peak_sustained_elapsed
-        Description: ""
-        Value: 1.5246
-      - Name: Warps Active Shader Compute [%]
-        Id: tpc__warps_active_shader_compute.avg.pct_of_peak_sustained_elapsed
-        Description: ""
-        Value: 0.5630
-      - Name: Warps Active Shader Vertex [%]
-        Id: tpc__warps_active_shader_vertex.avg.pct_of_peak_sustained_elapsed
-        Description: ""
-        Value: 0.0019
-  - Name: SM Warp Issue Stalls [%]
-    Category: Overview
-    Explanation: "Breakdown of the cumulative warp latencies by issue stall reason, as percentages.  \nAverage values across all SM sub-partitions (SMSPs)."
-    Suggestion: ""
-    Metrics:
-      - Name: Warps Issue Stalled Misc [%]
-        Id: smsp__warps_issue_stalled_misc.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting on a miscellaneous hardware reason
-        Value: 8.0021
-      - Name: Warps Issue Stalled Long Scoreboard L1 [%]
-        Id: smsp__warps_issue_stalled_long_scoreboard_pipe_l1tex.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a scoreboard dependency on a L1TEX (local, global, surface, tex) operation
-        Value: 5.5879
-      - Name: Warps Issue Stalled Not Selected [%]
-        Id: smsp__warps_issue_stalled_not_selected.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for the microscheduler to select the warp to issue
-        Value: 4.7274
-      - Name: Warps Issue Stalled Wait [%]
-        Id: smsp__warps_issue_stalled_wait.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting on a fixed latency execution dependency
-        Value: 3.8010
-      - Name: Warps Issue Stalled TEX Throttle [%]
-        Id: smsp__warps_issue_stalled_tex_throttle.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a free entry in the TEX instruction queue
-        Value: 1.7260
-      - Name: Warps Issue Stalled Math Pipe Throttle [%]
-        Id: smsp__warps_issue_stalled_math_pipe_throttle.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for an execution pipe to be available
-        Value: 1.5832
-      - Name: Warps Issue Stalled Short Scoreboard [%]
-        Id: smsp__warps_issue_stalled_short_scoreboard.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a scoreboard dependency on shared-memory loads, indexed constant-buffer loads, SFU ops (rcp, rsqrt, etc), [or RTCORE on Turing], ...
-        Value: 0.8265
-      - Name: Warps Issue Stalled No Instruction [%]
-        Id: smsp__warps_issue_stalled_no_instruction.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting to be selected for instruction fetch, or waiting on an instruction cache miss
-        Value: 0.6845
-      - Name: Warps Issue Stalled Dispatch Stall [%]
-        Id: smsp__warps_issue_stalled_dispatch_stall.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting on a dispatch stall (not actionable on the application side)
-        Value: 0.3006
-      - Name: Warps Issue Stalled MIO Throttle MIO [%]
-        Id: smsp__warps_issue_stalled_mio_throttle_pipe_mio.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a free entry in the MIO instruction queue
-        Value: 0.1390
-      - Name: Warps Issue Stalled IMC Miss [%]
-        Id: smsp__warps_issue_stalled_imc_miss.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for an immediate constant cache (IMC) miss
-        Value: 0.1353
-      - Name: Warps Issue Stalled Drain [%]
-        Id: smsp__warps_issue_stalled_drain.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting after EXIT for all memory instructions to complete so that warp resources can be freed
-        Value: 0.0308
-      - Name: Warps Issue Stalled LG Throttle [%]
-        Id: smsp__warps_issue_stalled_lg_throttle.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for a free entry in the LSU instruction queue (for Local and Global memory accesses)
-        Value: 0.0010
-      - Name: Warps Issue Stalled Barrier [%]
-        Id: smsp__warps_issue_stalled_barrier.avg.pct_of_peak_sustained_elapsed
-        Description: Cumulative warp latency cycles for warps waiting for sibling warps at a thread group barrier
-        Value: 0.0001
+      - Name: Active Warps per Cycle All
+        Id: sm__warps_active.avg.per_cycle_elapsed
+        Description: Percentage of SM warp slots occupied by a resident warp
+        Value: 15.9455
+      - Name: Active Warps per Cycle VTG
+        Id: sm__warps_active_shader_vtg_realtime.avg.per_cycle_elapsed
+        Description: Active warp slots per cycle per SM for VS/HS/DS/GS shaders
+        Value: 0.3097
+      - Name: Active Warps per Cycle PS
+        Id: sm__warps_active_shader_ps_realtime.avg.per_cycle_elapsed
+        Description: Active warp slots per cycle per SM for Pixel Shaders
+        Value: 15.3000
+      - Name: Active Warps per Cycle CS
+        Id: sm__warps_active_shader_cs_realtime.avg.per_cycle_elapsed
+        Description: Active warp slots per cycle per SM for Compute Shaders
+        Value: 0.3358
   - Name: PCIe Bytes
     Category: PCIe
     Explanation: ""
@@ -266,41 +96,66 @@ Rules:
       - Name: PCIe Bytes Received by GPU
         Id: pcie__read_bytes.sum
         Description: Number of bytes of PCIe read data, at 512B granularity
-        Value: 473152
+        Value: 3437757
       - Name: PCIe Bytes Transmitted by GPU
         Id: pcie__write_bytes.sum
         Description: Number of bytes of PCIe write data, at 512B granularity
-        Value: 21705404
-  - Name: Warp Launch Stalled by Reasons [%]
+        Value: 9075100
+  - Name: SM Warp Occupancy [%]
     Category: SM Warp Occupancy
-    Explanation: "The % of elapsed cycles where a warp launch was stalled due to reason X (non-exclusively) [Top 3]  \nThe top stall reason is the main SM warp occupancy limiter.  \nIf all values are close to zero, the workload is too small to fill every hardware warp slot, which is a form of starvation."
-    Suggestion: "Note: In general, occupancy increase helps only latency-limited workloads (Top Throughput% < 85%)."
+    Explanation: "NVIDIA Ampere RTX GPUs have up to 48 warp slots per SM.  \nNVIDIA Turing RTX GPUs have up to 32 warp slots per SM.  \nNote: Increasing SM warp occupancy may not necessarily result in a performance gain.  \nSee https://developer.nvidia.com/blog/optimizing-vk-vkr-and-dx12-dxr-applications-using-nsight-graphics-gpu-trace-advanced-mode-metrics/ and https://www.gdcvault.com/browse/gdc-19/play/1026202."
+    Suggestion: "The following strategies may be used to increase the SM warp occupancy:  \n- Reducing the SM warp launch stall reasons (see the SM Warp Occupancy section), typically register pressure  \n- Overlapping this workload with an indepedendent SM workload by using an Asynchronous Compute queue (for DX12 or VK)  \n- Reducing the number of DX12 ResouceBarriers or VK vkCmdPipelineBarrier commands"
     Metrics:
-      - Name: VTG Warp Launch Stalled ISBE Allocation [%]
-        Id: tpc__pe2sm_vtg_isbe_allocation_cycles_stalled.avg.pct_of_peak_sustained_elapsed
-        Description: Percentage of the SM elapsed cycles where an SM cannot launch a VTG warp because it's running out of ISBE space (to store inter-shader attributes)
-        Value: 24.6451
-      - Name: PS Warp Launch Stalled Register Allocation [%]
-        Id: tpc__warp_launch_cycles_stalled_shader_ps_reason_register_allocation.avg.pct_of_peak_sustained_elapsed
-        Description: Percentage of the SM elapsed cycles where an SM cannot launch a PS warp because it's running out of register-file space
-        Value: 18.3310
-      - Name: PS Warp Launch Stalled TRAM Allocation [%]
-        Id: tpc__pe2sm_ps_tram_allocation_cycles_stalled.avg.pct_of_peak_sustained_elapsed
-        Description: Percentage of the SM elapsed cycles where an SM cannot launch a PS warp because it runs out of TRAM space to allocate plane equations (for pixel-shader attributes)
-        Value: 1.2459
+      - Name: Active Warps per Cycle All [%]
+        Id: sm__warps_active.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM, normalized by the max warp slots per SM
+        Value: 33.2198
+      - Name: Active Warps per Cycle VTG [%]
+        Id: sm__warps_active_shader_vtg_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM for VS/HS/DS/GS shaders
+        Value: 0.6451
+      - Name: Active Warps per Cycle PS [%]
+        Id: sm__warps_active_shader_ps_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM for Pixel Shaders
+        Value: 31.8750
+      - Name: Active Warps per Cycle CS [%]
+        Id: sm__warps_active_shader_cs_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Active warp slots per cycle per SM for Compute Shaders
+        Value: 0.6997
+  - Name: SM Low Active Warps
+    Category: SM Warp Occupancy
+    Explanation: Less than 4 active warps per SM is a starving condition.
+    Suggestion: ""
+    Metrics:
+      - Name: Active Warps per Cycle All
+        Id: sm__warps_active.avg.per_cycle_elapsed
+        Description: Percentage of SM warp slots occupied by a resident warp
+        Value: 15.9455
   - Name: SM Throughputs
     Category: Throughputs
     Explanation: "SM pipes on GA10X and AD10X:  \n- adu: Computed branches and indexed constants\n- alu: INT32 except multiply; FP32 comparison\n- cbu: Divergent branches and control flow\n- fma: FP32 mul/add, FP16 mul/add\n- fmaheavy: FP32 mul/add and INT32 multiply\n- fp64: FP64 mul/add\n- ipa: Pixel shader attribute interpolation\n- lsu: Global, local, shared memory, and misc\n- tensor: Tensor matrix multiply (FP16, INT8/4/1)\n- tex: Texture and surface memory\n- uniform: Warp-level scalar operations\n- xu: Transcendentals and float/int conversion"
     Suggestion: Look at the top SM throughput metric and remove work from its associated pipe to get a speedup.
     Metrics:
+      - Name: SM Inst Executed [%]
+        Id: sm__inst_executed_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle
+        Value: 28.7656
+      - Name: SM Pipe ALU [%]
+        Id: sm__inst_executed_pipe_alu_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle for the ALU pipe. The ALU pipe is responsible for execution of most bit manipulation and logic instructions (e.g. FP32 min/max). It also executes integer instructions, excluding IMAD and IMUL. On NVIDIA Ampere architecture chips, the ALU pipeline performs fast FP32-to-FP16 conversion.
+        Value: 18.3697
+      - Name: SM Pipe SFU [%]
+        Id: sm__inst_executed_pipe_xu_realtime.avg.pct_of_peak_sustained_elapsed
+        Description: Percentage of max warp instructions executed per cycle for the SFU pipe. The SFU/XU pipe can execute transcendental math operations (rsqrt, cos/sin, etc.) or int-to-float / float-to-int conversions.
+        Value: 11.7339
       - Name: SM Pipe FMA Active [%]
         Id: sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_elapsed
         Description: Number of cycles where fma pipes were active
-        Value: 7.1989
+        Value: 11.3953
       - Name: SM Pipe FMA Heavy [%]
         Id: smsp__inst_executed_pipe_fmaheavy.avg.pct_of_peak_sustained_elapsed
         Description: ""
-        Value: 5.6965
+        Value: 8.8118
   - Name: Draw/Dispatch Commands
     Category: Workload
     Explanation: "Note: These metrics are measured in the GPU Front-End unit, and may exceed the number of API-level commands."
@@ -309,8 +164,8 @@ Rules:
       - Name: Draw Started
         Id: fe__draw_count.sum
         Description: Number of Draw* or Clear commands sent to the Graphics/Compute engine
-        Value: 1814
+        Value: 776
       - Name: Dispatch Started
         Id: gr__dispatch_count.sum
         Description: Number of Dispatch* commands sent to the Graphics/Compute engine
-        Value: 30
+        Value: 28

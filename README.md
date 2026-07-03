@@ -148,6 +148,11 @@ ctest --test-dir build/Tests --output-on-failure -R anotest_vk
 The sanitizer profiles run the same suite under AddressSanitizer or ThreadSanitizer, and the Headless profile skips the renderer entirely. The sanitizer profiles are Linux/macOS-only: MinGW clang on Windows supports neither TSan nor a working ASan against ucrt. 
 The logger benchmark (`anotest_logbench`) and the allocator easter egg (`anotest_chariots`) are built but disabled in CTest; run them by hand, from a Release-tests build — Debug numbers are ~2x pessimistic.
 
+### Profiling
+
+The switch to a multi-queue async approach is likely the cause of an Nsight deadlock error.
+To capture frame traces, try ANO_FORCE_NO_ASYNC_HIZ=1 ANO_FORCE_NO_ASYNC_LC=1.
+
 ### Rendering Compatibility
 
 The renderer is GPU-driven: a compute pass animates transforms, a compute culling pass
