@@ -69,6 +69,25 @@ Additional guidance:
 
 Once Mingw-w64 is installed with `clang` working on your system, run `build.bat` from the repository root; its usage mirrors `build.sh`.
 
+#### Building under WSL (Nix)
+
+WSL has no C toolchain. `shell.nix` provides clang, cmake and `glslc` for the **Linux** build:
+
+```bash
+nix-shell --run './build.sh 6'   # headless build + non-GPU test suite
+nix-shell --run './build.sh 5'   # ThreadSanitizer (Linux only)
+```
+
+WSL has no Vulkan driver, so the renderer and `vk_*` tests need the **Windows target**. It builds
+with MSYS2 clang and the Windows Vulkan SDK (no Nix) and renders on the real GPU:
+
+```bash
+cmd.exe /c build.bat 1                                  # -> build\Release\anopticengine.exe
+( cd build/Release && PATH="/mnt/c/msys64/clang64/bin:$PATH" ./anopticengine.exe )
+```
+
+The MSYS2 build needs `clang64\bin` on `PATH` to find its runtime DLLs.
+
 ### Editor / LSP Setup
 
 The engine uses `clangd` as its language server. 
