@@ -16,12 +16,17 @@
 #include <stddef.h>
 #include <mimalloc.h>
 #include "render_bridge/render_bridge.h" // private transport: SPSC ring + bridge + endpoints
+#include "anoptic_memory.h" // ANO_CACHE_LINE / ANO_THREAD_LINE
 #include "anoptic_threads.h"
 
 // The false-sharing avoidance must be real, not aspirational.
 _Static_assert(offsetof(AnoSpscRing, head) - offsetof(AnoSpscRing, tail) >= ANO_CACHE_LINE,
                "SPSC head/tail must live on separate cache lines");
-_Static_assert(_Alignof(AnoSpscRing) == ANO_CACHE_LINE,
+// The ring's hot cursors are _Alignas(ANO_THREAD_LINE), which may exceed the
+// coherency line (128 vs 64 on x86-64); the guaranteed alignment floor is the
+// lesser of the two interference constants.
+#define ANO_MIN_LINE (ANO_CACHE_LINE < ANO_THREAD_LINE ? ANO_CACHE_LINE : ANO_THREAD_LINE)
+_Static_assert(_Alignof(AnoSpscRing) >= ANO_MIN_LINE,
                "SPSC ring must be cache-line aligned");
 
 static int failures = 0;
@@ -69,7 +74,7 @@ static void *consumer_fn(void *arg)
         if (c.mesh_index != mesh_of(next) || c.material_index != material_of(next))
             ctx->payload_err++;
         next++;
-        RenderEvent e = { .kind = REVENT_SLOT_RETIRED, .render_id = c.render_id };
+        RenderEvent e = { .kind = REVENT_SLOT_RETIRED, .u.render_id = c.render_id };
         while (!ano_render_emit_event(ctx->b, &e)) { /* event ring full: spin */ }
     }
     ctx->received = next;
@@ -119,7 +124,7 @@ int main(void)
     for (uint32_t next = 0; next < ITEMS; ) {
         RenderEvent e;
         if (!ano_render_poll_event(&bridge, &e)) continue;
-        if (e.render_id != next) evt_order_err++;
+        if (e.u.render_id != next) evt_order_err++;
         next++;
     }
 

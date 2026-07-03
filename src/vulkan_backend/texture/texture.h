@@ -50,6 +50,11 @@ uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta
 // Generic function for parametrized image creation
 bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
 				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16);
+// Ditto with a queue-family share list: >= 2 distinct families selects CONCURRENT sharing (cross-
+// queue images for the async Hi-Z build, review finding 2); a NULL/short list behaves as createImage
+bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
+				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16,
+				const uint32_t* shareFamilies, uint32_t shareFamilyCount);
 // Transitions an image layout for use in rendering
 bool transitionImageLayout(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels);
 

@@ -186,10 +186,14 @@ void perspective(float matrix[4][4], float fovDegrees, float aspect, float near,
 
     matrix[0][0] = 1.0f / (aspect * tanHalfFov);
     matrix[1][1] = -1.0f / tanHalfFov; // Y flip for Vulkan!
-	matrix[2][2] = (far + near) / (near - far);
 
+	// Vulkan clip depth is [0,1] (ZO), not OpenGL's [-1,1]. RH, view looks down -Z.
+	// ndc.z = (m22*z_view + m32) / (-z_view) maps z_view=-near -> 0, z_view=-far -> 1.
+	// The old (far+near)/(near-far) form was OpenGL [-1,1]: under the [0,1] viewport it
+	// over-clipped the near range and halved depth precision. See docs/math_conventions.md.
+	matrix[2][2] = far / (near - far);
     matrix[2][3] = -1.0f;
-	matrix[3][2] = (2 * far * near) / (near - far);
+	matrix[3][2] = (far * near) / (near - far);
 	matrix[3][3] = 0.0f;
 
 }
@@ -237,11 +241,13 @@ void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj)
     planes[3].v[2] = viewProj[2][3] - viewProj[2][1];
     planes[3].v[3] = viewProj[3][3] - viewProj[3][1];
 
-    // Near
-    planes[4].v[0] = viewProj[0][3] + viewProj[0][2];
-    planes[4].v[1] = viewProj[1][3] + viewProj[1][2];
-    planes[4].v[2] = viewProj[2][3] + viewProj[2][2];
-    planes[4].v[3] = viewProj[3][3] + viewProj[3][2];
+    // Near. Vulkan [0,1] depth: the near plane is clip.z >= 0, i.e. ROW 2 alone — NOT
+    // row3 + row2 (which is the OpenGL [-1,1] near). Matched to perspective()'s ZO form;
+    // mismatching it leaves a loose near plane that under-culls behind the camera.
+    planes[4].v[0] = viewProj[0][2];
+    planes[4].v[1] = viewProj[1][2];
+    planes[4].v[2] = viewProj[2][2];
+    planes[4].v[3] = viewProj[3][2];
 
     // Far
     planes[5].v[0] = viewProj[0][3] - viewProj[0][2];
@@ -259,4 +265,41 @@ void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj)
             planes[i].v[3] /= length;
         }
     }
+}
+
+bool invertMat4(mat4 out, const mat4 m)
+{
+    // Cofactor (adjugate / determinant) inverse over the 16 contiguous floats. mat4 is column-major,
+    // but the algorithm is element-wise so the result lands in the same convention. inv[] holds the
+    // transposed cofactors; det reuses the first column of cofactors.
+    const float *a = (const float *)m;
+    float inv[16];
+
+    inv[0]  =  a[5]*a[10]*a[15] - a[5]*a[11]*a[14] - a[9]*a[6]*a[15] + a[9]*a[7]*a[14] + a[13]*a[6]*a[11] - a[13]*a[7]*a[10];
+    inv[4]  = -a[4]*a[10]*a[15] + a[4]*a[11]*a[14] + a[8]*a[6]*a[15] - a[8]*a[7]*a[14] - a[12]*a[6]*a[11] + a[12]*a[7]*a[10];
+    inv[8]  =  a[4]*a[9]*a[15]  - a[4]*a[11]*a[13] - a[8]*a[5]*a[15] + a[8]*a[7]*a[13] + a[12]*a[5]*a[11] - a[12]*a[7]*a[9];
+    inv[12] = -a[4]*a[9]*a[14]  + a[4]*a[10]*a[13] + a[8]*a[5]*a[14] - a[8]*a[6]*a[13] - a[12]*a[5]*a[10] + a[12]*a[6]*a[9];
+
+    inv[1]  = -a[1]*a[10]*a[15] + a[1]*a[11]*a[14] + a[9]*a[2]*a[15] - a[9]*a[3]*a[14] - a[13]*a[2]*a[11] + a[13]*a[3]*a[10];
+    inv[5]  =  a[0]*a[10]*a[15] - a[0]*a[11]*a[14] - a[8]*a[2]*a[15] + a[8]*a[3]*a[14] + a[12]*a[2]*a[11] - a[12]*a[3]*a[10];
+    inv[9]  = -a[0]*a[9]*a[15]  + a[0]*a[11]*a[13] + a[8]*a[1]*a[15] - a[8]*a[3]*a[13] - a[12]*a[1]*a[11] + a[12]*a[3]*a[9];
+    inv[13] =  a[0]*a[9]*a[14]  - a[0]*a[10]*a[13] - a[8]*a[1]*a[14] + a[8]*a[2]*a[13] + a[12]*a[1]*a[10] - a[12]*a[2]*a[9];
+
+    inv[2]  =  a[1]*a[6]*a[15]  - a[1]*a[7]*a[14]  - a[5]*a[2]*a[15] + a[5]*a[3]*a[14] + a[13]*a[2]*a[7]  - a[13]*a[3]*a[6];
+    inv[6]  = -a[0]*a[6]*a[15]  + a[0]*a[7]*a[14]  + a[4]*a[2]*a[15] - a[4]*a[3]*a[14] - a[12]*a[2]*a[7]  + a[12]*a[3]*a[6];
+    inv[10] =  a[0]*a[5]*a[15]  - a[0]*a[7]*a[13]  - a[4]*a[1]*a[15] + a[4]*a[3]*a[13] + a[12]*a[1]*a[7]  - a[12]*a[3]*a[5];
+    inv[14] = -a[0]*a[5]*a[14]  + a[0]*a[6]*a[13]  + a[4]*a[1]*a[14] - a[4]*a[2]*a[13] - a[12]*a[1]*a[6]  + a[12]*a[2]*a[5];
+
+    inv[3]  = -a[1]*a[6]*a[11]  + a[1]*a[7]*a[10]  + a[5]*a[2]*a[11] - a[5]*a[3]*a[10] - a[9]*a[2]*a[7]   + a[9]*a[3]*a[6];
+    inv[7]  =  a[0]*a[6]*a[11]  - a[0]*a[7]*a[10]  - a[4]*a[2]*a[11] + a[4]*a[3]*a[10] + a[8]*a[2]*a[7]   - a[8]*a[3]*a[6];
+    inv[11] = -a[0]*a[5]*a[11]  + a[0]*a[7]*a[9]   + a[4]*a[1]*a[11] - a[4]*a[3]*a[9]  - a[8]*a[1]*a[7]   + a[8]*a[3]*a[5];
+    inv[15] =  a[0]*a[5]*a[10]  - a[0]*a[6]*a[9]   - a[4]*a[1]*a[10] + a[4]*a[2]*a[9]  + a[8]*a[1]*a[6]   - a[8]*a[2]*a[5];
+
+    float det = a[0]*inv[0] + a[1]*inv[4] + a[2]*inv[8] + a[3]*inv[12];
+    if (det == 0.0f) return false;
+    det = 1.0f / det;
+
+    float *o = (float *)out;
+    for (int i = 0; i < 16; ++i) o[i] = inv[i] * det;
+    return true;
 }

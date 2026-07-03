@@ -1,0 +1,25 @@
+﻿Type,,Name,Hash,Correlation,File Name,Samples,# Warp,# Reg,Smem,CTA Dim,"Live""""Registers",Instruction Mix,Dependency-Attributed Samples,Top Stall #1 (Type),Top Stall #1 (% Samples),Top Stall #2 (Type),Top Stall #2 (% Samples),Top Stall #3 (Type),Top Stall #3 (% Samples),NOTSEL,SELECT,THDBAR,DISPCH,SLEEP,BRANCH,WAIT,NOINST,MATHTH,SHRTSB,MIOT,TEXTHR,LGSB,LGTHR,MEMBAR,IMCMIS,DRAIN,MISC,"Instructions""""Executed","Thread Instructions""""Executed","Thread Instructions""""Executed Pred On","Active Threads""""Per Warp"
+Compute,,main,0xd4a477949637de31,GLSL/SPIRV,update.comp,0,--,--,--,--,0,177,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Compute,,main,0x0571f8e5720fbbea,GLSL/SPIRV,lightsetup.comp,0,--,--,--,--,0,33,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Compute,,main,0xa662506e2af390b2,GLSL/SPIRV,shadowsetup.comp,0,--,--,--,--,0,254,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Compute,,main,0x54a0749963bfd7d2,GLSL/SPIRV,cull.comp,0,--,--,--,--,0,324,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Fragment,,main,0x340185c69836d6cb,GLSL/SPIRV,shadow_depth.frag,0,--,--,--,--,0,9,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Mesh,,main,0xb64b048b112c4360,SPIRV,mesh.10000.spv (b64b048b112c4360),0,--,--,--,--,0,85,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Task,,main,0x52588620e6f80c0f,SPIRV,task.10000.spv (52588620e6f80c0f),0,--,--,--,--,0,52,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Fragment,,main,0x2613666e1cf14f4b,GLSL/SPIRV,shadowblur.frag,0,--,--,--,--,0,30,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Vertex,,main,0xcd6076d81fcb2c22,SPIRV,vert.10000.spv (cd6076d81fcb2c22),0,--,--,--,--,0,9,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Compute,,main,0xa9d1a1415f7162d9,GLSL/SPIRV,tpsort.comp,0,--,--,--,--,0,26,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Fragment,,main,0x7e83b2c60ae5ce26,GLSL/SPIRV,transmission.frag,0,--,--,--,--,0,635,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Fragment,,main,0xa3549c9658fa6b47,GLSL/SPIRV,additive.frag,0,--,--,--,--,0,28,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Mesh,,main,0x9314f1f748b76d22,SPIRV,mesh.10000.spv (9314f1f748b76d22),0,--,--,--,--,0,166,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Fragment,,main,0xb2acdaf495cbaa85,GLSL/SPIRV,tonemap.frag,0,--,--,--,--,0,17,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Vertex,,main,0x0d784b2a5ac3816f,GLSL/SPIRV,tonemap.vert,0,--,--,--,--,0,11,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Compute,,main,0xba4518376bee3479,GLSL/SPIRV,lightcull.comp,0,--,--,--,--,0,112,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Compute,,main,0xf7b4e45ca21ecaea,SPIRV,comp.10000.spv (f7b4e45ca21ecaea),0,--,--,--,--,0,17,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Compute,,main,0xf7b4e45ca21ecaea,SPIRV,comp.10000.spv (f7b4e45ca21ecaea),0,--,--,--,--,0,20,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Task,,main_4,0x52588620e6f80c0f,SPIRV,task.10000.spv (52588620e6f80c0f),0,--,--,--,--,0,141,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Fragment,,main_16,0x0d462850881e038b,GLSL/SPIRV,flat.frag,0,--,--,--,--,0,551,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Mesh,,main_4,0xb64b048b112c4360,SPIRV,mesh.10000.spv (b64b048b112c4360),0,--,--,--,--,0,166,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Task,,main_4,0x52588620e6f80c0f,SPIRV,task.10000.spv (52588620e6f80c0f),0,--,--,--,--,0,88,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Mesh,,main_4,0x9314f1f748b76d22,SPIRV,mesh.10000.spv (9314f1f748b76d22),0,--,--,--,--,0,206,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+Unattributed,,Samples,--,--,--,0,--,--,--,--,0,,,SHRTSB,0,MISC,0,DRAIN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0

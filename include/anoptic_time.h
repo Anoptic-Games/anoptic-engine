@@ -17,6 +17,15 @@
 /// \brief Obtain a high-resolution monotonic raw timestamp in nanoseconds.
 uint64_t ano_timestamp_raw();
 
+/// \brief Raw monotonic hardware counter, no unit conversion -- the cheapest possible timestamp.
+/// \note Units are the platform timebase (mach ticks / QPC counts / ns on Linux), so only deltas are
+///       meaningful and only after ano_ticks_to_ns. Use to timestamp a hot path and defer the
+///       division to a colder one.
+uint64_t ano_timestamp_ticks();
+
+/// \brief Convert a raw counter value or delta from ano_timestamp_ticks to nanoseconds.
+uint64_t ano_ticks_to_ns(uint64_t ticks);
+
 /// \brief Obtain a high-resolution monotonic raw timestamp, scaled to microseconds.
 uint64_t ano_timestamp_us();
 
@@ -26,6 +35,22 @@ uint32_t ano_timestamp_ms();
 /// \brief Get Unix UTC timestamp.
 /// \note Timestamps are not guaranteed to be monotonic.
 int64_t ano_timestamp_unix();
+
+/// \brief Platform-agnostic broken-down local civil time.
+/// The platform layer wraps localtime_r / localtime_s.
+typedef struct {
+    int year;    ///< full year, e.g. 2026
+    int month;   ///< 1-12
+    int day;     ///< 1-31
+    int hour;    ///< 0-23
+    int minute;  ///< 0-59
+    int second;  ///< 0-60 (60 on a leap second)
+} ano_datetime;
+
+/// \brief Convert a Unix timestamp (seconds, as from ano_timestamp_unix) to local civil time.
+/// \param unix_seconds Seconds since the Unix epoch.
+/// \return Broken-down local time; all-zero on conversion failure.
+ano_datetime ano_localtime(int64_t unix_seconds);
 
 /// \brief Spinlock the current thread for ns nanoseconds.
 /// \param ns The number of nanoseconds to busy-wait.

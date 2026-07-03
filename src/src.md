@@ -9,7 +9,7 @@ Other subdirectories within ``src/`` are for the various submodules
 
 ## Directory Structure
 
-Each module follows the platform-abstraction convention (see the root `CLAUDE.md`):
+Each module follows the platform-abstraction convention (see `docs/docs.md`):
 a public interface lives in `include/anoptic_<mod>.h` (exposing only `ano_*()`
 declarations and platform-agnostic types), while `src/<mod>/` holds the
 implementation — a common `<mod>.c` plus, where needed, per-platform files
@@ -24,7 +24,7 @@ src/
 ├── render_bridge/  # Logic <-> render boundary: lock-free SPSC command/event rings
 ├── vulkan_backend/ # GPU-driven Vulkan renderer (render master thread); owns GPU slots + all GLFW
 ├── render/         # Asset-facing render support: glTF loader (gltf/), text/font stack (text/)
-├── mesh/           # meshoptimizer wrapper (meshlet decomposition at upload time)
+├── mesh/           # clean-room mesh ops: meshlet decomposition, vertex-cache opt, LOD simplify
 ├── memory/         # Aligned allocation + mimalloc integration (per-platform)
 ├── threads/        # Thread / mutex / condvar / atomics abstraction over pthreads + Win32
 ├── time/           # High-resolution monotonic timing and OS-scheduled sleeps
@@ -57,11 +57,14 @@ src/
 - `render/`: Higher-level render support that feeds the backend — the glTF model
   loader (`gltf/`) and the FreeType/SDF text stack (`text/`).
 
-- `mesh/` (`ano_meshoptimizer.h`): Wrapper over meshoptimizer; decomposes uploaded
-  geometry into meshlets and bounds for the GPU geometry pool.
+- `mesh/` (`ano_meshoptimizer.h`): Clean-room reimplementation of the meshoptimizer
+  algorithms (no library linked): vertex-cache optimization, meshlet + bounds decomposition
+  for the GPU geometry pool, and quadric-error edge-collapse simplification (`ano_simplify`)
+  for LOD chain production.
 
-- `memory/` (`anoptic_memory.h`, `anoptic_memalign.h`): Aligned allocation primitives
-  and the mimalloc integration that backs the engine's arenas and thread-local heaps.
+- `memory/` (`anoptic_memory.h`): Aligned allocation primitives, the hardware
+  interference constants (`ANO_CACHE_LINE` / `ANO_THREAD_LINE`), and the mimalloc
+  integration that backs the engine's arenas and thread-local heaps.
 
 - `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition
   variables, spinlocks, barriers, and TLS over pthreads / Win32.

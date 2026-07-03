@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <time.h>     // struct timespec for ano_thread_cond_timedwait
 
 // Represents a thread handle.
 typedef pthread_t anothread_t;
@@ -40,12 +41,12 @@ typedef pthread_rwlockattr_t anothread_rwlockattr_t;
 #if defined(__APPLE__)
 // macOS libpthread has no pthread_barrier_t/attr; define per glibc's shape (C23 atomics).
 typedef struct {
-	unsigned int count;       // required arrivals, set at init
-	atomic_uint  arrived;     // arrivals in the current round
-	atomic_uint  generation;  // phase counter; enables barrier reuse
+    unsigned int count;       // required arrivals, set at init
+    atomic_uint  arrived;     // arrivals this round
+    atomic_uint  generation;  // phase counter enabling barrier reuse
 } pthread_barrier_t;
 typedef struct {
-	int pshared;
+    int pshared;
 } pthread_barrierattr_t;
 #endif
 typedef pthread_barrier_t anothread_barrier_t;
@@ -88,6 +89,11 @@ int ano_mutex_destroy(anothread_mutex_t *mutex);
 int ano_thread_cond_init(anothread_cond_t *conditionVariable, const anothread_condattr_t *attr);
 
 int ano_thread_cond_wait(anothread_cond_t *conditionVariable, anothread_mutex_t *external_mutex);
+
+// Wait with an absolute CLOCK_REALTIME deadline (pthread_cond_timedwait parity). Returns 0 on
+// signal, ETIMEDOUT on deadline, else an errno. Build the deadline with timespec_get(TIME_UTC).
+int ano_thread_cond_timedwait(anothread_cond_t *conditionVariable, anothread_mutex_t *external_mutex,
+                              const struct timespec *abstime);
 
 int  ano_thread_cond_signal(anothread_cond_t *conditionVariable);
 

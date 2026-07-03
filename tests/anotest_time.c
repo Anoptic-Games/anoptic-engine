@@ -76,36 +76,131 @@ int testTimeStamps() {
     return 0;
 }
 
-int testBusyWait(uint64_t duration) {
-    printf("\nTesting ano_busywait for %" PRIu64 " ns\n", duration);
+/* Resolution tests: assert the waits actually land near their target across every scale.
+ * (These replace the earlier print-only sleep checks, which never failed on a wrong wait.) */
 
-    int status = 0;
+#define SLEEP_SAMPLES   8   // best-of-N: scheduler hiccups inflate the worst case, not the best
+#define BUSY_SAMPLES    5
 
-    uint64_t start = ano_timestamp_raw();
-    status = ano_busywait(duration);
-    uint64_t end = ano_timestamp_raw();
+// One ano_sleep resolution case. Asserts no sample ever wakes early (the hard contract), and the
+// best sample lands within an overshoot tolerance (the achievable resolution).
+//   in:  us (uint64_t) requested sleep, microseconds
+//   out: int, 0 pass, 1 fail
+static int sleepCase(uint64_t us) {
+    uint64_t want = us * 1000ULL;                       // ns
+    // Never-early floor: tolerate only clock quantization, not Sleep()-style truncation.
+    uint64_t floorSlack = want / 100ULL + 20000ULL;     // 1% + 20us
+    // Achievable-resolution ceiling on the best sample: generous so it isn't scheduler-flaky,
+    // tight enough that 15.6ms Sleep granularity on a sub-ms request still fails.
+    uint64_t ceil = want + (want / 2ULL > 2000000ULL ? want / 2ULL : 2000000ULL);
 
-    uint64_t elapsed = end - start;
-    printf("Expected wait:\t%" PRIu64 " ns\n", duration);
-    printf("Actual wait:\t%" PRIu64 " ns\n", elapsed);
+    uint64_t best = UINT64_MAX;
+    int early = 0;
+    for (int i = 0; i < SLEEP_SAMPLES; i++) {
+        uint64_t t0 = ano_timestamp_raw();
+        if (ano_sleep(us) != 0) {
+            printf("  [FAIL] ano_sleep(%" PRIu64 "us) returned nonzero\n", us);
+            return 1;
+        }
+        uint64_t el = ano_timestamp_raw() - t0;
+        if (el + floorSlack < want)                     // woke meaningfully early
+            early = 1;
+        if (el < best)
+            best = el;
+    }
 
-    return status;
+    int ok = !early && best <= ceil;
+    printf("  [%s] sleep %8" PRIu64 "us  best=%8" PRIu64 "ns  floor>=%" PRIu64 "ns  ceil<=%" PRIu64 "ns\n",
+           ok ? "PASS" : "FAIL", us, best, want > floorSlack ? want - floorSlack : 0, ceil);
+    if (early)
+        printf("         ^ a sample woke before the requested duration (timer too coarse / truncating)\n");
+    return ok ? 0 : 1;
 }
 
-int testOSSleep(uint64_t duration) {
-    printf("\nTesting ano_sleep for %" PRIu64 " ns\n", duration);
+// One ano_busywait resolution case. The spin must elapse at least its target (the Windows ano_sleep
+// spin-tail relies on this) and not wildly overshoot.
+//   in:  ns (uint64_t) requested busy-wait
+//   out: int, 0 pass, 1 fail
+static int busyCase(uint64_t ns) {
+    uint64_t floorSlack = ns / 100ULL + 1000ULL;        // 1% + 1us
+    uint64_t ceil = ns + (ns / 10ULL > 100000ULL ? ns / 10ULL : 100000ULL);
 
-    int status = 0;
+    uint64_t best = UINT64_MAX;
+    int early = 0;
+    for (int i = 0; i < BUSY_SAMPLES; i++) {
+        uint64_t t0 = ano_timestamp_raw();
+        if (ano_busywait(ns) != 0) {
+            printf("  [FAIL] ano_busywait(%" PRIu64 "ns) returned nonzero\n", ns);
+            return 1;
+        }
+        uint64_t el = ano_timestamp_raw() - t0;
+        if (el + floorSlack < ns)
+            early = 1;
+        if (el < best)
+            best = el;
+    }
 
-    uint64_t start = ano_timestamp_raw();
-    status = ano_sleep(duration / 1000);  // Convert ns to us for ano_sleep
-    uint64_t end = ano_timestamp_raw();
+    int ok = !early && best <= ceil;
+    printf("  [%s] busywait %9" PRIu64 "ns  best=%9" PRIu64 "ns  ceil<=%" PRIu64 "ns\n",
+           ok ? "PASS" : "FAIL", ns, best, ceil);
+    return ok ? 0 : 1;
+}
 
-    uint64_t elapsed = end - start;
-    printf("Expected wait:\t%" PRIu64 " ns\n", duration);
-    printf("Actual wait:\t%" PRIu64 " ns\n", elapsed);
+// Sweep both primitives across sub-ms to 100ms scales and assert resolution at each.
+//   out: int, count of failed cases
+static int testResolution(void) {
+    int fails = 0;
 
-    return status;
+    // Warm up: the first ano_sleep lazily creates the per-thread waitable timer (Windows); keep that
+    // one-time cost out of the timed samples.
+    ano_sleep(1000);
+    ano_busywait(1000);
+
+    printf("\nano_busywait resolution sweep:\n");
+    uint64_t busyNs[] = {1000, 10000, 100000, 1000000, 10000000}; // 1us .. 10ms
+    for (size_t i = 0; i < sizeof busyNs / sizeof busyNs[0]; i++)
+        fails += busyCase(busyNs[i]);
+
+    printf("\nano_sleep resolution sweep:\n");
+    // sub-ms (spin-only on Windows), the 1ms boundary, and coarse scales.
+    uint64_t sleepUs[] = {50, 100, 250, 500, 1000, 2000, 5000, 10000, 50000, 100000};
+    for (size_t i = 0; i < sizeof sleepUs / sizeof sleepUs[0]; i++)
+        fails += sleepCase(sleepUs[i]);
+
+    return fails;
+}
+
+/* Timebase granularity: the smallest nonzero step ano_timestamp_ticks can resolve, in ns. Raw QPC on
+ * many Windows hosts steps in 100ns, too coarse to order log records stamped in the same window; the
+ * calibrated rdtsc timebase resolves far finer. Assert sub-100ns so a regression back to raw QPC (or
+ * any equally coarse clock) fails here. Linux CLOCK_MONOTONIC and macOS 24MHz mach ticks both clear it. */
+#define GRAIN_SAMPLES 200000
+#define GRAIN_MAX_NS  100
+
+static int testGranularity(void) {
+    printf("\nTesting timebase granularity (smallest resolvable step)\n");
+
+    uint64_t minDelta = UINT64_MAX;
+    uint64_t prev = ano_timestamp_ticks();
+    for (int i = 0; i < GRAIN_SAMPLES; i++) {
+        uint64_t now = ano_timestamp_ticks();
+        uint64_t d = now - prev;    // monotonic counter, so the delta never underflows
+        prev = now;
+        if (d != 0 && d < minDelta)
+            minDelta = d;
+    }
+    if (minDelta == UINT64_MAX) {
+        printf("  [FAIL] timestamp never advanced across %d samples\n", GRAIN_SAMPLES);
+        return 1;
+    }
+
+    uint64_t grainNs = ano_ticks_to_ns(minDelta);
+    int ok = grainNs < GRAIN_MAX_NS;
+    printf("  [%s] min step = %" PRIu64 " ticks = %" PRIu64 " ns (need < %d ns)\n",
+           ok ? "PASS" : "FAIL", minDelta, grainNs, GRAIN_MAX_NS);
+    if (!ok)
+        printf("         ^ timebase too coarse (raw 10 MHz QPC steps in 100 ns); expected a finer clock\n");
+    return ok ? 0 : 1;
 }
 
 int main() {
@@ -126,30 +221,19 @@ int main() {
         return -1;
     }
 
-    /* Sleep Tests */
-    uint64_t durations[] = {100, 500, 1000, 1600, 5000, 10000, 160000,
-                            16000000, 100000000, 1000000000}; // in nanoseconds
-    //uint64_t start, end, elapsed;
-
-    // Test with ano_busywait()
-    for (int i = 0; i < sizeof(durations) / sizeof(durations[0]); i++) {
-        status = testBusyWait(durations[i]);
-        if (status != 0) {
-            printf("anoptic_time.h: ano_busywait() failed with duration=%" PRIu64 "\n", durations[i]);
-            return -1;
-        }
+    /* Granularity Test: assert the timebase resolves finer than raw QPC's 100ns grain */
+    if (testGranularity() != 0) {
+        printf("\nanoptic_time.h: timebase granularity too coarse.\n");
+        return -1;
     }
 
-    // Test with ano_sleep()
-    for (int i = 0; i < sizeof(durations) / sizeof(durations[0]); i++) {
-        status = testOSSleep(durations[i]);
-        if (status != 0) {
-            printf("anoptic_time.h: ano_sleep() failed with duration=%" PRIu64 "\n", durations[i]);
-            return -1;
-        }
+    /* Resolution Tests: assert ano_busywait/ano_sleep land near their target across all scales */
+    int resFails = testResolution();
+    if (resFails != 0) {
+        printf("\nanoptic_time.h: %d resolution case(s) failed.\n", resFails);
+        return -1;
     }
 
-
-    printf("anoptic_time.h: All Tests passed!\n");
+    printf("\nanoptic_time.h: All Tests passed!\n");
     return 0;
 }
