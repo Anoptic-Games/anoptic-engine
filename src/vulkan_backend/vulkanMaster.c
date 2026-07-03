@@ -763,19 +763,47 @@ void recordCommandBuffer(uint32_t imageIndex)
             for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) rendererState.shadowLayerValid[s] = false;
         rendererState.shadowGlobalDirty = false;
 
+        // Pass 1 — classify. Matrix-dirty (light attached/changed/teleported, or riding a mover:
+        // shadowsetup rewrites its viewProj from live state) renders unconditionally — deferral
+        // would sample old content with a new matrix. Content-dirty with a stable light (mover
+        // exposure, mutation epochs) keeps an identical matrix across frames, so it is safely
+        // deferrable and budget-eligible. Force/freeze modes bypass the budget entirely.
         bool renderS[ANO_SHADOW_FRUSTUM_COUNT];
-        uint32_t renderCount = 0u, maxSub = 0u;
+        bool candidate[ANO_SHADOW_FRUSTUM_COUNT];
+        uint32_t renderCount = 0u, maxSub = 0u, candCount = 0u;
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
             bool active = shadowCfgs[s].active && lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode);
+            renderS[s] = false; candidate[s] = false;
+            if (!active) continue;
+            if (rendererState.shadowCacheMode != 0u) { renderS[s] = !rendererState.shadowLayerValid[s]; continue; }
             const ShadowCasterVolume* v = &rendererState.shadowVolume[s];
-            bool moverDirty = rendererState.shadowCacheMode == 0u
-                           && (rendererState.shadowExposed[s] > 0u
-                               || (v->parentSlot != ANO_RENDER_SLOT_UNMAPPED
-                                   && v->parentSlot < rendererState.slotMotionCap
-                                   && rendererState.slotMotion[v->parentSlot]));
-            renderS[s] = active && (!rendererState.shadowLayerValid[s] || moverDirty);
-            if (renderS[s]) { renderCount++; maxSub = (s + 1u) * ANO_SHADOW_ATLAS_SUBLAYERS; }
+            bool parentMover  = v->parentSlot != ANO_RENDER_SLOT_UNMAPPED
+                             && v->parentSlot < rendererState.slotMotionCap
+                             && rendererState.slotMotion[v->parentSlot];
+            bool matrixDirty  = rendererState.shadowMatrixDirty[s] || parentMover;
+            bool contentDirty = !rendererState.shadowLayerValid[s] || rendererState.shadowExposed[s] > 0u;
+            if (matrixDirty)       renderS[s] = true;
+            else if (contentDirty) { candidate[s] = true; candCount++; }
         }
+        // Pass 2 — admit content-dirty candidates oldest-first up to the budget (0 = unlimited;
+        // the budget is a content-refresh throttle on TOP of the mandatory renders, so a scene
+        // full of moving lights can never starve caster-shadow refresh). Equal stamps round-robin
+        // naturally: an admitted frustum's fresh stamp loses the next frame's scan. Deferral needs
+        // no retry bookkeeping — the valid flag stays false and exposure counts persist.
+        uint32_t budget = rendererState.shadowRenderBudget;
+        uint32_t admit = (budget == 0u || budget > candCount) ? candCount : budget;
+        for (uint32_t k = 0; k < admit; k++) {
+            uint32_t best = ANO_SHADOW_FRUSTUM_COUNT;
+            for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
+                if (candidate[s] && (best == ANO_SHADOW_FRUSTUM_COUNT
+                                     || rendererState.shadowLastRendered[s] < rendererState.shadowLastRendered[best]))
+                    best = s;
+            if (best == ANO_SHADOW_FRUSTUM_COUNT) break;
+            candidate[best] = false;
+            renderS[best] = true;
+        }
+        for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
+            if (renderS[s]) { renderCount++; maxSub = (s + 1u) * ANO_SHADOW_ATLAS_SUBLAYERS; }
         g_shadowRenderAccum += renderCount;
         g_shadowRenderFrames++;
 
@@ -992,9 +1020,14 @@ void recordCommandBuffer(uint32_t imageIndex)
             }
         }
 
-        // Rendered layers are now faithful to their light + this frame's scene.
+        // Rendered layers are now faithful to their light + this frame's scene; the render also
+        // retires any matrix dirt and stamps the frustum for budget fairness.
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
-            if (renderS[s]) rendererState.shadowLayerValid[s] = true;
+            if (renderS[s]) {
+                rendererState.shadowLayerValid[s]   = true;
+                rendererState.shadowMatrixDirty[s]  = false;
+                rendererState.shadowLastRendered[s] = rendererState.globalFrame;
+            }
     }
 
     ano_ts(cmd, ANO_TS_AFTER_SHADOW);
@@ -2355,11 +2388,16 @@ static void shadow_frustum_free(RendererState* st, uint32_t base) {
 
 // Attach a runtime shadow caster: allocate a frustum block, stage its per-frustum config (active=1)
 // Invalidate a frustum block's cached atlas layers (review finding 8): its light was (re)attached,
-// detached, or its fields changed, so the persistent content no longer matches. NONE/no-op safe.
+// detached, or its fields changed, so the persistent content no longer matches. Every call site is
+// a LIGHT change, so the block is also matrix-dirty: shadowsetup rewrites its viewProj from live
+// state this frame, and sampling old content with the new matrix would tear — the render budget
+// must not defer it. NONE/no-op safe.
 static void shadow_layers_invalidate(RendererState* st, uint32_t base, uint32_t count) {
     if (base == ANO_SHADOW_NONE) return;
-    for (uint32_t f = 0; f < count && base + f < ANO_SHADOW_FRUSTUM_COUNT; f++)
-        st->shadowLayerValid[base + f] = false;
+    for (uint32_t f = 0; f < count && base + f < ANO_SHADOW_FRUSTUM_COUNT; f++) {
+        st->shadowLayerValid[base + f]  = false;
+        st->shadowMatrixDirty[base + f] = true;
+    }
 }
 
 // --- Swept-bound motion exposure (review finding 8, deferred half) --------------------------------
@@ -2579,12 +2617,14 @@ static void shadow_volume_clear(RendererState* st, uint32_t base, uint32_t count
 }
 
 // Parent slot teleported: refresh every caster volume it drives (static create-with-light rows and
-// runtime attaches both key volumes by parent slot).
+// runtime attaches both key volumes by parent slot). The light's world pose moved with it, so the
+// block is matrix-dirty: not deferrable by the render budget.
 static void shadow_volumes_reparent(RendererState* st, uint32_t slot) {
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
         if (st->shadowVolume[s].parentSlot == slot) {
             shadow_volume_recompute(st, s);
             shadow_expose_rebuild_frustum(st, s);
+            st->shadowMatrixDirty[s] = true;
         }
 }
 
@@ -3962,7 +4002,16 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
         state->shadowVolume[s].parentSlot = ANO_RENDER_SLOT_UNMAPPED;
         state->shadowExposed[s] = 0u;
+        state->shadowMatrixDirty[s] = false;
+        state->shadowLastRendered[s] = 0u;
     }
+    // Content-refresh budget (0 = unlimited). Matrix-dirty renders are exempt, so this throttles
+    // only the lag-tolerant class; total renders/frame = mandatory + budget.
+    const char* budgetEnv = getenv("ANO_SHADOW_BUDGET");
+    state->shadowRenderBudget = budgetEnv ? (uint32_t)atoi(budgetEnv) : 0u;
+    if (state->shadowRenderBudget)
+        printf("Shadow cache: content re-render budget %u/frame (matrix-dirty exempt)\n",
+               state->shadowRenderBudget);
 
     // Transient nearest-occluder depth (never sampled): ONE image shared across frames in flight,
     // one slice per shadow frustum so the per-frustum depth renders are mutually independent (no

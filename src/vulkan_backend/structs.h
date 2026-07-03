@@ -1150,6 +1150,18 @@ typedef struct RendererState
     ShadowCasterVolume      shadowVolume[ANO_SHADOW_FRUSTUM_COUNT];
     uint32_t                shadowExposed[ANO_SHADOW_FRUSTUM_COUNT]; // movers whose bound reaches the volume
 
+    // Re-render budget (finding 8, last deferred half). Caps CONTENT-dirty renders per frame
+    // (mover exposure / scene-mutation epochs — the light unchanged, so this frame's rewritten
+    // frustum matrix is identical to the cached content's: deferral costs only temporal lag,
+    // never matrix/content tearing). MATRIX-dirty frustums (light attached/changed/teleported/
+    // riding a mover) are exempt and always render: shadowsetup rewrites their viewProj from live
+    // state each frame, so deferring them would sample old content with a new matrix. Deferral is
+    // naturally persistent (valid flag stays false; exposure counts remain), and command-driven
+    // exposure changes always ride an epoch, so stale content never strands. 0 = unlimited.
+    bool                    shadowMatrixDirty[ANO_SHADOW_FRUSTUM_COUNT]; // light changed: not deferrable
+    uint64_t                shadowLastRendered[ANO_SHADOW_FRUSTUM_COUNT]; // globalFrame stamp: oldest-first fairness
+    uint32_t                shadowRenderBudget; // max content-dirty renders/frame (ANO_SHADOW_BUDGET)
+
     // Shadow config: per-frustum (which light/face/active) + per-light (where its maps live). Both
     // are SlotUpload (×1 device + delta staging) so the runtime caster lifecycle can mutate them
     // race-free, exactly like lightBuffer; the static rig seeds them at init. shadowCfgMirror is the

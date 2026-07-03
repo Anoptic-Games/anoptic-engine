@@ -475,7 +475,32 @@ volume. With one static point light moved to the far end of the atrium (outside 
 trajectory bound), its 6 cube faces build once and stay cached: frusta 20.0/42 vs
 26.0/42 under ANO_FORCE_NO_SWEPT, shadow region 0.765 vs 0.950 ms (−19%), total 1.810 vs
 2.019 ms, visuals identical, validation-clean. Hook: ANO_FORCE_NO_SWEPT pins the blanket
-epoch. Still deferred: re-render budgets (staleness/matrix-drift policy).
+epoch.
+
+Re-render budgets landed 2026-07-03, closing the finding. Stale-matrix policy: dirt is
+classified into MATRIX-dirty (the light itself attached/changed/teleported or rides a
+mover — shadowsetup rewrites its viewProj from live state every frame, so deferring it
+would sample old content with a new matrix and tear) and CONTENT-dirty (casters moved,
+light unchanged — the rewritten matrix is bit-identical to the cached content's, so
+deferral costs only temporal lag on caster shadows). The budget (ANO_SHADOW_BUDGET, 0 =
+unlimited/default) caps only the content-dirty class, admitted oldest-first by a
+per-frustum last-rendered stamp (equal stamps round-robin naturally); matrix-dirty
+frustums always render, so moving lights can never starve caster refresh. Deferral needs
+no retry bookkeeping: the valid flag stays false and exposure counts persist, and since
+command-driven exposure changes always ride an epoch, deferred content can never strand
+stale. Classification reuses the swept-exposure hooks (shadow_layers_invalidate call
+sites and shadow_volumes_reparent are exactly the light-change class). Force/freeze cache
+modes bypass the budget. Measured (debug): default = parity (frusta 26.0/42, shadow
+0.919 ms); ANO_SHADOW_BUDGET=2 = frusta 8.0/42 steady (the orbiting caster's 6 faces
+mandatory + 2 budgeted, cycling the 20 exposure-dirty static-light frustums every 10
+frames), shadow region 0.329 ms (−64%), shadows visually well-formed (lag, never tear),
+validation-clean.
+
+Possible future option (recorded, not planned): error-metric scheduling — allow small
+matrix drift under a projected-texel tolerance and prioritize by drift, light intensity/
+screen impact, and staleness age. The CPU can evaluate the closed-form motions to know
+animated caster poses cheaply. Only worth its complexity with hundreds of casters; at 42
+frustums the two-class policy above is sufficient.
 
 ShadowResources lives inside FrameResources (structs.h:746–764, 933), so the 512² ×
 84-layer RGBA16 atlas and its blur temp exist once per frame-in-flight: 176 MB × 2 images
