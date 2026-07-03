@@ -12,6 +12,8 @@
 #include "text/text_internal.h"
 
 #include <errno.h>
+#include <stddef.h>
+#include <string.h>
 
 #include "anoptic_logging.h"
 #include "anoptic_memory.h"
@@ -178,4 +180,38 @@ void *ano_text_face(AnoFontId font)
     if (font == 0 || font > ANO_TEXT_MAX_FONTS)
         return NULL;
     return g_faces[font - 1u];
+}
+
+// Internal ground truth for the reference rasterizer: FreeType's own smooth AA render
+// (linear 256-level coverage, unhinted) copied tightly into buf. Sets pixel sizes on
+// the face; the bake path is unaffected (it loads FT_LOAD_NO_SCALE). Module thread.
+int ano_text_ref_ft_render(AnoFontId font, uint32_t codepoint, uint32_t pixelsPerEm,
+                           uint8_t *buf, uint32_t cap, int *width, int *rows,
+                           int *left, int *top)
+{
+    FT_Face face = ano_text_face(font);
+    if (face == NULL || buf == NULL || width == NULL || rows == NULL || left == NULL
+        || top == NULL || pixelsPerEm == 0)
+        return EINVAL;
+    if (FT_Set_Pixel_Sizes(face, 0, pixelsPerEm) != FT_Err_Ok)
+        return EIO;
+    if (FT_Load_Char(face, codepoint, FT_LOAD_NO_HINTING | FT_LOAD_RENDER) != FT_Err_Ok)
+        return EIO;
+    FT_GlyphSlot slot = face->glyph;
+    if (slot->bitmap.pixel_mode != FT_PIXEL_MODE_GRAY)
+        return EIO;
+
+    uint32_t bw = slot->bitmap.width, br = slot->bitmap.rows;
+    if ((uint64_t)bw * br > cap)
+        return ENOMEM;
+    // buffer points at the top-left byte; pitch (either sign) steps one row down.
+    for (uint32_t r = 0; r < br; r++)
+        memcpy(buf + (size_t)r * bw,
+               slot->bitmap.buffer + (ptrdiff_t)r * slot->bitmap.pitch, bw);
+
+    *width = (int)bw;
+    *rows  = (int)br;
+    *left  = slot->bitmap_left;
+    *top   = slot->bitmap_top;
+    return 0;
 }

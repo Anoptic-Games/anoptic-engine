@@ -202,14 +202,19 @@ full-viewport UI at the paper's cost class without ever touching the graphics cr
 
 ## 6. Friction points
 
-1. Overlapping contours, confirmed in the demo charset. The paper's coverage sum breaks when
-   same-winding contours overlap. The audit found real overlaps in Geist-Regular ASCII:
-   `# $ % + f t` — and `$`, `%`, digits-adjacent glyphs appear in the profile lines
-   themselves. Mitigation: clamp per-glyph coverage to [0,1] at assembly. For solid overlaps
-   (crossing strokes) the clamp is exactly correct; the only residual error is in pixels
-   where two anti-aliased edges cross inside an overlap — sub-pixel corner softening,
-   invisible at text sizes. The paper's own alternatives (offline outline union, per-contour
-   evaluation) stay documented as escalation paths if artifacts show.
+1. Coverage overflow from overlapping ink — confirmed, measured, and broader than the
+   scouting audit saw. The paper's coverage sum breaks when ink covers a pixel more than
+   once, and Geist ships BOTH forms of that: separate same-winding contours overlapping
+   (`# $ + f t`, measured unclamped coverage exactly 2.0; `%` was a bbox false positive in
+   the original audit — its ink never overlaps) and single contours that SELF-overlap —
+   Geist draws `H 8 @` as overlapping strokes joined by diagonal jogs, leaving winding-2
+   pockets (measured peaks 1.87 / 1.75 / 1.50) that a contour-pair audit cannot see.
+   Mitigation, validated off-GPU in step 3: clamp per-glyph coverage to [0,1] at assembly.
+   Against FreeType's nonzero-rule ground truth the clamped reference rasterizer measures
+   worst-probe RMS 2.7/255, residual error confined to AA pixels on overlap-pocket
+   boundaries. Note the paper's own per-contour-evaluation fallback handles only the first
+   form — self-overlap inside one contour survives it — so the clamp is the more general
+   fix; offline outline union remains the escalation path if artifacts ever show.
 2. Kerning is GPOS-only in this font. `FT_Get_Kerning` reads the legacy `kern` table and
    returns zeros for Geist. PoC ships unkerned (profile lines are numeric/monospace-ish;
    acceptable). Shaper v1 adds the in-house PairPos reader (§4) — do not burn time wiring
@@ -312,8 +317,10 @@ re-ABIs.
    directory. Unit tests: monotonicity and bbox==endpoints invariants, segment counts against
    this report's audit numbers (1654 / ASCII), closed-contour area sanity.
 3. CPU reference rasterizer: scalar mirror of the shader math; RMS-compare coverage against
-   `FT_Render_Glyph` bitmaps for a probe set including the overlap glyphs (`# $ % + f t A g @`).
-   This validates the coverage math and the clamp fix off-GPU before any Vulkan work.
+   `FT_Render_Glyph` bitmaps for a probe set including the overlap glyphs. This validates the
+   coverage math and the clamp fix off-GPU before any Vulkan work. (Done: 13 probes at
+   64 px/em, worst RMS 2.71/255, worst per-pixel 53/255 on winding-pocket AA boundaries;
+   surfaced the self-overlap form now recorded in §6.1.)
 4. Shaper v0 (UTF-8, cmap, advances, newline) + golden layout tests.
 5. GPU plumbing, visually inert: buffers, overlay ×3 + resize path, descriptor sets, compute
    pipeline, composite blend draw sampling a cleared overlay. Validation-clean.
