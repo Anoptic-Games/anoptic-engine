@@ -2126,7 +2126,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 }
 
 // Binds the clustered-forward froxel buffers: global set bindings 10/11 (fragment reads) and
-// the light-cull compute set bindings 0-4 (in: UBO/transforms/lights, out: count/index). The
+// the light-cull compute set bindings 0-4 (in: UBO/light-runtime/lights, out: count/index). The
 // cluster buffers are fixed-size and not extent-dependent, so this runs once at init only.
 void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
@@ -2139,7 +2139,9 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
             VkDescriptorBufferInfo countInfo = { vr->clusterLightCountBuffer, 0, VK_WHOLE_SIZE };
             VkDescriptorBufferInfo indexInfo = { vr->clusterLightIndexBuffer, 0, VK_WHOLE_SIZE };
             VkDescriptorBufferInfo uboInfo   = { vr->uniformBuffer, 0, VK_WHOLE_SIZE };
-            VkDescriptorBufferInfo xformInfo = { state->transformBuffer.buffer[i], 0, VK_WHOLE_SIZE };
+            // Binding 1 is the precomputed per-light world pose (lightsetup.comp output), not the raw
+            // transforms: lightcull reads posRange instead of re-deriving the pose per froxel per light.
+            VkDescriptorBufferInfo poseInfo  = { state->lightRuntimeBuffer.buffer[i], 0, VK_WHOLE_SIZE };
             VkDescriptorBufferInfo lightInfo = { state->lightBuffer.device, 0, VK_WHOLE_SIZE };
 
             VkWriteDescriptorSet writes[7] = {};
@@ -2153,7 +2155,7 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
             writes[1] = writes[0];
             writes[1].dstBinding = 11;
             writes[1].pBufferInfo = &indexInfo;
-            // Light-cull set: 0 UBO, 1 transforms, 2 lights, 3 count(out), 4 index(out).
+            // Light-cull set: 0 UBO, 1 light runtime (pose), 2 lights, 3 count(out), 4 index(out).
             writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[2].dstSet = vr->lightcullSet;
             writes[2].dstBinding = 0;
@@ -2163,7 +2165,7 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
             writes[3] = writes[2];
             writes[3].dstBinding = 1;
             writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[3].pBufferInfo = &xformInfo;
+            writes[3].pBufferInfo = &poseInfo;
             writes[4] = writes[3];
             writes[4].dstBinding = 2;
             writes[4].pBufferInfo = &lightInfo;
@@ -2795,9 +2797,18 @@ bool createCommandBuffer(VulkanContext* ctx, RendererState* state)
 
 	for (uint32_t i =0; i<MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		if (vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].commandBuffer)) != VK_SUCCESS) 
+		if (vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].commandBuffer)) != VK_SUCCESS)
 		{
 			printf("Failed to allocate command buffers!\n");
+			return false;
+		}
+		// Async light-cull (review finding 2 remainder): the frame's uploads + shared compute
+		// prelude record into their own CB, submitted ahead of the main one so the compute-queue
+		// light-cull can start off its completion signal.
+		if (state->asyncLc
+			&& vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].preludeCommandBuffer)) != VK_SUCCESS)
+		{
+			printf("Failed to allocate prelude command buffers!\n");
 			return false;
 		}
 	}
@@ -2838,6 +2849,17 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 			vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->hizTimeline) != VK_SUCCESS)
 		{
 			printf("Failed to create async Hi-Z timeline semaphores!\n");
+			return false;
+		}
+		// Async light-cull (finding 2 remainder): preludeTimeline counts prelude submits (waited by
+		// that frame's light-cull), lcTimeline counts light-culls (waited by the same frame's main
+		// submit at FRAGMENT_SHADER, the next frame's prelude at TRANSFER, and the host before CB
+		// reuse). Same 1-based ordinal scheme as the Hi-Z pair.
+		if (state->asyncLc &&
+			(vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->preludeTimeline) != VK_SUCCESS ||
+			 vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->lcTimeline) != VK_SUCCESS))
+		{
+			printf("Failed to create async light-cull timeline semaphores!\n");
 			return false;
 		}
 	}
@@ -3125,6 +3147,15 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	if (rendererState.hizTimeline != NULL)
 	{
 		vkDestroySemaphore(ctx->device, rendererState.hizTimeline, NULL);
+	}
+	// Async light-cull timelines (finding 2 remainder); NULL when asyncLc was off.
+	if (rendererState.preludeTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.preludeTimeline, NULL);
+	}
+	if (rendererState.lcTimeline != NULL)
+	{
+		vkDestroySemaphore(ctx->device, rendererState.lcTimeline, NULL);
 	}
 
 

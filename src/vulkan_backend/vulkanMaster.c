@@ -84,7 +84,7 @@ static Monitors monitors =
 
 // SlotUpload helpers (defined below, before ensureEntityCapacity) — forward-declared because
 // recordCommandBuffer and the apply path use them earlier in the file.
-static bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride, uint32_t stagingCap);
+static bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride, uint32_t stagingCap, bool computeShared);
 static void slot_upload_stage(SlotUpload* b, uint32_t f, uint32_t index, const void* value);
 static void slot_upload_flush(VkCommandBuffer cmd, SlotUpload* b, uint32_t f);
 static bool slot_upload_grow_device(SlotUpload* b, uint32_t newCap, uint32_t keep);
@@ -106,14 +106,16 @@ void unInitVulkan() // A celebration
 		}
     }
 
-	// Async Hi-Z (review finding 2): the compute submits are not fence-tracked; drain the last
-	// signaled ordinal before teardown destroys their pool/semaphores/images.
+	// Async Hi-Z / light-cull (review finding 2): the compute submits are not fence-tracked; drain
+	// their last signaled ordinals before teardown destroys the pool/semaphores/images.
 	if (rendererState.asyncHiz && rendererState.hizTimeline != VK_NULL_HANDLE
 		&& ctx.device != VK_NULL_HANDLE && rendererState.timelineOrdinal > 0)
 	{
-		uint64_t last = rendererState.timelineOrdinal;
+		uint64_t last[2] = { rendererState.timelineOrdinal, rendererState.timelineOrdinal };
+		VkSemaphore sems[2] = { rendererState.hizTimeline, rendererState.lcTimeline };
+		uint32_t n = rendererState.asyncLc && rendererState.lcTimeline != VK_NULL_HANDLE ? 2u : 1u;
 		VkSemaphoreWaitInfo waitInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-			.semaphoreCount = 1, .pSemaphores = &rendererState.hizTimeline, .pValues = &last };
+			.semaphoreCount = n, .pSemaphores = sems, .pValues = last };
 		vkWaitSemaphores(ctx.device, &waitInfo, UINT64_MAX);
 	}
 
@@ -423,6 +425,34 @@ static void recordHiZCompute(uint32_t frameIndex)
     vkEndCommandBuffer(cmd);
 }
 
+// Async light-cull CB (review finding 2 remainder): both views' froxel binning for this frame,
+// submitted to ctx.computeQueue between the frame's two graphics submits — waits preludeTimeline
+// == this ordinal (lightsetup/light uploads done), signals lcTimeline == the same ordinal (waited
+// by the main submit at FRAGMENT_SHADER), so it overlaps the shadow region. No barriers: the two
+// dispatches write disjoint per-view buffers, and the semaphores carry the memory dependencies
+// both ways. Recorded (possibly empty) every frame — the signal must fire even with no entities.
+// CB reuse is fence-safe: this slot's prior main submit waited lcTimeline >= its ordinal, so the
+// frame fence retiring implies the prior light-cull retired.
+static void recordLightcullCompute(uint32_t frameIndex)
+{
+    VkCommandBuffer cmd = rendererState.frames[frameIndex].lightcullCommandBuffer;
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    if (rendererState.entityCount > 0) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            rendererState.prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline);
+        uint32_t lightcullDispatch = (ANO_CLUSTER_COUNT + 63u) / 64u;
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+            ViewResources* vr = &rendererState.frames[frameIndex].views[v];
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                rendererState.prototypes[PIPELINE_COMPUTE_LIGHTCULL].layout, 0, 1, &vr->lightcullSet, 0, NULL);
+            vkCmdDispatch(cmd, lightcullDispatch, 1, 1);
+        }
+    }
+    vkEndCommandBuffer(cmd);
+}
+
 void recordCommandBuffer(uint32_t imageIndex)
 {
 	VkCommandBufferBeginInfo beginInfo = {};
@@ -430,7 +460,12 @@ void recordCommandBuffer(uint32_t imageIndex)
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // re-recorded every frame, submitted once
 	beginInfo.pInheritanceInfo = NULL;// Optional
 	
-	VkCommandBuffer cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
+	// Async light-cull (review finding 2 remainder): the uploads + shared compute prelude record
+	// into their own CB, submitted ahead of the main one (its completion signal releases the
+	// compute-queue light-cull). Off async, everything records into the one frame CB as before.
+	VkCommandBuffer cmd = rendererState.asyncLc
+		? rendererState.frames[rendererState.frameIndex].preludeCommandBuffer
+		: rendererState.frames[rendererState.frameIndex].commandBuffer;
 
 	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
 	{
@@ -438,37 +473,14 @@ void recordCommandBuffer(uint32_t imageIndex)
 	}
 
 	// Profiling: reset this frame's query pool and stamp the frame-begin boundary (outside any
-	// render pass). The five section boundaries below are stamped unconditionally at top level.
+	// render pass). The five section boundaries below are stamped unconditionally at top level;
+	// split submits execute in submission order on the one graphics queue, so the reset (prelude
+	// CB) still precedes every stamp in the main CB.
 	if (rendererState.timestampValidBits) {
 		vkCmdResetQueryPool(cmd, rendererState.frames[rendererState.frameIndex].timestampPool, 0, ANO_TS_COUNT);
 		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			rendererState.frames[rendererState.frameIndex].timestampPool, ANO_TS_FRAME_BEGIN);
 	}
-
-	// Transition swapchain image to color attachment optimal
-	VkImageMemoryBarrier swapChainBarrier = {};
-	swapChainBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	swapChainBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	swapChainBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	swapChainBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	swapChainBarrier.image = rendererState.images[imageIndex];
-	swapChainBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	swapChainBarrier.subresourceRange.baseMipLevel = 0;
-	swapChainBarrier.subresourceRange.levelCount = 1;
-	swapChainBarrier.subresourceRange.baseArrayLayer = 0;
-	swapChainBarrier.subresourceRange.layerCount = 1;
-	swapChainBarrier.srcAccessMask = 0;
-	swapChainBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-	vkCmdPipelineBarrier(
-		cmd,
-		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		0,
-		0, NULL,
-		0, NULL,
-		1, &swapChainBarrier
-	);
 
     // Each view's HDR resolve target is moved to COLOR_ATTACHMENT inside the per-view loop below
     // (UNDEFINED -> COLOR: the geometry clear + resolve overwrite the whole render area).
@@ -526,12 +538,17 @@ void recordCommandBuffer(uint32_t imageIndex)
                 continue; // nothing streamed this frame: skip the scatter pass entirely
 
             if (pass->prototype == PIPELINE_COMPUTE_CULL) {
-                // Zero the entire indirect buffer (sized for the larger command format) so
-                // unwritten partitions decode as no-op draws on either path, plus the draw count.
-                VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
-                    ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
-                vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
-                    cmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count(), 0);
+                // Zero the per-partition draw counts. The full indirect-buffer fill (several MB:
+                // stride x capacity x partitions) is only needed on the fallback path, where the
+                // fixed-count vkCmdDraw*Indirect reads every slot and unwritten commands must decode
+                // as no-op draws. On the indirect-count path nothing reads past drawCount — cull
+                // appends [0, count) and tpsort bounds by drawCounts — so the fill is skipped.
+                if (!ctx.deviceCapabilities.drawIndirectCount) {
+                    VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+                        ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
+                        cmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count(), 0);
+                }
                 vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
                     sizeof(uint32_t) * ano_draw_partition_count(), 0);
 
@@ -609,8 +626,11 @@ void recordCommandBuffer(uint32_t imageIndex)
             memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
-                // Shadow frustums feed the cull (compute), the depth render (mesh/vertex), and the
-                // fragment sampler — make the writes visible to all three.
+                // ONE barrier for lightsetup + shadowsetup (mutually independent: disjoint writes, no
+                // cross-reads, adjacent in the pass table — lightsetup emits none below). Shadow
+                // frustums feed the cull (compute), the depth render (mesh/vertex), and the fragment
+                // sampler; the light runtime feeds the light-cull (compute) and the fragment passes
+                // (set 0 binding 12). Union: COMPUTE | geom | FRAGMENT.
                 VkPipelineStageFlags geomStage = ctx.deviceCapabilities.meshShader
                     ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
                 memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -618,10 +638,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
-                // Per-light world pose is read by the fragment passes (flat/transmission set 0 binding 12).
-                memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+                // No barrier: shadowsetup (next pass, independent) carries the shared one above.
             } else if (pass->prototype == PIPELINE_COMPUTE_UPDATE || pass->prototype == PIPELINE_COMPUTE_SCATTER) {
                 // update -> scatter is a WAW on streamed slots (scatter must win); both -> cull is a read.
                 memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -646,6 +663,39 @@ void recordCommandBuffer(uint32_t imageIndex)
     uint32_t drawSlotCount = ano_draw_pipeline_count();
 
     ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
+
+    // Async light-cull: the prelude CB ends here; everything below records into the main CB.
+    // Between the two submits the compute queue runs both views' light-culls off the prelude's
+    // completion signal, overlapping the shadow region below.
+    if (rendererState.asyncLc) {
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+            printf("Failed to record prelude command buffer!\n");
+        cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
+        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+            printf("Failed to begin recording command buffer!\n");
+    }
+
+    // Transition swapchain image to color attachment optimal (consumed by the composite at the
+    // frame's end; recorded here so the prelude CB never touches the swapchain).
+    {
+        VkImageMemoryBarrier swapChainBarrier = {};
+        swapChainBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        swapChainBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        swapChainBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        swapChainBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        swapChainBarrier.image = rendererState.images[imageIndex];
+        swapChainBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        swapChainBarrier.subresourceRange.baseMipLevel = 0;
+        swapChainBarrier.subresourceRange.levelCount = 1;
+        swapChainBarrier.subresourceRange.baseArrayLayer = 0;
+        swapChainBarrier.subresourceRange.layerCount = 1;
+        swapChainBarrier.srcAccessMask = 0;
+        swapChainBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, NULL, 0, NULL, 1, &swapChainBarrier);
+    }
 
     // === Layered Power CDF shadow render + separable prefilter ===
     // Three phases: (1) render each active frustum's nearest occluder as a one-hot (coverage=1, M=z)
@@ -975,7 +1025,10 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
 
         // Light-cull for this view: bins lights into this view's froxel grid using its frustum.
-        if (entityCount > 0) {
+        // Async mode records both views' dispatches into the compute-queue CB instead
+        // (recordLightcullCompute); the main submit's lcTimeline wait at FRAGMENT_SHADER replaces
+        // this barrier.
+        if (entityCount > 0 && !rendererState.asyncLc) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                 rendererState.prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1402,19 +1455,31 @@ void recordCommandBuffer(uint32_t imageIndex)
     ano_ts(cmd, ANO_TS_AFTER_COMPOSITE);
 
 	// Transition swapchain image to present
-	swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	swapChainBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-	swapChainBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	swapChainBarrier.dstAccessMask = 0;
+	{
+		VkImageMemoryBarrier swapChainBarrier = {};
+		swapChainBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		swapChainBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		swapChainBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		swapChainBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		swapChainBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		swapChainBarrier.image = rendererState.images[imageIndex];
+		swapChainBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		swapChainBarrier.subresourceRange.baseMipLevel = 0;
+		swapChainBarrier.subresourceRange.levelCount = 1;
+		swapChainBarrier.subresourceRange.baseArrayLayer = 0;
+		swapChainBarrier.subresourceRange.layerCount = 1;
+		swapChainBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		swapChainBarrier.dstAccessMask = 0;
 
-	vkCmdPipelineBarrier(
-		cmd,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		0,
-		0, NULL,
-		0, NULL,
-		1, &swapChainBarrier
-	);
+		vkCmdPipelineBarrier(
+			cmd,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			0,
+			0, NULL,
+			0, NULL,
+			1, &swapChainBarrier
+		);
+	}
 
 	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
 	{
@@ -1688,14 +1753,29 @@ static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
 // Uses the file-global ctx/gpuAllocator like growBufferSet.
 // ---------------------------------------------------------------------------
 
-// in:  b, capacity (device elements), stride (bytes/elem), stagingCap (initial delta budget)
+// Applies gfx+compute CONCURRENT sharing to a buffer the async light-cull touches across queue
+// families (an EXCLUSIVE buffer's contents are undefined to the other family without ownership-
+// transfer barriers; CONCURRENT trades that bookkeeping for a negligible access cost). fams must
+// outlive the vkCreateBuffer call.
+static void buffer_share_async_compute(VkBufferCreateInfo* bi, uint32_t fams[2])
+{
+    fams[0] = ctx.queueFamilyIndices.graphicsFamily;
+    fams[1] = ctx.queueFamilyIndices.computeFamily;
+    bi->sharingMode = VK_SHARING_MODE_CONCURRENT;
+    bi->queueFamilyIndexCount = 2;
+    bi->pQueueFamilyIndices = fams;
+}
+
+// in:  b, capacity (device elements), stride (bytes/elem), stagingCap (initial delta budget),
+//      computeShared (device buffer read by the async light-cull's compute family)
 // out: device DEVICE_LOCAL buffer + N host-visible staging buffers + region arrays; false on failure
-static bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride, uint32_t stagingCap)
+static bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride, uint32_t stagingCap, bool computeShared)
 {
     memset(b, 0, sizeof(*b));
-    b->capacity   = capacity;
-    b->stride     = stride;
-    b->stagingCap = stagingCap ? stagingCap : 1u;
+    b->capacity      = capacity;
+    b->stride        = stride;
+    b->stagingCap    = stagingCap ? stagingCap : 1u;
+    b->computeShared = computeShared && rendererState.asyncLc;
 
     VkBufferCreateInfo di = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -1703,6 +1783,8 @@ static bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride
         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
+    uint32_t fams[2];
+    if (b->computeShared) buffer_share_async_compute(&di, fams);
     if (vkCreateBuffer(ctx.device, &di, NULL, &b->device) != VK_SUCCESS) return false;
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(ctx.device, b->device, &mr);
@@ -1808,6 +1890,8 @@ static bool slot_upload_grow_device(SlotUpload* b, uint32_t newCap, uint32_t kee
         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
+    uint32_t fams[2];
+    if (b->computeShared) buffer_share_async_compute(&di, fams); // sharing survives growth
     VkBuffer nb = VK_NULL_HANDLE;
     if (vkCreateBuffer(ctx.device, &di, NULL, &nb) != VK_SUCCESS) return false;
     VkMemoryRequirements mr;
@@ -2904,6 +2988,8 @@ void drawFrame()
 	render_apply_commands(&rendererState, rendererState.frameIndex);
 
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
+	if (rendererState.asyncLc)
+		vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].preludeCommandBuffer, 0);
 	recordCommandBuffer(imageIndex);
 
 	//updateUniformBuffer(&ctx, &rendererState);
@@ -2924,37 +3010,118 @@ void drawFrame()
 		}
 		recordHiZCompute(rendererState.frameIndex);
 	}
-
-	VkSubmitInfo submitInfo = {};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	// Async light-cull CB for this frame (reuse is fence-safe — see recordLightcullCompute).
+	if (rendererState.asyncLc)
+		recordLightcullCompute(rendererState.frameIndex);
 
 	// Graphics submit. Async Hi-Z adds a second wait — hizTimeline >= ordinal-2 at the cull's
 	// COMPUTE stage (the lag-2 pyramid it samples) | EARLY_FRAGMENT_TESTS (chain anchor for the
 	// depth-resolve WAR flip in recordCommandBuffer) — and a second signal, gfxTimeline = ordinal
 	// (waited by this frame's compute build). Values on binary semaphores are ignored per spec.
-	VkSemaphore waitSemaphores[2] = {rendererState.frames[rendererState.frameIndex].imageAvailable, rendererState.hizTimeline};
-	VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT};
-	uint64_t waitValues[2] = {0, ordinal > 2u ? ordinal - 2u : 0u};
+	// renderFinished/gfxTimeline are signaled by whichever submit ends the frame (present waits
+	// signalSemaphores[0]).
 	VkSemaphore signalSemaphores[2] = {rendererState.frames[rendererState.frameIndex].renderFinished, rendererState.gfxTimeline};
 	uint64_t signalValues[2] = {0, ordinal};
-	VkTimelineSemaphoreSubmitInfo timelineValues = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-		.waitSemaphoreValueCount = 2, .pWaitSemaphoreValues = waitValues,
-		.signalSemaphoreValueCount = 2, .pSignalSemaphoreValues = signalValues };
-	if (rendererState.asyncHiz)
-		submitInfo.pNext = &timelineValues;
-	submitInfo.waitSemaphoreCount = rendererState.asyncHiz ? 2 : 1;
-	submitInfo.pWaitSemaphores = waitSemaphores;
-	submitInfo.pWaitDstStageMask = waitStages;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &(rendererState.frames[rendererState.frameIndex].commandBuffer);
-	submitInfo.signalSemaphoreCount = rendererState.asyncHiz ? 2 : 1;
-	submitInfo.pSignalSemaphores = signalSemaphores;
+	uint64_t hizWaitValue = ordinal > 2u ? ordinal - 2u : 0u;
 	vkResetFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence)); // this goes here because multi-threading
-	if (vkQueueSubmit(ctx.graphicsQueue, 1, &submitInfo, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS)
+	if (!rendererState.asyncLc)
 	{
-		printf("Failed to submit draw command buffer!\n");
-		return;
+		VkSubmitInfo submitInfo = {};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		VkSemaphore waitSemaphores[2] = {rendererState.frames[rendererState.frameIndex].imageAvailable, rendererState.hizTimeline};
+		VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT};
+		uint64_t waitValues[2] = {0, hizWaitValue};
+		VkTimelineSemaphoreSubmitInfo timelineValues = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.waitSemaphoreValueCount = 2, .pWaitSemaphoreValues = waitValues,
+			.signalSemaphoreValueCount = 2, .pSignalSemaphoreValues = signalValues };
+		if (rendererState.asyncHiz)
+			submitInfo.pNext = &timelineValues;
+		submitInfo.waitSemaphoreCount = rendererState.asyncHiz ? 2 : 1;
+		submitInfo.pWaitSemaphores = waitSemaphores;
+		submitInfo.pWaitDstStageMask = waitStages;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &(rendererState.frames[rendererState.frameIndex].commandBuffer);
+		submitInfo.signalSemaphoreCount = rendererState.asyncHiz ? 2 : 1;
+		submitInfo.pSignalSemaphores = signalSemaphores;
+		if (vkQueueSubmit(ctx.graphicsQueue, 1, &submitInfo, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS)
+		{
+			printf("Failed to submit draw command buffer!\n");
+			return;
+		}
+	}
+	else
+	{
+		// Async light-cull split (finding 2 remainder), one atomic two-batch submit + fence.
+		// A (prelude CB): waits hizTimeline >= ordinal-2 at COMPUTE (the cull samples the lag-2
+		// pyramids) and lcTimeline >= ordinal-1 at TRANSFER (the lightBuffer copy must not
+		// overwrite the PRIOR frame's compute-queue light-cull read — the in-queue reach-back
+		// barrier cannot see the other queue); signals preludeTimeline = ordinal.
+		// B (main CB): waits imageAvailable at COLOR_OUT, hizTimeline >= ordinal-2 at
+		// EARLY_FRAGMENT_TESTS (depth-resolve WAR anchor), and lcTimeline == ordinal at
+		// FRAGMENT_SHADER (first froxel-list consumer; timeline waits may be submitted before
+		// their signal); signals renderFinished + gfxTimeline = ordinal as before.
+		uint64_t lcPrevValue = ordinal > 1u ? ordinal - 1u : 0u;
+		VkSemaphore aWaitSems[2] = { rendererState.hizTimeline, rendererState.lcTimeline };
+		VkPipelineStageFlags aWaitStages[2] = { VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT };
+		uint64_t aWaitValues[2] = { hizWaitValue, lcPrevValue };
+		VkTimelineSemaphoreSubmitInfo aTimeline = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.waitSemaphoreValueCount = 2, .pWaitSemaphoreValues = aWaitValues,
+			.signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &ordinal };
+		VkSubmitInfo submits[2] = {};
+		submits[0].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submits[0].pNext = &aTimeline;
+		submits[0].waitSemaphoreCount = 2;
+		submits[0].pWaitSemaphores = aWaitSems;
+		submits[0].pWaitDstStageMask = aWaitStages;
+		submits[0].commandBufferCount = 1;
+		submits[0].pCommandBuffers = &(rendererState.frames[rendererState.frameIndex].preludeCommandBuffer);
+		submits[0].signalSemaphoreCount = 1;
+		submits[0].pSignalSemaphores = &rendererState.preludeTimeline;
+
+		VkSemaphore bWaitSems[3] = { rendererState.frames[rendererState.frameIndex].imageAvailable,
+			rendererState.hizTimeline, rendererState.lcTimeline };
+		VkPipelineStageFlags bWaitStages[3] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT };
+		uint64_t bWaitValues[3] = { 0, hizWaitValue, ordinal };
+		VkTimelineSemaphoreSubmitInfo bTimeline = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.waitSemaphoreValueCount = 3, .pWaitSemaphoreValues = bWaitValues,
+			.signalSemaphoreValueCount = 2, .pSignalSemaphoreValues = signalValues };
+		submits[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submits[1].pNext = &bTimeline;
+		submits[1].waitSemaphoreCount = 3;
+		submits[1].pWaitSemaphores = bWaitSems;
+		submits[1].pWaitDstStageMask = bWaitStages;
+		submits[1].commandBufferCount = 1;
+		submits[1].pCommandBuffers = &(rendererState.frames[rendererState.frameIndex].commandBuffer);
+		submits[1].signalSemaphoreCount = 2;
+		submits[1].pSignalSemaphores = signalSemaphores;
+
+		if (vkQueueSubmit(ctx.graphicsQueue, 2, submits, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS)
+		{
+			printf("Failed to submit draw command buffers!\n");
+			return;
+		}
+
+		// Light-cull compute submit: released by this frame's prelude, consumed by its main submit —
+		// it executes DURING the shadow region on the dedicated queue.
+		VkPipelineStageFlags lcWaitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		VkTimelineSemaphoreSubmitInfo lcTimelineInfo = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+			.waitSemaphoreValueCount = 1, .pWaitSemaphoreValues = &ordinal,
+			.signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &ordinal };
+		VkSubmitInfo lcSubmit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &lcTimelineInfo,
+			.waitSemaphoreCount = 1, .pWaitSemaphores = &rendererState.preludeTimeline, .pWaitDstStageMask = &lcWaitStage,
+			.commandBufferCount = 1, .pCommandBuffers = &rendererState.frames[rendererState.frameIndex].lightcullCommandBuffer,
+			.signalSemaphoreCount = 1, .pSignalSemaphores = &rendererState.lcTimeline };
+		if (vkQueueSubmit(ctx.computeQueue, 1, &lcSubmit, VK_NULL_HANDLE) != VK_SUCCESS)
+		{
+			// Keep the timeline monotonic so the main submit's wait cannot deadlock (the frame keeps
+			// the previous froxel lists); a failed submit here is device-loss territory anyway.
+			printf("Failed to submit async light-cull command buffer!\n");
+			VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+				.semaphore = rendererState.lcTimeline, .value = ordinal };
+			vkSignalSemaphore(ctx.device, &signalInfo);
+		}
 	}
 	rendererState.timelineOrdinal = ordinal;
 
@@ -3058,7 +3225,7 @@ bool createLightBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxLig
     (void)ctx;
     // Light palette: ×1 device-local + delta staging (count tracks live lights; create-with-light
     // and RCMD_LIGHT_* commands stage into it). slot_upload_create zeroes count.
-    return slot_upload_create(&state->lightBuffer, maxLights, sizeof(LightData), SLOT_STAGING_INIT);
+    return slot_upload_create(&state->lightBuffer, maxLights, sizeof(LightData), SLOT_STAGING_INIT, true);
 }
 
 // Register a STATIC-region shadow caster for a light-palette row whose photometric data was already
@@ -3100,7 +3267,7 @@ bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEn
     state->motionActiveCount = 0u;
     // ×1 device-local + delta staging. Fresh slots are written by their CREATE before being
     // read (a slot is < slotHighWater only after allocation), so no host-side zero-fill is needed.
-    return slot_upload_create(&state->motionBuffer, maxEntities, sizeof(AnoMotionDescriptor), SLOT_STAGING_INIT);
+    return slot_upload_create(&state->motionBuffer, maxEntities, sizeof(AnoMotionDescriptor), SLOT_STAGING_INIT, false);
 }
 
 // Slot-indexed per-entity instance channel (tint/flags/scalars). ×1 device-local + delta
@@ -3109,7 +3276,7 @@ bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEn
 // out: true on success; false on buffer/alloc failure
 bool createInstanceDataBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     (void)ctx;
-    return slot_upload_create(&state->instanceDataBuffer, maxEntities, sizeof(AnoInstanceData), SLOT_STAGING_INIT);
+    return slot_upload_create(&state->instanceDataBuffer, maxEntities, sizeof(AnoInstanceData), SLOT_STAGING_INIT, false);
 }
 
 // Creates one host-visible storage buffer per frame and writes its handle/alloc/mapped
@@ -3243,6 +3410,9 @@ bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t
         bufferInfo.size = bufferSize;
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        // Async light-cull reads the pose records on the compute family (lightsetup writes on graphics).
+        uint32_t fams[2];
+        if (rendererState.asyncLc) buffer_share_async_compute(&bufferInfo, fams);
 
         if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &buf->buffer[i]) != VK_SUCCESS) {
             printf("Failed to create light pose buffer!\n");
@@ -3322,6 +3492,10 @@ bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
             info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
             info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            // Async light-cull writes the lists on the compute family; the fragment passes read
+            // them on graphics.
+            uint32_t fams[2];
+            if (rendererState.asyncLc) buffer_share_async_compute(&info, fams);
             VkMemoryRequirements memReqs;
 
             info.size = countSize;
@@ -3468,8 +3642,8 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     // lifecycle mutates them race-free, like lightBuffer. The init zero-fills the device (spare slots:
     // active=0 / castsShadow=0); a casting create stages its frustum block via register_static_shadow.
     // shadowCfgMirror is the render-thread CPU copy the record loop gates on.
-    if (!slot_upload_create(&state->shadowConfig, ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig), SLOT_STAGING_INIT)) return false;
-    if (!slot_upload_create(&state->shadowInfo, state->lightBuffer.capacity, sizeof(ShadowLightInfo), SLOT_STAGING_INIT)) return false;
+    if (!slot_upload_create(&state->shadowConfig, ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig), SLOT_STAGING_INIT, false)) return false;
+    if (!slot_upload_create(&state->shadowInfo, state->lightBuffer.capacity, sizeof(ShadowLightInfo), SLOT_STAGING_INIT, false)) return false;
     state->shadowCfgMirror = (ShadowFrustumConfig*)calloc(ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig)); // active=0
     if (!state->shadowCfgMirror) return false;
 
@@ -3517,7 +3691,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     
     // Per-slot mesh/material (meshIndex, materialIndex): ×1 device-local + delta staging,
     // replacing the former per-frame host-visible entityBuffer.
-    if (!slot_upload_create(&state->culling.entity, maxEntities, sizeof(uint32_t) * 2u, SLOT_STAGING_INIT))
+    if (!slot_upload_create(&state->culling.entity, maxEntities, sizeof(uint32_t) * 2u, SLOT_STAGING_INIT, false))
         return false;
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -3763,6 +3937,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	                      && !getenv("ANO_FORCE_NO_ASYNC_HIZ");
 	printf("Async Hi-Z build: %s\n", rendererState.asyncHiz ? "on (dedicated compute queue)" : "off (in-frame)");
 
+	// Async light-cull gate (review finding 2 remainder): rides asyncHiz's infrastructure (dedicated
+	// compute queue, compute command pool, timeline support), so forcing the Hi-Z build in-frame also
+	// falls this back. ANO_FORCE_NO_ASYNC_LC pins the in-frame light-cull alone for A/B. Must be
+	// decided before buffer creation (CONCURRENT sharing) and createSyncObjects (timelines).
+	rendererState.asyncLc = rendererState.asyncHiz && !getenv("ANO_FORCE_NO_ASYNC_LC");
+	printf("Async light-cull: %s\n", rendererState.asyncLc ? "on (split submit, overlaps shadows)" : "off (in-frame)");
+
     // Mesh-shader entry points only exist on the mesh path. The fallback path draws
     // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
     if (ctx.deviceCapabilities.meshShader) {
@@ -3844,7 +4025,9 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 };
 		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
-			if (vkAllocateCommandBuffers(ctx.device, &cai, &rendererState.frames[i].computeCommandBuffer) != VK_SUCCESS)
+			if (vkAllocateCommandBuffers(ctx.device, &cai, &rendererState.frames[i].computeCommandBuffer) != VK_SUCCESS
+				|| (rendererState.asyncLc
+					&& vkAllocateCommandBuffers(ctx.device, &cai, &rendererState.frames[i].lightcullCommandBuffer) != VK_SUCCESS))
 			{
 				printf("Quitting init: compute command buffer allocation failure!\n");
 				unInitVulkan();
@@ -3938,7 +4121,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	uint32_t maxEntities = INITIAL_ENTITY_CAPACITY;
 	if (!createTransformBuffer(&ctx, &rendererState.transformBuffer, maxEntities,
 	                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
-	    !slot_upload_create(&rendererState.initialTransformBuffer, maxEntities, sizeof(mat4), SLOT_STAGING_INIT) ||
+	    !slot_upload_create(&rendererState.initialTransformBuffer, maxEntities, sizeof(mat4), SLOT_STAGING_INIT, false) ||
 	    !createMotionBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createInstanceDataBuffer(&ctx, &rendererState, maxEntities) ||
 	    !createStreamBuffers(&ctx, &rendererState, STREAM_CAPACITY) ||

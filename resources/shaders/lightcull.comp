@@ -29,8 +29,17 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint  pad1;
 } g;
 
-layout(set = 0, binding = 1) readonly buffer TransformSSBO {
-    mat4 transforms[];
+// Per-light world pose precomputed by lightsetup.comp (its binding 2). Reading posRange here
+// replaces the old transforms[] mat4 load + multiply per froxel per light — the pass's worst
+// latency line in the profile. Layout MUST match lightsetup.comp / flat.frag / transmission.frag.
+struct LightRuntime {
+    vec4 posRange;   // xyz = world position,  w = range
+    vec4 dirType;    // xyz = world forward,    w = float(type)
+    vec4 radInner;   // xyz = color*intensity,  w = innerConeCos
+    vec4 outer;      // x   = outerConeCos,     yzw reserved
+};
+layout(set = 0, binding = 1) readonly buffer LightRuntimeSSBO {
+    LightRuntime runtime[];
 };
 
 const uint LIGHT_TYPE_DIRECTIONAL = 0u;
@@ -123,8 +132,7 @@ void main() {
         if (L.type == LIGHT_TYPE_DIRECTIONAL || L.range <= 0.0) {
             include = true; // unbounded: relevant to every froxel
         } else {
-            vec3 worldPos = (transforms[L.transformIndex] * vec4(L.localOffset, 1.0)).xyz;
-            vec3 viewPos = (g.view * vec4(worldPos, 1.0)).xyz;
+            vec3 viewPos = (g.view * vec4(runtime[i].posRange.xyz, 1.0)).xyz;
             include = sphereAabb(viewPos, L.range, bmin, bmax);
         }
 
