@@ -11,9 +11,9 @@ message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER}")
 
 # Anoptic Engine Only Supports 64-bit Compilation
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-  message(STATUS "64-bit compiler detected.")
+    message(STATUS "64-bit compiler detected.")
 else()
-  message(FATAL_ERROR "64-bit compiler REQUIRED.")
+    message(FATAL_ERROR "64-bit compiler REQUIRED.")
 endif()
 
 # Single-config generators default to an EMPTY build type, which is neither Debug nor
