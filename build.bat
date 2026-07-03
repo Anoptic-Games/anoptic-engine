@@ -4,6 +4,18 @@ setlocal enabledelayedexpansion
 :: Navigate to the script's directory
 cd /d %~dp0
 
+:: Toolchain discovery. If clang/cmake are already on PATH (an MSYS2 shell, or a dev who set it
+:: up), these are no-ops. Otherwise fall back to the conventional MSYS2 / CMake install dirs so a
+:: bare cmd.exe can build. Override by setting the var first, e.g.  set MSYS2_CLANG=D:\... ^& build.bat 1
+:: Vulkan is NOT handled here: the SDK installer exports VULKAN_SDK system-wide and CMake's
+:: find_package(Vulkan) reads it, so there is nothing to hardcode.
+if not defined MSYS2_CLANG set "MSYS2_CLANG=C:\msys64\clang64\bin"
+if not defined CMAKE_BIN   set "CMAKE_BIN=C:\Program Files\CMake\bin"
+where clang >nul 2>&1 || set "PATH=%MSYS2_CLANG%;%PATH%"
+where cmake >nul 2>&1 || set "PATH=%CMAKE_BIN%;%PATH%"
+where clang >nul 2>&1 || (echo ERROR: clang not found. Install MSYS2 clang64 or set MSYS2_CLANG. & exit /b 1)
+where cmake >nul 2>&1 || (echo ERROR: cmake not found. Install CMake or set CMAKE_BIN. & exit /b 1)
+
 :: Parse the build type. BUILD_LABEL names the build dir + toolchain file;
 :: CMAKE_CONFIG is the real CMake config (Tests is a Debug build that runs CTest).
 if "%1"=="1" (
