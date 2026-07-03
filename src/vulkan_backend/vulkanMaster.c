@@ -1305,11 +1305,81 @@ void recordCommandBuffer(uint32_t imageIndex)
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &hdrToRead);
         }
+    }
 
-        // Hi-Z occlusion pyramid build (review 4.9 step 3). Reduce this view's MSAA depth into mip 0,
-        // then MAX-downsample the chain (the cull samples it next frame; single-phase). Standard ZO
-        // depth -> MAX reduction (farthest occluder). Depth -> SHADER_READ for the reduce and restored
-        // to DEPTH_ATTACHMENT after, so next frame's geometry pass finds it in the expected layout.
+    ano_ts(cmd, ANO_TS_AFTER_LIGHTING);
+
+    // --- Composite: tonemap each view's HDR target onto the swapchain ---
+    // View 0 fills the screen; auxiliary views composite as picture-in-picture insets along the
+    // bottom-right. Each draw is the same ACES tonemap fullscreen triangle, scoped to its
+    // destination rect by viewport+scissor, sampling that view's HDR target via its tonemap set.
+    // Each view's HDR target was already moved to SHADER_READ at the end of its geometry pass.
+    {
+        VkRenderingAttachmentInfo tmColor = {};
+        tmColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        tmColor.imageView = rendererState.views[imageIndex];
+        tmColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        tmColor.resolveMode = VK_RESOLVE_MODE_NONE;
+        tmColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // view 0 covers every pixel
+        tmColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingInfo tmInfo = {};
+        tmInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        tmInfo.renderArea.offset = (VkOffset2D){0, 0};
+        tmInfo.renderArea.extent = rendererState.imageExtent;
+        tmInfo.layerCount = 1;
+        tmInfo.colorAttachmentCount = 1;
+        tmInfo.pColorAttachments = &tmColor;
+
+        vkCmdBeginRendering(cmd, &tmInfo);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.tonemapPipeline);
+
+        uint32_t W = rendererState.imageExtent.width, H = rendererState.imageExtent.height;
+        uint32_t insetW = W / 3u, insetH = H / 3u, margin = 16u;
+
+        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+            ViewResources* vr = &rendererState.frames[rendererState.frameIndex].views[v];
+
+            VkViewport tmViewport = {};
+            VkRect2D tmScissor = {};
+            if (v == 0) {
+                // Main view: full screen.
+                tmViewport.x = 0.0f; tmViewport.y = 0.0f;
+                tmViewport.width = (float)W; tmViewport.height = (float)H;
+                tmScissor.offset = (VkOffset2D){0, 0};
+                tmScissor.extent = rendererState.imageExtent;
+            } else {
+                // Inset: stack auxiliary views up the right edge from the bottom corner.
+                uint32_t idx = v - 1u;
+                int32_t x = (int32_t)(W - insetW - margin);
+                int32_t y = (int32_t)(H - margin - (insetH + margin) * (idx + 1u) + margin);
+                tmViewport.x = (float)x; tmViewport.y = (float)y;
+                tmViewport.width = (float)insetW; tmViewport.height = (float)insetH;
+                tmScissor.offset = (VkOffset2D){x, y};
+                tmScissor.extent = (VkExtent2D){insetW, insetH};
+            }
+            tmViewport.minDepth = 0.0f; tmViewport.maxDepth = 1.0f;
+            vkCmdSetViewport(cmd, 0, 1, &tmViewport);
+            vkCmdSetScissor(cmd, 0, 1, &tmScissor);
+
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.tonemapLayout,
+                0, 1, &vr->tonemapSet, 0, NULL);
+            vkCmdDraw(cmd, 3, 1, 0, 0); // fullscreen triangle, scoped by viewport+scissor
+        }
+        vkCmdEndRendering(cmd);
+    }
+
+    // Hi-Z occlusion pyramid build (review 4.9 step 3), all views. Reduce each view's MSAA depth
+    // into mip 0, then MAX-downsample the chain (the cull samples it next frame; single-phase).
+    // Standard ZO depth -> MAX reduction (farthest occluder). Depth -> SHADER_READ for the reduce
+    // and restored to DEPTH_ATTACHMENT after, so next frame's geometry pass finds it in the
+    // expected layout. Recorded AFTER every view's color passes + the composite, not per view:
+    // the SHADER_READ->DEPTH_ATTACHMENT flip below drains all prior raster before it executes,
+    // which mid-frame serialized view 1 behind view 0's whole fragment tail (0.42 ms FE stall,
+    // 2026-07-03 trace). Nothing in-frame consumes the pyramid — the compute reduce waits on the
+    // submit-end gfxTimeline signal regardless — so only the tiny resolves sit behind the drain.
+    for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+        ViewResources* vr = &rendererState.frames[rendererState.frameIndex].views[v];
         {
             // Reduce source setup. Avenue 1 (depthMaxResolve): fixed-function MAX-resolves this view's
             // MSAA depth into the single-sample depthResolveImage (farthest sample = conservative
@@ -1453,67 +1523,6 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
     }
 
-    ano_ts(cmd, ANO_TS_AFTER_LIGHTING);
-
-    // --- Composite: tonemap each view's HDR target onto the swapchain ---
-    // View 0 fills the screen; auxiliary views composite as picture-in-picture insets along the
-    // bottom-right. Each draw is the same ACES tonemap fullscreen triangle, scoped to its
-    // destination rect by viewport+scissor, sampling that view's HDR target via its tonemap set.
-    // Each view's HDR target was already moved to SHADER_READ at the end of its geometry pass.
-    {
-        VkRenderingAttachmentInfo tmColor = {};
-        tmColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        tmColor.imageView = rendererState.views[imageIndex];
-        tmColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        tmColor.resolveMode = VK_RESOLVE_MODE_NONE;
-        tmColor.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // view 0 covers every pixel
-        tmColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-        VkRenderingInfo tmInfo = {};
-        tmInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        tmInfo.renderArea.offset = (VkOffset2D){0, 0};
-        tmInfo.renderArea.extent = rendererState.imageExtent;
-        tmInfo.layerCount = 1;
-        tmInfo.colorAttachmentCount = 1;
-        tmInfo.pColorAttachments = &tmColor;
-
-        vkCmdBeginRendering(cmd, &tmInfo);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.tonemapPipeline);
-
-        uint32_t W = rendererState.imageExtent.width, H = rendererState.imageExtent.height;
-        uint32_t insetW = W / 3u, insetH = H / 3u, margin = 16u;
-
-        for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
-            ViewResources* vr = &rendererState.frames[rendererState.frameIndex].views[v];
-
-            VkViewport tmViewport = {};
-            VkRect2D tmScissor = {};
-            if (v == 0) {
-                // Main view: full screen.
-                tmViewport.x = 0.0f; tmViewport.y = 0.0f;
-                tmViewport.width = (float)W; tmViewport.height = (float)H;
-                tmScissor.offset = (VkOffset2D){0, 0};
-                tmScissor.extent = rendererState.imageExtent;
-            } else {
-                // Inset: stack auxiliary views up the right edge from the bottom corner.
-                uint32_t idx = v - 1u;
-                int32_t x = (int32_t)(W - insetW - margin);
-                int32_t y = (int32_t)(H - margin - (insetH + margin) * (idx + 1u) + margin);
-                tmViewport.x = (float)x; tmViewport.y = (float)y;
-                tmViewport.width = (float)insetW; tmViewport.height = (float)insetH;
-                tmScissor.offset = (VkOffset2D){x, y};
-                tmScissor.extent = (VkExtent2D){insetW, insetH};
-            }
-            tmViewport.minDepth = 0.0f; tmViewport.maxDepth = 1.0f;
-            vkCmdSetViewport(cmd, 0, 1, &tmViewport);
-            vkCmdSetScissor(cmd, 0, 1, &tmScissor);
-
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.tonemapLayout,
-                0, 1, &vr->tonemapSet, 0, NULL);
-            vkCmdDraw(cmd, 3, 1, 0, 0); // fullscreen triangle, scoped by viewport+scissor
-        }
-        vkCmdEndRendering(cmd);
-    }
     ano_ts(cmd, ANO_TS_AFTER_COMPOSITE);
 
 	// Transition swapchain image to present
