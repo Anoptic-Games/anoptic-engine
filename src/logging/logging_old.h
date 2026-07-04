@@ -6,14 +6,22 @@
 // The pre-ring mutex logger, preserved as the benchmark baseline for anotest_logbench. It is NOT part
 // of anoptic_core and never enters the standard build. Compiled only into the optional
 // benchmark, so the lock-free ring logger can be timed against it. The API mirrors
-// anoptic_logging.h but is namespaced mtxlog_* so both implementations link into one executable. The
-// log_types_t / LOG_* severities are shared with the ring logger. Design history: docs/logger.md §14.
+// anoptic_logging.h but is namespaced mtxlog_* so both implementations link into one executable.
+// Design history: docs/logger.md §14.
 
 #ifndef ANOPTICENGINE_LOGGING_OLD_H
 #define ANOPTICENGINE_LOGGING_OLD_H
 
-#include <anoptic_logging.h>   // log_types_t (LOG_DEBUG..LOG_FATAL), shared with the ring logger
 #include <stdint.h>
+
+// The retired 5-tier severities, preserved with the baseline (the ring logger moved to routes).
+typedef enum {
+    LOG_DEBUG,
+    LOG_INFO,
+    LOG_WARN,
+    LOG_ERROR,
+    LOG_FATAL
+} log_types_t;
 
 #define MTXLOG_MSG_MAX  4096u             // max formatted line, NUL included
 #define MTXLOG_BUF_CAP  (1u << 16)        // shared buffer, must exceed MSG_MAX
