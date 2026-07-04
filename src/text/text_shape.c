@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Shaper v0 (FONT_RENDER.md step 4): UTF-8 decode, cmap-by-range lookup, horizontal
-// advances, newline handling. Pure functions over an immutable AnoFontBake -- no
-// FreeType, no module state, callable from any thread. Kerning (GPOS PairPos) is the
-// documented v1 extension; ligatures, marks, and bidi are explicit non-goals.
+// Shaper (FONT_RENDER.md step 4 + v1 kerning): UTF-8 decode, cmap-by-range lookup,
+// horizontal advances with GPOS pair kerning, newline handling. Pure functions over an
+// immutable AnoFontBake -- no FreeType, no module state, callable from any thread.
+// Ligatures, marks, and bidi are explicit non-goals.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -60,6 +60,25 @@ uint32_t ano_utf8_next(const char *s, uint32_t len, uint32_t *consumed)
     return cp;
 }
 
+float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSlot)
+{
+    if (bake == NULL || bake->kernCount == 0
+        || leftSlot >= bake->glyphCount || rightSlot >= bake->glyphCount)
+        return 0.0f;
+    uint32_t key = leftSlot << 16 | rightSlot;
+    uint32_t lo = 0, hi = bake->kernCount;
+    while (lo < hi)
+    {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (bake->kerns[mid].key < key)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    return (lo < bake->kernCount && bake->kerns[lo].key == key) ? bake->kerns[lo].xAdvance
+                                                                : 0.0f;
+}
+
 uint32_t ano_text_shape(const AnoFontBake *bake, const char *utf8, uint32_t len,
                         float sizePx, const float origin[2], const float color[4],
                         AnoGlyphInstance *out, uint32_t cap, float *penOut)
@@ -70,6 +89,7 @@ uint32_t ano_text_shape(const AnoFontBake *bake, const char *utf8, uint32_t len,
     float penX = origin[0], penY = origin[1];
     float lineStep = bake->lineHeight * sizePx;
     uint32_t needed = 0, emitted = 0;
+    uint32_t prevSlot = UINT32_MAX; // pair-kern chain; newline/gap resets it
 
     for (uint32_t i = 0; i < len;)
     {
@@ -82,14 +102,20 @@ uint32_t ano_text_shape(const AnoFontBake *bake, const char *utf8, uint32_t len,
         {
             penX = origin[0];
             penY += lineStep;
+            prevSlot = UINT32_MAX;
             continue;
         }
         if (cp < bake->firstCodepoint || cp - bake->firstCodepoint >= bake->glyphCount)
         {
             penX += ANO_TEXT_GAP_EM * sizePx;
+            prevSlot = UINT32_MAX;
             continue;
         }
-        const AnoGlyphEntry *e = &bake->glyphs[cp - bake->firstCodepoint];
+        uint32_t slot = cp - bake->firstCodepoint;
+        if (prevSlot != UINT32_MAX)
+            penX += ano_text_kern(bake, prevSlot, slot) * sizePx;
+        prevSlot = slot;
+        const AnoGlyphEntry *e = &bake->glyphs[slot];
         if (e->curveCount > 0)
         {
             needed++;
@@ -99,7 +125,7 @@ uint32_t ano_text_shape(const AnoFontBake *bake, const char *utf8, uint32_t len,
                     .inv     = { 1.0f / sizePx, 0.0f, 0.0f, -1.0f / sizePx },
                     .color   = { color[0], color[1], color[2], color[3] },
                     .origin  = { penX, penY },
-                    .glyphID = cp - bake->firstCodepoint,
+                    .glyphID = slot,
                     .flags   = 0,
                 };
             }
@@ -122,6 +148,7 @@ void ano_text_measure(const AnoFontBake *bake, const char *utf8, uint32_t len,
     if (bake != NULL && utf8 != NULL && sizePx > 0.0f && len > 0)
     {
         lines = 1;
+        uint32_t prevSlot = UINT32_MAX; // mirrors ano_text_shape's pair chain exactly
         for (uint32_t i = 0; i < len;)
         {
             uint32_t used;
@@ -134,12 +161,20 @@ void ano_text_measure(const AnoFontBake *bake, const char *utf8, uint32_t len,
                 maxW = fmaxf(maxW, w);
                 w = 0.0f;
                 lines++;
+                prevSlot = UINT32_MAX;
                 continue;
             }
             if (cp < bake->firstCodepoint || cp - bake->firstCodepoint >= bake->glyphCount)
+            {
                 w += ANO_TEXT_GAP_EM * sizePx;
-            else
-                w += bake->glyphs[cp - bake->firstCodepoint].advance * sizePx;
+                prevSlot = UINT32_MAX;
+                continue;
+            }
+            uint32_t slot = cp - bake->firstCodepoint;
+            if (prevSlot != UINT32_MAX)
+                w += ano_text_kern(bake, prevSlot, slot) * sizePx;
+            prevSlot = slot;
+            w += bake->glyphs[slot].advance * sizePx;
         }
         maxW = fmaxf(maxW, w);
     }

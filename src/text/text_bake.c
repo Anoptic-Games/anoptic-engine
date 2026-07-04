@@ -28,6 +28,8 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
+#include FT_TRUETYPE_TABLES_H
+#include FT_TRUETYPE_TAGS_H
 
 // ---------------------------------------------------------------------------------------------
 // binary16 conversion (round-to-nearest-even), kept bit-exact and branch-simple; the
@@ -451,8 +453,68 @@ static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeCon
 }
 
 // ---------------------------------------------------------------------------------------------
+// Kerning extraction (shaper v1): the face's GPOS 'kern' PairPos adjustments for the
+// baked range, compacted into a key-sorted pair table on the caller heap. Fail-soft
+// everywhere: no GPOS, no 'kern' feature, or a malformed table bake kernCount 0 (only
+// allocation failure is an error). The dense scratch accumulator is slotCount^2, so
+// oversized ranges skip extraction with a warning.
+
+static int bake_kerns(FT_Face face, mi_heap_t *scratch, mi_heap_t *heap,
+                      const AnoGlyphEntry *glyphs, uint32_t glyphCount,
+                      uint32_t firstCodepoint, double invUpem, AnoFontBake *out)
+{
+    if (glyphCount > 1024u)
+    {
+        ano_log_warn("text: kern extraction skipped (range %u > 1024 slots)", glyphCount);
+        return 0;
+    }
+    FT_ULong glen = 0;
+    if (FT_Load_Sfnt_Table(face, TTAG_GPOS, 0, NULL, &glen) != FT_Err_Ok || glen < 10u)
+        return 0; // no GPOS: nothing to kern
+
+    uint8_t  *blob = mi_heap_malloc(scratch, glen);
+    uint32_t *slotGids = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(uint32_t));
+    int32_t  *dense = mi_heap_zalloc(scratch, (size_t)glyphCount * glyphCount * sizeof(int32_t));
+    if (blob == NULL || slotGids == NULL || dense == NULL)
+        return ENOMEM;
+    if (FT_Load_Sfnt_Table(face, TTAG_GPOS, 0, blob, &glen) != FT_Err_Ok)
+        return 0;
+
+    for (uint32_t i = 0; i < glyphCount; i++)
+        slotGids[i] = (glyphs[i].flags & ANO_GLYPH_MISSING)
+                          ? 0xFFFFFFFFu
+                          : (uint32_t)FT_Get_Char_Index(face, firstCodepoint + i);
+    if (ano_gpos_extract_kerns(blob, (uint32_t)glen, slotGids, glyphCount, dense) != 0)
+    {
+        ano_log_warn("text: malformed GPOS table; kerning disabled for this bake");
+        return 0;
+    }
+
+    uint32_t nz = 0;
+    for (uint32_t i = 0; i < glyphCount * glyphCount; i++)
+        nz += dense[i] != 0;
+    if (nz == 0)
+        return 0;
+    AnoKernPair *pairs = mi_heap_malloc(heap, (size_t)nz * sizeof(AnoKernPair));
+    if (pairs == NULL)
+        return ENOMEM;
+    uint32_t w = 0;
+    for (uint32_t s1 = 0; s1 < glyphCount; s1++) // s1-major walk: keys land sorted
+        for (uint32_t s2 = 0; s2 < glyphCount; s2++)
+        {
+            int32_t v = dense[s1 * glyphCount + s2];
+            if (v != 0)
+                pairs[w++] = (AnoKernPair){ .key = s1 << 16 | s2,
+                                            .xAdvance = (float)((double)v * invUpem) };
+        }
+    out->kerns = pairs;
+    out->kernCount = nz;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Bake entry point. All FreeType work happens here (module thread); temporaries live
-// on a scoped scratch heap; only the two result blobs land in the caller's heap.
+// on a scoped scratch heap; only the result blobs land in the caller's heap.
 
 int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCodepoint,
                        mi_heap_t *heap, AnoFontBake *out)
@@ -545,6 +607,10 @@ int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCod
         if (!bake_pack_glyph(scratch, &stream, col.contours, col.contourCount, e))
             return ENOMEM;
     }
+
+    int kerr = bake_kerns(face, scratch, heap, glyphs, glyphCount, firstCodepoint, invUpem, out);
+    if (kerr != 0)
+        return kerr;
 
     uint32_t *points = NULL;
     if (stream.count > 0)

@@ -47,6 +47,18 @@ int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm,
                        AnoQuad *out, int maxOut);
 
 // ---------------------------------------------------------------------------------------------
+// GPOS kerning extraction (shaper v1), FreeType-free for the white-box test.
+
+// Accumulates horizontal 'kern' PairPos xAdvance adjustments (latn/DFLT default
+// LangSys; lookups in list order; first applying subtable per pair) from a raw GPOS
+// table into dense[s1 * slotCount + s2], font units, caller-zeroed. slotGids maps
+// directory slots to font glyph ids; values > 0xFFFF mark absent slots. Every read is
+// bounds-checked: malformed tables return nonzero (EIO) with dense partially written
+// -- callers discard it. Returns 0 on success, including "face kerns nothing".
+int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *slotGids,
+                           uint32_t slotCount, int32_t *dense);
+
+// ---------------------------------------------------------------------------------------------
 // Shaping internals.
 
 // Decodes the next codepoint from s[0..len), len >= 1. Strict: overlongs, surrogates,

@@ -29,11 +29,16 @@
  *     asserting zero isolated coverage (>= 3/255 with an all-zero FT 3x3 around it)
  *     anywhere outside the ink -- the regression net for the solve_mono chord-fallback
  *     bands the on-screen demo exposed on 'v w ( 2';
- *   - the v0 shaper (step 4): strict UTF-8 decode (overlong/surrogate/range/resync
- *     cases), golden layout over the Geist bake -- exact pen advances, blank glyphs
- *     advancing without emitting, newline/CR handling, out-of-range gap, cap
- *     truncation vs total count, bitwise run continuation via penOut, measure
- *     extents, and the 48-byte GPU ABI offsets of AnoGlyphInstance.
+ *   - the shaper (step 4 + v1 kerning): strict UTF-8 decode (overlong/surrogate/range/
+ *     resync cases), golden layout over the Geist bake -- exact kerned pen advances,
+ *     blank glyphs advancing without emitting, newline/CR handling, out-of-range gap,
+ *     cap truncation vs total count, bitwise run continuation via penOut (split at a
+ *     non-kerning boundary), measure extents, the 48-byte GPU ABI of AnoGlyphInstance;
+ *   - the GPOS PairPos reader (v1): a hand-assembled synthetic table exercising
+ *     first-subtable-wins, lookup accumulation, class-0 defaults, coverage/classdef
+ *     formats 1+2, type-9 extension wrapping, absent slots, truncation fail-soft, and
+ *     non-kern feature exclusion; plus the Geist oracle -- 2891 ASCII pairs summing to
+ *     -63296 FUnits (fontTools audit), spot pairs bitwise, sorted-key invariant.
  * Requires resources/fonts/Geist staged next to the binary (tests/CMakeLists.txt).
  * Exit 0 == pass; failures print what broke. */
 
@@ -522,6 +527,167 @@ static void test_utf8(void)
     CHECK(ano_utf8_next("\x80", 1, &n) == 0xFFFD && n == 1, "stray continuation byte");
 }
 
+// ---------------------------------------------------------------------------------------------
+// GPOS PairPos parser (shaper v1), white-box against a hand-assembled synthetic table.
+
+// Byte cursor for big-endian table assembly; every section boundary is asserted so a
+// layout mistake fails here, not as a confusing parser result.
+static uint32_t put16(uint8_t *b, uint32_t off, uint32_t v)
+{
+    b[off] = (uint8_t)(v >> 8);
+    b[off + 1] = (uint8_t)v;
+    return off + 2;
+}
+
+static uint32_t put32(uint8_t *b, uint32_t off, uint32_t v)
+{
+    off = put16(b, off, v >> 16);
+    return put16(b, off, v & 0xFFFFu);
+}
+
+// Layout under test -- 'latn' script, 'kern' feature with three lookups:
+//   L0: fmt1 (pair 5,7 = -50) then fmt2 fallback (classes: (5|6, 7|8) = -30, covered
+//       first glyph with class-0 second = -70) -- first-applying-subtable-wins;
+//   L1: fmt2 (+10 for (5,7)) -- lookups accumulate;
+//   L2: type-9 Extension wrapping fmt1 (pair 9,5 = -25).
+// Coverage fmt1+fmt2 and ClassDef fmt1+fmt2 all appear at least once.
+static void test_gpos_synthetic(void)
+{
+    enum { SL = 10, FL = 30, LL = 48, TOTAL = 238 };
+    static uint8_t t[TOTAL];
+    memset(t, 0, sizeof t);
+    uint32_t o = 0;
+    o = put16(t, o, 1); o = put16(t, o, 0);            // version 1.0
+    o = put16(t, o, SL); o = put16(t, o, FL); o = put16(t, o, LL);
+    CHECK(o == SL, "synthetic header lays out");
+
+    o = put16(t, o, 1);                                 // ScriptList: 1 record
+    o = put32(t, o, 0x6C61746Eu); o = put16(t, o, 8);   // 'latn' -> SL+8
+    o = put16(t, o, 4); o = put16(t, o, 0);             // Script: defaultLangSys=4
+    o = put16(t, o, 0); o = put16(t, o, 0xFFFF);        // LangSys: order, reqFeature
+    o = put16(t, o, 1); o = put16(t, o, 0);             // 1 feature index: 0
+    CHECK(o == FL, "synthetic script list lays out");
+
+    o = put16(t, o, 1);                                 // FeatureList: 1 record
+    o = put32(t, o, 0x6B65726Eu); o = put16(t, o, 8);   // 'kern' -> FL+8
+    o = put16(t, o, 0); o = put16(t, o, 3);             // Feature: params, 3 lookups
+    o = put16(t, o, 0); o = put16(t, o, 1); o = put16(t, o, 2);
+    CHECK(o == LL, "synthetic feature list lays out");
+
+    o = put16(t, o, 3);                                 // LookupList: 3 lookups
+    o = put16(t, o, 8); o = put16(t, o, 96); o = put16(t, o, 150);
+    // L0 @ LL+8: type 2, 2 subtables at +10 (fmt1) and +34 (fmt2).
+    o = put16(t, o, 2); o = put16(t, o, 0); o = put16(t, o, 2);
+    o = put16(t, o, 10); o = put16(t, o, 34);
+    o = put16(t, o, 1); o = put16(t, o, 12);            // S0a: fmt1, cov @ +12
+    o = put16(t, o, 0x4); o = put16(t, o, 0);
+    o = put16(t, o, 1); o = put16(t, o, 18);            // 1 pairset @ +18
+    o = put16(t, o, 1); o = put16(t, o, 1); o = put16(t, o, 5);  // cov fmt1: {5}
+    o = put16(t, o, 1); o = put16(t, o, 7); o = put16(t, o, (uint32_t)(int32_t)-50);
+    o = put16(t, o, 2); o = put16(t, o, 24);            // S0b: fmt2, cov @ +24
+    o = put16(t, o, 0x4); o = put16(t, o, 0);
+    o = put16(t, o, 34); o = put16(t, o, 44);           // cd1 @ +34, cd2 @ +44
+    o = put16(t, o, 2); o = put16(t, o, 2);             // 2x2 classes
+    o = put16(t, o, 0); o = put16(t, o, 0);             // matrix [0][*]
+    o = put16(t, o, (uint32_t)(int32_t)-70); o = put16(t, o, (uint32_t)(int32_t)-30);
+    o = put16(t, o, 2); o = put16(t, o, 1);             // cov fmt2: 1 range
+    o = put16(t, o, 5); o = put16(t, o, 6); o = put16(t, o, 0);
+    o = put16(t, o, 1); o = put16(t, o, 5);             // cd1 fmt1: start 5
+    o = put16(t, o, 2); o = put16(t, o, 1); o = put16(t, o, 1); // classes {1,1}
+    o = put16(t, o, 2); o = put16(t, o, 1);             // cd2 fmt2: 1 range
+    o = put16(t, o, 7); o = put16(t, o, 8); o = put16(t, o, 1);
+    CHECK(o == LL + 96, "synthetic lookup 0 lays out");
+    // L1 @ LL+96: type 2, 1 subtable (fmt2, +10 for class pair (1,1)).
+    o = put16(t, o, 2); o = put16(t, o, 0); o = put16(t, o, 1);
+    o = put16(t, o, 8);
+    o = put16(t, o, 2); o = put16(t, o, 24);            // S1: fmt2, cov @ +24
+    o = put16(t, o, 0x4); o = put16(t, o, 0);
+    o = put16(t, o, 30); o = put16(t, o, 38);           // cd1 @ +30, cd2 @ +38
+    o = put16(t, o, 2); o = put16(t, o, 2);
+    o = put16(t, o, 0); o = put16(t, o, 0);
+    o = put16(t, o, 0); o = put16(t, o, 10);
+    o = put16(t, o, 1); o = put16(t, o, 1); o = put16(t, o, 5);  // cov fmt1: {5}
+    o = put16(t, o, 1); o = put16(t, o, 5); o = put16(t, o, 1); o = put16(t, o, 1);
+    o = put16(t, o, 1); o = put16(t, o, 7); o = put16(t, o, 1); o = put16(t, o, 1);
+    CHECK(o == LL + 150, "synthetic lookup 1 lays out");
+    // L2 @ LL+150: type 9 Extension -> fmt1 (pair 9,5 = -25) at +8.
+    o = put16(t, o, 9); o = put16(t, o, 0); o = put16(t, o, 1);
+    o = put16(t, o, 8);
+    o = put16(t, o, 1); o = put16(t, o, 2); o = put32(t, o, 8); // ext: type 2 @ +8
+    o = put16(t, o, 1); o = put16(t, o, 12);            // inner fmt1, cov @ +12
+    o = put16(t, o, 0x4); o = put16(t, o, 0);
+    o = put16(t, o, 1); o = put16(t, o, 18);
+    o = put16(t, o, 1); o = put16(t, o, 1); o = put16(t, o, 9);  // cov fmt1: {9}
+    o = put16(t, o, 1); o = put16(t, o, 5); o = put16(t, o, (uint32_t)(int32_t)-25);
+    CHECK(o == TOTAL, "synthetic table lays out to its full size");
+
+    uint32_t slotGids[10];
+    for (uint32_t i = 0; i < 10; i++)
+        slotGids[i] = i;
+    slotGids[3] = 0xFFFFFFFFu; // absent slot: must never touch the matrix
+    int32_t dense[100] = { 0 };
+    CHECK(ano_gpos_extract_kerns(t, TOTAL, slotGids, 10, dense) == 0,
+          "synthetic table parses");
+    CHECK(dense[5 * 10 + 7] == -40, "fmt1 wins over fmt2, lookups accumulate (-50 +10)");
+    CHECK(dense[5 * 10 + 8] == -30, "fmt1 miss falls through to the fmt2 classes");
+    CHECK(dense[5 * 10 + 9] == -70, "unlisted second glyph kerns as class 0");
+    CHECK(dense[6 * 10 + 7] == -30, "coverage fmt2 range + classdef fmt1");
+    CHECK(dense[9 * 10 + 5] == -25, "extension-wrapped PairPos applies");
+    CHECK(dense[7 * 10 + 7] == 0 && dense[0] == 0, "uncovered pairs stay zero");
+    int32_t rowcol3 = 0;
+    for (uint32_t i = 0; i < 10; i++)
+        rowcol3 |= dense[3 * 10 + i] | dense[i * 10 + 3];
+    CHECK(rowcol3 == 0, "absent slots kern nothing");
+
+    memset(dense, 0, sizeof dense);
+    CHECK(ano_gpos_extract_kerns(t, 100, slotGids, 10, dense) != 0,
+          "truncated table fails soft");
+
+    static uint8_t noKern[TOTAL];
+    memcpy(noKern, t, TOTAL);
+    put32(noKern, FL + 2, 0x6D61726Bu); // feature tag 'kern' -> 'mark'
+    memset(dense, 0, sizeof dense);
+    CHECK(ano_gpos_extract_kerns(noKern, TOTAL, slotGids, 10, dense) == 0,
+          "non-kern features parse to nothing");
+    int32_t any = 0;
+    for (uint32_t i = 0; i < 100; i++)
+        any |= dense[i];
+    CHECK(any == 0, "non-kern features contribute no pairs");
+}
+
+// The Geist kern oracle (fontTools audit of GPOS 'kern' for latn, ASCII x ASCII):
+// 2891 nonzero pairs summing to -63296 font units, spot-checked on classic pairs.
+static void test_kern_oracle(const AnoFontBake *b)
+{
+    CHECK(b->kernCount == 2891, "ASCII kern pair count matches the fontTools audit");
+    int64_t sum = 0;
+    bool sorted = true;
+    for (uint32_t i = 0; i < b->kernCount; i++)
+    {
+        sum += lround((double)b->kerns[i].xAdvance * (double)b->upem);
+        if (i > 0 && b->kerns[i - 1].key >= b->kerns[i].key)
+            sorted = false;
+    }
+    CHECK(sum == -63296, "kern value sum matches the fontTools audit");
+    CHECK(sorted, "pair table is strictly key-sorted (binary-search precondition)");
+
+    double invUpem = 1.0 / (double)b->upem; // mirrors the bake's conversion exactly
+    static const struct { char l, r; int32_t funits; } spot[] = {
+        { 'A', 'V', -106 }, { 'V', 'A', -106 }, { 'T', 'o', -80 }, { 'L', 'T', -140 },
+        { 'Y', 'o', -70 },  { 'r', '.', -60 },  { 'F', '.', -80 }, { 'A', 'v', -60 },
+        { 'A', ' ', 0 },    { ' ', 'B', 0 },
+    };
+    for (size_t i = 0; i < sizeof spot / sizeof *spot; i++)
+    {
+        float expect = (float)((double)spot[i].funits * invUpem);
+        CHECK(ano_text_kern(b, (uint32_t)(spot[i].l - 32), (uint32_t)(spot[i].r - 32)) == expect,
+              "spot kern pair matches the audit bitwise");
+    }
+    CHECK(ano_text_kern(b, 1000, 0) == 0.0f && ano_text_kern(b, 0, 1000) == 0.0f,
+          "out-of-range slots kern zero");
+    CHECK(ano_text_kern(NULL, 0, 0) == 0.0f, "NULL bake kerns zero");
+}
+
 static void test_shaper(const AnoFontBake *b)
 {
     const float S = 32.0f;
@@ -534,7 +700,10 @@ static void test_shaper(const AnoFontBake *b)
     CHECK(n == 2, "AV emits two instances");
     CHECK(inst[0].origin[0] == org[0] && inst[0].origin[1] == org[1], "first glyph at the origin");
     float expX = org[0] + b->glyphs['A' - 32].advance * S; // mirrors the shaper's op order
-    CHECK(inst[1].origin[0] == expX && inst[1].origin[1] == org[1], "advance is exact");
+    expX += ano_text_kern(b, 'A' - 32, 'V' - 32) * S;      // ...including the pair kern
+    CHECK(inst[1].origin[0] == expX && inst[1].origin[1] == org[1], "kerned advance is exact");
+    CHECK(inst[1].origin[0] < org[0] + b->glyphs['A' - 32].advance * S,
+          "AV actually kerns tighter than the bare advance");
     CHECK(inst[0].glyphID == 'A' - 32 && inst[1].glyphID == 'V' - 32, "directory slots");
     CHECK(inst[0].inv[0] == 1.0f / S && inst[0].inv[1] == 0.0f && inst[0].inv[2] == 0.0f
               && inst[0].inv[3] == -1.0f / S,
@@ -544,7 +713,9 @@ static void test_shaper(const AnoFontBake *b)
     n = ano_text_shape(b, "A B", 3, S, org, col, inst, 8, NULL);
     CHECK(n == 2, "space emits nothing");
     expX = org[0] + b->glyphs['A' - 32].advance * S;
-    expX += b->glyphs[0].advance * S; // slot 0 = space
+    expX += ano_text_kern(b, 'A' - 32, 0) * S;  // blanks join the pair chain (zero here)
+    expX += b->glyphs[0].advance * S;           // slot 0 = space
+    expX += ano_text_kern(b, 0, 'B' - 32) * S;
     CHECK(inst[1].origin[0] == expX, "space still advances the pen");
 
     float pen[2] = { 0 };
@@ -555,10 +726,12 @@ static void test_shaper(const AnoFontBake *b)
     CHECK(pen[0] == org[0] + b->glyphs['B' - 32].advance * S && pen[1] == inst[1].origin[1],
           "penOut lands after the last glyph");
 
-    // Splitting a run at any point and continuing from penOut is bitwise identical.
+    // Splitting a run and continuing from penOut is bitwise identical when the split
+    // point doesn't kern (kerning never bridges calls -- split at a space, as the
+    // header documents; Geist kerns 'A '/' B' zero, pinned by the kern oracle).
     AnoGlyphInstance whole[2], second[1];
-    ano_text_shape(b, "AB", 2, S, org, col, whole, 2, NULL);
-    ano_text_shape(b, "A", 1, S, org, col, inst, 8, pen);
+    ano_text_shape(b, "A B", 3, S, org, col, whole, 2, NULL);
+    ano_text_shape(b, "A ", 2, S, org, col, inst, 8, pen);
     ano_text_shape(b, "B", 1, S, pen, col, second, 1, NULL);
     CHECK(memcmp(&whole[1], &second[0], sizeof(AnoGlyphInstance)) == 0,
           "run continuation via penOut is exact");
@@ -575,8 +748,9 @@ static void test_shaper(const AnoFontBake *b)
     float w = -1.0f, h = -1.0f;
     ano_text_measure(b, "AB\nA", 4, S, &w, &h);
     float lineAB = b->glyphs['A' - 32].advance * S;
+    lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // mirrors measure's op order
     lineAB += b->glyphs['B' - 32].advance * S;
-    CHECK(w == lineAB, "measure width is the widest line");
+    CHECK(w == lineAB, "measure width is the widest line (kerned)");
     CHECK(h == (2.0f * b->lineHeight) * S, "measure height covers both lines");
     ano_text_measure(b, "", 0, S, &w, &h);
     CHECK(w == 0.0f && h == 0.0f, "empty text measures zero");
@@ -591,6 +765,7 @@ int main(void)
     test_quad_split();
     test_cubic();
     test_utf8();
+    test_gpos_synthetic();
 
     CHECK(ano_fs_chdir_gamepath(), "chdir to the exe directory (staged font root)");
     CHECK(ano_text_init() == 0, "init for bake tests");
@@ -611,6 +786,7 @@ int main(void)
 
     CHECK(ano_text_font_bake(geist, 32, 126, heapA, &bake) == 0, "ASCII bake succeeds");
     validate_bake(&bake);
+    test_kern_oracle(&bake);
     test_reference_raster(geist, &bake);
     test_ghost_pixels(geist, &bake);
     test_shaper(&bake);
@@ -618,14 +794,18 @@ int main(void)
     // Determinism: a second bake is bit-identical (double math, fixed iteration order).
     AnoFontBake again = { 0 };
     CHECK(ano_text_font_bake(geist, 32, 126, heapB, &again) == 0, "second bake succeeds");
-    CHECK(again.pointCount == bake.pointCount && again.glyphCount == bake.glyphCount,
+    CHECK(again.pointCount == bake.pointCount && again.glyphCount == bake.glyphCount
+              && again.kernCount == bake.kernCount,
           "second bake has identical shape");
-    if (again.pointCount == bake.pointCount && again.glyphCount == bake.glyphCount)
+    if (again.pointCount == bake.pointCount && again.glyphCount == bake.glyphCount
+        && again.kernCount == bake.kernCount)
     {
         CHECK(memcmp(again.points, bake.points, bake.pointCount * 4u) == 0,
               "point streams are bit-identical");
         CHECK(memcmp(again.glyphs, bake.glyphs, bake.glyphCount * sizeof(AnoGlyphEntry)) == 0,
               "directories are bit-identical");
+        CHECK(memcmp(again.kerns, bake.kerns, bake.kernCount * sizeof(AnoKernPair)) == 0,
+              "kern tables are bit-identical");
     }
 
     ano_text_shutdown();
