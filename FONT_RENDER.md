@@ -110,6 +110,8 @@ Proposed public surface, PoC scope:
     ano_text_font_bake(font, firstCp, lastCp, heap, &out) // GPU-ready blobs in caller heap
     ano_text_shape(bake, utf8, len, sizePx, origin, color, out, cap, penOut) -> count
     ano_text_measure(bake, utf8, len, sizePx, &w, &h)
+    ano_text_shape_runs(bake, utf8, runs, runCount, origin, out, cap, penOut) -> count
+    ano_text_measure_runs(bake, utf8, runs, runCount, &w, &h)   // v2 style runs
 
 Load/bake are bound to the module thread (FreeType underneath); shape/measure are pure
 functions over the immutable bake — no parser state, callable from ANY thread. That split
@@ -139,6 +141,24 @@ truncation. Explicit non-goals, stated to prevent HarfBuzz-shaped creep:
 GSUB ligatures, mark attachment, bidi/RTL, complex scripts, hinting (the technique is
 unhinted analytic AA by design). If the game ever needs Arabic or Devanagari, that is a
 separate decision about a real shaping engine, not an extension of this module.
+
+Shaper v2, per-glyph color/style runs (landed 2026-07-04): `AnoTextRun {byteCount,
+sizePx, color}` spans partition the UTF-8 buffer; `ano_text_shape_runs` /
+`ano_text_measure_runs` walk ONE pen across all runs, so a style change never moves a
+glyph. The four public functions are now thin wrappers over a single static `shape_core`
+in text_shape.c (the old shape/measure duplication is gone; plain shape = one synthesized
+run, bit-identical op order). Zero GPU-side change: size and color were already
+per-instance in the 48-byte ABI (`inv` carries 1/sizePx). Semantics: pair kerning
+bridges a run boundary iff the size is unchanged (the chain tracks the size that shaped
+the previous glyph, so color splits inside kern pairs are position-bitwise vs the
+unsplit shape and empty runs can't break a bridge); a size change resets the chain (a
+kern between two sizes is ill-defined); `\n` steps by the lineHeight of its own run; a
+run boundary inside a multi-byte sequence never splits the codepoint (the lead byte's
+run styles it). measure_runs height = per-line steps summed at each line's ending size.
+Standing demos: the world panel (mixed 72/48/60 px lines, line 3's color splits land
+inside the kern pairs A|V L|T T|o W|a) and the profiling OSD via the
+`ano_vk_text_set_runs` twin (white stats, the total colored by frame budget
+green<4ms<amber<8<red, VRAM line dimmed).
 
 ## 5. Renderer integration map
 

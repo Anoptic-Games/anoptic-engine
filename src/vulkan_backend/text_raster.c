@@ -90,6 +90,18 @@ void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float
     state->textVersion++;
 }
 
+void ano_vk_text_set_runs(RendererState* state, const char* utf8, const AnoTextRun* runs,
+                          uint32_t runCount, const float origin[2])
+{
+    if (!state->textOverlay || state->textPending == NULL || g_textPinned)
+        return;
+    uint32_t cap = ANO_TEXT_WORLD_FIRST;
+    uint32_t count = ano_text_shape_runs(&state->textBake, utf8, runs, runCount, origin,
+                                         state->textPending, cap, NULL);
+    state->textPendingCount = count < cap ? count : cap;
+    state->textVersion++;
+}
+
 void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
 {
     if (!state->textOverlay || state->textPending == NULL)
@@ -496,8 +508,21 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     }
     if (state->textWorld)
     {
-        const float amber[4] = { 1.0f, 0.78f, 0.32f, 1.0f };
-        const float worldOrigin[2] = { 24.0f, 70.0f };
+        // Styled runs double as the feature's standing demo: mixed sizes across lines,
+        // and line 3's color splits land INSIDE the kern pairs (A|V, L|T, T|o, W|a) --
+        // same-size color runs must not move a glyph, so the pairs stay kerned.
+        static const AnoTextRun worldRuns[] = {
+            { 17, 72.0f, { 1.00f, 0.78f, 0.32f, 1.0f } }, // "Scanline Sweeper\n"
+            { 17, 48.0f, { 0.90f, 0.90f, 0.90f, 1.0f } }, // "world-space lane\n"
+            {  1, 60.0f, { 1.00f, 0.42f, 0.35f, 1.0f } }, // "A
+            {  3, 60.0f, { 0.45f, 0.75f, 1.00f, 1.0f } }, //  V L
+            {  3, 60.0f, { 0.45f, 0.95f, 0.60f, 1.0f } }, //  T T
+            {  3, 60.0f, { 1.00f, 0.85f, 0.30f, 1.0f } }, //  o W
+            { 10, 60.0f, { 0.80f, 0.60f, 1.00f, 1.0f } }, //  a "kerned""
+        };
+        static_assert(17 + 17 + 1 + 3 + 3 + 3 + 10 == sizeof g_worldText - 1,
+                      "world runs cover the panel text exactly");
+        const float worldOrigin[2] = { 24.0f, 76.0f };
         uint32_t worldCap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance)
                           - ANO_TEXT_WORLD_FIRST;
         uint32_t count = 0;
@@ -505,9 +530,9 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         {
             AnoGlyphInstance* dst = (AnoGlyphInstance*)state->frames[i].textFrameMapped
                                   + ANO_TEXT_WORLD_FIRST;
-            count = ano_text_shape(&state->textBake, g_worldText,
-                                   (uint32_t)(sizeof g_worldText - 1), 64.0f,
-                                   worldOrigin, amber, dst, worldCap, NULL);
+            count = ano_text_shape_runs(&state->textBake, g_worldText, worldRuns,
+                                        (uint32_t)(sizeof worldRuns / sizeof worldRuns[0]),
+                                        worldOrigin, dst, worldCap, NULL);
         }
         state->textWorldCount = count < worldCap ? count : worldCap;
     }

@@ -34,6 +34,10 @@
  *     blank glyphs advancing without emitting, newline/CR handling, out-of-range gap,
  *     cap truncation vs total count, bitwise run continuation via penOut (split at a
  *     non-kerning boundary), measure extents, the 48-byte GPU ABI of AnoGlyphInstance;
+ *   - color/style runs: same-size color splits inside kern pairs are position-bitwise
+ *     vs the unsplit shape (empty runs invisible to the chain), size boundaries kill
+ *     the kern and land per-run scale in the inverse, '\n' steps at its own run's
+ *     height, mid-sequence boundaries can't split a codepoint, measure_runs extents;
  *   - the GPOS PairPos reader (v1): a hand-assembled synthetic table exercising
  *     first-subtable-wins, lookup accumulation, class-0 defaults, coverage/classdef
  *     formats 1+2, type-9 extension wrapping, absent slots, truncation fail-soft, and
@@ -756,6 +760,125 @@ static void test_shaper(const AnoFontBake *b)
     CHECK(w == 0.0f && h == 0.0f, "empty text measures zero");
 }
 
+static void test_shaper_runs(const AnoFontBake *b)
+{
+    const float S = 32.0f;
+    const float org[2] = { 100.0f, 200.0f };
+    const float red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    AnoGlyphInstance plain[8], styled[8];
+    float penA[2], penB[2];
+
+    // Same-size color splits landing INSIDE kerning pairs: one pen walks the whole
+    // text, so positions/slots/penOut are bit-identical to the unsplit shape (the pair
+    // chain bridges a color boundary) while each glyph wears its run's color.
+    uint32_t n = ano_text_shape(b, "AV LT", 5, S, org, red, plain, 8, penA);
+    const AnoTextRun split[3] = {
+        { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } }, // "A
+        { 3, S, { 0.0f, 0.0f, 1.0f, 1.0f } }, //  V L
+        { 1, S, { 0.0f, 1.0f, 0.0f, 1.0f } }, //  T"
+    };
+    CHECK(ano_text_shape_runs(b, "AV LT", split, 3, org, styled, 8, penB) == n,
+          "color-split count matches the unsplit shape");
+    for (uint32_t i = 0; i < n; i++)
+        CHECK(styled[i].origin[0] == plain[i].origin[0]
+                  && styled[i].origin[1] == plain[i].origin[1]
+                  && styled[i].glyphID == plain[i].glyphID && styled[i].inv[0] == plain[i].inv[0],
+              "a same-size color run never moves a glyph");
+    CHECK(penA[0] == penB[0] && penA[1] == penB[1], "penOut is split-invariant");
+    CHECK(styled[0].color[0] == 1.0f && styled[1].color[2] == 1.0f && styled[2].color[2] == 1.0f
+              && styled[3].color[1] == 1.0f,
+          "each glyph wears its run's color");
+
+    // An empty run, even at another size, can't break the bridge: the chain compares
+    // against the size that SHAPED the previous glyph, not the previous run.
+    const AnoTextRun hollow[3] = {
+        { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },
+        { 0, 2.0f * S, { 1.0f, 1.0f, 1.0f, 1.0f } },
+        { 1, S, { 0.0f, 0.0f, 1.0f, 1.0f } },
+    };
+    CHECK(ano_text_shape_runs(b, "AV", hollow, 3, org, styled, 8, NULL) == 2
+              && styled[1].origin[0] == plain[1].origin[0],
+          "an empty run is invisible to the pair chain");
+
+    // A SIZE boundary resets the chain: the right glyph lands at the bare advance and
+    // both instances carry their own run's scale in the inverse.
+    const AnoTextRun sized[2] = {
+        { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },
+        { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },
+    };
+    CHECK(ano_text_shape_runs(b, "AV", sized, 2, org, styled, 8, NULL) == 2, "sized AV shapes");
+    CHECK(styled[1].origin[0] == org[0] + b->glyphs['A' - 32].advance * S,
+          "a size boundary suppresses the pair kern");
+    CHECK(styled[0].inv[0] == 1.0f / S && styled[1].inv[0] == 1.0f / (2.0f * S)
+              && styled[1].inv[3] == -1.0f / (2.0f * S),
+          "per-run size lands in the instance inverse");
+
+    // '\n' steps by the lineHeight of the run holding the newline itself.
+    const AnoTextRun nlFirst[2] = {
+        { 2, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A\n"
+        { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "B"
+    };
+    CHECK(ano_text_shape_runs(b, "A\nB", nlFirst, 2, org, styled, 8, NULL) == 2
+              && styled[1].origin[1] == org[1] + b->lineHeight * S,
+          "newline steps by its own run's line height");
+    const AnoTextRun nlSecond[2] = {
+        { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A"
+        { 2, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "\nB"
+    };
+    CHECK(ano_text_shape_runs(b, "A\nB", nlSecond, 2, org, styled, 8, NULL) == 2
+              && styled[1].origin[1] == org[1] + b->lineHeight * (2.0f * S),
+          "a newline owned by the second run steps at ITS size");
+
+    // A boundary inside a multi-byte sequence: the lead byte's run styles the whole
+    // codepoint (here an unbaked e-acute's gap advance); the next run picks up after.
+    const AnoTextRun straddle[2] = {
+        { 2, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A" + the C3 lead byte
+        { 2, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // the A9 tail + "B"
+    };
+    CHECK(ano_text_shape_runs(b, "A\xC3\xA9" "B", straddle, 2, org, styled, 8, NULL) == 2,
+          "a straddled codepoint never splits");
+    CHECK(styled[1].origin[0] == org[0] + b->glyphs['A' - 32].advance * S + ANO_TEXT_GAP_EM * S,
+          "the gap advance takes the lead byte's size");
+    CHECK(styled[1].color[2] == 1.0f && styled[1].inv[0] == 1.0f / (2.0f * S),
+          "the next codepoint takes the next run's style");
+
+    // Sizing call, cap truncation, and validation mirror ano_text_shape.
+    CHECK(ano_text_shape_runs(b, "AV LT", split, 3, org, NULL, 0, NULL) == n,
+          "count mode needs no buffer");
+    CHECK(ano_text_shape_runs(b, "AV LT", split, 3, org, styled, 1, NULL) == n,
+          "cap truncates writes, not the reported need");
+    const AnoTextRun dead[1] = { { 2, 0.0f, { 1.0f, 1.0f, 1.0f, 1.0f } } };
+    CHECK(ano_text_shape_runs(b, "AV", dead, 1, org, styled, 8, NULL) == 0
+              && ano_text_shape_runs(b, "AV", NULL, 1, org, styled, 8, NULL) == 0
+              && ano_text_shape_runs(b, "AV", split, 0, org, styled, 8, NULL) == 0
+              && ano_text_shape_runs(b, NULL, split, 3, org, styled, 8, NULL) == 0,
+          "zero size, NULL runs, zero count, NULL text all reject");
+
+    // measure_runs: widest kerned line, height as the sum of per-line steps (each line
+    // at the size in effect at its end); uniform-run width matches ano_text_measure.
+    const AnoTextRun mixed[2] = {
+        { 3, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "AB\n"
+        { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "A"
+    };
+    float w = -1.0f, h = -1.0f;
+    ano_text_measure_runs(b, "AB\nA", mixed, 2, &w, &h);
+    float lineAB = b->glyphs['A' - 32].advance * S;
+    lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // mirrors the core's op order
+    lineAB += b->glyphs['B' - 32].advance * S;
+    CHECK(w == fmaxf(lineAB, b->glyphs['A' - 32].advance * (2.0f * S)),
+          "runs width is the widest line across sizes");
+    CHECK(h == b->lineHeight * S + b->lineHeight * (2.0f * S),
+          "runs height sums per-line steps at each line's ending size");
+    const AnoTextRun uni[1] = { { 4, S, { 1.0f, 1.0f, 1.0f, 1.0f } } };
+    float w2 = -1.0f, h2 = -1.0f;
+    ano_text_measure(b, "AB\nA", 4, S, &w2, &h2);
+    ano_text_measure_runs(b, "AB\nA", uni, 1, &w, &h);
+    CHECK(w == w2, "uniform-run width is bit-identical to ano_text_measure");
+    const AnoTextRun none[1] = { { 0, S, { 1.0f, 1.0f, 1.0f, 1.0f } } };
+    ano_text_measure_runs(b, "", none, 1, &w, &h);
+    CHECK(w == 0.0f && h == 0.0f, "empty runs measure zero");
+}
+
 // ---------------------------------------------------------------------------------------------
 
 int main(void)
@@ -790,6 +913,7 @@ int main(void)
     test_reference_raster(geist, &bake);
     test_ghost_pixels(geist, &bake);
     test_shaper(&bake);
+    test_shaper_runs(&bake);
 
     // Determinism: a second bake is bit-identical (double math, fixed iteration order).
     AnoFontBake again = { 0 };

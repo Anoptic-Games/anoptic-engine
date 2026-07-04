@@ -3280,20 +3280,29 @@ static void ano_print_profiling(void) {
     g_shadowRenderFrames = 0;
 
     // Mirror the same readout on-screen (FONT_RENDER.md step 8): render-thread-internal,
-    // re-shaped at print cadence, copied into each frame slot post-fence.
+    // re-shaped at print cadence, copied into each frame slot post-fence. Three style
+    // runs: white stats, the total colored by frame budget, the VRAM line dimmed.
     char osd[512];
-    int n = snprintf(osd, sizeof osd,
+    int head = snprintf(osd, sizeof osd,
         "[%s] GPU ms  upload %.3f  compute %.3f  shadow %.3f (frusta %.1f/%u)\n"
-        "lighting %.3f  composite %.3f  total %.3f\n"
-        "VRAM MiB  gpu %.1f  tex %.1f  swap %.1f  staging %.1f  shadowAtlas %.1f",
-        mn, up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co, total,
-        gpu, tex, swap, stg, atlas);
-    if (n > 0)
+        "lighting %.3f  composite %.3f  total ",
+        mn, up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co);
+    int mid = head > 0 ? snprintf(osd + head, sizeof osd - (size_t)head, "%.3f", total) : -1;
+    int tail = mid > 0 ? snprintf(osd + head + mid, sizeof osd - (size_t)(head + mid),
+        "\nVRAM MiB  gpu %.1f  tex %.1f  swap %.1f  staging %.1f  shadowAtlas %.1f",
+        gpu, tex, swap, stg, atlas) : -1;
+    if (tail > 0 && head + mid + tail < (int)sizeof osd)
     {
         static const float osdOrigin[2] = { 24.0f, 40.0f };
-        static const float osdColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-        uint32_t len = (uint32_t)n < sizeof osd - 1u ? (uint32_t)n : (uint32_t)(sizeof osd - 1u);
-        ano_vk_text_set(&rendererState, osd, len, 22.0f, osdOrigin, osdColor);
+        const float* health = total < 4.0 ? (const float[4]){ 0.35f, 1.00f, 0.45f, 1.0f }
+                            : total < 8.0 ? (const float[4]){ 1.00f, 0.78f, 0.32f, 1.0f }
+                                          : (const float[4]){ 1.00f, 0.30f, 0.25f, 1.0f };
+        AnoTextRun runs[3] = {
+            { (uint32_t)head, 22.0f, { 1.0f, 1.0f, 1.0f, 1.0f } },
+            { (uint32_t)mid, 22.0f, { health[0], health[1], health[2], health[3] } },
+            { (uint32_t)tail, 22.0f, { 0.62f, 0.62f, 0.62f, 1.0f } },
+        };
+        ano_vk_text_set_runs(&rendererState, osd, runs, 3, osdOrigin);
     }
 }
 
