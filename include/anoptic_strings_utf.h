@@ -91,6 +91,10 @@ bool anorune_is_whitespace(anorune_t r);
 // Covers 0300-036F (the Zalgo arsenal); unlisted scripts' marks report false.
 bool anorune_is_mark(anorune_t r);
 
+// General category P*. Symbols (S*) are not punctuation: culling "+5 Sword!" keeps the +.
+// Shipped scripts only (ASCII, General Punctuation, CJK, full/halfwidth forms).
+bool anorune_is_punct(anorune_t r);
+
 /* Collation */
 
 // Lexicographic order for humans: UCA over the DUCET default table, no locale tailoring.
@@ -101,11 +105,36 @@ bool anorune_is_mark(anorune_t r);
 // Tables cover Latin, Greek, Cyrillic, Runic, kana, and punctuation. 
 // Everything else (Han included: no alphabet exists) falls back to code point order.
 // NO contractions and locale rules (Swedish ö-after-z).
+// Scripts hold disjoint primary ranges, so whole scripts group together in DUCET order:
+// punctuation < digits < Latin < Greek < Cyrillic < Runic < kana, then unlisted scripts
+// (Han, Hebrew, emoji) in code point order. Weights stream left to right, first difference
+// wins: "あの Bjørn's Agda Gun" sorts by its FIRST rune (the kana), the tail only breaks ties.
 // Use for everything a player reads.
 int anostr_collate(anostr_t a, anostr_t b); // Collates a and b in lexicographic order.
 
-// Sort values in collation order, in place.
+// The first four nonzero primary weights of s, big-endian in one u64, 
+// Compute once, sort integers. Unequal keys agree with anostr_collate's sign. 
+// Short strings zero-pad (0 sorts before any weight).
+uint64_t anostr_collate_prefix(anostr_t s);
+
+// Full sort key: anostr_compare(key(a), key(b)) matches anostr_collate(a, b) exactly, ties
+// Layout: each strength's nonzero weights as u16 big-endian, a 0x0000 terminator, three levels, then the bytes. 
+// ~6 bytes per rune plus the string. For repeated comparisons. Empty string on allocation failure.
+anostr_t anostr_collate_key(mi_heap_t *heap, anostr_t s);
+
+// Sort values in collation order, in place. Stable (equal strings keep their order).
+// String bytes are read once, sequentially.
 void anostr_sort(anostr_t *items, size_t count);
+
+// The sort as a permutation: fills order[0..count) so items[order[i]] is nondecreasing.
+// Sort structs by name without shuffling 16-byte values, gather through order instead.
+void anostr_sort_idx(const anostr_t *items, size_t count, uint32_t *order);
+
+// Sort interned symbols by their strings' collation order, in place. Stable. 
+// Prefix keys cache per symbol in the table, so re-sorting seen names is a pure integer sort.
+// Mutates the cache (same one-owner-thread rule as anostr_intern). 
+// Out-of-range symbols sort as the empty string, matching anostr_sym_str.
+void anostr_sym_sort(anostr_intern_t *t, anostr_sym *syms, size_t count);
 
 // Base-letter equality: case- and accent-insensitive. eq_base("Ålesund", "alesund").
 bool anostr_eq_base(anostr_t a, anostr_t b);
@@ -116,6 +145,21 @@ bool anostr_starts_base(anostr_t s, anostr_t prefix);
 // Byte index of the first base-letter match of needle at or after `from`.
 // ANOSTR_NPOS if absent. An empty needle matches at min(from, len).
 size_t anostr_find_base(anostr_t s, anostr_t needle, size_t from);
+
+/* Rune-class filters and per-string transforms */
+
+#define ANOSTR_CULL_WHITESPACE 1u   // White_Space (space, tabs, NBSP, U+3000)
+#define ANOSTR_CULL_PUNCT      2u   // general category P*
+#define ANOSTR_CULL_MARK       4u   // combining marks M* (accents, Zalgo)
+
+// s minus every rune whose class is in `classes` (any ANOSTR_CULL_* bits). 
+// One pass ASCII tested 8 bytes at a time, survivors copied in runs. No match returns s unchanged.
+// Empty string on allocation failure.
+anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes);
+
+// The runes of s sorted ascending by code point (malformed bytes decode as U+FFFD).
+// Empty string on allocation failure.
+anostr_t anostr_rune_sort(mi_heap_t *heap, anostr_t s);
 
 /* Encoding conversion */
 

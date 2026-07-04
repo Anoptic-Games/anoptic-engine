@@ -11,6 +11,7 @@ Comments:
 - No comment should have a ; or - or -- or — inside of it to split a sentence. Needing one means the sentence is too long, so truncate it and get the meaning across already. a -> b is ok.
 - A comment needing paragraphs means the code is unclear. Rename a local instead.
 - Use the shorter synonym when a dev reads it identically. eg: "longest formatted line" --> "max formatted line"
+- Never allow comments to split mid-sentence. Make a newline or use /* */ for paragraphs sparingly.
 - Keep my `/* Section */` comments and my own comments verbatim.
 - Preserve semantic meaning.
 

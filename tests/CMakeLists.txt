@@ -35,6 +35,35 @@ target_link_libraries(anotest_strings_utf PRIVATE anoptic_core)
 add_test(NAME anoptic_strings_utf COMMAND anotest_strings_utf)
 set_tests_properties(anoptic_strings_utf PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Collation sort pipeline (prefix keys, radix, sym_sort cache) and transforms (replace_all,
+# cull, rune_sort). Oracle: qsort over anostr_collate, plus naive rebuilds for transforms.
+add_executable(anotest_strings_sort anotest_strings_sort.c)
+target_link_libraries(anotest_strings_sort PRIVATE anoptic_core)
+add_test(NAME anoptic_strings_sort COMMAND anotest_strings_sort)
+set_tests_properties(anoptic_strings_sort PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# Collation sort benchmark: the 6000-item inventory. qsort+collate baseline vs anostr_sort
+# / sort_idx / sym_sort (cold + warm) vs byte floor, plus replace_all/cull/rune_sort.
+# DISABLED in ctest, run ./anotest_sortbench from a -O3 build (build.bat 7).
+add_executable(anotest_sortbench anotest_sortbench.c)
+target_link_libraries(anotest_sortbench PRIVATE anoptic_core)
+add_test(NAME anoptic_sortbench COMMAND anotest_sortbench)
+set_tests_properties(anoptic_sortbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# String-ops benchmark: find / replace_all / cull / rune_sort across hit/miss/dense/sparse/
+# grow/shrink/no-match shapes, results checked. DISABLED in ctest, run from a -O3 build.
+add_executable(anotest_stropsbench anotest_stropsbench.c)
+target_link_libraries(anotest_stropsbench PRIVATE anoptic_core)
+add_test(NAME anoptic_stropsbench COMMAND anotest_stropsbench)
+set_tests_properties(anoptic_stropsbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# Logger stress: anostr_t values through %.*s under multi-producer fire. Latency percentiles
+# plus two oracles (no loss, byte-exact UTF-8). DISABLED in ctest, run from -O3.
+add_executable(anotest_logstrbench anotest_logstrbench.c)
+target_link_libraries(anotest_logstrbench PRIVATE anoptic_core)
+add_test(NAME anoptic_logstrbench COMMAND anotest_logstrbench)
+set_tests_properties(anoptic_logstrbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
 # Testing for ``anoptic_text.h`` (FreeType lifecycle; glyph-curve bake: stream grammar,
 # monotonicity, winding, and the FONT_RENDER.md audit-count oracle). Geist is staged next
 # to the binary; the test chdirs to its exe dir (gamepath) and loads it by relative path.
