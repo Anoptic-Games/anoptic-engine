@@ -20,20 +20,25 @@ static inline float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Single root of a monotone quadratic component hitting `target`, clamped to [0,1]
-// (the paper's solver: one branch selected by the sweep direction; near-linear
-// segments -- including baked lines, whose quadratic term is only f16 noise -- fall
-// back to chord interpolation). Caller guarantees c0 != c2.
+// Single root of a monotone quadratic component hitting `target`, clamped to [0,1],
+// in the citardauq form 2c/(-b - sign(span)*sqrt(d)): monotonicity makes sign(b) match
+// sign(span) (the bake clamps controls into the endpoint box), so the denominator is
+// always the additive |b|+sqrt(d) -- no cancellation for shallow curves -- and a -> 0
+// (baked lines) degrades exactly to the chord with NO threshold branch. A threshold
+// fallback here is a coverage bug: it mis-crosses shallow-but-genuine quads by up to
+// |a|/4 em, which reads as constant ghost bands right of concave edges (v w ( 2).
+// Caller guarantees c0 != c2.
 static float solve_mono(float c0, float c1, float c2, float target)
 {
     float span = c2 - c0;
     float a = c0 - 2.0f * c1 + c2;
-    if (fabsf(a) <= 1e-2f * fabsf(span))
-        return clampf((target - c0) / span, 0.0f, 1.0f);
     float b = 2.0f * (c1 - c0);
-    float d = fmaxf(b * b - 4.0f * a * (c0 - target), 0.0f);
-    float t = (-b + copysignf(sqrtf(d), span)) / (2.0f * a);
-    return clampf(t, 0.0f, 1.0f);
+    float c = c0 - target;
+    float d = fmaxf(b * b - 4.0f * a * c, 0.0f);
+    float den = -b - copysignf(sqrtf(d), span);
+    if (den == 0.0f) // b == 0 && d == 0: the t=0 extremum endpoint sits on target
+        return 0.0f;
+    return clampf(2.0f * c / den, 0.0f, 1.0f);
 }
 
 // Signed area swept between one monotone quad and the window's right edge, clipped

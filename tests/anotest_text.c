@@ -25,6 +25,10 @@
  *     separate overlapping contours ('# $ + f t') and self-overlapping single
  *     contours with winding-2 pockets ('H 8 @') -- while clean glyphs (incl. '%',
  *     whose audit flag was a bbox false positive) stay in [~1, 1.1);
+ *   - the ghost-pixel sweep: every baked glyph at 64 and 200 px/em on a padded grid,
+ *     asserting zero isolated coverage (>= 3/255 with an all-zero FT 3x3 around it)
+ *     anywhere outside the ink -- the regression net for the solve_mono chord-fallback
+ *     bands the on-screen demo exposed on 'v w ( 2';
  *   - the v0 shaper (step 4): strict UTF-8 decode (overlong/surrogate/range/resync
  *     cases), golden layout over the Geist bake -- exact pen advances, blank glyphs
  *     advancing without emitting, newline/CR handling, out-of-range gap, cap
@@ -414,6 +418,92 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Ghost-pixel sweep: coverage leaking outside the ink.
+
+// Regression net for the step-6 band artifact: solve_mono's former chord-fallback
+// threshold mis-crossed shallow-but-genuine quads, so opposing stroke edges stopped
+// cancelling and constant faint bands appeared right of concave edges ('v w ( 2') --
+// entirely OUTSIDE the strokes, so RMS thresholds absorbed them and the affected glyphs
+// sat outside the probe set. This sweep renders EVERY baked glyph on a grid padded past
+// FreeType's tight bitmap and flags any pixel with coverage >= GHOST_MIN whose 3x3
+// FreeType neighborhood is all zero: honest AA partials always touch ink, phantom
+// coverage doesn't. Two scales, because the crossing error is a fixed em quantity while
+// the window shrinks with 1/S: 200 px amplifies what 64 px shows ~3x (the old fallback
+// fails here at >20/255).
+
+#define GHOST_MIN 3   // flag isolated coverage at or above this (post-fix residual is 0)
+#define GHOST_PAD 8   // grid margin past the FT bitmap; bands extend beyond the ink
+#define GHOST_DIM 320 // per-glyph buffer side; fits any 200px glyph plus padding
+
+static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
+{
+    static uint8_t truth[GHOST_DIM * GHOST_DIM];
+    static uint8_t ours[GHOST_DIM * GHOST_DIM];
+    static const uint32_t scales[2] = { 64, 200 };
+
+    for (int s = 0; s < 2; s++)
+    {
+        uint32_t S = scales[s];
+        int ghosts = 0, worst = 0, worstCp = 0;
+        for (uint32_t cp = b->firstCodepoint; cp < b->firstCodepoint + b->glyphCount; cp++)
+        {
+            const AnoGlyphEntry *g = &b->glyphs[cp - b->firstCodepoint];
+            if (g->curveCount == 0)
+                continue;
+            int fw = 0, fr = 0, fl = 0, ft = 0;
+            int rc = ano_text_ref_ft_render(font, cp, S, truth, sizeof truth,
+                                            &fw, &fr, &fl, &ft);
+            CHECK(rc == 0, "FreeType ground-truth render succeeds");
+            if (rc != 0 || fw <= 0 || fr <= 0)
+                continue;
+            int ow = fw + 2 * GHOST_PAD, or_ = fr + 2 * GHOST_PAD;
+            CHECK(ow <= GHOST_DIM && or_ <= GHOST_DIM, "padded ghost grid fits");
+            if (ow > GHOST_DIM || or_ > GHOST_DIM)
+                continue;
+            ano_text_raster_ref(b->points, g, (float)S, fl - GHOST_PAD, ft + GHOST_PAD,
+                                ow, or_, ours, NULL);
+
+            for (int r = 0; r < or_; r++)
+                for (int c = 0; c < ow; c++)
+                {
+                    int v = ours[r * ow + c];
+                    if (v < GHOST_MIN)
+                        continue;
+                    // FT coordinates of this pixel; any ink in the 3x3 absolves it.
+                    int fy = r - GHOST_PAD, fx = c - GHOST_PAD;
+                    int ink = 0;
+                    for (int dy = -1; dy <= 1 && !ink; dy++)
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            int ny = fy + dy, nx = fx + dx;
+                            if (ny < 0 || nx < 0 || ny >= fr || nx >= fw)
+                                continue;
+                            if (truth[ny * fw + nx] != 0)
+                            {
+                                ink = 1;
+                                break;
+                            }
+                        }
+                    if (!ink)
+                    {
+                        if (ghosts < 8)
+                            printf("ghost '%c' @%upx (%d,%d) = %d\n", (char)cp, S, c, r, v);
+                        ghosts++;
+                        if (v > worst)
+                        {
+                            worst = v;
+                            worstCp = (int)cp;
+                        }
+                    }
+                }
+        }
+        printf("ghost sweep @%3upx: %d ghost pixels (worst %d on '%c')\n", S, ghosts,
+               worst, ghosts ? (char)worstCp : ' ');
+        CHECK(ghosts == 0, "no coverage outside the ink at any glyph");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Shaper v0.
 
 static void test_utf8(void)
@@ -522,6 +612,7 @@ int main(void)
     CHECK(ano_text_font_bake(geist, 32, 126, heapA, &bake) == 0, "ASCII bake succeeds");
     validate_bake(&bake);
     test_reference_raster(geist, &bake);
+    test_ghost_pixels(geist, &bake);
     test_shaper(&bake);
 
     // Determinism: a second bake is bit-identical (double math, fixed iteration order).

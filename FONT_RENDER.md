@@ -255,6 +255,24 @@ full-viewport UI at the paper's cost class without ever touching the graphics cr
    escape hatch (directory flag + fat buffer); noted, not built.
 9. FreeType license: FTL (BSD-style with attribution clause) — add the credit line to
    third-party notices when it starts shipping in builds.
+10. Solver chord-fallback ghost bands — found on-screen in step 6, root-caused, fixed. The
+   original solve_mono fell back to chord interpolation when |a| ≤ 1e-2·|span| (meant to
+   absorb f16 noise on baked lines). But genuine font curvature reaches arbitrarily far
+   below any threshold: Geist's shallow stroke edges (`v w ( 2 K`, and at larger sizes even
+   `"`) crossed the band boundary up to |a|/4 em off, so a stroke's accurately-solved edge
+   and its chord-approximated partner stopped cancelling — a constant phantom Σ(Δy)·w for
+   every window to their right. Faint horizontal bands (~4/255 at 36 px) bridging concave
+   nooks; invisible to RMS thresholds (outside the ink, below the noise floor) and the
+   step-3 probe set didn't include the affected glyphs. Fix: the citardauq quadratic form
+   t = 2c/(−b − sign(span)·√d) — under monotonicity sign(b) = sign(span) (the bake clamps
+   controls into the endpoint box), so the denominator is the additive |b|+√d, cancellation-
+   free, and a→0 degrades exactly to the chord: one branch-free formula for real quads and
+   noise-quad lines, no threshold to tune. The error was a fixed em quantity against a
+   window that shrinks with 1/S, so it grew with font size: the regression net in
+   anotest_text sweeps EVERY baked glyph at 64 and 200 px on a padded grid and asserts zero
+   isolated coverage (≥3/255 with an all-zero FreeType 3×3 neighborhood — honest AA always
+   touches ink). Old solver measured against it: 562 ghost pixels at 64 px, worst 7/255 on
+   `(`; fixed solver: zero at both scales, demo-canvas ghost scan 141 → 0.
 
 ## 7. Demo target: profile lines on-screen
 
@@ -357,7 +375,11 @@ re-ABIs.
    the sRGB-roundtrip + UNORM8 envelope. Validation-clean; suite 15/15. Cost in-frame,
    release, busy desktop: composite 0.09→0.25 ms, total ≈ +0.15 ms; before the empty-tile
    skips it was +0.5 ms — the remaining cost is the degenerate one-big-list gather, and
-   real per-tile binning stays the step-8 lever if the stat screen needs it.)
+   real per-tile binning stays the step-8 lever if the stat screen needs it. Post-landing,
+   on-screen inspection caught faint ghost bands on `v w ( 2` — present in the CPU
+   reference too, root-caused to the solve_mono chord-fallback threshold and fixed with the
+   citardauq form; full story in friction §6.10, regression net (all-glyph two-scale
+   ghost-pixel sweep) in anotest_text.)
 7. Async lane: `textTimeline`, text CB, submit + graphics wait, `ANO_FORCE_NO_ASYNC_TEXT`
    A/B, validation-clean in both modes, freeze-methodology timing.
 8. Demo: profile-line mirror at print cadence, record before/after frame numbers here.
