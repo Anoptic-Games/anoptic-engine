@@ -101,7 +101,7 @@ int main(void) {
         ano_log_flush();                            // optional: checkpoint each tick
     }
 
-    join_all_workers();                             // REQUIRED before cleanup
+    // REQUIRED before cleanup: stop your own threads so nothing calls ano_log_* again
     ano_log_cleanup();                              // once, at the end
     return 0;
 }
