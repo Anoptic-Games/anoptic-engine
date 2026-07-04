@@ -40,6 +40,11 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state);
 void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float sizePx,
                      const float origin[2], const float color[4]);
 
+// ano_vk_text_set with per-glyph color/style runs (see AnoTextRun); the text length is
+// the runs' byteCount sum. Same replace-pending semantics and gating.
+void ano_vk_text_set_runs(RendererState* state, const char* utf8, const AnoTextRun* runs,
+                          uint32_t runCount, const float origin[2]);
+
 // Copies pending text into this slot's mapped frame buffer when stale, and points the
 // push-constant instance count at the slot's contents. Call after the slot's fence wait
 // (prior GPU read retired) and before its record/submit.

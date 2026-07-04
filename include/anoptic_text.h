@@ -143,6 +143,17 @@ static_assert(offsetof(AnoGlyphInstance, color) == 16 && offsetof(AnoGlyphInstan
 // a slot is out of range. Pure, any thread (binary search over the bake's pair table).
 float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSlot);
 
+// One styled span of a shape_runs/measure_runs call: the next byteCount bytes of the
+// UTF-8 buffer render at sizePx with this color. Runs are consecutive; their byteCount
+// sum IS the text length. A codepoint takes the style of the run holding its LEAD byte
+// (a boundary inside a multi-byte sequence never splits the codepoint). byteCount 0 is
+// a legal no-op.
+typedef struct AnoTextRun {
+    uint32_t byteCount;
+    float    sizePx;    // pixels per em; every run must be > 0
+    float    color[4];  // premultiplied linear RGBA
+} AnoTextRun;
+
 // Shapes UTF-8 bytes into glyph instances at sizePx pixels per em, the pen starting at
 // origin (screen pixels, y-down baseline). Writes up to cap instances to out; returns
 // the TOTAL count the text needs (size with out=NULL, cap=0). Blank glyphs (space,
@@ -161,5 +172,23 @@ uint32_t ano_text_shape(const AnoFontBake *bake, const char *utf8, uint32_t len,
 // line count times line height (a trailing '\n' starts a line), both in pixels.
 void ano_text_measure(const AnoFontBake *bake, const char *utf8, uint32_t len,
                       float sizePx, float *width, float *height);
+
+// ano_text_shape with per-glyph color/style runs: one pen walks the whole text, so a
+// style change never moves a glyph -- splitting a string into same-size runs yields
+// bit-identical positions to the unsplit shape (pair kerning bridges the boundary).
+// A SIZE change resets the pair chain (a kern between two sizes is ill-defined) and
+// '\n' steps by the lineHeight of its own run. Rejects (returns 0) on any run with
+// sizePx <= 0. Otherwise identical semantics to ano_text_shape.
+uint32_t ano_text_shape_runs(const AnoFontBake *bake, const char *utf8,
+                             const AnoTextRun *runs, uint32_t runCount,
+                             const float origin[2],
+                             AnoGlyphInstance *out, uint32_t cap, float *penOut);
+
+// ano_text_measure over runs. Width = the widest line's pen advance (bit-identical to
+// ano_text_measure for uniform runs). Height = the sum over started lines of the
+// lineHeight in effect at each line's END (its '\n', or the last run for the final line).
+void ano_text_measure_runs(const AnoFontBake *bake, const char *utf8,
+                           const AnoTextRun *runs, uint32_t runCount,
+                           float *width, float *height);
 
 #endif
