@@ -3273,6 +3273,23 @@ static void ano_print_profiling(void) {
            mn, up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co, total, gpu, tex, swap, stg, atlas);
     g_shadowRenderAccum = 0;
     g_shadowRenderFrames = 0;
+
+    // Mirror the same readout on-screen (FONT_RENDER.md step 8): render-thread-internal,
+    // re-shaped at print cadence, copied into each frame slot post-fence.
+    char osd[512];
+    int n = snprintf(osd, sizeof osd,
+        "[%s] GPU ms  upload %.3f  compute %.3f  shadow %.3f (frusta %.1f/%u)\n"
+        "lighting %.3f  composite %.3f  total %.3f\n"
+        "VRAM MiB  gpu %.1f  tex %.1f  swap %.1f  staging %.1f  shadowAtlas %.1f",
+        mn, up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co, total,
+        gpu, tex, swap, stg, atlas);
+    if (n > 0)
+    {
+        static const float osdOrigin[2] = { 24.0f, 40.0f };
+        static const float osdColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        uint32_t len = (uint32_t)n < sizeof osd - 1u ? (uint32_t)n : (uint32_t)(sizeof osd - 1u);
+        ano_vk_text_set(&rendererState, osd, len, 22.0f, osdOrigin, osdColor);
+    }
 }
 
 // Read this frame slot's timestamps (its prior submission is fence-complete) and fold the per-pass
@@ -3378,6 +3395,10 @@ void drawFrame()
 
 	// Ingest discrete ECS->render state transitions for this frame slot.
 	render_apply_commands(&rendererState, rendererState.frameIndex);
+
+	// Copy pending on-screen text into this slot's frame buffer (post-fence; the stats
+	// mirror above may have bumped the version). Must precede record and async submit.
+	ano_vk_text_frame_refresh(&rendererState, rendererState.frameIndex);
 
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
 	if (rendererState.asyncLc)

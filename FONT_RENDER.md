@@ -399,6 +399,20 @@ re-ABIs.
    draw itself. Totals within session noise, as with the light-cull split; the lever
    grows with text volume.)
 8. Demo: profile-line mirror at print cadence, record before/after frame numbers here.
+   (Done: ano_print_profiling shapes the same readout into a three-line 22 px overlay at
+   the top-left via ano_vk_text_set — render-thread-internal, zero bridge traffic. Update
+   machinery: set() shapes into a pending canonical array (textHeap) and bumps
+   textVersion; each frame slot copies it into its own mapped frame buffer right after
+   its fence wait (ano_vk_text_frame_refresh, called before record/submit), so in-flight
+   GPU readers are never overwritten and the push-constant count always matches the
+   slot's contents. Boot shows a title line until the first 120-frame print; ANO_TEXT_DEMO
+   pins the step-6 torture text so the offline pixel-compare harness keeps a stable
+   target — verified post-pin against two elapsed print intervals, still RMS 0.032/255.
+   Hardware-verified: live on-screen updates across print intervals, validation-clean,
+   suite 15/15. Numbers, release, busy desktop: composite with the stats overlay ≈ 0.11 ms
+   vs no-text ≈ 0.09–0.14 ms — the on-timeline cost of the live readout is inside session
+   noise; the raster itself runs on the async lane (step 7). The PoC scouting goal — the
+   profile lines on-screen through the Scanline Sweeper — is delivered.)
 
 Rough scope: `src/text` ≈ 1000-1200 lines C (bake 400, shaper 300, tests 400),
 `textraster.comp` ≈ 300 lines GLSL, `text_raster.c` + hooks ≈ 600 lines. PoC total ≈ 2.5k

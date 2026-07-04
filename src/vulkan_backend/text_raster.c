@@ -38,8 +38,9 @@ typedef struct TextRasterPush {
 // TextRasterPush.flags bits (mirrored in textraster.comp).
 #define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop for the screenshot self-test
 
-// Step-6 demo: a static torture line set covering every baked codepoint, including all
-// known coverage-overlap glyphs (contour-pair # $ + f t and self-overlap H 8 @).
+// Step-6 static torture text, pinned by ANO_TEXT_DEMO: covers every baked codepoint,
+// including all known coverage-overlap glyphs (contour-pair # $ + f t and self-overlap
+// H 8 @) — the stable target the offline pixel-compare harness renders against.
 static const char g_demoText[] =
     "Anoptic Engine :: Scanline Sweeper v0\n"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz\n"
@@ -47,18 +48,36 @@ static const char g_demoText[] =
 #define ANO_TEXT_DEMO_SIZE_PX 36.0f
 static const float g_demoOrigin[2] = { 48.0f, 96.0f };
 
-// Shapes the demo text into every frame slot's mapped frame buffer (identical content,
-// so the in-flight copies never diverge) and records the instance count for the push.
-static void text_upload_demo(RendererState* state)
+// On-screen readout placement (step 8 stats mirror + the boot line).
+static const float g_osdOrigin[2] = { 24.0f, 40.0f };
+#define ANO_TEXT_OSD_SIZE_PX 22.0f
+
+static bool g_textPinned; // ANO_TEXT_DEMO: hold the harness text, ignore later sets
+
+void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float sizePx,
+                     const float origin[2], const float color[4])
 {
-    const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    if (!state->textOverlay || state->textPending == NULL || g_textPinned)
+        return;
     uint32_t cap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance);
-    uint32_t count = 0;
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-        count = ano_text_shape(&state->textBake, g_demoText, (uint32_t)(sizeof g_demoText - 1),
-                               ANO_TEXT_DEMO_SIZE_PX, g_demoOrigin, white,
-                               (AnoGlyphInstance*)state->frames[i].textFrameMapped, cap, NULL);
-    state->textInstanceCount = count < cap ? count : cap;
+    uint32_t count = ano_text_shape(&state->textBake, utf8, len, sizePx, origin, color,
+                                    state->textPending, cap, NULL);
+    state->textPendingCount = count < cap ? count : cap;
+    state->textVersion++;
+}
+
+void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
+{
+    if (!state->textOverlay || state->textPending == NULL)
+        return;
+    PerFrameResources* fr = &state->frames[frameIndex];
+    if (fr->textSlotVersion != state->textVersion)
+    {
+        memcpy(fr->textFrameMapped, state->textPending,
+               (size_t)state->textPendingCount * sizeof(AnoGlyphInstance));
+        fr->textSlotVersion = state->textVersion;
+    }
+    state->textInstanceCount = state->textPendingCount;
 }
 
 // createDataBuffer with optional CONCURRENT graphics+compute sharing: the curve and
@@ -341,12 +360,36 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         }
     }
 
-    text_upload_demo(state);
+    // Pending canonical text (step 8): full frame-buffer capacity, dies with textHeap.
+    // ANO_TEXT_DEMO pins the step-6 torture text for the offline pixel-compare harness;
+    // the default boot line is replaced by the profiling mirror at its first print.
+    uint32_t cap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance);
+    state->textPending = mi_heap_malloc(state->textHeap, (size_t)cap * sizeof(AnoGlyphInstance));
+    if (state->textPending == NULL)
+    {
+        printf("Text overlay disabled: pending-text allocation failed.\n");
+        state->textOverlay = false;
+        state->asyncText = false;
+        return true;
+    }
+    const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    if (getenv("ANO_TEXT_DEMO") != NULL)
+    {
+        ano_vk_text_set(state, g_demoText, (uint32_t)(sizeof g_demoText - 1),
+                        ANO_TEXT_DEMO_SIZE_PX, g_demoOrigin, white);
+        g_textPinned = true;
+    }
+    else
+    {
+        static const char boot[] = "Anoptic Engine :: Scanline Sweeper";
+        ano_vk_text_set(state, boot, (uint32_t)(sizeof boot - 1),
+                        ANO_TEXT_OSD_SIZE_PX, g_osdOrigin, white);
+    }
     state->textFlags = (getenv("ANO_TEXT_OPAQUE") != NULL) ? ANO_TEXT_RASTER_OPAQUE : 0u;
 
     printf("Text overlay: on (%u glyphs, %u curve points, %.1f KiB static, %u instances, %s)\n",
            state->textBake.glyphCount, state->textBake.pointCount,
-           (double)(curveBytes + glyphBytes) / 1024.0, state->textInstanceCount,
+           (double)(curveBytes + glyphBytes) / 1024.0, state->textPendingCount,
            state->asyncText ? "async lane" : "in-frame");
     return true;
 }
