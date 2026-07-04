@@ -33,6 +33,11 @@ typedef enum {
 int ano_log_init(void);     // Build up, singleton initialization.
 int ano_log_cleanup(void);  // Teardown, most likely at program exit.
 
+// Scope-bound teardown, LOCALHEAPATTR-style (anoptic_memory.h). 
+// Usage: int logAlive ANO_LOG_SCOPE_ATTR = ano_log_init();
+void ano_log_scope_release(const int *initStatus);
+#define ANO_LOG_SCOPE_ATTR __attribute__((__cleanup__(ano_log_scope_release))) 
+
 // The usual method: format {level, file, line, fmt, ...} into one line on the calling thread, copy
 // it into the ring, and publish with one release store.
 // Returns: 0 enqueued; 1 the ring was full, so this thread waited for the consumer to free room before
