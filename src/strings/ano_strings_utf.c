@@ -157,11 +157,11 @@ int anostr_builder_append_rune(anostr_builder_t *b, anorune_t r)
 
 // ---------------------------------------------------------------------------------------------
 // Case and classification. Record 0 is the identity record.
-// Unassigned and out-of-range runes fall through to it with no special casing here.
+// Unassigned, unlisted, and beyond-BMP runes fall through to it with no special casing here.
 
 static inline const ano_uc_record_t *uc_record(anorune_t r)
 {
-    if (r > ANORUNE_MAX)
+    if (r >= ANO_UC_TABLE_MAX)
         return &ano_uc_records[0];
     size_t block = ano_uc_stage1[r >> 8];
     return &ano_uc_records[ano_uc_stage2[block * 256 + (r & 0xFFu)]];
