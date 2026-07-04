@@ -3,48 +3,15 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_text.h -- module lifecycle, and the glyph-curve bake path:
- *   - lifecycle: version zeros before init, idempotent init, linked FreeType is the
- *     vendored 2.13+ submodule, clean shutdown / double shutdown / re-init;
- *   - white-box bake math (via src include of text/text_internal.h): binary16 pack is
- *     round-trip exact on representable values, RNE-accurate and monotone elsewhere,
- *     clamps overflow to inf; monotone quad splitting yields chained sandwich-monotone
- *     pieces (0/1/2-split cases); cubic->quad conversion preserves endpoints and stays
- *     within tolerance on a circle arc;
- *   - bake of Geist-Regular ASCII 32..126 against an independent decoder of the
- *     documented stream grammar: contiguous glyph extents, bit-exact contour closure,
- *     exact post-quantization monotone sandwich, directory bbox == decoded bbox,
- *     fill-right winding (chord shoelace: 'H' negative; 'O' outer negative + hole
- *     positive), per-glyph and total curve counts pinned to the FONT_RENDER.md audit
- *     oracle (1654 total, '@' 63, space 0), advance/metrics sanity, EINVAL/ENOMEM
- *     argument contract, and bit-identical determinism across two bakes;
- *   - the CPU reference rasterizer (step 3, the scalar mirror of the GPU shader)
- *     against FT_Render_Glyph ground truth on the same pixel grid at 64 px/em:
- *     per-glyph RMS and max coverage error, plus the unclamped-peak oracle proving
- *     the per-glyph clamp is load-bearing for BOTH overlap forms this font ships --
- *     separate overlapping contours ('# $ + f t') and self-overlapping single
- *     contours with winding-2 pockets ('H 8 @') -- while clean glyphs (incl. '%',
- *     whose audit flag was a bbox false positive) stay in [~1, 1.1);
- *   - the ghost-pixel sweep: every baked glyph at 64 and 200 px/em on a padded grid,
- *     asserting zero isolated coverage (>= 3/255 with an all-zero FT 3x3 around it)
- *     anywhere outside the ink -- the regression net for the solve_mono chord-fallback
- *     bands the on-screen demo exposed on 'v w ( 2';
- *   - the shaper (step 4 + v1 kerning): strict UTF-8 decode (overlong/surrogate/range/
- *     resync cases), golden layout over the Geist bake -- exact kerned pen advances,
- *     blank glyphs advancing without emitting, newline/CR handling, out-of-range gap,
- *     cap truncation vs total count, bitwise run continuation via penOut (split at a
- *     non-kerning boundary), measure extents, the 48-byte GPU ABI of AnoGlyphInstance;
- *   - color/style runs: same-size color splits inside kern pairs are position-bitwise
- *     vs the unsplit shape (empty runs invisible to the chain), size boundaries kill
- *     the kern and land per-run scale in the inverse, '\n' steps at its own run's
- *     height, mid-sequence boundaries can't split a codepoint, measure_runs extents;
- *   - the GPOS PairPos reader (v1): a hand-assembled synthetic table exercising
- *     first-subtable-wins, lookup accumulation, class-0 defaults, coverage/classdef
- *     formats 1+2, type-9 extension wrapping, absent slots, truncation fail-soft, and
- *     non-kern feature exclusion; plus the Geist oracle -- 2891 ASCII pairs summing to
- *     -63296 FUnits (fontTools audit), spot pairs bitwise, sorted-key invariant.
- * Requires resources/fonts/Geist staged next to the binary (tests/CMakeLists.txt).
- * Exit 0 == pass; failures print what broke. */
+/* Coverage for anoptic_text.h: module lifecycle, white-box bake math (binary16,
+ * monotone quad splitting, cubic->quad), the Geist ASCII bake against an independent
+ * stream-grammar decoder and the FONT_RENDER.md audit oracles, the CPU reference
+ * rasterizer against FreeType ground truth (including the unclamped-peak oracle and
+ * the ghost-pixel sweep), the shaper's golden layout and penOut continuation, the
+ * multi-face Runic range bake, color/style runs, and the GPOS PairPos reader (a
+ * synthetic table plus the Geist kern oracle).
+ * Requires the fonts staged next to the binary (tests/CMakeLists.txt).
+ * Exit 0 == pass. Failures print what broke. */
 
 #include <errno.h>
 #include <math.h>
@@ -61,7 +28,8 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-#define FONT_PATH "resources/fonts/Geist/static/Geist-Regular.ttf"
+#define FONT_PATH      "resources/fonts/Geist/static/Geist-Regular.ttf"
+#define RUNE_FONT_PATH "resources/fonts/NotoSansRunic/NotoSansRunic-Regular.ttf"
 
 // ---------------------------------------------------------------------------------------------
 // Lifecycle.
@@ -108,7 +76,7 @@ static void test_half(void)
         CHECK(ano_half_unpack(ano_half_pack(exact[i])) == exact[i],
               "representable value round-trips exactly");
 
-    // Coordinate-range values: relative error within one half ulp; order preserved.
+    // Coordinate-range values: relative error within one half ulp, order preserved.
     float prev = -10.0f;
     for (int k = 0; k <= 2000; k++)
     {
@@ -220,7 +188,7 @@ typedef struct DecodedGlyph {
 static float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 0xFFFFu)); }
 static float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
 
-// Walks one glyph's stream range; checks grammar, closure, and the monotone sandwich.
+// Walks one glyph's stream range, checking grammar, closure, and the monotone sandwich.
 // Returns the stream index just past the glyph (== the next glyph's offset).
 static uint32_t decode_glyph(const uint32_t *pts, const AnoGlyphEntry *e, DecodedGlyph *d)
 {
@@ -287,7 +255,13 @@ static void validate_bake(const AnoFontBake *b)
 {
     CHECK(b->glyphCount == 95, "ASCII 32..126 bakes 95 glyphs");
     CHECK(b->upem == 1000, "Geist reports upem 1000");
-    CHECK(b->firstCodepoint == 32, "range echoed back");
+    CHECK(b->rangeCount == 1 && b->ranges != NULL, "single-range bake has one map entry");
+    CHECK(b->ranges[0].first == 32 && b->ranges[0].last == 126 && b->ranges[0].slotBase == 0,
+          "range echoed back");
+    CHECK(ano_text_bake_slot(b, 'A') == 'A' - 32, "slot lookup hits inside the range");
+    CHECK(ano_text_bake_slot(b, 31) == ANO_TEXT_SLOT_NONE
+              && ano_text_bake_slot(b, 127) == ANO_TEXT_SLOT_NONE,
+          "slot lookup misses outside the range");
     CHECK(b->pointCount > 0 && b->points != NULL, "point stream exists");
     CHECK(b->ascender > 0.0f && b->descender < 0.0f, "ascender above, descender below baseline");
     CHECK(b->lineHeight > b->ascender - b->descender - 0.5f && b->lineHeight > 0.0f,
@@ -317,16 +291,15 @@ static void validate_bake(const AnoFontBake *b)
         total += e->curveCount;
     }
 
-    // Audit oracle (FONT_RENDER.md section 3): counts measured on this exact font file
-    // by an independent fontTools implementation (with composite glyphs decomposed --
-    // ':',';','`','i','j' are components in Geist).
+    // Audit oracle (FONT_RENDER.md section 3): counts measured on this exact font
+    // file by an independent fontTools implementation, composite glyphs decomposed.
     printf("bake: %u monotone curves across ASCII (audit oracle 1654), %u stream points\n",
            total, b->pointCount);
     CHECK(total == 1654, "total monotone curve count matches the fontTools audit");
     if (total != 1654)
         for (uint32_t i = 0; i < b->glyphCount; i++)
-            printf("  U+%04X '%c' curves=%u\n", b->firstCodepoint + i,
-                   (char)(b->firstCodepoint + i), b->glyphs[i].curveCount);
+            printf("  U+%04X '%c' curves=%u\n", b->ranges[0].first + i,
+                   (char)(b->ranges[0].first + i), b->glyphs[i].curveCount);
     CHECK(b->glyphs[' ' - 32].curveCount == 0, "space is blank");
     CHECK(b->glyphs['@' - 32].curveCount == 63, "'@' matches the audit worst case");
 
@@ -353,12 +326,9 @@ static void validate_bake(const AnoFontBake *b)
 
 // The unclamped-peak oracle, measured on this font. Coverage exceeding 1 comes in TWO
 // forms, both neutralized by the per-glyph clamp: separate same-winding contours
-// overlapping ('# $ + f t', the scouting audit's set minus '%' -- a bbox-proxy false
-// positive, its ink never overlaps), and single contours that SELF-overlap ('H 8 @':
-// Geist draws stems and crossbars as overlapping strokes joined by diagonal jogs,
-// leaving winding-2 pockets; found by this test, invisible to the contour-pair audit).
-// Note the paper's per-contour-evaluation fallback would NOT fix the self-overlap
-// form; the clamp handles both. Clean glyphs must also REACH unity (solid interiors).
+// overlapping ('# $ + f t') and single contours that SELF-overlap with winding-2
+// pockets ('H 8 @'). '%' was a bbox-proxy false positive, its ink never overlaps.
+// Clean glyphs must also REACH unity (solid interiors).
 static const struct {
     char  g;
     float lo, hi;
@@ -390,7 +360,7 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
               "ground-truth bitmap has sane dimensions");
 
         float maxSum = 0.0f;
-        ano_text_raster_ref(b->points, &b->glyphs[cp - b->firstCodepoint], (float)REF_SCALE,
+        ano_text_raster_ref(b->points, &b->glyphs[ano_text_bake_slot(b, cp)], (float)REF_SCALE,
                             fl, ft, fw, fr, ours, &maxSum);
 
         double se = 0.0;
@@ -412,10 +382,9 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
         if (maxd > worstMax)
             worstMax = maxd;
 
-        // Coverage agreement with FreeType (also an exact-area rasterizer). Observed
-        // worst on this font: rms 2.71, max 53 -- the max sits on winding-2 pocket
-        // boundaries where clamped coverage and the nonzero fill rule diverge for one
-        // AA pixel. Thresholds leave margin for FP/platform variance only.
+        // Coverage agreement with FreeType. Observed worst on this font: rms 2.71,
+        // max 53, on winding-2 pocket boundaries where clamped coverage and the
+        // nonzero fill rule diverge. Thresholds leave margin for platform variance.
         CHECK(rms <= 4.0, "coverage RMS within threshold of FreeType");
         CHECK(maxd <= 64, "per-pixel coverage deviation bounded");
 
@@ -429,16 +398,12 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
 // ---------------------------------------------------------------------------------------------
 // Ghost-pixel sweep: coverage leaking outside the ink.
 
-// Regression net for the step-6 band artifact: solve_mono's former chord-fallback
-// threshold mis-crossed shallow-but-genuine quads, so opposing stroke edges stopped
-// cancelling and constant faint bands appeared right of concave edges ('v w ( 2') --
-// entirely OUTSIDE the strokes, so RMS thresholds absorbed them and the affected glyphs
-// sat outside the probe set. This sweep renders EVERY baked glyph on a grid padded past
-// FreeType's tight bitmap and flags any pixel with coverage >= GHOST_MIN whose 3x3
-// FreeType neighborhood is all zero: honest AA partials always touch ink, phantom
-// coverage doesn't. Two scales, because the crossing error is a fixed em quantity while
-// the window shrinks with 1/S: 200 px amplifies what 64 px shows ~3x (the old fallback
-// fails here at >20/255).
+// Regression net for the step-6 band artifact: solve_mono's former chord fallback
+// mis-crossed shallow quads, leaving faint bands outside the ink ('v w ( 2') that RMS
+// thresholds absorbed. This sweep renders EVERY baked glyph on a padded grid and flags
+// any pixel with coverage >= GHOST_MIN whose 3x3 FreeType neighborhood is all zero.
+// Honest AA partials always touch ink, phantom coverage doesn't. Two scales because
+// the crossing error is a fixed em quantity while the window shrinks with 1/S.
 
 #define GHOST_MIN 3   // flag isolated coverage at or above this (post-fix residual is 0)
 #define GHOST_PAD 8   // grid margin past the FT bitmap; bands extend beyond the ink
@@ -454,9 +419,9 @@ static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
     {
         uint32_t S = scales[s];
         int ghosts = 0, worst = 0, worstCp = 0;
-        for (uint32_t cp = b->firstCodepoint; cp < b->firstCodepoint + b->glyphCount; cp++)
+        for (uint32_t cp = b->ranges[0].first; cp <= b->ranges[0].last; cp++)
         {
-            const AnoGlyphEntry *g = &b->glyphs[cp - b->firstCodepoint];
+            const AnoGlyphEntry *g = &b->glyphs[ano_text_bake_slot(b, cp)];
             if (g->curveCount == 0)
                 continue;
             int fw = 0, fr = 0, fl = 0, ft = 0;
@@ -513,28 +478,9 @@ static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shaper v0.
-
-static void test_utf8(void)
-{
-    uint32_t n = 0;
-    CHECK(ano_utf8_next("A", 1, &n) == 'A' && n == 1, "ascii decodes");
-    CHECK(ano_utf8_next("\xC3\xA9", 2, &n) == 0xE9 && n == 2, "2-byte sequence");
-    CHECK(ano_utf8_next("\xE2\x82\xAC", 3, &n) == 0x20AC && n == 3, "3-byte sequence");
-    CHECK(ano_utf8_next("\xF0\x9F\x99\x82", 4, &n) == 0x1F642 && n == 4, "4-byte sequence");
-    CHECK(ano_utf8_next("\xC0\x80", 2, &n) == 0xFFFD && n == 2, "overlong rejected, consumed");
-    CHECK(ano_utf8_next("\xED\xA0\x80", 3, &n) == 0xFFFD && n == 3, "surrogate rejected");
-    CHECK(ano_utf8_next("\xF4\x90\x80\x80", 4, &n) == 0xFFFD && n == 4, "past U+10FFFF rejected");
-    CHECK(ano_utf8_next("\xC3", 1, &n) == 0xFFFD && n == 1, "truncated tail resyncs by one");
-    CHECK(ano_utf8_next("\xC3\x41", 2, &n) == 0xFFFD && n == 1, "broken continuation resyncs by one");
-    CHECK(ano_utf8_next("\xFF", 1, &n) == 0xFFFD && n == 1, "invalid lead byte");
-    CHECK(ano_utf8_next("\x80", 1, &n) == 0xFFFD && n == 1, "stray continuation byte");
-}
-
-// ---------------------------------------------------------------------------------------------
 // GPOS PairPos parser (shaper v1), white-box against a hand-assembled synthetic table.
 
-// Byte cursor for big-endian table assembly; every section boundary is asserted so a
+// Byte cursor for big-endian table assembly. Every section boundary is asserted so a
 // layout mistake fails here, not as a confusing parser result.
 static uint32_t put16(uint8_t *b, uint32_t off, uint32_t v)
 {
@@ -549,10 +495,10 @@ static uint32_t put32(uint8_t *b, uint32_t off, uint32_t v)
     return put16(b, off, v & 0xFFFFu);
 }
 
-// Layout under test -- 'latn' script, 'kern' feature with three lookups:
-//   L0: fmt1 (pair 5,7 = -50) then fmt2 fallback (classes: (5|6, 7|8) = -30, covered
-//       first glyph with class-0 second = -70) -- first-applying-subtable-wins;
-//   L1: fmt2 (+10 for (5,7)) -- lookups accumulate;
+// Layout under test: 'latn' script, 'kern' feature with three lookups.
+//   L0: fmt1 (pair 5,7 = -50) then fmt2 fallback (classes (5|6, 7|8) = -30, covered
+//       first glyph with class-0 second = -70), first applying subtable wins.
+//   L1: fmt2 (+10 for (5,7)), lookups accumulate.
 //   L2: type-9 Extension wrapping fmt1 (pair 9,5 = -25).
 // Coverage fmt1+fmt2 and ClassDef fmt1+fmt2 all appear at least once.
 static void test_gpos_synthetic(void)
@@ -699,8 +645,9 @@ static void test_shaper(const AnoFontBake *b)
     const float col[4] = { 1.0f, 0.5f, 0.25f, 1.0f };
     AnoGlyphInstance inst[8];
 
-    CHECK(ano_text_shape(b, "AV", 2, S, org, col, NULL, 0, NULL) == 2, "count mode needs no buffer");
-    uint32_t n = ano_text_shape(b, "AV", 2, S, org, col, inst, 8, NULL);
+    CHECK(ano_text_shape_lit(b, "AV", S, org, col, NULL, 0, NULL) == 2,
+          "count mode needs no buffer");
+    uint32_t n = ano_text_shape_lit(b, "AV", S, org, col, inst, 8, NULL);
     CHECK(n == 2, "AV emits two instances");
     CHECK(inst[0].origin[0] == org[0] && inst[0].origin[1] == org[1], "first glyph at the origin");
     float expX = org[0] + b->glyphs['A' - 32].advance * S; // mirrors the shaper's op order
@@ -714,7 +661,7 @@ static void test_shaper(const AnoFontBake *b)
           "v0 inverse is scale plus y-flip only");
     CHECK(inst[0].color[1] == 0.5f && inst[0].flags == 0, "color copied, flags clear");
 
-    n = ano_text_shape(b, "A B", 3, S, org, col, inst, 8, NULL);
+    n = ano_text_shape_lit(b, "A B", S, org, col, inst, 8, NULL);
     CHECK(n == 2, "space emits nothing");
     expX = org[0] + b->glyphs['A' - 32].advance * S;
     expX += ano_text_kern(b, 'A' - 32, 0) * S;  // blanks join the pair chain (zero here)
@@ -723,7 +670,7 @@ static void test_shaper(const AnoFontBake *b)
     CHECK(inst[1].origin[0] == expX, "space still advances the pen");
 
     float pen[2] = { 0 };
-    n = ano_text_shape(b, "A\r\nB", 4, S, org, col, inst, 8, pen);
+    n = ano_text_shape_lit(b, "A\r\nB", S, org, col, inst, 8, pen);
     CHECK(n == 2, "CRLF emits two glyphs");
     CHECK(inst[1].origin[0] == org[0] && inst[1].origin[1] == org[1] + b->lineHeight * S,
           "newline returns x to origin and steps one line down");
@@ -731,32 +678,31 @@ static void test_shaper(const AnoFontBake *b)
           "penOut lands after the last glyph");
 
     // Splitting a run and continuing from penOut is bitwise identical when the split
-    // point doesn't kern (kerning never bridges calls -- split at a space, as the
-    // header documents; Geist kerns 'A '/' B' zero, pinned by the kern oracle).
+    // point doesn't kern. Geist kerns 'A '/' B' zero, pinned by the kern oracle.
     AnoGlyphInstance whole[2], second[1];
-    ano_text_shape(b, "A B", 3, S, org, col, whole, 2, NULL);
-    ano_text_shape(b, "A ", 2, S, org, col, inst, 8, pen);
-    ano_text_shape(b, "B", 1, S, pen, col, second, 1, NULL);
+    ano_text_shape_lit(b, "A B", S, org, col, whole, 2, NULL);
+    ano_text_shape_lit(b, "A ", S, org, col, inst, 8, pen);
+    ano_text_shape_lit(b, "B", S, pen, col, second, 1, NULL);
     CHECK(memcmp(&whole[1], &second[0], sizeof(AnoGlyphInstance)) == 0,
           "run continuation via penOut is exact");
 
-    CHECK(ano_text_shape(b, "ABC", 3, S, org, col, inst, 1, NULL) == 3,
+    CHECK(ano_text_shape_lit(b, "ABC", S, org, col, inst, 1, NULL) == 3,
           "cap truncates writes, not the reported need");
 
-    n = ano_text_shape(b, "A\xC3\xA9" "B", 4, S, org, col, inst, 8, NULL);
+    n = ano_text_shape_lit(b, "A\xC3\xA9" "B", S, org, col, inst, 8, NULL);
     CHECK(n == 2, "unbaked codepoint emits nothing");
     expX = org[0] + b->glyphs['A' - 32].advance * S;
     expX += ANO_TEXT_GAP_EM * S;
     CHECK(inst[1].origin[0] == expX, "unbaked codepoint leaves the documented gap");
 
     float w = -1.0f, h = -1.0f;
-    ano_text_measure(b, "AB\nA", 4, S, &w, &h);
+    ano_text_measure_lit(b, "AB\nA", S, &w, &h);
     float lineAB = b->glyphs['A' - 32].advance * S;
     lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // mirrors measure's op order
     lineAB += b->glyphs['B' - 32].advance * S;
     CHECK(w == lineAB, "measure width is the widest line (kerned)");
     CHECK(h == (2.0f * b->lineHeight) * S, "measure height covers both lines");
-    ano_text_measure(b, "", 0, S, &w, &h);
+    ano_text_measure(b, anostr_empty(), S, &w, &h);
     CHECK(w == 0.0f && h == 0.0f, "empty text measures zero");
 }
 
@@ -768,16 +714,15 @@ static void test_shaper_runs(const AnoFontBake *b)
     AnoGlyphInstance plain[8], styled[8];
     float penA[2], penB[2];
 
-    // Same-size color splits landing INSIDE kerning pairs: one pen walks the whole
-    // text, so positions/slots/penOut are bit-identical to the unsplit shape (the pair
-    // chain bridges a color boundary) while each glyph wears its run's color.
-    uint32_t n = ano_text_shape(b, "AV LT", 5, S, org, red, plain, 8, penA);
+    // Same-size color splits landing INSIDE kerning pairs: positions/slots/penOut are
+    // bit-identical to the unsplit shape while each glyph wears its run's color.
+    uint32_t n = ano_text_shape_lit(b, "AV LT", S, org, red, plain, 8, penA);
     const AnoTextRun split[3] = {
         { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } }, // "A
         { 3, S, { 0.0f, 0.0f, 1.0f, 1.0f } }, //  V L
         { 1, S, { 0.0f, 1.0f, 0.0f, 1.0f } }, //  T"
     };
-    CHECK(ano_text_shape_runs(b, "AV LT", split, 3, org, styled, 8, penB) == n,
+    CHECK(ano_text_shape_runs_lit(b, "AV LT", split, 3, org, styled, 8, penB) == n,
           "color-split count matches the unsplit shape");
     for (uint32_t i = 0; i < n; i++)
         CHECK(styled[i].origin[0] == plain[i].origin[0]
@@ -789,14 +734,14 @@ static void test_shaper_runs(const AnoFontBake *b)
               && styled[3].color[1] == 1.0f,
           "each glyph wears its run's color");
 
-    // An empty run, even at another size, can't break the bridge: the chain compares
+    // An empty run, even at another size, can't break the bridge. The chain compares
     // against the size that SHAPED the previous glyph, not the previous run.
     const AnoTextRun hollow[3] = {
         { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },
         { 0, 2.0f * S, { 1.0f, 1.0f, 1.0f, 1.0f } },
         { 1, S, { 0.0f, 0.0f, 1.0f, 1.0f } },
     };
-    CHECK(ano_text_shape_runs(b, "AV", hollow, 3, org, styled, 8, NULL) == 2
+    CHECK(ano_text_shape_runs_lit(b, "AV", hollow, 3, org, styled, 8, NULL) == 2
               && styled[1].origin[0] == plain[1].origin[0],
           "an empty run is invisible to the pair chain");
 
@@ -806,7 +751,8 @@ static void test_shaper_runs(const AnoFontBake *b)
         { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },
         { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },
     };
-    CHECK(ano_text_shape_runs(b, "AV", sized, 2, org, styled, 8, NULL) == 2, "sized AV shapes");
+    CHECK(ano_text_shape_runs_lit(b, "AV", sized, 2, org, styled, 8, NULL) == 2,
+          "sized AV shapes");
     CHECK(styled[1].origin[0] == org[0] + b->glyphs['A' - 32].advance * S,
           "a size boundary suppresses the pair kern");
     CHECK(styled[0].inv[0] == 1.0f / S && styled[1].inv[0] == 1.0f / (2.0f * S)
@@ -818,24 +764,24 @@ static void test_shaper_runs(const AnoFontBake *b)
         { 2, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A\n"
         { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "B"
     };
-    CHECK(ano_text_shape_runs(b, "A\nB", nlFirst, 2, org, styled, 8, NULL) == 2
+    CHECK(ano_text_shape_runs_lit(b, "A\nB", nlFirst, 2, org, styled, 8, NULL) == 2
               && styled[1].origin[1] == org[1] + b->lineHeight * S,
           "newline steps by its own run's line height");
     const AnoTextRun nlSecond[2] = {
         { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A"
         { 2, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "\nB"
     };
-    CHECK(ano_text_shape_runs(b, "A\nB", nlSecond, 2, org, styled, 8, NULL) == 2
+    CHECK(ano_text_shape_runs_lit(b, "A\nB", nlSecond, 2, org, styled, 8, NULL) == 2
               && styled[1].origin[1] == org[1] + b->lineHeight * (2.0f * S),
           "a newline owned by the second run steps at ITS size");
 
     // A boundary inside a multi-byte sequence: the lead byte's run styles the whole
-    // codepoint (here an unbaked e-acute's gap advance); the next run picks up after.
+    // codepoint (here an unbaked e-acute's gap advance), the next run picks up after.
     const AnoTextRun straddle[2] = {
         { 2, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A" + the C3 lead byte
         { 2, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // the A9 tail + "B"
     };
-    CHECK(ano_text_shape_runs(b, "A\xC3\xA9" "B", straddle, 2, org, styled, 8, NULL) == 2,
+    CHECK(ano_text_shape_runs_lit(b, "A\xC3\xA9" "B", straddle, 2, org, styled, 8, NULL) == 2,
           "a straddled codepoint never splits");
     CHECK(styled[1].origin[0] == org[0] + b->glyphs['A' - 32].advance * S + ANO_TEXT_GAP_EM * S,
           "the gap advance takes the lead byte's size");
@@ -843,25 +789,25 @@ static void test_shaper_runs(const AnoFontBake *b)
           "the next codepoint takes the next run's style");
 
     // Sizing call, cap truncation, and validation mirror ano_text_shape.
-    CHECK(ano_text_shape_runs(b, "AV LT", split, 3, org, NULL, 0, NULL) == n,
+    CHECK(ano_text_shape_runs_lit(b, "AV LT", split, 3, org, NULL, 0, NULL) == n,
           "count mode needs no buffer");
-    CHECK(ano_text_shape_runs(b, "AV LT", split, 3, org, styled, 1, NULL) == n,
+    CHECK(ano_text_shape_runs_lit(b, "AV LT", split, 3, org, styled, 1, NULL) == n,
           "cap truncates writes, not the reported need");
     const AnoTextRun dead[1] = { { 2, 0.0f, { 1.0f, 1.0f, 1.0f, 1.0f } } };
-    CHECK(ano_text_shape_runs(b, "AV", dead, 1, org, styled, 8, NULL) == 0
-              && ano_text_shape_runs(b, "AV", NULL, 1, org, styled, 8, NULL) == 0
-              && ano_text_shape_runs(b, "AV", split, 0, org, styled, 8, NULL) == 0
-              && ano_text_shape_runs(b, NULL, split, 3, org, styled, 8, NULL) == 0,
-          "zero size, NULL runs, zero count, NULL text all reject");
+    CHECK(ano_text_shape_runs_lit(b, "AV", dead, 1, org, styled, 8, NULL) == 0
+              && ano_text_shape_runs_lit(b, "AV", NULL, 1, org, styled, 8, NULL) == 0
+              && ano_text_shape_runs_lit(b, "AV", split, 0, org, styled, 8, NULL) == 0
+              && ano_text_shape_runs_lit(b, "AV", split, 3, org, styled, 8, NULL) == 0,
+          "zero size, NULL runs, zero count, run-sum/length mismatch all reject");
 
-    // measure_runs: widest kerned line, height as the sum of per-line steps (each line
-    // at the size in effect at its end); uniform-run width matches ano_text_measure.
+    // measure_runs: widest kerned line, height as the sum of per-line steps.
+    // Uniform-run width matches ano_text_measure.
     const AnoTextRun mixed[2] = {
         { 3, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "AB\n"
         { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "A"
     };
     float w = -1.0f, h = -1.0f;
-    ano_text_measure_runs(b, "AB\nA", mixed, 2, &w, &h);
+    ano_text_measure_runs_lit(b, "AB\nA", mixed, 2, &w, &h);
     float lineAB = b->glyphs['A' - 32].advance * S;
     lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // mirrors the core's op order
     lineAB += b->glyphs['B' - 32].advance * S;
@@ -871,12 +817,75 @@ static void test_shaper_runs(const AnoFontBake *b)
           "runs height sums per-line steps at each line's ending size");
     const AnoTextRun uni[1] = { { 4, S, { 1.0f, 1.0f, 1.0f, 1.0f } } };
     float w2 = -1.0f, h2 = -1.0f;
-    ano_text_measure(b, "AB\nA", 4, S, &w2, &h2);
-    ano_text_measure_runs(b, "AB\nA", uni, 1, &w, &h);
+    ano_text_measure_lit(b, "AB\nA", S, &w2, &h2);
+    ano_text_measure_runs_lit(b, "AB\nA", uni, 1, &w, &h);
     CHECK(w == w2, "uniform-run width is bit-identical to ano_text_measure");
     const AnoTextRun none[1] = { { 0, S, { 1.0f, 1.0f, 1.0f, 1.0f } } };
-    ano_text_measure_runs(b, "", none, 1, &w, &h);
+    ano_text_measure_runs(b, anostr_empty(), none, 1, &w, &h);
     CHECK(w == 0.0f && h == 0.0f, "empty runs measure zero");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Multi-range multi-face bake: Geist ASCII + Noto Sans Runic in one directory.
+// Slot bases chain in range order, kerning never crosses faces, and the argument
+// contract rejects unsorted/overlapping range lists.
+
+static void test_runic_bake(AnoFontId geist, AnoFontId runic, mi_heap_t *heap)
+{
+    const AnoBakeRange ranges[2] = {
+        { .font = geist, .first = 0x0020, .last = 0x007E },
+        { .font = runic, .first = 0x16A0, .last = 0x16F8 },
+    };
+    AnoFontBake b = { 0 };
+    CHECK(ano_text_font_bake_ranges(ranges, 2, heap, &b) == 0, "two-face bake succeeds");
+    CHECK(b.rangeCount == 2 && b.glyphCount == 95 + 89, "slots cover both ranges");
+    CHECK(b.ranges[1].slotBase == 95, "second range's slots chain after the first");
+    CHECK(b.upem == 1000 && b.ascender > 0.0f, "metrics come from the first face");
+
+    CHECK(ano_text_bake_slot(&b, 'A') == 'A' - 32, "ASCII resolves to range 0");
+    CHECK(ano_text_bake_slot(&b, 0x16A0) == 95, "fehu resolves to range 1's base");
+    CHECK(ano_text_bake_slot(&b, 0x100) == ANO_TEXT_SLOT_NONE
+              && ano_text_bake_slot(&b, 0x16F9) == ANO_TEXT_SLOT_NONE,
+          "the inter-range gap and the tail miss");
+
+    // Every Elder Futhark rune bakes with real ink from the Noto face.
+    uint32_t inked = 0;
+    for (uint32_t cp = 0x16A0; cp <= 0x16F8; cp++)
+    {
+        const AnoGlyphEntry *e = &b.glyphs[ano_text_bake_slot(&b, cp)];
+        if (!(e->flags & ANO_GLYPH_MISSING) && e->curveCount > 0)
+            inked++;
+    }
+    printf("runic bake: %u of 89 runes carry ink\n", inked);
+    CHECK(inked == 89, "Noto Sans Runic covers the whole Runic block");
+
+    // Cross-script shaping: "A" + fehu + "V" emits three instances.
+    // The A|V pair kern must NOT apply across the rune.
+    const float S = 32.0f;
+    const float org[2] = { 0.0f, 0.0f };
+    const float col[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    AnoGlyphInstance inst[4];
+    CHECK(ano_text_shape_lit(&b, "A\u16A0V", S, org, col, inst, 4, NULL) == 3,
+          "mixed-script text shapes every glyph");
+    CHECK(inst[1].glyphID == 95, "the rune wears its directory slot");
+    float fehuAdv = b.glyphs[95].advance * S;
+    CHECK(inst[2].origin[0] == b.glyphs['A' - 32].advance * S + fehuAdv,
+          "advances accumulate across faces with no phantom cross-face kern");
+
+    // The contract: unsorted or overlapping range lists reject.
+    const AnoBakeRange unsorted[2] = {
+        { .font = runic, .first = 0x16A0, .last = 0x16F8 },
+        { .font = geist, .first = 0x0020, .last = 0x007E },
+    };
+    const AnoBakeRange overlap[2] = {
+        { .font = geist, .first = 0x0020, .last = 0x007E },
+        { .font = geist, .first = 0x0070, .last = 0x00FF },
+    };
+    AnoFontBake reject;
+    CHECK(ano_text_font_bake_ranges(unsorted, 2, heap, &reject) == EINVAL,
+          "unsorted ranges reject");
+    CHECK(ano_text_font_bake_ranges(overlap, 2, heap, &reject) == EINVAL,
+          "overlapping ranges reject");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -887,16 +896,18 @@ int main(void)
     test_half();
     test_quad_split();
     test_cubic();
-    test_utf8();
     test_gpos_synthetic();
 
     CHECK(ano_fs_chdir_gamepath(), "chdir to the exe directory (staged font root)");
     CHECK(ano_text_init() == 0, "init for bake tests");
 
-    CHECK(ano_text_font_load("resources/fonts/does-not-exist.ttf") == 0,
+    CHECK(ano_text_font_load_lit("resources/fonts/does-not-exist.ttf") == 0,
           "loading a missing file fails cleanly");
-    AnoFontId geist = ano_text_font_load(FONT_PATH);
+    CHECK(ano_text_font_load(anostr_empty()) == 0, "an empty path fails cleanly");
+    AnoFontId geist = ano_text_font_load_lit(FONT_PATH);
     CHECK(geist != 0, "Geist-Regular loads");
+    AnoFontId runic = ano_text_font_load_lit(RUNE_FONT_PATH);
+    CHECK(runic != 0, "Noto Sans Runic loads");
 
     mi_heap_t *heapA LOCALHEAPATTR = mi_heap_new();
     mi_heap_t *heapB LOCALHEAPATTR = mi_heap_new();
@@ -914,6 +925,7 @@ int main(void)
     test_ghost_pixels(geist, &bake);
     test_shaper(&bake);
     test_shaper_runs(&bake);
+    test_runic_bake(geist, runic, heapA);
 
     // Determinism: a second bake is bit-identical (double math, fixed iteration order).
     AnoFontBake again = { 0 };

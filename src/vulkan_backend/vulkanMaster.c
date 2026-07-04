@@ -3319,7 +3319,8 @@ static void ano_print_profiling(void) {
             { (uint32_t)mid, 22.0f, { health[0], health[1], health[2], health[3] } },
             { (uint32_t)tail, 22.0f, { 0.62f, 0.62f, 0.62f, 1.0f } },
         };
-        ano_vk_text_set_runs(&rendererState, osd, runs, 3, osdOrigin);
+        ano_vk_text_set_runs(&rendererState, anostr_view(osd, (size_t)(head + mid + tail)),
+                             runs, 3, osdOrigin);
     }
 }
 

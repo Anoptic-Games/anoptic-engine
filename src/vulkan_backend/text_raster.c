@@ -3,12 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Text overlay plumbing (FONT_RENDER.md step 5). CPU side: FreeType init + Geist ASCII
-// bake at renderer init (render thread == the text module's owner thread). GPU side:
-// curve/directory blobs uploaded once to device-local EXCLUSIVE buffers (one consuming
-// queue per boot mode), per-frame host-visible frame-data buffers, per-frame overlay
-// images, the PIPELINE_COMPUTE_TEXTRASTER prototype (lightcull recipe), and a bespoke
-// composite blend pipeline that shares the tonemap set/pipeline layout.
+// Text overlay plumbing (FONT_RENDER.md step 5). CPU side: FreeType init + font bake
+// at renderer init. GPU side: static glyph buffers, per-frame frame-data buffers and
+// overlay images, the PIPELINE_COMPUTE_TEXTRASTER prototype, and a composite blend
+// pipeline sharing the tonemap set/pipeline layout.
 
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
@@ -21,11 +19,12 @@
 #include <string.h>
 
 #include <anoptic_filesystem.h>
+#include <anoptic_strings.h>
 #include <anoptic_text.h>
 
-#define ANO_TEXT_FONT_REL "resources/fonts/Geist/static/Geist-Regular.ttf"
-// Frame-data capacity: ~21k glyph instances (48 B each), rewritten wholesale at
-// text-change cadence.
+#define ANO_TEXT_FONT_REL      "resources/fonts/Geist/static/Geist-Regular.ttf"
+#define ANO_TEXT_RUNE_FONT_REL "resources/fonts/NotoSansRunic/NotoSansRunic-Regular.ttf"
+// Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
 // Push-constant block shared with textraster.comp (16 B).
@@ -39,8 +38,8 @@ typedef struct TextRasterPush {
 // TextRasterPush.flags bits (mirrored in textraster.comp).
 #define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop for the screenshot self-test
 
-// Frame-buffer region split: the OSD/pending path owns instance indices [0,
-// ANO_TEXT_WORLD_FIRST); the world panel's static instances sit from there up.
+// Region split: the OSD/pending path owns instance indices [0, ANO_TEXT_WORLD_FIRST),
+// the world panel's static instances sit from there up.
 #define ANO_TEXT_WORLD_FIRST 8192u
 static_assert(ANO_TEXT_WORLD_FIRST == ANO_RENDER_TEXT_MAX,
               "the public screen-text capacity is the pending region size");
@@ -54,19 +53,22 @@ typedef struct TextWorldPush {
 } TextWorldPush;
 
 // World panel: text shaped in a virtual pixel space, mapped onto a quad of the given
-// world dimensions. Same shaper conventions as the overlay (pixels, y-down baseline).
+// world dimensions. Same shaper conventions as the overlay.
 #define ANO_TEXT_PANEL_PX_W   768.0f
-#define ANO_TEXT_PANEL_PX_H   256.0f
-#define ANO_TEXT_PANEL_WORLD_W  6.0f
-#define ANO_TEXT_PANEL_WORLD_H  2.0f
+#define ANO_TEXT_PANEL_PX_H   352.0f
+#define ANO_TEXT_PANEL_WORLD_W  6.00f
+#define ANO_TEXT_PANEL_WORLD_H  2.75f
+// Line 4 is the full 24-rune Elder Futhark, the world lane's unicode proof.
 static const char g_worldText[] =
     "Scanline Sweeper\n"
     "world-space lane\n"
-    "AV LT To Wa \"kerned\"";
+    "AV LT To Wa \"kerned\"\n"
+    "\u16A0\u16A2\u16A6\u16A8\u16B1\u16B2\u16B7\u16B9\u16EB"
+    "\u16BA\u16BE\u16C1\u16C3\u16C7\u16C8\u16C9\u16CA\u16EB"
+    "\u16CF\u16D2\u16D6\u16D7\u16DA\u16DC\u16DE\u16DF";
 
-// Step-6 static torture text, pinned by ANO_TEXT_DEMO: covers every baked codepoint,
-// including all known coverage-overlap glyphs (contour-pair # $ + f t and self-overlap
-// H 8 @) — the stable target the offline pixel-compare harness renders against.
+// Static torture text, pinned by ANO_TEXT_DEMO. Covers every baked codepoint,
+// the stable target for the offline pixel-compare harness.
 static const char g_demoText[] =
     "Anoptic Engine :: Scanline Sweeper v0\n"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz\n"
@@ -80,10 +82,9 @@ static const float g_osdOrigin[2] = { 24.0f, 40.0f };
 
 static bool g_textPinned; // ANO_TEXT_DEMO: hold the harness text, ignore later sets
 
-// Recomposes the pending canonical after any source changed: the OSD region
-// [0, textOsdCount) is already in place (the setters shape it there), logic blocks
-// append after it in registry order, truncating at the region cap. ANO_TEXT_DEMO's pin
-// keeps the harness canvas OSD-only (blocks stay registered, just not composed).
+// Recomposes the pending canonical after any source changed. The OSD region
+// [0, textOsdCount) is already in place, logic blocks append after it in registry
+// order, truncating at the region cap. The demo pin keeps the canvas OSD-only.
 static void text_blocks_append(RendererState* state)
 {
     uint32_t cap = ANO_TEXT_WORLD_FIRST;
@@ -102,34 +103,34 @@ static void text_blocks_append(RendererState* state)
     state->textVersion++;
 }
 
-void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float sizePx,
+void ano_vk_text_set(RendererState* state, anostr_t text, float sizePx,
                      const float origin[2], const float color[4])
 {
     if (!state->textOverlay || state->textPending == NULL || g_textPinned)
         return;
-    uint32_t cap = ANO_TEXT_WORLD_FIRST; // the region above belongs to the world panel
-    uint32_t count = ano_text_shape(&state->textBake, utf8, len, sizePx, origin, color,
+    uint32_t cap = ANO_TEXT_WORLD_FIRST; // the world panel owns the region above
+    uint32_t count = ano_text_shape(&state->textBake, text, sizePx, origin, color,
                                     state->textPending, cap, NULL);
     state->textOsdCount = count < cap ? count : cap;
     text_blocks_append(state);
 }
 
-void ano_vk_text_set_runs(RendererState* state, const char* utf8, const AnoTextRun* runs,
+void ano_vk_text_set_runs(RendererState* state, anostr_t text, const AnoTextRun* runs,
                           uint32_t runCount, const float origin[2])
 {
     if (!state->textOverlay || state->textPending == NULL || g_textPinned)
         return;
     uint32_t cap = ANO_TEXT_WORLD_FIRST;
-    uint32_t count = ano_text_shape_runs(&state->textBake, utf8, runs, runCount, origin,
+    uint32_t count = ano_text_shape_runs(&state->textBake, text, runs, runCount, origin,
                                          state->textPending, cap, NULL);
     state->textOsdCount = count < cap ? count : cap;
     text_blocks_append(state);
 }
 
-// Adopts a logic-submitted block (RCMD_TEXT_SET): replaces text_id's contents, creating
-// the entry if new. Ownership of blk (ONE mi allocation: header + instances, packed by
-// ano_render_text_set) transfers here unconditionally -- freed on replace/clear/teardown,
-// or immediately when the overlay is off or the registry is full. Render thread only.
+// Adopts a logic-submitted block (RCMD_TEXT_SET), replacing text_id's contents.
+// Ownership of blk (one mi allocation) transfers here unconditionally. Freed on
+// replace/clear/teardown, or immediately when the overlay is off or the registry is
+// full. Render thread only.
 void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderTextBlock* blk)
 {
     if (blk == NULL)
@@ -162,8 +163,8 @@ void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderT
     text_blocks_append(state);
 }
 
-// Removes a block (RCMD_TEXT_CLEAR); idempotent. Order-preserving compaction so the
-// composite order stays the producers' creation order.
+// Removes a block (RCMD_TEXT_CLEAR), idempotent. Order-preserving compaction keeps
+// the composite in creation order.
 void ano_vk_text_block_clear(RendererState* state, uint32_t text_id)
 {
     for (uint32_t i = 0; i < state->textBlockCount; i++)
@@ -194,10 +195,9 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
     state->textInstanceCount = state->textPendingCount;
 }
 
-// createDataBuffer with optional CONCURRENT graphics+compute sharing: the curve and
-// directory blobs are staged from the graphics queue at init but read by the async
-// lane's compute queue, and CONCURRENT sidesteps the queue-family ownership transfer
-// (the async light-cull buffers' pattern). Exclusive when shared is false.
+// createDataBuffer with optional CONCURRENT graphics+compute sharing, which sidesteps
+// the queue-family ownership transfer for buffers the async lane's compute queue
+// reads. Exclusive when shared is false.
 static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc)
@@ -226,8 +226,8 @@ static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
     return true;
 }
 
-// Builds the compute raster prototype: 3 SSBOs (curves, directory, frame data) + 1
-// storage image (overlay), 16 B push. Mirrors the lightcull recipe.
+// Builds the compute raster prototype: 3 SSBOs + 1 storage image, 16 B push.
+// Mirrors the lightcull recipe.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkDescriptorSetLayoutBinding bindings[4] = {};
@@ -238,8 +238,7 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
                                               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
         // The world lane's fragment shader reads the three glyph buffers through the
-        // same set; the overlay storage image stays compute-only (never statically
-        // used by the fragment stage, so its GENERAL-layout descriptor is inert there).
+        // same set. The overlay storage image stays compute-only.
         bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
                                | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT : 0u);
     }
@@ -298,9 +297,8 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     return r == VK_SUCCESS;
 }
 
-// Builds the composite blend pipeline: the tonemap pipeline's twin (bufferless triangle,
-// dynamic viewport/scissor, swapchain format, shared tonemap set/pipeline layout) with
-// premultiplied src-over blending and overlay.frag sampling the overlay image.
+// Builds the composite blend pipeline: the tonemap pipeline's twin with premultiplied
+// src-over blending and overlay.frag sampling the overlay image.
 static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
 {
     struct Buffer vertCode, fragCode;
@@ -397,10 +395,9 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
     return r == VK_SUCCESS;
 }
 
-// Builds the world-space text pipeline: the additive lane's raster recipe (HDR color +
-// scene depth, ctx->msaaSamples, cull NONE, depth test LESS / no write, dynamic
-// viewport/scissor) with premultiplied src-over blending, a bufferless quad, and the
-// raster set layout for the glyph buffers. Its own layout carries the 88 B push.
+// Builds the world-space text pipeline: the additive lane's raster recipe with
+// premultiplied src-over blending, a bufferless quad, and the raster set layout for
+// the glyph buffers. Its own layout carries the 88 B push.
 static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkPushConstantRange push = {};
@@ -448,7 +445,7 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
     VkPipelineRasterizationStateCreateInfo rasterizer = {};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode = VK_CULL_MODE_NONE; // a sign readable from both sides (mirrored back)
+    rasterizer.cullMode = VK_CULL_MODE_NONE; // sign readable from both sides
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo multisampling = {};
@@ -471,7 +468,7 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &blendAttachment;
 
-    // Depth-tested against the scene (hidden behind solids), no write: a blend lane.
+    // Depth-tested against the scene, no write: a blend lane.
     VkPipelineDepthStencilStateCreateInfo depthStencil = {};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthStencil.depthTestEnable = VK_TRUE;
@@ -520,24 +517,46 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     if (!state->textOverlay)
         return true;
 
-    // CPU side: bake blobs live on textHeap (also the step-6 shaping source).
+    // CPU side: bake blobs live on textHeap.
     state->textHeap = mi_heap_new();
     ano_fspath game = ano_fs_gamepath();
     char fontPath[512];
     snprintf(fontPath, sizeof fontPath, "%s/%s", game.str, ANO_TEXT_FONT_REL);
     AnoFontId font = 0;
     if (state->textHeap == NULL || ano_text_init() != 0
-        || (font = ano_text_font_load(fontPath)) == 0
-        || ano_text_font_bake(font, 32, 126, state->textHeap, &state->textBake) != 0)
+        || (font = ano_text_font_load(anostr_view(fontPath, strlen(fontPath)))) == 0)
     {
-        printf("Text overlay disabled: font load/bake failed ('%s').\n", fontPath);
+        printf("Text overlay disabled: font load failed ('%s').\n", fontPath);
         state->textOverlay = false;
         state->asyncText = false;
         return true;
     }
 
-    // Static glyph data: one-shot staged upload to device-local. CONCURRENT-shared with
-    // the compute family when the async lane will read them from ctx->computeQueue.
+    // Bake coverage: ASCII, Latin-1, and core Cyrillic from Geist, plus the Runic
+    // block from Noto Sans Runic. A missing rune font degrades to the Geist ranges
+    // and runes render as gaps, not tofu.
+    char runePath[512];
+    snprintf(runePath, sizeof runePath, "%s/%s", game.str, ANO_TEXT_RUNE_FONT_REL);
+    AnoFontId runeFont = ano_text_font_load(anostr_view(runePath, strlen(runePath)));
+    if (runeFont == 0)
+        printf("Text overlay: rune font missing ('%s'); Runic will not render.\n", runePath);
+    AnoBakeRange ranges[4] = {
+        { .font = font, .first = 0x0020, .last = 0x007E },     // ASCII
+        { .font = font, .first = 0x00A0, .last = 0x00FF },     // Latin-1 supplement
+        { .font = font, .first = 0x0400, .last = 0x045F },     // Cyrillic core + Ё/ё
+        { .font = runeFont, .first = 0x16A0, .last = 0x16F8 }, // Runic (Elder Futhark+)
+    };
+    uint32_t rangeCount = runeFont != 0 ? 4u : 3u;
+    if (ano_text_font_bake_ranges(ranges, rangeCount, state->textHeap, &state->textBake) != 0)
+    {
+        printf("Text overlay disabled: font bake failed.\n");
+        state->textOverlay = false;
+        state->asyncText = false;
+        return true;
+    }
+
+    // Static glyph data: one-shot staged upload to device-local, CONCURRENT-shared
+    // with the compute family when the async lane will read them.
     VkDeviceSize curveBytes = (VkDeviceSize)state->textBake.pointCount * sizeof(uint32_t);
     VkDeviceSize glyphBytes = (VkDeviceSize)state->textBake.glyphCount * sizeof(AnoGlyphEntry);
     bool ok = text_create_buffer(ctx, curveBytes,
@@ -551,7 +570,7 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
                    &state->textGlyphBuffer, &state->textGlyphAlloc)
             && stagingTransfer(ctx, state->textBake.glyphs, state->textGlyphBuffer, glyphBytes);
 
-    // Per-frame frame data: host-visible, persistently mapped (uniform-ring pattern).
+    // Per-frame frame data: host-visible, persistently mapped.
     for (uint32_t i = 0; ok && i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         GpuAllocation alloc;
@@ -567,7 +586,7 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
 
     if (!ok || !text_init_raster_pipeline(ctx, state) || !text_init_overlay_pipeline(ctx, state))
     {
-        // Partially-created objects are handle-guarded in the teardown paths.
+        // Partially-created objects are handle-guarded in teardown.
         printf("Text overlay disabled: GPU resource/pipeline creation failed.\n");
         state->textOverlay = false;
         state->asyncText = false;
@@ -575,9 +594,9 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
     }
 
-    // World-space lane (the paper's pixel-shader variant): its pipeline, plus the demo
-    // panel shaped ONCE into the upper region of every frame slot (slots are not in
-    // flight during init, so the direct writes are safe). Failure drops just this lane.
+    // World-space lane: its pipeline, plus the demo panel shaped ONCE into the upper
+    // region of every frame slot (no slot is in flight during init, so direct writes
+    // are safe). Failure drops just this lane.
     state->textWorld = getenv("ANO_FORCE_NO_TEXT_WORLD") == NULL;
     if (state->textWorld && !text_init_world_pipeline(ctx, state))
     {
@@ -586,9 +605,10 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     }
     if (state->textWorld)
     {
-        // Styled runs double as the feature's standing demo: mixed sizes across lines,
-        // and line 3's color splits land INSIDE the kern pairs (A|V, L|T, T|o, W|a) --
-        // same-size color runs must not move a glyph, so the pairs stay kerned.
+        // Standing styled-runs demo: mixed sizes across lines, and line 3's color
+        // splits land INSIDE the kern pairs (A|V, L|T, T|o, W|a) to prove same-size
+        // runs stay kerned. The futhark run owns its leading '\n' so the line step
+        // takes the runes' size.
         static const AnoTextRun worldRuns[] = {
             { 17, 72.0f, { 1.00f, 0.78f, 0.32f, 1.0f } }, // "Scanline Sweeper\n"
             { 17, 48.0f, { 0.90f, 0.90f, 0.90f, 1.0f } }, // "world-space lane\n"
@@ -597,27 +617,29 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
             {  3, 60.0f, { 0.45f, 0.95f, 0.60f, 1.0f } }, //  T T
             {  3, 60.0f, { 1.00f, 0.85f, 0.30f, 1.0f } }, //  o W
             { 10, 60.0f, { 0.80f, 0.60f, 1.00f, 1.0f } }, //  a "kerned""
+            { 79, 40.0f, { 0.55f, 0.85f, 1.00f, 1.0f } }, // "\n" + the Elder Futhark
         };
-        static_assert(17 + 17 + 1 + 3 + 3 + 3 + 10 == sizeof g_worldText - 1,
+        static_assert(17 + 17 + 1 + 3 + 3 + 3 + 10 + 79 == sizeof g_worldText - 1,
                       "world runs cover the panel text exactly");
         const float worldOrigin[2] = { 24.0f, 76.0f };
         uint32_t worldCap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance)
                           - ANO_TEXT_WORLD_FIRST;
+        anostr_t worldText = anostr_view(g_worldText, sizeof g_worldText - 1);
         uint32_t count = 0;
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             AnoGlyphInstance* dst = (AnoGlyphInstance*)state->frames[i].textFrameMapped
                                   + ANO_TEXT_WORLD_FIRST;
-            count = ano_text_shape_runs(&state->textBake, g_worldText, worldRuns,
+            count = ano_text_shape_runs(&state->textBake, worldText, worldRuns,
                                         (uint32_t)(sizeof worldRuns / sizeof worldRuns[0]),
                                         worldOrigin, dst, worldCap, NULL);
         }
         state->textWorldCount = count < worldCap ? count : worldCap;
     }
 
-    // Async lane objects (step 7): the timeline the main submit waits on, plus a per-frame
-    // raster CB on asyncHiz's compute-family pool. Failure downgrades to the in-frame
-    // record; the overlay stays on.
+    // Async lane objects (step 7): the timeline the main submit waits on, plus a
+    // per-frame raster CB on the compute-family pool. Failure downgrades to the
+    // in-frame record, the overlay stays on.
     if (state->asyncText)
     {
         VkSemaphoreTypeCreateInfo timelineInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -638,8 +660,8 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     }
 
     // Pending canonical text (step 8): full frame-buffer capacity, dies with textHeap.
-    // ANO_TEXT_DEMO pins the step-6 torture text for the offline pixel-compare harness;
-    // the default boot line is replaced by the profiling mirror at its first print.
+    // ANO_TEXT_DEMO pins the torture text for the offline pixel-compare harness.
+    // The default boot line is replaced by the profiling mirror at its first print.
     uint32_t cap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance);
     state->textPending = mi_heap_malloc(state->textHeap, (size_t)cap * sizeof(AnoGlyphInstance));
     if (state->textPending == NULL)
@@ -652,15 +674,14 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     if (getenv("ANO_TEXT_DEMO") != NULL)
     {
-        ano_vk_text_set(state, g_demoText, (uint32_t)(sizeof g_demoText - 1),
+        ano_vk_text_set(state, anostr_view(g_demoText, sizeof g_demoText - 1),
                         ANO_TEXT_DEMO_SIZE_PX, g_demoOrigin, white);
         g_textPinned = true;
     }
     else
     {
-        static const char boot[] = "Anoptic Engine :: Scanline Sweeper";
-        ano_vk_text_set(state, boot, (uint32_t)(sizeof boot - 1),
-                        ANO_TEXT_OSD_SIZE_PX, g_osdOrigin, white);
+        ano_vk_text_set_lit(state, "Anoptic Engine :: Scanline Sweeper",
+                            ANO_TEXT_OSD_SIZE_PX, g_osdOrigin, white);
     }
     state->textFlags = (getenv("ANO_TEXT_OPAQUE") != NULL) ? ANO_TEXT_RASTER_OPAQUE : 0u;
 
@@ -677,8 +698,8 @@ void ano_vk_text_record_world(RendererState* state, VkCommandBuffer cmd, uint32_
 {
     if (!state->textWorld || state->textWorldCount == 0)
         return;
-    // Spinning sign: yaw from the UBO clock; model = T(position) * R(yaw); the MVP
-    // composes CPU-side in the engine's convention (proj * view * model, column vectors).
+    // Spinning sign: yaw from the UBO clock, model = T(position) * R(yaw).
+    // MVP composes CPU-side (proj * view * model, column vectors).
     mat4 T, R, pv, model;
     TextWorldPush push;
     translate(T, 0.0f, 2.6f, 0.0f);
@@ -706,8 +727,8 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)
         return;
-    // Async lane: written on the compute queue, sampled on graphics — CONCURRENT skips
-    // the ownership transfer (the Hi-Z pyramid pattern). Exclusive when in-frame.
+    // Async lane: written on compute, sampled on graphics, so CONCURRENT skips the
+    // ownership transfer. Exclusive when in-frame.
     uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
@@ -719,7 +740,7 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
                     shareFamilies, state->asyncText ? 2u : 0u);
         fr->textOverlayView = createImageView(ctx->device, fr->textOverlayImage,
                                               VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1);
-        // Seed the composite's resting layout; the per-frame record rewrites from UNDEFINED.
+        // Seed the composite's resting layout. The per-frame record rewrites from UNDEFINED.
         if (!transitionImageLayout(ctx, VK_NULL_HANDLE, fr->textOverlayImage, VK_FORMAT_R8G8B8A8_UNORM,
                                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
         {
@@ -831,17 +852,16 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
 }
 
 // The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
-// sampled read. asyncQueue selects the final barrier's destination — the graphics queue
-// consumes at FRAGMENT_SHADER directly; a compute-only family has no such stage, so the
-// barrier only performs the layout transition and the textTimeline wait (at
-// FRAGMENT_SHADER on the main submit) carries the cross-queue dependency.
+// sampled read. On the graphics queue the final barrier targets FRAGMENT_SHADER.
+// A compute-only family has no such stage, so the barrier only transitions the layout
+// and the textTimeline wait carries the cross-queue dependency.
 static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
                                bool asyncQueue)
 {
     PerFrameResources* fr = &state->frames[frameIndex];
 
-    // Prior readers of this slot's overlay retired with its frame fence; contents are
-    // stale by 3 frames either way, so UNDEFINED discards them.
+    // Prior readers of this slot's overlay retired with its frame fence.
+    // Contents are stale anyway, so UNDEFINED discards them.
     VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     VkImageMemoryBarrier toClear = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -901,10 +921,10 @@ void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t
 {
     if (!state->asyncText)
         return;
-    // CB reuse is fence-safe: this slot's prior main submit waited textTimeline >= its
-    // ordinal at FRAGMENT_SHADER, so the frame fence retiring implies the prior text
-    // CB retired. The submit itself needs NO waits — frame data is CPU-written before
-    // this call and the overlay slot's prior reader retired with the same fence.
+    // CB reuse is fence-safe: the frame fence retiring implies the prior text CB
+    // retired (the main submit waited on textTimeline). The submit needs NO waits.
+    // Frame data is CPU-written before this call and the overlay slot's prior reader
+    // retired with the same fence.
     VkCommandBuffer cmd = state->frames[frameIndex].textCommandBuffer;
     vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -919,8 +939,8 @@ void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t
         .signalSemaphoreCount = 1, .pSignalSemaphores = &state->textTimeline };
     if (vkQueueSubmit(ctx->computeQueue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
     {
-        // Keep the timeline monotonic so the main submit's wait cannot deadlock (the
-        // frame keeps a stale overlay); a failed submit here is device-loss territory.
+        // Keep the timeline monotonic so the main submit's wait cannot deadlock.
+        // A failed submit here is device-loss territory.
         printf("Failed to submit async text raster command buffer!\n");
         VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
             .semaphore = state->textTimeline, .value = ordinal };
@@ -965,17 +985,17 @@ void ano_vk_text_destroy(VulkanContext* ctx, RendererState* state)
         vkDestroyBuffer(ctx->device, state->textGlyphBuffer, NULL);
         state->textGlyphBuffer = VK_NULL_HANDLE;
     }
-    // Async lane: the timeline was drained in unInitVulkan; the CBs die with the pool.
+    // Async lane: the timeline was drained in unInitVulkan, the CBs die with the pool.
     if (state->textTimeline != VK_NULL_HANDLE)
     {
         vkDestroySemaphore(ctx->device, state->textTimeline, NULL);
         state->textTimeline = VK_NULL_HANDLE;
     }
-    // Logic text blocks: adopted render-owned copies (default mi heap, not textHeap).
+    // Logic text blocks: adopted copies on the default mi heap, not textHeap.
     for (uint32_t i = 0; i < state->textBlockCount; i++)
         mi_free((void*)state->textBlocks[i].blk);
     state->textBlockCount = 0;
-    // CPU side: FreeType down (init thread == this thread), bake blobs die with the heap.
+    // CPU side: FreeType down, bake blobs die with the heap.
     ano_text_shutdown();
     if (state->textHeap != NULL)
     {
