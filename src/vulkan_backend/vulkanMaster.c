@@ -110,14 +110,20 @@ void unInitVulkan() // A celebration
 		}
     }
 
-	// Async Hi-Z / light-cull (review finding 2): the compute submits are not fence-tracked; drain
-	// their last signaled ordinals before teardown destroys the pool/semaphores/images.
+	// Async Hi-Z / light-cull / text (review finding 2, FONT_RENDER.md step 7): the compute
+	// submits are not fence-tracked; drain their last signaled ordinals before teardown
+	// destroys the pool/semaphores/images.
 	if (rendererState.asyncHiz && rendererState.hizTimeline != VK_NULL_HANDLE
 		&& ctx.device != VK_NULL_HANDLE && rendererState.timelineOrdinal > 0)
 	{
-		uint64_t last[2] = { rendererState.timelineOrdinal, rendererState.timelineOrdinal };
-		VkSemaphore sems[2] = { rendererState.hizTimeline, rendererState.lcTimeline };
-		uint32_t n = rendererState.asyncLc && rendererState.lcTimeline != VK_NULL_HANDLE ? 2u : 1u;
+		uint64_t last[3] = { rendererState.timelineOrdinal, rendererState.timelineOrdinal,
+			rendererState.timelineOrdinal };
+		VkSemaphore sems[3] = { rendererState.hizTimeline, VK_NULL_HANDLE, VK_NULL_HANDLE };
+		uint32_t n = 1u;
+		if (rendererState.asyncLc && rendererState.lcTimeline != VK_NULL_HANDLE)
+			sems[n++] = rendererState.lcTimeline;
+		if (rendererState.asyncText && rendererState.textTimeline != VK_NULL_HANDLE)
+			sems[n++] = rendererState.textTimeline;
 		VkSemaphoreWaitInfo waitInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
 			.semaphoreCount = n, .pSemaphores = sems, .pValues = last };
 		vkWaitSemaphores(ctx.device, &waitInfo, UINT64_MAX);
@@ -3400,6 +3406,11 @@ void drawFrame()
 	if (rendererState.asyncLc)
 		recordLightcullCompute(rendererState.frameIndex);
 
+	// Async text raster (FONT_RENDER.md step 7): CPU-fed and self-contained, so it submits
+	// FIRST with no waits and overlaps the entire graphics frame; the main submit waits
+	// textTimeline == ordinal at FRAGMENT_SHADER (the composite sample is the consumer).
+	ano_vk_text_submit_async(&ctx, &rendererState, rendererState.frameIndex, ordinal);
+
 	// Graphics submit. Async Hi-Z adds a second wait — hizTimeline >= ordinal-2 at the cull's
 	// COMPUTE stage (the lag-2 pyramid it samples) | EARLY_FRAGMENT_TESTS (chain anchor for the
 	// depth-resolve WAR flip in recordCommandBuffer) — and a second signal, gfxTimeline = ordinal
@@ -3414,19 +3425,23 @@ void drawFrame()
 	{
 		VkSubmitInfo submitInfo = {};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		VkSemaphore waitSemaphores[2] = {rendererState.frames[rendererState.frameIndex].imageAvailable, rendererState.hizTimeline};
+		VkSemaphore waitSemaphores[3] = {rendererState.frames[rendererState.frameIndex].imageAvailable,
+			rendererState.hizTimeline, rendererState.textTimeline};
 		// The task meshlet cull samples the async-built pyramids too (global set binding 13), so
-		// its stage joins the hizTimeline wait when active.
-		VkPipelineStageFlags waitStages[2] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		// its stage joins the hizTimeline wait when active. The async text raster joins at
+		// FRAGMENT_SHADER (asyncText implies asyncHiz, so slot 2 only exists alongside slot 1).
+		VkPipelineStageFlags waitStages[3] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0)};
-		uint64_t waitValues[2] = {0, hizWaitValue};
+				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
+		uint64_t waitValues[3] = {0, hizWaitValue, ordinal};
+		uint32_t waitCount = rendererState.asyncText ? 3u : (rendererState.asyncHiz ? 2u : 1u);
 		VkTimelineSemaphoreSubmitInfo timelineValues = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-			.waitSemaphoreValueCount = 2, .pWaitSemaphoreValues = waitValues,
+			.waitSemaphoreValueCount = waitCount, .pWaitSemaphoreValues = waitValues,
 			.signalSemaphoreValueCount = 2, .pSignalSemaphoreValues = signalValues };
 		if (rendererState.asyncHiz)
 			submitInfo.pNext = &timelineValues;
-		submitInfo.waitSemaphoreCount = rendererState.asyncHiz ? 2 : 1;
+		submitInfo.waitSemaphoreCount = waitCount;
 		submitInfo.pWaitSemaphores = waitSemaphores;
 		submitInfo.pWaitDstStageMask = waitStages;
 		submitInfo.commandBufferCount = 1;
@@ -3468,21 +3483,23 @@ void drawFrame()
 		submits[0].signalSemaphoreCount = 1;
 		submits[0].pSignalSemaphores = &rendererState.preludeTimeline;
 
-		VkSemaphore bWaitSems[3] = { rendererState.frames[rendererState.frameIndex].imageAvailable,
-			rendererState.hizTimeline, rendererState.lcTimeline };
+		VkSemaphore bWaitSems[4] = { rendererState.frames[rendererState.frameIndex].imageAvailable,
+			rendererState.hizTimeline, rendererState.lcTimeline, rendererState.textTimeline };
 		// hizTimeline @ EARLY_FRAG (depth-resolve WAR) + TASK when the meshlet cull samples the
 		// async-built pyramids in this submit's geometry passes (global set binding 13).
-		VkPipelineStageFlags bWaitStages[3] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		// textTimeline == ordinal @ FRAGMENT (composite samples the async-rastered overlay).
+		VkPipelineStageFlags bWaitStages[4] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
 				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT };
-		uint64_t bWaitValues[3] = { 0, hizWaitValue, ordinal };
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT };
+		uint64_t bWaitValues[4] = { 0, hizWaitValue, ordinal, ordinal };
+		uint32_t bWaitCount = rendererState.asyncText ? 4u : 3u;
 		VkTimelineSemaphoreSubmitInfo bTimeline = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-			.waitSemaphoreValueCount = 3, .pWaitSemaphoreValues = bWaitValues,
+			.waitSemaphoreValueCount = bWaitCount, .pWaitSemaphoreValues = bWaitValues,
 			.signalSemaphoreValueCount = 2, .pSignalSemaphoreValues = signalValues };
 		submits[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		submits[1].pNext = &bTimeline;
-		submits[1].waitSemaphoreCount = 3;
+		submits[1].waitSemaphoreCount = bWaitCount;
 		submits[1].pWaitSemaphores = bWaitSems;
 		submits[1].pWaitDstStageMask = bWaitStages;
 		submits[1].commandBufferCount = 1;
@@ -4384,6 +4401,15 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// clears it again, non-fatally. ANO_FORCE_NO_TEXT pins it off for A/B.
 	rendererState.textOverlay = !getenv("ANO_FORCE_NO_TEXT");
 	printf("Text overlay: %s\n", rendererState.textOverlay ? "enabled (pending font init)" : "off (forced)");
+
+	// Async text lane gate (FONT_RENDER.md step 7): rides asyncHiz's infrastructure like
+	// the light-cull lane (independent of asyncLc — either A/B toggle stands alone).
+	// Decided here so the overlay images and glyph buffers pick CONCURRENT sharing;
+	// ano_vk_text_init downgrades it non-fatally if the lane's objects fail.
+	// ANO_FORCE_NO_ASYNC_TEXT pins the in-frame raster for A/B.
+	rendererState.asyncText = rendererState.textOverlay && rendererState.asyncHiz
+	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
+	printf("Async text raster: %s\n", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
 
     // Mesh-shader entry points only exist on the mesh path. The fallback path draws
     // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.

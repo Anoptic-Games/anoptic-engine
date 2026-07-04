@@ -381,7 +381,23 @@ re-ABIs.
    citardauq form; full story in friction §6.10, regression net (all-glyph two-scale
    ghost-pixel sweep) in anotest_text.)
 7. Async lane: `textTimeline`, text CB, submit + graphics wait, `ANO_FORCE_NO_ASYNC_TEXT`
-   A/B, validation-clean in both modes, freeze-methodology timing.
+   A/B, validation-clean in both modes, freeze-methodology timing. (Done: lag-0 lane on
+   asyncHiz's infrastructure, gated by asyncText — decided at the toggle site so the
+   overlay images and curve/directory buffers pick CONCURRENT graphics+compute sharing,
+   downgraded non-fatally if the lane's objects fail. The per-frame raster CB submits to
+   the compute queue FIRST, with no waits (inputs are CPU-written and slot reuse is
+   frame-fence ordered — same argument as the light-cull CB), signals textTimeline ==
+   ordinal; the main submit waits it at FRAGMENT_SHADER on both the split and non-split
+   paths; failed submits host-signal the ordinal; unInitVulkan drains the timeline next
+   to hiz/lc. The shared record body parameterizes only the final barrier — a compute-
+   only family has no FRAGMENT stage, so the async CB releases at BOTTOM_OF_PIPE/0 and
+   the semaphore carries the cross-queue dependency. Hardware-verified: async + forced-
+   in-frame both validation-clean incl. two resize cycles and WM-close teardown; async
+   overlay pixel-identical to in-frame (compare RMS 0.032/255, same max pixel). A/B,
+   release, busy desktop: composite no-text 0.093 / in-frame 0.255 / async 0.125 ms —
+   the raster is off the graphics timeline; the residual +0.03 ms is the composite blend
+   draw itself. Totals within session noise, as with the light-cull split; the lever
+   grows with text volume.)
 8. Demo: profile-line mirror at print cadence, record before/after frame numbers here.
 
 Rough scope: `src/text` ≈ 1000-1200 lines C (bake 400, shaper 300, tests 400),
