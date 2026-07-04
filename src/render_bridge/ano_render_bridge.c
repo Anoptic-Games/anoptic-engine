@@ -129,6 +129,42 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
+// Screen-text endpoints (FONT_RENDER.md v0 bridge). `set` packs the block header + the
+// instance copy into ONE render-owned allocation (the registry adopts it; freed render-
+// side on replace/clear/shutdown), so the caller's array need only live until this
+// returns. count 0 == clear. Backpressure contract is ano_render_submit's.
+bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
+                         const AnoGlyphInstance *instances, uint32_t count)
+{
+    if (count == 0u)
+        return ano_render_text_clear(bridge, text_id);
+    if (instances == NULL)
+        return true; // invalid pair (count without data): documented no-op
+    if (count > ANO_RENDER_TEXT_MAX)
+        count = ANO_RENDER_TEXT_MAX; // one block never exceeds the whole region
+    size_t bytes = sizeof(RenderTextBlock) + (size_t)count * sizeof(AnoGlyphInstance);
+    char *blk = mi_malloc(bytes);
+    if (blk == NULL)
+        return false;
+    RenderTextBlock *b = (RenderTextBlock *)blk;
+    AnoGlyphInstance *inst = (AnoGlyphInstance *)(blk + sizeof(RenderTextBlock));
+    memcpy(inst, instances, (size_t)count * sizeof(AnoGlyphInstance));
+    b->count = count;
+    b->instances = inst;
+    RenderCommand c = { .kind = RCMD_TEXT_SET, .text_id = text_id, .text = b, .bulk_owned = true };
+    if (!ano_spsc_push(&bridge->commands, &c)) {
+        mi_free(blk);
+        return false;
+    }
+    return true;
+}
+
+bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
+{
+    RenderCommand c = { .kind = RCMD_TEXT_CLEAR, .text_id = text_id };
+    return ano_spsc_push(&bridge->commands, &c);
+}
+
 // Back-channel logic-master endpoints (anoptic_render.h). Non-inline so the logic master reaches
 // them through the opaque handle; the matching render-side producer/consumer halves are the inline
 // helpers in render_bridge.h.

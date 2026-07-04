@@ -2970,6 +2970,15 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
             break;
         }
 
+        case RCMD_TEXT_SET:
+            // The registry adopts the packed block (frees it itself); NOT free_owned_bulk.
+            ano_vk_text_block_set(state, cmd.text_id, cmd.text);
+            break;
+
+        case RCMD_TEXT_CLEAR:
+            ano_vk_text_block_clear(state, cmd.text_id);
+            break;
+
         default:
             break;
         }
@@ -3053,6 +3062,14 @@ uint32_t anoRenderAssetPrimitives(uint32_t asset_id, const mat4 root, AnoRendera
 uint32_t anoRenderFallbackMesh(void)    { return FALLBACK_MESH_INDEX; }
 uint32_t anoRenderDefaultMaterial(void) { return g_defaultMaterial; }
 uint32_t anoRenderStaticLightBase(void) { return ANO_STATIC_LIGHT_COUNT; }
+
+// The baked font for logic-side shaping (anoptic_render.h). Immutable plain data from
+// init to unInitVulkan; NULL when the text stack is down (ano_text_shape over NULL
+// yields 0, so producers degrade to no text with no special path).
+const AnoFontBake* anoRenderTextBake(void)
+{
+    return rendererState.textOverlay ? &rendererState.textBake : NULL;
+}
 
 // Producer endpoint — reserve the next free transform-ring slice. Returns false (out
 // untouched) when that slice is still in flight on the GPU (reclaimSeq has not caught

@@ -42,6 +42,8 @@ typedef struct TextRasterPush {
 // Frame-buffer region split: the OSD/pending path owns instance indices [0,
 // ANO_TEXT_WORLD_FIRST); the world panel's static instances sit from there up.
 #define ANO_TEXT_WORLD_FIRST 8192u
+static_assert(ANO_TEXT_WORLD_FIRST == ANO_RENDER_TEXT_MAX,
+              "the public screen-text capacity is the pending region size");
 
 // Push-constant block shared with textworld.vert/.frag (88 B).
 typedef struct TextWorldPush {
@@ -78,6 +80,28 @@ static const float g_osdOrigin[2] = { 24.0f, 40.0f };
 
 static bool g_textPinned; // ANO_TEXT_DEMO: hold the harness text, ignore later sets
 
+// Recomposes the pending canonical after any source changed: the OSD region
+// [0, textOsdCount) is already in place (the setters shape it there), logic blocks
+// append after it in registry order, truncating at the region cap. ANO_TEXT_DEMO's pin
+// keeps the harness canvas OSD-only (blocks stay registered, just not composed).
+static void text_blocks_append(RendererState* state)
+{
+    uint32_t cap = ANO_TEXT_WORLD_FIRST;
+    uint32_t total = state->textOsdCount < cap ? state->textOsdCount : cap;
+    if (!g_textPinned)
+    {
+        for (uint32_t i = 0; i < state->textBlockCount && total < cap; i++)
+        {
+            const RenderTextBlock* b = state->textBlocks[i].blk;
+            uint32_t n = b->count < cap - total ? b->count : cap - total;
+            memcpy(state->textPending + total, b->instances, (size_t)n * sizeof(AnoGlyphInstance));
+            total += n;
+        }
+    }
+    state->textPendingCount = total;
+    state->textVersion++;
+}
+
 void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float sizePx,
                      const float origin[2], const float color[4])
 {
@@ -86,8 +110,8 @@ void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float
     uint32_t cap = ANO_TEXT_WORLD_FIRST; // the region above belongs to the world panel
     uint32_t count = ano_text_shape(&state->textBake, utf8, len, sizePx, origin, color,
                                     state->textPending, cap, NULL);
-    state->textPendingCount = count < cap ? count : cap;
-    state->textVersion++;
+    state->textOsdCount = count < cap ? count : cap;
+    text_blocks_append(state);
 }
 
 void ano_vk_text_set_runs(RendererState* state, const char* utf8, const AnoTextRun* runs,
@@ -98,8 +122,62 @@ void ano_vk_text_set_runs(RendererState* state, const char* utf8, const AnoTextR
     uint32_t cap = ANO_TEXT_WORLD_FIRST;
     uint32_t count = ano_text_shape_runs(&state->textBake, utf8, runs, runCount, origin,
                                          state->textPending, cap, NULL);
-    state->textPendingCount = count < cap ? count : cap;
-    state->textVersion++;
+    state->textOsdCount = count < cap ? count : cap;
+    text_blocks_append(state);
+}
+
+// Adopts a logic-submitted block (RCMD_TEXT_SET): replaces text_id's contents, creating
+// the entry if new. Ownership of blk (ONE mi allocation: header + instances, packed by
+// ano_render_text_set) transfers here unconditionally -- freed on replace/clear/teardown,
+// or immediately when the overlay is off or the registry is full. Render thread only.
+void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderTextBlock* blk)
+{
+    if (blk == NULL)
+        return;
+    if (!state->textOverlay || state->textPending == NULL)
+    {
+        mi_free((void*)blk);
+        return;
+    }
+    for (uint32_t i = 0; i < state->textBlockCount; i++)
+    {
+        if (state->textBlocks[i].id == text_id)
+        {
+            mi_free((void*)state->textBlocks[i].blk);
+            state->textBlocks[i].blk = blk;
+            text_blocks_append(state);
+            return;
+        }
+    }
+    if (state->textBlockCount >= ANO_TEXT_MAX_BLOCKS)
+    {
+        printf("Text bridge: block registry full (%u); text_id %u dropped.\n",
+               ANO_TEXT_MAX_BLOCKS, text_id);
+        mi_free((void*)blk);
+        return;
+    }
+    state->textBlocks[state->textBlockCount].id = text_id;
+    state->textBlocks[state->textBlockCount].blk = blk;
+    state->textBlockCount++;
+    text_blocks_append(state);
+}
+
+// Removes a block (RCMD_TEXT_CLEAR); idempotent. Order-preserving compaction so the
+// composite order stays the producers' creation order.
+void ano_vk_text_block_clear(RendererState* state, uint32_t text_id)
+{
+    for (uint32_t i = 0; i < state->textBlockCount; i++)
+    {
+        if (state->textBlocks[i].id != text_id)
+            continue;
+        mi_free((void*)state->textBlocks[i].blk);
+        for (uint32_t j = i + 1; j < state->textBlockCount; j++)
+            state->textBlocks[j - 1] = state->textBlocks[j];
+        state->textBlockCount--;
+        if (state->textOverlay && state->textPending != NULL)
+            text_blocks_append(state);
+        return;
+    }
 }
 
 void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
@@ -893,6 +971,10 @@ void ano_vk_text_destroy(VulkanContext* ctx, RendererState* state)
         vkDestroySemaphore(ctx->device, state->textTimeline, NULL);
         state->textTimeline = VK_NULL_HANDLE;
     }
+    // Logic text blocks: adopted render-owned copies (default mi heap, not textHeap).
+    for (uint32_t i = 0; i < state->textBlockCount; i++)
+        mi_free((void*)state->textBlocks[i].blk);
+    state->textBlockCount = 0;
     // CPU side: FreeType down (init thread == this thread), bake blobs die with the heap.
     ano_text_shutdown();
     if (state->textHeap != NULL)

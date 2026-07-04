@@ -358,6 +358,29 @@ rules, `anoptic_render.h:334`) or through the zero-copy stream region
 update rates; the ABI above is public in `anoptic_text.h` from day one so that path never
 re-ABIs.
 
+The v0 bridge path LANDED 2026-07-04, taking the copy-at-submit option (text updates are
+discrete label changes at UI rates, not per-tick streams — the events-vs-state standing
+rule picks the command ring). Public surface: `anoRenderTextBake()` hands logic the
+render-side bake (immutable plain data, published before the logic thread spawns; NULL =
+text stack down, and shaping over NULL yields 0 so producers degrade for free); logic
+shapes on its own thread and ships `RenderTextBlock {count, instances}` via
+`ano_render_text_set(bridge, text_id, instances, count)` — one mi allocation packs header
++ copy, the command carries it `bulk_owned`, and the render-side registry ADOPTS the
+allocation on RCMD_TEXT_SET (no second copy; freed on replace/clear/teardown).
+`ano_render_text_clear` / count 0 removes a block; text_id is the producer's namespace
+(the light_id convention). SET is a full replace, so unlike CREATE/DESTROY a dropped
+submit is safe to skip — the block is stale one tick; one-shot sets and clears retry.
+Registry: ANO_TEXT_MAX_BLOCKS (64) entries, render thread only; compose = OSD region
+[0, textOsdCount) + blocks in creation order, truncated at ANO_RENDER_TEXT_MAX == the
+region cap (static-asserted against ANO_TEXT_WORLD_FIRST); every change recomposes
+textPending and bumps textVersion — the frame-refresh protocol and the GPU dispatch are
+untouched. ANO_TEXT_DEMO's pin suppresses block COMPOSITION (registry still adopts), so
+the offline pixel-compare canvas stays exactly the torture text. Demo (main.c logic
+master): a styled title (runs path), a transient notice cleared 15 s after frames start
+(REVENT-free one-shot via the armed deadline), and a 1 Hz camera readout; all three
+verbs hardware-verified (notice visible then gone, validation 0 both normal + pinned
+runs).
+
 ## 9. Future paths (explicitly out of PoC scope)
 
 - World-space text (LANDED 2026-07-04, ahead of schedule): the paper's pixel-shader

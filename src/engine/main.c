@@ -18,6 +18,7 @@
 #ifndef HEADLESS_BUILD
 // Renderer contract + GLFW — only compiled into the graphical engine.
 #include <anoptic_render.h>
+#include <anoptic_text.h> // logic-side shaping over anoRenderTextBake()
 #include <vulkan/vulkan.h>
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -222,6 +223,24 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 	}
 }
 
+// Logic-side text (FONT_RENDER.md v0 bridge): shape UTF-8 against the renderer's bake on
+// THIS thread (pure functions over immutable plain data) and ship the instances as named
+// blocks. text_id is the producer's namespace. The demo drives all three verbs: a styled
+// persistent title (SET, runs path), a transient notice cleared after 6 s (CLEAR), and a
+// once-per-second camera readout (REPLACE — a dropped set just leaves it stale a tick).
+#define HUD_TEXT_TITLE  1u
+#define HUD_TEXT_NOTICE 2u
+#define HUD_TEXT_CAM    3u
+#define HUD_TEXT_CAP    128u
+
+// Shape + submit one block, clamping the reported need to what the buffer actually holds
+// (ano_render_text_set copies count instances; never hand it unshaped tail entries).
+static bool hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
+                            AnoGlyphInstance* inst, uint32_t shaped) {
+	if (shaped > HUD_TEXT_CAP) shaped = HUD_TEXT_CAP;
+	return ano_render_text_set(bridge, text_id, inst, shaped);
+}
+
 void* anoLogicThreadMain(void* arg)
 {
 	(void)arg;
@@ -230,6 +249,30 @@ void* anoLogicThreadMain(void* arg)
 	// Compose the scene (logic owns it now): geometry + scene lights + candle lights, emitted through
 	// the bridge — the same command path a runtime spawn takes. Replaces the renderer's hardcoded rig.
 	spawn_scene(bridge);
+
+	// One-time HUD blocks (below the renderer's own profiling OSD). The scene burst above
+	// is backpressure-retried, so these are too — one-shot sets must not be dropped.
+	const AnoFontBake* bake = anoRenderTextBake();
+	AnoGlyphInstance hud[HUD_TEXT_CAP];
+	if (bake != NULL) {
+		static const char title[] = "logic HUD :: text bridge v0";
+		const AnoTextRun titleRuns[2] = {
+			{ 9,  24.0f, { 1.0f, 0.78f, 0.32f, 1.0f } }, // "logic HUD" amber
+			{ 18, 24.0f, { 0.9f, 0.9f, 0.9f, 1.0f } },   // " :: text bridge v0"
+		};
+		const float titleOrg[2] = { 24.0f, 150.0f };
+		uint32_t n = ano_text_shape_runs(bake, title, titleRuns, 2, titleOrg, hud, HUD_TEXT_CAP, NULL);
+		while (!hud_text_submit(bridge, HUD_TEXT_TITLE, hud, n)) ano_sleep(1000);
+
+		static const char notice[] = "this line clears itself in 15 s";
+		const float noticeOrg[2] = { 24.0f, 180.0f };
+		const float grey[4] = { 0.6f, 0.6f, 0.6f, 1.0f };
+		n = ano_text_shape(bake, notice, (uint32_t)(sizeof notice - 1), 20.0f, noticeOrg, grey,
+		                   hud, HUD_TEXT_CAP, NULL);
+		while (!hud_text_submit(bridge, HUD_TEXT_NOTICE, hud, n)) ano_sleep(1000);
+	}
+	uint64_t noticeDeadline = 0; // armed 15 s after frames start flowing (first snapshot)
+	bool     noticeCleared = false;
 
 	// Free-fly camera owned by logic (audit 4.11): drain forwarded input, integrate a WASD + right-drag
 	// look camera, publish its pose. Starts at the renderer's old fallback pose, with the forward derived
@@ -316,13 +359,34 @@ void* anoLogicThreadMain(void* arg)
 			ano_render_publish_view(bridge, &view);
 		}
 
-		// Prove the snapshot path: log the renderer's published frame id ~once/sec.
+		// One-shot: retire the transient notice (RCMD_TEXT_CLEAR end to end). A full
+		// ring returns false and this retries next tick — a clear must not be dropped.
+		if (bake != NULL && !noticeCleared && noticeDeadline != 0 && now > noticeDeadline)
+			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE);
+
+		// Prove the snapshot path: log the renderer's published frame id ~once/sec, and
+		// refresh the camera readout block on the same cadence (REPLACE semantics: a
+		// drop leaves last second's text standing, corrected by the next set).
 		{
 			RenderSnapshot snap;
+			if (noticeDeadline == 0 && ano_render_acquire_snapshot(bridge, &snap))
+				noticeDeadline = now + 15000000ull; // first published frame: arm the notice
 			if (ano_render_acquire_snapshot(bridge, &snap) && now - lastSnapLog > 1000000) {
 				printf("Snapshot: frameId %llu, viewport %ux%u\n",
 				       (unsigned long long)snap.frameId, snap.vpWidth, snap.vpHeight);
 				lastSnapLog = now;
+				if (bake != NULL) {
+					char cam[96];
+					int len = snprintf(cam, sizeof cam, "cam  x %+.2f  y %+.2f  z %+.2f",
+					                   (double)camEye[0], (double)camEye[1], (double)camEye[2]);
+					if (len > 0) {
+						const float camOrg[2] = { 24.0f, 210.0f };
+						const float mint[4] = { 0.45f, 0.95f, 0.6f, 1.0f };
+						uint32_t n = ano_text_shape(bake, cam, (uint32_t)len, 20.0f, camOrg,
+						                            mint, hud, HUD_TEXT_CAP, NULL);
+						(void)hud_text_submit(bridge, HUD_TEXT_CAM, hud, n);
+					}
+				}
 			}
 		}
 		ano_sleep(2000); // ~2 ms logic tick
