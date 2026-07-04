@@ -197,6 +197,168 @@ bool anorune_is_mark(anorune_t r)
     return (uc_record(r)->flags & ANO_UC_MARK) != 0;
 }
 
+bool anorune_is_punct(anorune_t r)
+{
+    return (uc_record(r)->flags & ANO_UC_PUNCT) != 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rune-class culling. One pass, survivors copied in runs so a lightly-culled string is
+// mostly memcpy. ASCII rides an 8-byte high-bit test and a bitset, only non-ASCII decodes.
+
+static uint8_t cull_uc_mask(uint32_t classes)
+{
+    uint8_t m = 0;
+    if (classes & ANOSTR_CULL_WHITESPACE) m |= ANO_UC_WHITESPACE;
+    if (classes & ANOSTR_CULL_PUNCT)      m |= ANO_UC_PUNCT;
+    if (classes & ANOSTR_CULL_MARK)       m |= ANO_UC_MARK;
+    return m;
+}
+
+// Byte offset of the first rune to cull, or len if none. Same walk as the copy loop.
+static size_t cull_find_first(anostr_t s, uint8_t ucMask, const uint64_t asciiSet[2])
+{
+    const uint8_t *p = (const uint8_t *)anostr_bytes(&s);
+    size_t i = 0;
+    while (i < s.len) {
+        // 8-byte chunks with no high bit and no member byte skip in one test.
+        while (i + 8 <= s.len) {
+            uint64_t chunk;
+            memcpy(&chunk, p + i, 8);
+            if (chunk & 0x8080808080808080ull)
+                break;
+            bool hit = false;
+            for (int k = 0; k < 8 && !hit; k++) {
+                uint8_t b = p[i + k];
+                hit = (asciiSet[b >> 6] >> (b & 63)) & 1;
+            }
+            if (hit)
+                break;
+            i += 8;
+        }
+        if (i >= s.len)
+            break;
+        uint8_t b = p[i];
+        if (b < 0x80u) {
+            if ((asciiSet[b >> 6] >> (b & 63)) & 1)
+                return i;
+            i++;
+            continue;
+        }
+        size_t at = i;
+        anorune_t r = anostr_rune_next(s, &i);
+        if (r < ANO_UC_TABLE_MAX && (uc_record(r)->flags & ucMask) != 0)
+            return at;
+    }
+    return s.len;
+}
+
+anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes)
+{
+    uint8_t ucMask = cull_uc_mask(classes);
+    if (ucMask == 0 || s.len == 0)
+        return s;
+
+    // ASCII membership bitset for these classes, from the tables (one source of truth).
+    uint64_t asciiSet[2] = {0};
+    for (uint32_t c = 0; c < 128; c++)
+        if ((uc_record(c)->flags & ucMask) != 0)
+            asciiSet[c >> 6] |= 1ull << (c & 63);
+
+    size_t first = cull_find_first(s, ucMask, asciiSet);
+    if (first == s.len)
+        return s;   // nothing to cull, same backing, no alloc
+
+    const uint8_t *p = (const uint8_t *)anostr_bytes(&s);
+    anostr_builder_t b = anostr_builder_make(heap, s.len);
+    if (anostr_builder_append(&b, p, first) != 0) {
+        anostr_builder_discard(&b);
+        return anostr_empty();
+    }
+
+    size_t i = first, runStart = first;
+    while (i < s.len) {
+        size_t at = i;
+        bool   culled;
+        uint8_t byte = p[i];
+        if (byte < 0x80u) {
+            culled = (asciiSet[byte >> 6] >> (byte & 63)) & 1;
+            i++;
+        } else {
+            anorune_t r = anostr_rune_next(s, &i);
+            culled = r < ANO_UC_TABLE_MAX && (uc_record(r)->flags & ucMask) != 0;
+        }
+        if (culled) {
+            if (at > runStart && anostr_builder_append(&b, p + runStart, at - runStart) != 0) {
+                anostr_builder_discard(&b);
+                return anostr_empty();
+            }
+            runStart = i;
+        }
+    }
+    if (s.len > runStart && anostr_builder_append(&b, p + runStart, s.len - runStart) != 0) {
+        anostr_builder_discard(&b);
+        return anostr_empty();
+    }
+    return anostr_freeze(&b);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sort a string's runes ascending by code point (UTF-8 byte order IS code point order).
+// Pure ASCII: counting sort, no decode. Otherwise decode to runes, sort, re-encode.
+
+static int rune_cmp_(const void *a, const void *b)
+{
+    anorune_t x = *(const anorune_t *)a, y = *(const anorune_t *)b;
+    return x < y ? -1 : (x > y);
+}
+
+anostr_t anostr_rune_sort(mi_heap_t *heap, anostr_t s)
+{
+    if (s.len < 2)
+        return s;
+    const uint8_t *p = (const uint8_t *)anostr_bytes(&s);
+
+    bool ascii = true;
+    for (size_t i = 0; i < s.len && ascii; i++)
+        ascii = p[i] < 0x80u;
+    if (ascii) {
+        uint32_t counts[128] = {0};
+        for (size_t i = 0; i < s.len; i++)
+            counts[p[i]]++;
+        anostr_builder_t b = anostr_builder_make(heap, s.len);
+        char fill[64];
+        for (uint32_t c = 0; c < 128; c++) {
+            size_t remaining = counts[c];
+            if (remaining == 0)
+                continue;
+            memset(fill, (int)c, remaining < sizeof fill ? remaining : sizeof fill);
+            while (remaining > 0) {
+                size_t chunk = remaining < sizeof fill ? remaining : sizeof fill;
+                if (anostr_builder_append(&b, fill, chunk) != 0) {
+                    anostr_builder_discard(&b);
+                    return anostr_empty();
+                }
+                remaining -= chunk;
+            }
+        }
+        return anostr_freeze(&b);
+    }
+
+    // At most len runes. Malformed bytes decode to U+FFFD.
+    anorune_t *runes = mi_malloc((size_t)s.len * sizeof *runes);
+    if (runes == NULL)
+        return anostr_empty();
+    size_t n = 0;
+    for (size_t i = 0; i < s.len; )
+        runes[n++] = anostr_rune_next(s, &i);
+    qsort(runes, n, sizeof runes[0], rune_cmp_);
+
+    anostr_t out = anostr_from_utf32(heap, runes, n);
+    mi_free(runes);
+    return out;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Encoding conversion. In: decode foreign units to runes, append through the builder
 // (which sanitizes to U+FFFD and canonicalizes inline/long on freeze).

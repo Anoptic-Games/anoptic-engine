@@ -39,6 +39,7 @@
 #define FLAG_DIGIT      2u
 #define FLAG_WHITESPACE 4u
 #define FLAG_MARK       8u
+#define FLAG_PUNCT      16u
 
 static uint8_t flags[MAX_CP];
 static int32_t upper_delta[MAX_CP];
@@ -114,11 +115,20 @@ static int is_mark_category(const char *cat)
     return cat[0] == 'M' && (cat[1] == 'n' || cat[1] == 'c' || cat[1] == 'e');
 }
 
+// Punctuation: P* only. Symbols (S*) are not punctuation, so "+5 Sword" keeps the +.
+static int is_punct_category(const char *cat)
+{
+    return cat[0] == 'P' && (cat[1] == 'c' || cat[1] == 'd' || cat[1] == 's' ||
+                             cat[1] == 'e' || cat[1] == 'i' || cat[1] == 'f' ||
+                             cat[1] == 'o');
+}
+
 static uint8_t category_flags(const char *cat)
 {
     if (is_letter_category(cat)) return FLAG_LETTER;
     if (strcmp(cat, "Nd") == 0)  return FLAG_DIGIT;
     if (is_mark_category(cat))   return FLAG_MARK;
+    if (is_punct_category(cat))  return FLAG_PUNCT;
     return 0;
 }
 
@@ -557,6 +567,19 @@ static void emit_collate_tables(const char *version)
     emit_u16_array(f, "ano_ce_stage2", stage2, block_count * 256);
     emit_u16_array(f, "ano_ce_stage1", stage1, BLOCK_COUNT);
 
+    // Flat ASCII fast path: every ASCII cp maps to exactly one CE and never decomposes,
+    // so hot loops skip the two-stage walk. Asserted here so it cannot silently rot.
+    uint32_t ce_ascii[128];
+    for (uint32_t cp = 0; cp < 128; cp++) {
+        uint16_t span = ce_span_of_cp[cp];
+        if (span == 0 || ce_spans[span].len != 1 || find_decomp(cp) != NULL) {
+            fprintf(stderr, "ASCII fast-path assumption broken at U+%04X\n", cp);
+            exit(1);
+        }
+        ce_ascii[cp] = ce_pool[ce_spans[span].offset];
+    }
+    emit_u32_array(f, "ano_ce_ascii", ce_ascii, 128);
+
     static uint16_t dc_cp[sizeof decomps / sizeof decomps[0]];
     static uint16_t dc_span[sizeof decomps / sizeof decomps[0]];
     static uint16_t dc_pool[sizeof decomp_pool / sizeof decomp_pool[0]];
@@ -633,6 +656,7 @@ int main(void)
         "#define ANO_UC_DIGIT      %uu\n"
         "#define ANO_UC_WHITESPACE %uu\n"
         "#define ANO_UC_MARK       %uu\n"
+        "#define ANO_UC_PUNCT      %uu\n"
         "\n"
         "typedef struct ano_uc_record_t {\n"
         "    int32_t upper_delta;   // 0 when no simple uppercase mapping\n"
@@ -640,7 +664,7 @@ int main(void)
         "    uint8_t flags;\n"
         "} ano_uc_record_t;\n"
         "\n",
-        version, version, FLAG_LETTER, FLAG_DIGIT, FLAG_WHITESPACE, FLAG_MARK);
+        version, version, FLAG_LETTER, FLAG_DIGIT, FLAG_WHITESPACE, FLAG_MARK, FLAG_PUNCT);
 
     fprintf(f, "static const ano_uc_record_t ano_uc_records[%zu] = {\n", record_count);
     for (size_t k = 0; k < record_count; k++)
