@@ -104,7 +104,7 @@ static inline const char *anostr_bytes(const anostr_t *s)
 }
 
 // Format-argument adapter: pass a value to any printf-family "%.*s" conversion, the logger included -- no anostr_to_cstr copy:
-//     ano_log_info("loading %.*s", anostr_fmt(path));
+//     ano_log(ANO_INFO, "loading %.*s", anostr_fmt(path));
 #define anostr_fmt(s) (int)anostr_len((s)), anostr_bytes((const anostr_t[]){ (s) })
 
 // ---------------------------------------------------------------------------------------------
@@ -185,6 +185,12 @@ char *anostr_to_cstr(mi_heap_t *heap, anostr_t s);
 // Byte index of the first occurrence of needle at or after `from`; ANOSTR_NPOS if absent.
 // An empty needle matches immediately at min(from, len). Total: any `from` is safe.
 size_t anostr_find(anostr_t s, anostr_t needle, size_t from);
+
+// Every needle replaced by repl, left to right, non-overlapping ("aaa"/"aa" once).
+// Byte-level: UTF-8 self-synchronizes, so matches land on rune boundaries. 
+// Zero matches or empty needle return s unchanged. 
+// Empty string if the result exceeds UINT32_MAX or allocation fails.
+anostr_t anostr_replace_all(mi_heap_t *heap, anostr_t s, anostr_t needle, anostr_t repl);
 
 // a ++ b. Allocates from heap only when the result exceeds the inline cap. 
 // Returns the empty string if the total exceeds UINT32_MAX or allocation fails.

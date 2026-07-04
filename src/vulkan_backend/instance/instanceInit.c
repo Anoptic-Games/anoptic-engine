@@ -8,8 +8,10 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
+#include <ctype.h>
 #include <math.h>
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -163,7 +165,7 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 {
 	if (!glfwInit())
 	{
-		fprintf(stderr, "Failed to initialize GLFW!\n");
+		ano_log(ANO_FATAL, "Failed to initialize GLFW!");
 		return NULL;
 	}
 
@@ -259,7 +261,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	#ifdef DEBUG_BUILD
 	if (!checkValidationLayerSupport(validationLayers, validationCount))
 	{
-		printf("Validation layers requested, but not available!\n");
+		ano_log(ANO_WARN, "Validation layers requested, but not available!");
 	}
 	else
 	{
@@ -267,13 +269,13 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 		createInfo.ppEnabledLayerNames = validationLayers;
 		populateDebugMessengerCreateInfo(&debugCreateInfo);
 		createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debugCreateInfo;
-		printf("Enabled validation layers!\n");
+		ano_log(ANO_INFO, "Enabled validation layers!");
 	}
 	#endif
 
 	if (vkCreateInstance(&createInfo, NULL, &(ctx->instance)) != VK_SUCCESS)
 	{
-		fprintf(stderr, "Failed to create Vulkan instance!\n");
+		ano_log(ANO_FATAL, "Failed to create Vulkan instance!");
 		free(extensions);
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
@@ -300,7 +302,13 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Validation messenger cal
 	{
 		return VK_FALSE;
 	}
-	printf("Validation layer: %s\n", pCallbackData->pMessage);
+	// Route by layer severity. %s is copied at capture, so the layer may free the message after.
+	if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+		ano_log(ANO_ERROR, "Validation layer: %s", pCallbackData->pMessage);
+	else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+		ano_log(ANO_WARN, "Validation layer: %s", pCallbackData->pMessage);
+	else
+		ano_debug_log(ANO_INFO, "Validation layer: %s", pCallbackData->pMessage);
 
 	if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
 	{
@@ -339,7 +347,7 @@ void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMe
 	populateDebugMessengerCreateInfo(&createInfo);
 	if (CreateDebugUtilsMessengerEXT(*instance, &createInfo, NULL, debugMessenger) != VK_SUCCESS)
 	{
-		printf("Failed to set up debug messenger!\n");
+		ano_log(ANO_WARN, "Failed to set up debug messenger!");
 	}
 }
 
@@ -396,7 +404,7 @@ VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* su
 {
 	if (glfwCreateWindowSurface(instance, window, NULL, surface) != VK_SUCCESS)
 	{
-		fprintf(stderr, "Failed to create window surface!\n");
+		ano_log(ANO_FATAL, "Failed to create window surface!");
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
@@ -612,20 +620,36 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 	// Mesh shader is preferred but NOT required: devices without it render via the
 	// vertex-shader fallback path. Everything below is needed by BOTH paths.
 	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
-		fprintf(stderr, "Device lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.\n");
+		ano_log(ANO_WARN, "Device rejected: lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.");
 		return false;
 	}
 	if (!meshShaderFeatures.meshShader) {
-		fprintf(stderr, "Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.\n");
+		ano_log(ANO_WARN, "Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.");
 		// The vertex fallback packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
 		// (read as gl_InstanceIndex); a nonzero firstInstance in an indirect draw requires
 		// drawIndirectFirstInstance. A device with neither mesh shaders nor this feature would
 		// mis-draw, so reject it here instead of failing silently. The mesh path needs neither.
 		if (!features2.features.drawIndirectFirstInstance) {
-			fprintf(stderr, "Device also lacks drawIndirectFirstInstance: the vertex fallback path "
-			                "cannot draw correctly. Device not suitable.\n");
+			ano_log(ANO_WARN, "Device rejected: also lacks drawIndirectFirstInstance, so the vertex "
+			             "fallback path cannot draw correctly.");
 			return false;
 		}
+	}
+
+	// The renderer has no 1x path. A device whose usable sample counts are 1x-only
+	// (layered Vulkan-on-D3D12 adapters cap integer-color MSAA at 1) cannot render.
+	// The intersection mirrors getMaxUsableSampleCount.
+	VkPhysicalDeviceVulkan12Properties vk12Props = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
+	VkPhysicalDeviceProperties2 props2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vk12Props };
+	vkGetPhysicalDeviceProperties2(device, &props2);
+	VkSampleCountFlags usableCounts = props2.properties.limits.framebufferColorSampleCounts
+	                                & props2.properties.limits.framebufferDepthSampleCounts
+	                                & props2.properties.limits.sampledImageDepthSampleCounts
+	                                & vk12Props.framebufferIntegerColorSampleCounts;
+	if (!(usableCounts & ~(VkSampleCountFlags)VK_SAMPLE_COUNT_1_BIT)) {
+		ano_log(ANO_WARN, "Device rejected: supports only 1x MSAA across the engine's attachment set, "
+		             "and the renderer has no 1x path.");
+		return false;
 	}
 
 	return physicalRequirements && queueRequirements && extensionsSupported;
@@ -661,10 +685,13 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 	uint32_t preferred = getChosenMsaaSamples();
 	const char* msaaEnv = getenv("ANO_MSAA");
 	if (msaaEnv) preferred = (uint32_t)atoi(msaaEnv);
-	if (preferred < 2u) { printf("MSAA preference %u below minimum, using 2x\n", preferred); preferred = 2u; }
+	if (preferred < 2u) { ano_log(ANO_WARN, "MSAA preference %u below minimum, using 2x", preferred); preferred = 2u; }
 	VkSampleCountFlags mask = 0;
 	for (uint32_t s = 2u; s <= preferred && s <= 64u; s <<= 1) mask |= s; // sample flags are their counts
-	counts &= mask;
+	// If the preference window misses every supported count, take any supported >=2x
+	// count rather than the unbuilt 1x path. isDeviceSuitable guarantees one exists.
+	VkSampleCountFlags preferredCounts = counts & mask;
+	counts = preferredCounts ? preferredCounts : (counts & ~(VkSampleCountFlags)VK_SAMPLE_COUNT_1_BIT);
 
 	if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
 	if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
@@ -676,16 +703,79 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 	return VK_SAMPLE_COUNT_1_BIT;
 }
 
+// Selection preference, not a requirement (the fallback path exists). Layered drivers
+// (Mesa "dozen" Vulkan-on-D3D12) enumerate alongside the native ICD for the same GPU,
+// claim DISCRETE_GPU with big heaps, and lack mesh shaders. A raw memory contest picks
+// them over the native driver and silently degrades the machine to the fallback path.
+static bool deviceHasMeshShader(VkPhysicalDevice device)
+{
+	VkPhysicalDeviceMeshShaderFeaturesEXT meshFeatures = {};
+	meshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+
+	VkPhysicalDeviceFeatures2 features2 = {};
+	features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	features2.pNext = &meshFeatures;
+
+	vkGetPhysicalDeviceFeatures2(device, &features2);
+	return meshFeatures.meshShader;
+}
+
+// ASCII-only case fold. CRT tolower() is locale-dependent (Turkish-I problem).
+// Non-ASCII bytes compare exactly, never folded.
+static char asciiLower(char c)
+{
+	return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
+}
+
+// Caseless substring match for the ANO_DEVICE override. Device names vary by driver
+// ("NVIDIA GeForce RTX 3070 Ti" vs "Microsoft Direct3D12 (NVIDIA ...)"), so exact
+// strcmp would be unusable from a shell. strcasestr is absent on Windows.
+// The inner scan stops at either terminator, so no out-of-bounds reads.
+static bool nameContainsCaseless(const char* haystack, const char* needle)
+{
+	size_t needleLen = strlen(needle);
+	if (needleLen == 0)
+		return false;
+	for (; *haystack; haystack++)
+	{
+		size_t j = 0;
+		while (j < needleLen && haystack[j] &&
+		       asciiLower(haystack[j]) == asciiLower(needle[j]))
+			j++;
+		if (j == needleLen)
+			return true;
+	}
+	return false;
+}
+
+// Heap 0 is not guaranteed to be video memory. Compare by largest DEVICE_LOCAL heap.
+static VkDeviceSize maxDeviceLocalHeapSize(const VkPhysicalDeviceMemoryProperties* memProperties)
+{
+	VkDeviceSize maxSize = 0;
+	for (uint32_t h = 0; h < memProperties->memoryHeapCount; h++)
+	{
+		if ((memProperties->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+		    memProperties->memoryHeaps[h].size > maxSize)
+		{
+			maxSize = memProperties->memoryHeaps[h].size;
+		}
+	}
+	return maxSize;
+}
+
 bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Further extend selection logic, split device discovery into dedicated function
 {																																				 //   and retain device attributes in public interface for use in UI or logic
 	bool foundPreferredDevice = false;
+	// ANO_DEVICE (caseless name substring) pins the adapter without a rebuild.
+	// Escape hatch for multi-ICD machines. Suitability checks still apply.
+	const char* envDevice = getenv("ANO_DEVICE");
 	ctx->deviceCount = 0;
 
 	vkEnumeratePhysicalDevices(ctx->instance, &(ctx->deviceCount), NULL);
 
 	if (ctx->deviceCount == 0) 
 	{
-		fprintf(stderr, "Failed to find GPUs with Vulkan support!\n");
+		ano_log(ANO_FATAL, "Failed to find GPUs with Vulkan support!");
 		return false;
 	}
 
@@ -705,20 +795,30 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 
 	VkPhysicalDevice bestDedicatedDevice = VK_NULL_HANDLE;
 	VkPhysicalDevice bestIntegratedDevice = VK_NULL_HANDLE;
+	bool bestDedicatedMesh = false;
+	bool bestIntegratedMesh = false;
 
-	printf("DeviceCount: %d\n", ctx->deviceCount);
+	ano_log(ANO_INFO, "DeviceCount: %d", ctx->deviceCount);
 	
+	static const char* deviceTypeNames[] = { "other", "integrated", "discrete", "virtual", "cpu" };
+
 	for (uint32_t i = 0; i < ctx->deviceCount; i++)
 	{
 		vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
 		vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
-		printf("%d\n", i);
+		// Multi-ICD machines list the same GPU several times in unstable order.
+		// A bare index is undiagnosable from a user report, so log full identity.
+		ano_log(ANO_INFO, "Device %u: %s (%s, mesh shader: %s)", i, deviceProperties.deviceName,
+		             deviceProperties.deviceType <= VK_PHYSICAL_DEVICE_TYPE_CPU
+		                 ? deviceTypeNames[deviceProperties.deviceType] : "unknown",
+		             deviceHasMeshShader(devices[i]) ? "yes" : "no");
 
 		if (isDeviceSuitable(devices[i], &(ctx->surface)))
 		{
 
 			//Select the first preffered device if available and break out of the selection loop
-			if (strcmp(deviceProperties.deviceName, preferredDevice) == 0)
+			if (strcmp(deviceProperties.deviceName, preferredDevice) == 0 ||
+			    (envDevice && nameContainsCaseless(deviceProperties.deviceName, envDevice)))
 			{
 				ctx->physicalDevice = devices[i];
 				foundPreferredDevice = true;
@@ -726,25 +826,36 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 			}
 
 		
-			//!TODO Extend the logic to select the heap that's DEVICE_LOCAL
-			VkDeviceSize currentMemorySize = memProperties.memoryHeaps[0].size;
+			// Rank suitable devices: mesh-shader capability first, then DEVICE_LOCAL
+			// memory. See deviceHasMeshShader for why capability dominates.
+			VkDeviceSize currentMemorySize = maxDeviceLocalHeapSize(&memProperties);
+			bool currentMesh = deviceHasMeshShader(devices[i]);
 
-			if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && currentMemorySize > maxDedicatedMemory)
+			if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+			    ((currentMesh && !bestDedicatedMesh) ||
+			     (currentMesh == bestDedicatedMesh && currentMemorySize > maxDedicatedMemory)))
 			{
 				bestDedicatedDevice = devices[i];
+				bestDedicatedMesh = currentMesh;
 				maxDedicatedMemory = currentMemorySize;
 			}
-			else if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && currentMemorySize > maxIntegratedMemory)
+			else if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
+			         ((currentMesh && !bestIntegratedMesh) ||
+			          (currentMesh == bestIntegratedMesh && currentMemorySize > maxIntegratedMemory)))
 			{
 				bestIntegratedDevice = devices[i];
+				bestIntegratedMesh = currentMesh;
 				maxIntegratedMemory = currentMemorySize;
 			}
 			(ctx->availableDevices)[i] = (char*)mi_malloc(strlen(deviceProperties.deviceName) +1);
 			strcpy((ctx->availableDevices)[i], deviceProperties.deviceName);
-			#ifdef DEBUG_BUILD
-			printf("%s\n", ctx->availableDevices[i]);
-			#endif
+			ano_debug_log(ANO_INFO, "Device %u is suitable: %s", i, ctx->availableDevices[i]);
 		}
+	}
+
+	if (envDevice && !foundPreferredDevice)
+	{
+		ano_log(ANO_WARN, "ANO_DEVICE=\"%s\" matched no suitable device; falling back to automatic selection.", envDevice);
 	}
 
 	if (foundPreferredDevice)
@@ -769,14 +880,20 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		}
 		else
 		{
-			fprintf(stderr, "Failed to find a suitable GPU!\n");
+			ano_log(ANO_FATAL, "Failed to find a suitable GPU!");
 			free(devices);
 			return false;
 		}
 	}
 
+	// Always name the winner: on multi-ICD machines "which device did it pick"
+	// is the first diagnostic question.
+	VkPhysicalDeviceProperties chosenProperties;
+	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &chosenProperties);
+	ano_log(ANO_INFO, "Selected device: %s", chosenProperties.deviceName);
+
 	ctx->msaaSamples = getMaxUsableSampleCount(ctx);
-	printf("MSAA samples used: %d\n", ctx->msaaSamples);
+	ano_log(ANO_INFO, "MSAA samples used: %d", ctx->msaaSamples);
 
 	//printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (ctx->queueFamilyIndices.graphicsFamily), (ctx->queueFamilyIndices.computeFamily), (ctx->queueFamilyIndices.transferFamily), (ctx->queueFamilyIndices.presentFamily));
 
@@ -926,11 +1043,11 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 
 	createInfo.enabledExtensionCount = enabledExtensionCount;
 	createInfo.ppEnabledExtensionNames = enabledExtensions;
-	printf("Enabling %u device extensions (mesh shader: %s)\n", enabledExtensionCount, meshSupported ? "yes" : "no");
+	ano_log(ANO_INFO, "Enabling %u device extensions (mesh shader: %s)", enabledExtensionCount, meshSupported ? "yes" : "no");
 
 	if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
 	{
-		fprintf(stderr, "Failed to create logical device!\n");
+		ano_log(ANO_FATAL, "Failed to create logical device!");
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 		
@@ -938,14 +1055,14 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	vkGetDeviceQueue(*device, indices->graphicsFamily, 0, graphicsQueue);
 	if (*graphicsQueue == NULL)
 	{
-		printf("Failed to acquire graphics queue!\n");
+		ano_log(ANO_FATAL, "Failed to acquire graphics queue!");
 		return VK_ERROR_INITIALIZATION_FAILED;	
 	}
 	vkGetDeviceQueue(*device, indices->presentFamily, 0, presentQueue);
-	printf("PresentQueue: %p\n", presentQueue);
+	ano_debug_log(ANO_INFO, "PresentQueue: %p", (void*)presentQueue);
 	if (*presentQueue == NULL)
 	{
-		printf("Failed to acquire present queue!\n");
+		ano_log(ANO_FATAL, "Failed to acquire present queue!");
 		return VK_ERROR_INITIALIZATION_FAILED;	
 	}
 	if (indices->computePresent)
@@ -953,7 +1070,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 		vkGetDeviceQueue(*device, indices->computeFamily, 0, computeQueue);
 		if (*computeQueue == NULL)
 		{
-			printf("Failed to acquire compute queue!\n");
+			ano_log(ANO_FATAL, "Failed to acquire compute queue!");
 			return VK_ERROR_INITIALIZATION_FAILED;	
 		}
 	}
@@ -962,7 +1079,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 		vkGetDeviceQueue(*device, indices->transferFamily, 0, transferQueue);
 		if (*transferQueue == NULL)
 		{
-			printf("Failed to acquire transfer queue!\n");
+			ano_log(ANO_FATAL, "Failed to acquire transfer queue!");
 			return VK_ERROR_INITIALIZATION_FAILED;	
 		}
 	}
@@ -2965,7 +3082,7 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
 
 	for (uint32_t z = 0; z < availableLayerCount; z++) 
 	{
-	 printf("Layer %d: %s\n", z, availableLayers[z].layerName);
+		ano_debug_log(ANO_INFO, "Layer %u: %s", z, availableLayers[z].layerName);
 	}
 
 	for(size_t i = 0; i < validationCount; i++) 
