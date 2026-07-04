@@ -82,6 +82,11 @@ Once Mingw-w64 is installed with `clang` working on your system, run `build.bat`
 
 The flake is the primary Nix entry point (`shell.nix` remains as a thin legacy shell):
 
+> The commands below are flake commands and need the `nix-command` and `flakes`
+> experimental features, off by default on stock Nix. Enable them in `nix.conf`
+> (`experimental-features = nix-command flakes`) or per invocation:
+> `nix --extra-experimental-features 'nix-command flakes' develop ...`.
+
 ```bash
 nix develop --command ./build.sh 6    # Linux clang shell: headless build + non-GPU tests
 nix develop --command ./build.sh 5    # ThreadSanitizer (Linux only)
@@ -90,7 +95,12 @@ nix build .#renderer                  # one-shot Vulkan renderer package (binary
 ```
 
 WSL has no Linux Vulkan driver, so the renderer runs there only as a **Windows** exe.
-Two ways to build one:
+WSL's in-guest Vulkan devices (Mesa `dozen` and `llvmpipe`) are not supported render
+targets. The **headless** build needs no GPU or display at all: `nix build` /
+`build.sh 6` artifacts run fine in WSL, containers, and GPU-less servers. That is the
+intended "server build" for hosting.
+
+Two ways to build a Windows renderer exe from WSL:
 
 1. **Nix cross shell** (`nix develop .#windows`) — the whole MinGW-w64 (gcc, ucrt64)
    toolchain, Vulkan import lib, and glslc come from Nix; no MSYS2 or Windows Vulkan SDK
@@ -176,6 +186,27 @@ ANO_FORCE_NO_MESH_SHADER=1 ./build/Debug/anopticengine
 ```
 
 The startup log prints which path is active, e.g. `Enabling 3 device extensions (mesh shader: yes)`. See the Rendering Philosophy section of `docs/notes.md` for the full design.
+
+#### Device selection
+
+The engine ranks suitable Vulkan devices by **mesh-shader capability first**, then
+largest DEVICE_LOCAL (video) memory, discrete over integrated. The winner is logged as
+`Selected device: <name>`.
+
+Capability-first matters on machines with *layered* Vulkan drivers, e.g. Mesa's `dozen`
+(Vulkan-on-D3D12, installed on Windows by the "OpenCL, OpenGL, and Vulkan Compatibility
+Pack"). These enumerate alongside the native driver, can claim more memory than the
+real GPU, and typically lack `VK_EXT_mesh_shader`.
+
+Set `ANO_DEVICE` to a caseless substring of a device name (as printed at startup) to
+override the choice:
+
+```bash
+ANO_DEVICE=nvidia ./build/Release/anopticengine        # pin the NVIDIA adapter
+ANO_DEVICE=direct3d12 ./build/Release/anopticengine    # deliberately test a layered one
+```
+
+If nothing matches, the engine warns and selects automatically.
 
 ### More
 
