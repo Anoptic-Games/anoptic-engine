@@ -370,7 +370,7 @@ int main()
     // with no readiness handshake.
     if (!initVulkan())
     {
-        ano_log_fatal("Vulkan initialization failed.");
+        ano_log(ANO_FATAL, "Vulkan initialization failed.");
         return -1;
     }
 
@@ -378,7 +378,7 @@ int main()
     anothread_t logicThread;
     if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
     {
-        ano_log_fatal("Failed to spawn logic thread.");
+        ano_log(ANO_FATAL, "Failed to spawn logic thread.");
         unInitVulkan();
         return -1;
     }

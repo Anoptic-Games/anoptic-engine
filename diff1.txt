@@ -1,0 +1,334 @@
+diff --git a/docs/logger.md b/docs/logger.md
+index c60458c..aa7565b 100644
+--- a/docs/logger.md
++++ b/docs/logger.md
+@@ -8,32 +8,38 @@ It is a singleton, one logger per program, owned by `main`. The whole interface
+ 
+ ## The interactive surface
+ 
+-### Severity levels
++### Severity and route ΓÇö two separate axes
+ 
+ ```c
+-typedef enum { LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR, LOG_FATAL } log_types_t;
++typedef enum { ANO_INFO, ANO_WARN, ANO_ERROR, ANO_FATAL } ano_loglevel_t;
++
++typedef enum {
++    ANO_FILE = 1 << 0,              // the output file (terminal when none is open)
++    ANO_TERM = 1 << 1,              // the terminal: stdout, ERROR+ to stderr; ANSI-colored on a tty
++    ANO_BOTH = ANO_FILE | ANO_TERM,
++    ANO_NOW  = 1 << 2,              // synchronous: drain, write, fsync on the calling thread
++} ano_logroute_t;
+ ```
+ 
+-The levels are ordered. A runtime gate admits everything at or above a chosen minimum, so you can lower the volume in production without touching call sites.
++Severity says how bad. Route says where and when. The levels are ordered, and a runtime gate admits buffered records at or above a chosen minimum. `ANO_NOW` composes with the sink bits (`ANO_NOW | ANO_TERM`) and alone inherits the level's default sinks. Defaults: INFO, WARN, and ERROR go to the file, FATAL goes to both sinks synchronously. `ano_log_set_route` rebinds a default at runtime.
+ 
+-### The call-site macros ΓÇö what you actually use
++Two notes on names. There is no DEBUG severity. Debug-only lives in the `ano_debug_` macros below (conventions.md). And the `ANO_` prefix is load-bearing: bare `ERROR` is a `windows.h` macro and bare `FILE` is stdio's typedef.
+ 
+-Day to day you use these macros:
++### The call-site macros ΓÇö what you actually use
+ 
+ ```c
+-ano_log_debug("loaded %d chunks in %.2f ms", n, ms);   // compiled out unless DEBUG_BUILD
+-ano_log_info ("entity %u spawned at (%d,%d)", id, x, y);
+-ano_log_warn ("texture %s missing, using fallback", name);
+-ano_log_error("vkAcquireNextImage failed: %d", err);
+-ano_log_fatal("arena exhausted, %zu bytes requested", want);
++ano_log(ANO_INFO, "entity %u spawned at (%d,%d)", id, x, y);     // level's default route
++ano_rlog(ANO_WARN, ANO_BOTH, "texture %s missing", name);        // explicit route
++ano_debug_log(ANO_INFO, "loaded %d chunks in %.2f ms", n, ms);   // GONE outside DEBUG_BUILD
++ano_debug_rlog(ANO_ERROR, ANO_NOW, "validation: %s", msg);       // explicit route, debug-only
+ ```
+ 
+ Each macro captures the source file and line (via `__FILE_NAME__` / `__LINE__`) and forwards the rest. Two things to remember:
+ 
+-- The format string must be a compile-time string literal. The macros carry a `printf` format attribute, so the compiler type-checks your arguments against it. `ano_log_info("%d", x)` is checked. `ano_log_info(some_char_ptr, x)` will not compile. Pass dynamic text as an argument: `ano_log_info("%s", dynamic)`.
+-- `ano_log_debug` evaluates to nothing outside a `DEBUG_BUILD`, arguments included, so debug logging costs zero in a release build.
++- The format string must be a compile-time string literal. The macros carry a `printf` format attribute, so the compiler type-checks your arguments against it. `ano_log(ANO_INFO, "%d", x)` is checked. `ano_log(ANO_INFO, some_char_ptr, x)` will not compile. Pass dynamic text as an argument: `"%s", dynamic`.
++- `ano_debug_log` / `ano_debug_rlog` expand to `((void)0)` outside a `DEBUG_BUILD`, arguments included, so debug logging costs zero in a release build.
+ 
+-`debug`, `info`, `warn`, and `error` are buffered through the lock-free ring and written by the background thread. `fatal` is synchronous (see "immediate" below), because you want a fatal line on disk before the process possibly dies.
++Buffered records ride the lock-free ring, and the background thread routes each to its sinks. A real terminal gets the level name colored by severity (yellow WARN, red ERROR, bold red FATAL). The file never sees an escape code. A `NOW` route is synchronous, because you want a fatal line on disk before the process possibly dies.
+ 
+ ### Lifecycle
+ 
+@@ -42,32 +48,33 @@ int ano_log_init(void);     // build up; 0 on success
+ int ano_log_cleanup(void);  // tear down; 0 on success
+ ```
+ 
+-Call `ano_log_init()` once at startup, before anyone logs. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/anoptic.log`), and spawns the background drain thread. Until it returns 0, only the immediate path works, writing to `stderr`.
++Call `ano_log_init()` once at startup, before anyone logs. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/anoptic.log`), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work, writing to `stderr`.
+ 
+ Call `ano_log_cleanup()` once at shutdown. It stops and joins the drain thread, runs one final drain so nothing buffered is lost, then syncs and closes the file. The one hard rule in the API lives here: every producer thread must have stopped before you call cleanup. Logging concurrently with cleanup is undefined.
+ 
+ ### Control
+ 
+ ```c
+-int  ano_log_output_dir(const char *dir);  // open dir/anoptic.log as the output; 0 ok, -1 rejected
+-void ano_log_set_level(log_types_t min);   // admit only records at or above `min`
+-void ano_log_flush(void);                  // drain synchronously, on the calling thread, right now
++int  ano_log_output_dir(const char *dir);                        // open dir/anoptic.log; 0 ok, -1 rejected
++void ano_log_set_level(ano_loglevel_t min);                      // admit only buffered records >= min
++void ano_log_set_route(ano_loglevel_t lvl, ano_logroute_t rt);   // rebind a level's default route
++void ano_log_flush(void);                                        // drain synchronously, right now
+ ```
+ 
+-`ano_log_output_dir` redirects output to a different directory. A rejected switch (bad or unopenable path) leaves the current file intact and returns `-1`. `ano_log_set_level` is the volume knob. With no output file configured, records still drain to the console.
++`ano_log_output_dir` redirects output to a different directory. A rejected switch (bad or unopenable path) leaves the current file intact and returns `-1`. `ano_log_set_level` is the volume knob, and `NOW` records ignore it. `ano_log_set_route` must name at least one sink. With no output file configured, FILE records still drain to the terminal.
+ 
+ `ano_log_flush` you usually do not need. The background thread drains the ring continuously. Reach for `flush` when you want everything logged so far on disk now: a once-per-tick checkpoint, or just before a risky operation. It runs an extra drain pass synchronously on the calling thread and returns when the buffer is empty.
+ 
+ ### Raw entry points
+ 
+-The macros expand to these; call them directly only if you are building your own wrappers:
++The macros expand to one function; call it (or the `va_list` variant, for your own wrappers) directly when the macros don't fit:
+ 
+ ```c
+-int  ano_log_enqueue  (log_types_t lvl, const char *file, int line, const char *fmt, ...);
+-void ano_log_immediate(log_types_t lvl, const char *file, int line, const char *fmt, ...);
++int ano_log_write (ano_loglevel_t lvl, ano_logroute_t rt, const char *file, int line, const char *fmt, ...);
++int ano_log_vwrite(ano_loglevel_t lvl, ano_logroute_t rt, const char *file, int line, const char *fmt, va_list args);
+ ```
+ 
+-`ano_log_enqueue` is the buffered path. Its return value is almost always ignored: `0` means buffered normally, `1` means the ring was full so the call waited for the drain to free room before buffering. It never drops. `ano_log_immediate` formats and writes the line straight through on the calling thread, fsyncs it, and is what `ano_log_fatal` uses.
++A route of `0` (what `ano_log` passes) inherits the level's default. The return value is almost always ignored: `0` means written or buffered normally, `1` means a full ring made the call wait for drain room. It never drops.
+ 
+ ---
+ 
+@@ -79,20 +86,20 @@ A complete, minimal program shape:
+ #include <anoptic_logging.h>
+ 
+ int main(void) {
+-    ano_log_init();                       // once, before any logging
+-    ano_log_output_dir("logs");           // optional: logs/anoptic.log
+-    ano_log_set_level(LOG_INFO);          // optional: drop DEBUG
++    ano_log_init();                                 // once, before any logging
++    ano_log_output_dir("logs");                     // optional: logs/anoptic.log
++    ano_log_set_route(ANO_WARN, ANO_BOTH);          // optional: warnings on the terminal too
+ 
+-    ano_log_info("engine up, build %s", VERSION);
++    ano_log(ANO_INFO, "engine up, build %s", VERSION);
+ 
+     while (running) {
+-        // ... worker threads call ano_log_* freely ...
++        // ... worker threads call ano_log freely ...
+         tick();
+-        ano_log_flush();                  // optional: checkpoint each tick
++        ano_log_flush();                            // optional: checkpoint each tick
+     }
+ 
+-    join_all_workers();                   // REQUIRED before cleanup
+-    ano_log_cleanup();                    // once, at the end
++    join_all_workers();                             // REQUIRED before cleanup
++    ano_log_cleanup();                              // once, at the end
+     return 0;
+ }
+ ```
+@@ -103,7 +110,7 @@ The rules, in full:
+ 2. Any thread may call `ano_log_*` concurrently, except `ano_log_cleanup`, which is single-owner and requires the producers stopped.
+ 3. Format strings are literals. Dynamic text goes through `%s`.
+ 4. You rarely call `flush`. Reach for it only when you need durability at a specific instant.
+-5. Use `fatal` for lines that must survive a crash. Use `info`/`warn`/`error` for everything else and let the ring carry them.
++5. Use `ANO_FATAL` (or an explicit `ANO_NOW`) for lines that must survive a crash. Let the ring carry everything else.
+ 
+ Output lines look like this: wall-clock time, level, call site, then your message:
+ 
+@@ -130,7 +137,7 @@ Formatting shapes latency. Most records carry finished text into the ring, forma
+ What you can rely on:
+ 
+ - No loss. Every accepted record reaches the file (or the console, with no file configured).
+-- Order. Records through the ring appear in issue order. `immediate`/`fatal` lines are written out of band and may interleave with still-buffered records.
++- Order. Records through the ring appear in issue order. `NOW`-routed lines drain the ring first, then write out of band.
+ - Non-blocking common path. A normal log call returns without waiting on the consumer or the disk.
+ 
+ What you must hold up your end of:
+diff --git a/include/anoptic_logging.h b/include/anoptic_logging.h
+index ebed2f4..e0b6b5f 100644
+--- a/include/anoptic_logging.h
++++ b/include/anoptic_logging.h
+@@ -3,84 +3,88 @@
+  * SPDX-License-Identifier: LGPL-3.0 */
+ /*  == Anoptic Game Engine v0.0000001 == */
+ 
+-// The logger follows a singleton pattern (one per program), owned by main. A producer formats its
+-// line on the calling thread and appends it to a shared ring; an owned consumer thread drains that
+-// ring to the output file continuously. ano_log_flush() drains inline for callers that need records
+-// on disk at once (e.g. per tick). Design: docs/logger.md.
++// Lock-free MPSC logger, one per program, owned by main. Producers format on their own threads
++// into a shared ring. An owned consumer thread drains it continuously. Design: docs/logger.md.
++//
++// Four macros over one function. Severity says how bad. Route says where and when.
++//   ano_log(ANO_WARN, "fmt %d", x);                        the level's default route
++//   ano_rlog(ANO_ERROR, ANO_TERM | ANO_NOW, "fmt %d", x);  explicit route
++//   ano_debug_log(...) / ano_debug_rlog(...)               same, Debug builds only (conventions.md)
++//
++// The ANO_ prefix is load-bearing. Bare ERROR is a windows.h macro, bare FILE a stdio typedef.
+ 
+ #ifndef ANOPTIC_LOGGING_H
+ #define ANOPTIC_LOGGING_H
+ 
+-#include <stdint.h>
++#include <stdarg.h>
+ 
+-// Severity levels, ascending. The runtime gate (ano_log_set_level) admits >= its minimum. FATAL
+-// takes the immediate path, which echoes > LOG_WARN to stderr and the rest to stdout.
++// Severity, ascending. Debug-only is not a severity, it lives in the ano_debug_* macros.
+ typedef enum {
+-    LOG_DEBUG,
+-    LOG_INFO,
+-    LOG_WARN,
+-    LOG_ERROR,
+-    LOG_FATAL
+-} log_types_t;
+-
+-// Full ring: a producer whose reservation would overrun an undrained record waits for the owned consumer
+-// to free room. No loss, self-throttling to the drain rate.
+-
+-// Lifecycle. ano_log_init opens the default output file (the game directory); until it returns 0, only
+-// the immediate (stderr) path works. ano_log_cleanup drains any buffered records, then syncs and closes
+-// the output file. Both return 0 on success. Single-owner teardown: all producer threads must have stopped
+-// before ano_log_cleanup is called -- calling any ano_log_* concurrently with cleanup is undefined.
+-int ano_log_init(void);     // Build up, singleton initialization.
+-int ano_log_cleanup(void);  // Teardown, most likely at program exit.
++    ANO_INFO = 0,
++    ANO_WARN,
++    ANO_ERROR,
++    ANO_FATAL
++} ano_loglevel_t;
++
++// Route: where a record lands, and when. Sink bits compose with ANO_NOW. No sink bit named means
++// the level's default sinks. Defaults: INFO/WARN/ERROR -> FILE, FATAL -> BOTH | NOW (set_route rebinds).
++typedef enum {
++    ANO_FILE = 1 << 0,              // the output file (terminal when none is open)
++    ANO_TERM = 1 << 1,              // the terminal: stdout, ERROR+ to stderr, ANSI-colored on a tty
++    ANO_BOTH = ANO_FILE | ANO_TERM,
++    ANO_NOW  = 1 << 2,              // synchronous: drain, write, fsync on this thread
++} ano_logroute_t;
++
++// Lifecycle, both 0 on success. Until init returns, only NOW records work (stderr). Cleanup drains,
++// syncs, and closes. Stop all producer threads before cleanup.
++int ano_log_init(void);
++int ano_log_cleanup(void);
+ 
+ // Scope-bound teardown, LOCALHEAPATTR-style (anoptic_memory.h). 
+ // Usage: int logAlive ANO_LOG_SCOPE_ATTR = ano_log_init();
+ void ano_log_scope_release(const int *initStatus);
+ #define ANO_LOG_SCOPE_ATTR __attribute__((__cleanup__(ano_log_scope_release))) 
+ 
+-// The usual method: format {level, file, line, fmt, ...} into one line on the calling thread, copy
+-// it into the ring, and publish with one release store.
+-// Returns: 0 enqueued; 1 the ring was full, so this thread waited for the consumer to free room before
+-// buffering this line (self-throttling to the drain rate, never dropping).
+-// printFormat MUST be a string literal -- the format attribute checks the args against it.
+-int ano_log_enqueue(log_types_t log_type, const char* sourceFile, int lineNumber,
+-                    const char* printFormat, ...) __attribute__((format(printf, 4, 5)));
+-
+-// Should report the event immediately: format, prepend wall-clock time, write then fsync, all on
+-// the calling thread. Bypasses the ring without consuming it (single-consumer preserved).
+-void ano_log_immediate(log_types_t log_type, const char* sourceFile, int lineNumber,
+-                       const char* printFormat, ...) __attribute__((format(printf, 4, 5)));
+-
+-// Open dir/anoptic.log as the output file (a per-run UTC-stamped name is deferred). Returns 0 on
+-// success; -1 if the directory is invalid or could not be opened, in which case a previously open
+-// output file is kept. With no output file set, records still drain to console.
++// The one entry point behind the macros. Buffered records format on the calling thread, publish to
++// the ring, and drain to their sinks off-thread. NOW records skip the severity gate, drain the ring
++// for order, then write through. Returns 0, or 1 when a full ring made this thread wait for the
++// consumer (never dropping). printFormat MUST be a string literal.
++int ano_log_write(ano_loglevel_t level, ano_logroute_t route,
++                  const char* sourceFile, int lineNumber,
++                  const char* printFormat, ...) __attribute__((format(printf, 5, 6)));
++
++// va_list variant, for wrappers forwarding their own variadic args.
++int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
++                   const char* sourceFile, int lineNumber,
++                   const char* printFormat, va_list args) __attribute__((format(printf, 5, 0)));
++
++// Open dir/anoptic.log as the output file. Returns 0 on success; -1 keeps the previous file.
++// With no output file, FILE-routed records drain to the terminal.
+ int ano_log_output_dir(const char* directoryPath);
+ 
+-// Runtime severity gate: enqueues below min are refused with one relaxed load.
+-void ano_log_set_level(log_types_t min);
++// Runtime severity gate, one relaxed load. Buffered records below min are refused. NOW ignores it.
++void ano_log_set_level(ano_loglevel_t min);
++
++// Replace a level's default route. Must name a sink. Out-of-range levels are ignored.
++void ano_log_set_route(ano_loglevel_t level, ano_logroute_t route);
+ 
+-// Drain all buffered records to the output file, synchronously on the calling thread. The owned consumer
+-// thread already drains continuously; call this when you need records on disk now (e.g. once per tick).
+-// ano_log_cleanup drains a final time, and a full ring makes producers wait for room, so a missed flush
+-// delays records but never loses them.
++// Drain all buffered records synchronously on the calling thread (e.g. once per tick). The owned
++// consumer already drains continuously, so a missed flush delays records but never loses them.
+ void ano_log_flush(void);
+ 
+ 
+-// Call-site macros: pass level + __FILE_NAME__ + __LINE__ + fmt straight through. The first three
+-// are compile-time constants; the line is formatted eagerly inside the call. fmt MUST be a string
+-// literal. ano_log_debug / _debug_now compile to nothing outside DEBUG_BUILD.
+-/// TODO: Make sure that the __
++// Call-site macros: severity (+ route) + __FILE_NAME__ + __LINE__ + fmt, all compile-time.
++// fmt MUST be a string literal. Route 0 = the level's default, only ano_log spells it.
++// ano_debug_* is GONE from Release builds (conventions.md).
++#define ano_log(level, ...)          ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
++#define ano_rlog(level, route, ...)  ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
++
+ #ifdef DEBUG_BUILD
+-#define ano_log_debug(...)      ano_log_enqueue(LOG_DEBUG, __FILE_NAME__, __LINE__, __VA_ARGS__)
+-#define ano_log_debug_now(...)  ano_log_immediate(LOG_DEBUG, __FILE_NAME__, __LINE__, __VA_ARGS__)
++#define ano_debug_log(level, ...)          ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
++#define ano_debug_rlog(level, route, ...)  ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
+ #else
+-#define ano_log_debug(...)      /* Debug logging disabled */
+-#define ano_log_debug_now(...)  /* Debug logging disabled */
++#define ano_debug_log(...)   ((void)0)
++#define ano_debug_rlog(...)  ((void)0)
+ #endif
+ 
+-#define ano_log_info(...)   ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, __VA_ARGS__)
+-#define ano_log_warn(...)   ano_log_enqueue(LOG_WARN, __FILE_NAME__, __LINE__, __VA_ARGS__)
+-#define ano_log_error(...)  ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, __VA_ARGS__)
+-#define ano_log_fatal(...)  ano_log_immediate(LOG_FATAL, __FILE_NAME__, __LINE__, __VA_ARGS__)
+-
+-#endif // ANOPTIC_LOGGING_H
+\ No newline at end of file
++#endif // ANOPTIC_LOGGING_H
+diff --git a/include/anoptic_strings.h b/include/anoptic_strings.h
+index 0205f3c..8cee059 100644
+--- a/include/anoptic_strings.h
++++ b/include/anoptic_strings.h
+@@ -104,7 +104,7 @@ static inline const char *anostr_bytes(const anostr_t *s)
+ }
+ 
+ // Format-argument adapter: pass a value to any printf-family "%.*s" conversion, the logger included -- no anostr_to_cstr copy:
+-//     ano_log_info("loading %.*s", anostr_fmt(path));
++//     ano_log(ANO_INFO, "loading %.*s", anostr_fmt(path));
+ #define anostr_fmt(s) (int)anostr_len((s)), anostr_bytes((const anostr_t[]){ (s) })
+ 
+ // ---------------------------------------------------------------------------------------------
+diff --git a/src/engine/main.c b/src/engine/main.c
+index 060fa32..6493131 100644
+--- a/src/engine/main.c
++++ b/src/engine/main.c
+@@ -370,7 +370,7 @@ int main()
+     // with no readiness handshake.
+     if (!initVulkan())
+     {
+-        ano_log_fatal("Vulkan initialization failed.");
++        ano_log(ANO_FATAL, "Vulkan initialization failed.");
+         return -1;
+     }
+ 
+@@ -378,7 +378,7 @@ int main()
+     anothread_t logicThread;
+     if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
+     {
+-        ano_log_fatal("Failed to spawn logic thread.");
++        ano_log(ANO_FATAL, "Failed to spawn logic thread.");
+         unInitVulkan();
+         return -1;
+     }

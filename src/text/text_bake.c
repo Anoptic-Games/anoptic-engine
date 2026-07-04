@@ -490,7 +490,7 @@ int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCod
             FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP | FT_LOAD_IGNORE_TRANSFORM);
         if (err != FT_Err_Ok || face->glyph->format != FT_GLYPH_FORMAT_OUTLINE)
         {
-            ano_log_warn("text: glyph U+%04X failed to load as an outline (err %d)",
+            ano_log(ANO_WARN, "text: glyph U+%04X failed to load as an outline (err %d)",
                          firstCodepoint + i, (int)err);
             e->flags = ANO_GLYPH_MISSING;
             continue;

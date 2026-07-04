@@ -24,6 +24,7 @@
 #include "templates/rng.h"          // per-thread deterministic xorshift
 #include "templates/scratch.h"      // scratch dirs, ANO_TEST_OUTDIR anchor
 
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -49,8 +50,8 @@ static const int TP_THREADS[] = {1, 2, 4, 8, 16};
 #define MIX_SMALL   16          // small-message body for the mixed battery (bytes)
 #define MIX_SEED    0x5E3D17u   // fixed srand seed for the mixed battery
 
-// The two implementations behind one vtable. ano_log_* and mtxlog_* share these signatures, so the
-// benchmark drives both through identical call sites.
+// The two implementations behind one vtable, in the baseline's 5-tier signature so both keep
+// identical call sites.
 typedef struct {
     const char *name;
     int  (*init)(void);
@@ -60,8 +61,29 @@ typedef struct {
     int  (*output_dir)(const char *);
 } logger_api;
 
+// Adapter to the ring logger's new write surface. DEBUG folds into INFO. The va_list hop costs
+// the same at every measurement point, so ratios are unaffected.
+static ano_loglevel_t map_level(log_types_t t)
+{
+    switch (t) {
+    case LOG_WARN:  return ANO_WARN;
+    case LOG_ERROR: return ANO_ERROR;
+    case LOG_FATAL: return ANO_FATAL;
+    default:        return ANO_INFO;
+    }
+}
+
+__attribute__((format(printf, 4, 5)))
+static int ring_enqueue(log_types_t level, const char *file, int line, const char *fmt, ...)
+{
+    va_list ap; va_start(ap, fmt);
+    int r = ano_log_vwrite(map_level(level), 0, file, line, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
 static const logger_api RING  = {
-    "ring  (lock-free MPSC)", ano_log_init, ano_log_enqueue, ano_log_flush, ano_log_cleanup, ano_log_output_dir
+    "ring  (lock-free MPSC)", ano_log_init, ring_enqueue, ano_log_flush, ano_log_cleanup, ano_log_output_dir
 };
 static const logger_api MUTEX = {
     "mutex (baseline)",       mtxlog_init,  mtxlog_enqueue,  mtxlog_flush,  mtxlog_cleanup,  mtxlog_output_dir

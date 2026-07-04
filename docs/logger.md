@@ -8,32 +8,39 @@ It is a singleton, one logger per program, owned by `main`. The whole interface 
 
 ## The interactive surface
 
-### Severity levels
+### Severity and Route
 
 ```c
-typedef enum { LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR, LOG_FATAL } log_types_t;
+typedef enum { ANO_INFO, ANO_WARN, ANO_ERROR, ANO_FATAL } ano_loglevel_t;
+
+typedef enum {
+    ANO_FILE = 1 << 0,              // the output file (terminal when none is open)
+    ANO_TERM = 1 << 1,              // the terminal: stdout, ERROR+ to stderr; ANSI-colored on a tty
+    ANO_BOTH = ANO_FILE | ANO_TERM,
+    ANO_NOW  = 1 << 2,              // synchronous: drain, write, fsync on the calling thread
+} ano_logroute_t;
 ```
 
-The levels are ordered. A runtime gate admits everything at or above a chosen minimum, so you can lower the volume in production without touching call sites.
+Severity says how bad. Route says where to redirect the output. 
 
-### The call-site macros — what you actually use
-
-Day to day you use these macros:
+### Usage Macros
 
 ```c
-ano_log_debug("loaded %d chunks in %.2f ms", n, ms);   // compiled out unless DEBUG_BUILD
-ano_log_info ("entity %u spawned at (%d,%d)", id, x, y);
-ano_log_warn ("texture %s missing, using fallback", name);
-ano_log_error("vkAcquireNextImage failed: %d", err);
-ano_log_fatal("arena exhausted, %zu bytes requested", want);
+ano_log(ANO_INFO, "entity %u spawned at (%d,%d)", id, x, y);     // default route
+ano_rlog(ANO_WARN, ANO_BOTH, "texture %s missing", name);        // explicit route
+ano_debug_log(ANO_INFO, "loaded %d chunks in %.2f ms", n, ms);   // GONE outside DEBUG_BUILD
+ano_debug_rlog(ANO_ERROR, ANO_NOW, "validation: %s", msg);       // DEBUG_BUILD explicit route
 ```
 
-Each macro captures the source file and line (via `__FILE_NAME__` / `__LINE__`) and forwards the rest. Two things to remember:
+Each macro captures the source file and line (via `__FILE_NAME__` / `__LINE__`) and forwards the rest. 
 
-- The format string must be a compile-time string literal. The macros carry a `printf` format attribute, so the compiler type-checks your arguments against it. `ano_log_info("%d", x)` is checked. `ano_log_info(some_char_ptr, x)` will not compile. Pass dynamic text as an argument: `ano_log_info("%s", dynamic)`.
-- `ano_log_debug` evaluates to nothing outside a `DEBUG_BUILD`, arguments included, so debug logging costs zero in a release build.
+Two things to remember:
+- The format string must be a compile-time string literal. The macros carry a `printf` format attribute, so the compiler type-checks your arguments against it. `ano_log(ANO_INFO, "%d", x)` is checked. `ano_log(ANO_INFO, some_char_ptr, x)` will not compile.
+- Pass dynamic text as an argument: `"%s", dynamic`.
+- `ano_debug_log` / `ano_debug_rlog` expand to `((void)0)` outside a `DEBUG_BUILD`, arguments included, so debug logging costs zero in a release build.
 
-`debug`, `info`, `warn`, and `error` are buffered through the lock-free ring and written by the background thread. `fatal` is synchronous (see "immediate" below), because you want a fatal line on disk before the process possibly dies.
+Buffered records ride the lock-free ring, and the background thread routes each to its sinks.
+The `NOW` route is synchronous, because you want a fatal line on disk before the process possibly dies.
 
 ### Lifecycle
 
@@ -42,32 +49,35 @@ int ano_log_init(void);     // build up; 0 on success
 int ano_log_cleanup(void);  // tear down; 0 on success
 ```
 
-Call `ano_log_init()` once at startup, before anyone logs. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/anoptic.log`), and spawns the background drain thread. Until it returns 0, only the immediate path works, writing to `stderr`.
+Call `ano_log_init()` once at startup. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/anoptic.log`), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work, writing to `stderr`.
 
-Call `ano_log_cleanup()` once at shutdown. It stops and joins the drain thread, runs one final drain so nothing buffered is lost, then syncs and closes the file. The one hard rule in the API lives here: every producer thread must have stopped before you call cleanup. Logging concurrently with cleanup is undefined.
+Call `ano_log_cleanup()` once at shutdown. It stops and joins the drain thread, runs one final drain so nothing buffered is lost, then syncs and closes the file.
 
 ### Control
 
 ```c
-int  ano_log_output_dir(const char *dir);  // open dir/anoptic.log as the output; 0 ok, -1 rejected
-void ano_log_set_level(log_types_t min);   // admit only records at or above `min`
-void ano_log_flush(void);                  // drain synchronously, on the calling thread, right now
+int  ano_log_output_dir(const char *dir);                        // open dir/anoptic.log; 0 ok, -1 rejected
+void ano_log_set_level(ano_loglevel_t min);                      // admit only buffered records >= min
+void ano_log_set_route(ano_loglevel_t lvl, ano_logroute_t rt);   // rebind a level's default route
+void ano_log_flush(void);                                        // drain synchronously, right now
 ```
 
-`ano_log_output_dir` redirects output to a different directory. A rejected switch (bad or unopenable path) leaves the current file intact and returns `-1`. `ano_log_set_level` is the volume knob. With no output file configured, records still drain to the console.
+`ano_log_output_dir` redirects output to a different directory. A rejected switch (bad or unopenable path) leaves the current file intact and returns `-1`. 
+`ano_log_set_level` is the volume knob, and `NOW` records ignore it. 
+`ano_log_set_route` must name at least one sink. With no output file configured, FILE records still drain to the terminal.
 
 `ano_log_flush` you usually do not need. The background thread drains the ring continuously. Reach for `flush` when you want everything logged so far on disk now: a once-per-tick checkpoint, or just before a risky operation. It runs an extra drain pass synchronously on the calling thread and returns when the buffer is empty.
 
 ### Raw entry points
 
-The macros expand to these; call them directly only if you are building your own wrappers:
+The macros expand to one function; call it (or the `va_list` variant, for your own wrappers) directly when the macros don't fit:
 
 ```c
-int  ano_log_enqueue  (log_types_t lvl, const char *file, int line, const char *fmt, ...);
-void ano_log_immediate(log_types_t lvl, const char *file, int line, const char *fmt, ...);
+int ano_log_write (ano_loglevel_t lvl, ano_logroute_t rt, const char *file, int line, const char *fmt, ...);
+int ano_log_vwrite(ano_loglevel_t lvl, ano_logroute_t rt, const char *file, int line, const char *fmt, va_list args);
 ```
 
-`ano_log_enqueue` is the buffered path. Its return value is almost always ignored: `0` means buffered normally, `1` means the ring was full so the call waited for the drain to free room before buffering. It never drops. `ano_log_immediate` formats and writes the line straight through on the calling thread, fsyncs it, and is what `ano_log_fatal` uses.
+A route of `0` (what `ano_log` passes) inherits the level's default. The return value is almost always ignored: `0` means written or buffered normally, `1` means a full ring made the call wait for drain room.
 
 ---
 
@@ -79,20 +89,20 @@ A complete, minimal program shape:
 #include <anoptic_logging.h>
 
 int main(void) {
-    ano_log_init();                       // once, before any logging
-    ano_log_output_dir("logs");           // optional: logs/anoptic.log
-    ano_log_set_level(LOG_INFO);          // optional: drop DEBUG
+    ano_log_init();                                 // once, before any logging
+    ano_log_output_dir("logs");                     // optional: logs/anoptic.log
+    ano_log_set_route(ANO_WARN, ANO_BOTH);          // optional: warnings on the terminal too
 
-    ano_log_info("engine up, build %s", VERSION);
+    ano_log(ANO_INFO, "engine up, build %s", VERSION);
 
     while (running) {
-        // ... worker threads call ano_log_* freely ...
+        // ... worker threads call ano_log freely ...
         tick();
-        ano_log_flush();                  // optional: checkpoint each tick
+        ano_log_flush();                            // optional: checkpoint each tick
     }
 
-    join_all_workers();                   // REQUIRED before cleanup
-    ano_log_cleanup();                    // once, at the end
+    join_all_workers();                             // REQUIRED before cleanup
+    ano_log_cleanup();                              // once, at the end
     return 0;
 }
 ```
@@ -103,7 +113,7 @@ The rules, in full:
 2. Any thread may call `ano_log_*` concurrently, except `ano_log_cleanup`, which is single-owner and requires the producers stopped.
 3. Format strings are literals. Dynamic text goes through `%s`.
 4. You rarely call `flush`. Reach for it only when you need durability at a specific instant.
-5. Use `fatal` for lines that must survive a crash. Use `info`/`warn`/`error` for everything else and let the ring carry them.
+5. Use `ANO_FATAL` (or an explicit `ANO_NOW`) for lines that must survive a crash. Let the ring carry everything else.
 
 Output lines look like this: wall-clock time, level, call site, then your message:
 
@@ -130,7 +140,7 @@ Formatting shapes latency. Most records carry finished text into the ring, forma
 What you can rely on:
 
 - No loss. Every accepted record reaches the file (or the console, with no file configured).
-- Order. Records through the ring appear in issue order. `immediate`/`fatal` lines are written out of band and may interleave with still-buffered records.
+- Order. Records through the ring appear in issue order. `NOW`-routed lines drain the ring first, then write out of band.
 - Non-blocking common path. A normal log call returns without waiting on the consumer or the disk.
 
 What you must hold up your end of:

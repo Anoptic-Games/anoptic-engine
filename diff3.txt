@@ -1,0 +1,302 @@
+diff --git a/src/text/text.c b/src/text/text.c
+index c02bba5..3c9142b 100644
+--- a/src/text/text.c
++++ b/src/text/text.c
+@@ -73,7 +73,7 @@ int ano_text_init(void)
+     if (err != FT_Err_Ok)
+     {
+         const char *msg = FT_Error_String(err);
+-        ano_log_error("text: FT_New_Library failed: %d (%s)", (int)err, msg ? msg : "?");
++        ano_log(ANO_ERROR, "text: FT_New_Library failed: %d (%s)", (int)err, msg ? msg : "?");
+         g_ftLibrary = NULL;
+         mi_heap_destroy(g_textHeap);
+         g_textHeap = NULL;
+@@ -84,7 +84,7 @@ int ano_text_init(void)
+ 
+     FT_Int maj = 0, min = 0, pat = 0;
+     FT_Library_Version(g_ftLibrary, &maj, &min, &pat);
+-    ano_log_info("text: FreeType %d.%d.%d ready (module-heap backed)", maj, min, pat);
++    ano_log(ANO_INFO, "text: FreeType %d.%d.%d ready (module-heap backed)", maj, min, pat);
+     return 0;
+ }
+ 
+@@ -146,7 +146,7 @@ AnoFontId ano_text_font_load(const char *path)
+     }
+     if (slot == ANO_TEXT_MAX_FONTS)
+     {
+-        ano_log_error("text: font registry full (%u faces), cannot load '%s'",
++        ano_log(ANO_ERROR, "text: font registry full (%u faces), cannot load '%s'",
+                       ANO_TEXT_MAX_FONTS, path);
+         return 0;
+     }
+@@ -156,20 +156,20 @@ AnoFontId ano_text_font_load(const char *path)
+     if (err != FT_Err_Ok)
+     {
+         const char *msg = FT_Error_String(err);
+-        ano_log_error("text: FT_New_Face('%s') failed: %d (%s)", path, (int)err,
++        ano_log(ANO_ERROR, "text: FT_New_Face('%s') failed: %d (%s)", path, (int)err,
+                       msg ? msg : "?");
+         return 0;
+     }
+     if (!FT_IS_SCALABLE(face))
+     {
+         // The bake path consumes outlines only; bitmap strikes have no curves.
+-        ano_log_error("text: '%s' is not a scalable outline face", path);
++        ano_log(ANO_ERROR, "text: '%s' is not a scalable outline face", path);
+         FT_Done_Face(face);
+         return 0;
+     }
+ 
+     g_faces[slot] = face;
+-    ano_log_info("text: loaded '%s' (%ld glyphs, upem %u)", path, (long)face->num_glyphs,
++    ano_log(ANO_INFO, "text: loaded '%s' (%ld glyphs, upem %u)", path, (long)face->num_glyphs,
+                  (unsigned)face->units_per_EM);
+     return slot + 1u;
+ }
+diff --git a/src/text/text_bake.c b/src/text/text_bake.c
+index a0f3e91..47c7801 100644
+--- a/src/text/text_bake.c
++++ b/src/text/text_bake.c
+@@ -490,7 +490,7 @@ int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCod
+             FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP | FT_LOAD_IGNORE_TRANSFORM);
+         if (err != FT_Err_Ok || face->glyph->format != FT_GLYPH_FORMAT_OUTLINE)
+         {
+-            ano_log_warn("text: glyph U+%04X failed to load as an outline (err %d)",
++            ano_log(ANO_WARN, "text: glyph U+%04X failed to load as an outline (err %d)",
+                          firstCodepoint + i, (int)err);
+             e->flags = ANO_GLYPH_MISSING;
+             continue;
+diff --git a/src/vulkan_backend/instance/instanceInit.c b/src/vulkan_backend/instance/instanceInit.c
+index b689ef3..88bbcf3 100644
+--- a/src/vulkan_backend/instance/instanceInit.c
++++ b/src/vulkan_backend/instance/instanceInit.c
+@@ -165,7 +165,7 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a
+ {
+ 	if (!glfwInit())
+ 	{
+-		ano_log_fatal("Failed to initialize GLFW!");
++		ano_log(ANO_FATAL, "Failed to initialize GLFW!");
+ 		return NULL;
+ 	}
+ 
+@@ -261,7 +261,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
+ 	#ifdef DEBUG_BUILD
+ 	if (!checkValidationLayerSupport(validationLayers, validationCount))
+ 	{
+-		ano_log_warn("Validation layers requested, but not available!");
++		ano_log(ANO_WARN, "Validation layers requested, but not available!");
+ 	}
+ 	else
+ 	{
+@@ -269,13 +269,13 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
+ 		createInfo.ppEnabledLayerNames = validationLayers;
+ 		populateDebugMessengerCreateInfo(&debugCreateInfo);
+ 		createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*) &debugCreateInfo;
+-		ano_log_info("Enabled validation layers!");
++		ano_log(ANO_INFO, "Enabled validation layers!");
+ 	}
+ 	#endif
+ 
+ 	if (vkCreateInstance(&createInfo, NULL, &(ctx->instance)) != VK_SUCCESS)
+ 	{
+-		ano_log_fatal("Failed to create Vulkan instance!");
++		ano_log(ANO_FATAL, "Failed to create Vulkan instance!");
+ 		free(extensions);
+ 		return VK_ERROR_INITIALIZATION_FAILED;
+ 	}
+@@ -304,11 +304,11 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Validation messenger cal
+ 	}
+ 	// Route by layer severity. %s is copied at capture, so the layer may free the message after.
+ 	if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+-		ano_log_error("Validation layer: %s", pCallbackData->pMessage);
++		ano_log(ANO_ERROR, "Validation layer: %s", pCallbackData->pMessage);
+ 	else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+-		ano_log_warn("Validation layer: %s", pCallbackData->pMessage);
++		ano_log(ANO_WARN, "Validation layer: %s", pCallbackData->pMessage);
+ 	else
+-		ano_log_debug("Validation layer: %s", pCallbackData->pMessage);
++		ano_debug_log(ANO_INFO, "Validation layer: %s", pCallbackData->pMessage);
+ 
+ 	if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+ 	{
+@@ -347,7 +347,7 @@ void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMe
+ 	populateDebugMessengerCreateInfo(&createInfo);
+ 	if (CreateDebugUtilsMessengerEXT(*instance, &createInfo, NULL, debugMessenger) != VK_SUCCESS)
+ 	{
+-		ano_log_warn("Failed to set up debug messenger!");
++		ano_log(ANO_WARN, "Failed to set up debug messenger!");
+ 	}
+ }
+ 
+@@ -404,7 +404,7 @@ VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* su
+ {
+ 	if (glfwCreateWindowSurface(instance, window, NULL, surface) != VK_SUCCESS)
+ 	{
+-		ano_log_fatal("Failed to create window surface!");
++		ano_log(ANO_FATAL, "Failed to create window surface!");
+ 		return VK_ERROR_INITIALIZATION_FAILED;
+ 	}
+ 
+@@ -620,17 +620,17 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
+ 	// Mesh shader is preferred but NOT required: devices without it render via the
+ 	// vertex-shader fallback path. Everything below is needed by BOTH paths.
+ 	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
+-		ano_log_warn("Device rejected: lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.");
++		ano_log(ANO_WARN, "Device rejected: lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.");
+ 		return false;
+ 	}
+ 	if (!meshShaderFeatures.meshShader) {
+-		ano_log_warn("Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.");
++		ano_log(ANO_WARN, "Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.");
+ 		// The vertex fallback packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
+ 		// (read as gl_InstanceIndex); a nonzero firstInstance in an indirect draw requires
+ 		// drawIndirectFirstInstance. A device with neither mesh shaders nor this feature would
+ 		// mis-draw, so reject it here instead of failing silently. The mesh path needs neither.
+ 		if (!features2.features.drawIndirectFirstInstance) {
+-			ano_log_warn("Device rejected: also lacks drawIndirectFirstInstance, so the vertex "
++			ano_log(ANO_WARN, "Device rejected: also lacks drawIndirectFirstInstance, so the vertex "
+ 			             "fallback path cannot draw correctly.");
+ 			return false;
+ 		}
+@@ -647,7 +647,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
+ 	                                & props2.properties.limits.sampledImageDepthSampleCounts
+ 	                                & vk12Props.framebufferIntegerColorSampleCounts;
+ 	if (!(usableCounts & ~(VkSampleCountFlags)VK_SAMPLE_COUNT_1_BIT)) {
+-		ano_log_warn("Device rejected: supports only 1x MSAA across the engine's attachment set, "
++		ano_log(ANO_WARN, "Device rejected: supports only 1x MSAA across the engine's attachment set, "
+ 		             "and the renderer has no 1x path.");
+ 		return false;
+ 	}
+@@ -685,7 +685,7 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
+ 	uint32_t preferred = getChosenMsaaSamples();
+ 	const char* msaaEnv = getenv("ANO_MSAA");
+ 	if (msaaEnv) preferred = (uint32_t)atoi(msaaEnv);
+-	if (preferred < 2u) { ano_log_warn("MSAA preference %u below minimum, using 2x", preferred); preferred = 2u; }
++	if (preferred < 2u) { ano_log(ANO_WARN, "MSAA preference %u below minimum, using 2x", preferred); preferred = 2u; }
+ 	VkSampleCountFlags mask = 0;
+ 	for (uint32_t s = 2u; s <= preferred && s <= 64u; s <<= 1) mask |= s; // sample flags are their counts
+ 	// If the preference window misses every supported count, take any supported >=2x
+@@ -775,7 +775,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
+ 
+ 	if (ctx->deviceCount == 0) 
+ 	{
+-		ano_log_fatal("Failed to find GPUs with Vulkan support!");
++		ano_log(ANO_FATAL, "Failed to find GPUs with Vulkan support!");
+ 		return false;
+ 	}
+ 
+@@ -798,7 +798,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
+ 	bool bestDedicatedMesh = false;
+ 	bool bestIntegratedMesh = false;
+ 
+-	ano_log_info("DeviceCount: %d", ctx->deviceCount);
++	ano_log(ANO_INFO, "DeviceCount: %d", ctx->deviceCount);
+ 	
+ 	static const char* deviceTypeNames[] = { "other", "integrated", "discrete", "virtual", "cpu" };
+ 
+@@ -808,7 +808,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
+ 		vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
+ 		// Multi-ICD machines list the same GPU several times in unstable order.
+ 		// A bare index is undiagnosable from a user report, so log full identity.
+-		ano_log_info("Device %u: %s (%s, mesh shader: %s)", i, deviceProperties.deviceName,
++		ano_log(ANO_INFO, "Device %u: %s (%s, mesh shader: %s)", i, deviceProperties.deviceName,
+ 		             deviceProperties.deviceType <= VK_PHYSICAL_DEVICE_TYPE_CPU
+ 		                 ? deviceTypeNames[deviceProperties.deviceType] : "unknown",
+ 		             deviceHasMeshShader(devices[i]) ? "yes" : "no");
+@@ -849,13 +849,13 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
+ 			}
+ 			(ctx->availableDevices)[i] = (char*)mi_malloc(strlen(deviceProperties.deviceName) +1);
+ 			strcpy((ctx->availableDevices)[i], deviceProperties.deviceName);
+-			ano_log_debug("Device %u is suitable: %s", i, ctx->availableDevices[i]);
++			ano_debug_log(ANO_INFO, "Device %u is suitable: %s", i, ctx->availableDevices[i]);
+ 		}
+ 	}
+ 
+ 	if (envDevice && !foundPreferredDevice)
+ 	{
+-		ano_log_warn("ANO_DEVICE=\"%s\" matched no suitable device; falling back to automatic selection.", envDevice);
++		ano_log(ANO_WARN, "ANO_DEVICE=\"%s\" matched no suitable device; falling back to automatic selection.", envDevice);
+ 	}
+ 
+ 	if (foundPreferredDevice)
+@@ -880,7 +880,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
+ 		}
+ 		else
+ 		{
+-			ano_log_fatal("Failed to find a suitable GPU!");
++			ano_log(ANO_FATAL, "Failed to find a suitable GPU!");
+ 			free(devices);
+ 			return false;
+ 		}
+@@ -890,10 +890,10 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
+ 	// is the first diagnostic question.
+ 	VkPhysicalDeviceProperties chosenProperties;
+ 	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &chosenProperties);
+-	ano_log_info("Selected device: %s", chosenProperties.deviceName);
++	ano_log(ANO_INFO, "Selected device: %s", chosenProperties.deviceName);
+ 
+ 	ctx->msaaSamples = getMaxUsableSampleCount(ctx);
+-	ano_log_info("MSAA samples used: %d", ctx->msaaSamples);
++	ano_log(ANO_INFO, "MSAA samples used: %d", ctx->msaaSamples);
+ 
+ 	//printf("Graphics family: %d\nCompute family: %d\nTransfer family: %d\nPresent family: %d\n", (ctx->queueFamilyIndices.graphicsFamily), (ctx->queueFamilyIndices.computeFamily), (ctx->queueFamilyIndices.transferFamily), (ctx->queueFamilyIndices.presentFamily));
+ 
+@@ -1043,11 +1043,11 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device,
+ 
+ 	createInfo.enabledExtensionCount = enabledExtensionCount;
+ 	createInfo.ppEnabledExtensionNames = enabledExtensions;
+-	ano_log_info("Enabling %u device extensions (mesh shader: %s)", enabledExtensionCount, meshSupported ? "yes" : "no");
++	ano_log(ANO_INFO, "Enabling %u device extensions (mesh shader: %s)", enabledExtensionCount, meshSupported ? "yes" : "no");
+ 
+ 	if (vkCreateDevice(physicalDevice, &createInfo, NULL, device) != VK_SUCCESS)
+ 	{
+-		ano_log_fatal("Failed to create logical device!");
++		ano_log(ANO_FATAL, "Failed to create logical device!");
+ 		return VK_ERROR_INITIALIZATION_FAILED;
+ 	}
+ 		
+@@ -1055,14 +1055,14 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device,
+ 	vkGetDeviceQueue(*device, indices->graphicsFamily, 0, graphicsQueue);
+ 	if (*graphicsQueue == NULL)
+ 	{
+-		ano_log_fatal("Failed to acquire graphics queue!");
++		ano_log(ANO_FATAL, "Failed to acquire graphics queue!");
+ 		return VK_ERROR_INITIALIZATION_FAILED;	
+ 	}
+ 	vkGetDeviceQueue(*device, indices->presentFamily, 0, presentQueue);
+-	ano_log_debug("PresentQueue: %p", (void*)presentQueue);
++	ano_debug_log(ANO_INFO, "PresentQueue: %p", (void*)presentQueue);
+ 	if (*presentQueue == NULL)
+ 	{
+-		ano_log_fatal("Failed to acquire present queue!");
++		ano_log(ANO_FATAL, "Failed to acquire present queue!");
+ 		return VK_ERROR_INITIALIZATION_FAILED;	
+ 	}
+ 	if (indices->computePresent)
+@@ -1070,7 +1070,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device,
+ 		vkGetDeviceQueue(*device, indices->computeFamily, 0, computeQueue);
+ 		if (*computeQueue == NULL)
+ 		{
+-			ano_log_fatal("Failed to acquire compute queue!");
++			ano_log(ANO_FATAL, "Failed to acquire compute queue!");
+ 			return VK_ERROR_INITIALIZATION_FAILED;	
+ 		}
+ 	}
+@@ -1079,7 +1079,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device,
+ 		vkGetDeviceQueue(*device, indices->transferFamily, 0, transferQueue);
+ 		if (*transferQueue == NULL)
+ 		{
+-			ano_log_fatal("Failed to acquire transfer queue!");
++			ano_log(ANO_FATAL, "Failed to acquire transfer queue!");
+ 			return VK_ERROR_INITIALIZATION_FAILED;	
+ 		}
+ 	}
+@@ -3082,7 +3082,7 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
+ 
+ 	for (uint32_t z = 0; z < availableLayerCount; z++) 
+ 	{
+-		ano_log_debug("Layer %u: %s", z, availableLayers[z].layerName);
++		ano_debug_log(ANO_INFO, "Layer %u: %s", z, availableLayers[z].layerName);
+ 	}
+ 
+ 	for(size_t i = 0; i < validationCount; i++) 
