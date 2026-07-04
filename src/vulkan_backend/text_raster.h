@@ -45,6 +45,14 @@ void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float
 void ano_vk_text_set_runs(RendererState* state, const char* utf8, const AnoTextRun* runs,
                           uint32_t runCount, const float origin[2]);
 
+// Logic text blocks (the v0 bridge path, applied from render_apply_commands). block_set
+// ADOPTS blk -- the single allocation ano_render_text_set packed -- replacing text_id's
+// contents (freed on replace/clear/teardown, or immediately if the overlay is off or the
+// registry is full). block_clear is idempotent. Both recompose the pending canonical
+// (OSD region first, blocks after, truncated at the region cap) and bump textVersion.
+void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderTextBlock* blk);
+void ano_vk_text_block_clear(RendererState* state, uint32_t text_id);
+
 // Copies pending text into this slot's mapped frame buffer when stale, and points the
 // push-constant instance count at the slot's contents. Call after the slot's fence wait
 // (prior GPU read retired) and before its record/submit.

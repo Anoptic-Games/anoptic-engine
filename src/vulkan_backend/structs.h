@@ -57,6 +57,10 @@
 // phase) to reject occluded entities. Mip cap covers a half-res 4K base (2048 -> 12 mips) with slack.
 #define ANO_MAX_HIZ_MIPS         16u
 
+// Live logic-submitted screen-text blocks the renderer holds at once (FONT_RENDER.md v0
+// bridge). A HUD is dozens of labels; a set beyond capacity is dropped with a log line.
+#define ANO_TEXT_MAX_BLOCKS      64u
+
 // Default per-view screen-area cull threshold, in pixels of projected bounding-sphere radius
 // (review 4.9 step 1). An in-frustum entity smaller than this on screen emits no draw. ~1.5 px
 // drops genuinely sub-pixel geometry while staying conservative; tune per view at runtime via
@@ -1097,6 +1101,14 @@ typedef struct RendererState
     VkPipeline              textWorldPipeline;
     VkPipelineLayout        textWorldLayout;
     uint32_t                textWorldCount;
+    // Logic-submitted screen-text blocks (the v0 bridge path): each entry ADOPTS the
+    // single mi-heap allocation ano_render_text_set packed (header + instances), freed
+    // on replace/clear/teardown. textPending = the OSD region [0, textOsdCount) + the
+    // live blocks appended in registry order (text_blocks_append), clamped to the
+    // region cap. Render thread only (apply_commands + the OSD setters + teardown).
+    struct { uint32_t id; const RenderTextBlock* blk; } textBlocks[ANO_TEXT_MAX_BLOCKS];
+    uint32_t                textBlockCount;
+    uint32_t                textOsdCount;      // instances the render-internal OSD text occupies
 
     // Hi-Z occlusion pyramid build (review 4.9 step 3). The pipeline lives in prototypes[
     // PIPELINE_COMPUTE_HIZ] (two implementations: [0]=reduce MSAA depth->mip0, [1]=downsample mip->mip,
