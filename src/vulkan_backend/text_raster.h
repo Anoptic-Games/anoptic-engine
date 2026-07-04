@@ -60,6 +60,12 @@ void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t
 // the composite's dynamic-rendering block after the PiP insets.
 void ano_vk_text_record_composite(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex);
 
+// The world-space text panel (the paper's pixel-shader variant): one bufferless quad
+// draw, recorded inside a view's additive pass (the last MSAA color pass) so the text
+// resolves with the scene. No-op unless textWorld.
+void ano_vk_text_record_world(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
+                              uint32_t view);
+
 // Frame-independent teardown: frame-data + curve/directory buffers, the CPU bake heap,
 // and the FreeType backend. The compute prototype and the bespoke pipeline die in
 // ano_vk_cleanup_pipelines; the overlay images die with the swapchain.

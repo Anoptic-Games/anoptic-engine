@@ -1258,6 +1258,11 @@ void recordCommandBuffer(uint32_t imageIndex)
                 }
             }
 
+            // World-space text panel (FONT_RENDER.md): rides the additive pass — the
+            // last MSAA color pass — so the quad resolves with the scene in every view.
+            if (pass->prototype == PIPELINE_ADDITIVE)
+                ano_vk_text_record_world(&rendererState, cmd, rendererState.frameIndex, v);
+
             vkCmdEndRendering(cmd);
         }
 

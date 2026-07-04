@@ -1435,6 +1435,16 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 		vkDestroyPipeline(ctx->device, state->textOverlayPipeline, NULL);
 		state->textOverlayPipeline = VK_NULL_HANDLE;
 	}
+	if (state->textWorldPipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(ctx->device, state->textWorldPipeline, NULL);
+		state->textWorldPipeline = VK_NULL_HANDLE;
+	}
+	if (state->textWorldLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(ctx->device, state->textWorldLayout, NULL);
+		state->textWorldLayout = VK_NULL_HANDLE;
+	}
 	if (state->textRasterSetLayout != VK_NULL_HANDLE)
 	{
 		vkDestroyDescriptorSetLayout(ctx->device, state->textRasterSetLayout, NULL);

@@ -14,6 +14,7 @@
 #include "vulkan_backend/instance/instanceInit.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include "vulkan_backend/texture/texture.h"
+#include "vulkan_backend/vertex/vertex.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,29 @@ typedef struct TextRasterPush {
 // TextRasterPush.flags bits (mirrored in textraster.comp).
 #define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop for the screenshot self-test
 
+// Frame-buffer region split: the OSD/pending path owns instance indices [0,
+// ANO_TEXT_WORLD_FIRST); the world panel's static instances sit from there up.
+#define ANO_TEXT_WORLD_FIRST 8192u
+
+// Push-constant block shared with textworld.vert/.frag (88 B).
+typedef struct TextWorldPush {
+    float    mvp[4][4]; // proj * view * model, this view
+    float    panel[4];  // panel pixel W,H | panel world W,H
+    uint32_t first;     // == ANO_TEXT_WORLD_FIRST
+    uint32_t count;
+} TextWorldPush;
+
+// World panel: text shaped in a virtual pixel space, mapped onto a quad of the given
+// world dimensions. Same shaper conventions as the overlay (pixels, y-down baseline).
+#define ANO_TEXT_PANEL_PX_W   768.0f
+#define ANO_TEXT_PANEL_PX_H   256.0f
+#define ANO_TEXT_PANEL_WORLD_W  6.0f
+#define ANO_TEXT_PANEL_WORLD_H  2.0f
+static const char g_worldText[] =
+    "Scanline Sweeper\n"
+    "world-space lane\n"
+    "AV LT To Wa \"kerned\"";
+
 // Step-6 static torture text, pinned by ANO_TEXT_DEMO: covers every baked codepoint,
 // including all known coverage-overlap glyphs (contour-pair # $ + f t and self-overlap
 // H 8 @) — the stable target the offline pixel-compare harness renders against.
@@ -59,7 +83,7 @@ void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float
 {
     if (!state->textOverlay || state->textPending == NULL || g_textPinned)
         return;
-    uint32_t cap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance);
+    uint32_t cap = ANO_TEXT_WORLD_FIRST; // the region above belongs to the world panel
     uint32_t count = ano_text_shape(&state->textBake, utf8, len, sizePx, origin, color,
                                     state->textPending, cap, NULL);
     state->textPendingCount = count < cap ? count : cap;
@@ -123,7 +147,11 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
-        bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        // The world lane's fragment shader reads the three glyph buffers through the
+        // same set; the overlay storage image stays compute-only (never statically
+        // used by the fragment stage, so its GENERAL-layout descriptor is inert there).
+        bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
+                               | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT : 0u);
     }
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -279,6 +307,124 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
     return r == VK_SUCCESS;
 }
 
+// Builds the world-space text pipeline: the additive lane's raster recipe (HDR color +
+// scene depth, ctx->msaaSamples, cull NONE, depth test LESS / no write, dynamic
+// viewport/scissor) with premultiplied src-over blending, a bufferless quad, and the
+// raster set layout for the glyph buffers. Its own layout carries the 88 B push.
+static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
+{
+    VkPushConstantRange push = {};
+    push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    push.size = sizeof(TextWorldPush);
+    VkPipelineLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &state->textRasterSetLayout;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &push;
+    if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->textWorldLayout) != VK_SUCCESS)
+        return false;
+
+    struct Buffer vertCode, fragCode;
+    if (!loadFile("resources/shaders/textworld.vert.spv", &vertCode))
+        return false;
+    if (!loadFile("resources/shaders/textworld.frag.spv", &fragCode))
+    {
+        ano_aligned_free(vertCode.data);
+        return false;
+    }
+    VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
+    VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertModule;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragModule;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vertexInput = {};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.cullMode = VK_CULL_MODE_NONE; // a sign readable from both sides (mirrored back)
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = ctx->msaaSamples;
+
+    // Premultiplied src-over onto the lit HDR scene.
+    VkPipelineColorBlendAttachmentState blendAttachment = {};
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                                   | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blendAttachment.blendEnable = VK_TRUE;
+    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &blendAttachment;
+
+    // Depth-tested against the scene (hidden behind solids), no write: a blend lane.
+    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+
+    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamicState = {};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+
+    VkFormat colorFormat = ANO_HDR_COLOR_FORMAT;
+    VkPipelineRenderingCreateInfo renderingInfo = {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachmentFormats = &colorFormat;
+    renderingInfo.depthAttachmentFormat = state->depthFormat;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.pNext = &renderingInfo;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = stages;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = state->textWorldLayout;
+
+    VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo,
+                                           NULL, &state->textWorldPipeline);
+    ano_aligned_free(vertCode.data);
+    ano_aligned_free(fragCode.data);
+    vkDestroyShaderModule(ctx->device, vertModule, NULL);
+    vkDestroyShaderModule(ctx->device, fragModule, NULL);
+    return r == VK_SUCCESS;
+}
+
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)
@@ -335,7 +481,35 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         printf("Text overlay disabled: GPU resource/pipeline creation failed.\n");
         state->textOverlay = false;
         state->asyncText = false;
+        state->textWorld = false;
         return true;
+    }
+
+    // World-space lane (the paper's pixel-shader variant): its pipeline, plus the demo
+    // panel shaped ONCE into the upper region of every frame slot (slots are not in
+    // flight during init, so the direct writes are safe). Failure drops just this lane.
+    state->textWorld = getenv("ANO_FORCE_NO_TEXT_WORLD") == NULL;
+    if (state->textWorld && !text_init_world_pipeline(ctx, state))
+    {
+        printf("Text overlay: world lane pipeline failed, disabled.\n");
+        state->textWorld = false;
+    }
+    if (state->textWorld)
+    {
+        const float amber[4] = { 1.0f, 0.78f, 0.32f, 1.0f };
+        const float worldOrigin[2] = { 24.0f, 70.0f };
+        uint32_t worldCap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance)
+                          - ANO_TEXT_WORLD_FIRST;
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            AnoGlyphInstance* dst = (AnoGlyphInstance*)state->frames[i].textFrameMapped
+                                  + ANO_TEXT_WORLD_FIRST;
+            count = ano_text_shape(&state->textBake, g_worldText,
+                                   (uint32_t)(sizeof g_worldText - 1), 64.0f,
+                                   worldOrigin, amber, dst, worldCap, NULL);
+        }
+        state->textWorldCount = count < worldCap ? count : worldCap;
     }
 
     // Async lane objects (step 7): the timeline the main submit waits on, plus a per-frame
@@ -387,11 +561,42 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     }
     state->textFlags = (getenv("ANO_TEXT_OPAQUE") != NULL) ? ANO_TEXT_RASTER_OPAQUE : 0u;
 
-    printf("Text overlay: on (%u glyphs, %u curve points, %.1f KiB static, %u instances, %s)\n",
+    printf("Text overlay: on (%u glyphs, %u curve points, %.1f KiB static, %u instances, %s%s)\n",
            state->textBake.glyphCount, state->textBake.pointCount,
            (double)(curveBytes + glyphBytes) / 1024.0, state->textPendingCount,
-           state->asyncText ? "async lane" : "in-frame");
+           state->asyncText ? "async lane" : "in-frame",
+           state->textWorld ? ", world panel" : "");
     return true;
+}
+
+void ano_vk_text_record_world(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
+                              uint32_t view)
+{
+    if (!state->textWorld || state->textWorldCount == 0)
+        return;
+    // Spinning sign: yaw from the UBO clock; model = T(position) * R(yaw); the MVP
+    // composes CPU-side in the engine's convention (proj * view * model, column vectors).
+    mat4 T, R, pv, model;
+    TextWorldPush push;
+    translate(T, 0.0f, 2.6f, 0.0f);
+    translate(R, 0.0f, 0.0f, 0.0f);
+    rotateMatrix(R, 'Y', state->uboData[0].time * 0.7f);
+    multiplyMat4(model, T, R);
+    multiplyMat4(pv, state->uboData[view].proj, state->uboData[view].view);
+    multiplyMat4(push.mvp, pv, model);
+    push.panel[0] = ANO_TEXT_PANEL_PX_W;
+    push.panel[1] = ANO_TEXT_PANEL_PX_H;
+    push.panel[2] = ANO_TEXT_PANEL_WORLD_W;
+    push.panel[3] = ANO_TEXT_PANEL_WORLD_H;
+    push.first = ANO_TEXT_WORLD_FIRST;
+    push.count = state->textWorldCount;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state->textWorldPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state->textWorldLayout,
+                            0, 1, &state->frames[frameIndex].textRasterSet, 0, NULL);
+    vkCmdPushConstants(cmd, state->textWorldLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof push, &push);
+    vkCmdDraw(cmd, 6, 1, 0, 0);
 }
 
 void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
