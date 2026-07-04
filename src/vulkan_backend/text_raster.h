@@ -34,6 +34,17 @@ void ano_vk_text_create_sets(VulkanContext* ctx, RendererState* state);
 // (Re)writes the per-frame sets; rerun after a swapchain resize (overlay views change).
 void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state);
 
+// Replaces the on-screen text: shapes utf8 into the pending canonical array and bumps
+// textVersion (frame slots pick it up via ano_vk_text_frame_refresh). Render thread
+// only; no-op when the overlay is off or ANO_TEXT_DEMO pinned the harness text.
+void ano_vk_text_set(RendererState* state, const char* utf8, uint32_t len, float sizePx,
+                     const float origin[2], const float color[4]);
+
+// Copies pending text into this slot's mapped frame buffer when stale, and points the
+// push-constant instance count at the slot's contents. Call after the slot's fence wait
+// (prior GPU read retired) and before its record/submit.
+void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex);
+
 // In-frame raster record (the async lane's mandatory fallback): clear the overlay,
 // dispatch the raster pass, hand the image to the fragment stage. No-op when asyncText.
 void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex);

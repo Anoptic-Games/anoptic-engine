@@ -990,6 +990,7 @@ typedef struct PerFrameResources
     VkDescriptorSet     textRasterSet;   // curves + directory + frame data + storage image
     VkDescriptorSet     textOverlaySet;  // tonemapSetLayout-shaped: sampled overlay for composite
     VkCommandBuffer     textCommandBuffer; // async text raster CB (computeCommandPool); NULL when asyncText off
+    uint32_t            textSlotVersion;   // textVersion this slot's frame buffer last copied
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -1070,8 +1071,15 @@ typedef struct RendererState
     GpuAllocation           textGlyphAlloc;
     AnoFontBake             textBake;
     mi_heap_t*              textHeap;
-    uint32_t                textInstanceCount; // instances shaped into every frame slot
+    uint32_t                textInstanceCount; // instances in the CURRENT slot's frame buffer
     uint32_t                textFlags;         // TextRasterPush.flags (bit 0 = opaque self-test)
+    // Pending on-screen text (FONT_RENDER.md step 8): ano_vk_text_set shapes into this
+    // canonical array (textHeap) and bumps textVersion; each frame slot copies it into
+    // its own mapped frame buffer after its fence wait (ano_vk_text_frame_refresh), so
+    // in-flight GPU readers are never overwritten. Render thread only.
+    AnoGlyphInstance*       textPending;
+    uint32_t                textPendingCount;
+    uint32_t                textVersion;
     // Async text lane (FONT_RENDER.md step 7): lag-0, rides asyncHiz's infrastructure. The
     // per-frame raster CB submits to ctx.computeQueue with NO waits (inputs are CPU-written,
     // slot reuse is frame-fence ordered) and signals textTimeline == ordinal; the frame's

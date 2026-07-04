@@ -151,7 +151,7 @@ The logger benchmark (`anotest_logbench`) and the allocator easter egg (`anotest
 ### Profiling
 
 The switch to a multi-queue async approach is likely the cause of an Nsight deadlock error.
-To capture frame traces, try ANO_FORCE_NO_ASYNC_HIZ=1 ANO_FORCE_NO_ASYNC_LC=1.
+To capture frame traces, try ANO_FORCE_NO_ASYNC_HIZ=1 ANO_FORCE_NO_ASYNC_LC=1 ANO_FORCE_NO_ASYNC_TEXT=1.
 
 ### Rendering Compatibility
 
