@@ -15,6 +15,11 @@
   # Target selection is the flake-idiomatic "argument": one devShell per target.
   # There is no autodetect -- a Linux host is a valid host for BOTH targets, so
   # the choice can't be inferred; you name the one you want.
+  #
+  # All of the above are flake commands. They need `experimental-features =
+  # nix-command flakes` in nix.conf, or `--extra-experimental-features` per run.
+  # A flake cannot self-enable this (nixConfig is read only once flakes work),
+  # so the setup note lives in the README ("Building under WSL / Nix").
   description = "Anoptic Engine — C23 game engine (Linux native + Windows MinGW-w64 cross)";
 
   inputs = {
