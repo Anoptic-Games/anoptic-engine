@@ -61,6 +61,38 @@ static void text_upload_demo(RendererState* state)
     state->textInstanceCount = count < cap ? count : cap;
 }
 
+// createDataBuffer with optional CONCURRENT graphics+compute sharing: the curve and
+// directory blobs are staged from the graphics queue at init but read by the async
+// lane's compute queue, and CONCURRENT sidesteps the queue-family ownership transfer
+// (the async light-cull buffers' pattern). Exclusive when shared is false.
+static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
+                               VkMemoryPropertyFlags props, bool shared,
+                               VkBuffer* buffer, GpuAllocation* alloc)
+{
+    uint32_t fams[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size, .usage = usage,
+        .sharingMode = shared ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE };
+    if (shared)
+    {
+        bi.queueFamilyIndexCount = 2;
+        bi.pQueueFamilyIndices = fams;
+    }
+    if (vkCreateBuffer(ctx->device, &bi, NULL, buffer) != VK_SUCCESS)
+        return false;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(ctx->device, *buffer, &req);
+    *alloc = gpu_alloc(&gpuAllocator, req, props);
+    if (alloc->memory == VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(ctx->device, *buffer, NULL);
+        *buffer = VK_NULL_HANDLE;
+        return false;
+    }
+    vkBindBufferMemory(ctx->device, *buffer, alloc->memory, alloc->offset);
+    return true;
+}
+
 // Builds the compute raster prototype: 3 SSBOs (curves, directory, frame data) + 1
 // storage image (overlay), 16 B push. Mirrors the lightcull recipe.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
@@ -245,19 +277,23 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     {
         printf("Text overlay disabled: font load/bake failed ('%s').\n", fontPath);
         state->textOverlay = false;
+        state->asyncText = false;
         return true;
     }
 
-    // Static glyph data: one-shot staged upload to device-local.
+    // Static glyph data: one-shot staged upload to device-local. CONCURRENT-shared with
+    // the compute family when the async lane will read them from ctx->computeQueue.
     VkDeviceSize curveBytes = (VkDeviceSize)state->textBake.pointCount * sizeof(uint32_t);
     VkDeviceSize glyphBytes = (VkDeviceSize)state->textBake.glyphCount * sizeof(AnoGlyphEntry);
-    bool ok = createDataBuffer(ctx, &gpuAllocator, curveBytes,
+    bool ok = text_create_buffer(ctx, curveBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &state->textCurveBuffer, &state->textCurveAlloc)
+                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, state->asyncText,
+                   &state->textCurveBuffer, &state->textCurveAlloc)
             && stagingTransfer(ctx, state->textBake.points, state->textCurveBuffer, curveBytes)
-            && createDataBuffer(ctx, &gpuAllocator, glyphBytes,
+            && text_create_buffer(ctx, glyphBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &state->textGlyphBuffer, &state->textGlyphAlloc)
+                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, state->asyncText,
+                   &state->textGlyphBuffer, &state->textGlyphAlloc)
             && stagingTransfer(ctx, state->textBake.glyphs, state->textGlyphBuffer, glyphBytes);
 
     // Per-frame frame data: host-visible, persistently mapped (uniform-ring pattern).
@@ -279,15 +315,39 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         // Partially-created objects are handle-guarded in the teardown paths.
         printf("Text overlay disabled: GPU resource/pipeline creation failed.\n");
         state->textOverlay = false;
+        state->asyncText = false;
         return true;
+    }
+
+    // Async lane objects (step 7): the timeline the main submit waits on, plus a per-frame
+    // raster CB on asyncHiz's compute-family pool. Failure downgrades to the in-frame
+    // record; the overlay stays on.
+    if (state->asyncText)
+    {
+        VkSemaphoreTypeCreateInfo timelineInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+            .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0 };
+        VkSemaphoreCreateInfo timelineSem = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .pNext = &timelineInfo };
+        VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = state->computeCommandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 };
+        bool asyncOk = vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->textTimeline) == VK_SUCCESS;
+        for (uint32_t i = 0; asyncOk && i < MAX_FRAMES_IN_FLIGHT; i++)
+            asyncOk = vkAllocateCommandBuffers(ctx->device, &cai, &state->frames[i].textCommandBuffer) == VK_SUCCESS;
+        if (!asyncOk)
+        {
+            printf("Text overlay: async lane objects failed, falling back in-frame.\n");
+            state->asyncText = false;
+        }
     }
 
     text_upload_demo(state);
     state->textFlags = (getenv("ANO_TEXT_OPAQUE") != NULL) ? ANO_TEXT_RASTER_OPAQUE : 0u;
 
-    printf("Text overlay: on (%u glyphs, %u curve points, %.1f KiB static, %u instances)\n",
+    printf("Text overlay: on (%u glyphs, %u curve points, %.1f KiB static, %u instances, %s)\n",
            state->textBake.glyphCount, state->textBake.pointCount,
-           (double)(curveBytes + glyphBytes) / 1024.0, state->textInstanceCount);
+           (double)(curveBytes + glyphBytes) / 1024.0, state->textInstanceCount,
+           state->asyncText ? "async lane" : "in-frame");
     return true;
 }
 
@@ -295,13 +355,17 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)
         return;
+    // Async lane: written on the compute queue, sampled on graphics — CONCURRENT skips
+    // the ownership transfer (the Hi-Z pyramid pattern). Exclusive when in-frame.
+    uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         PerFrameResources* fr = &state->frames[i];
-        createImage(ctx, &swapchainAllocator, state->imageExtent.width, state->imageExtent.height,
+        createImageShared(ctx, &swapchainAllocator, state->imageExtent.width, state->imageExtent.height,
                     1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &fr->textOverlayImage, &fr->textOverlayAlloc, false);
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &fr->textOverlayImage, &fr->textOverlayAlloc, false,
+                    shareFamilies, state->asyncText ? 2u : 0u);
         fr->textOverlayView = createImageView(ctx->device, fr->textOverlayImage,
                                               VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1);
         // Seed the composite's resting layout; the per-frame record rewrites from UNDEFINED.
@@ -415,10 +479,14 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
     }
 }
 
-void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex)
+// The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
+// sampled read. asyncQueue selects the final barrier's destination — the graphics queue
+// consumes at FRAGMENT_SHADER directly; a compute-only family has no such stage, so the
+// barrier only performs the layout transition and the textTimeline wait (at
+// FRAGMENT_SHADER on the main submit) carries the cross-queue dependency.
+static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
+                               bool asyncQueue)
 {
-    if (!state->textOverlay)
-        return;
     PerFrameResources* fr = &state->frames[frameIndex];
 
     // Prior readers of this slot's overlay retired with its frame fence; contents are
@@ -462,10 +530,51 @@ void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t fram
         .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = fr->textOverlayImage,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = asyncQueue ? 0 : VK_ACCESS_SHADER_READ_BIT,
         .subresourceRange = range };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         asyncQueue ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 0, NULL, 0, NULL, 1, &toSample);
+}
+
+void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex)
+{
+    if (!state->textOverlay || state->asyncText)
+        return;
+    text_record_raster(state, cmd, frameIndex, false);
+}
+
+void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t frameIndex,
+                              uint64_t ordinal)
+{
+    if (!state->asyncText)
+        return;
+    // CB reuse is fence-safe: this slot's prior main submit waited textTimeline >= its
+    // ordinal at FRAGMENT_SHADER, so the frame fence retiring implies the prior text
+    // CB retired. The submit itself needs NO waits — frame data is CPU-written before
+    // this call and the overlay slot's prior reader retired with the same fence.
+    VkCommandBuffer cmd = state->frames[frameIndex].textCommandBuffer;
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    vkBeginCommandBuffer(cmd, &beginInfo);
+    text_record_raster(state, cmd, frameIndex, true);
+    vkEndCommandBuffer(cmd);
+
+    VkTimelineSemaphoreSubmitInfo timelineInfo = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &ordinal };
+    VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &timelineInfo,
+        .commandBufferCount = 1, .pCommandBuffers = &cmd,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = &state->textTimeline };
+    if (vkQueueSubmit(ctx->computeQueue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
+    {
+        // Keep the timeline monotonic so the main submit's wait cannot deadlock (the
+        // frame keeps a stale overlay); a failed submit here is device-loss territory.
+        printf("Failed to submit async text raster command buffer!\n");
+        VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+            .semaphore = state->textTimeline, .value = ordinal };
+        vkSignalSemaphore(ctx->device, &signalInfo);
+    }
 }
 
 void ano_vk_text_record_composite(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex)
@@ -504,6 +613,12 @@ void ano_vk_text_destroy(VulkanContext* ctx, RendererState* state)
     {
         vkDestroyBuffer(ctx->device, state->textGlyphBuffer, NULL);
         state->textGlyphBuffer = VK_NULL_HANDLE;
+    }
+    // Async lane: the timeline was drained in unInitVulkan; the CBs die with the pool.
+    if (state->textTimeline != VK_NULL_HANDLE)
+    {
+        vkDestroySemaphore(ctx->device, state->textTimeline, NULL);
+        state->textTimeline = VK_NULL_HANDLE;
     }
     // CPU side: FreeType down (init thread == this thread), bake blobs die with the heap.
     ano_text_shutdown();

@@ -34,9 +34,16 @@ void ano_vk_text_create_sets(VulkanContext* ctx, RendererState* state);
 // (Re)writes the per-frame sets; rerun after a swapchain resize (overlay views change).
 void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state);
 
-// In-frame raster record (step 5/6 path; step 7 moves this to the async compute lane):
-// clear the overlay, dispatch the raster pass, and hand the image to the fragment stage.
+// In-frame raster record (the async lane's mandatory fallback): clear the overlay,
+// dispatch the raster pass, hand the image to the fragment stage. No-op when asyncText.
 void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex);
+
+// Async lane (step 7, lag-0): records this frame's raster CB and submits it to
+// ctx->computeQueue with no waits, signaling textTimeline == ordinal (the main graphics
+// submit waits it at FRAGMENT_SHADER). A failed submit host-signals the ordinal so the
+// timeline stays monotonic. No-op unless asyncText.
+void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t frameIndex,
+                              uint64_t ordinal);
 
 // The composite-side overlay draw: one fullscreen premultiplied blend, recorded inside
 // the composite's dynamic-rendering block after the PiP insets.

@@ -989,6 +989,7 @@ typedef struct PerFrameResources
     void*               textFrameMapped;
     VkDescriptorSet     textRasterSet;   // curves + directory + frame data + storage image
     VkDescriptorSet     textOverlaySet;  // tonemapSetLayout-shaped: sampled overlay for composite
+    VkCommandBuffer     textCommandBuffer; // async text raster CB (computeCommandPool); NULL when asyncText off
 
     // Deferred resource deletion
     DeletionQueue       deletionQueue;
@@ -1071,6 +1072,14 @@ typedef struct RendererState
     mi_heap_t*              textHeap;
     uint32_t                textInstanceCount; // instances shaped into every frame slot
     uint32_t                textFlags;         // TextRasterPush.flags (bit 0 = opaque self-test)
+    // Async text lane (FONT_RENDER.md step 7): lag-0, rides asyncHiz's infrastructure. The
+    // per-frame raster CB submits to ctx.computeQueue with NO waits (inputs are CPU-written,
+    // slot reuse is frame-fence ordered) and signals textTimeline == ordinal; the frame's
+    // main submit waits it at FRAGMENT_SHADER (the composite sample is the only consumer).
+    // Gate: asyncText (asyncHiz && textOverlay && !ANO_FORCE_NO_ASYNC_TEXT, downgraded
+    // non-fatally if the lane's objects fail); off falls back to the in-frame record.
+    bool                    asyncText;
+    VkSemaphore             textTimeline;
 
     // Hi-Z occlusion pyramid build (review 4.9 step 3). The pipeline lives in prototypes[
     // PIPELINE_COMPUTE_HIZ] (two implementations: [0]=reduce MSAA depth->mip0, [1]=downsample mip->mip,
