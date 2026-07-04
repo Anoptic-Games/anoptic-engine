@@ -237,10 +237,10 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
                     VERBATIM)
         endif()
 
-        # Fonts resolve exe-relative like shaders (the text overlay bakes Geist at init).
+        # Fonts resolve exe-relative like shaders, so stage the whole font tree.
         add_custom_command(TARGET anopticengine POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/resources/fonts/Geist $<TARGET_FILE_DIR:anopticengine>/resources/fonts/Geist
-                COMMENT "Staging Geist next to anopticengine"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/resources/fonts $<TARGET_FILE_DIR:anopticengine>/resources/fonts
+                COMMENT "Staging fonts next to anopticengine"
                 VERBATIM)
     else()
         target_link_libraries(anopticengine PRIVATE anoptic_core)
