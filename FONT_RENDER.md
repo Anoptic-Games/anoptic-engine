@@ -119,10 +119,23 @@ allocation. penOut chains runs (color changes mid-line) bitwise-exactly.
 
 Shaper v0 (PoC, built in step 4): strict UTF-8 decode (overlongs/surrogates rejected,
 byte-wise resync), cmap-by-range lookup against the bake, horizontal advances, `\n`/`\r`
-handling, out-of-range codepoints advance a visible ANO_TEXT_GAP_EM. No kerning. That is
-sufficient for profile lines. Shaper v1: an in-house GPOS PairPos reader — the audit bounds
-this precisely at coverage formats 1/2, ClassDef formats 1/2, PairPos formats 1/2, roughly
-250 lines of table walking. Explicit non-goals, stated to prevent HarfBuzz-shaped creep:
+handling, out-of-range codepoints advance a visible ANO_TEXT_GAP_EM. That is sufficient
+for profile lines. Shaper v1 (landed 2026-07-04): the in-house GPOS PairPos reader —
+src/text/text_gpos.c, ~300 lines, FreeType-free (the bake hands it the raw table plus a
+slot→glyph-id map, so the white-box test drives it with synthetic tables). Semantics:
+'latn'→'DFLT' default LangSys, 'kern' feature only (Geist's mark/mkmk lookups excluded),
+lookups accumulate in LookupList order, first-applying-subtable-wins per pair (specific
+fmt-1 pairs short-circuit the fmt-2 class fallback; class-0 rows apply with their value),
+type-9 Extension unwrapped, every read bounds-checked with malformed tables failing soft
+to zero kerns. Extraction runs at bake time into a dense FUnit matrix (slotCount² scratch,
+ranges past 1024 slots skip with a warning), compacted to a key-sorted AnoKernPair table
+on the caller heap; ano_text_kern is a pure binary search, and shape/measure add the pair
+adjustment between adjacent in-range glyphs, resetting the chain at newlines and gaps
+(kerning never bridges penOut continuations — split runs at non-kerning boundaries).
+Oracle, fontTools-audited: ASCII×ASCII = 2891 nonzero pairs summing to −63296 FUnits
+(AV −106, LT −140, To −80), pinned bitwise in anotest_text alongside a hand-assembled
+synthetic table covering both coverage/ClassDef formats, accumulation, extension, and
+truncation. Explicit non-goals, stated to prevent HarfBuzz-shaped creep:
 GSUB ligatures, mark attachment, bidi/RTL, complex scripts, hinting (the technique is
 unhinted analytic AA by design). If the game ever needs Arabic or Devanagari, that is a
 separate decision about a real shaping engine, not an extension of this module.
@@ -223,9 +236,10 @@ full-viewport UI at the paper's cost class without ever touching the graphics cr
    form — self-overlap inside one contour survives it — so the clamp is the more general
    fix; offline outline union remains the escalation path if artifacts ever show.
 2. Kerning is GPOS-only in this font. `FT_Get_Kerning` reads the legacy `kern` table and
-   returns zeros for Geist. PoC ships unkerned (profile lines are numeric/monospace-ish;
-   acceptable). Shaper v1 adds the in-house PairPos reader (§4) — do not burn time wiring
-   FreeType kerning APIs that cannot work here.
+   returns zeros for Geist — do not burn time wiring FreeType kerning APIs that cannot
+   work here. RESOLVED: shaper v1's in-house PairPos reader landed (§4); the ANO_TEXT_DEMO
+   pinned pipeline re-verified end-to-end with kerned layout (GPU vs reference RMS
+   0.031/255).
 3. Dedicated compute queue is not guaranteed (`findQueueFamilies` falls back to the graphics
    family). Every async lane in this renderer carries an in-frame fallback recording site;
    text is no exception and the pattern is mechanical (§5). Cost is a second, trivial

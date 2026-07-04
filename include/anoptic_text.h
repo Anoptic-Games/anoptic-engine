@@ -75,14 +75,24 @@ typedef struct AnoGlyphEntry {
 
 #define ANO_GLYPH_MISSING 0x1u  // codepoint absent from the face (blank stand-in)
 
+// One horizontal kerning pair (GPOS PairPos, shaper v1): xAdvance is added to the pen
+// between the left and right glyph, em units (negative pulls them together). key packs
+// the two directory slots; the bake's table is sorted by key for binary search.
+typedef struct AnoKernPair {
+    uint32_t key;       // leftSlot << 16 | rightSlot
+    float    xAdvance;  // em
+} AnoKernPair;
+
 // One baked codepoint range. Directory slot i corresponds to codepoint firstCodepoint+i;
-// both arrays live in the heap passed to ano_text_font_bake and die at its teardown.
+// all arrays live in the heap passed to ano_text_font_bake and die at its teardown.
 typedef struct AnoFontBake {
     const uint32_t      *points;      // packed half-pair stream (see grammar above)
     uint32_t             pointCount;
     const AnoGlyphEntry *glyphs;
     uint32_t             glyphCount;
     uint32_t             firstCodepoint;
+    const AnoKernPair   *kerns;       // sorted by key; NULL/0 when the face kerns nothing
+    uint32_t             kernCount;
     float                ascender;    // em, above baseline (positive)
     float                descender;   // em, below baseline (typically negative)
     float                lineHeight;  // em, baseline-to-baseline advance
@@ -129,14 +139,20 @@ static_assert(offsetof(AnoGlyphInstance, color) == 16 && offsetof(AnoGlyphInstan
 // Pen advance, in em, for codepoints the bake has no slot for (visible gap, no tofu).
 #define ANO_TEXT_GAP_EM 0.5f
 
+// Kern adjustment between two directory slots, em units; 0 when the pair is absent or
+// a slot is out of range. Pure, any thread (binary search over the bake's pair table).
+float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSlot);
+
 // Shapes UTF-8 bytes into glyph instances at sizePx pixels per em, the pen starting at
 // origin (screen pixels, y-down baseline). Writes up to cap instances to out; returns
 // the TOTAL count the text needs (size with out=NULL, cap=0). Blank glyphs (space,
 // missing) advance the pen without emitting; '\n' returns the pen to origin[0] and
 // steps one lineHeight down; '\r' is ignored; codepoints outside the bake's range
 // advance ANO_TEXT_GAP_EM; malformed UTF-8 is consumed byte-wise as out-of-range.
-// penOut (optional, 2 floats) receives the final pen so runs can continue seamlessly
-// (e.g. a color change mid-line passes penOut as the next call's origin).
+// Adjacent in-range glyphs on one line receive pair kerning (ano_text_kern); a
+// newline or out-of-range gap resets the pair chain. penOut (optional, 2 floats)
+// receives the final pen so runs can continue seamlessly (e.g. a color change
+// mid-line passes penOut as the next call's origin; kerning does NOT bridge calls).
 uint32_t ano_text_shape(const AnoFontBake *bake, const char *utf8, uint32_t len,
                         float sizePx, const float origin[2], const float color[4],
                         AnoGlyphInstance *out, uint32_t cap, float *penOut);
