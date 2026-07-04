@@ -8,13 +8,23 @@
 // UTF-8 for storage, always. anostr_t is byte-transparent, so compare/hash/find/split/
 // intern already work on UTF-8. UTF-8 memcmp order IS code point order.
 // UTF-16 exists only at OS boundaries. Convert there, never store it.
-// Full code space 0..0x10FFFF, no script curation. Case and classification tables are
-// generated from the UCD by tools/gen_unicode_tables.c (~74 KB, two-stage, deduped).
+// Decode/encode/iterate the full code space 0..0x10FFFF.
 // Everything here is total. Malformed bytes decode as U+FFFD and advance one byte.
 // Case mapping a caseless rune is the identity. No error paths anywhere.
 // Simple case mapping only (1:1). No locale rules, no round-trip promise (final sigma).
 // Positions are byte offsets. Rune-at-index invites quadratic loops, so it does not exist.
 // Grapheme clusters (UAX #29) wait until a text-editing widget needs them.
+//
+// Anoptic supports lexicographic sorting (and case/classification) for these UTF subsets:
+//   - English and every Latin-script European language (German, French, Romanian,
+//     Swedish, Norwegian, Polish, Czech, Turkish, Vietnamese, ...)
+//   - Greek, modern and polytonic/Ancient
+//   - Cyrillic (Russian, Ukrainian, Serbian, Bulgarian, ...)
+//   - Futhark (Runic)
+//   - Japanese (kana sort in gojuon order; kanji by code point)
+//   - Chinese (no alphabet exists; code point order ~ radical-stroke)
+//   - punctuation, currency, full/halfwidth forms
+// Everything else falls back to code point (= byte) order after the listed scripts.
 
 #ifndef ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
 #define ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
@@ -57,25 +67,55 @@ int anorune_encode(char buf[4], anorune_t r);
 // Encode r and append. Same returns as anostr_builder_append.
 int anostr_builder_append_rune(anostr_builder_t *b, anorune_t r);
 
-// utf to uppercase
-// utf to lowercase
-// Identity when r has no mapping (caseless, unassigned, invalid). Never fails.
-anorune_t anorune_to_upper(anorune_t r);
-anorune_t anorune_to_lower(anorune_t r);
+// Case and classification tables cover the shipped scripts only:
+// Latin, Greek, Cyrillic, Runic, kana, Han, punctuation
+// Outside them every rune is caseless with no flags.
 
-// General category L*: letters of every script, cased or not.
+// UTF to uppercase
+// UTF to lowercase
+// Identity when r has no mapping (caseless, unlisted, unassigned, invalid). Never fails.
+anorune_t anorune_to_upper(anorune_t r);
+anorune_t anorune_to_lower(anorune_t r); // UTF to lowercase
+// General category L* within the shipped scripts, cased or not.
 bool anorune_is_letter(anorune_t r);
 
-// General category Nd: decimal digits of every script, not just ASCII 0-9.
+// General category Nd: ASCII 0-9 and fullwidth digits (unlisted scripts' digits are not).
 bool anorune_is_digit(anorune_t r);
 
-// The Unicode White_Space property: space/tab/newlines, NBSP, etc.
+// The Unicode White_Space property: space/tab/newlines, NBSP, ideographic space.
 bool anorune_is_whitespace(anorune_t r);
 
 // General category M*: combining marks (accents that stack onto a preceding base).
 // Precomposed letters are NOT marks, so rejecting marks at input boundaries kills
 // Zalgo text while every normal-keyboard language keeps working.
+// Covers 0300-036F (the Zalgo arsenal); unlisted scripts' marks report false.
 bool anorune_is_mark(anorune_t r);
+
+/* Collation */
+
+// Lexicographic order for humans: UCA over the DUCET default table, no locale tailoring.
+// Three levels: base letters first, then accents, then case. Byte order breaks ties.
+// So "Äpfel" < "Zebra", "resume" < "résumé", "apple" < "Apple", Cyrillic ё lands after е.
+// Precomposed letters decompose internally: ș sorts with s, å with a.
+// Kana sort together (hiragana/katakana differ at level three).
+// Tables cover Latin, Greek, Cyrillic, Runic, kana, and punctuation. 
+// Everything else (Han included: no alphabet exists) falls back to code point order.
+// NO contractions and locale rules (Swedish ö-after-z).
+// Use for everything a player reads.
+int anostr_collate(anostr_t a, anostr_t b); // Collates a and b in lexicographic order.
+
+// Sort values in collation order, in place.
+void anostr_sort(anostr_t *items, size_t count);
+
+// Base-letter equality: case- and accent-insensitive. eq_base("Ålesund", "alesund").
+bool anostr_eq_base(anostr_t a, anostr_t b);
+
+// Does s start with prefix, base letters only? Search-as-you-type against any list.
+bool anostr_starts_base(anostr_t s, anostr_t prefix);
+
+// Byte index of the first base-letter match of needle at or after `from`.
+// ANOSTR_NPOS if absent. An empty needle matches at min(from, len).
+size_t anostr_find_base(anostr_t s, anostr_t needle, size_t from);
 
 /* Encoding conversion */
 

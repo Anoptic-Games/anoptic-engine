@@ -13,12 +13,16 @@
  *     text, inline and heap-backed variants both;
  *   - rune_count == runes yielded by iteration on valid strings;
  *   - case mapping: ASCII, Cyrillic, Latin Extended-A odd/even pairs, final sigma (the
- *     documented non-round-trip), Deseret (SMP), identity on caseless (CJK, digits, emoji);
- *     every mapping of every code point stays a valid scalar value;
- *   - classification: letters across scripts (incl. Runic and CJK), Nd digits beyond ASCII,
- *     White_Space property quirks (NBSP yes, ZWSP no), combining marks (Mn/Mc/Me) vs
- *     precomposed letters;
+ *     documented non-round-trip), identity on caseless and on unlisted scripts (the
+ *     tables are trimmed to the shipped scripts); every mapping stays a scalar value;
+ *   - classification: letters across the shipped scripts (incl. Runic and CJK),
+ *     fullwidth digits, White_Space quirks (NBSP yes, ZWSP no), combining marks
+ *     (0300-036F) vs precomposed letters, unlisted scripts reporting false;
  *   - builder_append_rune composes the exact expected byte sequence;
+ *   - collation (UCA/DUCET, trimmed to the shipped scripts): the three strength levels
+ *     (base < accent < case), Russian yo placement, Romanian s-comma grouping, kana
+ *     levels, implicit-weight fallback (Han, Runic-before-Han), the base-strength search
+ *     trio (eq_base / starts_base / find_base), and anostr_sort on a multi-script list;
  *   - encoding conversion: UTF-16 surrogate pairs get exact expected units both ways,
  *     unpaired surrogates and out-of-range UTF-32 convert as U+FFFD, NUL termination and
  *     out-counts are right, and UTF-8 -> UTF-16/32 -> UTF-8 round-trips to anostr_eq;
@@ -202,16 +206,16 @@ static void test_case_mapping(void)
     // Final sigma: both lowercase sigmas uppercase to capital sigma; no round-trip promise.
     CHECK(anorune_to_upper(0x3C2) == 0x3A3 && anorune_to_upper(0x3C3) == 0x3A3, "sigma and final sigma");
     CHECK(anorune_to_lower(0x3A3) == 0x3C3, "capital sigma lowers to medial sigma");
-    // SMP casing: Deseret long I.
-    CHECK(anorune_to_lower(0x10400) == 0x10428 && anorune_to_upper(0x10428) == 0x10400, "Deseret (SMP)");
     // Romanian: comma-below forms (correct) and the legacy cedilla forms both case.
     CHECK(anorune_to_lower(0x218) == 0x219 && anorune_to_upper(0x219) == 0x218, "Romanian S-comma");
     CHECK(anorune_to_lower(0x21A) == 0x21B && anorune_to_upper(0x21B) == 0x21A, "Romanian T-comma");
     CHECK(anorune_to_lower(0x15E) == 0x15F && anorune_to_upper(0x103) == 0x102,
           "legacy cedilla + a-breve pair");
 
-    // Identity on caseless: CJK, kana, digits, emoji, unassigned, out of range.
-    static const anorune_t caseless[] = { 0x6F22, 0x3042, '7', 0x1F600, 0xE000, 0x10FFFE, 0x110000 };
+    // Identity on caseless: CJK, kana, digits, emoji, unassigned, out of range,
+    // and unlisted scripts (the tables are trimmed: Deseret U+10400 is identity now).
+    static const anorune_t caseless[] = { 0x6F22, 0x3042, '7', 0x1F600, 0xE000, 0x10400,
+                                          0x10FFFE, 0x110000 };
     for (size_t k = 0; k < sizeof caseless / sizeof caseless[0]; k++) {
         anorune_t r = caseless[k];
         if (anorune_to_upper(r) != r || anorune_to_lower(r) != r) {
@@ -236,8 +240,8 @@ static void test_case_mapping(void)
 
 static void test_classification(void)
 {
-    // Letters across scripts: Latin, Cyrillic, Greek, CJK, kana, Runic (BMP), Deseret (SMP).
-    static const anorune_t letters[] = { 'A', 'z', 0x416, 0x3B1, 0x6F22, 0x3042, 0x16A0, 0x10400 };
+    // Letters across the shipped scripts: Latin, Cyrillic, Greek, CJK, kana, Runic.
+    static const anorune_t letters[] = { 'A', 'z', 0x416, 0x3B1, 0x6F22, 0x3042, 0x16A0 };
     for (size_t k = 0; k < sizeof letters / sizeof letters[0]; k++)
         if (!anorune_is_letter(letters[k])) {
             printf("FAIL: U+%04X should be a letter\n", letters[k]);
@@ -245,11 +249,14 @@ static void test_classification(void)
         }
     CHECK(!anorune_is_letter('!') && !anorune_is_letter('7') && !anorune_is_letter(0x1F600),
           "punctuation, digits, emoji are not letters");
+    CHECK(!anorune_is_letter(0x5D0) && !anorune_is_letter(0x10400),
+          "unlisted scripts (Hebrew, Deseret) report false after the trim");
 
-    // Nd digits: ASCII, Devanagari, Arabic-Indic. Roman numeral twelve is Nl, not Nd.
+    // Nd digits: ASCII and fullwidth. Unlisted scripts' digits are out; Roman XII is Nl.
     CHECK(anorune_is_digit('0') && anorune_is_digit('9'), "ASCII digits");
-    CHECK(anorune_is_digit(0x966) && anorune_is_digit(0x96F), "Devanagari digits");
-    CHECK(anorune_is_digit(0x663), "Arabic-Indic digit three");
+    CHECK(anorune_is_digit(0xFF10) && anorune_is_digit(0xFF19), "fullwidth digits");
+    CHECK(!anorune_is_digit(0x966) && !anorune_is_digit(0x663),
+          "Devanagari and Arabic-Indic digits are outside the keep-list");
     CHECK(!anorune_is_digit(0x216B), "Roman numeral XII is not Nd");
     CHECK(!anorune_is_digit('a'), "letters are not digits");
 
@@ -263,8 +270,8 @@ static void test_classification(void)
     CHECK(!anorune_is_whitespace(0x200B), "zero-width space is NOT White_Space (it is Cf)");
     CHECK(!anorune_is_whitespace('a'), "letters are not whitespace");
 
-    // Combining marks: Mn (acute, niqqud), Mc (Devanagari matra), Me (enclosing circle).
-    static const anorune_t marks[] = { 0x301, 0x5B4, 0x93E, 0x20DD };
+    // Combining marks: the 0300-036F block (the Zalgo arsenal) is covered.
+    static const anorune_t marks[] = { 0x300, 0x301, 0x308, 0x30A, 0x342, 0x36F };
     for (size_t k = 0; k < sizeof marks / sizeof marks[0]; k++)
         if (!anorune_is_mark(marks[k])) {
             printf("FAIL: U+%04X should be a combining mark\n", marks[k]);
@@ -272,6 +279,7 @@ static void test_classification(void)
         }
     CHECK(!anorune_is_mark('e') && !anorune_is_mark(0xE9) && !anorune_is_mark(0x219),
           "base and precomposed letters are not marks");
+    CHECK(!anorune_is_mark(0x5B4), "unlisted scripts' marks report false after the trim");
 }
 
 static void test_builder_append_rune(mi_heap_t *heap)
@@ -289,6 +297,88 @@ static void test_builder_append_rune(mi_heap_t *heap)
           "builder composed the exact expected bytes");
     CHECK(anostr_utf8_valid(s), "builder output is valid UTF-8");
     CHECK(anostr_rune_count(s) == 5, "builder output has 5 runes");
+}
+
+static void test_collation(void)
+{
+    // Level one: base letters. Byte order would put Ä (0xC3 0x84) after Z.
+    CHECK(anostr_collate(anostr_lit("\xC3\x84pfel"), anostr_lit("Zebra")) < 0, "Aepfel < Zebra");
+    // German umlauts group with their base letter.
+    CHECK(anostr_collate(anostr_lit("M\xC3\xBCller"), anostr_lit("Muster")) < 0, "Mueller < Muster");
+    // Level two: accents. resume < résumé, equal at level one.
+    CHECK(anostr_collate(anostr_lit("resume"), anostr_lit("r\xC3\xA9sum\xC3\xA9")) < 0, "resume < resume-acute");
+    // Level three: case. apple < Apple, equal at levels one and two.
+    CHECK(anostr_collate(anostr_lit("apple"), anostr_lit("Apple")) < 0, "apple < Apple");
+    CHECK(anostr_collate(anostr_lit("apple"), anostr_lit("apple")) == 0, "self-collation is 0");
+
+    // Russian: ё sorts between е and ж (byte order dumps it after я).
+    CHECK(anostr_collate(anostr_lit("\xD0\xB5"), anostr_lit("\xD1\x91")) < 0, "e < yo");
+    CHECK(anostr_collate(anostr_lit("\xD1\x91"), anostr_lit("\xD0\xB6")) < 0, "yo < zhe");
+    // Romanian: ș groups with s (secondary difference only).
+    CHECK(anostr_collate(anostr_lit("s"), anostr_lit("\xC8\x99")) < 0, "s < s-comma");
+    CHECK(anostr_collate(anostr_lit("\xC8\x99"), anostr_lit("t")) < 0, "s-comma < t");
+    // Kana: あ < い; hiragana and katakana a differ only at level three.
+    CHECK(anostr_collate(anostr_lit("\xE3\x81\x82"), anostr_lit("\xE3\x81\x84")) < 0, "a < i (kana)");
+    CHECK(anostr_eq_base(anostr_lit("\xE3\x81\x82"), anostr_lit("\xE3\x82\xA2")), "hira a ==base kata a");
+    CHECK(anostr_collate(anostr_lit("\xE3\x81\x82"), anostr_lit("\xE3\x82\xA2")) != 0, "hira != kata full");
+    // Han: implicit weights keep code point order (6F22 < 8A9E).
+    CHECK(anostr_collate(anostr_lit("\xE6\xBC\xA2"), anostr_lit("\xE8\xAA\x9E")) < 0, "Han cp order");
+    // Spaces are significant (non-ignorable): "New York" < "Newark".
+    CHECK(anostr_collate(anostr_lit("New York"), anostr_lit("Newark")) < 0, "space before letters");
+    // Empty sorts first; total order tie-break never reports equal for distinct bytes.
+    CHECK(anostr_collate(anostr_empty(), anostr_lit("a")) < 0, "empty sorts first");
+
+    // Base-letter search: case- and accent-insensitive.
+    CHECK(anostr_eq_base(anostr_lit("M\xC3\x9CNCHEN"), anostr_lit("m\xC3\xBCnchen")), "MUENCHEN ==base muenchen");
+    CHECK(anostr_eq_base(anostr_lit("\xC3\x85lesund"), anostr_lit("alesund")), "Aalesund ==base alesund");
+    CHECK(anostr_eq_base(anostr_lit("\xC8\x98tefan"), anostr_lit("stefan")), "Stefan-comma ==base stefan");
+    CHECK(!anostr_eq_base(anostr_lit("Oslo"), anostr_lit("Odin")), "different words differ");
+    CHECK(anostr_starts_base(anostr_lit("\xC3\x96rebro kommun"), anostr_lit("orebro")), "starts_base Oerebro");
+    CHECK(!anostr_starts_base(anostr_lit("Bergen"), anostr_lit("berge!")), "punctuation breaks a match");
+    CHECK(anostr_starts_base(anostr_lit("anything"), anostr_empty()), "empty prefix always matches");
+
+    // find_base: byte offset of "Örebro" when searching plain ASCII "orebro".
+    anostr_t line = anostr_lit("Visby \xC3\x96rebro");
+    CHECK(anostr_find_base(line, anostr_lit("orebro"), 0) == 6, "find_base hits the umlaut form");
+    CHECK(anostr_find_base(line, anostr_lit("kiruna"), 0) == ANOSTR_NPOS, "find_base misses cleanly");
+    CHECK(anostr_find_base(line, anostr_empty(), 99) == anostr_len(line), "empty needle at min(from,len)");
+
+    // Unlisted scripts sort after every listed one, in code point order among themselves.
+    CHECK(anostr_collate(anostr_lit("\xE1\x9A\xA0"), anostr_lit("\xE6\x9D\xB1")) < 0, "Runic before Han");
+}
+
+static void test_sort(void)
+{
+    // A shuffled city list across the shipped scripts. Expected: Latin by base letter
+    // (Ålesund with a, Örebro(orebro) before Oslo), then Greek, Cyrillic, and Han last.
+    anostr_t cities[] = {
+        anostr_lit("\xD0\x9C\xD0\xBE\xD1\x81\xD0\xBA\xD0\xB2\xD0\xB0"),  // Москва
+        anostr_lit("Oslo"),
+        anostr_lit("Z\xC3\xBCrich"),                                     // Zürich
+        anostr_lit("\xE6\x9D\xB1\xE4\xBA\xAC"),                          // 東京
+        anostr_lit("Athens"),
+        anostr_lit("\xC3\x85lesund"),                                    // Ålesund
+        anostr_lit("M\xC3\xBCnchen"),                                    // München
+        anostr_lit("\xCE\x91\xCE\xB8\xCE\xAE\xCE\xBD\xCE\xB1"),          // Αθήνα
+        anostr_lit("G\xC3\xB6teborg"),                                   // Göteborg
+        anostr_lit("\xC3\x96rebro"),                                     // Örebro
+        anostr_lit("Berlin"),
+    };
+    static const char *expect[] = {
+        "\xC3\x85lesund", "Athens", "Berlin", "G\xC3\xB6teborg", "M\xC3\xBCnchen",
+        "\xC3\x96rebro", "Oslo", "Z\xC3\xBCrich",
+        "\xCE\x91\xCE\xB8\xCE\xAE\xCE\xBD\xCE\xB1",
+        "\xD0\x9C\xD0\xBE\xD1\x81\xD0\xBA\xD0\xB2\xD0\xB0",
+        "\xE6\x9D\xB1\xE4\xBA\xAC",
+    };
+    size_t n = sizeof cities / sizeof cities[0];
+    anostr_sort(cities, n);
+    for (size_t k = 0; k < n; k++) {
+        if (!anostr_eq(cities[k], anostr_from_cstr(NULL, expect[k]))) {
+            printf("FAIL: sorted city %zu is \"%.*s\"\n", k, anostr_fmt(cities[k]));
+            failures++;
+        }
+    }
 }
 
 static void test_encoding_conversion(mi_heap_t *heap)
@@ -416,6 +506,8 @@ int main(int argc, char **argv)
     test_case_mapping();
     test_classification();
     test_builder_append_rune(heap);
+    test_collation();
+    test_sort();
     test_encoding_conversion(heap);
 
     uint32_t iterations = 500;
