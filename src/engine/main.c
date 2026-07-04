@@ -14,6 +14,7 @@
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
 #include "anoptic_filesystem.h"
+#include "anoptic_logging.h"
 
 #ifndef HEADLESS_BUILD
 // Renderer contract + GLFW — only compiled into the graphical engine.
@@ -332,7 +333,6 @@ void* anoLogicThreadMain(void* arg)
 #endif // !HEADLESS_BUILD
 
 // Main function
-#include "anoptic_logging.h"
 int main()
 {
     mi_version();
@@ -352,24 +352,16 @@ int main()
     mi_option_enable(mi_option_verbose);
     printf("Running in debug mode!\n");
 
-    ano_log_init();
-    for(int i = 0; i < 172; i++) {
-        ano_log_error("Enqueued Log Message # %d\n", (i + 1));
-    }
-
-    ano_log_error("01234567890123456789012");
-
-    ano_log_debug_now("Instantaneous Debug Message!\n");
-
-    for(int i = 0; i < 216; i++) {
-        ano_log_error("Enqueued Log Message # %d\n", (i + 1));
-    }
-
-    ano_log_debug_now("Instantaneous Debug Message!\n");
-
-    ano_log_cleanup();
-
     #endif
+
+    // Singleton logger up for the whole of main: 
+	// everything below (device selection, renderer init, the frame loop) logs through it. 
+	// Cleans itself upon scope exit.
+    int logAlive ANO_LOG_SCOPE_ATTR = ano_log_init();
+    if (logAlive != 0) {
+        fprintf(stderr, "Logger initialization failed; something is very wrong.\n");
+        return EXIT_FAILURE;
+    }
 
 #ifndef HEADLESS_BUILD
     // GLFW pins window + event handling to the main thread (mandatory on macOS).
@@ -378,7 +370,7 @@ int main()
     // with no readiness handshake.
     if (!initVulkan())
     {
-        printf("Vulkan initialization failed.\n");
+        ano_log_fatal("Vulkan initialization failed.");
         return -1;
     }
 
@@ -386,7 +378,7 @@ int main()
     anothread_t logicThread;
     if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
     {
-        printf("Failed to spawn logic thread.\n");
+        ano_log_fatal("Failed to spawn logic thread.");
         unInitVulkan();
         return -1;
     }

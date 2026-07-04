@@ -20,9 +20,13 @@
 // not (64 on x86-64, 128 on Apple Silicon), so a fixed line count would drift. Aligned to a power of two
 // so the ring sits in one self-sized region: page-allocator, Windows cache-view, Linux large-folio,
 // hugepage at 2 MiB. Override -DANO_LOG_RING_BYTES to experiment from 64 KiB to 2 MiB. Line count derives.
+// 2 MiB gained ~15% on benchmarks only, not worth 4x the footprint.
 #ifndef ANO_LOG_RING_BYTES
-#define ANO_LOG_RING_BYTES (2u * 1024u * 1024u)        // default 2 MiB: hits the hugepage-aligned path
-#endif                                                 //   below, and a bigger drain batch amortizes write()
+// 2MB
+//#define ANO_LOG_RING_BYTES (2u * 1024u * 1024u)
+// 512 KB
+#define ANO_LOG_RING_BYTES (512u * 1024u)
+#endif
 #define ANO_LOG_RING_LINES (ANO_LOG_RING_BYTES / ANO_CACHE_LINE)
 #define ANO_LOG_RING_ALIGN (ANO_LOG_RING_BYTES < (2u << 20) ? ANO_LOG_RING_BYTES : (2u << 20))
 

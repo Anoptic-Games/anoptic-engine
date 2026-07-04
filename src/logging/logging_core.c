@@ -785,6 +785,13 @@ int ano_log_init(void)
     return 0;
 }
 
+// ANO_LOG_SCOPE_ATTR target. Cleanup keys off g_initialized, so the bound status is unused.
+void ano_log_scope_release(const int *initStatus)
+{
+    (void)initStatus;
+    ano_log_cleanup();
+}
+
 int ano_log_cleanup(void)
 {
     if (!atomic_load_explicit(&g_initialized, memory_order_relaxed))
