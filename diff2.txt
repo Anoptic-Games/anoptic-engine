@@ -1,0 +1,414 @@
+diff --git a/src/logging/logging_core.c b/src/logging/logging_core.c
+index 6ca37fa..5b1df01 100644
+--- a/src/logging/logging_core.c
++++ b/src/logging/logging_core.c
+@@ -7,7 +7,8 @@
+ // `tail`, copies the text, and publishes with one release store of `tag`. The common path never waits.
+ // The logger owns one consumer thread that drains the ring continuously. ano_log_flush also drains inline
+ // for callers needing records on disk now. Cold paths take small locks: a drain mutex and an output-file
+-// mutex. FATAL writes straight through. A full ring makes the producer wait for room, never dropping.
++// mutex. NOW records (FATAL by default) write straight through. Sink bits ride each record's tag,
++// so the drainer routes per record. A full ring makes the producer wait for room, never dropping.
+ // Stop all producers before ano_log_cleanup.
+ 
+ #include "logging/logging_ring.h"
+@@ -24,19 +25,40 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++// Terminal detection + Windows VT enable, for the terminal sink's ANSI colors.
++#if defined(_WIN32)
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#include <io.h>
++#else
++#include <unistd.h>
++#endif
++
+ 
+ /* Internal state. Only the ring is producer-shared, the rest is cold. */
+ 
+ // Level names padded to 5, so the prefix is one fixed-length copy with no strlen or pad loop. Index by
+-// log_types_t. Out-of-range falls back to "?????".
+-static const char   logPad[5][8] = {"DEBUG", "INFO ", "WARN ", "ERROR", "FATAL"};
++// ano_loglevel_t. Out-of-range falls back to "?????".
++static const char   logPad[4][8] = {"INFO ", "WARN ", "ERROR", "FATAL"};
+ 
+ static log_ring_t   g_ring;         // the shared MPSC ring (producers: tail, consumer: head)
+-static atomic_bool  g_initialized;  // immediate-path liveness (cold path only)
++static atomic_bool  g_initialized;  // NOW-path liveness (cold path only)
+ // Severity gate and liveness in one relaxed load on enqueue. INT_MAX until init, back to INT_MAX at
+ // cleanup, so a not-live logger gates every enqueue.
+ static atomic_int   g_minLevel = INT_MAX;
+ 
++// Per-level default routes for records naming no sink. Static init keeps a pre-init FATAL on the
++// NOW path to stderr. ano_log_set_route swaps one atomically.
++static _Atomic uint8_t g_routeDefault[4] = {
++    ANO_FILE,               // INFO
++    ANO_FILE,               // WARN
++    ANO_FILE,               // ERROR
++    ANO_BOTH | ANO_NOW,     // FATAL
++};
++
++// Whether stdout/stderr are real terminals, decided once at init. Only a tty gets ANSI.
++static bool g_ttyOut, g_ttyErr;
++
+ static anothread_mutex_t g_drainMtx;   // gates the single consumer: one drainer at a time
+ static anothread_mutex_t g_outFileMtx; // guards the output file handle's lifecycle and writes
+ static ano_file    *g_outFile;         // the open output file, or NULL
+@@ -175,11 +197,11 @@ static int fast_format(char *out, int cap, const char *fmt, va_list ap)
+ // prefix is hand-rolled. The message goes through fast_format, falling back to vsnprintf for conversions
+ // it cannot handle. format(printf, 6, 0) marks a printf forwarder so the vsnprintf passes -Wformat-nonliteral.
+ __attribute__((format(printf, 6, 0)))
+-static int format_line(char *out, int cap, log_types_t level,
++static int format_line(char *out, int cap, ano_loglevel_t level,
+                        const char *file, int line, const char *fmt, va_list ap)
+ {
+     char *p = out;
+-    memcpy(p, (unsigned)level <= LOG_FATAL ? logPad[level] : "?????", 5);  // fixed 5, no strlen/pad
++    memcpy(p, (unsigned)level <= ANO_FATAL ? logPad[level] : "?????", 5);  // fixed 5, no strlen/pad
+     p += 5;
+     *p++ = ' ';
+     size_t fl = strnlen(file, 256);         // bounded scan: a freak file name can't crowd out the message
+@@ -271,7 +293,7 @@ static int capture_deferred(char *out, int cap, const char *file, int line, cons
+ // Render a capture blob at drain: prefix (level/file/line) then the message. Re-parses fmt, rebuilds each
+ // conversion's spec with any '*' resolved from the captured ints, and lets snprintf do the actual format
+ // from the captured value. Byte-for-byte printf for everything capture_deferred accepts. Returns bytes.
+-static int format_deferred(char *out, int cap, log_types_t level, const char *blob)
++static int format_deferred(char *out, int cap, ano_loglevel_t level, const char *blob)
+ {
+     const char *b = blob;
+     const char *file; memcpy(&file, b, sizeof file); b += sizeof file;
+@@ -279,7 +301,7 @@ static int format_deferred(char *out, int cap, log_types_t level, const char *bl
+     const char *fmt;  memcpy(&fmt,  b, sizeof fmt);  b += sizeof fmt;
+ 
+     char *p = out, *end = out + cap;
+-    memcpy(p, (unsigned)level <= LOG_FATAL ? logPad[level] : "?????", 5); p += 5;
++    memcpy(p, (unsigned)level <= ANO_FATAL ? logPad[level] : "?????", 5); p += 5;
+     *p++ = ' ';
+     size_t fl = strnlen(file, 256); memcpy(p, file, fl); p += fl;
+     *p++ = ':';
+@@ -442,10 +464,52 @@ static void select_output(void)
+     g_syncOut  = g_haveFile ? sync_file    : sync_none;
+ }
+ 
+-// Echo a finished line to the console by severity (>WARN to stderr, else stdout). Immediate path only.
+-static inline void echo_console(const char *line, size_t len, log_types_t level)
++// Detect ttys once. Windows also needs VT processing switched on (legacy conhost).
++static void console_color_init(void)
+ {
+-    fwrite(line, 1, len, (level > LOG_WARN) ? stderr : stdout);
++#if defined(_WIN32)
++    g_ttyOut = _isatty(_fileno(stdout)) != 0;
++    g_ttyErr = _isatty(_fileno(stderr)) != 0;
++    for (int i = 0; i < 2; i++) {
++        HANDLE h = GetStdHandle(i == 0 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
++        DWORD mode;
++        if (h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode))
++            SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
++    }
++#else
++    g_ttyOut = isatty(fileno(stdout)) != 0;
++    g_ttyErr = isatty(fileno(stderr)) != 0;
++#endif
++}
++
++// ANSI color for a level's prefix, NULL for uncolored (INFO, out of range).
++static const char *ansi_for(ano_loglevel_t level)
++{
++    switch (level) {
++    case ANO_WARN:  return "\x1b[33m";      // yellow
++    case ANO_ERROR: return "\x1b[31m";      // red
++    case ANO_FATAL: return "\x1b[1;31m";    // bold red
++    default:        return NULL;
++    }
++}
++
++// Echo one record to the terminal, ERROR+ on stderr. The body's first 5 bytes are the level name,
++// colored on a tty. The file never sees an escape code. Caller holds g_outFileMtx so lines stay whole.
++static void echo_console(ano_loglevel_t level, const char *hms, const char *body, size_t len)
++{
++    FILE *stream = level >= ANO_ERROR ? stderr : stdout;
++    const char *color = (stream == stderr ? g_ttyErr : g_ttyOut) ? ansi_for(level) : NULL;
++    fwrite(hms, 1, 8, stream);
++    fputc(' ', stream);
++    if (color != NULL && len >= 5) {
++        fputs(color, stream);
++        fwrite(body, 1, 5, stream);
++        fputs("\x1b[0m", stream);
++        fwrite(body + 5, 1, len - 5, stream);
++    } else {
++        fwrite(body, 1, len, stream);
++    }
++    fputc('\n', stream);
+ }
+ 
+ // Write a finished batch to the chosen output, one locked call, no per-write target test.
+@@ -458,11 +522,11 @@ static void write_batch(const char *data, size_t len)
+     ano_mutex_unlock(&g_outFileMtx);
+ }
+ 
+-// Write one finished record straight through on the calling thread (immediate or full-ring fallback).
+-// Assembles "<walltime> <text>\n" once so the append is atomic. `console` echoes by severity, off with
+-// no file. `sync` fsyncs after the write for FATAL durability.
+-static void emit_one(log_types_t level, uint64_t raw_ts, const char *text, uint16_t len,
+-                     bool console, bool sync)
++// Write one record straight through on the calling thread (NOW path, full-ring wedge fallback).
++// With no file open, FILE already persists to the terminal, so the echo is skipped to avoid a
++// double print. `sync` fsyncs the file, or flushes a terminal-only record's stream.
++static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, uint16_t len,
++                     bool toFile, bool toCon, bool sync)
+ {
+     char out[ANO_LOG_MSG_MAX + ANO_LOG_TIME_RESV + 2];
+     int  p  = render_walltime(out, raw_ts);
+@@ -471,10 +535,14 @@ static void emit_one(log_types_t level, uint64_t raw_ts, const char *text, uint1
+     out[p++] = '\n';
+ 
+     ano_mutex_lock(&g_outFileMtx);
+-    if (console && g_haveFile)              // no file: the persist below already hits the console
+-        echo_console(out, (size_t)p, level);
+-    g_persist(out, (size_t)p);
+-    if (sync) g_syncOut();
++    if (toCon && (g_haveFile || !toFile))   // no file: the persist below already hits the console
++        echo_console(level, out, text, len);
++    if (toFile) {
++        g_persist(out, (size_t)p);
++        if (sync) g_syncOut();
++    } else if (sync && toCon) {
++        fflush(level >= ANO_ERROR ? stderr : stdout);
++    }
+     ano_mutex_unlock(&g_outFileMtx);
+ }
+ 
+@@ -509,17 +577,27 @@ static uint64_t drain_and_emit(void)
+             g_drainSec = sec;
+             g_drainHMSValid = true;
+         }
++        size_t recStart = blen;
+         memcpy(g_batch + blen, g_drainHMS, 8); blen += 8;
+         g_batch[blen++] = ' ';
++        size_t bodyStart = blen;
+         if (v.flags & ANO_LOG_DEFERRED) {   // render the capture blob now, else copy finished text
+             size_t room = g_batchCap - blen;
+             int dcap = room > ANO_LOG_MSG_MAX ? (int)ANO_LOG_MSG_MAX : (int)room;   // clamp the line like eager
+-            blen += (size_t)format_deferred(g_batch + blen, dcap, (log_types_t)v.level, body);
++            blen += (size_t)format_deferred(g_batch + blen, dcap, (ano_loglevel_t)v.level, body);
+         }
+         else {
+             memcpy(g_batch + blen, body, v.len); blen += v.len;
+         }
+-        g_batch[blen++] = '\n';
++        if (v.flags & ANO_LOG_TOCON) {      // echo the just-rendered bytes, under the sink lock
++            ano_mutex_lock(&g_outFileMtx);
++            echo_console((ano_loglevel_t)v.level, g_drainHMS, g_batch + bodyStart, blen - bodyStart);
++            ano_mutex_unlock(&g_outFileMtx);
++        }
++        if (v.flags & ANO_LOG_TOFILE)
++            g_batch[blen++] = '\n';
++        else
++            blen = recStart;                // terminal-only, drop it from the file batch
+         h += need;
+     }
+ 
+@@ -588,18 +666,19 @@ static void *drainer_main(void *arg)
+ }
+ 
+ 
+-/* Public interface */
++/* The two paths behind ano_log_vwrite. Sink resolution already happened. */
+ 
+-int ano_log_enqueue(log_types_t level, const char *file, int line, const char *fmt, ...)
++// The buffered path: capture or eagerly format on the calling thread, publish to the ring. The
++// drainer routes by the sink bits riding the tag.
++__attribute__((format(printf, 5, 0)))
++static int log_buffered(ano_loglevel_t level, uint8_t sinks, const char *file, int line,
++                        const char *fmt, va_list args)
+ {
+-    if ((int)level < atomic_load_explicit(&g_minLevel, memory_order_relaxed))
+-        return 0;   // one relaxed load gates both severity and liveness (INT_MAX until init)
+-
+     uint64_t ts = ano_timestamp_ticks();   // stamp at the call site, bare counter, convert at drain
+ 
+     char blob[ANO_LOG_MSG_MAX]; // capture blob (deferred) or finished line (eager fallback), off-ring
+-    va_list ap; va_start(ap, fmt);
+-    va_list apc; va_copy(apc, ap);
++    va_list ap; va_copy(ap, args);
++    va_list apc; va_copy(apc, args);
+     int n = capture_deferred(blob, (int)ANO_LOG_MSG_MAX, file, line, fmt, ap);  // defer formatting to drain
+     bool deferred = (n >= 0);
+     if (!deferred)                                                              // fancy conversion: format now
+@@ -627,12 +706,13 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
+             waited = true;
+             if (hd != lastHead) { lastHead = hd; stall = 0; backoff = FULL_BACKOFF_MIN_NS; }
+             else if (++stall > FULL_STALL_LIMIT) {
++                bool toFile = (sinks & ANO_FILE) != 0, toCon = (sinks & ANO_TERM) != 0;
+                 if (deferred) {   // render the capture blob to text for the direct write
+                     char txt[ANO_LOG_MSG_MAX];
+                     int tn = format_deferred(txt, (int)sizeof txt, level, blob);
+-                    emit_one(level, ts, txt, (uint16_t)tn, false, false);
++                    emit_one(level, ts, txt, (uint16_t)tn, toFile, toCon, false);
+                 } else {
+-                    emit_one(level, ts, blob, len, false, false);   // cold escape: the call-site ticks
++                    emit_one(level, ts, blob, len, toFile, toCon, false);   // cold escape: the call-site ticks
+                 }
+                 return 1;
+             }
+@@ -654,8 +734,10 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
+     log_marker_t *m = log_marker_at(&g_ring, pos);
+     m->timestamp = ts;  // plain store, ordered by the release below
+     log_write_body(&g_ring, pos, blob, len);    // <= 2 memcpys
++    // Sink bits ride the tag: ANO_FILE/ANO_TERM (1|2) shift onto ANO_LOG_TOFILE/TOCON (4|8).
+     log_word_t v = { .len = len, .level = (uint8_t)level,
+-                     .flags = (uint8_t)(ANO_LOG_COMMITTED | (deferred ? ANO_LOG_DEFERRED : 0)),
++                     .flags = (uint8_t)(ANO_LOG_COMMITTED | (deferred ? ANO_LOG_DEFERRED : 0)
++                                        | ((sinks & ANO_BOTH) << 2)),
+                      .cycle = log_cycle(&g_ring, pos) };
+     atomic_store_explicit(&m->tag, v.w, memory_order_release);  // publish: one gate, whole record
+ 
+@@ -666,20 +748,58 @@ int ano_log_enqueue(log_types_t level, const char *file, int line, const char *f
+     return waited ? 1 : 0;   // 1: the ring was full, so we waited for the consumer to make room
+ }
+ 
+-void ano_log_immediate(log_types_t level, const char *file, int line, const char *fmt, ...)
++// The NOW path: format eagerly, drain for order, write through with an fsync. Bypasses the ring
++// without consuming it, and skips the severity gate.
++__attribute__((format(printf, 5, 0)))
++static int log_now(ano_loglevel_t level, uint8_t sinks, const char *file, int line,
++                   const char *fmt, va_list args)
+ {
+     char blob[ANO_LOG_MSG_MAX];
+-    va_list ap; va_start(ap, fmt);
+-    int n = format_line(blob, (int)ANO_LOG_MSG_MAX,
+-                        level, file, line, fmt, ap);
++    va_list ap; va_copy(ap, args);
++    int n = format_line(blob, (int)ANO_LOG_MSG_MAX, level, file, line, fmt, ap);
+     va_end(ap);
+ 
+     if (!atomic_load_explicit(&g_initialized, memory_order_relaxed)) {
+         fprintf(stderr, "%.*s\n", n, blob); // pre-init: stderr only, no anchor yet
+-        return;
++        return 0;
+     }
+     drain();    // flush buffered records first to keep order
+-    emit_one(level, ano_timestamp_ticks(), blob, (uint16_t)n, /*console*/true, /*sync*/true);
++    emit_one(level, ano_timestamp_ticks(), blob, (uint16_t)n,
++             (sinks & ANO_FILE) != 0, (sinks & ANO_TERM) != 0, /*sync*/true);
++    return 0;
++}
++
++
++/* Public interface */
++
++int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
++                   const char *file, int line, const char *fmt, va_list args)
++{
++    unsigned lvlIdx = (unsigned)level <= ANO_FATAL ? (unsigned)level : (unsigned)ANO_FATAL;
++    unsigned r      = (unsigned)route;
++    if ((r & ANO_BOTH) == 0)  // no sink named, inherit the level's default (NOW composes)
++        r |= atomic_load_explicit(&g_routeDefault[lvlIdx], memory_order_relaxed);
++    if (r & ANO_NOW)
++        return log_now(level, (uint8_t)r, file, line, fmt, args);
++    if ((int)level < atomic_load_explicit(&g_minLevel, memory_order_relaxed))
++        return 0;   // one relaxed load gates both severity and liveness (INT_MAX until init)
++    return log_buffered(level, (uint8_t)r, file, line, fmt, args);
++}
++
++int ano_log_write(ano_loglevel_t level, ano_logroute_t route,
++                  const char *file, int line, const char *fmt, ...)
++{
++    va_list ap; va_start(ap, fmt);
++    int rc = ano_log_vwrite(level, route, file, line, fmt, ap);
++    va_end(ap);
++    return rc;
++}
++
++void ano_log_set_route(ano_loglevel_t level, ano_logroute_t route)
++{
++    if ((unsigned)level > ANO_FATAL || (route & ANO_BOTH) == 0)
++        return;     // must name a level in range and at least one sink
++    atomic_store_explicit(&g_routeDefault[level], (uint8_t)route, memory_order_relaxed);
+ }
+ 
+ int ano_log_output_dir(const char *directoryPath)
+@@ -703,7 +823,7 @@ int ano_log_output_dir(const char *directoryPath)
+     return 0;
+ }
+ 
+-void ano_log_set_level(log_types_t min)
++void ano_log_set_level(ano_loglevel_t min)
+ {
+     if (atomic_load_explicit(&g_initialized, memory_order_relaxed))
+         atomic_store_explicit(&g_minLevel, (int)min, memory_order_relaxed);
+@@ -757,6 +877,8 @@ int ano_log_init(void)
+     g_drainHMSValid = false;
+     g_outFile = NULL;
+ 
++    console_color_init();   // decide ANSI capability before any echo
++
+     g_anchorTicks  = ano_timestamp_ticks();
+     g_anchorUnixNs = (uint64_t)ano_timestamp_unix() * 1000000000ull;
+ 
+@@ -781,7 +903,7 @@ int ano_log_init(void)
+     }
+ 
+     // Open the gate last: enqueues are admitted (and liveness reads true) only now everything is up.
+-    atomic_store_explicit(&g_minLevel, LOG_DEBUG, memory_order_relaxed);
++    atomic_store_explicit(&g_minLevel, ANO_INFO, memory_order_relaxed);
+     return 0;
+ }
+ 
+diff --git a/src/logging/logging_old.h b/src/logging/logging_old.h
+index 71dcded..110daa0 100644
+--- a/src/logging/logging_old.h
++++ b/src/logging/logging_old.h
+@@ -6,15 +6,23 @@
+ // The pre-ring mutex logger, preserved as the benchmark baseline for anotest_logbench. It is NOT part
+ // of anoptic_core and never enters the standard build. Compiled only into the optional
+ // benchmark, so the lock-free ring logger can be timed against it. The API mirrors
+-// anoptic_logging.h but is namespaced mtxlog_* so both implementations link into one executable. The
+-// log_types_t / LOG_* severities are shared with the ring logger. Design history: docs/logger.md ┬º14.
++// anoptic_logging.h but is namespaced mtxlog_* so both implementations link into one executable.
++// Design history: docs/logger.md ┬º14.
+ 
+ #ifndef ANOPTICENGINE_LOGGING_OLD_H
+ #define ANOPTICENGINE_LOGGING_OLD_H
+ 
+-#include <anoptic_logging.h>   // log_types_t (LOG_DEBUG..LOG_FATAL), shared with the ring logger
+ #include <stdint.h>
+ 
++// The retired 5-tier severities, preserved with the baseline (the ring logger moved to routes).
++typedef enum {
++    LOG_DEBUG,
++    LOG_INFO,
++    LOG_WARN,
++    LOG_ERROR,
++    LOG_FATAL
++} log_types_t;
++
+ #define MTXLOG_MSG_MAX  4096u             // max formatted line, NUL included
+ #define MTXLOG_BUF_CAP  (1u << 16)        // shared buffer, must exceed MSG_MAX
+ #define MTXLOG_FILENAME "anoptic_mtx.log" // distinct from the ring logger's file, so both can run
+diff --git a/src/logging/logging_ring.h b/src/logging/logging_ring.h
+index f7e2920..73aa31c 100644
+--- a/src/logging/logging_ring.h
++++ b/src/logging/logging_ring.h
+@@ -31,6 +31,8 @@
+ enum {
+     ANO_LOG_COMMITTED = 1 << 0, // set on publish, so a committed tag is nonzero even at len 0
+     ANO_LOG_DEFERRED  = 1 << 1, // body is a deferred-format capture blob, not finished text (┬º9 proto)
++    ANO_LOG_TOFILE    = 1 << 2, // sink: batched to the output file at drain
++    ANO_LOG_TOCON     = 1 << 3, // sink: echoed to the terminal at drain
+ };
+ 
+ // An entry's head line begins with this 16-byte marker. The rest of the head line and every
+@@ -51,8 +53,8 @@ typedef union {
+     // _Static_assert below proves it). It is chosen so `len` is the low 16 bits of `w`.
+     struct {
+         uint16_t len;       // stored text bytes, span = ceil((16 + len) / ANO_CL)
+-        uint8_t  level;     // log_types_t copy, so the flusher routes by severity without the text
+-        uint8_t  flags;     // ANO_LOG_COMMITTED + ANO_LOG_DEFERRED
++        uint8_t  level;     // ano_loglevel_t copy, so the flusher routes by severity without the text
++        uint8_t  flags;     // ANO_LOG_COMMITTED + ANO_LOG_DEFERRED + sink bits
+         uint32_t cycle;     // lap number (pos >> shift), so a stale prior-lap tag is told from this lap's.
+                             //   Lets the drainer reclaim by cycle check, no per-slot zeroing.
+     };

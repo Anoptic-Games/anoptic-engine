@@ -104,7 +104,7 @@ static inline const char *anostr_bytes(const anostr_t *s)
 }
 
 // Format-argument adapter: pass a value to any printf-family "%.*s" conversion, the logger included -- no anostr_to_cstr copy:
-//     ano_log_info("loading %.*s", anostr_fmt(path));
+//     ano_log(ANO_INFO, "loading %.*s", anostr_fmt(path));
 #define anostr_fmt(s) (int)anostr_len((s)), anostr_bytes((const anostr_t[]){ (s) })
 
 // ---------------------------------------------------------------------------------------------

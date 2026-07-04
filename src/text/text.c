@@ -73,7 +73,7 @@ int ano_text_init(void)
     if (err != FT_Err_Ok)
     {
         const char *msg = FT_Error_String(err);
-        ano_log_error("text: FT_New_Library failed: %d (%s)", (int)err, msg ? msg : "?");
+        ano_log(ANO_ERROR, "text: FT_New_Library failed: %d (%s)", (int)err, msg ? msg : "?");
         g_ftLibrary = NULL;
         mi_heap_destroy(g_textHeap);
         g_textHeap = NULL;
@@ -84,7 +84,7 @@ int ano_text_init(void)
 
     FT_Int maj = 0, min = 0, pat = 0;
     FT_Library_Version(g_ftLibrary, &maj, &min, &pat);
-    ano_log_info("text: FreeType %d.%d.%d ready (module-heap backed)", maj, min, pat);
+    ano_log(ANO_INFO, "text: FreeType %d.%d.%d ready (module-heap backed)", maj, min, pat);
     return 0;
 }
 
@@ -146,7 +146,7 @@ AnoFontId ano_text_font_load(const char *path)
     }
     if (slot == ANO_TEXT_MAX_FONTS)
     {
-        ano_log_error("text: font registry full (%u faces), cannot load '%s'",
+        ano_log(ANO_ERROR, "text: font registry full (%u faces), cannot load '%s'",
                       ANO_TEXT_MAX_FONTS, path);
         return 0;
     }
@@ -156,20 +156,20 @@ AnoFontId ano_text_font_load(const char *path)
     if (err != FT_Err_Ok)
     {
         const char *msg = FT_Error_String(err);
-        ano_log_error("text: FT_New_Face('%s') failed: %d (%s)", path, (int)err,
+        ano_log(ANO_ERROR, "text: FT_New_Face('%s') failed: %d (%s)", path, (int)err,
                       msg ? msg : "?");
         return 0;
     }
     if (!FT_IS_SCALABLE(face))
     {
         // The bake path consumes outlines only; bitmap strikes have no curves.
-        ano_log_error("text: '%s' is not a scalable outline face", path);
+        ano_log(ANO_ERROR, "text: '%s' is not a scalable outline face", path);
         FT_Done_Face(face);
         return 0;
     }
 
     g_faces[slot] = face;
-    ano_log_info("text: loaded '%s' (%ld glyphs, upem %u)", path, (long)face->num_glyphs,
+    ano_log(ANO_INFO, "text: loaded '%s' (%ld glyphs, upem %u)", path, (long)face->num_glyphs,
                  (unsigned)face->units_per_EM);
     return slot + 1u;
 }

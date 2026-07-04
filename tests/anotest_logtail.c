@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Logger tail-latency benchmark: PER-CALL ano_log_enqueue latency percentiles (p50/p90/p99/p99.9),
+// Logger tail-latency benchmark: PER-CALL ano_log() latency percentiles (p50/p90/p99/p99.9),
 // the numbers anotest_logbench's means cannot show. Every call is timed individually with a
 // calibrated rdtsc on x86-64 (QPC's 100ns grain would swallow a ~30ns fast path), falling back to
 // ano_timestamp_ticks elsewhere. P producers hammer enqueue while the logger's own drain thread
@@ -67,8 +67,7 @@ static void *producer(void *p)
     prod_arg *a = p;
     for (int i = 0; i < a->count; i++) {
         uint64_t t0 = tick_now();
-        ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__,
-                        "tail bench thread %d message %d with payload", a->id, i);
+        ano_log(ANO_INFO, "tail bench thread %d message %d with payload", a->id, i);
         bench_lat_add(&a->lat, tick_now() - t0);
     }
     return NULL;
@@ -135,7 +134,7 @@ int main(int argc, char **argv)
     ano_log_output_dir(TAIL_DIR);
 
     for (int i = 0; i < 256; i++)   // warm caches + branch predictors
-        ano_log_enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "warm %d", i);
+        ano_log(ANO_INFO, "warm %d", i);
     ano_log_flush();
 
     for (int p = 0; p < NPOINTS; p++) {
