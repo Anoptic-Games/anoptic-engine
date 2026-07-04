@@ -340,11 +340,25 @@ re-ABIs.
 
 ## 9. Future paths (explicitly out of PoC scope)
 
-- World-space text: the same curve/directory buffers evaluated in a fragment shader on
-  quads/decals — the paper's pixel-shader variant, where the dynamically-computed em-space
-  footprint gives perspective-correct AA with zero resource invalidation. Slots into the
-  reserved `PIPELINE_UI`/decal lanes as a material type when needed. Nothing in the PoC data
-  design blocks this; it is the reason the bake is projection-agnostic.
+- World-space text (LANDED 2026-07-04, ahead of schedule): the paper's pixel-shader
+  variant, built as a bespoke lane rather than a material type — textworld.vert/.frag on a
+  bufferless spinning quad, recorded inside each view's additive pass (the last MSAA color
+  pass, so the panel resolves with the scene; depth-tested LESS/no-write, premultiplied
+  src-over onto lit HDR, cull NONE so the back reads as a mirrored sign). The coverage math
+  moved to a shared include (textcoverage.glsl) consumed verbatim by both lanes, so the
+  fragment variant can never drift from the compute lane or the CPU reference. The em
+  window comes from screen derivatives of the interpolated panel coordinate
+  (abs(dFdx)+abs(dFdy)), giving perspective-adaptive AA — grazing views widen the window
+  and the text self-filters instead of shimmering. Text shapes once at init into the upper
+  region of the per-frame instance buffers (index ANO_TEXT_WORLD_FIRST on; the OSD pending
+  path owns the region below), through the same shaper — kerning included — and the same
+  48 B ABI; the raster descriptor set is shared (bindings 0–2 gained FRAGMENT visibility;
+  the storage-image binding stays compute-only and is never statically used by the
+  fragment stage). The MVP composes CPU-side per view from the uboData mirrors
+  (proj·view·model), yaw driven by the UBO clock. Gate: ANO_FORCE_NO_TEXT_WORLD; both
+  states hardware-verified validation-clean, suite 15/15; the panel is visible in main and
+  PiP views (world content in every camera), readable front-on and correctly mirrored from
+  behind. Panel: 768×256 virtual px on a 6×2-unit quad at the atrium center, 64 px text.
 - Dense-text scaling: the paper's scanline-partition/stripe acceleration with cooperative
   shared-memory curve loads replaces the per-tile gather when full-page text appears.
   Indirect dispatch over non-empty tiles is the intermediate step.

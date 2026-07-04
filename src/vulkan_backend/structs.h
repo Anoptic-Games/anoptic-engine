@@ -1088,6 +1088,15 @@ typedef struct RendererState
     // non-fatally if the lane's objects fail); off falls back to the in-frame record.
     bool                    asyncText;
     VkSemaphore             textTimeline;
+    // World-space text lane (the paper's pixel-shader variant): a bespoke spinning quad
+    // drawn inside each view's additive pass (the last MSAA color pass, so it resolves
+    // with the scene). Same glyph buffers and instance ABI; instances live in the upper
+    // region of the per-frame text buffers (index ANO_TEXT_WORLD_FIRST on), shaped once
+    // at init. Gate: textWorld (textOverlay && !ANO_FORCE_NO_TEXT_WORLD).
+    bool                    textWorld;
+    VkPipeline              textWorldPipeline;
+    VkPipelineLayout        textWorldLayout;
+    uint32_t                textWorldCount;
 
     // Hi-Z occlusion pyramid build (review 4.9 step 3). The pipeline lives in prototypes[
     // PIPELINE_COMPUTE_HIZ] (two implementations: [0]=reduce MSAA depth->mip0, [1]=downsample mip->mip,
