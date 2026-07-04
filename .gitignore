@@ -126,6 +126,9 @@ assets/*
 # Scratchpad
 scratch/
 
+# Unicode Character Database cache for tools/gen_unicode_tables.c
+tools/ucd/
+
 # Exceptions
 .claude/*
 !.claude/settings.json
