@@ -29,6 +29,12 @@ target_link_libraries(anotest_strings PRIVATE anoptic_core)
 add_test(NAME anoptic_strings COMMAND anotest_strings)
 set_tests_properties(anoptic_strings PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Testing for ``anoptic_strings_utf.h`` (UTF-8 iteration/encode, Unicode case + classification)
+add_executable(anotest_strings_utf anotest_strings_utf.c)
+target_link_libraries(anotest_strings_utf PRIVATE anoptic_core)
+add_test(NAME anoptic_strings_utf COMMAND anotest_strings_utf)
+set_tests_properties(anoptic_strings_utf PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Testing for ``anoptic_text.h`` (FreeType lifecycle; glyph-curve bake: stream grammar,
 # monotonicity, winding, and the FONT_RENDER.md audit-count oracle). Geist is staged next
 # to the binary; the test chdirs to its exe dir (gamepath) and loads it by relative path.
