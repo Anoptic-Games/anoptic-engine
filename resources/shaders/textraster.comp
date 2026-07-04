@@ -46,19 +46,22 @@ const uint CHUNK = 64u;            // instances per cooperative cull round == wg
 shared uint sHit[CHUNK]; // per-lane tile-cull verdict for the current chunk
 shared uint sAny;        // chunk had any hit: empty tiles skip the scan entirely
 
-// Single root of a monotone quadratic component hitting `target`, clamped to [0,1];
-// near-linear segments (baked lines' quadratic term is f16 noise) use the chord.
-// Caller guarantees c0 != c2.
+// Single root of a monotone quadratic component hitting `target`, clamped to [0,1],
+// in the citardauq form 2c/(-b - sign(span)*sqrt(d)): the denominator is always the
+// additive |b|+sqrt(d) under monotonicity, so shallow curves don't cancel and a -> 0
+// (baked lines) degrades exactly to the chord with no threshold branch (a threshold
+// here mis-crosses shallow quads -> ghost bands; see text_raster_ref.c).
 float solve_mono(float c0, float c1, float c2, float target)
 {
     float span = c2 - c0;
     float a = c0 - 2.0 * c1 + c2;
-    if (abs(a) <= 1e-2 * abs(span))
-        return clamp((target - c0) / span, 0.0, 1.0);
     float b = 2.0 * (c1 - c0);
-    float d = max(b * b - 4.0 * a * (c0 - target), 0.0);
-    float t = (-b + (span < 0.0 ? -sqrt(d) : sqrt(d))) / (2.0 * a);
-    return clamp(t, 0.0, 1.0);
+    float c = c0 - target;
+    float d = max(b * b - 4.0 * a * c, 0.0);
+    float den = -b - (span < 0.0 ? -sqrt(d) : sqrt(d));
+    if (den == 0.0)
+        return 0.0;
+    return clamp(2.0 * c / den, 0.0, 1.0);
 }
 
 // Signed area swept between one monotone quad and the window's right edge, clipped to
