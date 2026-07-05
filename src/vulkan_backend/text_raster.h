@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Text overlay plumbing (FONT_RENDER.md step 5): glyph-curve GPU buffers, per-frame
+// Text overlay plumbing: glyph-curve GPU buffers, per-frame
 // overlay raster targets, the PIPELINE_COMPUTE_TEXTRASTER pass, and the composite
 // blend draw. Gated on rendererState.textOverlay.
 

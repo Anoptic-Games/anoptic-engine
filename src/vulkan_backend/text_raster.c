@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Text overlay plumbing (FONT_RENDER.md step 5). CPU side: FreeType init + font bake
+// Text overlay plumbing. CPU side: FreeType init + font bake
 // at renderer init. GPU side: static glyph buffers, per-frame frame-data buffers and
 // overlay images, the PIPELINE_COMPUTE_TEXTRASTER prototype, and a composite blend
 // pipeline sharing the tonemap set/pipeline layout.

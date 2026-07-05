@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // CPU reference rasterizer for the Scanline Sweeper coverage math, the scalar mirror
-// the GLSL compute shader is written against (FONT_RENDER.md step 3). All per-pixel
+// the GLSL compute shader is written against. All per-pixel
 // arithmetic is float32 to predict shader precision. Consumes the baked stream verbatim
 // (grammar in anoptic_text.h). No gamma, output is linear coverage like FT_Render_Glyph's.
 
@@ -139,7 +139,7 @@ void ano_text_raster_ref(const uint32_t *points, const AnoGlyphEntry *glyph,
                 float wx = (float)(left + c) * invS;
                 float sum = ano_text_window_sum(points, glyph, wx, wy, invS, invS);
                 maxSum = fmaxf(maxSum, sum);
-                // Per-glyph clamp (FONT_RENDER.md 6.1). No gamma here.
+                // Per-glyph clamp. No gamma here.
                 out[r * width + c] = (uint8_t)(clampf(sum, 0.0f, 1.0f) * 255.0f + 0.5f);
             }
         }

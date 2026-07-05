@@ -10,7 +10,7 @@
 // emits, and frees the range with one `head` store. A slot is live iff its tag is committed and carries
 // the current lap (`cycle`), so reuse needs no zeroing. Only `tag` is synchronized. Timestamp and text
 // ride its release/acquire as plain memory.
-// Design: docs/logger.md. Migrates to anoptic_collections.h at the lock-free port.
+// Migrates to anoptic_collections.h at the lock-free port.
 
 #ifndef ANOPTICENGINE_LOGGING_RING_H
 #define ANOPTICENGINE_LOGGING_RING_H

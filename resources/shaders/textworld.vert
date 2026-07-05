@@ -1,6 +1,6 @@
 #version 450
 
-// World-space text panel (FONT_RENDER.md): bufferless two-triangle quad centered on its
+// World-space text panel: bufferless two-triangle quad centered on its
 // model origin in the XY plane. Emits panel-space text coordinates, pixels y-down.
 
 layout(push_constant) uniform TextWorldPush {

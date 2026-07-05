@@ -134,7 +134,7 @@ void em_box(vec4 inv, vec2 rMin, vec2 rMax, out vec2 lo, out vec2 hi)
 }
 
 // Premultiplied contribution of one instance over the text-space window [rMin, rMax]:
-// per-glyph coverage clamp (FONT_RENDER.md 6.1) times instance color.
+// per-glyph coverage clamp times instance color.
 vec4 shade_window(uint idx, vec2 rMin, vec2 rMax)
 {
     GlyphInstance gi = instances[idx];

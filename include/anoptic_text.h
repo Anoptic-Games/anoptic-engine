@@ -6,7 +6,7 @@
 // Anoptic Text API
 //
 // Font loading, glyph-curve baking, and minimal text shaping for the GPU text stack.
-// Design of record: FONT_RENDER.md. No FreeType type crosses this header.
+// No FreeType type crosses this header.
 //
 // Threading: init, all font loading/baking, and shutdown must run on the SAME thread.
 // Baked blobs and shaped output are plain data, readable from any thread.

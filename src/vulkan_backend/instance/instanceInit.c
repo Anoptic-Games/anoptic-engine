@@ -120,8 +120,8 @@ static void charCallback(GLFWwindow* window, unsigned int codepoint)
 
 // L cycles the lighting mode: shadow maps -> hybrid (RC point + shadow-mapped dir/spot) ->
 // radiance cascades. Edge-triggered on press so one keystroke advances one mode. The setter just
-// updates the render state; updateCullingBuffers publishes it into the GlobalUBO. See AnoLightingMode
-// and docs/artifacts/RADIANCE_CASCADES.md. Runs on the main (render) thread alongside the frame loop.
+// updates the render state; updateCullingBuffers publishes it into the GlobalUBO. See AnoLightingMode.
+// Runs on the main (render) thread alongside the frame loop.
 // These L/H/[]/;' keys stay render-side dev tooling (they tune render-thread-only state); the same
 // keystrokes are ALSO forwarded to logic, which today consumes only the camera-control keys.
 static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -1950,7 +1950,7 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 		}
 	}
 
-	// Text overlay raster targets (FONT_RENDER.md step 5): per-frame, swapchain-sized.
+	// Text overlay raster targets: per-frame, swapchain-sized.
 	ano_vk_text_create_overlay(ctx, &rendererState);
 }
 
@@ -1969,7 +1969,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets. Transparency sort (audit 4.7) adds
 	// cull binding 10 (1 SSBO, the sort-key buffer) — the +1 in the shared term below.
 	// global now 12 SSBOs/view (binding 12 = per-light LightRuntime record); + lightsetup set (3 SSBO) shared.
-	// Text overlay (FONT_RENDER.md step 5) adds per frame: raster set (3 SSBO + 1 storage
+	// Text overlay adds per frame: raster set (3 SSBO + 1 storage
 	// image) + overlay sample set (1 sampler), 2 extra sets.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u + 3u);
@@ -3003,7 +3003,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		}
 	}
 
-	// GPU timestamp profiling (RADIANCE_CASCADES.md §8). One query pool of ANO_TS_COUNT timestamps
+	// GPU timestamp profiling. One query pool of ANO_TS_COUNT timestamps
 	// per frame in flight. Gated on the graphics queue family's timestampValidBits + a usable period;
 	// when unsupported the whole timing path is a no-op and rendering is unaffected.
 	{
@@ -3185,7 +3185,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		ShadowResources* sh = &rendererState.frames[i].shadow;
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
 	}
-	// Text overlay (FONT_RENDER.md): frame-data + glyph curve/directory buffers, the CPU
+	// Text overlay: frame-data + glyph curve/directory buffers, the CPU
 	// bake heap, and the FreeType backend. Pipelines die in ano_vk_cleanup_pipelines.
 	ano_vk_text_destroy(ctx, &rendererState);
 

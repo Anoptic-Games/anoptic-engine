@@ -1,6 +1,6 @@
 #version 450
 
-// Scanline Sweeper overlay raster (FONT_RENDER.md step 6): integrates glyph coverage
+// Scanline Sweeper overlay raster: integrates glyph coverage
 // per pixel using the shared math in textcoverage.glsl. One workgroup per 8x8 pixel
 // tile. The 64 lanes cooperatively cull instances against the tile in 64-instance
 // chunks, then each in-extent pixel integrates the survivors and over-blends

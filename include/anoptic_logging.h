@@ -4,12 +4,12 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Lock-free MPSC logger, one per program, owned by main. Producers format on their own threads
-// into a shared ring. An owned consumer thread drains it continuously. Design: docs/logger.md.
+// into a shared ring. An owned consumer thread drains it continuously.
 //
 // Four macros over one function. Severity says how bad. Route says where and when.
 //   ano_log(ANO_WARN, "fmt %d", x);                        the level's default route
 //   ano_rlog(ANO_ERROR, ANO_TERM | ANO_NOW, "fmt %d", x);  explicit route
-//   ano_debug_log(...) / ano_debug_rlog(...)               same, Debug builds only (conventions.md)
+//   ano_debug_log(...) / ano_debug_rlog(...)               same, Debug builds only
 //
 // The ANO_ prefix is load-bearing. Bare ERROR is a windows.h macro, bare FILE a stdio typedef.
 

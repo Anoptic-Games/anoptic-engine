@@ -5,7 +5,7 @@
 
 /* Coverage for anoptic_text.h: module lifecycle, white-box bake math (binary16,
  * monotone quad splitting, cubic->quad), the Geist ASCII bake against an independent
- * stream-grammar decoder and the FONT_RENDER.md audit oracles, the CPU reference
+ * stream-grammar decoder and the audit oracles, the CPU reference
  * rasterizer against FreeType ground truth (including the unclamped-peak oracle and
  * the ghost-pixel sweep), the shaper's golden layout and penOut continuation, the
  * multi-face Runic range bake, color/style runs, and the GPOS PairPos reader (a
@@ -287,7 +287,7 @@ static void validate_bake(const AnoFontBake *b)
         total += e->curveCount;
     }
 
-    // Audit oracle (FONT_RENDER.md section 3): counts measured on this exact font
+    // Audit oracle: counts measured on this exact font
     // file by an independent fontTools implementation, composite glyphs decomposed.
     printf("bake: %u monotone curves across ASCII (audit oracle 1654), %u stream points\n",
            total, b->pointCount);

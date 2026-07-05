@@ -1,10 +1,7 @@
 #version 450
 
-// Clustered-forward light assignment. One invocation per froxel: reconstruct the froxel's
-// view-space AABB, test every active light's bounding sphere against it, and write the froxel's
-// light index list + count. The fragment shader then loops only its froxel's lights. See
-// LIGHTING_SCALE.md. Brute force O(clusters x lights) — fine for thousands of lights; a coarse
-// pre-pass is a future optimization.
+// Clustered-forward light assignment. One invocation per froxel: reconstruct the froxel's view-space
+// AABB, test every active light's sphere against it, write the froxel's light index list + count.
 layout(local_size_x = 64) in;
 
 layout(set = 0, binding = 0) uniform GlobalUBO {
@@ -23,15 +20,13 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint  clusterDimY;
     uint  clusterDimZ;
     uint  maxLightsPerCluster;
-    uint  lightingMode;   // AnoLightingMode (RADIANCE_CASCADES.md); unused here, kept in std140 sync
+    uint  lightingMode;   // AnoLightingMode, unused here, std140 sync
     uint  debugView;
     uint  pad0;
     uint  pad1;
 } g;
 
-// Per-light world pose precomputed by lightsetup.comp (its binding 2). Reading posRange here
-// replaces the old transforms[] mat4 load + multiply per froxel per light — the pass's worst
-// latency line in the profile. Layout MUST match lightsetup.comp / flat.frag / transmission.frag.
+// Per-light world pose precomputed by lightsetup.comp. Layout MUST match lightsetup.comp / flat.frag / transmission.frag.
 struct LightRuntime {
     vec4 posRange;   // xyz = world position,  w = range
     vec4 dirType;    // xyz = world forward,    w = float(type)
@@ -55,9 +50,9 @@ struct LightData {
     uint  enabled;
     uint  pad0;
     uint  pad1;
-    vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
+    vec3  localOffset; // model-space offset. world pos = transforms[transformIndex] * vec4(offset,1)
     uint  pad2;
-    vec3  localDir;    // unused here (binning is position+range); present so the struct stride matches
+    vec3  localDir;    // unused here, stride padding
     uint  pad3;
 };
 
@@ -99,8 +94,7 @@ void main() {
     float ndcMinY = (float(cy)      / float(g.clusterDimY)) * 2.0 - 1.0;
     float ndcMaxY = (float(cy + 1u) / float(g.clusterDimY)) * 2.0 - 1.0;
 
-    // view.x = ndc.x * (-z) / proj00, view.y = ndc.y * (-z) / proj11. Min/max over all 8 corners
-    // handles any projection sign (e.g. a Y-flipped proj11) without special-casing.
+    // view.x = ndc.x * (-z) / proj00, view.y = ndc.y * (-z) / proj11. Min/max over 8 corners handles any projection sign.
     float p00 = g.proj[0][0];
     float p11 = g.proj[1][1];
     float zs[2] = float[2](zNear, zFar);

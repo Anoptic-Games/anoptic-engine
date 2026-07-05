@@ -1,11 +1,8 @@
 #version 450
 
-// Streamed-transform scatter pass (Path B, docs/artifacts/STREAMED_TRANSFORMS.md).
-// Runs after update.comp and before cull: overwrites each ANO_MOTION_STREAMED slot
-// with its CPU-supplied transform for this tick. update.comp has already written the
-// base pose into those slots (they read as static there), so a streamed entity absent
-// from this tick's batch keeps its base pose rather than stale data. O(streamCount):
-// one mat4 store per entry, dense coalesced reads, scattered writes keyed by slot.
+// Streamed-transform scatter pass.
+// Runs after update.comp, before cull: overwrites each ANO_MOTION_STREAMED slot with its CPU-supplied
+// transform for this tick. update.comp wrote the base pose first, absent entities keep it. O(streamCount).
 
 layout(local_size_x = 256) in;
 
@@ -13,8 +10,7 @@ layout(set = 0, binding = 0) readonly buffer StreamSlots {
     uint slots[];
 };
 
-// Bound to the published ring slice via a dynamic descriptor offset, so xforms[0..count)
-// is this tick's slice; the host never copies the matrices into a per-frame buffer.
+// Bound to the published ring slice via a dynamic descriptor offset. xforms[0..count) is this tick's slice.
 layout(set = 0, binding = 1) readonly buffer StreamTransforms {
     mat4 xforms[];
 };

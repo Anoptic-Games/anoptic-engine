@@ -14,7 +14,7 @@
  * the opaque AnoRenderBridge handle below. The transport mechanism (the lock-free
  * SPSC rings, the bridge struct, the render->logic event protocol, the logic-side
  * DisplayState projection) is private to the render_bridge module under src/ and
- * is never exposed here. Design of record: docs/artifacts/VK_BACKEND_INTEROP.md.
+ * is never exposed here.
  */
 
 /*
@@ -93,7 +93,7 @@ uint32_t anoRenderAssetPrimitives(uint32_t asset_id, const mat4 root, AnoRendera
 uint32_t anoRenderFallbackMesh(void);
 uint32_t anoRenderDefaultMaterial(void);
 
-// The renderer's baked font (FONT_RENDER.md), for LOGIC-SIDE shaping: game code shapes
+// The renderer's baked font, for LOGIC-SIDE shaping: game code shapes
 // UTF-8 into AnoGlyphInstance arrays with ano_text_shape/_runs against this bake on any
 // thread (the bake is immutable plain data, published before the logic thread starts)
 // and ships the instances through ano_render_text_set below. NULL when the text stack
@@ -167,8 +167,8 @@ enum {
                                         // frame); off->on re-allocates if the runtime budget allows.
 };
 
-// Occlusion model selector, profiled head-to-head against radiance cascades (see
-// docs/artifacts/RADIANCE_CASCADES.md). Drives, per light type, whether a light's direct
+// Occlusion model selector, profiled head-to-head against radiance cascades.
+// Drives, per light type, whether a light's direct
 // occlusion is sampled from its conventional shadow map this frame or carried by the radiance
 // cascade field. The renderer also gates the shadow depth render itself on this, so a type that
 // is RC-occluded pays no shadow-map render cost (the memory/bandwidth win under measurement).
@@ -418,7 +418,7 @@ bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
                                     uint32_t fields);
 bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 
-// Screen-text blocks (FONT_RENDER.md, the v0 logic->render text path). `set` copies the
+// Screen-text blocks (the v0 logic->render text path). `set` copies the
 // shaped instances into one render-owned block (count truncated to ANO_RENDER_TEXT_MAX)
 // and REPLACES block text_id's contents — the caller's array need only live until the
 // call returns. `clear` removes the block (idempotent; unknown text_id is a no-op).

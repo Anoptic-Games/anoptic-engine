@@ -1,6 +1,6 @@
 #version 450
 
-// Text/UI overlay composite (FONT_RENDER.md): passthrough sample of the compute-rastered
+// Text/UI overlay composite: passthrough sample of the compute-rastered
 // overlay, premultiplied linear RGBA. Fixed-function blend does src-over.
 // Shares tonemap.vert's fullscreen triangle and set layout.
 
