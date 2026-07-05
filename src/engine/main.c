@@ -17,7 +17,7 @@
 #include "anoptic_logging.h"
 
 #ifndef HEADLESS_BUILD
-// Renderer contract + GLFW — only compiled into the graphical engine.
+// Renderer contract + GLFW, graphical engine only.
 #include <anoptic_render.h>
 #include <anoptic_text.h> // logic-side shaping over anoRenderTextBake()
 #include <vulkan/vulkan.h>
@@ -40,18 +40,17 @@ static atomic_bool g_logicShouldStop = false;
 // ---------------------------------------------------------------------------
 // Scene composition (logic owns the scene)
 // ---------------------------------------------------------------------------
-// The render world loaded the glTF assets + fallback cube and assigned their GPU mesh/material
-// indices; the logic master composes the scene from them and emits the creates through the bridge —
-// the same command path a runtime spawn takes. This replaces the renderer's old hardcoded init rig.
+// The render world loaded the glTF assets + fallback cube and assigned GPU mesh/material indices.
+// The logic master composes the scene and emits creates through the bridge.
 
-// Backpressure-safe submit for the one-time, small scene burst: retry until it fits the command ring.
+// Backpressure-safe submit: retry until it fits the command ring.
 static void submit_blocking(AnoRenderBridge* bridge, const RenderCommand* c) {
 	while (!ano_render_submit(bridge, c)) ano_sleep(1000);
 }
 
-// Spawn one renderable per primitive of asset `asset_id` at `root`, all sharing `motion` (+ speed for
-// spin/orbit). Returns the first primitive's render_id (so a caller can attach lights to it); advances *nextId.
-// Cap on primitives spawned per asset in one call; sized for Sponza's 103-primitive single node.
+// Spawn one renderable per primitive of asset `asset_id` at `root`, sharing `motion` (+ speed for spin/orbit).
+// Returns the first primitive's render_id. Advances *nextId.
+// Cap on primitives spawned per asset in one call.
 #define SPAWN_ASSET_MAX_PRIMS 256u
 static uint32_t spawn_asset(AnoRenderBridge* bridge, uint32_t* nextId, uint32_t asset_id,
                             const mat4 root, AnoMotionType motion, float speed) {
@@ -72,8 +71,8 @@ static uint32_t spawn_asset(AnoRenderBridge* bridge, uint32_t* nextId, uint32_t 
 	return first;
 }
 
-// Spawn a procedural box renderable (fallback cube + default material) with a full world transform,
-// static. Advances *nextId; returns its render_id.
+// Spawn a static procedural box renderable (fallback cube + default material) with a full world transform.
+// Advances *nextId. Returns its render_id.
 static uint32_t spawn_box(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 transform) {
 	uint32_t id = (*nextId)++;
 	RenderCommand c = { .kind = RCMD_CREATE, .render_id = id,
@@ -85,10 +84,9 @@ static uint32_t spawn_box(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 
 	return id;
 }
 
-// Spawn a mesh-less scene light-entity: its transform drives the light (position = column 3, forward =
-// -column 2 for dir/spot); light_index is a static-region palette row; casting lights take a static
-// shadow frustum. `motion` animates the slot (an orbiting light rides it for free). Advances *nextId;
-// returns its render_id.
+// Spawn a mesh-less scene light-entity: its transform drives the light (position = column 3, forward = -column 2 for dir/spot).
+// light_index is a static-region palette row. Casting lights take a static shadow frustum.
+// `motion` animates the slot. Advances *nextId. Returns its render_id.
 static uint32_t spawn_light_entity(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 transform,
                                    uint32_t light_index, const RenderLightParams* params,
                                    AnoMotionType motion, float speed) {
@@ -108,28 +106,24 @@ static uint32_t spawn_light_entity(AnoRenderBridge* bridge, uint32_t* nextId, co
 static void spawn_scene(AnoRenderBridge* bridge) {
 	uint32_t nextId = 0u;
 
-	// Viking room: the glTF is Z-up; rotate -90 deg about X to the engine's Y-up (this is the exact
-	// matrix the old rig's rotateMatrix(identity,'X',-pi/2) produced). Spins about +Y at 1 rad/s.
+	// Viking room: glTF is Z-up, rotate -90 deg about X to the engine's Y-up. Spins about +Y at 1 rad/s.
 	mat4 vikingRoot = {{1,0,0,0},{0,0,-1,0},{0,1,0,0},{0,0,0,1}};
 	spawn_asset(bridge, &nextId, 0u, vikingRoot, ANO_MOTION_SPIN, 1.0f);
 
-	// Two transmissive candle holders orbiting +Y at 0.5 rad/s at radii 2.0 / 2.2 (their camera-space
-	// order swaps each revolution — exercises the transparency sort). The first candle anchors the
-	// decorative candle lights below.
+	// Two transmissive candle holders orbiting +Y at 0.5 rad/s at radii 2.0 / 2.2.
+	// The first candle anchors the decorative candle lights below.
 	mat4 candle1 = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{2.0f,0,0,1}};
 	mat4 candle2 = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{2.2f,0,0,1}};
 	uint32_t candleSlot = spawn_asset(bridge, &nextId, 1u, candle1, ANO_MOTION_ORBIT, 0.5f);
 	spawn_asset(bridge, &nextId, 1u, candle2, ANO_MOTION_ORBIT, 0.5f);
 
-	// Sponza (asset_id 2): the scene environment. Y-up already, with its 0.008 scale baked into the node
-	// transform (~30 m atrium, floor at y ~ -1), so it drops in at identity; static. Its 103 primitives
-	// spawn as individual renderables (node-mesh placement stress) and supply the floor/walls the
-	// directional + point/spot shadows now fall on — so the old wide ground slab is gone. A no-op if
-	// Sponza failed to load (asset_id 2 unregistered). The viking room + candles sit as props on its floor.
+	// Sponza (asset_id 2): the scene environment. Y-up with its 0.008 scale baked into the node transform, dropped in at identity, static.
+	// Its 103 primitives spawn as individual renderables and supply the floor/walls the directional + point/spot shadows fall on.
+	// A no-op if Sponza failed to load (asset_id 2 unregistered). The viking room + candles sit as props on its floor.
 	mat4 sponzaRoot = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
 	spawn_asset(bridge, &nextId, 2u, sponzaRoot, ANO_MOTION_STATIC, 0.0f);
 
-	// Small sun-marker cube at the directional light's source (static), so the light's origin is visible.
+	// Small sun-marker cube at the directional light's source (static).
 	mat4 sunMarker = {{0.2f,0,0,0},{0,0.2f,0,0},{0,0,0.2f,0},{2.59f,5.18f,1.55f,1}};
 	spawn_box(bridge, &nextId, sunMarker);
 
@@ -178,7 +172,7 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 	}
 }
 
-// Logic-side text (FONT_RENDER.md v0 bridge): shape UTF-8 against the renderer's bake on THIS thread
+// Logic-side text (v0 bridge): shape UTF-8 against the renderer's bake on THIS thread
 // and ship the instances as named blocks. text_id is the producer's namespace. The demo drives all
 // verbs: a persistent title (SET), a transient notice (CLEAR), a per-second camera readout (REPLACE),
 // and a persistent unicode sampler.
@@ -201,8 +195,7 @@ void* anoLogicThreadMain(void* arg)
 	(void)arg;
 	AnoRenderBridge* bridge = anoRenderBridge();
 
-	// Compose the scene (logic owns it now): geometry + scene lights + candle lights, emitted through
-	// the bridge — the same command path a runtime spawn takes. Replaces the renderer's hardcoded rig.
+	// Compose the scene (logic owns it now): geometry + scene lights + candle lights, emitted through the bridge.
 	spawn_scene(bridge);
 
 	// One-time HUD blocks (below the renderer's own profiling OSD), backpressure-retried.
@@ -303,7 +296,7 @@ void* anoLogicThreadMain(void* arg)
 					ano_debug_log(ANO_INFO, "Pick: cursor over render_id %u", ev.u.pick_render_id);
 				break;
 			case REVENT_SLOT_RETIRED:   break; // ECS id recycling lands with the real producer
-			case REVENT_BATCH_CONSUMED: break; // borrowed-batch ack (audit 4.10); unused by this stand-in
+			case REVENT_BATCH_CONSUMED: break; // borrowed-batch ack, unused by this stand-in
 			case REVENT_CAPACITY:
 				ano_log(ANO_WARN, "Producer: back-channel saturated; some input samples were dropped.");
 				break;
@@ -315,7 +308,7 @@ void* anoLogicThreadMain(void* arg)
 			float dt = (now - lastCam) / 1000000.0f; lastCam = now;
 			if (dt > 0.1f) dt = 0.1f; // clamp a long stall so a hitch is not a teleport
 			float cp = cosf(camPitch), sp = sinf(camPitch), sy = sinf(camYaw), cy = cosf(camYaw);
-			float fwd[3]   = { cp * sy, sp, -cp * cy }; // RH, looks down -Z at yaw 0 (math_conventions.md)
+			float fwd[3]   = { cp * sy, sp, -cp * cy }; // RH, looks down -Z at yaw 0
 			float right[3] = { cy, 0.0f, sy };          // normalize(cross(fwd, worldUp))
 			float step = 2.5f * dt;                     // units/sec
 			float mF = (float)((int)inW - (int)inS);
@@ -378,7 +371,7 @@ int main()
     // Resolve assets relative to the executable, not the launch directory.
     // Shaders resolve against ano_fs_gamepath() directly (loadFile in pipeline.c);
     // only the CWD-relative asset loads (glTF, textures) need this.
-    // Interim shim until the Resource Manager owns asset paths (docs/resourcesmg.md).
+    // Interim shim until the Resource Manager owns asset paths.
     if (!ano_fs_chdir_gamepath())
         ano_rlog(ANO_WARN, ANO_TERM | ANO_NOW, "Warning: could not set the working directory to the executable's; "
                "assets will load relative to the current working directory.");

@@ -24,19 +24,19 @@
 #include "vulkan_backend/geometry.h"
 #include "vulkan_backend/render_slots.h"
 #include "render_bridge/render_bridge.h" // private transport; completes AnoRenderBridge + protocol
-#include <anoptic_text.h>                // AnoFontBake + AnoGlyphInstance (text overlay, FONT_RENDER.md)
+#include <anoptic_text.h>                // AnoFontBake + AnoGlyphInstance (text overlay)
 
 #define MAX_FRAMES_IN_FLIGHT 3
 
 // HDR linear render target. The geometry passes render into this float format (MSAA),
 // resolve to a single-sample HDR image, and a fullscreen tonemap pass encodes to the
 // swapchain. R16G16B16A16_SFLOAT is in Vulkan's mandatory color-attachment + sampled +
-// blend set, so it needs no runtime format-support query. See LIGHTING_SCALE.md.
+// blend set, so it needs no runtime format-support query.
 #define ANO_HDR_COLOR_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
 
 // Clustered-forward froxel grid. Fixed dimensions (independent of entity/light count), so the
 // cluster buffers are a fixed allocation, not on the entity growth path. ANO_CLUSTER_MAX_LIGHTS
-// caps lights per froxel; overflow drops extras (logged-in-design; see LIGHTING_SCALE.md).
+// caps lights per froxel; overflow drops extras (logged-in-design).
 #define ANO_CLUSTER_X            16u
 #define ANO_CLUSTER_Y            9u
 #define ANO_CLUSTER_Z            24u
@@ -57,7 +57,7 @@
 // phase) to reject occluded entities. Mip cap covers a half-res 4K base (2048 -> 12 mips) with slack.
 #define ANO_MAX_HIZ_MIPS         16u
 
-// Max live logic-submitted screen-text blocks (FONT_RENDER.md v0 bridge). Excess is dropped
+// Max live logic-submitted screen-text blocks (v0 bridge). Excess is dropped
 // with a log line.
 #define ANO_TEXT_MAX_BLOCKS      64u
 
@@ -124,7 +124,7 @@ _Static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 
 #define ANO_SHADOW_ATLAS_LAYERS    (ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_ATLAS_SUBLAYERS) // 84
 #define ANO_SHADOW_ORTHO_EXTENT  20.0f                  // half-size of the single directional ortho box; sized to enclose the ~30m Sponza atrium (mirror of shadowsetup.comp; non-cascaded, so larger = coarser texels)
 
-// Per-pass GPU timestamp boundaries (RADIANCE_CASCADES.md §8). Fence-post model: one timestamp at
+// Per-pass GPU timestamp boundaries. Fence-post model: one timestamp at
 // each section boundary, region time = consecutive delta. Shared by the record path (vulkanMaster)
 // and the per-frame query-pool sizing (instanceInit). Insert RC boundaries here as those passes land.
 enum {
@@ -297,7 +297,7 @@ typedef struct InstanceDataBuffer
     uint32_t         count;
 } InstanceDataBuffer;
 
-// Streamed-transform lane (Path B, docs/artifacts/STREAMED_TRANSFORMS.md). Two SoA
+// Streamed-transform lane (Path B). Two SoA
 // staging buffers on their OWN capacity axis (the streamed set is a minority, not the
 // entity axis): per-tick render slots + their CPU transforms, scattered into the live
 // transform buffer by scatter.comp. Per-frame, host-visible, ephemeral (overwritten
@@ -365,7 +365,7 @@ typedef struct TransformStreamBuffer
 // staging[f] -> device with one vkCmdCopyBuffer, barrier-ordered after prior frames' shader
 // reads (single graphics queue, cross-submission) and before this frame's reads. ONE upload
 // suffices: the device buffer is shared by every frame in flight. Growth copies the live span
-// old->new device-side under vkDeviceWaitIdle. See docs/artifacts/DEVICE_LOCAL_SLOTS.md.
+// old->new device-side under vkDeviceWaitIdle.
 typedef struct SlotUpload
 {
     VkBuffer        device;                            // ×1 DEVICE_LOCAL authoritative (GPU reads this)
@@ -958,7 +958,7 @@ typedef struct PerFrameResources
     VkCommandBuffer     preludeCommandBuffer;
     VkCommandBuffer     lightcullCommandBuffer;
 
-    // Per-pass GPU timestamps (RADIANCE_CASCADES.md profiling harness). One pool per frame in
+    // Per-pass GPU timestamps. One pool per frame in
     // flight: reset + written during record, read back after this slot's fence next time round.
     VkQueryPool         timestampPool;
 
@@ -981,7 +981,7 @@ typedef struct PerFrameResources
     VkDescriptorSet     scatterSet;
     VkDescriptorSet     lightsetupSet;  // per-light runtime precompute (transforms+lights in, LightRuntime out)
 
-    // Text overlay (FONT_RENDER.md step 5). The overlay image is the glyph raster target
+    // Text overlay. The overlay image is the glyph raster target
     // (compute-written GENERAL, composite-sampled SHADER_READ), swapchain-sized, recreated
     // with the swapchain. textFrameBuffer is host-visible/mapped frame data, rewritten
     // wholesale when the text changes.
@@ -1061,7 +1061,7 @@ typedef struct RendererState
     VkDescriptorSetLayout   tonemapSetLayout;       // 1 combined-image-sampler (hdrColorView)
     VkPipelineCache         tonemapCache;
 
-    // Text overlay (FONT_RENDER.md). Glyph curves bake once (CPU blobs on textHeap) and
+    // Text overlay. Glyph curves bake once (CPU blobs on textHeap) and
     // upload to device-local buffers. Raster pass in prototypes[PIPELINE_COMPUTE_TEXTRASTER].
     // The composite blend draw is bespoke, shares the tonemap set/pipeline layout.
     // textOverlay gate: ANO_FORCE_NO_TEXT or a font/bake init failure turns it off.
@@ -1076,13 +1076,13 @@ typedef struct RendererState
     mi_heap_t*              textHeap;
     uint32_t                textInstanceCount; // instances in the CURRENT slot's frame buffer
     uint32_t                textFlags;         // TextRasterPush.flags (bit 0 = opaque self-test)
-    // Pending on-screen text (FONT_RENDER.md step 8): ano_vk_text_set shapes into this
+    // Pending on-screen text: ano_vk_text_set shapes into this
     // canonical array (textHeap) and bumps textVersion. Each frame slot copies it into its
     // mapped frame buffer after its fence wait (ano_vk_text_frame_refresh). Render thread only.
     AnoGlyphInstance*       textPending;
     uint32_t                textPendingCount;
     uint32_t                textVersion;
-    // Async text lane (FONT_RENDER.md step 7): lag-0, rides asyncHiz's infrastructure. The
+    // Async text lane: lag-0, rides asyncHiz's infrastructure. The
     // per-frame raster CB submits to ctx.computeQueue with no waits and signals
     // textTimeline == ordinal. The main submit waits it at FRAGMENT_SHADER.
     // Gate: asyncText, downgraded non-fatally if the lane's objects fail.
@@ -1258,7 +1258,7 @@ typedef struct RendererState
     // Culling system
     CullingBuffers          culling;
 
-    // ECS <-> render bridge (VK_BACKEND_INTEROP.md). The render master owns the
+    // ECS <-> render bridge. The render master owns the
     // slot authority and consumes discrete state-transition commands; per-entity
     // GPU layout is keyed off render_slots, never the logic-side entity index.
     mi_heap_t              *renderHeap;     // backs slot table + bridge rings
@@ -1267,7 +1267,7 @@ typedef struct RendererState
     uint64_t                globalFrame;    // monotonic frame counter for slot quarantine
     LightRegistry           lightRegistry;  // runtime light attach/detach lifecycle (audit 4.7 Phase 3)
 
-    // Runtime render config (RADIANCE_CASCADES.md). lightingMode is an AnoLightingMode, stored
+    // Runtime render config. lightingMode is an AnoLightingMode, stored
     // as u32 so it copies straight into the GlobalUBO tail; debugView selects a visualization
     // (0 = off) added with the radiance-cascade passes. Process-arena lifetime, mutated only
     // from the render thread (L-key callback / ano_render_set_lighting_mode).
@@ -1338,7 +1338,7 @@ typedef struct RendererState
     // constant stage flags, and the cull UBO flag all key off it together.
     bool                    taskCull;
 
-    // GPU timestamp profiling (RADIANCE_CASCADES.md §8). Queried once at init from the device
+    // GPU timestamp profiling. Queried once at init from the device
     // limits + graphics queue family; validBits == 0 disables the per-pass timing path.
     float                   timestampPeriodNs;  // ns per timestamp tick (limits.timestampPeriod)
     uint32_t                timestampValidBits;  // graphics-queue timestampValidBits (0 = unsupported)

@@ -20,7 +20,7 @@ void *ano_text_face(AnoFontId font);
 // Reports the FreeType version through any non-NULL pointers, all zeros before init.
 void ano_text_version(int *major, int *minor, int *patch);
 
-// The bake's wire format (FONT_RENDER.md section 2), decoded only by the bake, the
+// The bake's wire format, decoded only by the bake, the
 // shaper, the reference rasterizer, and the GPU shaders.
 //
 // Point stream: one uint32_t per point, binary16 x in bits 0..15 and y in bits 16..31
@@ -101,7 +101,7 @@ int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm,
 int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *slotGids,
                            uint32_t slotCount, int32_t *dense);
 
-// Reference rasterization (FONT_RENDER.md step 3).
+// Reference rasterization.
 
 // Unclamped coverage sum for one em-space window (position wx/wy, size w/h) of one
 // glyph's curve stream. The reference rasterizer's inner loop. Pure, any thread.

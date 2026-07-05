@@ -91,8 +91,8 @@ void rotateMatrix(float mat[4][4], char axis, float angle)
         }
     }
 
-    // Copying the result back into the input matrix
-    for(int i = 0; i < 4; i++) 
+    // Copy result back into mat.
+    for(int i = 0; i < 4; i++)
 	{
         for(int j = 0; j < 4; j++) 
 		{
@@ -156,7 +156,7 @@ void lookAt(float mat[4][4], float eye[3], float center[3], float up[3])
 
 void translate(float mat[4][4], float x, float y, float z)
 {
-    // Initialize the matrix to identity matrix
+    // Identity matrix.
     for (int i = 0; i < 4; i++)
     {
         for (int j = 0; j < 4; j++)
@@ -165,7 +165,7 @@ void translate(float mat[4][4], float x, float y, float z)
         }
     }
 
-    // Set the translation components
+    // Translation components.
     mat[3][0] = x;
     mat[3][1] = y;
     mat[3][2] = z;
@@ -189,8 +189,6 @@ void perspective(float matrix[4][4], float fovDegrees, float aspect, float near,
 
 	// Vulkan clip depth is [0,1] (ZO), not OpenGL's [-1,1]. RH, view looks down -Z.
 	// ndc.z = (m22*z_view + m32) / (-z_view) maps z_view=-near -> 0, z_view=-far -> 1.
-	// The old (far+near)/(near-far) form was OpenGL [-1,1]: under the [0,1] viewport it
-	// over-clipped the near range and halved depth precision. See docs/math_conventions.md.
 	matrix[2][2] = far / (near - far);
     matrix[2][3] = -1.0f;
 	matrix[3][2] = (far * near) / (near - far);
@@ -205,9 +203,7 @@ void multiplyMat4(mat4 result, const mat4 a, const mat4 b)
         for (int j = 0; j < 4; ++j) { // col
             temp[i][j] = 0.0f;
             for (int k = 0; k < 4; ++k) {
-                // OpenGL / Vulkan typical column-major ordering in memory:
-                // If a[i][j] is a[col][row], then temp[col][row] += a[k][row] * b[col][k]
-                // Let's assume a[i][j] is a[col][row] standard for GLM, which means:
+                // Column-major: temp[col][row] += a[k][row] * b[col][k].
                 temp[i][j] += a[k][j] * b[i][k];
             }
         }
@@ -241,9 +237,7 @@ void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj)
     planes[3].v[2] = viewProj[2][3] - viewProj[2][1];
     planes[3].v[3] = viewProj[3][3] - viewProj[3][1];
 
-    // Near. Vulkan [0,1] depth: the near plane is clip.z >= 0, i.e. ROW 2 alone — NOT
-    // row3 + row2 (which is the OpenGL [-1,1] near). Matched to perspective()'s ZO form;
-    // mismatching it leaves a loose near plane that under-culls behind the camera.
+    // Near. Vulkan [0,1] depth: near plane is clip.z >= 0, i.e. ROW 2 alone.
     planes[4].v[0] = viewProj[0][2];
     planes[4].v[1] = viewProj[1][2];
     planes[4].v[2] = viewProj[2][2];
@@ -269,9 +263,8 @@ void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj)
 
 bool invertMat4(mat4 out, const mat4 m)
 {
-    // Cofactor (adjugate / determinant) inverse over the 16 contiguous floats. mat4 is column-major,
-    // but the algorithm is element-wise so the result lands in the same convention. inv[] holds the
-    // transposed cofactors; det reuses the first column of cofactors.
+    // Cofactor (adjugate/determinant) inverse over the 16 contiguous floats. Element-wise, so
+    // layout-agnostic. inv[] holds the transposed cofactors.
     const float *a = (const float *)m;
     float inv[16];
 

@@ -5,7 +5,7 @@
 
 // Glyph-curve bake: FreeType outlines -> directed monotone quadratic Beziers in em
 // space -> packed binary16 shared-vertex stream + glyph directory. Grammar in
-// text_internal.h, design in FONT_RENDER.md section 2.
+// text_internal.h.
 //
 // Per glyph: decompose contours to quads in double em, normalize winding to
 // fill-right, split each quad at its interior per-axis extrema, drop degenerate

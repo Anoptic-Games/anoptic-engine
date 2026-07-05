@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Shaper (FONT_RENDER.md step 4): UTF-8 rune iteration, slot lookup, horizontal
+// Shaper: UTF-8 rune iteration, slot lookup, horizontal
 // advances with pair kerning, newline handling. Pure functions over an immutable
 // AnoFontBake, callable from any thread. Ligatures, marks, and bidi are non-goals.
 

@@ -113,6 +113,7 @@ build
 build/
 build/*
 build-*/
+build_log.txt
 # Nix build output symlinks (nix build -> ./result)
 result
 result-*

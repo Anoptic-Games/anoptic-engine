@@ -47,7 +47,7 @@ GpuAllocator textureAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
-// --- Profiling harness (RADIANCE_CASCADES.md §8) -------------------------------------------
+// --- Profiling harness ---------------------------------------------------------------------
 // Per-pass GPU timestamps as a fence-post: one timestamp (boundary enum in structs.h) at each
 // section boundary, region time = consecutive delta * timestampPeriod. All boundaries are written
 // unconditionally at top level (outside any render pass) so a skipped section yields a ~0 region,
@@ -62,8 +62,7 @@ static uint32_t g_tsFrames = 0;             // frames accumulated since the last
 static uint64_t g_shadowRenderAccum = 0;
 static uint32_t g_shadowRenderFrames = 0;
 
-// Live VRAM use of a bump allocator: sum of each block's high-water offset (RADIANCE_CASCADES.md
-// reports per-allocator resident so the shadow atlas can be broken out from the RC budget).
+// Live VRAM use of a bump allocator: sum of each block's high-water offset.
 static VkDeviceSize allocator_used_bytes(const GpuAllocator* a) {
     VkDeviceSize used = 0;
     for (uint32_t i = 0; i < a->blockCount; i++) used += a->blocks[i].offset;
@@ -111,7 +110,7 @@ void unInitVulkan() // A celebration
 		}
     }
 
-	// Async Hi-Z / light-cull / text (FONT_RENDER.md step 7): drain last signaled ordinals
+	// Async Hi-Z / light-cull / text: drain last signaled ordinals
 	// before teardown destroys the pool/semaphores/images.
 	if (rendererState.asyncHiz && rendererState.hizTimeline != VK_NULL_HANDLE
 		&& ctx.device != VK_NULL_HANDLE && rendererState.timelineOrdinal > 0)
@@ -1258,7 +1257,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 }
             }
 
-            // World-space text panel (FONT_RENDER.md): drawn in the additive pass (last MSAA
+            // World-space text panel: drawn in the additive pass (last MSAA
             // color pass), resolves with the scene.
             if (pass->prototype == PIPELINE_ADDITIVE)
                 ano_vk_text_record_world(&rendererState, cmd, rendererState.frameIndex, v);
@@ -1321,7 +1320,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_LIGHTING);
 
-    // Text overlay raster (FONT_RENDER.md, in-frame path): clear + dispatch + hand the
+    // Text overlay raster (in-frame path): clear + dispatch + hand the
     // overlay to the composite's fragment stage.
     ano_vk_text_record(&rendererState, cmd, rendererState.frameIndex);
 
@@ -1384,7 +1383,7 @@ void recordCommandBuffer(uint32_t imageIndex)
         }
 
         // Text/UI overlay over everything (main view AND the PiP insets): one fullscreen
-        // premultiplied blend sampling the compute-rastered overlay (FONT_RENDER.md).
+        // premultiplied blend sampling the compute-rastered overlay.
         ano_vk_text_record_composite(&rendererState, cmd, rendererState.frameIndex);
 
         vkCmdEndRendering(cmd);
@@ -1671,7 +1670,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         memcpy(viewUbo->hizProj, ubo->hizProj[v], sizeof(viewUbo->hizProj));
         // Publish the active light count to each view's fragment stage.
         viewUbo->lightCount = state->lightBuffer.count;
-        // Publish the runtime lighting mode + debug selector (RADIANCE_CASCADES.md). The fragment
+        // Publish the runtime lighting mode + debug selector. The fragment
         // stage gates per-light shadow sampling on this; the shadow depth render is gated to match.
         viewUbo->lightingMode = state->lightingMode;
         viewUbo->debugView = state->debugView;
@@ -1752,7 +1751,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
 }
 
 // ---------------------------------------------------------------------------
-// ECS <-> render bridge consumer (VK_BACKEND_INTEROP.md S5-S7, S9).
+// ECS <-> render bridge consumer.
 //
 // Drains discrete state-transition commands from the logic thread and applies
 // them to the mapped GPU buffers by render slot, propagating each across all
@@ -1867,7 +1866,7 @@ static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
 
 // ---------------------------------------------------------------------------
 // SlotUpload: ×1 DEVICE_LOCAL per-slot buffer fed by a per-frame host-visible delta
-// staging ring (docs/artifacts/DEVICE_LOCAL_SLOTS.md). Replaces the former ×3
+// staging ring. Replaces the former ×3
 // host-visible mapped buffers for the command-written per-slot data. Render-thread only.
 // Uses the file-global ctx/gpuAllocator like growBufferSet.
 // ---------------------------------------------------------------------------
@@ -2752,7 +2751,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
     // are single copies shared by all frames, so one upload suffices. A DESTROY dead-marks
     // its slot and retires it immediately; the safeFrame = globalFrame + framesInFlight
     // quarantine then keeps the slot out of reuse until every frame that could still read the
-    // old occupant has drained (see docs/artifacts/DEVICE_LOCAL_SLOTS.md).
+    // old occupant has drained.
     RenderCommand cmd;
     while (ano_render_next_command(&state->bridge, &cmd)) {
         switch (cmd.kind) {
@@ -3003,7 +3002,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
         // trailing run of free slots at the top, drop slotHighWater past them so cull/update
         // stop dispatching over dead tail slots. Only fires when the free-list just changed
         // (alloc never lowers the high-water). No live slot moves; no VRAM is returned (the
-        // buffers stay grown — see SLOT_RECLAIM.md for the deferred per-region VRAM path).
+        // buffers stay grown).
         render_slots_compact(&state->slots);
     }
 
@@ -3170,7 +3169,7 @@ bool ano_render_submit_bulk_destroy(AnoRenderBridge* bridge, const uint32_t* ren
     return true;
 }
 
-// Lighting-mode control (RADIANCE_CASCADES.md). Stored on the render state and published into the
+// Lighting-mode control. Stored on the render state and published into the
 // GlobalUBO tail by updateCullingBuffers; takes effect from the next recorded frame. Mutated only
 // from the render thread (frame record + L-key callback are both main-thread), so no atomics.
 void ano_render_set_lighting_mode(AnoLightingMode mode) {
@@ -3261,8 +3260,8 @@ bool ano_render_get_view_hiz_enable(uint32_t view) {
     return rendererState.hizEnable[view] != 0u;
 }
 
-// Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode
-// (RADIANCE_CASCADES.md §8). shadowAtlas is the always-resident CDF-stats atlas (ANO_SHADOW_ATLAS_LAYERS
+// Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode.
+// shadowAtlas is the always-resident CDF-stats atlas (ANO_SHADOW_ATLAS_LAYERS
 // RGBA16 layers x ANO_SHADOW_DIM^2 x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
 // not charged for the idle-but-resident atlas — the fairness break-out the harness requires.
 static void ano_print_profiling(void) {
@@ -3295,7 +3294,7 @@ static void ano_print_profiling(void) {
     g_shadowRenderAccum = 0;
     g_shadowRenderFrames = 0;
 
-    // Mirror the readout on-screen (FONT_RENDER.md step 8), re-shaped at print cadence.
+    // Mirror the readout on-screen, re-shaped at print cadence.
     // Three style runs: white stats, the total colored by frame budget, the VRAM line dimmed.
     char osd[512];
     int head = snprintf(osd, sizeof osd,
@@ -3457,7 +3456,7 @@ void drawFrame()
 	if (rendererState.asyncLc)
 		recordLightcullCompute(rendererState.frameIndex);
 
-	// Async text raster (FONT_RENDER.md step 7): submits first with no waits, overlaps the
+	// Async text raster: submits first with no waits, overlaps the
 	// graphics frame. The main submit waits textTimeline == ordinal at FRAGMENT_SHADER.
 	ano_vk_text_submit_async(&ctx, &rendererState, rendererState.frameIndex, ordinal);
 
@@ -4303,10 +4302,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
     };
     
-    // Winding matches the glTF convention (CCW front under frontFace=CCW + the Y-flip projection),
-    // so the fallback cube agrees with loaded meshes and needs no per-instance mirror. (The original
-    // order was the reverse, which left the ground box's top face back-facing — see
-    // docs/math_conventions.md, winding.) Per triangle (a,b,c) -> (a,c,b).
+    // Winding matches the glTF convention (CCW front under frontFace=CCW + Y-flip projection). Per triangle (a,b,c) -> (a,c,b).
     const uint32_t cubeIndices[] = {
         0, 2, 1, 2, 0, 3, // front
         1, 6, 5, 6, 1, 2, // right
@@ -4445,12 +4441,12 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	                      && !getenv("ANO_FORCE_NO_TASK");
 	ano_log(ANO_INFO, "Task meshlet cull: %s", rendererState.taskCull ? "on (frustum+cone, Hi-Z with occlusion toggle)" : "off (direct mesh dispatch)");
 
-	// Text overlay gate (FONT_RENDER.md). A later font/bake init failure clears it non-fatally.
+	// Text overlay gate. A later font/bake init failure clears it non-fatally.
 	// ANO_FORCE_NO_TEXT pins it off.
 	rendererState.textOverlay = !getenv("ANO_FORCE_NO_TEXT");
 	ano_log(ANO_INFO, "Text overlay: %s", rendererState.textOverlay ? "enabled (pending font init)" : "off (forced)");
 
-	// Async text lane gate (FONT_RENDER.md step 7): rides asyncHiz's infrastructure.
+	// Async text lane gate: rides asyncHiz's infrastructure.
 	// ano_vk_text_init downgrades it non-fatally if the lane's objects fail.
 	// ANO_FORCE_NO_ASYNC_TEXT pins the in-frame raster.
 	rendererState.asyncText = rendererState.textOverlay && rendererState.asyncHiz
@@ -4604,7 +4600,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Text overlay (FONT_RENDER.md step 5): font bake + glyph buffers + raster/blend
+	// Text overlay: font bake + glyph buffers + raster/blend
 	// pipelines. Non-fatal: failure logs and turns the overlay off.
 	ano_vk_text_init(&ctx, &rendererState);
 
@@ -4697,7 +4693,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 
-	// ECS <-> render bridge: render-owned slot authority + command/event rings (VK_BACKEND_INTEROP.md).
+	// ECS <-> render bridge: render-owned slot authority + command/event rings.
 	// The logic master now composes the whole scene and emits its creates through this command ring —
 	// the same path a runtime spawn takes — so nothing is written to the per-slot GPU buffers here.
 	rendererState.renderHeap = mi_heap_new();

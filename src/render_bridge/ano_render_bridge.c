@@ -7,8 +7,7 @@
  * endpoint (ano_render_submit). The hot-path push/pop and the in-src endpoints
  * stay inlined in the private render_bridge.h, while only the cold init/destroy and
  * the public (non-inline) submit live here. Platform-agnostic and GPU-free,
- * part of anoptic_core. Public contract: include/anoptic_render.h.
- * Design of record: docs/artifacts/VK_BACKEND_INTEROP.md. */
+ * part of anoptic_core. Public contract: include/anoptic_render.h. */
 
 #include "render_bridge.h"
 
@@ -85,16 +84,15 @@ void ano_render_bridge_destroy(AnoRenderBridge *bridge)
     ano_spsc_destroy(&bridge->events);
 }
 
-// Public producer endpoint (anoptic_render.h). Non-inline by design, so the engine
-// entry point reaches it through the opaque handle without seeing the ring.
+// Public producer endpoint (anoptic_render.h). Non-inline, reached through the opaque handle.
 // The in-src consumer/event endpoints stay inlined in render_bridge.h.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd)
 {
     return ano_spsc_push(&bridge->commands, cmd);
 }
 
-// Runtime light endpoints (audit 4.7). Build a POD RenderCommand and push it through the same SPSC
-// command ring; backpressure contract is ano_render_submit's (false == ring full, retry).
+// Runtime light endpoints. Build a POD RenderCommand and push it through the SPSC command ring.
+// Backpressure contract is ano_render_submit's (false == ring full, retry).
 bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_t parent_render_id,
                              const RenderLightParams *params, float ox, float oy, float oz)
 {
@@ -126,7 +124,7 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
-// Screen-text endpoints (FONT_RENDER.md v0 bridge). `set` packs the block header and the instance copy
+// Screen-text endpoints (v0 bridge). `set` packs the block header and the instance copy
 // into one render-owned allocation, freed render-side on replace/clear/shutdown. count 0 == clear.
 // Backpressure contract is ano_render_submit's.
 bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
@@ -161,9 +159,8 @@ bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
-// Back-channel logic-master endpoints (anoptic_render.h). Non-inline so the logic master reaches
-// them through the opaque handle; the matching render-side producer/consumer halves are the inline
-// helpers in render_bridge.h.
+// Back-channel logic-master endpoints (anoptic_render.h). Non-inline, reached through the opaque handle.
+// The matching render-side producer/consumer halves are the inline helpers in render_bridge.h.
 bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out)
 {
     return ano_spsc_pop(&bridge->events, out);

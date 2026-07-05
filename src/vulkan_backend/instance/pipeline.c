@@ -29,7 +29,7 @@
 // compile-time source path -- means the same binary works from the build tree, an
 // installed tree, and a nix store path alike; the build stages resources/ next to every
 // binary that loads them (root CMakeLists). Interim shim until the Resource Manager owns
-// asset paths (docs/resourcesmg.md).
+// asset paths.
 static FILE* openEngineFile(const char* relative)
 {
 	ano_fspath dir = ano_fs_gamepath();
@@ -213,7 +213,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 	instanceDataLayoutBinding.pImmutableSamplers = NULL;
 
 	// 10/11: clustered-forward froxel light lists. Fragment-only: the fragment maps to its
-	// froxel and loops [offset, offset+count) of the index list (see flat.frag / LIGHTING_SCALE.md).
+	// froxel and loops [offset, offset+count) of the index list (see flat.frag).
 	VkDescriptorSetLayoutBinding clusterCountLayoutBinding = {};
 	clusterCountLayoutBinding.binding = 10;
 	clusterCountLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1429,7 +1429,7 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 		vkDestroyDescriptorSetLayout(ctx->device, state->tonemapSetLayout, NULL);
 		state->tonemapSetLayout = VK_NULL_HANDLE;
 	}
-	// Text overlay (FONT_RENDER.md): the bespoke composite blend pipeline + the raster set
+	// Text overlay: the bespoke composite blend pipeline + the raster set
 	// layout. The PIPELINE_COMPUTE_TEXTRASTER prototype is freed by the generic loop below.
 	if (state->textOverlayPipeline != VK_NULL_HANDLE)
 	{

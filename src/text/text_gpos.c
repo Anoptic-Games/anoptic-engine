@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// GPOS PairPos kerning reader (shaper v1, FONT_RENDER.md section 4). Parses a raw GPOS
+// GPOS PairPos kerning reader (shaper v1). Parses a raw GPOS
 // table of untrusted bytes with every read bounds-checked, malformed input failing
 // soft, accumulating horizontal 'kern' xAdvance adjustments for a slot range into a
 // dense FUnit matrix. FreeType-free: the bake hands in the blob and slot->glyph-id map.

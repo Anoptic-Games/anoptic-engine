@@ -5,7 +5,7 @@
 
 // Anoptic Text implementation: module lifetime + the FreeType backend it wraps.
 // FT_New_Library with custom FT_Memory hooks routes every parser allocation into the
-// module's mimalloc heap. Design of record: FONT_RENDER.md.
+// module's mimalloc heap.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"

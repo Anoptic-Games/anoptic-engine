@@ -8,17 +8,14 @@
  * @brief Render-internal slot authority: logical render_id -> physical GPU slot,
  *        stable slots with holes, free-list, and frame-quarantined reuse.
  *
- * PRIVATE to the Vulkan backend (VK_BACKEND_INTEROP.md S4, S9). The logic world
- * never sees a GPU slot — it addresses renderables by render_id only — so this
- * header stays inside src/vulkan_backend/ and is never exposed through include/.
+ * PRIVATE to the Vulkan backend, never exposed through include/. The logic world
+ * addresses renderables by render_id only and never sees a GPU slot.
  *
- * Slots are STABLE and may contain holes: the cull pass already compacts visible
- * work, so a dead slot costs one skipped compute invocation and zero draw cost.
- * There is deliberately no swap-and-pop / defragmentation of the per-entity GPU
- * buffers here. The render_id -> slot indirection additionally lets the backend
- * relocate a slot internally (optional) without the logic world noticing.
+ * Slots are STABLE and may contain holes: no swap-and-pop or defragmentation of
+ * the per-entity GPU buffers. The render_id -> slot indirection lets the backend
+ * relocate a slot internally without the logic world noticing.
  *
- * Owned and mutated by the Vulkan master thread only; no synchronization inside.
+ * Owned and mutated by the Vulkan master thread only. No internal synchronization.
  */
 
 #ifndef ANO_RENDER_SLOTS_H
@@ -30,6 +27,10 @@
 
 #define ANO_RENDER_SLOT_UNMAPPED 0xFFFFFFFFu
 
+// ---------------------------------------------------------------------------
+// Slot table types
+// ---------------------------------------------------------------------------
+
 // A slot awaiting frame-in-flight retirement before its index may be reused.
 typedef struct RenderSlotQuarantine
 {
@@ -40,17 +41,15 @@ typedef struct RenderSlotQuarantine
 
 typedef struct RenderSlotTable
 {
-    mi_heap_t            *heap;   // backs all table storage; not owned
+    mi_heap_t            *heap;   // backs all table storage, not owned
 
-    // render_id -> gpu slot (ANO_RENDER_SLOT_UNMAPPED == not mapped). Grown on
-    // demand; logical ids are dense (ECS recycles them) so this stays a flat
-    // indexed map, no hashing.
+    // render_id -> gpu slot (ANO_RENDER_SLOT_UNMAPPED == not mapped). Flat indexed
+    // map, grown on demand, no hashing.
     uint32_t             *logicalToSlot;
     uint32_t              logicalCapacity;
 
-    // slot -> render_id (the inverse of logicalToSlot, ANO_RENDER_SLOT_UNMAPPED == free).
-    // Sized slotCapacity, maintained O(1) on alloc/retire. Lets the picking readback turn a
-    // slot sampled from the id-buffer back into a render_id every frame without a scan.
+    // slot -> render_id (inverse of logicalToSlot, ANO_RENDER_SLOT_UNMAPPED == free).
+    // Sized slotCapacity, maintained O(1). Picking maps a sampled slot back to a render_id.
     uint32_t             *slotToLogical;
 
     // Free-list stack of reusable physical slots (holes below the high-water mark).
@@ -58,8 +57,8 @@ typedef struct RenderSlotTable
     uint32_t              freeCount;
     uint32_t              freeCapacity;
 
-    // Physical slot space. slotHighWater is the cull/animation dispatch bound;
-    // dead slots within [0, slotHighWater) self-skip in the shaders.
+    // Physical slot space. slotHighWater is the cull/animation dispatch bound.
+    // Dead slots in [0, slotHighWater) self-skip in the shaders.
     uint32_t              slotHighWater;
     uint32_t              slotCapacity;
 
@@ -70,6 +69,10 @@ typedef struct RenderSlotTable
 
     uint32_t              framesInFlight; // == MAX_FRAMES_IN_FLIGHT
 } RenderSlotTable;
+
+// ---------------------------------------------------------------------------
+// API
+// ---------------------------------------------------------------------------
 
 // in:  table, heap (backs all storage), maxSlots (physical slot ceiling, == GPU
 //      per-entity buffer capacity), framesInFlight (>= 1)
@@ -87,20 +90,19 @@ void render_slots_destroy(RenderSlotTable *table);
 uint32_t render_slots_alloc(RenderSlotTable *table, uint32_t render_id);
 
 // Allocates a CONTIGUOUS range of `count` slots for `render_ids[0..count)` (mass
-// spawn, RCMD_BULK_CREATE). Contiguity lets the caller block-write the GPU buffers.
+// spawn, RCMD_BULK_CREATE).
 // out: the base slot of the range, or ANO_RENDER_SLOT_UNMAPPED on failure.
 uint32_t render_slots_alloc_range(RenderSlotTable *table, const uint32_t *render_ids, uint32_t count);
 
 // Raises the physical slot ceiling to `newCapacity` (no-op if already >=). The
-// caller grows the backing GPU buffers to match BEFORE calling this; this only
-// lifts the gate that `_alloc` / `_alloc_range` enforce. Never shrinks.
+// caller grows the backing GPU buffers to match BEFORE calling this. Never shrinks.
 void render_slots_set_capacity(RenderSlotTable *table, uint32_t newCapacity);
 
 // out: the physical slot mapped to `render_id`, or ANO_RENDER_SLOT_UNMAPPED.
 uint32_t render_slots_resolve(const RenderSlotTable *table, uint32_t render_id);
 
 // out: the render_id occupying physical `slot`, or ANO_RENDER_SLOT_UNMAPPED if the slot is free,
-//      quarantined, or out of range. The inverse of render_slots_resolve (used by picking).
+//      quarantined, or out of range. The inverse of render_slots_resolve.
 uint32_t render_slots_render_id_of(const RenderSlotTable *table, uint32_t slot);
 
 // Begins retirement of `render_id`'s slot (after its dead-mark has propagated to
@@ -118,12 +120,9 @@ uint32_t render_slots_collect_retired(RenderSlotTable *table, uint64_t currentFr
                                        uint32_t *out_render_ids, uint32_t max);
 
 // Lowers slotHighWater past any trailing run of free slots, shrinking the cull/animation
-// dispatch bound (entityCount) without VRAM change. Only slots already on the free-list are
-// peeled — those are quarantine-expired (no in-flight reader) and unmapped — so NO live slot
-// moves and slot indices stay stable (consistent with the no-defrag design). Fragmentation
-// below a live slot is left in place; a contiguous bulk despawn at the top is reclaimed
-// wholesale. Reaches slotHighWater == 0 when every slot is free (epoch reset). Costs an
-// O(freeCount log freeCount) sort, so call it only when the free-list just changed.
+// dispatch bound without VRAM change. Only free-list slots are peeled, so no live slot moves
+// and slot indices stay stable. Fragmentation below a live slot is left in place. Reaches
+// slotHighWater == 0 when every slot is free. Costs an O(freeCount log freeCount) sort.
 // out: number of slots reclaimed from the dispatch bound (0 if the top slot is live).
 uint32_t render_slots_compact(RenderSlotTable *table);
 
