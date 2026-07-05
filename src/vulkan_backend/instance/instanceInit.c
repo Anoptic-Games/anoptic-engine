@@ -54,7 +54,7 @@ static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 {
 	static uint32_t count = 0;
 	// VulkanContext* ctx = glfwGetWindowUserPointer(window);
-	printf("Resize: %d\n", count);
+	ano_debug_log(ANO_INFO, "Resize: %d", count);
 	count++;
 	rendererState.framebufferResized = true; // swapchain recreate stays render-owned
 	// Also forward to logic so it learns the new aspect (for UI / cursor interpretation).
@@ -133,7 +133,7 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 		AnoLightingMode next = (AnoLightingMode)(((uint32_t)ano_render_get_lighting_mode() + 1u) % (uint32_t)ANO_LIGHTING_MODE_COUNT);
 		ano_render_set_lighting_mode(next);
 		static const char* const names[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RADIANCE_CASCADES" };
-		printf("Lighting mode: %s\n", names[next]);
+		ano_log(ANO_INFO, "Lighting mode: %s", names[next]);
 	}
 	// LOD bias inspection (review 4.9 step 2): [ biases finer, ] coarser. Repeats while held so the
 	// scene can be swept from finest to coarsest; a large bias pins every LOD-chain mesh to one end.
@@ -141,7 +141,7 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 	    (action == GLFW_PRESS || action == GLFW_REPEAT)) {
 		int32_t bias = ano_render_get_lod_bias() + (key == GLFW_KEY_RIGHT_BRACKET ? 1 : -1);
 		ano_render_set_lod_bias(bias);
-		printf("LOD bias: %+d\n", ano_render_get_lod_bias());
+		ano_log(ANO_INFO, "LOD bias: %+d", ano_render_get_lod_bias());
 	}
 	// Shadow-caster LOD offset inspection (review 4.9 step 2, revised): ; finer shadows, ' coarser.
 	// Shadows track the view-0 LOD by default (offset 0); this trades shadow cost against silhouette
@@ -150,14 +150,14 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 	    (action == GLFW_PRESS || action == GLFW_REPEAT)) {
 		int32_t bias = ano_render_get_shadow_lod_bias() + (key == GLFW_KEY_APOSTROPHE ? 1 : -1);
 		ano_render_set_shadow_lod_bias(bias);
-		printf("Shadow LOD bias: %+d\n", ano_render_get_shadow_lod_bias());
+		ano_log(ANO_INFO, "Shadow LOD bias: %+d", ano_render_get_shadow_lod_bias());
 	}
 	// Hi-Z occlusion toggle (review 4.9 step 3): H flips the main view's GPU occlusion cull on/off for
 	// A/B inspection (default off). With it on, entities fully behind nearer geometry stop drawing.
 	if (key == GLFW_KEY_H && action == GLFW_PRESS) {
 		bool on = !ano_render_get_view_hiz_enable(0u);
 		ano_render_set_view_hiz_enable(0u, on);
-		printf("Hi-Z occlusion (view 0): %s\n", on ? "ON" : "OFF");
+		ano_log(ANO_INFO, "Hi-Z occlusion (view 0): %s", on ? "ON" : "OFF");
 	}
 }
 
@@ -1407,7 +1407,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	glfwGetFramebufferSize(window, &width, &height);
 	while (width == 0 || height == 0)
 	{
-		printf("Sleeping!\n");
+		ano_debug_log(ANO_INFO, "Sleeping!");
 		glfwGetFramebufferSize(window, &width, &height);
 		glfwWaitEvents();
 	}
@@ -1425,14 +1425,14 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 
 	if(rendererState.swapChain == VK_NULL_HANDLE)
 	{
-		printf("Swap chain re-creation error, exiting!\n");
+		ano_log(ANO_FATAL, "Swap chain re-creation error, exiting!");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
 	createImageViews(ctx, &rendererState);
 	if (rendererState.views == NULL)
 	{
-		printf("View group re-creation error, exiting!\n");
+		ano_log(ANO_FATAL, "View group re-creation error, exiting!");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
@@ -1442,7 +1442,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	createDepthResources(ctx, &rendererState);
 	if (rendererState.frames[0].views[0].depthView == NULL)
 	{
-		printf("Depth resources re-creation error, exiting!\n");
+		ano_log(ANO_FATAL, "Depth resources re-creation error, exiting!");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
@@ -1451,7 +1451,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	// per-mip sets to the new pyramid + depth views (mirrors the tonemap-set rebind below).
 	if (!createHiZResources(ctx, &rendererState))
 	{
-		printf("Hi-Z resources re-creation error, exiting!\n");
+		ano_log(ANO_FATAL, "Hi-Z resources re-creation error, exiting!");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
@@ -1491,7 +1491,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 	VkImageView imageView;
 	if (vkCreateImageView(device, &viewInfo, NULL, &imageView) != VK_SUCCESS)
 	{
-		printf("Failed to create image view!\n");
+		ano_log(ANO_ERROR, "Failed to create image view!");
 	}
 
 	return imageView;
@@ -1521,7 +1521,7 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 	
 	if (vkCreateCommandPool(device, &poolInfo, NULL, commandPool) != VK_SUCCESS) 
 	{
-		printf("Failed to create command pool!\n");
+		ano_log(ANO_FATAL, "Failed to create command pool!");
 		return false;
 	}
 	return true;
@@ -1537,7 +1537,7 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 
 	if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, buffer) != VK_SUCCESS)
 	{
-		printf("Failed to create data buffer!");
+		ano_log(ANO_ERROR, "Failed to create data buffer!");
 		return false;
 	}
 
@@ -1570,7 +1570,7 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 			if (!createDataBuffer(ctx, &gpuAllocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 				 &(rendererState.frames[i].views[v].uniformBuffer), &alloc))
 			{
-				printf("Failed to create uniform buffer!");
+				ano_log(ANO_FATAL, "Failed to create uniform buffer!");
 				return false;
 			}
 
@@ -1583,14 +1583,10 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 
 void printMatrix(float mat[4][4])
 { // Debug function previously used to sanity-check matrix operation results. Can prolly be removed
-	printf("Matrix:\n");
+	ano_debug_log(ANO_INFO, "Matrix:");
 	for (int i = 0; i < 4; i++)
 	{
-		for (int j = 0; j < 4; j++)
-		{
-			printf("%f ", mat[i][j]);
-		}
-		printf("\n");
+		ano_debug_log(ANO_INFO, "%f %f %f %f", mat[i][0], mat[i][1], mat[i][2], mat[i][3]);
 	}
 }
 
@@ -1732,7 +1728,7 @@ VkFormat findSupportedFormat(VulkanContext* ctx, const VkFormat* candidates, uin
 			return format;
 		}
 	}
-	printf("Failed to find a suitable format!\n");
+	ano_log(ANO_ERROR, "Failed to find a suitable format!");
 	return VK_FORMAT_UNDEFINED;
 }
 
@@ -1756,7 +1752,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 	VkFormat depthFormat = findDepthFormat(ctx);
 	if (depthFormat == VK_FORMAT_UNDEFINED)
 	{
-		printf("No compatible depth formats detected!\n");
+		ano_log(ANO_FATAL, "No compatible depth formats detected!");
 		return false;
 	}
 	state->depthFormat = depthFormat;
@@ -1774,7 +1770,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 							 &vr->depthImage, &vr->depthAlloc, false))
 			{
-				printf("Failed to create depth resource for frame %d view %u!\n", i, v);
+				ano_log(ANO_FATAL, "Failed to create depth resource for frame %d view %u!", i, v);
 				return false;
 			}
 
@@ -1783,7 +1779,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 			if(!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthImage, depthFormat,
 									  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
 			{
-				printf("Failed to transition depth buffer layout for frame %d view %u!\n", i, v);
+				ano_log(ANO_FATAL, "Failed to transition depth buffer layout for frame %d view %u!", i, v);
 				return false;
 			}
 
@@ -1802,7 +1798,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 								 &vr->depthResolveImage, &vr->depthResolveAlloc, false,
 								 shareFamilies, state->asyncHiz ? 2u : 0u))
 				{
-					printf("Failed to create depth-resolve resource for frame %d view %u!\n", i, v);
+					ano_log(ANO_FATAL, "Failed to create depth-resolve resource for frame %d view %u!", i, v);
 					return false;
 				}
 				vr->depthResolveView = createImageView(ctx->device, vr->depthResolveImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
@@ -1811,7 +1807,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 										  state->asyncHiz ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 										                  : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
 				{
-					printf("Failed to transition depth-resolve layout for frame %d view %u!\n", i, v);
+					ano_log(ANO_FATAL, "Failed to transition depth-resolve layout for frame %d view %u!", i, v);
 					return false;
 				}
 			}
@@ -1854,7 +1850,7 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 				&vr->hizImage, &vr->hizAlloc, false,
 				shareFamilies, state->asyncHiz ? 2u : 0u))
 			{
-				printf("Failed to create Hi-Z image for frame %u view %u!\n", i, v);
+				ano_log(ANO_FATAL, "Failed to create Hi-Z image for frame %u view %u!", i, v);
 				return false;
 			}
 
@@ -1874,7 +1870,7 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 				iv.subresourceRange.layerCount = 1;
 				if (vkCreateImageView(ctx->device, &iv, NULL, &vr->hizMipViews[m]) != VK_SUCCESS)
 				{
-					printf("Failed to create Hi-Z mip view %u (frame %u view %u)!\n", m, i, v);
+					ano_log(ANO_FATAL, "Failed to create Hi-Z mip view %u (frame %u view %u)!", m, i, v);
 					return false;
 				}
 			}
@@ -1885,7 +1881,7 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hizImage, VK_FORMAT_R32_SFLOAT,
 									   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips))
 			{
-				printf("Failed to transition Hi-Z image for frame %u view %u!\n", i, v);
+				ano_log(ANO_FATAL, "Failed to transition Hi-Z image for frame %u view %u!", i, v);
 				return false;
 			}
 		}
@@ -1916,7 +1912,7 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 
 		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage[v], colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
 		{
-			printf("Failed to transition color image layout (view %u)!\n", v);
+			ano_log(ANO_ERROR, "Failed to transition color image layout (view %u)!", v);
 		}
 
 		// MSAA picking-id attachment (audit 3.1): mirrors the MSAA color above (transient,
@@ -1928,7 +1924,7 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 		rendererState.pickIdView[v] = createImageView(ctx->device, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
 		{
-			printf("Failed to transition picking id image layout (view %u)!\n", v);
+			ano_log(ANO_ERROR, "Failed to transition picking id image layout (view %u)!", v);
 		}
 	}
 
@@ -1947,7 +1943,7 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 			vr->hdrColorView = createImageView(ctx->device, vr->hdrColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hdrColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
 			{
-				printf("Failed to transition HDR resolve image layout!\n");
+				ano_log(ANO_ERROR, "Failed to transition HDR resolve image layout!");
 			}
 
 			// Picking id resolve target: view 0 only (the gameplay view). Single-sample R32_UINT,
@@ -1961,7 +1957,7 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 				vr->pickIdResolveView = createImageView(ctx->device, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
 				{
-					printf("Failed to transition picking id resolve image layout!\n");
+					ano_log(ANO_ERROR, "Failed to transition picking id resolve image layout!");
 				}
 			}
 		}
@@ -2015,7 +2011,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{
-		printf("Failed to create descriptor pool!\n");
+		ano_log(ANO_FATAL, "Failed to create descriptor pool!");
 		return false;
 	}
 
@@ -2037,7 +2033,7 @@ bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state)
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &rendererState.bindlessTextures.pool) != VK_SUCCESS)
 	{
-		printf("Failed to create bindless texture descriptor pool!\n");
+		ano_log(ANO_FATAL, "Failed to create bindless texture descriptor pool!");
 		return false;
 	}
 
@@ -2055,7 +2051,7 @@ bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state)
 
 	if (vkAllocateDescriptorSets(ctx->device, &allocInfo, &rendererState.bindlessTextures.set) != VK_SUCCESS)
 	{
-		printf("Failed to allocate bindless texture descriptor set!\n");
+		ano_log(ANO_FATAL, "Failed to allocate bindless texture descriptor set!");
 		return false;
 	}
 
@@ -2083,7 +2079,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorSet globalSetsTemp[PERVIEW_SETS];
 	if (vkAllocateDescriptorSets(ctx->device, &allocInfo, globalSetsTemp) != VK_SUCCESS)
 	{
-        printf("Failed to allocate global descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate global descriptor sets!");
 		return false;
 	}
 	for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++)
@@ -2104,7 +2100,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorSet cullSetsTemp[MAX_FRAMES_IN_FLIGHT];
     if (vkAllocateDescriptorSets(ctx->device, &cullAllocInfo, cullSetsTemp) != VK_SUCCESS)
     {
-        printf("Failed to allocate cull descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate cull descriptor sets!");
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].cullSet = cullSetsTemp[i];
@@ -2123,7 +2119,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSet updateSetsTemp[MAX_FRAMES_IN_FLIGHT];
     if (vkAllocateDescriptorSets(ctx->device, &updateAllocInfo, updateSetsTemp) != VK_SUCCESS)
     {
-        printf("Failed to allocate update descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate update descriptor sets!");
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].updateSet = updateSetsTemp[i];
@@ -2142,7 +2138,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSet scatterSetsTemp[MAX_FRAMES_IN_FLIGHT];
     if (vkAllocateDescriptorSets(ctx->device, &scatterAllocInfo, scatterSetsTemp) != VK_SUCCESS)
     {
-        printf("Failed to allocate scatter descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate scatter descriptor sets!");
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].scatterSet = scatterSetsTemp[i];
@@ -2161,7 +2157,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSet lightsetupSetsTemp[MAX_FRAMES_IN_FLIGHT];
     if (vkAllocateDescriptorSets(ctx->device, &lightsetupAllocInfo, lightsetupSetsTemp) != VK_SUCCESS)
     {
-        printf("Failed to allocate lightsetup descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate lightsetup descriptor sets!");
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) rendererState.frames[i].lightsetupSet = lightsetupSetsTemp[i];
@@ -2180,7 +2176,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSet lightcullSetsTemp[PERVIEW_SETS];
     if (vkAllocateDescriptorSets(ctx->device, &lightcullAllocInfo, lightcullSetsTemp) != VK_SUCCESS)
     {
-        printf("Failed to allocate light-cull descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate light-cull descriptor sets!");
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++)
@@ -2204,7 +2200,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSet tonemapSetsTemp[PERVIEW_SETS];
     if (vkAllocateDescriptorSets(ctx->device, &tonemapAllocInfo, tonemapSetsTemp) != VK_SUCCESS)
     {
-        printf("Failed to allocate tonemap descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate tonemap descriptor sets!");
         return false;
     }
     for(int i=0; i<MAX_FRAMES_IN_FLIGHT; i++) {
@@ -2226,7 +2222,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSet hizSetsTemp[MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS];
     if (vkAllocateDescriptorSets(ctx->device, &hizAllocInfo, hizSetsTemp) != VK_SUCCESS)
     {
-        printf("Failed to allocate Hi-Z descriptor sets!\n");
+        ano_log(ANO_FATAL, "Failed to allocate Hi-Z descriptor sets!");
         return false;
     }
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -2241,11 +2237,11 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSetAllocateInfo setupAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = MAX_FRAMES_IN_FLIGHT, .pSetLayouts = setupLayouts };
     VkDescriptorSet setupTemp[MAX_FRAMES_IN_FLIGHT];
-    if (vkAllocateDescriptorSets(ctx->device, &setupAlloc, setupTemp) != VK_SUCCESS) { printf("Failed to allocate shadowsetup sets!\n"); return false; }
+    if (vkAllocateDescriptorSets(ctx->device, &setupAlloc, setupTemp) != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to allocate shadowsetup sets!"); return false; }
     VkDescriptorSetAllocateInfo geomAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = MAX_FRAMES_IN_FLIGHT, .pSetLayouts = geomLayouts };
     VkDescriptorSet geomTemp[MAX_FRAMES_IN_FLIGHT];
-    if (vkAllocateDescriptorSets(ctx->device, &geomAlloc, geomTemp) != VK_SUCCESS) { printf("Failed to allocate shadow geom sets!\n"); return false; }
+    if (vkAllocateDescriptorSets(ctx->device, &geomAlloc, geomTemp) != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to allocate shadow geom sets!"); return false; }
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { rendererState.frames[i].shadow.setupSet = setupTemp[i]; rendererState.frames[i].shadow.geomSet = geomTemp[i]; }
 
     // Moment-blur source sets (audit 4.7 MSM): two per frame (blur-X reads atlas, blur-Y reads temp).
@@ -2254,7 +2250,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     VkDescriptorSetAllocateInfo blurAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = rendererState.globalDescriptorPool, .descriptorSetCount = 2 * MAX_FRAMES_IN_FLIGHT, .pSetLayouts = blurLayouts };
     VkDescriptorSet blurTemp[2 * MAX_FRAMES_IN_FLIGHT];
-    if (vkAllocateDescriptorSets(ctx->device, &blurAlloc, blurTemp) != VK_SUCCESS) { printf("Failed to allocate shadow blur sets!\n"); return false; }
+    if (vkAllocateDescriptorSets(ctx->device, &blurAlloc, blurTemp) != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to allocate shadow blur sets!"); return false; }
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         rendererState.frames[i].shadow.blurAtlasSet = blurTemp[2 * i + 0];
         rendererState.frames[i].shadow.blurTempSet  = blurTemp[2 * i + 1];
@@ -2852,7 +2848,7 @@ uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropert
 		}
 	}
 	
-	printf("Failed to find suitable memory type!");
+	ano_log(ANO_ERROR, "Failed to find suitable memory type!");
 	return UINT32_MAX;
 }
 
@@ -2866,7 +2862,7 @@ bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, V
 
 	if (!createDataBuffer(ctx, &stagingAllocator, bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, properties, &stagingBuffer, &stagingAlloc)) 
 	{
-		printf("Failed to create staging buffer!");
+		ano_log(ANO_ERROR, "Failed to create staging buffer!");
 		return false;
 	}
 
@@ -2877,7 +2873,7 @@ bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, V
 	// Copy data from staging buffer to destination buffer
 	if (!copyBuffer(ctx, stagingBuffer, dstBuffer, bufferSize))
 	{
-		printf("Failed to copy buffers!");
+		ano_log(ANO_ERROR, "Failed to copy buffers!");
 		return false;
 	}
 
@@ -2956,7 +2952,7 @@ bool createCommandBuffer(VulkanContext* ctx, RendererState* state)
 	{
 		if (vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].commandBuffer)) != VK_SUCCESS)
 		{
-			printf("Failed to allocate command buffers!\n");
+			ano_log(ANO_FATAL, "Failed to allocate command buffers!");
 			return false;
 		}
 		// Async light-cull (review finding 2 remainder): the frame's uploads + shared compute
@@ -2965,7 +2961,7 @@ bool createCommandBuffer(VulkanContext* ctx, RendererState* state)
 		if (state->asyncLc
 			&& vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].preludeCommandBuffer)) != VK_SUCCESS)
 		{
-			printf("Failed to allocate prelude command buffers!\n");
+			ano_log(ANO_FATAL, "Failed to allocate prelude command buffers!");
 			return false;
 		}
 	}
@@ -2988,7 +2984,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 			vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &(rendererState.frames[i].renderFinished)) != VK_SUCCESS ||
 			vkCreateFence(ctx->device, &fenceInfo, NULL, &(rendererState.frames[i].frameFence)) != VK_SUCCESS)
 			{
-			printf("Failed to create semaphores!\n");
+			ano_log(ANO_FATAL, "Failed to create semaphores!");
 			return false;
 		}
 	}
@@ -3005,7 +3001,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		if (vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->gfxTimeline) != VK_SUCCESS ||
 			vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->hizTimeline) != VK_SUCCESS)
 		{
-			printf("Failed to create async Hi-Z timeline semaphores!\n");
+			ano_log(ANO_FATAL, "Failed to create async Hi-Z timeline semaphores!");
 			return false;
 		}
 		// Async light-cull (finding 2 remainder): preludeTimeline counts prelude submits (waited by
@@ -3016,7 +3012,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 			(vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->preludeTimeline) != VK_SUCCESS ||
 			 vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->lcTimeline) != VK_SUCCESS))
 		{
-			printf("Failed to create async light-cull timeline semaphores!\n");
+			ano_log(ANO_FATAL, "Failed to create async light-cull timeline semaphores!");
 			return false;
 		}
 	}
@@ -3045,7 +3041,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 				qpi.queryType = VK_QUERY_TYPE_TIMESTAMP;
 				qpi.queryCount = ANO_TS_COUNT;
 				if (vkCreateQueryPool(ctx->device, &qpi, NULL, &state->frames[i].timestampPool) != VK_SUCCESS) {
-					printf("Failed to create timestamp query pool; profiling disabled.\n");
+					ano_log(ANO_WARN, "Failed to create timestamp query pool; profiling disabled.");
 					state->timestampValidBits = 0u; // disable profiling, keep rendering
 				}
 			}
@@ -3060,7 +3056,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		if (!createDataBuffer(ctx, &gpuAllocator, sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 				&state->frames[i].pickReadback, &state->frames[i].pickReadbackAlloc)) {
-			printf("Failed to create picking readback buffer!\n");
+			ano_log(ANO_FATAL, "Failed to create picking readback buffer!");
 			return false;
 		}
 		state->frames[i].pickReadbackMapped = state->frames[i].pickReadbackAlloc.mapped;

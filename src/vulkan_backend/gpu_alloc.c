@@ -1,6 +1,7 @@
 #include "gpu_alloc.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <anoptic_logging.h>
 
 #define DEFAULT_BLOCK_SIZE (256 * 1024 * 1024) // 256 MiB
 
@@ -13,7 +14,7 @@ static uint32_t findMemoryType(VkPhysicalDeviceMemoryProperties memProps, uint32
             return i;
         }
     }
-    printf("Failed to find suitable memory type!\n");
+    ano_log(ANO_ERROR, "Failed to find suitable memory type!");
     return UINT32_MAX;
 }
 
@@ -54,7 +55,7 @@ GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemory
     // Expand blocks array
     void* temp = realloc(alloc->blocks, (alloc->blockCount + 1) * sizeof(GpuBlock));
     if (!temp) {
-        printf("Host OOM: Failed to allocate memory for GPU block tracking array!\n");
+        ano_log(ANO_ERROR, "Host OOM: Failed to allocate memory for GPU block tracking array!");
         return (GpuAllocation){0};
     }
     alloc->blocks = temp;
@@ -74,7 +75,7 @@ GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemory
 
     if (vkAllocateMemory(alloc->device, &allocInfo, NULL, &newBlock->memory) != VK_SUCCESS)
     {
-        printf("Failed to allocate GPU block memory!\n");
+        ano_log(ANO_ERROR, "Failed to allocate GPU block memory!");
         // Revert block count expansion
         alloc->blockCount--;
         GpuAllocation empty = {0};

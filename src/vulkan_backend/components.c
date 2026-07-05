@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 #include "vulkan_backend/components.h"
 #include "vulkan_backend/structs.h"
 #include <stdlib.h>
@@ -50,7 +51,7 @@ void ano_vk_register_mesh(RenderPrimitives* primitives, MeshData data) {
         uint32_t newCapacity = primitives->meshCapacity == 0 ? 8 : primitives->meshCapacity * 2;
         void* temp = realloc(primitives->meshes, sizeof(MeshData) * newCapacity);
         if (!temp) {
-            printf("Error: Failed to reallocate memory for meshes!\n");
+            ano_log(ANO_ERROR, "Error: Failed to reallocate memory for meshes!");
             return;
         }
         primitives->meshes = temp;
@@ -78,7 +79,7 @@ void ano_vk_register_texture(RenderPrimitives* primitives, TextureData data) {
         uint32_t newCapacity = primitives->textureCapacity == 0 ? 8 : primitives->textureCapacity * 2;
         void* temp = realloc(primitives->textureBuffers, sizeof(TextureData) * newCapacity);
         if (!temp) {
-            printf("Error: Failed to reallocate memory for textures!\n");
+            ano_log(ANO_ERROR, "Error: Failed to reallocate memory for textures!");
             return;
         }
         primitives->textureBuffers = temp;

@@ -5,6 +5,7 @@
 #include "vulkan_backend/geometry.h"
 #include <string.h>
 #include <stdio.h>
+#include <anoptic_logging.h>
 
 bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily)
 {
@@ -258,7 +259,7 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
     }
     if (finalVertexOffset == (uint32_t)-1) {
         if ((VkDeviceSize)pool->vertexWriteOffset + vertexSize > pool->vertexCapacity) {
-            printf("Error: Geometry mega-buffer vertex pool exhausted! Requested %llu, Capacity %llu\n",
+            ano_log(ANO_ERROR, "Error: Geometry mega-buffer vertex pool exhausted! Requested %llu, Capacity %llu",
                    (unsigned long long)(pool->vertexWriteOffset + vertexSize), (unsigned long long)pool->vertexCapacity);
             vkDestroyBuffer(device, stagingBuffer, NULL);
             vkDestroyCommandPool(device, transientPool, NULL);
@@ -282,7 +283,7 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
     }
     if (finalIndexOffset == (uint32_t)-1) {
         if ((VkDeviceSize)pool->indexWriteOffset + total_metadata_size > pool->indexCapacity) {
-            printf("Error: Geometry mega-buffer metadata pool exhausted! Requested %llu, Capacity %llu\n",
+            ano_log(ANO_ERROR, "Error: Geometry mega-buffer metadata pool exhausted! Requested %llu, Capacity %llu",
                    (unsigned long long)(pool->indexWriteOffset + total_metadata_size), (unsigned long long)pool->indexCapacity);
             vkDestroyBuffer(device, stagingBuffer, NULL);
             vkDestroyCommandPool(device, transientPool, NULL);

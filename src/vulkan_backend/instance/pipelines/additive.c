@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 #include "additive.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include <stdio.h>
@@ -44,7 +45,7 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 
 	if (vkCreatePipelineLayout(ctx->device, &pipelineLayoutInfo, NULL, &proto->layout) != VK_SUCCESS)
 	{
-		printf("Failed to create additive pipeline layout!\n");
+		ano_log(ANO_FATAL, "Failed to create additive pipeline layout!");
 		return false;
 	}
 
