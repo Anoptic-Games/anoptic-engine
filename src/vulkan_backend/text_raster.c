@@ -24,6 +24,7 @@
 
 #define ANO_TEXT_FONT_REL      "resources/fonts/Geist/static/Geist-Regular.ttf"
 #define ANO_TEXT_RUNE_FONT_REL "resources/fonts/NotoSansRunic/NotoSansRunic-Regular.ttf"
+#define ANO_TEXT_GREEK_FONT_REL "resources/fonts/NotoSans/NotoSans-Regular.ttf"
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
@@ -58,14 +59,25 @@ typedef struct TextWorldPush {
 #define ANO_TEXT_PANEL_PX_H   352.0f
 #define ANO_TEXT_PANEL_WORLD_W  6.00f
 #define ANO_TEXT_PANEL_WORLD_H  2.75f
-// Line 4 is the full 24-rune Elder Futhark, the world lane's unicode proof.
+// The panel text, one macro per style run so the run table below takes each
+// byteCount from sizeof — no hand counting, boundaries correct by construction.
+// Line 3's splits land INSIDE the kern pairs (A|V, L|T, T|o, W|a) to prove
+// same-size runs stay kerned. The rune and greek runs own their leading '\n' so
+// each line step takes that line's size.
+// W_RUNES is the Gallehus horn inscription (Elder Futhark, Proto-Norse: "ek
+// hlewagastiz holtijaz horna tawido" — I, Hlewagastiz of Holt, made the horn).
+// W_GREEK is Iliad 1.1. Together they are the world lane's multi-font unicode proof.
+#define W_TITLE "Scanline Sweeper\n"
+#define W_LANE  "world-space lane\n"
+#define W_KERN1 "A"
+#define W_KERN2 "V L"
+#define W_KERN3 "T T"
+#define W_KERN4 "o W"
+#define W_KERN5 "a \"kerned\""
+#define W_RUNES "\nᛖᚲ ᚺᛚᛖᚹᚨᚷᚨᛊᛏᛁᛉ ᚺᛟᛚᛏᛁᛃᚨᛉ ᚺᛟᚱᚾᚨ ᛏᚨᚹᛁᛞᛟ"
+#define W_GREEK "\nΜῆνιν ἄειδε θεὰ Πηληϊάδεω Ἀχιλῆος"
 static const char g_worldText[] =
-    "Scanline Sweeper\n"
-    "world-space lane\n"
-    "AV LT To Wa \"kerned\"\n"
-    "\u16A0\u16A2\u16A6\u16A8\u16B1\u16B2\u16B7\u16B9\u16EB"
-    "\u16BA\u16BE\u16C1\u16C3\u16C7\u16C8\u16C9\u16CA\u16EB"
-    "\u16CF\u16D2\u16D6\u16D7\u16DA\u16DC\u16DE\u16DF";
+    W_TITLE W_LANE W_KERN1 W_KERN2 W_KERN3 W_KERN4 W_KERN5 W_RUNES W_GREEK;
 
 // Static torture text, pinned by ANO_TEXT_DEMO. Covers every baked codepoint,
 // the stable target for the offline pixel-compare harness.
@@ -532,21 +544,31 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
     }
 
-    // Bake coverage: ASCII, Latin-1, and core Cyrillic from Geist, plus the Runic
-    // block from Noto Sans Runic. A missing rune font degrades to the Geist ranges
-    // and runes render as gaps, not tofu.
-    char runePath[512];
+    // Bake coverage: ASCII, Latin-1, and core Cyrillic from Geist, the Greek blocks
+    // (monotonic + polytonic, for the Homer passages) from Noto Sans, and the Runic
+    // block from Noto Sans Runic. Ranges must stay codepoint-sorted and disjoint.
+    // A missing auxiliary font degrades to the remaining ranges; its script renders
+    // as gaps, not tofu.
+    char runePath[512], greekPath[512];
     snprintf(runePath, sizeof runePath, "%s/%s", game.str, ANO_TEXT_RUNE_FONT_REL);
     AnoFontId runeFont = ano_text_font_load(anostr_view(runePath, strlen(runePath)));
     if (runeFont == 0)
         printf("Text overlay: rune font missing ('%s'); Runic will not render.\n", runePath);
-    AnoBakeRange ranges[4] = {
-        { .font = font, .first = 0x0020, .last = 0x007E },     // ASCII
-        { .font = font, .first = 0x00A0, .last = 0x00FF },     // Latin-1 supplement
-        { .font = font, .first = 0x0400, .last = 0x045F },     // Cyrillic core + Ё/ё
-        { .font = runeFont, .first = 0x16A0, .last = 0x16F8 }, // Runic (Elder Futhark+)
-    };
-    uint32_t rangeCount = runeFont != 0 ? 4u : 3u;
+    snprintf(greekPath, sizeof greekPath, "%s/%s", game.str, ANO_TEXT_GREEK_FONT_REL);
+    AnoFontId greekFont = ano_text_font_load(anostr_view(greekPath, strlen(greekPath)));
+    if (greekFont == 0)
+        printf("Text overlay: greek font missing ('%s'); Greek will not render.\n", greekPath);
+    AnoBakeRange ranges[6];
+    uint32_t rangeCount = 0;
+    ranges[rangeCount++] = (AnoBakeRange){ .font = font, .first = 0x0020, .last = 0x007E }; // ASCII
+    ranges[rangeCount++] = (AnoBakeRange){ .font = font, .first = 0x00A0, .last = 0x00FF }; // Latin-1 supplement
+    if (greekFont != 0)
+        ranges[rangeCount++] = (AnoBakeRange){ .font = greekFont, .first = 0x0370, .last = 0x03FF }; // Greek + Coptic
+    ranges[rangeCount++] = (AnoBakeRange){ .font = font, .first = 0x0400, .last = 0x045F }; // Cyrillic core + Ё/ё
+    if (runeFont != 0)
+        ranges[rangeCount++] = (AnoBakeRange){ .font = runeFont, .first = 0x16A0, .last = 0x16F8 }; // Runic (Elder Futhark+)
+    if (greekFont != 0)
+        ranges[rangeCount++] = (AnoBakeRange){ .font = greekFont, .first = 0x1F00, .last = 0x1FFF }; // Greek Extended (polytonic)
     if (ano_text_font_bake_ranges(ranges, rangeCount, state->textHeap, &state->textBake) != 0)
     {
         printf("Text overlay disabled: font bake failed.\n");
@@ -605,22 +627,19 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     }
     if (state->textWorld)
     {
-        // Standing styled-runs demo: mixed sizes across lines, and line 3's color
-        // splits land INSIDE the kern pairs (A|V, L|T, T|o, W|a) to prove same-size
-        // runs stay kerned. The futhark run owns its leading '\n' so the line step
-        // takes the runes' size.
+        // Standing styled-runs demo: mixed sizes across lines. Each byteCount is
+        // sizeof its own segment macro, so the boundaries cannot drift.
         static const AnoTextRun worldRuns[] = {
-            { 17, 72.0f, { 1.00f, 0.78f, 0.32f, 1.0f } }, // "Scanline Sweeper\n"
-            { 17, 48.0f, { 0.90f, 0.90f, 0.90f, 1.0f } }, // "world-space lane\n"
-            {  1, 60.0f, { 1.00f, 0.42f, 0.35f, 1.0f } }, // "A
-            {  3, 60.0f, { 0.45f, 0.75f, 1.00f, 1.0f } }, //  V L
-            {  3, 60.0f, { 0.45f, 0.95f, 0.60f, 1.0f } }, //  T T
-            {  3, 60.0f, { 1.00f, 0.85f, 0.30f, 1.0f } }, //  o W
-            { 10, 60.0f, { 0.80f, 0.60f, 1.00f, 1.0f } }, //  a "kerned""
-            { 79, 40.0f, { 0.55f, 0.85f, 1.00f, 1.0f } }, // "\n" + the Elder Futhark
+            { sizeof W_TITLE - 1, 72.0f, { 1.00f, 0.78f, 0.32f, 1.0f } },
+            { sizeof W_LANE  - 1, 48.0f, { 0.90f, 0.90f, 0.90f, 1.0f } },
+            { sizeof W_KERN1 - 1, 60.0f, { 1.00f, 0.42f, 0.35f, 1.0f } },
+            { sizeof W_KERN2 - 1, 60.0f, { 0.45f, 0.75f, 1.00f, 1.0f } },
+            { sizeof W_KERN3 - 1, 60.0f, { 0.45f, 0.95f, 0.60f, 1.0f } },
+            { sizeof W_KERN4 - 1, 60.0f, { 1.00f, 0.85f, 0.30f, 1.0f } },
+            { sizeof W_KERN5 - 1, 60.0f, { 0.80f, 0.60f, 1.00f, 1.0f } },
+            { sizeof W_RUNES - 1, 36.0f, { 0.55f, 0.85f, 1.00f, 1.0f } },
+            { sizeof W_GREEK - 1, 34.0f, { 0.75f, 0.95f, 0.80f, 1.0f } },
         };
-        static_assert(17 + 17 + 1 + 3 + 3 + 3 + 10 + 79 == sizeof g_worldText - 1,
-                      "world runs cover the panel text exactly");
         const float worldOrigin[2] = { 24.0f, 76.0f };
         uint32_t worldCap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance)
                           - ANO_TEXT_WORLD_FIRST;

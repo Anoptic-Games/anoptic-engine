@@ -233,6 +233,7 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 #define HUD_TEXT_NOTICE  2u
 #define HUD_TEXT_CAM     3u
 #define HUD_TEXT_UNICODE 4u
+#define HUD_TEXT_HOMER   5u
 #define HUD_TEXT_CAP     128u
 
 // Shape + submit one block, clamping the reported need to what the buffer holds.
@@ -256,14 +257,19 @@ void* anoLogicThreadMain(void* arg)
 	const AnoFontBake* bake = anoRenderTextBake();
 	AnoGlyphInstance hud[HUD_TEXT_CAP];
 	if (bake != NULL) {
+		// Each run's byteCount is sizeof its own segment, so the split cannot drift.
+		#define TITLE_HEAD "logic HUD"
+		#define TITLE_TAIL " :: text bridge v0"
 		const AnoTextRun titleRuns[2] = {
-			{ 9,  24.0f, { 1.0f, 0.78f, 0.32f, 1.0f } }, // "logic HUD" amber
-			{ 18, 24.0f, { 0.9f, 0.9f, 0.9f, 1.0f } },   // " :: text bridge v0"
+			{ sizeof TITLE_HEAD - 1, 24.0f, { 1.0f, 0.78f, 0.32f, 1.0f } }, // amber
+			{ sizeof TITLE_TAIL - 1, 24.0f, { 0.9f, 0.9f, 0.9f, 1.0f } },
 		};
 		const float titleOrg[2] = { 24.0f, 150.0f };
-		uint32_t n = ano_text_shape_runs_lit(bake, "logic HUD :: text bridge v0", titleRuns, 2,
+		uint32_t n = ano_text_shape_runs_lit(bake, TITLE_HEAD TITLE_TAIL, titleRuns, 2,
 		                                     titleOrg, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_TITLE, hud, n)) ano_sleep(1000);
+		#undef TITLE_HEAD
+		#undef TITLE_TAIL
 
 		const float noticeOrg[2] = { 24.0f, 180.0f };
 		const float grey[4] = { 0.6f, 0.6f, 0.6f, 1.0f };
@@ -271,15 +277,26 @@ void* anoLogicThreadMain(void* arg)
 		                       20.0f, noticeOrg, grey, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_NOTICE, hud, n)) ano_sleep(1000);
 
-		// Unicode sampler: Latin-1, Cyrillic, and Elder Futhark in one UTF-8 value,
-		// shaped on the logic thread and swept on the GPU.
+		// Unicode sampler: the Gallehus horn inscription in Elder Futhark ("ek
+		// hlewagastiz holtijaz horna tawido" — I, Hlewagastiz of Holt, made the
+		// horn), plus Latin-1 and Cyrillic spice, in one UTF-8 value shaped on
+		// the logic thread and swept on the GPU.
 		const float samplerOrg[2] = { 24.0f, 240.0f };
 		const float gold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
 		n = ano_text_shape_lit(bake,
-		                       "Fu\u00FEark \u16A0\u16A2\u16A6\u16A8\u16B1\u16B2"
-		                       " \u00B7 \u0420\u0443\u043D\u044B \u00B7 \u00C5land \u00E6re \u00DF",
+		                       "ᛖᚲ ᚺᛚᛖᚹᚨᚷᚨᛊᛏᛁᛉ ᚺᛟᛚᛏᛁᛃᚨᛉ ᚺᛟᚱᚾᚨ ᛏᚨᚹᛁᛞᛟ · Руны · æ ß",
 		                       22.0f, samplerOrg, gold, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_UNICODE, hud, n)) ano_sleep(1000);
+
+		// Homer, Odyssey 1.1 in polytonic Greek: "Andra moi ennepe, Mousa,
+		// polytropon" — Tell me, Muse, of the man of many turns. Exercises the
+		// Greek + Greek Extended bake ranges from the logic thread.
+		const float homerOrg[2] = { 24.0f, 270.0f };
+		const float aegean[4] = { 0.55f, 0.80f, 1.0f, 1.0f };
+		n = ano_text_shape_lit(bake,
+		                       "Ἄνδρα μοι ἔννεπε, Μοῦσα, πολύτροπον",
+		                       22.0f, homerOrg, aegean, hud, HUD_TEXT_CAP, NULL);
+		while (!hud_text_submit(bridge, HUD_TEXT_HOMER, hud, n)) ano_sleep(1000);
 	}
 	uint64_t noticeDeadline = 0; // armed 15 s after frames start flowing (first snapshot)
 	bool     noticeCleared = false;
