@@ -5,8 +5,7 @@
 
 // Text overlay plumbing (FONT_RENDER.md step 5): glyph-curve GPU buffers, per-frame
 // overlay raster targets, the PIPELINE_COMPUTE_TEXTRASTER pass, and the composite
-// blend draw. Everything is gated on rendererState.textOverlay, so a mid-init disable
-// is safe.
+// blend draw. Gated on rendererState.textOverlay.
 
 #ifndef ANO_TEXT_RASTER_H
 #define ANO_TEXT_RASTER_H
@@ -14,12 +13,11 @@
 #include "vulkan_backend/structs.h"
 
 // One-time init on the render thread: FreeType up, fonts loaded + baked, GPU buffers
-// and pipelines built. Returns true always: failure logs and clears state->textOverlay
-// instead of failing engine init.
+// and pipelines built. Always returns true: failure logs and clears state->textOverlay.
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state);
 
 // Size-dependent overlay images (one per frame in flight, swapchain extent). Called
-// from createColorResources so the resize path recreates them.
+// from createColorResources.
 void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state);
 
 // Destroys the overlay images/views (handle-guarded).
@@ -60,9 +58,8 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex);
 void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex);
 
 // Async lane (step 7): records this frame's raster CB and submits it to the compute
-// queue with no waits, signaling textTimeline == ordinal (the main graphics submit
-// waits on it). A failed submit host-signals the ordinal so the timeline stays
-// monotonic. No-op unless asyncText.
+// queue with no waits, signaling textTimeline == ordinal. A failed submit host-signals
+// the ordinal. No-op unless asyncText.
 void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t frameIndex,
                               uint64_t ordinal);
 
@@ -71,7 +68,7 @@ void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t
 void ano_vk_text_record_composite(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex);
 
 // The world-space text panel: one bufferless quad draw, recorded inside a view's
-// additive pass so the text resolves with the scene. No-op unless textWorld.
+// additive pass. No-op unless textWorld.
 void ano_vk_text_record_world(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
                               uint32_t view);
 

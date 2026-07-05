@@ -1,6 +1,6 @@
 # gcc-x64-autodetect.cmake
 # Auto-detected toolchain for the current platform.
-# GCC FALLBACK path -- clang/LLVM is the project default (clang-linux-x64.cmake).
+# GCC fallback, clang/LLVM is the default (clang-linux-x64.cmake).
 
 message(STATUS "!! Using auto-detected toolchain for your current platform.")
 

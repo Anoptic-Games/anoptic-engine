@@ -64,7 +64,7 @@ const char *__tsan_default_suppressions(void)
 #define PATH_B     ANO_TEST_OUTDIR "/anolog_fuzz_alt/anoptic.log"
 
 #define PRODUCERS      6
-#define DEFAULT_ITERS  4000     // per producer; ~few seconds, overflows the ring repeatedly
+#define DEFAULT_ITERS  4000     // per producer, overflows the ring repeatedly
 #define MAX_CONTENT    600      // > one ring entry (64/128B line) to force spanning/wrap, < message cap
 
 // Total records actually enqueued, summed across all producers. The drop-nothing oracle.
@@ -210,7 +210,7 @@ int main(int argc, char **argv)
     printf("logfuzz: producers=%d iters=%d enqueued=%llu lines=%llu\n",
            PRODUCERS, g_iters, (unsigned long long)enq, (unsigned long long)lines);
 
-    // Counted above; drop the files and directories so a manual run leaves nothing behind.
+    // Drop the test files and directories.
     remove(PATH_A);
     remove(PATH_B);
     scratch_remove_dir(DIR_A);

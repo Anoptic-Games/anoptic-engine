@@ -1,9 +1,6 @@
-// Scanline Sweeper coverage math shared by the overlay compute raster
-// (textraster.comp) and the world-space fragment lane (textworld.frag) -- one copy so
-// the two lanes can never drift from src/text/text_raster_ref.c, the validated CPU
-// reference this GLSL mirrors statement for statement. Declares the three glyph-data
-// buffers (set 0, bindings 0/1/2 -- both lanes bind the same textRasterSet); the
-// including shader adds only its own extras (overlay image, push constants, IO).
+// Scanline Sweeper coverage math shared by textraster.comp and textworld.frag.
+// Mirrors src/text/text_raster_ref.c statement for statement. Declares the three
+// glyph-data buffers (set 0, bindings 0/1/2). The including shader adds its own extras.
 
 // Mirrors AnoGlyphEntry (32 B).
 struct GlyphEntry {
@@ -15,7 +12,7 @@ struct GlyphEntry {
     uint  flags;
 };
 
-// Mirrors AnoGlyphInstance (48 B; offsets pinned by static_asserts in anoptic_text.h).
+// Mirrors AnoGlyphInstance, 48 B. Offsets pinned by static_asserts in anoptic_text.h.
 struct GlyphInstance {
     vec4 inv;     // 2x2 pixel->em inverse, rows: em = (dot(inv.xy,d), dot(inv.zw,d))
     vec4 color;   // premultiplied linear RGBA
@@ -31,10 +28,7 @@ layout(std430, set = 0, binding = 2) readonly buffer FrameData { GlyphInstance i
 const uint SENTINEL = 0x7C007C00u; // contour separator: both halves +inf
 
 // Single root of a monotone quadratic component hitting `target`, clamped to [0,1],
-// in the citardauq form 2c/(-b - sign(span)*sqrt(d)): the denominator is always the
-// additive |b|+sqrt(d) under monotonicity, so shallow curves don't cancel and a -> 0
-// (baked lines) degrades exactly to the chord with no threshold branch (a threshold
-// here mis-crosses shallow quads -> ghost bands; see text_raster_ref.c).
+// citardauq form 2c/(-b - sign(span)*sqrt(d)).
 float solve_mono(float c0, float c1, float c2, float target)
 {
     float span = c2 - c0;
@@ -49,8 +43,7 @@ float solve_mono(float c0, float c1, float c2, float target)
 }
 
 // Signed area swept between one monotone quad and the window's right edge, clipped to
-// the window [0,w]x[0,h]; curve coordinates arrive window-local. Statement-for-statement
-// mirror of curve_area() in text_raster_ref.c -- derivation commentary lives there.
+// [0,w]x[0,h]. Curve coordinates arrive window-local. Mirrors curve_area() in text_raster_ref.c.
 float curve_area(float x0, float y0, float x1, float y1, float x2, float y2,
                  float w, float h)
 {
@@ -126,9 +119,8 @@ float window_sum(GlyphEntry g, vec2 wpos, vec2 wdim)
     return area / (wdim.x * wdim.y);
 }
 
-// Text-space rect corners (relative to the instance origin) -> em-space box under the
-// instance's pixel->em transform. Exact for v0's axis-aligned transforms; the bbox
-// of the footprint parallelogram under future skew/rotation.
+// Text-space rect corners (relative to instance origin) -> em-space bbox under the
+// instance's pixel->em transform, the footprint parallelogram's bounds.
 void em_box(vec4 inv, vec2 rMin, vec2 rMax, out vec2 lo, out vec2 hi)
 {
     vec2 c10 = vec2(rMax.x, rMin.y);
@@ -142,7 +134,7 @@ void em_box(vec4 inv, vec2 rMin, vec2 rMax, out vec2 lo, out vec2 hi)
 }
 
 // Premultiplied contribution of one instance over the text-space window [rMin, rMax]:
-// per-glyph coverage clamp (the overlap fix, FONT_RENDER.md 6.1) times instance color.
+// per-glyph coverage clamp (FONT_RENDER.md 6.1) times instance color.
 vec4 shade_window(uint idx, vec2 rMin, vec2 rMax)
 {
     GlyphInstance gi = instances[idx];

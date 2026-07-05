@@ -1,10 +1,8 @@
 #version 450
 
-// World-space Scanline Sweeper lane: per-fragment analytic coverage over the shared
-// glyph buffers. The em-space window is the fragment's panel-space footprint from
-// screen derivatives, so the AA adapts to distance and obliquity for free (grazing
-// views widen the window and the text self-filters instead of shimmering). Output is
-// premultiplied; the pipeline blends src-over onto the HDR target.
+// World-space Scanline Sweeper lane: per-fragment analytic coverage over the shared glyph
+// buffers. The em-space window is the fragment's panel-space footprint from screen
+// derivatives. Output is premultiplied, blended src-over onto the HDR target.
 
 #include "textcoverage.glsl"
 

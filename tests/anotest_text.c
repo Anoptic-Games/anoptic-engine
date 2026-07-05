@@ -31,7 +31,6 @@ static int failures = 0;
 #define FONT_PATH      "resources/fonts/Geist/static/Geist-Regular.ttf"
 #define RUNE_FONT_PATH "resources/fonts/NotoSansRunic/NotoSansRunic-Regular.ttf"
 
-// ---------------------------------------------------------------------------------------------
 // Lifecycle.
 
 static void expect_version_zero(const char *when)
@@ -65,7 +64,6 @@ static void test_lifecycle(void)
     ano_text_shutdown();
 }
 
-// ---------------------------------------------------------------------------------------------
 // White-box: binary16 conversion.
 
 static void test_half(void)
@@ -95,7 +93,6 @@ static void test_half(void)
     CHECK(fabsf(ano_half_unpack(ano_half_pack(tiny)) - tiny) < 1e-7f, "subnormal path sane");
 }
 
-// ---------------------------------------------------------------------------------------------
 // White-box: monotone splitting and cubic conversion.
 
 static void check_monotone_quad(const AnoQuad *q, const char *msg)
@@ -175,7 +172,6 @@ static void test_cubic(void)
     CHECK(ano_cubic_to_quads(px, py, 1e-3, q, 0) == -1, "maxOut < 1 is rejected");
 }
 
-// ---------------------------------------------------------------------------------------------
 // Bake validation: an independent decoder of the documented stream grammar.
 
 typedef struct DecodedGlyph {
@@ -318,11 +314,10 @@ static void validate_bake(const AnoFontBake *b)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
 // Reference rasterizer vs FreeType ground truth.
 
 #define REF_SCALE 64u      // px per em: big enough that curve detail matters
-#define REF_DIM   160      // per-glyph buffer side; comfortably above any 64px glyph
+#define REF_DIM   160      // per-glyph buffer side, above any 64px glyph
 
 // The unclamped-peak oracle, measured on this font. Coverage exceeding 1 comes in TWO
 // forms, both neutralized by the per-glyph clamp: separate same-winding contours
@@ -395,7 +390,6 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
            sizeof peakOracle / sizeof *peakOracle);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Ghost-pixel sweep: coverage leaking outside the ink.
 
 // Regression net for the step-6 band artifact: solve_mono's former chord fallback
@@ -406,8 +400,8 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
 // the crossing error is a fixed em quantity while the window shrinks with 1/S.
 
 #define GHOST_MIN 3   // flag isolated coverage at or above this (post-fix residual is 0)
-#define GHOST_PAD 8   // grid margin past the FT bitmap; bands extend beyond the ink
-#define GHOST_DIM 320 // per-glyph buffer side; fits any 200px glyph plus padding
+#define GHOST_PAD 8   // grid margin past the FT bitmap
+#define GHOST_DIM 320 // per-glyph buffer side, fits any 200px glyph plus padding
 
 static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
 {
@@ -443,7 +437,7 @@ static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
                     int v = ours[r * ow + c];
                     if (v < GHOST_MIN)
                         continue;
-                    // FT coordinates of this pixel; any ink in the 3x3 absolves it.
+                    // FT coordinates of this pixel, any ink in the 3x3 absolves it.
                     int fy = r - GHOST_PAD, fx = c - GHOST_PAD;
                     int ink = 0;
                     for (int dy = -1; dy <= 1 && !ink; dy++)
@@ -477,7 +471,6 @@ static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
 // GPOS PairPos parser (shaper v1), white-box against a hand-assembled synthetic table.
 
 // Byte cursor for big-endian table assembly. Every section boundary is asserted so a
@@ -825,7 +818,6 @@ static void test_shaper_runs(const AnoFontBake *b)
     CHECK(w == 0.0f && h == 0.0f, "empty runs measure zero");
 }
 
-// ---------------------------------------------------------------------------------------------
 // Multi-range multi-face bake: Geist ASCII + Noto Sans Runic in one directory.
 // Slot bases chain in range order, kerning never crosses faces, and the argument
 // contract rejects unsorted/overlapping range lists.
@@ -888,7 +880,6 @@ static void test_runic_bake(AnoFontId geist, AnoFontId runic, mi_heap_t *heap)
           "overlapping ranges reject");
 }
 
-// ---------------------------------------------------------------------------------------------
 
 int main(void)
 {

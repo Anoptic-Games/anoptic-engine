@@ -88,7 +88,7 @@ static char *slurp(const char *path, size_t *out_len)
         }
         size_t got = fread(buf + len, 1, cap - len - 1, f);
         len += got;
-        if (got == 0) break;    // EOF or read error; ferror distinguishes them below
+        if (got == 0) break;    // EOF or read error
     }
 
     if (ferror(f)) { free(buf); fclose(f); if (out_len) *out_len = 0; return NULL; }
@@ -878,7 +878,7 @@ static int test_edge_output_dir_switch(void)
     g_fail = 0;
     reset_output();
     make_dir(LOG_DIR_ALT);
-    remove(LOG_PATH_ALT);   // earlier cases write LOG_DIR_ALT; start both targets empty
+    remove(LOG_PATH_ALT);   // start both targets empty
 
     for (int round = 0; round < 4; round++) {
         ano_log_output_dir(LOG_DIR);
@@ -1105,7 +1105,7 @@ int main(void)
 {
     int failures = 0;
 
-    // Anchor scratch output to this executable's directory (cross-platform); before any file I/O.
+    // Anchor scratch output to this executable's directory, before any file I/O.
     if (!ano_fs_chdir_gamepath()) {
         fprintf(stderr, "chdir to gamepath failed\n");
         return 1;

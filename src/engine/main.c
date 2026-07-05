@@ -178,11 +178,10 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 	}
 }
 
-// Logic-side text (FONT_RENDER.md v0 bridge): shape UTF-8 against the renderer's bake
-// on THIS thread and ship the instances as named blocks. text_id is the producer's
-// namespace. The demo drives all three verbs: a styled persistent title (SET), a
-// transient notice (CLEAR), a once-per-second camera readout (REPLACE), and a
-// persistent unicode sampler proving the logic-thread string path end to end.
+// Logic-side text (FONT_RENDER.md v0 bridge): shape UTF-8 against the renderer's bake on THIS thread
+// and ship the instances as named blocks. text_id is the producer's namespace. The demo drives all
+// verbs: a persistent title (SET), a transient notice (CLEAR), a per-second camera readout (REPLACE),
+// and a persistent unicode sampler.
 #define HUD_TEXT_TITLE   1u
 #define HUD_TEXT_NOTICE  2u
 #define HUD_TEXT_CAM     3u
@@ -206,12 +205,11 @@ void* anoLogicThreadMain(void* arg)
 	// the bridge — the same command path a runtime spawn takes. Replaces the renderer's hardcoded rig.
 	spawn_scene(bridge);
 
-	// One-time HUD blocks (below the renderer's own profiling OSD). The scene burst above
-	// is backpressure-retried, so these are too — one-shot sets must not be dropped.
+	// One-time HUD blocks (below the renderer's own profiling OSD), backpressure-retried.
 	const AnoFontBake* bake = anoRenderTextBake();
 	AnoGlyphInstance hud[HUD_TEXT_CAP];
 	if (bake != NULL) {
-		// Each run's byteCount is sizeof its own segment, so the split cannot drift.
+		// Each run's byteCount is sizeof its own segment.
 		#define TITLE_HEAD "logic HUD"
 		#define TITLE_TAIL " :: text bridge v0"
 		const AnoTextRun titleRuns[2] = {
@@ -231,10 +229,8 @@ void* anoLogicThreadMain(void* arg)
 		                       20.0f, noticeOrg, grey, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_NOTICE, hud, n)) ano_sleep(1000);
 
-		// Unicode sampler: the Gallehus horn inscription in Elder Futhark ("ek
-		// hlewagastiz holtijaz horna tawido" — I, Hlewagastiz of Holt, made the
-		// horn), plus Latin-1 and Cyrillic spice, in one UTF-8 value shaped on
-		// the logic thread and swept on the GPU.
+		// Unicode sampler: the Gallehus horn inscription in Elder Futhark ("ek hlewagastiz holtijaz
+		// horna tawido", I Hlewagastiz of Holt made the horn), plus Latin-1 and Cyrillic, one UTF-8 value.
 		const float samplerOrg[2] = { 24.0f, 240.0f };
 		const float gold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
 		n = ano_text_shape_lit(bake,
@@ -242,9 +238,8 @@ void* anoLogicThreadMain(void* arg)
 		                       22.0f, samplerOrg, gold, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_UNICODE, hud, n)) ano_sleep(1000);
 
-		// Homer, Odyssey 1.1 in polytonic Greek: "Andra moi ennepe, Mousa,
-		// polytropon" — Tell me, Muse, of the man of many turns. Exercises the
-		// Greek + Greek Extended bake ranges from the logic thread.
+		// Homer, Odyssey 1.1 in polytonic Greek: "Andra moi ennepe, Mousa, polytropon" (Tell me, Muse,
+		// of the man of many turns). Greek + Greek Extended bake ranges.
 		const float homerOrg[2] = { 24.0f, 270.0f };
 		const float aegean[4] = { 0.55f, 0.80f, 1.0f, 1.0f };
 		n = ano_text_shape_lit(bake,
@@ -252,7 +247,7 @@ void* anoLogicThreadMain(void* arg)
 		                       22.0f, homerOrg, aegean, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_HOMER, hud, n)) ano_sleep(1000);
 	}
-	uint64_t noticeDeadline = 0; // armed 15 s after frames start flowing (first snapshot)
+	uint64_t noticeDeadline = 0; // armed 15 s after frames start flowing
 	bool     noticeCleared = false;
 
 	// Free-fly camera owned by logic (audit 4.11): drain forwarded input, integrate a WASD + right-drag
@@ -340,14 +335,13 @@ void* anoLogicThreadMain(void* arg)
 			ano_render_publish_view(bridge, &view);
 		}
 
-		// One-shot: retire the transient notice (RCMD_TEXT_CLEAR end to end). A full
-		// ring returns false and this retries next tick — a clear must not be dropped.
+		// One-shot: retire the transient notice (RCMD_TEXT_CLEAR). A full ring returns false and this
+		// retries next tick.
 		if (bake != NULL && !noticeCleared && noticeDeadline != 0 && now > noticeDeadline)
 			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE);
 
-		// Prove the snapshot path: log the renderer's published frame id ~once/sec, and
-		// refresh the camera readout block on the same cadence (REPLACE semantics: a
-		// drop leaves last second's text standing, corrected by the next set).
+		// Snapshot path: log the renderer's published frame id ~once/sec, and refresh the camera
+		// readout block on the same cadence (REPLACE semantics).
 		{
 			RenderSnapshot snap;
 			if (noticeDeadline == 0 && ano_render_acquire_snapshot(bridge, &snap))
@@ -398,9 +392,8 @@ int main()
 
     #endif
 
-    // Singleton logger up for the whole of main: 
-	// everything below (device selection, renderer init, the frame loop) logs through it. 
-	// Cleans itself upon scope exit.
+    // Singleton logger for the whole of main (device selection, renderer init, the frame loop).
+    // Cleans itself on scope exit.
     int logAlive ANO_LOG_SCOPE_ATTR = ano_log_init();
     if (logAlive != 0) {
         ano_log(ANO_FATAL, "Logger initialization failed; something is very wrong.");

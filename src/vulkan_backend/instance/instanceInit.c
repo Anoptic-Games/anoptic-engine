@@ -302,7 +302,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Validation messenger cal
 	{
 		return VK_FALSE;
 	}
-	// Route by layer severity. %s is copied at capture, so the layer may free the message after.
+	// Route by layer severity. %s copied at capture.
 	if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
 		ano_log(ANO_ERROR, "Validation layer: %s", pCallbackData->pMessage);
 	else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
@@ -636,9 +636,8 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 		}
 	}
 
-	// The renderer has no 1x path. A device whose usable sample counts are 1x-only
-	// (layered Vulkan-on-D3D12 adapters cap integer-color MSAA at 1) cannot render.
-	// The intersection mirrors getMaxUsableSampleCount.
+	// 1x-only sample support cannot render (no 1x path). Intersection mirrors
+	// getMaxUsableSampleCount.
 	VkPhysicalDeviceVulkan12Properties vk12Props = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
 	VkPhysicalDeviceProperties2 props2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vk12Props };
 	vkGetPhysicalDeviceProperties2(device, &props2);
@@ -688,8 +687,7 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 	if (preferred < 2u) { ano_log(ANO_WARN, "MSAA preference %u below minimum, using 2x", preferred); preferred = 2u; }
 	VkSampleCountFlags mask = 0;
 	for (uint32_t s = 2u; s <= preferred && s <= 64u; s <<= 1) mask |= s; // sample flags are their counts
-	// If the preference window misses every supported count, take any supported >=2x
-	// count rather than the unbuilt 1x path. isDeviceSuitable guarantees one exists.
+	// Preference window empty: take any supported >=2x count. isDeviceSuitable guarantees one.
 	VkSampleCountFlags preferredCounts = counts & mask;
 	counts = preferredCounts ? preferredCounts : (counts & ~(VkSampleCountFlags)VK_SAMPLE_COUNT_1_BIT);
 
@@ -703,10 +701,7 @@ VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 	return VK_SAMPLE_COUNT_1_BIT;
 }
 
-// Selection preference, not a requirement (the fallback path exists). Layered drivers
-// (Mesa "dozen" Vulkan-on-D3D12) enumerate alongside the native ICD for the same GPU,
-// claim DISCRETE_GPU with big heaps, and lack mesh shaders. A raw memory contest picks
-// them over the native driver and silently degrades the machine to the fallback path.
+// Mesh-shader capability, the primary device-ranking key.
 static bool deviceHasMeshShader(VkPhysicalDevice device)
 {
 	VkPhysicalDeviceMeshShaderFeaturesEXT meshFeatures = {};
@@ -720,17 +715,13 @@ static bool deviceHasMeshShader(VkPhysicalDevice device)
 	return meshFeatures.meshShader;
 }
 
-// ASCII-only case fold. CRT tolower() is locale-dependent (Turkish-I problem).
-// Non-ASCII bytes compare exactly, never folded.
+// ASCII-only case fold. Non-ASCII bytes pass through unfolded.
 static char asciiLower(char c)
 {
 	return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
 }
 
-// Caseless substring match for the ANO_DEVICE override. Device names vary by driver
-// ("NVIDIA GeForce RTX 3070 Ti" vs "Microsoft Direct3D12 (NVIDIA ...)"), so exact
-// strcmp would be unusable from a shell. strcasestr is absent on Windows.
-// The inner scan stops at either terminator, so no out-of-bounds reads.
+// Caseless substring match for the ANO_DEVICE override.
 static bool nameContainsCaseless(const char* haystack, const char* needle)
 {
 	size_t needleLen = strlen(needle);
@@ -748,7 +739,7 @@ static bool nameContainsCaseless(const char* haystack, const char* needle)
 	return false;
 }
 
-// Heap 0 is not guaranteed to be video memory. Compare by largest DEVICE_LOCAL heap.
+// Largest DEVICE_LOCAL heap.
 static VkDeviceSize maxDeviceLocalHeapSize(const VkPhysicalDeviceMemoryProperties* memProperties)
 {
 	VkDeviceSize maxSize = 0;
@@ -766,8 +757,7 @@ static VkDeviceSize maxDeviceLocalHeapSize(const VkPhysicalDeviceMemoryPropertie
 bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Further extend selection logic, split device discovery into dedicated function
 {																																				 //   and retain device attributes in public interface for use in UI or logic
 	bool foundPreferredDevice = false;
-	// ANO_DEVICE (caseless name substring) pins the adapter without a rebuild.
-	// Escape hatch for multi-ICD machines. Suitability checks still apply.
+	// ANO_DEVICE (caseless name substring) pins the adapter. Suitability checks still apply.
 	const char* envDevice = getenv("ANO_DEVICE");
 	ctx->deviceCount = 0;
 
@@ -806,8 +796,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 	{
 		vkGetPhysicalDeviceProperties(devices[i], &deviceProperties);
 		vkGetPhysicalDeviceMemoryProperties(devices[i], &memProperties);
-		// Multi-ICD machines list the same GPU several times in unstable order.
-		// A bare index is undiagnosable from a user report, so log full identity.
+		// Log full device identity.
 		ano_log(ANO_INFO, "Device %u: %s (%s, mesh shader: %s)", i, deviceProperties.deviceName,
 		             deviceProperties.deviceType <= VK_PHYSICAL_DEVICE_TYPE_CPU
 		                 ? deviceTypeNames[deviceProperties.deviceType] : "unknown",
@@ -816,7 +805,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		if (isDeviceSuitable(devices[i], &(ctx->surface)))
 		{
 
-			//Select the first preffered device if available and break out of the selection loop
+			// Select the first preferred device, if any.
 			if (strcmp(deviceProperties.deviceName, preferredDevice) == 0 ||
 			    (envDevice && nameContainsCaseless(deviceProperties.deviceName, envDevice)))
 			{
@@ -826,8 +815,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 			}
 
 		
-			// Rank suitable devices: mesh-shader capability first, then DEVICE_LOCAL
-			// memory. See deviceHasMeshShader for why capability dominates.
+			// Rank suitable devices: mesh-shader capability first, then DEVICE_LOCAL memory.
 			VkDeviceSize currentMemorySize = maxDeviceLocalHeapSize(&memProperties);
 			bool currentMesh = deviceHasMeshShader(devices[i]);
 
@@ -886,8 +874,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		}
 	}
 
-	// Always name the winner: on multi-ICD machines "which device did it pick"
-	// is the first diagnostic question.
+	// Log the selected device.
 	VkPhysicalDeviceProperties chosenProperties;
 	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &chosenProperties);
 	ano_log(ANO_INFO, "Selected device: %s", chosenProperties.deviceName);
@@ -1460,7 +1447,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	// The per-view HDR resolve views were recreated above; rebind the tonemap sets to them.
 	updateTonemapDescriptorSets(ctx, &rendererState);
 
-	// Text overlay images were recreated in createColorResources; rebind their sets.
+	// Text overlay images recreated in createColorResources. Rebind their sets.
 	ano_vk_text_update_sets(ctx, &rendererState);
 
 	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
@@ -1963,8 +1950,7 @@ void createColorResources(VulkanContext* ctx) //TODO: This probably should be ge
 		}
 	}
 
-	// Text overlay raster targets (FONT_RENDER.md step 5): per-frame, swapchain-sized;
-	// created here so the resize path recreates them with the other targets.
+	// Text overlay raster targets (FONT_RENDER.md step 5): per-frame, swapchain-sized.
 	ano_vk_text_create_overlay(ctx, &rendererState);
 }
 
@@ -1996,7 +1982,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	// (2 * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS/frame), plus the cull set's binding 11 occlusion pyramids
 	// (ANO_VIEW_COUNT samplers/frame).
 	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + ANO_VIEW_COUNT + 1u);
-	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame;
+	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame.
 	// + 1/frame: the text overlay raster destination.
 	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSize[4].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + 1u);
@@ -2007,7 +1993,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolInfo.pPoolSizes = poolSize;
 	// + 2 blur sets/frame on top of (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2),
 	// + ANO_VIEW_COUNT*ANO_MAX_HIZ_MIPS Hi-Z build sets/frame (one per mip per view, review 4.9 step 3).
-	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 9u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + 2u); // +1 shared set: lightsetup; +2 text overlay
+	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 9u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + 2u); // +1 lightsetup, +2 text overlay
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
 	{

@@ -82,7 +82,7 @@ if not exist build\%BUILD_LABEL% mkdir build\%BUILD_LABEL%
 cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE="%TOOLCHAIN_PATH%" -DCMAKE_BUILD_TYPE=%CMAKE_CONFIG% %EXTRA_FLAGS% -S . -B ./build/%BUILD_LABEL%
 if errorlevel 1 exit /b 1
 
-:: Scrub all object files so everything recompiles.
+:: Scrub all object files.
 cmake --build ./build/%BUILD_LABEL% --target ano_scrub
 if errorlevel 1 exit /b 1
 

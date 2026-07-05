@@ -51,9 +51,8 @@ static void *text_ft_realloc(FT_Memory memory, long cur_size, long new_size, voi
     return mi_heap_realloc(memory->user, block, (size_t)new_size);
 }
 
-// Creates the module heap and a FreeType library routed through it, then registers
-// the default font-format modules (FT_New_Library starts empty). Idempotent.
-// The calling thread becomes the module's owner thread.
+// Creates the module heap and a FreeType library routed through it, registers the
+// default font-format modules. Idempotent. Calling thread becomes the module owner.
 int ano_text_init(void)
 {
     if (g_ftLibrary != NULL)
@@ -188,8 +187,7 @@ void *ano_text_face(AnoFontId font)
 }
 
 // Internal ground truth for the reference rasterizer: FreeType's own smooth AA render
-// (unhinted) copied tightly into buf. Sets pixel sizes on the face, which the bake
-// path ignores (FT_LOAD_NO_SCALE). Module thread.
+// (unhinted) copied tightly into buf. Sets pixel sizes on the face. Module thread.
 int ano_text_ref_ft_render(AnoFontId font, uint32_t codepoint, uint32_t pixelsPerEm,
                            uint8_t *buf, uint32_t cap, int *width, int *rows,
                            int *left, int *top)

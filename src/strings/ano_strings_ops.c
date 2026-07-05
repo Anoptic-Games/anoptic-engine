@@ -36,7 +36,7 @@ anostr_t anostr_replace_all(mi_heap_t *heap, anostr_t s, anostr_t needle, anostr
     if (needle.len == 0 || needle.len > s.len)
         return s;
 
-    // Pass one: count non-overlapping matches, so pass two allocates exactly once.
+    // Pass one: count non-overlapping matches.
     size_t matches = 0;
     for (size_t at = 0; (at = anostr_find(s, needle, at)) != ANOSTR_NPOS; at += needle.len)
         matches++;

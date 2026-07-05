@@ -33,7 +33,6 @@
 
 enum { REPS = 40 };
 
-// ---------------------------------------------------------------------------------------------
 // Inventory name generator. Distinct pool ~ count/4, drawn with replacement, so stacks
 // duplicate like a real inventory and the intern table has real work to collapse.
 
@@ -60,7 +59,7 @@ static anostr_t make_name(mi_heap_t *heap, test_rng *rng)
 {
     char buf[96];
     uint32_t kind = rng_below(rng, 10);
-    if (kind < 5) {         // "Potion of Healing" -- shared-prefix tie families
+    if (kind < 5) {         // "Potion of Healing" shared-prefix ties
         snprintf(buf, sizeof buf, "%s of %s",
                  base_ascii[rng_below(rng, sizeof base_ascii / sizeof base_ascii[0])],
                  mod_ascii[rng_below(rng, sizeof mod_ascii / sizeof mod_ascii[0])]);

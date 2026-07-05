@@ -4,20 +4,17 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // GPOS PairPos kerning reader (shaper v1, FONT_RENDER.md section 4). Parses a raw GPOS
-// table -- untrusted bytes, every read bounds-checked, malformed input fails soft --
-// and accumulates horizontal 'kern' xAdvance adjustments for a slot range into a dense
-// FUnit matrix. Deliberately FreeType-free: the bake hands in the blob and the
-// slot->glyph-id map, and the white-box test hands in synthetic tables.
+// table of untrusted bytes with every read bounds-checked, malformed input failing
+// soft, accumulating horizontal 'kern' xAdvance adjustments for a slot range into a
+// dense FUnit matrix. FreeType-free: the bake hands in the blob and slot->glyph-id map.
 //
-// Semantics (matching the reference behavior of real shapers on real fonts):
-//   - script 'latn', falling back to 'DFLT'; that script's default LangSys only.
-//   - feature tag 'kern'; its lookups apply in LookupList order and ACCUMULATE.
-//   - within one lookup, subtables are tried in order; the FIRST one that applies to a
-//     pair wins (format 1 with the pair listed, or format 2 with the first glyph
-//     covered -- class 0 rows/columns apply with their value, including zero).
-//   - lookup type 2 (PairPos) direct or wrapped in type 9 (Extension); value read is
-//     ValueRecord1.xAdvance. LookupFlag is ignored: mark filtering cannot affect
-//     directly adjacent pairs from a plain codepoint range.
+// Semantics:
+//   - script 'latn', fallback 'DFLT', that script's default LangSys only.
+//   - feature tag 'kern', its lookups apply in LookupList order and accumulate.
+//   - within one lookup, subtables tried in order, first that applies to a pair wins
+//     (format 1 pair listed, format 2 first glyph covered, class 0 applies with its value).
+//   - lookup type 2 (PairPos) direct or wrapped in type 9 (Extension), value read is
+//     ValueRecord1.xAdvance. LookupFlag is ignored.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -29,7 +26,7 @@ typedef struct GposCtx {
     uint32_t       len;
 } GposCtx;
 
-// Bounds-checked big-endian reads; a failed read poisons *ok and returns 0.
+// Bounds-checked big-endian reads, poisoning *ok and returning 0 on failure.
 static uint32_t g16(const GposCtx *g, uint32_t off, bool *ok)
 {
     if (off + 2u > g->len || off + 2u < off)
@@ -98,7 +95,7 @@ static int32_t cov_index(const GposCtx *g, uint32_t off, uint32_t gid, bool *ok)
     return -1;
 }
 
-// ClassDef class of gid; glyphs not listed are class 0 (spec default).
+// ClassDef class of gid. Unlisted glyphs are class 0.
 static uint32_t class_of(const GposCtx *g, uint32_t off, uint32_t gid, bool *ok)
 {
     if (off == 0u)
@@ -147,9 +144,9 @@ static int32_t vr_xadvance(const GposCtx *g, uint32_t off, uint32_t vf, bool *ok
     return (int16_t)g16(g, off + skip, ok);
 }
 
-// Tries one PairPos subtable for (gid1, gid2). True = the subtable applies and
-// *kernOut holds its xAdvance (possibly 0); false = not covered / pair absent, try
-// the next subtable. Malformed data poisons *ok.
+// Tries one PairPos subtable for (gid1, gid2). True = applies, *kernOut holds its
+// xAdvance (possibly 0). False = not covered, try the next subtable. Malformed data
+// poisons *ok.
 static bool pairpos_apply(const GposCtx *g, uint32_t off, uint32_t gid1, uint32_t gid2,
                           int32_t *kernOut, bool *ok)
 {
@@ -252,10 +249,9 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
     if (!ok)
         return EIO;
     if (lsOff == 0)
-        return 0; // no latn/DFLT default LangSys: nothing to kern
+        return 0; // no latn/DFLT default LangSys
 
-    // LangSys feature indices -> 'kern' features -> lookup indices (dedup, ascending:
-    // lookups apply in LookupList order regardless of listing order).
+    // LangSys feature indices -> 'kern' features -> lookup indices, deduped and sorted ascending.
     uint32_t kernLookups[GPOS_MAX_LOOKUPS];
     uint32_t kernLookupCount = 0;
     uint32_t featCount = g16(&g, lsOff + 4u, &ok);
@@ -299,7 +295,7 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
         if (!ok)
             return EIO;
         if (type != 2u && type != 9u)
-            continue; // some other positioning under 'kern': not pair kerning
+            continue; // not PairPos kerning
         if (subCount > GPOS_MAX_SUBS)
             subCount = GPOS_MAX_SUBS;
 
@@ -324,7 +320,7 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
         if (!ok)
             return EIO;
 
-        // First applying subtable wins per pair; lookups accumulate into the matrix.
+        // First applying subtable wins per pair, lookups accumulate into the matrix.
         for (uint32_t s1 = 0; s1 < slotCount; s1++)
         {
             if (slotGids[s1] > 0xFFFFu)

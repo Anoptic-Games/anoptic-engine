@@ -9,7 +9,7 @@
   description = "Anoptic Engine — C23 game engine (Linux native + Windows MinGW-w64 cross + macOS Apple Silicon)";
 
   inputs = {
-    # Same rev as the pylon system flake, advance deliberately.
+    # Same rev as the pylon system flake.
     nixpkgs.url = "github:NixOS/nixpkgs/b5aa0fbd538984f6e3d201be0005b4463d8b09f8";
 
     # Pinned submodule sources, revs match .gitmodules.
@@ -44,7 +44,7 @@
       darwinSystem = "aarch64-darwin";
       darwinPkgs = nixpkgs.legacyPackages.${darwinSystem};
 
-      # clang stdenv with LLVM bintools so wrapped lld is the linker.
+      # clang stdenv with LLVM bintools for wrapped lld.
       clangLldStdenv = pkgs.overrideCC pkgs.clangStdenv (
         pkgs.llvmPackages.clang.override { bintools = pkgs.llvmPackages.bintools; }
       );

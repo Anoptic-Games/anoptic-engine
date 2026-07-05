@@ -44,7 +44,7 @@ typedef enum {
 int ano_log_init(void);
 int ano_log_cleanup(void);
 
-// Scope-bound teardown, LOCALHEAPATTR-style (anoptic_memory.h). 
+// Scope-bound teardown, LOCALHEAPATTR-style (anoptic_memory.h).
 void ano_log_scope_release(const int *initStatus);
 #define ANO_LOG_SCOPE_ATTR __attribute__((__cleanup__(ano_log_scope_release))) 
 
@@ -63,7 +63,7 @@ int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
 
 /* Configuration Functions */
 
-// Open dir/anoptic.log as the output file. Returns 0 on success; -1 keeps the previous file.
+// Open dir/anoptic.log as the output file. Returns 0 on success, -1 keeps the previous file.
 int ano_log_output_dir(const char* directoryPath);
 
 // Runtime severity gate.
@@ -78,10 +78,10 @@ void ano_log_flush(void);
 
 /* Call-site Macros */
 
-// _log : normal log, specify level.
-// _rlog: routed log, specify level and preferred route (output destinations).
-// _olog: origin log, specify level, includes callsite's source file name and line number.
-// _rolog: routed origin log, specify level, route, and includes callsite details as like olog.
+// _log  : normal log, specify level.
+// _rlog : routed log, specify level and route.
+// _olog : origin log, specify level, adds callsite file and line.
+// _rolog: routed origin log, specify level and route, adds callsite file and line.
 #define ano_log(level, ...)                 ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
 #define ano_rlog(level, route, ...)         ano_log_write((level), (route), NULL, 0, __VA_ARGS__)
 #define ano_olog(level, ...)                ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
