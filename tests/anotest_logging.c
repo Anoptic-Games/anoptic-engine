@@ -135,16 +135,20 @@ static int test_roundtrip(void)
     ano_log(ANO_INFO, "hello %d", 7);
     ano_log(ANO_WARN, "warn line");
     ano_log(ANO_ERROR, "err %s", "x");
+    ano_olog(ANO_INFO, "origin line");
     ano_log_flush();
 
     char *c = slurp(LOG_PATH, NULL);
     CHECK(c != NULL, "roundtrip: file readable");
     if (c) {
-        CHECK(count_lines(c) == 3, "roundtrip: three lines");
+        CHECK(count_lines(c) == 4, "roundtrip: four lines");
         CHECK(strstr(c, "INFO") && strstr(c, "hello 7"), "roundtrip: info line");
         CHECK(strstr(c, "WARN") && strstr(c, "warn line"), "roundtrip: warn line");
         CHECK(strstr(c, "ERROR") && strstr(c, "err x"), "roundtrip: error line");
-        CHECK(strstr(c, "anotest_logging.c:") != NULL, "roundtrip: file:line prefix");
+        int origins = 0;
+        for (char *s = c; (s = strstr(s, "anotest_logging.c:")) != NULL; s++)
+            origins++;
+        CHECK(origins == 1, "roundtrip: only the olog line carries the file:line prefix");
         free(c);
     }
     return g_fail;
@@ -751,6 +755,7 @@ static int test_visible_output(void)
     ano_log(ANO_INFO, "=== Anoptic logger showcase: this file is left on disk for you to read ===");
     ano_debug_log(ANO_INFO, "a debug line (present only in a DEBUG build)");
     ano_log(ANO_INFO, "formatted: int=%d str=%s hex=0x%x float=%.3f", 42, "hello", 255, 3.14159);
+    ano_olog(ANO_INFO, "an origin line carrying this call site's file:line");
     ano_log(ANO_WARN, "a warning about something");
     ano_log(ANO_ERROR, "an error with %d codes", 3);
     ano_log(ANO_INFO, "a multi-line\nmessage that spans\nthree physical lines");

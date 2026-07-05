@@ -28,11 +28,13 @@ Severity says how bad. Route says where to redirect the output.
 ```c
 ano_log(ANO_INFO, "entity %u spawned at (%d,%d)", id, x, y);     // default route
 ano_rlog(ANO_WARN, ANO_BOTH, "texture %s missing", name);        // explicit route
+ano_olog(ANO_INFO, "chunk cache rebuilt");                       // + call site (file:line)
+ano_rolog(ANO_ERROR, ANO_NOW, "device lost: %s", why);           // explicit route + call site
 ano_debug_log(ANO_INFO, "loaded %d chunks in %.2f ms", n, ms);   // GONE outside DEBUG_BUILD
 ano_debug_rlog(ANO_ERROR, ANO_NOW, "validation: %s", msg);       // DEBUG_BUILD explicit route
 ```
 
-Each macro captures the source file and line (via `__FILE_NAME__` / `__LINE__`) and forwards the rest. 
+The default is a bare message: `ano_log` / `ano_rlog` record no call site. The `o` variants (`ano_olog`, `ano_rolog`, and their `debug` twins) capture the source file and line via `__FILE_NAME__` / `__LINE__` and prefix the message with `file.c:212:`. Sprinkle origin lines where they earn their bytes -- one `olog` at the top of a subsystem's work, plain `ano_log` for the fifty lines that follow.
 
 Two things to remember:
 - The format string must be a compile-time string literal. The macros carry a `printf` format attribute, so the compiler type-checks your arguments against it. `ano_log(ANO_INFO, "%d", x)` is checked. `ano_log(ANO_INFO, some_char_ptr, x)` will not compile.
@@ -77,7 +79,7 @@ int ano_log_write (ano_loglevel_t lvl, ano_logroute_t rt, const char *file, int 
 int ano_log_vwrite(ano_loglevel_t lvl, ano_logroute_t rt, const char *file, int line, const char *fmt, va_list args);
 ```
 
-A route of `0` (what `ano_log` passes) inherits the level's default. The return value is almost always ignored: `0` means written or buffered normally, `1` means a full ring made the call wait for drain room.
+A route of `0` (what `ano_log` passes) inherits the level's default. `file` is nullable: pass `NULL` (and any `line`) to record no call site, which is what `ano_log` / `ano_rlog` do; the origin is neither stored nor printed. The return value is almost always ignored: `0` means written or buffered normally, `1` means a full ring made the call wait for drain room.
 
 ---
 
@@ -115,10 +117,11 @@ The rules, in full:
 4. You rarely call `flush`. Reach for it only when you need durability at a specific instant.
 5. Use `ANO_FATAL` (or an explicit `ANO_NOW`) for lines that must survive a crash. Let the ring carry everything else.
 
-Output lines look like this: wall-clock time, level, call site, then your message:
+Output lines look like this: wall-clock time, level, then your message -- with the call site in between when the record came from an `o` macro:
 
 ```
-14:01:43 INFO  world.c:212:  entity 4 spawned at (10,-3)
+14:01:43 INFO  entity 4 spawned at (10,-3)
+14:01:44 WARN  world.c:212:  chunk 9 took 40ms to load
 ```
 
 ---
