@@ -22,13 +22,33 @@ git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 
 ### Installation
 
-Renderer builds of Anoptic Engine require `clang 17+`, `CMake`, `glslc`, and the `Vulkan SDK`.
-Headless builds (`-DANOPTIC_HEADLESS=ON`, and the Nix packages below) need only clang + CMake.
-The engine is C23 and is developed with Clang; the Nix Windows cross shell uses MinGW gcc.
+We use Nix. Get it from: https://nix.dev/install-nix.html
 
-Acquire a copy of the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), version 1.3.2 or later.
+Turn on flakes:
+```bash
+# /etc/nix/nix.conf (or ~/.config/nix/nix.conf)
+experimental-features = nix-command flakes
+```
 
-> macOS note: `build.sh` uses Homebrew LLVM (`brew install llvm`), since Apple Clang rejects C23.
+Then run:
+```bash
+nix build
+```
+
+Done — a runnable headless engine lands in `./result/bin/anopticengine`, on any Linux or macOS host with Nix, no GPU or display required. The other flake targets:
+
+- `nix build .#renderer` — the full Vulkan renderer package (Linux host with a real GPU driver).
+- `nix develop --command ./build.sh 6` — the Linux dev shell: headless build plus the non-GPU test suite (`5`/`4` for the TSan/ASan runs). This shell deliberately carries no Vulkan or windowing libraries — the Linux renderer is `nix build .#renderer` above.
+- `nix develop --command ./build.sh 1` — on an Apple Silicon Mac this is the full renderer build; the macOS shell ships clang, glslc, and MoltenVK.
+- `nix develop .#windows` — MinGW-w64 cross shell: build a Windows renderer `.exe` from Linux/WSL (see [Building under WSL](#building-under-wsl)).
+
+Native Windows has no Nix; that is the `build.bat` path below.
+
+**Without Nix** (native Windows is this path — see [Building on Windows](#building-on-windows)): `clang 17+`, `CMake 3.29+`, `Ninja`, `glslc`, and the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/)(1.3.2+). Headless builds (`-DANOPTIC_HEADLESS=ON`) need only clang + CMake + Ninja.
+
+The engine is C23. Clang/LLVM (linking through `lld`) is the default toolchain on every OS; GCC is the supported fallback (MinGW gcc in the Nix cross shell, and the `gcc-*` platform files, which link through `mold` where available).
+
+> macOS without Nix: `build.sh` uses Homebrew LLVM (`brew install llvm`) — Apple Clang rejects C23.
 
 For editor integration the engine uses `clangd` (shipped with the LLVM toolchain above).
 See [Editor Setup](#editor-setup).
@@ -37,12 +57,17 @@ See [Editor Setup](#editor-setup).
 
 Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat` (Windows). Run it with no arguments and it prints the available build profiles. The rundown:
 
-- **Release** — the optimized (`-O3`) engine build.
+- **Release** — the optimized (`-O3` + ThinLTO) engine build.
 - **Debug** — debug build, Vulkan validation layers on.
 - **Tests** — Debug build + the full CTest suite.
 - **Sanitizer tests** — the same suite under AddressSanitizer/UBSan or ThreadSanitizer.
 - **Headless** — core + tests with the renderer disabled entirely.
 - **Release tests** — the CTest suite at `-O3`; the one to use for benchmarks.
+
+Anoptic never builds incrementally: the scripts run the `ano_scrub` target before every build, deleting every object file so all C recompiles from scratch each time.
+The build system is tuned for that whole-build path instead: Ninja, a modern linker in every config (lld with clang, mold with gcc on ELF), ThinLTO in Release, and static linking. Shaders and staged assets are the one exception and keep
+their normal fresh/stale tracking. The scripts and the Nix targets are the supported
+entry points; there is no supported incremental flow.
 
 Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the
 binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
@@ -69,7 +94,8 @@ Make sure you have `CMake` installed and in your path: https://cmake.org/install
 Have a copy of the `Mingw-w64` toolkit in your path.
 We recommend [MSYS2](https://www.msys2.org/)'s **CLANG64** environment with the
 [mingw-w64-clang-x86_64-clang](https://packages.msys2.org/package/mingw-w64-clang-x86_64-clang)
-package (`clang64\bin` — this is what `build.bat` looks for). The engine needs the UCRT
+and [mingw-w64-clang-x86_64-ninja](https://packages.msys2.org/package/mingw-w64-clang-x86_64-ninja)
+packages (`clang64\bin` — this is what `build.bat` looks for). The engine needs the UCRT
 C runtime for C11 `timespec_get`; the legacy MINGW64/msvcrt environment will not link.
 
 Additional guidance:
@@ -78,21 +104,7 @@ Additional guidance:
 
 Once Mingw-w64 is installed with `clang` working on your system, run `build.bat` from the repository root; its usage mirrors `build.sh`.
 
-#### Building under WSL / Nix
-
-The flake is the primary Nix entry point (`shell.nix` remains as a thin legacy shell):
-
-> The commands below are flake commands and need the `nix-command` and `flakes`
-> experimental features, off by default on stock Nix. Enable them in `nix.conf`
-> (`experimental-features = nix-command flakes`) or per invocation:
-> `nix --extra-experimental-features 'nix-command flakes' develop ...`.
-
-```bash
-nix develop --command ./build.sh 6    # Linux clang shell: headless build + non-GPU tests
-nix develop --command ./build.sh 5    # ThreadSanitizer (Linux only)
-nix build                             # one-shot headless package -> ./result/bin
-nix build .#renderer                  # one-shot Vulkan renderer package (binary + shaders)
-```
+#### Building under WSL
 
 WSL has no Linux Vulkan driver, so the renderer runs there only as a **Windows** exe.
 WSL's in-guest Vulkan devices (Mesa `dozen` and `llvmpipe`) are not supported render
@@ -118,10 +130,11 @@ Two ways to build a Windows renderer exe from WSL:
 
    ```bash
    cmd.exe /c build.bat 1                                  # -> build\Release\anopticengine.exe
-   ( cd build/Release && PATH="/mnt/c/msys64/clang64/bin:$PATH" ./anopticengine.exe )
+   ( cd build/Release && ./anopticengine.exe )
    ```
 
-   The MSYS2 build needs `clang64\bin` on `PATH` to find its runtime DLLs.
+   Windows binaries link `-static`, so the exe is self-contained — no toolchain
+   runtime DLLs to stage or put on `PATH` (only `vulkan-1.dll`, which the driver/SDK owns).
 
 ### Editor / LSP Setup
 
