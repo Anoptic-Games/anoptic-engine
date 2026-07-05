@@ -30,52 +30,6 @@
 
 // Variables
 
-// Helper Funcs (?)
-
-double findAverage(const uint64_t arr[], uint32_t n) {
-    if (n == 0) {
-        return 0; // Avoid division by zero
-    }
-
-    uint64_t sum = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        sum += arr[i];
-    }
-
-    return (double)sum / n;
-}
-
-// TODO: Move this somewhere more sane
-void measureFrameTime()
-{
-    static uint64_t frameTimes[200] = {};
-    static uint32_t timeIndex = 0;
-
-    uint64_t currentTime = ano_timestamp_us();
-    if (timeIndex > 0) {
-        frameTimes[timeIndex - 1] = currentTime - frameTimes[timeIndex - 1];
-    }
-
-    if (timeIndex == 199) {
-        frameTimes[timeIndex] = currentTime - frameTimes[timeIndex];
-
-        // Print the frame times
-        for (int i = 0; i < 200; i++) {
-            // TODO: uhh errrm
-            printf("Frame %d: %llu\n", i, frameTimes[i]);
-        }
-        
-        printf("Average frametime: %f\n", findAverage(frameTimes, 199)/1000);
-        
-        timeIndex = 0;
-    } else {
-        frameTimes[timeIndex] = currentTime;
-        timeIndex++;
-    }
-}
-
-
-
 #ifndef HEADLESS_BUILD
 // Logic/ECS master: the sole render-command producer.
 // Runs on its own thread while the render world owns the main thread.
@@ -103,8 +57,8 @@ static uint32_t spawn_asset(AnoRenderBridge* bridge, uint32_t* nextId, uint32_t 
                             const mat4 root, AnoMotionType motion, float speed) {
 	AnoRenderableDesc descs[SPAWN_ASSET_MAX_PRIMS];
 	uint32_t n = anoRenderAssetPrimitives(asset_id, root, descs, SPAWN_ASSET_MAX_PRIMS);
-	if (n == 0u) { printf("Producer: asset %u has no primitives; nothing spawned.\n", asset_id); return UINT32_MAX; }
-	if (n > SPAWN_ASSET_MAX_PRIMS) { printf("Producer: asset %u has %u primitives; spawning only the first %u.\n", asset_id, n, SPAWN_ASSET_MAX_PRIMS); n = SPAWN_ASSET_MAX_PRIMS; }
+	if (n == 0u) { ano_log(ANO_WARN, "Producer: asset %u has no primitives; nothing spawned.", asset_id); return UINT32_MAX; }
+	if (n > SPAWN_ASSET_MAX_PRIMS) { ano_log(ANO_WARN, "Producer: asset %u has %u primitives; spawning only the first %u.", asset_id, n, SPAWN_ASSET_MAX_PRIMS); n = SPAWN_ASSET_MAX_PRIMS; }
 	uint32_t first = *nextId;
 	for (uint32_t i = 0; i < n; i++) {
 		RenderCommand c = { .kind = RCMD_CREATE, .render_id = (*nextId)++,
@@ -351,12 +305,12 @@ void* anoLogicThreadMain(void* arg)
 			}
 			case REVENT_PICK_RESULT:
 				if (ev.u.pick_render_id != ANO_RENDER_NO_PICK)
-					printf("Pick: cursor over render_id %u\n", ev.u.pick_render_id);
+					ano_debug_log(ANO_INFO, "Pick: cursor over render_id %u", ev.u.pick_render_id);
 				break;
 			case REVENT_SLOT_RETIRED:   break; // ECS id recycling lands with the real producer
 			case REVENT_BATCH_CONSUMED: break; // borrowed-batch ack (audit 4.10); unused by this stand-in
 			case REVENT_CAPACITY:
-				printf("Producer: back-channel saturated; some input samples were dropped.\n");
+				ano_log(ANO_WARN, "Producer: back-channel saturated; some input samples were dropped.");
 				break;
 			}
 		}
@@ -399,7 +353,7 @@ void* anoLogicThreadMain(void* arg)
 			if (noticeDeadline == 0 && ano_render_acquire_snapshot(bridge, &snap))
 				noticeDeadline = now + 15000000ull; // first published frame: arm the notice
 			if (ano_render_acquire_snapshot(bridge, &snap) && now - lastSnapLog > 1000000) {
-				printf("Snapshot: frameId %llu, viewport %ux%u\n",
+				ano_debug_log(ANO_INFO, "Snapshot: frameId %llu, viewport %ux%u",
 				       (unsigned long long)snap.frameId, snap.vpWidth, snap.vpHeight);
 				lastSnapLog = now;
 				if (bake != NULL) {
@@ -432,15 +386,15 @@ int main()
     // only the CWD-relative asset loads (glTF, textures) need this.
     // Interim shim until the Resource Manager owns asset paths (docs/resourcesmg.md).
     if (!ano_fs_chdir_gamepath())
-        printf("Warning: could not set the working directory to the executable's; "
-               "assets will load relative to the current working directory.\n");
+        ano_rlog(ANO_WARN, ANO_TERM | ANO_NOW, "Warning: could not set the working directory to the executable's; "
+               "assets will load relative to the current working directory.");
 
     #ifdef DEBUG_BUILD
 
     mi_option_enable(mi_option_show_errors);
     mi_option_enable(mi_option_show_stats);
     mi_option_enable(mi_option_verbose);
-    printf("Running in debug mode!\n");
+    ano_debug_rlog(ANO_INFO, ANO_TERM | ANO_NOW, "Running in debug mode!");
 
     #endif
 
@@ -449,7 +403,7 @@ int main()
 	// Cleans itself upon scope exit.
     int logAlive ANO_LOG_SCOPE_ATTR = ano_log_init();
     if (logAlive != 0) {
-        fprintf(stderr, "Logger initialization failed; something is very wrong.\n");
+        ano_log(ANO_FATAL, "Logger initialization failed; something is very wrong.");
         return EXIT_FAILURE;
     }
 
@@ -489,9 +443,9 @@ int main()
     unInitVulkan();
 #else
     // Headless engine: no renderer. Console / server entry point.
-    printf("Anoptic Engine — headless console mode.\n");
+    ano_rlog(ANO_INFO, ANO_TERM, "Anoptic Engine — headless console mode.");
     while (true) {
-        printf("Waiting...\n");
+        ano_rlog(ANO_INFO, ANO_TERM, "Waiting...");
         ano_sleep(3 * 1000000);
     };
     // TODO: simulation / server loop goes here.

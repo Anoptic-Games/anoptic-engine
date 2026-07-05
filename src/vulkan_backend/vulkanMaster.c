@@ -8,6 +8,7 @@
 #include <math.h>
 #include <vulkan/vulkan.h>
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/gpu_alloc.h"
@@ -159,7 +160,7 @@ void unInitVulkan() // A celebration
 	#ifdef DEBUG_BUILD
 	// Validation summary: g_ValidationErrors counts every WARNING+ message routed to
 	// debugCallback over the run. 0 == validation-clean; nonzero is a regression to chase.
-	printf("Validation messages (warning+) this run: %u\n", g_ValidationErrors);
+	ano_log(ANO_INFO, "Validation messages (warning+) this run: %u", g_ValidationErrors);
 	#endif
 }
 
@@ -479,7 +480,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
 	{
-		printf("Failed to begin recording command buffer!\n");
+		ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
 	}
 
 	// Profiling: reset this frame's query pool and stamp the frame-begin boundary (outside any
@@ -688,10 +689,10 @@ void recordCommandBuffer(uint32_t imageIndex)
     // completion signal, overlapping the shadow region below.
     if (rendererState.asyncLc) {
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
-            printf("Failed to record prelude command buffer!\n");
+            ano_log(ANO_ERROR, "Failed to record prelude command buffer!");
         cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
         if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
-            printf("Failed to begin recording command buffer!\n");
+            ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
     }
 
     // Transition swapchain image to color attachment optimal (consumed by the composite at the
@@ -1575,7 +1576,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 
 	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
 	{
-		printf("Failed to record command buffer!\n");
+		ano_log(ANO_ERROR, "Failed to record command buffer!");
 	}
 }
 
@@ -1584,28 +1585,28 @@ void recordCommandBuffer(uint32_t imageIndex)
 void printUniformTransferState()
 {
 	// Swap Chain Components
-	printf("\n=== Swap Chain Components ===\n");
-	printf("Image count: %d\n", rendererState.imageCount);
-	printf("Image extent: width = %d, height = %d\n", rendererState.imageExtent.width, rendererState.imageExtent.height);
+	ano_debug_log(ANO_INFO, "=== Swap Chain Components ===");
+	ano_debug_log(ANO_INFO, "Image count: %d", rendererState.imageCount);
+	ano_debug_log(ANO_INFO, "Image extent: width = %d, height = %d", rendererState.imageExtent.width, rendererState.imageExtent.height);
 	
 	// Buffer Components
-	printf("\n=== Buffer Components ===\n");
-	printf("Live render slots: %u\n", rendererState.slots.slotHighWater); // scene is logic-composed; entities[] is gone
+	ano_debug_log(ANO_INFO, "=== Buffer Components ===");
+	ano_debug_log(ANO_INFO, "Live render slots: %u", rendererState.slots.slotHighWater); // scene is logic-composed; entities[] is gone
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		printf("Uniform buffer %d (view 0): %p\n", i, (void*)rendererState.frames[i].views[0].uniformBuffer);
-		printf("Uniform alloc %d (view 0): %p\n", i, (void*)rendererState.frames[i].views[0].uniformAlloc.memory);
-		printf("Uniform buffer mapping %d (view 0): %p\n", i, rendererState.frames[i].views[0].uniformMapped);
+		ano_debug_log(ANO_INFO, "Uniform buffer %d (view 0): %p", i, (void*)rendererState.frames[i].views[0].uniformBuffer);
+		ano_debug_log(ANO_INFO, "Uniform alloc %d (view 0): %p", i, (void*)rendererState.frames[i].views[0].uniformAlloc.memory);
+		ano_debug_log(ANO_INFO, "Uniform buffer mapping %d (view 0): %p", i, rendererState.frames[i].views[0].uniformMapped);
 	}
 
 	// Synchronization Components
-	printf("\n=== Synchronization Components ===\n");
-	printf("Current frame index: %d\n", rendererState.frameIndex);
+	ano_debug_log(ANO_INFO, "=== Synchronization Components ===");
+	ano_debug_log(ANO_INFO, "Current frame index: %d", rendererState.frameIndex);
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		printf("Frame %d submitted: %d\n", i, rendererState.frames[i].frameSubmitted);
+		ano_debug_log(ANO_INFO, "Frame %d submitted: %d", i, rendererState.frames[i].frameSubmitted);
 	}
-	printf("\n======================================\n");
+	ano_debug_log(ANO_INFO, "======================================");
 }
 
 void updateTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
@@ -2054,7 +2055,7 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
     if (newCap < required) newCap = required;
     newCap = ((newCap + ENTITY_GROWTH_CHUNK - 1u) / ENTITY_GROWTH_CHUNK) * ENTITY_GROWTH_CHUNK;
     if (newCap < required) { // round-up overflow
-        printf("Fatal: entity capacity request %u exceeds addressable range.\n", required);
+        ano_log(ANO_FATAL, "Fatal: entity capacity request %u exceeds addressable range.", required);
         return false;
     }
 
@@ -2104,7 +2105,7 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
         }
     }
     if (!ok) {
-        printf("Fatal: entity capacity growth %u -> %u failed (GPU out of memory?).\n", oldCap, newCap);
+        ano_log(ANO_FATAL, "Fatal: entity capacity growth %u -> %u failed (GPU out of memory?).", oldCap, newCap);
         return false;
     }
 
@@ -2133,7 +2134,7 @@ static bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32
     if (state->frames[0].views[0].globalSet != VK_NULL_HANDLE)
         updateUboDescriptorSets(&ctx, state);
 
-    printf("Entity capacity grown: %u -> %u slots.\n", oldCap, newCap);
+    ano_log(ANO_INFO, "Entity capacity grown: %u -> %u slots.", oldCap, newCap);
     return true;
 }
 
@@ -2548,7 +2549,7 @@ static void mover_set(RendererState* st, uint32_t slot, const AnoMotionDescripto
             uint32_t nc = st->moverCap ? st->moverCap * 2u : 64u;
             MoverBound* nm = (MoverBound*)realloc(st->movers, (size_t)nc * sizeof(MoverBound));
             if (!nm) {
-                printf("Shadow cache: mover array growth failed; swept exposure disabled.\n");
+                ano_log(ANO_ERROR, "Shadow cache: mover array growth failed; swept exposure disabled.");
                 st->sweptPoisoned = true;
                 return;
             }
@@ -3290,8 +3291,8 @@ static void ano_print_profiling(void) {
                             + (VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u) / MiB;
 
     double frusta = g_shadowRenderFrames ? (double)g_shadowRenderAccum / (double)g_shadowRenderFrames : 0.0;
-    printf("[profile mode=%s] GPU ms: upload=%.3f compute=%.3f shadow=%.3f (frusta %.1f/%u) lighting=%.3f composite=%.3f total=%.3f"
-           " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f\n",
+    ano_debug_log(ANO_INFO, "[profile mode=%s] GPU ms: upload=%.3f compute=%.3f shadow=%.3f (frusta %.1f/%u) lighting=%.3f composite=%.3f total=%.3f"
+           " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f",
            mn, up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co, total, gpu, tex, swap, stg, atlas);
     g_shadowRenderAccum = 0;
     g_shadowRenderFrames = 0;
@@ -3410,7 +3411,7 @@ void drawFrame()
 		return;
 	} else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) 
 	{
-		printf("Failed to acquire swap chain image!\n");
+		ano_log(ANO_ERROR, "Failed to acquire swap chain image!");
 		return;
 	}
 
@@ -3503,7 +3504,7 @@ void drawFrame()
 		submitInfo.pSignalSemaphores = signalSemaphores;
 		if (vkQueueSubmit(ctx.graphicsQueue, 1, &submitInfo, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS)
 		{
-			printf("Failed to submit draw command buffer!\n");
+			ano_log(ANO_ERROR, "Failed to submit draw command buffer!");
 			return;
 		}
 	}
@@ -3562,7 +3563,7 @@ void drawFrame()
 
 		if (vkQueueSubmit(ctx.graphicsQueue, 2, submits, rendererState.frames[rendererState.frameIndex].frameFence) != VK_SUCCESS)
 		{
-			printf("Failed to submit draw command buffers!\n");
+			ano_log(ANO_ERROR, "Failed to submit draw command buffers!");
 			return;
 		}
 
@@ -3580,7 +3581,7 @@ void drawFrame()
 		{
 			// Keep the timeline monotonic so the main submit's wait cannot deadlock (the frame keeps
 			// the previous froxel lists); a failed submit here is device-loss territory anyway.
-			printf("Failed to submit async light-cull command buffer!\n");
+			ano_log(ANO_ERROR, "Failed to submit async light-cull command buffer!");
 			VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
 				.semaphore = rendererState.lcTimeline, .value = ordinal };
 			vkSignalSemaphore(ctx.device, &signalInfo);
@@ -3606,7 +3607,7 @@ void drawFrame()
 		{
 			// Keep the timeline monotonic so the ordinal+2 graphics wait cannot deadlock; a failed
 			// submit here is device-loss territory anyway.
-			printf("Failed to submit async Hi-Z command buffer!\n");
+			ano_log(ANO_ERROR, "Failed to submit async Hi-Z command buffer!");
 			VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
 				.semaphore = rendererState.hizTimeline, .value = ordinal };
 			vkSignalSemaphore(ctx.device, &signalInfo);
@@ -3634,7 +3635,7 @@ void drawFrame()
 		return;
 	} else if (presentResult != VK_SUCCESS)
 	{
-		printf("Failed to present swap chain image!\n");
+		ano_log(ANO_ERROR, "Failed to present swap chain image!");
 		return;
 	}
 
@@ -3666,7 +3667,7 @@ bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
         if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->materialBuffer.buffer[i]) != VK_SUCCESS) {
-            printf("Failed to create material buffer!\n");
+            ano_log(ANO_FATAL, "Failed to create material buffer!");
         }
         
         VkMemoryRequirements memRequirements;
@@ -3806,7 +3807,7 @@ bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capa
     // Per-frame resolved-slot buffers (binding 0).
     if (!createMappedSsboSet(ctx, (VkDeviceSize)sizeof(uint32_t) * capacity,
                              ts->slotBuffer, ts->slotAllocs, (void**)ts->slotMapped)) {
-        printf("Failed to create stream slot buffer!\n");
+        ano_log(ANO_FATAL, "Failed to create stream slot buffer!");
         return false;
     }
 
@@ -3818,7 +3819,7 @@ bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capa
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &ts->xformRing) != VK_SUCCESS) {
-        printf("Failed to create stream transform ring!\n");
+        ano_log(ANO_FATAL, "Failed to create stream transform ring!");
         return false;
     }
     VkMemoryRequirements memReq;
@@ -3828,7 +3829,7 @@ bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capa
     if (ts->xformRingAlloc.memory == VK_NULL_HANDLE) {
         vkDestroyBuffer(ctx->device, ts->xformRing, NULL);
         ts->xformRing = VK_NULL_HANDLE;
-        printf("Failed to allocate stream transform ring!\n");
+        ano_log(ANO_FATAL, "Failed to allocate stream transform ring!");
         return false;
     }
     vkBindBufferMemory(ctx->device, ts->xformRing, ts->xformRingAlloc.memory, ts->xformRingAlloc.offset);
@@ -3853,7 +3854,7 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &buf->buffer[i]) != VK_SUCCESS) {
-            printf("Failed to create transform buffer!\n");
+            ano_log(ANO_FATAL, "Failed to create transform buffer!");
         }
 
         VkMemoryRequirements memRequirements;
@@ -3892,7 +3893,7 @@ bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t
         if (rendererState.asyncLc) buffer_share_async_compute(&bufferInfo, fams);
 
         if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &buf->buffer[i]) != VK_SUCCESS) {
-            printf("Failed to create light pose buffer!\n");
+            ano_log(ANO_FATAL, "Failed to create light pose buffer!");
             return false;
         }
 
@@ -3931,7 +3932,7 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
         };
 
         if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
-            printf("Failed to create indirect draw buffer!\n");
+            ano_log(ANO_FATAL, "Failed to create indirect draw buffer!");
             return false;
         }
 
@@ -4081,13 +4082,13 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) state->shadowLayerValid[s] = false;
     state->shadowGlobalDirty = false;
     if (state->shadowCacheMode)
-        printf("Shadow cache: %s\n", state->shadowCacheMode == 1u ? "OFF (every frame dirty)" : "FREEZE");
+        ano_log(ANO_INFO, "Shadow cache: %s", state->shadowCacheMode == 1u ? "OFF (every frame dirty)" : "FREEZE");
     // Swept-bound motion exposure (finding 8 deferred half): per-frustum caster volumes start
     // uninstalled; ANO_FORCE_NO_SWEPT pins the old any-mover-dirties-everything epoch.
     state->sweptExposure = getenv("ANO_FORCE_NO_SWEPT") == NULL;
     state->sweptPoisoned = false;
     if (!state->sweptExposure)
-        printf("Shadow cache: swept motion exposure OFF (any mover dirties every frustum)\n");
+        ano_log(ANO_INFO, "Shadow cache: swept motion exposure OFF (any mover dirties every frustum)");
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
         state->shadowVolume[s].parentSlot = ANO_RENDER_SLOT_UNMAPPED;
         state->shadowExposed[s] = 0u;
@@ -4099,7 +4100,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     const char* budgetEnv = getenv("ANO_SHADOW_BUDGET");
     state->shadowRenderBudget = budgetEnv ? (uint32_t)atoi(budgetEnv) : 0u;
     if (state->shadowRenderBudget)
-        printf("Shadow cache: content re-render budget %u/frame (matrix-dirty exempt)\n",
+        ano_log(ANO_INFO, "Shadow cache: content re-render budget %u/frame (matrix-dirty exempt)",
                state->shadowRenderBudget);
 
     // Transient nearest-occluder depth (never sampled): ONE image shared across frames in flight,
@@ -4327,7 +4328,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
                                                     cubeVertices, 8, cubeIndices, 36);
 
     if (fallbackMeshIdx != FALLBACK_MESH_INDEX) {
-        printf("Warning: Fallback mesh was assigned index %u instead of %u!\n", fallbackMeshIdx, FALLBACK_MESH_INDEX);
+        ano_log(ANO_WARN, "Warning: Fallback mesh was assigned index %u instead of %u!", fallbackMeshIdx, FALLBACK_MESH_INDEX);
     }
 
     // 2. Fallback Texture (2x2 Magenta/Black Checkerboard)
@@ -4339,7 +4340,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
     GpuAllocation fallbackImageAlloc; // Memory managed by gpu_allocator
 
     if (!createTextureImageFromPixels(ctx, VK_NULL_HANDLE, &state->fallbackImage, &fallbackImageAlloc, &state->fallbackImageView, fallbackPixels, 2, 2, NULL)) {
-        printf("Warning: Failed to create fallback texture!\n");
+        ano_log(ANO_WARN, "Warning: Failed to create fallback texture!");
         return false;
     }
 
@@ -4347,7 +4348,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
     uint32_t fallbackTexIdx = bindless_register_texture(ctx, &state->bindlessTextures, state->fallbackImageView, state->textureSampler);
     
     if (fallbackTexIdx != FALLBACK_TEXTURE_INDEX) {
-        printf("Warning: Fallback texture was assigned index %u instead of %u!\n", fallbackTexIdx, FALLBACK_TEXTURE_INDEX);
+        ano_log(ANO_WARN, "Warning: Fallback texture was assigned index %u instead of %u!", fallbackTexIdx, FALLBACK_TEXTURE_INDEX);
     }
 
     return true;
@@ -4371,7 +4372,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if (window == NULL)
 	{
 		// Handle error
-		printf("Window initialization failed.\n");
+		ano_log(ANO_FATAL, "Window initialization failed.");
 		unInitVulkan();
 		return 0;
 	}
@@ -4384,7 +4385,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// Initialize Vulkan
 	if (createInstance(&ctx) != VK_SUCCESS)
 	{
-		fprintf(stderr, "Failed to create Vulkan instance!\n");
+		ano_log(ANO_FATAL, "Failed to create Vulkan instance!");
 		unInitVulkan();
 		return false;
 	}
@@ -4393,7 +4394,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// Create a window surface
 	if (createSurface(ctx.instance, window, &(ctx.surface)) != VK_SUCCESS)
 	{
-		fprintf(stderr, "Failed to create window surface!\n");
+		ano_log(ANO_FATAL, "Failed to create window surface!");
 		unInitVulkan();
 		return false;
 	}
@@ -4406,7 +4407,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	char* preferredDevice = getChosenDevice();
 	if (!pickPhysicalDevice(&ctx, &capabilities, &(ctx.queueFamilyIndices), preferredDevice))
 	{
-		fprintf(stderr, "Quitting init: physical device failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: physical device failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4414,7 +4415,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (createLogicalDevice(ctx.physicalDevice, &(ctx.device), &(ctx.graphicsQueue), &(ctx.computeQueue), &(ctx.transferQueue), &(ctx.presentQueue), &(ctx.queueFamilyIndices)) != VK_SUCCESS)
 	{
-		fprintf(stderr, "Quitting init: logical device failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: logical device failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4431,14 +4432,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	                      && ctx.queueFamilyIndices.computePresent
 	                      && ctx.queueFamilyIndices.computeFamily != ctx.queueFamilyIndices.graphicsFamily
 	                      && !getenv("ANO_FORCE_NO_ASYNC_HIZ");
-	printf("Async Hi-Z build: %s\n", rendererState.asyncHiz ? "on (dedicated compute queue)" : "off (in-frame)");
+	ano_log(ANO_INFO, "Async Hi-Z build: %s", rendererState.asyncHiz ? "on (dedicated compute queue)" : "off (in-frame)");
 
 	// Async light-cull gate (review finding 2 remainder): rides asyncHiz's infrastructure (dedicated
 	// compute queue, compute command pool, timeline support), so forcing the Hi-Z build in-frame also
 	// falls this back. ANO_FORCE_NO_ASYNC_LC pins the in-frame light-cull alone for A/B. Must be
 	// decided before buffer creation (CONCURRENT sharing) and createSyncObjects (timelines).
 	rendererState.asyncLc = rendererState.asyncHiz && !getenv("ANO_FORCE_NO_ASYNC_LC");
-	printf("Async light-cull: %s\n", rendererState.asyncLc ? "on (split submit, overlaps shadows)" : "off (in-frame)");
+	ano_log(ANO_INFO, "Async light-cull: %s", rendererState.asyncLc ? "on (split submit, overlaps shadows)" : "off (in-frame)");
 
 	// Task-shader meshlet cull gate (review priority 10). Flips together: the TASK stage in every
 	// mesh-drawing pipeline + its layouts/pushes/barriers, and cull.comp's indirect groupCountX
@@ -4447,13 +4448,13 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	rendererState.taskCull = ctx.deviceCapabilities.meshShader
 	                      && ctx.deviceCapabilities.taskShader
 	                      && !getenv("ANO_FORCE_NO_TASK");
-	printf("Task meshlet cull: %s\n", rendererState.taskCull ? "on (frustum+cone, Hi-Z with occlusion toggle)" : "off (direct mesh dispatch)");
+	ano_log(ANO_INFO, "Task meshlet cull: %s", rendererState.taskCull ? "on (frustum+cone, Hi-Z with occlusion toggle)" : "off (direct mesh dispatch)");
 
 	// Text overlay gate (FONT_RENDER.md). Decided before createColorResources (overlay
 	// images ride the swapchain-sized target creation); a later font/bake init failure
 	// clears it again, non-fatally. ANO_FORCE_NO_TEXT pins it off for A/B.
 	rendererState.textOverlay = !getenv("ANO_FORCE_NO_TEXT");
-	printf("Text overlay: %s\n", rendererState.textOverlay ? "enabled (pending font init)" : "off (forced)");
+	ano_log(ANO_INFO, "Text overlay: %s", rendererState.textOverlay ? "enabled (pending font init)" : "off (forced)");
 
 	// Async text lane gate (FONT_RENDER.md step 7): rides asyncHiz's infrastructure like
 	// the light-cull lane (independent of asyncLc — either A/B toggle stands alone).
@@ -4462,7 +4463,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// ANO_FORCE_NO_ASYNC_TEXT pins the in-frame raster for A/B.
 	rendererState.asyncText = rendererState.textOverlay && rendererState.asyncHiz
 	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
-	printf("Async text raster: %s\n", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
+	ano_log(ANO_INFO, "Async text raster: %s", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
 
     // Mesh-shader entry points only exist on the mesh path. The fallback path draws
     // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
@@ -4472,7 +4473,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
         pfnVkCmdDrawMeshTasksIndirectCountEXT = (PFN_vkCmdDrawMeshTasksIndirectCountEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectCountEXT");
 
         if (!pfnVkCmdDrawMeshTasksEXT || !pfnVkCmdDrawMeshTasksIndirectEXT || !pfnVkCmdDrawMeshTasksIndirectCountEXT) {
-            fprintf(stderr, "Failed to load mesh shader extension function pointers!\n");
+            ano_log(ANO_FATAL, "Failed to load mesh shader extension function pointers!");
             unInitVulkan();
             return false;
         }
@@ -4498,7 +4499,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	textureAllocator.blockCount = 0;
 
 	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device, ctx.queueFamilyIndices.graphicsFamily, ctx.queueFamilyIndices.transferFamily)) {
-		printf("Quitting init: geometry pool creation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: geometry pool creation failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4506,7 +4507,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	initSwapChain(&ctx, window, getChosenPresentMode(), VK_NULL_HANDLE, &rendererState); // Initialize a swap chain
 	if (rendererState.swapChain == NULL)
 	{
-		printf("Quitting init: swap chain failure.\n");
+		ano_log(ANO_FATAL, "Quitting init: swap chain failure.");
 		unInitVulkan();
 		return false;
 	}
@@ -4514,7 +4515,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	createImageViews(&ctx, &rendererState);
 	if (rendererState.views == NULL)
 	{
-		printf("Quitting init: image view failure.\n");
+		ano_log(ANO_FATAL, "Quitting init: image view failure.");
 		unInitVulkan();
 		return false;
 	}
@@ -4522,7 +4523,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if (!createCommandPool(ctx.device, ctx.physicalDevice,
 						   ctx.surface, &(rendererState.commandPool)))
 	{
-		printf("Quitting init: command pool failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: command pool failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4536,7 +4537,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 			.queueFamilyIndex = ctx.queueFamilyIndices.computeFamily };
 		if (vkCreateCommandPool(ctx.device, &cpi, NULL, &rendererState.computeCommandPool) != VK_SUCCESS)
 		{
-			printf("Quitting init: compute command pool failure!\n");
+			ano_log(ANO_FATAL, "Quitting init: compute command pool failure!");
 			unInitVulkan();
 			return false;
 		}
@@ -4549,7 +4550,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 				|| (rendererState.asyncLc
 					&& vkAllocateCommandBuffers(ctx.device, &cai, &rendererState.frames[i].lightcullCommandBuffer) != VK_SUCCESS))
 			{
-				printf("Quitting init: compute command buffer allocation failure!\n");
+				ano_log(ANO_FATAL, "Quitting init: compute command buffer allocation failure!");
 				unInitVulkan();
 				return false;
 			}
@@ -4560,33 +4561,33 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if(!createDepthResources(&ctx, &rendererState))
 	{
-		printf("Quitting init: depth resource creation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: depth resource creation failure!");
 	}
 
 	// Hi-Z occlusion pyramid images (review 4.9 step 3). Built each frame from depth; the per-mip
 	// descriptor sets are allocated/written after the layout + pool exist (below).
 	if(!createHiZResources(&ctx, &rendererState))
 	{
-		printf("Quitting init: Hi-Z resource creation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: Hi-Z resource creation failure!");
 	}
 
 
 
 	if (!ano_vk_init_global_layout(&ctx, &rendererState))
 	{
-		printf("Quitting init: global layout failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: global layout failure!");
 		unInitVulkan();
 		return false;
 	}
 	if (!ano_vk_init_cull_layout(&ctx, &rendererState))
 	{
-		printf("Quitting init: cull layout failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: cull layout failure!");
 		unInitVulkan();
 		return false;
 	}
 	if (!ano_vk_init_material_layouts(&ctx, &rendererState))
 	{
-		printf("Quitting init: material layouts failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: material layouts failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4599,14 +4600,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (!ano_vk_init_pipelines(&ctx, &rendererState))
 	{
-		printf("Quitting init: pipeline failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: pipeline failure!");
 		unInitVulkan();
 		return false;
 	}
 
 	if (!ano_vk_init_tonemap(&ctx, &rendererState))
 	{
-		printf("Quitting init: tonemap pipeline failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: tonemap pipeline failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4619,21 +4620,21 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// Depth-only shadow pipeline + compare sampler (reuses the flat pipeline layout, so after pipelines).
 	if (!ano_vk_init_shadow(&ctx, &rendererState))
 	{
-		printf("Quitting init: shadow pipeline failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: shadow pipeline failure!");
 		unInitVulkan();
 		return false;
 	}
 
 	if(!createTextureSampler(&ctx, &rendererState))
 	{
-		printf("Quitting init: texture sampler failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: texture sampler failure!");
 		unInitVulkan();
 		return false;
 	}
 
 	if (!createFallbackResources(&ctx, &rendererState))
 	{
-		printf("Quitting init: fallback resources failure.\n");
+		ano_log(ANO_FATAL, "Quitting init: fallback resources failure.");
 		unInitVulkan();
 		return false;
 	}
@@ -4659,7 +4660,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    !createClusterBuffers(&ctx, &rendererState) ||
 	    !createShadowResources(&ctx, &rendererState))
 	{
-		printf("Quitting init: buffer creation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: buffer creation failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4671,14 +4672,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	ModelAsset* vikingRoomAsset = parseGltf(&ctx, "viking_room.gltf");
 	if (!vikingRoomAsset)
 	{
-		printf("Failed to parse glTF file!\n");
+		ano_log(ANO_FATAL, "Failed to parse glTF file!");
 		unInitVulkan();
 		return false;
 	}
 	ModelAsset* candleHolderAsset = parseGltf(&ctx, "GlassHurricaneCandleHolder.gltf");
 	if (!candleHolderAsset)
 	{
-		printf("Failed to parse GlassHurricaneCandleHolder glTF file!\n");
+		ano_log(ANO_FATAL, "Failed to parse GlassHurricaneCandleHolder glTF file!");
 		unInitVulkan();
 		return false;
 	}
@@ -4694,7 +4695,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	if (sponzaAsset)
 		g_assets[g_assetCount++] = sponzaAsset;   // asset_id 2
 	else
-		printf("Warning: failed to parse Sponza glTF; continuing without it.\n");
+		ano_log(ANO_WARN, "Warning: failed to parse Sponza glTF; continuing without it.");
 
 	// Default material for procedural renderables (ground slab / debug markers the logic master builds
 	// without an asset): the first asset's first primitive material, matching the old rig's choice.
@@ -4715,7 +4716,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    // render must never block emitting it, so the ring absorbs the spikes (audit 4.11).
 	    !ano_render_bridge_init(&rendererState.bridge, rendererState.renderHeap, 4096, 4096))
 	{
-		printf("Quitting init: render bridge / slot authority failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: render bridge / slot authority failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4735,7 +4736,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	    (size_t)rendererState.transformStream.ringSlices * STREAM_CAPACITY * sizeof(uint32_t));
 	if (!rendererState.transformStream.idRing)
 	{
-		printf("Quitting init: stream id ring allocation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: stream id ring allocation failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4759,7 +4760,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (!createUniformBuffers(&ctx, &rendererState))
 	{
-		printf("Quitting init: uniform buffer creation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: uniform buffer creation failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4769,7 +4770,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	// HERE
 	if (!createDescriptorPool(&ctx, &rendererState))
 	{
-		printf("Quitting init: UBO descriptor pool creation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: UBO descriptor pool creation failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4777,7 +4778,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (!createDescriptorSets(&ctx, &rendererState))
 	{
-		printf("Quitting init: UBO descriptor sets creation failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: UBO descriptor sets creation failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4793,7 +4794,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (!createCommandBuffer(&ctx, &rendererState))
 	{
-		printf("Quitting init: command buffer failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: command buffer failure!");
 		unInitVulkan();
 		return false;
 	}
@@ -4801,12 +4802,12 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (!createSyncObjects(&ctx, &rendererState))
 	{
-		printf("Quitting init: sync failure!\n");
+		ano_log(ANO_FATAL, "Quitting init: sync failure!");
 		unInitVulkan();
 		return false;
 	}
 
-	printf("Instance creation complete!\n");
+	ano_log(ANO_INFO, "Instance creation complete!");
 
 	return true;
 }

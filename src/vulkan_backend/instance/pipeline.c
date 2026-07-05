@@ -5,6 +5,7 @@
 
 #include <anoptic_memory.h>
 #include <anoptic_filesystem.h>
+#include <anoptic_logging.h>
 #include "pipeline.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
@@ -47,7 +48,7 @@ bool loadFile(const char* filename, struct Buffer* buffer)
 	FILE* file = openEngineFile(filename);
 	if (file == NULL)
 	{
-		fprintf(stderr, "Failed to open file (relative to the executable): %s\n", filename);
+		ano_log(ANO_ERROR, "Failed to open file (relative to the executable): %s", filename);
 		return false;
 	}
 
@@ -59,14 +60,14 @@ bool loadFile(const char* filename, struct Buffer* buffer)
 	buffer->data = ano_aligned_malloc(size, alignof(uint32_t));
 	if (buffer->data == NULL) 
 	{
-		fprintf(stderr, "Failed to allocate memory for file: %s\n", filename);
+		ano_log(ANO_ERROR, "Failed to allocate memory for file: %s", filename);
 		fclose(file);
 		return false;
 	}
 
 	if (fread(buffer->data, 1, size, file) != size) 
 	{
-		fprintf(stderr, "Failed to read file: %s\n", filename);
+		ano_log(ANO_ERROR, "Failed to read file: %s", filename);
 		free(buffer->data);
 		fclose(file);
 		return false;
@@ -89,7 +90,7 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 	VkShaderModule shaderModule;
 	if (vkCreateShaderModule(device, &createInfo, NULL, &shaderModule) != VK_SUCCESS)
 	{
-		printf("Failed to create shader module!\n");
+		ano_olog(ANO_ERROR, "Failed to create shader module!");
 		return NULL;
 	}
 
@@ -270,7 +271,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
 	{
-		printf("Failed to create global descriptor set layout!\n");
+		ano_log(ANO_FATAL, "Failed to create global descriptor set layout!");
 		return false;
 	}
 
@@ -362,7 +363,7 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
     {
-        printf("Failed to create cull descriptor set layout!\n");
+        ano_log(ANO_FATAL, "Failed to create cull descriptor set layout!");
         return false;
     }
 
@@ -390,7 +391,7 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     hizLayoutInfo.pBindings = hizBindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &hizLayoutInfo, NULL, &state->hizSetLayout) != VK_SUCCESS)
     {
-        printf("Failed to create Hi-Z descriptor set layout!\n");
+        ano_log(ANO_FATAL, "Failed to create Hi-Z descriptor set layout!");
         return false;
     }
 
@@ -466,7 +467,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 
 	state->bindlessTextures.maxTextures = uabLimit < 4096u ? uabLimit : 4096u;
 	state->bindlessTextures.textureCount = 0;
-	printf("Bindless texture array: maxTextures = %u (device update-after-bind limit %u)\n",
+	ano_log(ANO_INFO, "Bindless texture array: maxTextures = %u (device update-after-bind limit %u)",
 		state->bindlessTextures.maxTextures, uabLimit);
 
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
@@ -495,7 +496,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->bindlessTextures.layout) != VK_SUCCESS)
 	{
-		printf("Failed to create bindless texture descriptor set layout!\n");
+		ano_log(ANO_FATAL, "Failed to create bindless texture descriptor set layout!");
 		return false;
 	}
 
@@ -568,7 +569,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     if (vkCreateDescriptorSetLayout(ctx->device, &updateLayoutInfo, NULL, &state->updateSetLayout) != VK_SUCCESS)
     {
-        printf("Failed to create update descriptor set layout!\n");
+        ano_log(ANO_FATAL, "Failed to create update descriptor set layout!");
         return false;
     }
 
@@ -587,7 +588,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     if (vkCreatePipelineLayout(ctx->device, &updatePipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].layout) != VK_SUCCESS)
     {
-        printf("Failed to create compute update pipeline layout!\n");
+        ano_log(ANO_FATAL, "Failed to create compute update pipeline layout!");
         return false;
     }
 
@@ -639,7 +640,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     if (vkCreateDescriptorSetLayout(ctx->device, &scatterLayoutInfo, NULL, &state->scatterSetLayout) != VK_SUCCESS)
     {
-        printf("Failed to create scatter descriptor set layout!\n");
+        ano_log(ANO_FATAL, "Failed to create scatter descriptor set layout!");
         return false;
     }
 
@@ -657,7 +658,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     if (vkCreatePipelineLayout(ctx->device, &scatterPipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].layout) != VK_SUCCESS)
     {
-        printf("Failed to create compute scatter pipeline layout!\n");
+        ano_log(ANO_FATAL, "Failed to create compute scatter pipeline layout!");
         return false;
     }
 
@@ -702,7 +703,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 
     if (vkCreatePipelineLayout(ctx->device, &compLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].layout) != VK_SUCCESS)
     {
-        printf("Failed to create compute cull pipeline layout!\n");
+        ano_log(ANO_FATAL, "Failed to create compute cull pipeline layout!");
         return false;
     }
 
@@ -762,7 +763,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     hizPipeLayoutInfo.pPushConstantRanges = &hizPush;
     if (vkCreatePipelineLayout(ctx->device, &hizPipeLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].layout) != VK_SUCCESS)
     {
-        printf("Failed to create Hi-Z pipeline layout!\n");
+        ano_log(ANO_FATAL, "Failed to create Hi-Z pipeline layout!");
         return false;
     }
 
@@ -843,7 +844,7 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
     tpsortLayoutInfo.pSetLayouts = &state->culling.setLayout;
     if (vkCreatePipelineLayout(ctx->device, &tpsortLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].layout) != VK_SUCCESS)
     {
-        printf("Failed to create transparency-sort pipeline layout!\n");
+        ano_log(ANO_FATAL, "Failed to create transparency-sort pipeline layout!");
         return false;
     }
 
@@ -1052,7 +1053,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	setLayoutInfo.pBindings = &samplerBinding;
 	if (vkCreateDescriptorSetLayout(ctx->device, &setLayoutInfo, NULL, &state->tonemapSetLayout) != VK_SUCCESS)
 	{
-		printf("Failed to create tonemap descriptor set layout!\n");
+		ano_log(ANO_FATAL, "Failed to create tonemap descriptor set layout!");
 		return false;
 	}
 
@@ -1062,7 +1063,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	layoutInfo.pSetLayouts = &state->tonemapSetLayout;
 	if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->tonemapLayout) != VK_SUCCESS)
 	{
-		printf("Failed to create tonemap pipeline layout!\n");
+		ano_log(ANO_FATAL, "Failed to create tonemap pipeline layout!");
 		return false;
 	}
 
@@ -1163,7 +1164,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 
 	if (r != VK_SUCCESS)
 	{
-		printf("Failed to create tonemap pipeline!\n");
+		ano_log(ANO_FATAL, "Failed to create tonemap pipeline!");
 		return false;
 	}
 	return true;
@@ -1327,7 +1328,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (taskModule != VK_NULL_HANDLE)
 		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
-	if (r != VK_SUCCESS) { printf("Failed to create shadow depth pipeline!\n"); return false; }
+	if (r != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create shadow depth pipeline!"); return false; }
 
 	// --- Moment prefilter pipeline: fullscreen separable box over the atlas (X then Y) ---
 	// One combined-image-sampler (the blur source array) at set 0, plus a 16-byte push (dir + layer).
@@ -1342,7 +1343,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkDescriptorSetLayoutCreateInfo blurSetInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.bindingCount = 1, .pBindings = &blurBinding };
 	if (vkCreateDescriptorSetLayout(ctx->device, &blurSetInfo, NULL, &state->shadowBlurSetLayout) != VK_SUCCESS) {
-		printf("Failed to create shadow blur set layout!\n"); return false; }
+		ano_log(ANO_FATAL, "Failed to create shadow blur set layout!"); return false; }
 
 	// vec2 dir + int layer + int pad. VERTEX included for shadowblur.vert's gl_Layer routing; the
 	// fallback vertex stage ignores it (the record loop always pushes VERTEX|FRAGMENT to match).
@@ -1351,7 +1352,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 		.setLayoutCount = 1, .pSetLayouts = &state->shadowBlurSetLayout,
 		.pushConstantRangeCount = 1, .pPushConstantRanges = &blurPush };
 	if (vkCreatePipelineLayout(ctx->device, &blurLayoutInfo, NULL, &state->shadowBlurLayout) != VK_SUCCESS) {
-		printf("Failed to create shadow blur pipeline layout!\n"); return false; }
+		ano_log(ANO_FATAL, "Failed to create shadow blur pipeline layout!"); return false; }
 
 	struct Buffer blurVertCode, blurFragCode;
 	snprintf(path, sizeof(path), "resources/shaders/%s.spv",
@@ -1405,7 +1406,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	ano_aligned_free(blurFragCode.data);
 	vkDestroyShaderModule(ctx->device, blurVert, NULL);
 	vkDestroyShaderModule(ctx->device, blurFrag, NULL);
-	if (br != VK_SUCCESS) { printf("Failed to create shadow blur pipeline!\n"); return false; }
+	if (br != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create shadow blur pipeline!"); return false; }
 
 	return true;
 }

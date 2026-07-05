@@ -4,6 +4,7 @@
 #include "ano_GltfParser.h"
 #include <string.h>
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
@@ -22,18 +23,18 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     cgltf_result result = cgltf_parse_file(&options, fileName, &data);
     
     if (result != cgltf_result_success) {
-        printf("Failed to parse glTF file: %s\n", fileName);
+        ano_log(ANO_ERROR, "Failed to parse glTF file: %s", fileName);
         return NULL;
     }
     
     result = cgltf_load_buffers(&options, data, fileName);
     if (result != cgltf_result_success) {
-        printf("Failed to load glTF buffers for: %s\n", fileName);
+        ano_log(ANO_ERROR, "Failed to load glTF buffers for: %s", fileName);
         cgltf_free(data);
         return NULL;
     }
 
-    printf("Successfully parsed %s with cgltf!\n", fileName);
+    ano_debug_log(ANO_INFO, "Successfully parsed %s with cgltf!", fileName);
 
     ModelAsset* asset = calloc(1, sizeof(ModelAsset));
     strncpy(asset->name, fileName, 63);
@@ -68,7 +69,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             }
             
             if (!posAccessor || !prim->indices) {
-                printf("Warning: Primitive missing positions or indices. Skipping.\n");
+                ano_log(ANO_WARN, "Warning: Primitive missing positions or indices. Skipping.");
                 continue;
             }
             
@@ -119,9 +120,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
     // Identify PBR features globally supported by the active pipelines
     PbrFeatureFlags activeFeatures = ano_vk_get_active_pipelines_supported_features(&rendererState);
-#ifdef DEBUG_BUILD
-    printf("[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X\n", activeFeatures);
-#endif
+    ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
     // Identify which textures are actually needed based on supported features
     bool* textureNeeded = NULL;
@@ -131,10 +130,8 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             cgltf_material* mat = &data->materials[m];
             PbrFeatureFlags matFeatures = ano_gltf_identify_material_features(mat);
             PbrFeatureFlags supportedFeatures = matFeatures & activeFeatures;
-#ifdef DEBUG_BUILD
-            printf("[GLTF DEBUG] Material %zu (%s): required features = 0x%08X, supported = 0x%08X\n",
+            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Material %zu (%s): required features = 0x%08X, supported = 0x%08X",
                    m, mat->name ? mat->name : "unnamed", matFeatures, supportedFeatures);
-#endif
 
             if (mat->has_pbr_metallic_roughness) {
                 if ((supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) && mat->pbr_metallic_roughness.base_color_texture.texture) {
@@ -255,16 +252,14 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     for (size_t t = 0; t < data->textures_count; ++t) {
         cgltf_texture* tex = &data->textures[t];
         if (tex->image && tex->image->uri && textureNeeded && textureNeeded[t]) {
-#ifdef DEBUG_BUILD
-            printf("[GLTF DEBUG] Loading texture %zu: %s\n", t, tex->image->uri);
-#endif
+            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading texture %zu: %s", t, tex->image->uri);
             // Resolve the image URI against the glTF file's own directory, exactly as
             // cgltf_load_buffers resolves .bin URIs (combine, then percent-decode the
             // uri tail) -- both halves of a model share one base directory instead of
             // textures silently depending on the process CWD.
             char texPath[1024];
             if (strlen(fileName) + strlen(tex->image->uri) + 1 >= sizeof texPath) {
-                printf("Texture URI too long, skipping: %s\n", tex->image->uri);
+                ano_log(ANO_WARN, "Texture URI too long, skipping: %s", tex->image->uri);
                 textureLoaded[t] = false;
                 continue;
             }
@@ -289,9 +284,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 );
             }
         } else if (tex->image && tex->image->uri) {
-#ifdef DEBUG_BUILD
-            printf("[GLTF DEBUG] Skipping texture %zu: %s (not needed or unsupported by pipeline)\n", t, tex->image->uri);
-#endif
+            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Skipping texture %zu: %s (not needed or unsupported by pipeline)", t, tex->image->uri);
         }
     }
 
@@ -309,7 +302,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         totalPrimitives += data->meshes[m].primitives_count;
     }
     if (rendererState.materialBuffer.count + totalPrimitives > rendererState.materialBuffer.capacity) {
-        printf("Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.\n", 
+        ano_log(ANO_WARN, "Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.", 
                totalPrimitives, rendererState.materialBuffer.capacity, rendererState.materialBuffer.count);
     }
 
@@ -669,7 +662,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     }
 
     cgltf_free(data);
-    printf("Successfully extracted ModelAsset: %s\n", fileName);
+    ano_debug_log(ANO_INFO, "Successfully extracted ModelAsset: %s", fileName);
     return asset;
 }
 

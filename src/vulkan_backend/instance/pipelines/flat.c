@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 #include "flat.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include <stdio.h>
@@ -48,7 +49,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 
 	if (vkCreatePipelineLayout(ctx->device, &pipelineLayoutInfo, NULL, &proto->layout) != VK_SUCCESS) 
 	{
-		printf("Failed to create flat pipeline layout!\n");
+		ano_log(ANO_FATAL, "Failed to create flat pipeline layout!");
 		return false;
 	}
 
