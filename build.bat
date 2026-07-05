@@ -70,9 +70,15 @@ if "%1"=="1" (
 set TOOLCHAIN_PATH=%~dp0cmake\platforms\%TOOLCHAIN_FILE%
 echo TOOLCHAIN_PATH is set to: %TOOLCHAIN_PATH%
 
-:: Reset a build dir configured with an older generator.
+:: Reset a build dir whose cache has a different generator or source root.
+set "ANO_SRC=%~dp0"
+set "ANO_SRC=%ANO_SRC:\=/%"
+if "%ANO_SRC:~-1%"=="/" set "ANO_SRC=%ANO_SRC:~0,-1%"
 if exist build\%BUILD_LABEL%\CMakeCache.txt (
     findstr /c:"CMAKE_GENERATOR:INTERNAL=Ninja" build\%BUILD_LABEL%\CMakeCache.txt >nul || rmdir /s /q build\%BUILD_LABEL%
+)
+if exist build\%BUILD_LABEL%\CMakeCache.txt (
+    findstr /i /c:"CMAKE_HOME_DIRECTORY:INTERNAL=%ANO_SRC%" build\%BUILD_LABEL%\CMakeCache.txt >nul || rmdir /s /q build\%BUILD_LABEL%
 )
 
 :: Create build directory if not exist
