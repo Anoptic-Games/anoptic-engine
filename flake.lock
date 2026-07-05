@@ -17,6 +17,23 @@
         "type": "github"
       }
     },
+    "freetype-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1738122561,
+        "narHash": "sha256-YxWz3O9see1dktqZnC551V12yU5jcOERTB1Hn1lwUNM=",
+        "owner": "freetype",
+        "repo": "freetype",
+        "rev": "b1f47850878d232eea372ab167e760ccac4c4e32",
+        "type": "github"
+      },
+      "original": {
+        "owner": "freetype",
+        "repo": "freetype",
+        "rev": "b1f47850878d232eea372ab167e760ccac4c4e32",
+        "type": "github"
+      }
+    },
     "glfw-src": {
       "flake": false,
       "locked": {
@@ -70,6 +87,7 @@
     "root": {
       "inputs": {
         "cgltf-src": "cgltf-src",
+        "freetype-src": "freetype-src",
         "glfw-src": "glfw-src",
         "mimalloc-src": "mimalloc-src",
         "nixpkgs": "nixpkgs"

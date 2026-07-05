@@ -1,5 +1,6 @@
-# linux-x64-AVX2.cmake
-# Toolchain file for 64-bit Linux operating platforms with support for AVX2 vector extensions.
+# gcc-x64-autodetect.cmake
+# Auto-detected toolchain for the current platform.
+# GCC FALLBACK path -- clang/LLVM is the project default (clang-linux-x64.cmake).
 
 message(STATUS "!! Using auto-detected toolchain for your current platform.")
 
