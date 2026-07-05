@@ -53,7 +53,7 @@ typedef union {
     // _Static_assert below proves it). It is chosen so `len` is the low 16 bits of `w`.
     struct {
         uint16_t len;       // stored text bytes, span = ceil((16 + len) / ANO_CL)
-        uint8_t  level;     // ano_loglevel_t copy, so the flusher routes by severity without the text
+        uint8_t  level;     // ano_loglevel_t copy for the flusher's severity routing
         uint8_t  flags;     // ANO_LOG_COMMITTED + ANO_LOG_DEFERRED + sink bits
         uint32_t cycle;     // lap number (pos >> shift), so a stale prior-lap tag is told from this lap's.
                             //   Lets the drainer reclaim by cycle check, no per-slot zeroing.

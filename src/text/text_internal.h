@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Text module internals shared between text.c and text_bake.c, and exposed to the
-// white-box unit test. Deliberately FreeType-free.
+// Text module internals shared between text.c and text_bake.c, exposed to the
+// white-box unit test. FreeType-free.
 
 #ifndef ANO_TEXT_INTERNAL_H
 #define ANO_TEXT_INTERNAL_H
@@ -20,7 +20,6 @@ void *ano_text_face(AnoFontId font);
 // Reports the FreeType version through any non-NULL pointers, all zeros before init.
 void ano_text_version(int *major, int *minor, int *patch);
 
-// ---------------------------------------------------------------------------------------------
 // The bake's wire format (FONT_RENDER.md section 2), decoded only by the bake, the
 // shaper, the reference rasterizer, and the GPU shaders.
 //
@@ -31,11 +30,10 @@ void ano_text_version(int *major, int *minor, int *patch);
 //   glyph  := contour (SENTINEL contour)*
 //   contour := p0 (p1 p2)+          -- curve i+1 starts at curve i's p2
 //
-// ANO_TEXT_POINT_SENTINEL separates contours and never collides with a coordinate
-// (both halves +inf, coordinates clamped far below). Contours close bit-exactly and
-// wind so the signed trapezoid sum is POSITIVE inside ink: clockwise outers in y-up
-// (fill-right), counter-clockwise holes. Every curve is x- and y-monotone, so its
-// control point lies inside its endpoints' box.
+// ANO_TEXT_POINT_SENTINEL separates contours and never collides with a coordinate.
+// Contours close bit-exactly and wind so the signed trapezoid sum is positive inside
+// ink: clockwise outers in y-up (fill-right), counter-clockwise holes. Every curve is
+// x- and y-monotone, its control point inside its endpoints' box.
 
 #define ANO_TEXT_POINT_SENTINEL 0x7C007C00u
 
@@ -68,8 +66,7 @@ uint32_t ano_text_bake_slot(const AnoFontBake *bake, uint32_t codepoint);
 // a slot is out of range. Pure, any thread.
 float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSlot);
 
-// ---------------------------------------------------------------------------------------------
-// Bake math, kept pure and non-static for the white-box test.
+// Bake math.
 
 // float -> binary16 bits, round-to-nearest-even. |v| >= 65520 clamps to +-inf.
 uint16_t ano_half_pack(float v);
@@ -83,19 +80,17 @@ typedef struct AnoQuad {
     double y[3];
 } AnoQuad;
 
-// Splits a quad at its interior per-axis extrema so every piece is x- and y-monotone.
-// Writes 1..3 chained pieces to out, returns the count. Extrema within 1e-6 of 0/1
-// (or of each other) merge, mirroring the FONT_RENDER.md count oracle.
+// Splits a quad at its interior per-axis extrema into 1..3 chained monotone pieces.
+// Writes to out, returns the count. Extrema within 1e-6 of 0/1 or of each other merge.
 int ano_quad_split_monotone(const AnoQuad *q, AnoQuad out[3]);
 
 // Approximates one cubic Bezier by quads within tolEm max deviation. Writes to out,
-// returns the piece count (>= 1), or -1 when maxOut < 1. The count never exceeds
-// maxOut (accuracy degrades past the cap). Endpoints preserved exactly.
+// returns the piece count (>= 1), or -1 when maxOut < 1. Count never exceeds maxOut.
+// Endpoints preserved exactly.
 int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm,
                        AnoQuad *out, int maxOut);
 
-// ---------------------------------------------------------------------------------------------
-// GPOS kerning extraction, FreeType-free for the white-box test.
+// GPOS kerning extraction, FreeType-free.
 
 // Accumulates horizontal 'kern' PairPos xAdvance adjustments (latn/DFLT, lookups in
 // list order, first applying subtable per pair) from a raw GPOS table into
@@ -106,7 +101,6 @@ int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm,
 int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *slotGids,
                            uint32_t slotCount, int32_t *dense);
 
-// ---------------------------------------------------------------------------------------------
 // Reference rasterization (FONT_RENDER.md step 3).
 
 // Unclamped coverage sum for one em-space window (position wx/wy, size w/h) of one

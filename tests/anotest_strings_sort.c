@@ -46,7 +46,6 @@ static int failures = 0;
 
 static int sign(int v) { return v < 0 ? -1 : v > 0; }
 
-// ---------------------------------------------------------------------------------------------
 // Corpus: every script the collation tables ship, plus fallback and degenerate shapes.
 
 static const char *corpus_cstr[] = {
@@ -115,7 +114,6 @@ static anostr_t rng_str(test_rng *rng, mi_heap_t *heap, uint32_t maxRunes)
     return anostr_freeze(&b);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Oracle: the streaming comparator everyone agrees is correct, looped through qsort.
 
 static int oracle_cmp(const void *a, const void *b)
@@ -186,7 +184,6 @@ static bool check_against_oracle(const anostr_t *items, size_t n, const char *wh
     return true;
 }
 
-// ---------------------------------------------------------------------------------------------
 
 static void test_collate_prefix(void)
 {
@@ -387,7 +384,7 @@ static void test_sym_sort(mi_heap_t *heap)
     if (t == NULL)
         return;
 
-    // Intern the corpus with duplicates; keep the symbol list shuffled.
+    // Intern the corpus with duplicates, symbol list shuffled.
     enum { N = CORPUS_N * 2 };
     anostr_sym syms[N];
     anostr_t   strs[N];
@@ -398,7 +395,7 @@ static void test_sym_sort(mi_heap_t *heap)
         CHECK(syms[k] != ANOSTR_SYM_NONE, "intern succeeds");
     }
 
-    // Cold sort builds the key cache; warm re-sort must agree after a reshuffle.
+    // Cold sort builds the key cache, warm re-sort must agree.
     for (int round = 0; round < 2; round++) {
         anostr_sym_sort(t, syms, N);
         for (size_t k = 0; k < N; k++)
@@ -448,7 +445,7 @@ static void test_replace_all(mi_heap_t *heap)
                                        anostr_lit("\xC3\xA9"), anostr_lit("e")),
                     anostr_lit("resume")), "UTF-8 needle");
 
-    // No match: the SAME value comes back -- same backing pointer, no allocation.
+    // No match: the SAME value comes back, same backing pointer.
     anostr_t big = anostr_lit("a long string with no needle in it");
     anostr_t out = anostr_replace_all(heap, big, anostr_lit("zebra"), anostr_lit("!"));
     CHECK(anostr_eq(out, big) && anostr_bytes(&out) == anostr_bytes(&big),
@@ -462,7 +459,7 @@ static void test_replace_all(mi_heap_t *heap)
                              anostr_lit("x"), anostr_empty());
     CHECK(anostr_eq(out, anostr_lit("ab")) && anostr_is_inline(out), "shrinks to inline");
 
-    // Randomized: small alphabet so matches are dense; naive rebuild is the oracle.
+    // Randomized: naive rebuild is the oracle.
     test_rng rng = rng_make(0x5E91ACEDu);
     for (int it = 0; it < 300; it++) {
         char sb[64], nb[4], rb[6];
@@ -518,13 +515,13 @@ static void test_cull(mi_heap_t *heap)
                                 ANOSTR_CULL_WHITESPACE),
                     anostr_lit("abcde")), "whitespace cull across widths");
 
-    // Punctuation is P* only: symbols ($ + €) and digits survive; 、 (U+3001) goes.
+    // Punctuation is P* only: symbols ($ + €) and digits survive, 、 (U+3001) goes.
     CHECK(anostr_eq(anostr_cull(heap, anostr_lit("+5 Sword!, ($10) \xE2\x82\xAC. \xE3\x80\x81"),
                                 ANOSTR_CULL_PUNCT),
                     anostr_lit("+5 Sword $10 \xE2\x82\xAC ")),
           "punct cull keeps symbols");
 
-    // Marks: combining acute culled; precomposed é untouched.
+    // Marks: combining acute culled, precomposed é untouched.
     CHECK(anostr_eq(anostr_cull(heap, anostr_lit("e\xCC\x81 \xC3\xA9"), ANOSTR_CULL_MARK),
                     anostr_lit("e \xC3\xA9")), "marks cull, precomposed stays");
 

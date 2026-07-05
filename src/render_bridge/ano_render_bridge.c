@@ -15,13 +15,10 @@
 #include <stdint.h>
 #include <string.h>
 
-// Catch accidental growth of the events-ring element (copied byte-by-byte per push/pop and sized
-// capacity * this). It is exactly 32 B today and intentionally held there; growing a union arm past
-// it is a deliberate decision (ring footprint, copy cost), so this fires to force that decision.
+// Guard the events-ring element size (copied per push/pop, sized capacity * this). Held at 32 B.
 _Static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
 
-// Smallest power of two >= v, with a floor of 2. Returns 0 only on overflow
-// (v > 2^31), which the caller treats as failure.
+// Smallest power of two >= v, floor of 2. Returns 0 on overflow (v > 2^31).
 static uint32_t next_pow2_u32(uint32_t v)
 {
     if (v < 2u) return 2u;
@@ -129,19 +126,18 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
-// Screen-text endpoints (FONT_RENDER.md v0 bridge). `set` packs the block header + the
-// instance copy into ONE render-owned allocation (the registry adopts it; freed render-
-// side on replace/clear/shutdown), so the caller's array need only live until this
-// returns. count 0 == clear. Backpressure contract is ano_render_submit's.
+// Screen-text endpoints (FONT_RENDER.md v0 bridge). `set` packs the block header and the instance copy
+// into one render-owned allocation, freed render-side on replace/clear/shutdown. count 0 == clear.
+// Backpressure contract is ano_render_submit's.
 bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
                          const AnoGlyphInstance *instances, uint32_t count)
 {
     if (count == 0u)
         return ano_render_text_clear(bridge, text_id);
     if (instances == NULL)
-        return true; // invalid pair (count without data): documented no-op
+        return true; // invalid pair (count without data): no-op
     if (count > ANO_RENDER_TEXT_MAX)
-        count = ANO_RENDER_TEXT_MAX; // one block never exceeds the whole region
+        count = ANO_RENDER_TEXT_MAX; // clamp to the region
     size_t bytes = sizeof(RenderTextBlock) + (size_t)count * sizeof(AnoGlyphInstance);
     char *blk = mi_malloc(bytes);
     if (blk == NULL)

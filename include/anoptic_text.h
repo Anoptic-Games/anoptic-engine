@@ -43,7 +43,7 @@ AnoFontId ano_text_font_load(anostr_t path);
 
 // ---------------------------------------------------------------------------------------------
 // The baked glyph form consumed by the GPU rasterizer. The renderer uploads the
-// points/glyphs as opaque blobs; the wire format lives in src/text/text_internal.h.
+// points/glyphs as opaque blobs. Wire format in src/text/text_internal.h.
 
 // One directory entry, the per-glyph GPU ABI.
 typedef struct AnoGlyphEntry {
@@ -100,12 +100,12 @@ int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCod
 //
 // AnoGlyphInstance is the GPU ABI, one std430 SSBO element per glyph (offsets
 // 0/16/32/40/44, stride 48, GLSL-compatible).
-//   inv     -- 2x2 pixel->em inverse as rows, applied to (pixel - origin).
-//              v0 emits (1/size, 0, 0, -1/size).
-//   color   -- premultiplied linear RGBA.
-//   origin  -- baseline pen position, screen pixels, y-down.
-//   glyphID -- directory slot in the bake.
-//   flags   -- reserved.
+//   inv     : 2x2 pixel->em inverse as rows, applied to (pixel - origin).
+//             v0 emits (1/size, 0, 0, -1/size).
+//   color   : premultiplied linear RGBA.
+//   origin  : baseline pen position, screen pixels, y-down.
+//   glyphID : directory slot in the bake.
+//   flags   : reserved.
 
 typedef struct AnoGlyphInstance {
     float    inv[4];
@@ -164,8 +164,7 @@ void ano_text_measure_runs(const AnoFontBake *bake, anostr_t text,
                            float *width, float *height);
 
 // ---------------------------------------------------------------------------------------------
-// String-literal faces, mirroring the logger's macro style. These wrap anostr_lit so
-// call sites can pass plain literals (length folded at compile time, no allocation).
+// String-literal face macros wrapping anostr_lit, length folded at compile time.
 
 #define ano_text_shape_lit(bake, textlit, sizePx, origin, color, out, cap, penOut) \
     ano_text_shape((bake), anostr_lit(textlit), (sizePx), (origin), (color), (out), (cap), (penOut))

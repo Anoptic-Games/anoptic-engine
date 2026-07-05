@@ -50,9 +50,8 @@ float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSl
 
 // The single pen walk behind shape/measure x plain/runs. Assumes validated args.
 // One pen crosses run boundaries untouched. The pair-kern chain survives a boundary
-// iff the size is unchanged (prevSize tracks the size that shaped prevSlot, so empty
-// runs can't break a bridge). Returns the total instance count. Optionally reports
-// the pen, the widest line, started-line count, and the last run's line step.
+// iff the size is unchanged. Returns the total instance count. Optionally reports the
+// pen, the widest line, started-line count, and the last run's line step.
 static uint32_t shape_core(const AnoFontBake *bake, anostr_t text,
                            const AnoTextRun *runs, uint32_t runCount,
                            const float origin[2], AnoGlyphInstance *out, uint32_t cap,

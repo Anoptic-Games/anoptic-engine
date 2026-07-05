@@ -57,8 +57,8 @@
 // phase) to reject occluded entities. Mip cap covers a half-res 4K base (2048 -> 12 mips) with slack.
 #define ANO_MAX_HIZ_MIPS         16u
 
-// Live logic-submitted screen-text blocks the renderer holds at once (FONT_RENDER.md v0
-// bridge). A HUD is dozens of labels; a set beyond capacity is dropped with a log line.
+// Max live logic-submitted screen-text blocks (FONT_RENDER.md v0 bridge). Excess is dropped
+// with a log line.
 #define ANO_TEXT_MAX_BLOCKS      64u
 
 // Default per-view screen-area cull threshold, in pixels of projected bounding-sphere radius
@@ -983,8 +983,8 @@ typedef struct PerFrameResources
 
     // Text overlay (FONT_RENDER.md step 5). The overlay image is the glyph raster target
     // (compute-written GENERAL, composite-sampled SHADER_READ), swapchain-sized, recreated
-    // with the swapchain. textFrameBuffer is host-visible/mapped frame data (glyph
-    // instances now, tile lists later), rewritten wholesale when the text changes.
+    // with the swapchain. textFrameBuffer is host-visible/mapped frame data, rewritten
+    // wholesale when the text changes.
     VkImage             textOverlayImage;
     GpuAllocation       textOverlayAlloc;
     VkImageView         textOverlayView;
@@ -993,7 +993,7 @@ typedef struct PerFrameResources
     void*               textFrameMapped;
     VkDescriptorSet     textRasterSet;   // curves + directory + frame data + storage image
     VkDescriptorSet     textOverlaySet;  // tonemapSetLayout-shaped: sampled overlay for composite
-    VkCommandBuffer     textCommandBuffer; // async text raster CB (computeCommandPool); NULL when asyncText off
+    VkCommandBuffer     textCommandBuffer; // async text raster CB (computeCommandPool), NULL when asyncText off
     uint32_t            textSlotVersion;   // textVersion this slot's frame buffer last copied
 
     // Deferred resource deletion
@@ -1061,11 +1061,10 @@ typedef struct RendererState
     VkDescriptorSetLayout   tonemapSetLayout;       // 1 combined-image-sampler (hdrColorView)
     VkPipelineCache         tonemapCache;
 
-    // Text overlay (FONT_RENDER.md). Glyph curves bake once (CPU blobs on textHeap, the
-    // shaping source) and upload once to device-local buffers. The raster pass lives in
-    // prototypes[PIPELINE_COMPUTE_TEXTRASTER]; the composite blend draw is bespoke and
-    // shares the tonemap set/pipeline layout (one sampled image). textOverlay gates all
-    // of it: env ANO_FORCE_NO_TEXT, or a font/bake init failure (non-fatal), turn it off.
+    // Text overlay (FONT_RENDER.md). Glyph curves bake once (CPU blobs on textHeap) and
+    // upload to device-local buffers. Raster pass in prototypes[PIPELINE_COMPUTE_TEXTRASTER].
+    // The composite blend draw is bespoke, shares the tonemap set/pipeline layout.
+    // textOverlay gate: ANO_FORCE_NO_TEXT or a font/bake init failure turns it off.
     bool                    textOverlay;
     VkDescriptorSetLayout   textRasterSetLayout;
     VkPipeline              textOverlayPipeline;
@@ -1078,25 +1077,21 @@ typedef struct RendererState
     uint32_t                textInstanceCount; // instances in the CURRENT slot's frame buffer
     uint32_t                textFlags;         // TextRasterPush.flags (bit 0 = opaque self-test)
     // Pending on-screen text (FONT_RENDER.md step 8): ano_vk_text_set shapes into this
-    // canonical array (textHeap) and bumps textVersion; each frame slot copies it into
-    // its own mapped frame buffer after its fence wait (ano_vk_text_frame_refresh), so
-    // in-flight GPU readers are never overwritten. Render thread only.
+    // canonical array (textHeap) and bumps textVersion. Each frame slot copies it into its
+    // mapped frame buffer after its fence wait (ano_vk_text_frame_refresh). Render thread only.
     AnoGlyphInstance*       textPending;
     uint32_t                textPendingCount;
     uint32_t                textVersion;
     // Async text lane (FONT_RENDER.md step 7): lag-0, rides asyncHiz's infrastructure. The
-    // per-frame raster CB submits to ctx.computeQueue with NO waits (inputs are CPU-written,
-    // slot reuse is frame-fence ordered) and signals textTimeline == ordinal; the frame's
-    // main submit waits it at FRAGMENT_SHADER (the composite sample is the only consumer).
-    // Gate: asyncText (asyncHiz && textOverlay && !ANO_FORCE_NO_ASYNC_TEXT, downgraded
-    // non-fatally if the lane's objects fail); off falls back to the in-frame record.
+    // per-frame raster CB submits to ctx.computeQueue with no waits and signals
+    // textTimeline == ordinal. The main submit waits it at FRAGMENT_SHADER.
+    // Gate: asyncText, downgraded non-fatally if the lane's objects fail.
     bool                    asyncText;
     VkSemaphore             textTimeline;
-    // World-space text lane (the paper's pixel-shader variant): a bespoke spinning quad
-    // drawn inside each view's additive pass (the last MSAA color pass, so it resolves
-    // with the scene). Same glyph buffers and instance ABI; instances live in the upper
-    // region of the per-frame text buffers (index ANO_TEXT_WORLD_FIRST on), shaped once
-    // at init. Gate: textWorld (textOverlay && !ANO_FORCE_NO_TEXT_WORLD).
+    // World-space text lane (the paper's pixel-shader variant): a spinning quad drawn in
+    // each view's additive pass (the last MSAA color pass). Same glyph buffers and instance
+    // ABI. Instances live in the upper region of the per-frame text buffers
+    // (index ANO_TEXT_WORLD_FIRST on), shaped once at init. Gate: textWorld.
     bool                    textWorld;
     VkPipeline              textWorldPipeline;
     VkPipelineLayout        textWorldLayout;

@@ -77,7 +77,7 @@ add_test(NAME anoptic_text COMMAND anotest_text)
 set_tests_properties(anoptic_text PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
-# Built so it cannot rot, DISABLED in ctest -- run ./anotest_strbench by hand from a -O3 build.
+# DISABLED in ctest, run ./anotest_strbench by hand from a -O3 build.
 add_executable(anotest_strbench anotest_strbench.c)
 target_link_libraries(anotest_strbench PRIVATE anoptic_core)
 add_test(NAME anoptic_strbench COMMAND anotest_strbench)

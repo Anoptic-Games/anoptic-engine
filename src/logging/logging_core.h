@@ -9,18 +9,16 @@
 #define ANOPTICENGINE_LOGGING_CORE_H
 
 #include <anoptic_logging.h>
-#include <anoptic_memory.h>   // ANO_CACHE_LINE (the cache-line / ring reservation grain)
+#include <anoptic_memory.h>   // ANO_CACHE_LINE
 
 // A stored line plus the wall-clock prefix total 4096 bytes. ANO_LOG_MSG_MAX is the stored cap.
 // ANO_LOG_TIME_RESV is the prefix budget. A max-size entry spans ceil((16 + MSG_MAX) / ANO_CL) <= 64 lines.
 #define ANO_LOG_TIME_RESV 16u                          // budget for the "HH:MM:SS " prefix
 #define ANO_LOG_MSG_MAX   (4096u - ANO_LOG_TIME_RESV)  // stored line, stored + prefix = 4096
 
-// Ring capacity in BYTES, a power of two, so the byte size matches on every platform. The line size does
-// not (64 on x86-64, 128 on Apple Silicon), so a fixed line count would drift. Aligned to a power of two
-// so the ring sits in one self-sized region: page-allocator, Windows cache-view, Linux large-folio,
-// hugepage at 2 MiB. Override -DANO_LOG_RING_BYTES to experiment from 64 KiB to 2 MiB. Line count derives.
-// 2 MiB gained ~15% on benchmarks only, not worth 4x the footprint.
+// Ring capacity in BYTES, a power of two. Aligned to a power of two so the ring sits in one self-sized
+// region (page-allocator, Windows cache-view, Linux large-folio, hugepage at 2 MiB). Line count derives.
+// Override with: -DANO_LOG_RING_BYTES (64 KiB to 2 MiB).
 #ifndef ANO_LOG_RING_BYTES
 // 2MB
 //#define ANO_LOG_RING_BYTES (2u * 1024u * 1024u)

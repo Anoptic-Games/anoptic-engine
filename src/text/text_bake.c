@@ -4,14 +4,12 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Glyph-curve bake: FreeType outlines -> directed monotone quadratic Beziers in em
-// space -> packed binary16 shared-vertex stream + glyph directory (grammar in
-// text_internal.h, design of record FONT_RENDER.md section 2).
+// space -> packed binary16 shared-vertex stream + glyph directory. Grammar in
+// text_internal.h, design in FONT_RENDER.md section 2.
 //
-// Pipeline per glyph: decompose contours as quads in double em coordinates (lines
-// become midpoint-control quads, cubics subdivide within 1e-3 em), normalize winding
-// to fill-right, split every quad at its interior per-axis extrema, drop degenerate
-// pieces, then quantize to halves with each control clamped into its quantized
-// endpoints' box so the monotone sandwich survives quantization exactly.
+// Per glyph: decompose contours to quads in double em, normalize winding to
+// fill-right, split each quad at its interior per-axis extrema, drop degenerate
+// pieces, quantize to halves with controls clamped into their endpoint box.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -29,9 +27,7 @@
 #include FT_TRUETYPE_TABLES_H
 #include FT_TRUETYPE_TAGS_H
 
-// ---------------------------------------------------------------------------------------------
-// binary16 conversion (round-to-nearest-even), bit-exact. Overflow clamps to +-inf,
-// which real coordinates (a few em at most) never reach, keeping SENTINEL unique.
+// binary16 conversion (round-to-nearest-even), bit-exact. Overflow clamps to +-inf.
 
 uint16_t ano_half_pack(float v)
 {
@@ -58,7 +54,7 @@ uint16_t ano_half_pack(float v)
     uint32_t half = (((x >> 23) - 112u) << 10) | (mant >> 13);
     uint32_t rem  = mant & 0x1FFFu;
     if (rem > 0x1000u || (rem == 0x1000u && (half & 1u)))
-        half++; // a carry into the exponent is correct rounding
+        half++;
     return (uint16_t)(sign | half);
 }
 
@@ -88,7 +84,6 @@ float ano_half_unpack(uint16_t h)
     return out;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Quad utilities.
 
 // De Casteljau split of q at parameter t into l (before) and r (after).
@@ -106,7 +101,7 @@ static void quad_split_at(const AnoQuad *q, double t, AnoQuad *l, AnoQuad *r)
 
 int ano_quad_split_monotone(const AnoQuad *q, AnoQuad out[3])
 {
-    const double T = 1e-6; // interior-band threshold, mirrors the audit oracle
+    const double T = 1e-6; // interior-band threshold
     double ts[2];
     int    n = 0;
     for (int axis = 0; axis < 2; axis++)
@@ -196,10 +191,8 @@ int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm, Ano
     return count;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Decompose collector: FreeType callbacks accumulate per-contour quads in double em
-// coordinates on the scratch heap. Font-unit integers scale exactly, so double
-// equality tests on shared endpoints are reliable.
+// coordinates on the scratch heap.
 
 typedef struct BakeContour {
     AnoQuad *quads;
@@ -285,7 +278,7 @@ static int bake_line_to(const FT_Vector *to, void *user)
 {
     BakeCollect *c = user;
     double x = to->x * c->invUpem, y = to->y * c->invUpem;
-    if (x != c->curX || y != c->curY) // lines ride the shader's linear fallback
+    if (x != c->curX || y != c->curY)
         bake_push_quad(c, c->curX, c->curY, (c->curX + x) * 0.5, (c->curY + y) * 0.5, x, y);
     c->curX = x;
     c->curY = y;
@@ -338,7 +331,6 @@ static void bake_reverse_contour(BakeContour *con)
         con->quads[n / 2u] = quad_reversed(con->quads[n / 2u]);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Packing.
 
 typedef struct StreamVec {
@@ -385,8 +377,7 @@ static void bbox_add(BakeBBox *b, float x, float y)
 }
 
 // Emits one glyph's contours into the stream per the header grammar, quantizing to
-// halves. Controls clamp into their quantized endpoints' box, so the monotone
-// sandwich holds exactly on the GPU-visible values. bbox is exact. False on OOM.
+// halves. Controls clamp into their quantized endpoints' box. bbox is exact. False on OOM.
 static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeContour *cons,
                             uint32_t conCount, AnoGlyphEntry *e)
 {
@@ -417,7 +408,6 @@ static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeCon
             uint16_t h2x = bake_quant(q->x[2], &q2x);
             uint16_t h2y = bake_quant(q->y[2], &q2y);
             // Clamp the control into the quantized endpoint box, then quantize.
-            // The result stays inside because the bounds are half-representable.
             float c1x = (float)q->x[1];
             float c1y = (float)q->y[1];
             float lox = fminf(q0x, q2x), hix = fmaxf(q0x, q2x);
@@ -447,12 +437,10 @@ static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeCon
     return true;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Kerning extraction: each face's GPOS 'kern' PairPos adjustments for its own slots,
-// accumulated over a shared dense matrix (faces hold disjoint slot sets) and
-// compacted into one key-sorted pair table on the caller heap. Fail-soft: a missing
-// or malformed table contributes nothing, only allocation failure is an error.
-// The dense scratch is slotCount^2, so oversized bakes skip extraction with a warning.
+// Kerning extraction: each face's GPOS PairPos adjustments for its own slots,
+// accumulated over a shared dense matrix and compacted into one key-sorted pair
+// table on the caller heap. Fail-soft: a missing or malformed table contributes
+// nothing, only allocation failure is an error. Oversized bakes skip extraction.
 
 static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *glyphs,
                       uint32_t glyphCount, FT_Face *slotFace, const uint32_t *slotCp,
@@ -468,8 +456,7 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
     if (slotGids == NULL || dense == NULL)
         return ENOMEM;
 
-    // One pass per distinct face: build its gid map (foreign slots absent), then null
-    // its slots out of slotFace so the face is never processed twice.
+    // One pass per distinct face: build its gid map, then null its slots out of slotFace.
     for (uint32_t f = 0; f < glyphCount; f++)
     {
         FT_Face face = slotFace[f];
@@ -485,7 +472,7 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
 
         FT_ULong glen = 0;
         if (FT_Load_Sfnt_Table(face, TTAG_GPOS, 0, NULL, &glen) != FT_Err_Ok || glen < 10u)
-            continue; // no GPOS, this face kerns nothing
+            continue; // no GPOS
         uint8_t *blob = mi_heap_malloc(scratch, glen);
         if (blob == NULL)
             return ENOMEM;
@@ -517,7 +504,6 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
     return 0;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Bake entry point, module thread. Temporaries live on a scoped scratch heap.
 // Only the result blobs land in the caller's heap.
 

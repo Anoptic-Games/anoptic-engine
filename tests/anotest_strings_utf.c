@@ -203,7 +203,7 @@ static void test_case_mapping(void)
     CHECK(anorune_to_upper(0x436) == 0x416 && anorune_to_lower(0x416) == 0x436, "Cyrillic zhe");
     CHECK(anorune_to_lower(0x100) == 0x101 && anorune_to_upper(0x101) == 0x100,
           "Latin Extended-A odd/even pair (A-macron)");
-    // Final sigma: both lowercase sigmas uppercase to capital sigma; no round-trip promise.
+    // Final sigma: both lowercase sigmas uppercase to capital sigma.
     CHECK(anorune_to_upper(0x3C2) == 0x3A3 && anorune_to_upper(0x3C3) == 0x3A3, "sigma and final sigma");
     CHECK(anorune_to_lower(0x3A3) == 0x3C3, "capital sigma lowers to medial sigma");
     // Romanian: comma-below forms (correct) and the legacy cedilla forms both case.
@@ -252,7 +252,7 @@ static void test_classification(void)
     CHECK(!anorune_is_letter(0x5D0) && !anorune_is_letter(0x10400),
           "unlisted scripts (Hebrew, Deseret) report false after the trim");
 
-    // Nd digits: ASCII and fullwidth. Unlisted scripts' digits are out; Roman XII is Nl.
+    // Nd digits: ASCII and fullwidth. Unlisted scripts' digits out, Roman XII is Nl.
     CHECK(anorune_is_digit('0') && anorune_is_digit('9'), "ASCII digits");
     CHECK(anorune_is_digit(0xFF10) && anorune_is_digit(0xFF19), "fullwidth digits");
     CHECK(!anorune_is_digit(0x966) && !anorune_is_digit(0x663),
@@ -260,7 +260,7 @@ static void test_classification(void)
     CHECK(!anorune_is_digit(0x216B), "Roman numeral XII is not Nd");
     CHECK(!anorune_is_digit('a'), "letters are not digits");
 
-    // White_Space property: NBSP and ideographic space are in; ZWSP (format char) is out.
+    // White_Space property: NBSP and ideographic space in, ZWSP out.
     static const anorune_t spaces[] = { ' ', '\t', '\n', '\r', 0xA0, 0x3000 };
     for (size_t k = 0; k < sizeof spaces / sizeof spaces[0]; k++)
         if (!anorune_is_whitespace(spaces[k])) {
@@ -317,7 +317,7 @@ static void test_collation(void)
     // Romanian: ș groups with s (secondary difference only).
     CHECK(anostr_collate(anostr_lit("s"), anostr_lit("\xC8\x99")) < 0, "s < s-comma");
     CHECK(anostr_collate(anostr_lit("\xC8\x99"), anostr_lit("t")) < 0, "s-comma < t");
-    // Kana: あ < い; hiragana and katakana a differ only at level three.
+    // Kana: あ < い, hiragana and katakana a differ only at level three.
     CHECK(anostr_collate(anostr_lit("\xE3\x81\x82"), anostr_lit("\xE3\x81\x84")) < 0, "a < i (kana)");
     CHECK(anostr_eq_base(anostr_lit("\xE3\x81\x82"), anostr_lit("\xE3\x82\xA2")), "hira a ==base kata a");
     CHECK(anostr_collate(anostr_lit("\xE3\x81\x82"), anostr_lit("\xE3\x82\xA2")) != 0, "hira != kata full");
@@ -325,7 +325,7 @@ static void test_collation(void)
     CHECK(anostr_collate(anostr_lit("\xE6\xBC\xA2"), anostr_lit("\xE8\xAA\x9E")) < 0, "Han cp order");
     // Spaces are significant (non-ignorable): "New York" < "Newark".
     CHECK(anostr_collate(anostr_lit("New York"), anostr_lit("Newark")) < 0, "space before letters");
-    // Empty sorts first; total order tie-break never reports equal for distinct bytes.
+    // Empty sorts first, tie-break never equal for distinct bytes.
     CHECK(anostr_collate(anostr_empty(), anostr_lit("a")) < 0, "empty sorts first");
 
     // Base-letter search: case- and accent-insensitive.
@@ -401,7 +401,7 @@ static void test_encoding_conversion(mi_heap_t *heap)
     CHECK(anostr_eq(anostr_from_utf16_cstr(heap, w), s), "utf16 cstr round-trip");
     CHECK(anostr_eq(anostr_from_utf32(heap, u, 4), s), "utf32 round-trip");
 
-    // Unpaired surrogates -> U+FFFD; a high+low pair split by anything is unpaired.
+    // Unpaired surrogates -> U+FFFD, split pairs are unpaired.
     static const char16_t bad16[] = { 0xD800, 'a', 0xDC00, 0xDBFF };
     anostr_t fixed = anostr_from_utf16(heap, bad16, 4);
     static const anorune_t expect_fixed[] = { 0xFFFD, 'a', 0xFFFD, 0xFFFD };
@@ -496,7 +496,7 @@ static void soak(mi_heap_t *heap, uint32_t iterations)
 
 int main(int argc, char **argv)
 {
-    // One scratch heap for the whole run; everything long-lived dies with it at exit.
+    // One scratch heap for the whole run.
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
     if (heap == NULL) { printf("FAIL: mi_heap_new\n"); return 1; }
 

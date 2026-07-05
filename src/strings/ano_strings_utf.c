@@ -11,7 +11,6 @@
 
 #include "strings/ano_unicode_tables.h"
 
-// ---------------------------------------------------------------------------------------------
 // Decode core.
 
 static inline bool rune_is_surrogate(anorune_t r)
@@ -119,7 +118,6 @@ bool anostr_utf8_valid(anostr_t s)
     return true;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Encode.
 
 int anorune_encode(char buf[4], anorune_t r)
@@ -155,7 +153,6 @@ int anostr_builder_append_rune(anostr_builder_t *b, anorune_t r)
     return anostr_builder_append(b, buf, (size_t)n);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Case and classification. Record 0 is the identity record.
 // Unassigned, unlisted, and beyond-BMP runes fall through to it with no special casing here.
 
@@ -202,9 +199,8 @@ bool anorune_is_punct(anorune_t r)
     return (uc_record(r)->flags & ANO_UC_PUNCT) != 0;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Rune-class culling. One pass, survivors copied in runs so a lightly-culled string is
-// mostly memcpy. ASCII rides an 8-byte high-bit test and a bitset, only non-ASCII decodes.
+// Rune-class culling. One pass, survivors copied in runs. ASCII rides an 8-byte high-bit
+// test and a bitset, only non-ASCII decodes.
 
 static uint8_t cull_uc_mask(uint32_t classes)
 {
@@ -259,7 +255,7 @@ anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes)
     if (ucMask == 0 || s.len == 0)
         return s;
 
-    // ASCII membership bitset for these classes, from the tables (one source of truth).
+    // ASCII membership bitset for these classes, from the tables.
     uint64_t asciiSet[2] = {0};
     for (uint32_t c = 0; c < 128; c++)
         if ((uc_record(c)->flags & ucMask) != 0)
@@ -303,7 +299,6 @@ anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes)
     return anostr_freeze(&b);
 }
 
-// ---------------------------------------------------------------------------------------------
 // Sort a string's runes ascending by code point (UTF-8 byte order IS code point order).
 // Pure ASCII: counting sort, no decode. Otherwise decode to runes, sort, re-encode.
 
@@ -359,7 +354,6 @@ anostr_t anostr_rune_sort(mi_heap_t *heap, anostr_t s)
     return out;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Encoding conversion. In: decode foreign units to runes, append through the builder
 // (which sanitizes to U+FFFD and canonicalizes inline/long on freeze).
 // Out: worst-case allocation, one pass, shrink to exact.
@@ -430,7 +424,7 @@ char16_t *anostr_to_utf16(mi_heap_t *heap, anostr_t s, size_t *count)
     out[n] = 0;
     if (count != NULL)
         *count = n;
-    // A failed shrink keeps the original block: correct, just slack until heap teardown.
+    // A failed shrink keeps the original block.
     char16_t *exact = mi_heap_realloc(heap, out, (n + 1) * sizeof(char16_t));
     return exact != NULL ? exact : out;
 }

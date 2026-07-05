@@ -111,9 +111,8 @@ void unInitVulkan() // A celebration
 		}
     }
 
-	// Async Hi-Z / light-cull / text (review finding 2, FONT_RENDER.md step 7): the compute
-	// submits are not fence-tracked; drain their last signaled ordinals before teardown
-	// destroys the pool/semaphores/images.
+	// Async Hi-Z / light-cull / text (FONT_RENDER.md step 7): drain last signaled ordinals
+	// before teardown destroys the pool/semaphores/images.
 	if (rendererState.asyncHiz && rendererState.hizTimeline != VK_NULL_HANDLE
 		&& ctx.device != VK_NULL_HANDLE && rendererState.timelineOrdinal > 0)
 	{
@@ -1259,8 +1258,8 @@ void recordCommandBuffer(uint32_t imageIndex)
                 }
             }
 
-            // World-space text panel (FONT_RENDER.md): rides the additive pass — the
-            // last MSAA color pass — so the quad resolves with the scene in every view.
+            // World-space text panel (FONT_RENDER.md): drawn in the additive pass (last MSAA
+            // color pass), resolves with the scene.
             if (pass->prototype == PIPELINE_ADDITIVE)
                 ano_vk_text_record_world(&rendererState, cmd, rendererState.frameIndex, v);
 
@@ -1322,8 +1321,8 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_LIGHTING);
 
-    // Text overlay raster (FONT_RENDER.md; in-frame path — step 7 moves it to the async
-    // compute lane): clear + dispatch + hand the overlay to the composite's fragment stage.
+    // Text overlay raster (FONT_RENDER.md, in-frame path): clear + dispatch + hand the
+    // overlay to the composite's fragment stage.
     ano_vk_text_record(&rendererState, cmd, rendererState.frameIndex);
 
     // --- Composite: tonemap each view's HDR target onto the swapchain ---
@@ -1591,7 +1590,7 @@ void printUniformTransferState()
 	
 	// Buffer Components
 	ano_debug_log(ANO_INFO, "=== Buffer Components ===");
-	ano_debug_log(ANO_INFO, "Live render slots: %u", rendererState.slots.slotHighWater); // scene is logic-composed; entities[] is gone
+	ano_debug_log(ANO_INFO, "Live render slots: %u", rendererState.slots.slotHighWater); // scene is logic-composed, entities[] gone
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		ano_debug_log(ANO_INFO, "Uniform buffer %d (view 0): %p", i, (void*)rendererState.frames[i].views[0].uniformBuffer);
@@ -2972,7 +2971,7 @@ static void render_apply_commands(RendererState* state, uint32_t frameIndex)
         }
 
         case RCMD_TEXT_SET:
-            // The registry adopts the packed block (frees it itself); NOT free_owned_bulk.
+            // The registry adopts the packed block and frees it. NOT free_owned_bulk.
             ano_vk_text_block_set(state, cmd.text_id, cmd.text);
             break;
 
@@ -3064,9 +3063,8 @@ uint32_t anoRenderFallbackMesh(void)    { return FALLBACK_MESH_INDEX; }
 uint32_t anoRenderDefaultMaterial(void) { return g_defaultMaterial; }
 uint32_t anoRenderStaticLightBase(void) { return ANO_STATIC_LIGHT_COUNT; }
 
-// The baked font for logic-side shaping (anoptic_render.h). Immutable plain data from
-// init to unInitVulkan; NULL when the text stack is down (ano_text_shape over NULL
-// yields 0, so producers degrade to no text with no special path).
+// The baked font for logic-side shaping (anoptic_render.h). Immutable from init to
+// unInitVulkan, NULL when the text stack is down.
 const AnoFontBake* anoRenderTextBake(void)
 {
     return rendererState.textOverlay ? &rendererState.textBake : NULL;
@@ -3297,9 +3295,8 @@ static void ano_print_profiling(void) {
     g_shadowRenderAccum = 0;
     g_shadowRenderFrames = 0;
 
-    // Mirror the same readout on-screen (FONT_RENDER.md step 8): render-thread-internal,
-    // re-shaped at print cadence, copied into each frame slot post-fence. Three style
-    // runs: white stats, the total colored by frame budget, the VRAM line dimmed.
+    // Mirror the readout on-screen (FONT_RENDER.md step 8), re-shaped at print cadence.
+    // Three style runs: white stats, the total colored by frame budget, the VRAM line dimmed.
     char osd[512];
     int head = snprintf(osd, sizeof osd,
         "[%s] GPU ms  upload %.3f  compute %.3f  shadow %.3f (frusta %.1f/%u)\n"
@@ -3429,8 +3426,8 @@ void drawFrame()
 	// Ingest discrete ECS->render state transitions for this frame slot.
 	render_apply_commands(&rendererState, rendererState.frameIndex);
 
-	// Copy pending on-screen text into this slot's frame buffer (post-fence; the stats
-	// mirror above may have bumped the version). Must precede record and async submit.
+	// Copy pending on-screen text into this slot's frame buffer (post-fence).
+	// Must precede record and async submit.
 	ano_vk_text_frame_refresh(&rendererState, rendererState.frameIndex);
 
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
@@ -3460,9 +3457,8 @@ void drawFrame()
 	if (rendererState.asyncLc)
 		recordLightcullCompute(rendererState.frameIndex);
 
-	// Async text raster (FONT_RENDER.md step 7): CPU-fed and self-contained, so it submits
-	// FIRST with no waits and overlaps the entire graphics frame; the main submit waits
-	// textTimeline == ordinal at FRAGMENT_SHADER (the composite sample is the consumer).
+	// Async text raster (FONT_RENDER.md step 7): submits first with no waits, overlaps the
+	// graphics frame. The main submit waits textTimeline == ordinal at FRAGMENT_SHADER.
 	ano_vk_text_submit_async(&ctx, &rendererState, rendererState.frameIndex, ordinal);
 
 	// Graphics submit. Async Hi-Z adds a second wait — hizTimeline >= ordinal-2 at the cull's
@@ -3481,9 +3477,8 @@ void drawFrame()
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		VkSemaphore waitSemaphores[3] = {rendererState.frames[rendererState.frameIndex].imageAvailable,
 			rendererState.hizTimeline, rendererState.textTimeline};
-		// The task meshlet cull samples the async-built pyramids too (global set binding 13), so
-		// its stage joins the hizTimeline wait when active. The async text raster joins at
-		// FRAGMENT_SHADER (asyncText implies asyncHiz, so slot 2 only exists alongside slot 1).
+		// Task meshlet cull samples the async-built pyramids (global set binding 13), joins the
+		// hizTimeline wait when active. The async text raster joins at FRAGMENT_SHADER.
 		VkPipelineStageFlags waitStages[3] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
 				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
@@ -3541,7 +3536,7 @@ void drawFrame()
 			rendererState.hizTimeline, rendererState.lcTimeline, rendererState.textTimeline };
 		// hizTimeline @ EARLY_FRAG (depth-resolve WAR) + TASK when the meshlet cull samples the
 		// async-built pyramids in this submit's geometry passes (global set binding 13).
-		// textTimeline == ordinal @ FRAGMENT (composite samples the async-rastered overlay).
+		// textTimeline == ordinal @ FRAGMENT.
 		VkPipelineStageFlags bWaitStages[4] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
 				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
@@ -4450,17 +4445,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	                      && !getenv("ANO_FORCE_NO_TASK");
 	ano_log(ANO_INFO, "Task meshlet cull: %s", rendererState.taskCull ? "on (frustum+cone, Hi-Z with occlusion toggle)" : "off (direct mesh dispatch)");
 
-	// Text overlay gate (FONT_RENDER.md). Decided before createColorResources (overlay
-	// images ride the swapchain-sized target creation); a later font/bake init failure
-	// clears it again, non-fatally. ANO_FORCE_NO_TEXT pins it off for A/B.
+	// Text overlay gate (FONT_RENDER.md). A later font/bake init failure clears it non-fatally.
+	// ANO_FORCE_NO_TEXT pins it off.
 	rendererState.textOverlay = !getenv("ANO_FORCE_NO_TEXT");
 	ano_log(ANO_INFO, "Text overlay: %s", rendererState.textOverlay ? "enabled (pending font init)" : "off (forced)");
 
-	// Async text lane gate (FONT_RENDER.md step 7): rides asyncHiz's infrastructure like
-	// the light-cull lane (independent of asyncLc — either A/B toggle stands alone).
-	// Decided here so the overlay images and glyph buffers pick CONCURRENT sharing;
+	// Async text lane gate (FONT_RENDER.md step 7): rides asyncHiz's infrastructure.
 	// ano_vk_text_init downgrades it non-fatally if the lane's objects fail.
-	// ANO_FORCE_NO_ASYNC_TEXT pins the in-frame raster for A/B.
+	// ANO_FORCE_NO_ASYNC_TEXT pins the in-frame raster.
 	rendererState.asyncText = rendererState.textOverlay && rendererState.asyncHiz
 	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
 	ano_log(ANO_INFO, "Async text raster: %s", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
@@ -4613,8 +4605,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 
 	// Text overlay (FONT_RENDER.md step 5): font bake + glyph buffers + raster/blend
-	// pipelines. Shares the tonemap set/pipeline layout, so it must follow the tonemap
-	// init. Non-fatal: failure logs and turns the overlay off.
+	// pipelines. Non-fatal: failure logs and turns the overlay off.
 	ano_vk_text_init(&ctx, &rendererState);
 
 	// Depth-only shadow pipeline + compare sampler (reuses the flat pipeline layout, so after pipelines).

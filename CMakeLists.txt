@@ -65,7 +65,7 @@ if(WIN32 AND NOT MSVC)
     add_link_options(-static)
 endif()
 
-# ano_scrub: delete every object file so the next build recompiles everything.
+# ano_scrub: delete every object file.
 add_custom_target(ano_scrub
     COMMAND ${CMAKE_COMMAND} -DANO_SCRUB_DIR=${CMAKE_BINARY_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/scrub_objects.cmake
     COMMENT "Scrubbing object files (whole rebuild ahead)"
@@ -106,12 +106,12 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/external/freetype EXCLUDE_FROM_ALL)
 # pthreads everywhere: native on Linux, winpthreads on MinGW
 find_package(Threads REQUIRED)
 
-# Add headers into targets so IDEs parse them
+# Headers into targets for IDE parsing.
 file(GLOB HEADER_SOURCES CONFIGURE_DEPENDS
         "./include/*.h"
 )
 
-# Doing the same for single-header external dependencies
+# Same for single-header external dependencies.
 file(GLOB EXTERNAL_SOURCES CONFIGURE_DEPENDS
         "./external/jsmn/*.h"
         "./external/stb/*.h"

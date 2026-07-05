@@ -34,7 +34,7 @@
 
 #define BENCH_DIR   ANO_TEST_OUTDIR "/anolog_bench"
 
-#define LAT_BURST   512      // enqueues per timed round; must fit both buffers with no drain
+#define LAT_BURST   512      // enqueues per timed round, must fit both buffers
 #define LAT_ROUNDS  4000     // timed rounds -> ~2M enqueues per implementation
 #define TP_MSGS     200000   // messages per producer thread
 #define MAXP        16       // largest producer-thread count measured (@16 oversubscribes an 8-core box: the stress point)

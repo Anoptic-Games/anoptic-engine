@@ -12,7 +12,7 @@
 // Everything here is total. Malformed bytes decode as U+FFFD and advance one byte.
 // Case mapping a caseless rune is the identity. No error paths anywhere.
 // Simple case mapping only (1:1). No locale rules, no round-trip promise (final sigma).
-// Positions are byte offsets. Rune-at-index invites quadratic loops, so it does not exist.
+// Positions are byte offsets. No rune-at-index.
 // Grapheme clusters (UAX #29) wait until a text-editing widget needs them.
 //
 // Anoptic supports lexicographic sorting (and case/classification) for these UTF subsets:
@@ -21,8 +21,8 @@
 //   - Greek, modern and polytonic/Ancient
 //   - Cyrillic (Russian, Ukrainian, Serbian, Bulgarian, ...)
 //   - Futhark (Runic)
-//   - Japanese (kana sort in gojuon order; kanji by code point)
-//   - Chinese (no alphabet exists; code point order ~ radical-stroke)
+//   - Japanese (kana sort in gojuon order, kanji by code point)
+//   - Chinese (no alphabet exists, code point order ~ radical-stroke)
 //   - punctuation, currency, full/halfwidth forms
 // Everything else falls back to code point (= byte) order after the listed scripts.
 
@@ -71,11 +71,10 @@ int anostr_builder_append_rune(anostr_builder_t *b, anorune_t r);
 // Latin, Greek, Cyrillic, Runic, kana, Han, punctuation
 // Outside them every rune is caseless with no flags.
 
-// UTF to uppercase
-// UTF to lowercase
-// Identity when r has no mapping (caseless, unlisted, unassigned, invalid). Never fails.
+// r uppercased, or r when it has no mapping (caseless, unlisted, unassigned, invalid). Never fails.
 anorune_t anorune_to_upper(anorune_t r);
-anorune_t anorune_to_lower(anorune_t r); // UTF to lowercase
+// r lowercased, same identity contract.
+anorune_t anorune_to_lower(anorune_t r);
 // General category L* within the shipped scripts, cased or not.
 bool anorune_is_letter(anorune_t r);
 
@@ -86,9 +85,7 @@ bool anorune_is_digit(anorune_t r);
 bool anorune_is_whitespace(anorune_t r);
 
 // General category M*: combining marks (accents that stack onto a preceding base).
-// Precomposed letters are NOT marks, so rejecting marks at input boundaries kills
-// Zalgo text while every normal-keyboard language keeps working.
-// Covers 0300-036F (the Zalgo arsenal); unlisted scripts' marks report false.
+// Precomposed letters are NOT marks. Covers 0300-036F, unlisted scripts' marks report false.
 bool anorune_is_mark(anorune_t r);
 
 // General category P*. Symbols (S*) are not punctuation: culling "+5 Sword!" keeps the +.
@@ -99,26 +96,23 @@ bool anorune_is_punct(anorune_t r);
 
 // Lexicographic order for humans: UCA over the DUCET default table, no locale tailoring.
 // Three levels: base letters first, then accents, then case. Byte order breaks ties.
-// So "Äpfel" < "Zebra", "resume" < "résumé", "apple" < "Apple", Cyrillic ё lands after е.
+// "Äpfel" < "Zebra", "resume" < "résumé", "apple" < "Apple", Cyrillic ё after е.
 // Precomposed letters decompose internally: ș sorts with s, å with a.
 // Kana sort together (hiragana/katakana differ at level three).
-// Tables cover Latin, Greek, Cyrillic, Runic, kana, and punctuation. 
-// Everything else (Han included: no alphabet exists) falls back to code point order.
-// NO contractions and locale rules (Swedish ö-after-z).
-// Scripts hold disjoint primary ranges, so whole scripts group together in DUCET order:
-// punctuation < digits < Latin < Greek < Cyrillic < Runic < kana, then unlisted scripts
-// (Han, Hebrew, emoji) in code point order. Weights stream left to right, first difference
-// wins: "あの Bjørn's Agda Gun" sorts by its FIRST rune (the kana), the tail only breaks ties.
+// Tables cover Latin, Greek, Cyrillic, Runic, kana, and punctuation.
+// Everything else (Han included) falls back to code point order. No contractions, no locale rules.
+// Script primary order: punctuation < digits < Latin < Greek < Cyrillic < Runic < kana,
+// then unlisted scripts (Han, Hebrew, emoji) in code point order.
 // Use for everything a player reads.
-int anostr_collate(anostr_t a, anostr_t b); // Collates a and b in lexicographic order.
+int anostr_collate(anostr_t a, anostr_t b);
 
-// The first four nonzero primary weights of s, big-endian in one u64, 
-// Compute once, sort integers. Unequal keys agree with anostr_collate's sign. 
+// The first four nonzero primary weights of s, big-endian in one u64.
+// Compute once, sort integers. Unequal keys agree with anostr_collate's sign.
 // Short strings zero-pad (0 sorts before any weight).
 uint64_t anostr_collate_prefix(anostr_t s);
 
-// Full sort key: anostr_compare(key(a), key(b)) matches anostr_collate(a, b) exactly, ties
-// Layout: each strength's nonzero weights as u16 big-endian, a 0x0000 terminator, three levels, then the bytes. 
+// Full sort key: anostr_compare(key(a), key(b)) matches anostr_collate(a, b) exactly.
+// Layout: each strength's nonzero weights as u16 big-endian, 0x0000 terminator, three levels, then bytes.
 // ~6 bytes per rune plus the string. For repeated comparisons. Empty string on allocation failure.
 anostr_t anostr_collate_key(mi_heap_t *heap, anostr_t s);
 
@@ -130,9 +124,9 @@ void anostr_sort(anostr_t *items, size_t count);
 // Sort structs by name without shuffling 16-byte values, gather through order instead.
 void anostr_sort_idx(const anostr_t *items, size_t count, uint32_t *order);
 
-// Sort interned symbols by their strings' collation order, in place. Stable. 
-// Prefix keys cache per symbol in the table, so re-sorting seen names is a pure integer sort.
-// Mutates the cache (same one-owner-thread rule as anostr_intern). 
+// Sort interned symbols by their strings' collation order, in place. Stable.
+// Prefix keys cache per symbol in the table.
+// Mutates the cache (same one-owner-thread rule as anostr_intern).
 // Out-of-range symbols sort as the empty string, matching anostr_sym_str.
 void anostr_sym_sort(anostr_intern_t *t, anostr_sym *syms, size_t count);
 
@@ -152,9 +146,8 @@ size_t anostr_find_base(anostr_t s, anostr_t needle, size_t from);
 #define ANOSTR_CULL_PUNCT      2u   // general category P*
 #define ANOSTR_CULL_MARK       4u   // combining marks M* (accents, Zalgo)
 
-// s minus every rune whose class is in `classes` (any ANOSTR_CULL_* bits). 
-// One pass ASCII tested 8 bytes at a time, survivors copied in runs. No match returns s unchanged.
-// Empty string on allocation failure.
+// s minus every rune whose class is in `classes` (any ANOSTR_CULL_* bits).
+// No match returns s unchanged. Empty string on allocation failure.
 anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes);
 
 // The runes of s sorted ascending by code point (malformed bytes decode as U+FFFD).
@@ -163,7 +156,7 @@ anostr_t anostr_rune_sort(mi_heap_t *heap, anostr_t s);
 
 /* Encoding conversion */
 
-// For foreign boundaries  (Win32 W APIs, middleware).
+// For foreign boundaries (Win32 W APIs, middleware).
 // char16_t* casts to WCHAR*/wchar_t* on Windows. UTF-32 is just anorune_t[].
 // Same totality: unpaired surrogates and invalid runes convert as U+FFFD.
 

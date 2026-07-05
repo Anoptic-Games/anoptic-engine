@@ -60,14 +60,12 @@ typedef struct TextWorldPush {
 #define ANO_TEXT_PANEL_PX_H   352.0f
 #define ANO_TEXT_PANEL_WORLD_W  6.00f
 #define ANO_TEXT_PANEL_WORLD_H  2.75f
-// The panel text, one macro per style run so the run table below takes each
-// byteCount from sizeof — no hand counting, boundaries correct by construction.
-// Line 3's splits land INSIDE the kern pairs (A|V, L|T, T|o, W|a) to prove
-// same-size runs stay kerned. The rune and greek runs own their leading '\n' so
-// each line step takes that line's size.
+// The panel text, one macro per style run. The run table below takes each byteCount
+// from sizeof. Line 3's splits land inside the kern pairs (A|V, L|T, T|o, W|a). The
+// rune and greek runs own their leading '\n'.
 // W_RUNES is the Gallehus horn inscription (Elder Futhark, Proto-Norse: "ek
 // hlewagastiz holtijaz horna tawido" — I, Hlewagastiz of Holt, made the horn).
-// W_GREEK is Iliad 1.1. Together they are the world lane's multi-font unicode proof.
+// W_GREEK is Iliad 1.1.
 #define W_TITLE "Scanline Sweeper\n"
 #define W_LANE  "world-space lane\n"
 #define W_KERN1 "A"
@@ -208,9 +206,8 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
     state->textInstanceCount = state->textPendingCount;
 }
 
-// createDataBuffer with optional CONCURRENT graphics+compute sharing, which sidesteps
-// the queue-family ownership transfer for buffers the async lane's compute queue
-// reads. Exclusive when shared is false.
+// createDataBuffer with optional CONCURRENT graphics+compute sharing. Exclusive when
+// shared is false.
 static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc)
@@ -546,10 +543,9 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     }
 
     // Bake coverage: ASCII, Latin-1, and core Cyrillic from Geist, the Greek blocks
-    // (monotonic + polytonic, for the Homer passages) from Noto Sans, and the Runic
-    // block from Noto Sans Runic. Ranges must stay codepoint-sorted and disjoint.
-    // A missing auxiliary font degrades to the remaining ranges; its script renders
-    // as gaps, not tofu.
+    // (monotonic + polytonic) from Noto Sans, and the Runic block from Noto Sans Runic.
+    // Ranges must stay codepoint-sorted and disjoint. A missing auxiliary font degrades
+    // to the remaining ranges, its script rendering as gaps.
     char runePath[512], greekPath[512];
     snprintf(runePath, sizeof runePath, "%s/%s", game.str, ANO_TEXT_RUNE_FONT_REL);
     AnoFontId runeFont = ano_text_font_load(anostr_view(runePath, strlen(runePath)));
@@ -617,9 +613,8 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
     }
 
-    // World-space lane: its pipeline, plus the demo panel shaped ONCE into the upper
-    // region of every frame slot (no slot is in flight during init, so direct writes
-    // are safe). Failure drops just this lane.
+    // World-space lane: its pipeline, plus the demo panel shaped once into the upper
+    // region of every frame slot. Failure drops just this lane.
     state->textWorld = getenv("ANO_FORCE_NO_TEXT_WORLD") == NULL;
     if (state->textWorld && !text_init_world_pipeline(ctx, state))
     {
@@ -628,8 +623,8 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     }
     if (state->textWorld)
     {
-        // Standing styled-runs demo: mixed sizes across lines. Each byteCount is
-        // sizeof its own segment macro, so the boundaries cannot drift.
+        // Standing styled-runs demo: mixed sizes across lines. Each byteCount is sizeof
+        // its own segment macro.
         static const AnoTextRun worldRuns[] = {
             { sizeof W_TITLE - 1, 72.0f, { 1.00f, 0.78f, 0.32f, 1.0f } },
             { sizeof W_LANE  - 1, 48.0f, { 0.90f, 0.90f, 0.90f, 1.0f } },
@@ -747,8 +742,7 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)
         return;
-    // Async lane: written on compute, sampled on graphics, so CONCURRENT skips the
-    // ownership transfer. Exclusive when in-frame.
+    // Async lane: CONCURRENT (written on compute, sampled on graphics). Exclusive when in-frame.
     uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
@@ -806,7 +800,7 @@ void ano_vk_text_create_sets(VulkanContext* ctx, RendererState* state)
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = state->globalDescriptorPool;
     allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
-    // Raster and overlay sets allocate identically bar layout+destination; one failure path covers both.
+    // Raster and overlay sets allocate identically bar layout+destination. One failure path covers both.
     VkDescriptorSetLayout* setLayouts[2] = { rasterLayouts, overlayLayouts };
     VkDescriptorSet* outSets[2] = { rasterSets, overlaySets };
     for (int s = 0; s < 2; s++)
@@ -872,15 +866,15 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
 
 // The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
 // sampled read. On the graphics queue the final barrier targets FRAGMENT_SHADER.
-// A compute-only family has no such stage, so the barrier only transitions the layout
-// and the textTimeline wait carries the cross-queue dependency.
+// A compute-only family barrier only transitions the layout, the textTimeline wait
+// carries the cross-queue dependency.
 static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
                                bool asyncQueue)
 {
     PerFrameResources* fr = &state->frames[frameIndex];
 
     // Prior readers of this slot's overlay retired with its frame fence.
-    // Contents are stale anyway, so UNDEFINED discards them.
+    // UNDEFINED discards the stale contents.
     VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     VkImageMemoryBarrier toClear = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -940,10 +934,8 @@ void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t
 {
     if (!state->asyncText)
         return;
-    // CB reuse is fence-safe: the frame fence retiring implies the prior text CB
-    // retired (the main submit waited on textTimeline). The submit needs NO waits.
-    // Frame data is CPU-written before this call and the overlay slot's prior reader
-    // retired with the same fence.
+    // CB reuse is fence-safe: the frame fence retiring implies the prior text CB retired.
+    // The submit needs no waits.
     VkCommandBuffer cmd = state->frames[frameIndex].textCommandBuffer;
     vkResetCommandBuffer(cmd, 0);
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -958,8 +950,7 @@ void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t
         .signalSemaphoreCount = 1, .pSignalSemaphores = &state->textTimeline };
     if (vkQueueSubmit(ctx->computeQueue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
     {
-        // Keep the timeline monotonic so the main submit's wait cannot deadlock.
-        // A failed submit here is device-loss territory.
+        // Host-signal to keep the timeline monotonic.
         ano_log(ANO_ERROR, "Failed to submit async text raster command buffer!");
         VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
             .semaphore = state->textTimeline, .value = ordinal };

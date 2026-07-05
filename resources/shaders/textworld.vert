@@ -1,12 +1,10 @@
 #version 450
 
-// World-space text panel (FONT_RENDER.md, the paper's pixel-shader variant): a
-// bufferless two-triangle quad centered on its model origin in the XY plane. Emits
-// panel-space text coordinates (pixels, y-down -- the shaper's convention) so the
-// fragment lane evaluates the same instance stream as the overlay, no new ABI.
+// World-space text panel (FONT_RENDER.md): bufferless two-triangle quad centered on its
+// model origin in the XY plane. Emits panel-space text coordinates, pixels y-down.
 
 layout(push_constant) uniform TextWorldPush {
-    mat4  mvp;    // proj * view * model, this view
+    mat4  mvp;    // proj * view * model
     vec4  panel;  // panel pixel W,H | panel world W,H
     uvec2 range;  // first instance index, instance count
 } pc;

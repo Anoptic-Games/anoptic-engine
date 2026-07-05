@@ -3,13 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Lock-free MPSC ring logger. A producer formats on its stack, reserves cache lines with one CAS on
-// `tail`, copies the text, and publishes with one release store of `tag`. The common path never waits.
-// The logger owns one consumer thread that drains the ring continuously. ano_log_flush also drains inline
-// for callers needing records on disk now. Cold paths take small locks: a drain mutex and an output-file
-// mutex. NOW records (FATAL by default) write straight through. Sink bits ride each record's tag,
-// so the drainer routes per record. A full ring makes the producer wait for room, never dropping.
-// Stop all producers before ano_log_cleanup.
+// Lock-free MPSC ring logger. A producer formats on its stack, reserves lines with one CAS on `tail`,
+// copies the text, and publishes with one release store of `tag`. One owned consumer thread drains the
+// ring continuously. ano_log_flush drains inline for callers needing records on disk now. NOW records
+// (FATAL by default) write straight through. Sink bits ride each record's tag for per-record routing.
+// A full ring makes the producer wait for room, never dropping. Stop all producers before ano_log_cleanup.
 
 #include "logging/logging_ring.h"
 
@@ -25,7 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// Terminal detection + Windows VT enable, for the terminal sink's ANSI colors.
+// Terminal detection + Windows VT enable.
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -37,13 +35,12 @@
 
 /* Internal state. Only the ring is producer-shared, the rest is cold. */
 
-// Level names padded to 5, so the prefix is one fixed-length copy with no strlen or pad loop.
+// Level names padded to 5.
 static const char   logPad[4][8] = {"INFO ", "WARN ", "ERROR", "FATAL"};
 
 static log_ring_t   g_ring;         // the shared MPSC ring (producers: tail, consumer: head)
 static atomic_bool  g_initialized;  // NOW-path liveness (cold path only)
-// Severity gate and liveness in one relaxed load on enqueue. INT_MAX until init, back to INT_MAX at
-// cleanup, so a not-live logger gates every enqueue.
+// Severity gate and liveness in one relaxed load on enqueue. INT_MAX until init and at cleanup.
 static atomic_int   g_minLevel = INT_MAX;
 
 // Per-level default routes for records naming no sink. Static init keeps a pre-init FATAL on the
@@ -55,55 +52,45 @@ static _Atomic uint8_t g_routeDefault[4] = {
     ANO_BOTH | ANO_NOW,     // FATAL
 };
 
-// Whether stdout/stderr are real terminals, decided once at init. Only a tty gets ANSI.
+// stdout/stderr real-terminal flags, decided once at init.
 static bool g_ttyOut, g_ttyErr;
 
-static anothread_mutex_t g_drainMtx;   // gates the single consumer: one drainer at a time
+static anothread_mutex_t g_drainMtx;   // gates the single consumer
 static anothread_mutex_t g_outFileMtx; // guards the output file handle's lifecycle and writes
-static ano_file    *g_outFile;         // the open output file, or NULL
+static ano_file    *g_outFile;         // open output file, or NULL
 
-// The owned consumer thread. Drains the ring continuously so producers stay lock-free.
-// g_drainRun gates its loop, cleared at cleanup before the join.
+// Owned consumer thread, drains the ring continuously. g_drainRun gates its loop, cleared at
+// cleanup before the join.
 static anothread_t  g_drainThread;
 static atomic_bool  g_drainRun;
 
-// Park/wake for the owned consumer. After an empty pass the drainer parks on g_wakeCv and producers
-// signal it on the empty->nonempty transition, so the ring drains at wake latency instead of a fixed
-// poll period. g_drainerParked keeps the producer's check to one relaxed load when the drainer is
-// awake (the common case under load). The park is a timedwait capped at DRAIN_PARK_US: a producer's
-// tag publish (release store) and its g_drainerParked load can reorder against the drainer's
-// parked-store + head-recheck (the classic store-buffering interleaving), losing one wakeup. The cap
-// bounds that loss; it is an emission-latency bound, not a correctness gate, and ano_log_flush stays
-// synchronous regardless.
+// Park/wake for the owned consumer. The drainer parks on g_wakeCv after an empty pass, producers signal
+// on the empty->nonempty transition. g_drainerParked keeps the producer's check to one relaxed load when
+// the drainer is awake. The timedwait caps at DRAIN_PARK_US, bounding a lost wakeup's emission delay.
 static anothread_mutex_t g_wakeMtx;
 static anothread_cond_t  g_wakeCv;
 static atomic_bool       g_drainerParked;
 #define DRAIN_PARK_US     1000u     // park cap: worst-case emission delay on a lost wakeup
 
-// Full-ring producer backoff: escalate the spin between head rechecks from MIN to MAX (doubling),
-// snapping back to MIN whenever head advances. Short stalls stay responsive, long stalls get off
-// the consumer's cache lines. FULL_STALL_LIMIT counts rechecks with head frozen before declaring
-// the consumer wedged; at the capped spin that is tens of ms of zero progress, a catastrophic
-// fallback only (a producer died mid-publish and the drainer cannot pass its gap).
+// Full-ring producer backoff: spin between head rechecks doubles MIN->MAX, snapping to MIN when head
+// advances. FULL_STALL_LIMIT frozen-head rechecks declares the consumer wedged, a catastrophic fallback.
 #define FULL_BACKOFF_MIN_NS 64u
 #define FULL_BACKOFF_MAX_NS 8192u
 #define FULL_STALL_LIMIT    4096u
 
-// Writer set, bound once when the file opens or closes, so the write path never tests g_outFile.
-// g_persist writes a buffer (file else console). g_syncOut fsyncs or no-ops. g_haveFile gates the echo.
+// Writer set, bound once when the file opens or closes. g_persist writes a buffer (file else console).
+// g_syncOut fsyncs or no-ops. g_haveFile gates the echo.
 static void (*g_persist)(const void *data, size_t len);
 static void (*g_syncOut)(void);
 static bool         g_haveFile;
 
 // Timestamp anchor, a ticks/unix-ns pair captured once at init. The producer stamps bare ticks. The
-// drainer adds the anchor and converts to a wall-clock second, so the per-record division stays off the
-// hot path.
+// drainer adds the anchor and converts to a wall-clock second.
 static uint64_t     g_anchorTicks;
 static uint64_t     g_anchorUnixNs;
 
 // Drainer-private, touched only under g_drainMtx. g_scratch gathers a seam-straddling record. g_batch
-// holds a whole drain pass for one write. g_drainHMS caches "HH:MM:SS" so civil-time conversion runs
-// once per second.
+// holds a whole drain pass for one write. g_drainHMS caches "HH:MM:SS" per second.
 static char         g_scratch[ANO_LOG_MSG_MAX];
 static char        *g_batch;
 static size_t       g_batchCap;
@@ -191,12 +178,10 @@ static int fast_format(char *out, int cap, const char *fmt, va_list ap)
     return (int)(p - out);
 }
 
-// Compose "<LEVEL> <file>:<line>:  <message>" into out, no time prefix, no newline. A NULL file means
-// the caller named no origin (the ano_log/ano_rlog default), so the "<file>:<line>:" segment is omitted
-// entirely. The flusher adds the time at emit. Returns the length clamped to cap-1 so an over-long line
-// never overruns the entry. The prefix is hand-rolled. The message goes through fast_format, falling back
-// to vsnprintf for conversions it cannot handle. format(printf, 6, 0) marks a printf forwarder so the
-// vsnprintf passes -Wformat-nonliteral.
+// Compose "<LEVEL> <file>:<line>:  <message>" into out, no time prefix, no newline. NULL file omits the
+// "<file>:<line>:" segment. The flusher adds the time at emit. Returns the length clamped to cap-1.
+// Prefix hand-rolled, message through fast_format with a vsnprintf fallback. format(printf, 6, 0) marks
+// a printf forwarder for -Wformat-nonliteral.
 __attribute__((format(printf, 6, 0)))
 static int format_line(char *out, int cap, ano_loglevel_t level,
                        const char *file, int line, const char *fmt, va_list ap)
@@ -206,7 +191,7 @@ static int format_line(char *out, int cap, ano_loglevel_t level,
     p += 5;
     *p++ = ' ';
     if (file != NULL) {
-        size_t fl = strnlen(file, 256);     // bounded scan: a freak file name can't crowd out the message
+        size_t fl = strnlen(file, 256);     // bounded scan
         memcpy(p, file, fl); p += fl;
         *p++ = ':';
         p = put_u32(p, (uint32_t)(line < 0 ? 0 : line));
@@ -319,7 +304,7 @@ static int format_deferred(char *out, int cap, ano_loglevel_t level, const char 
         ++f;
         if (*f == '%') { if (p < end) *p++ = '%'; continue; }
         // Fast plain path: % [l|ll|z|t|j](d i u o x X c s), no flags/width/precision/h. Hand-rolled, no
-        // spec build, no libc. The common case, what keeps the drain fast.
+        // spec build, no libc.
         {
             const char *g = f;
             int plng = 0;
@@ -377,8 +362,7 @@ static int format_deferred(char *out, int cap, ano_loglevel_t level, const char 
         if (rem <= 1) break;
 
         int wrote = 0;
-// GCC spelling: honored by both gcc and clang (clang aliases GCC diagnostic
-// pragmas); the clang spelling is invisible to gcc, whose -Werror build breaks.
+// GCC diagnostic spelling, honored by both gcc and clang.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-nonliteral"
         switch (c) {
@@ -425,15 +409,13 @@ static void render_hms(char *out8, uint64_t sec)
     (void)   put2(p, t.second);
 }
 
-// Wall-clock second for a record's ticks, through the init anchor. The ticks->ns division is deferred
-// to here, off the producer's hot path.
+// Wall-clock second for a record's ticks, through the init anchor.
 static inline uint64_t wall_second(uint64_t ticks)
 {
     return (g_anchorUnixNs + ano_ticks_to_ns(ticks - g_anchorTicks)) / 1000000000ull;
 }
 
-// Render the 8-byte "HH:MM:SS" prefix for a record's raw ticks. Immediate path only. The drain path
-// memoizes per second instead (see drain_and_emit).
+// Render the 8-byte "HH:MM:SS" prefix for a record's raw ticks. Immediate path only.
 static int render_walltime(char *out, uint64_t ticks)
 {
     render_hms(out, wall_second(ticks));
@@ -451,8 +433,7 @@ static ano_file *open_log(const char *dir)
     return (n > 0 && n < (int)sizeof path) ? ano_fs_open_append(path) : NULL;
 }
 
-// The two persist targets, bound by select_output() when the file opens or closes. The console one
-// only fires when the default file failed to open.
+// The two persist targets, bound by select_output() when the file opens or closes.
 static void persist_file(const void *data, size_t len)
 {
     if (ano_fs_write(g_outFile, data, len) != 0)
@@ -470,7 +451,7 @@ static void select_output(void)
     g_syncOut  = g_haveFile ? sync_file    : sync_none;
 }
 
-// Detect ttys once. Windows also needs VT processing switched on (legacy conhost).
+// Detect ttys once. Windows also needs VT processing on.
 static void console_color_init(void)
 {
 #if defined(_WIN32)
@@ -500,7 +481,7 @@ static const char *ansi_for(ano_loglevel_t level)
 }
 
 // Echo one record to the terminal, ERROR+ on stderr. The body's first 5 bytes are the level name,
-// colored on a tty. The file never sees an escape code. Caller holds g_outFileMtx so lines stay whole.
+// colored on a tty. Caller holds g_outFileMtx.
 static void echo_console(ano_loglevel_t level, const char *hms, const char *body, size_t len)
 {
     FILE *stream = level >= ANO_ERROR ? stderr : stdout;
@@ -529,8 +510,7 @@ static void write_batch(const char *data, size_t len)
 }
 
 // Write one record straight through on the calling thread (NOW path, full-ring wedge fallback).
-// With no file open, FILE already persists to the terminal, so the echo is skipped to avoid a
-// double print. `sync` fsyncs the file, or flushes a terminal-only record's stream.
+// With no file open the echo is skipped. `sync` fsyncs the file, or flushes a terminal-only stream.
 static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, uint16_t len,
                      bool toFile, bool toCon, bool sync)
 {
@@ -541,7 +521,7 @@ static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, ui
     out[p++] = '\n';
 
     ano_mutex_lock(&g_outFileMtx);
-    if (toCon && (g_haveFile || !toFile))   // no file: the persist below already hits the console
+    if (toCon && (g_haveFile || !toFile))   // no file: persist already hits the console
         echo_console(level, out, text, len);
     if (toFile) {
         g_persist(out, (size_t)p);
@@ -555,13 +535,11 @@ static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, ui
 
 /* The consumer: one single-active drain pass, run by the owned drain thread */
 
-// Drain every committed record up to the tail bound into one batch write. Returns lines reclaimed,
-// so the caller parks when a pass finds nothing.
+// Drain every committed record up to the tail bound into one batch write. Returns lines reclaimed.
 static uint64_t drain_and_emit(void)
 {
-    // Not one linearization point: a batch drain is N consume events, each linearizing at its own `tag`
-    // acquire below. head is drainer-private. The tail load is a relaxed count bound. Reclaim linearizes
-    // at the head release-store at the end.
+    // head is drainer-private, the tail load a relaxed count bound. Each record linearizes at its own
+    // `tag` acquire below, reclaim at the head release-store at the end.
     uint64_t h0  = atomic_load_explicit(&g_ring.head, memory_order_relaxed); // drainer-private
     uint64_t h   = h0;
     uint64_t cap = atomic_load_explicit(&g_ring.tail, memory_order_relaxed); // reserved frontier, a count bound
@@ -569,7 +547,7 @@ static uint64_t drain_and_emit(void)
 
     for (;;) {  // bounded walk: stops at the tail bound or the first uncommitted gap
         if (h == cap)
-            break;  // caught up to tail, the only stop at exact fullness
+            break;  // caught up to tail
         log_marker_t *m = log_marker_at(&g_ring, h);
         log_word_t v = { .w = atomic_load_explicit(&m->tag, memory_order_acquire) };
         if (!(v.flags & ANO_LOG_COMMITTED) || v.cycle != log_cycle(&g_ring, h))
@@ -577,7 +555,7 @@ static uint64_t drain_and_emit(void)
         uint64_t need = log_span(v.len);
         const char *body = log_gather(&g_ring, h, v.len, g_scratch);   // <= 2 memcpys
 
-        uint64_t sec = wall_second(m->timestamp);   // deferred ticks->wall conversion, off the producer
+        uint64_t sec = wall_second(m->timestamp);   // deferred ticks->wall conversion
         if (!g_drainHMSValid || sec != g_drainSec) {   // civil-time conversion once per second
             render_hms(g_drainHMS, sec);
             g_drainSec = sec;
@@ -607,8 +585,8 @@ static uint64_t drain_and_emit(void)
         h += need;
     }
 
-    // No zeroing: a reused slot carries last lap's tag until republished, and the cycle check above
-    // rejects it. Reclaim is just the head advance, halving the drainer's memory traffic.
+    // No zeroing: a reused slot carries last lap's tag until republished, rejected by the cycle check
+    // above. Reclaim is just the head advance.
     atomic_store_explicit(&g_ring.head, h, memory_order_release);   // frees [h0,h) for reuse
 
     write_batch(g_batch, blen); // one syscall for the whole pass
@@ -616,8 +594,7 @@ static uint64_t drain_and_emit(void)
 }
 
 // One drain pass, serialized so exactly one thread drains at a time. The owned thread runs it in a loop.
-// ano_log_flush runs it inline for a synchronous guarantee. A mutex gates it so an inline flush and the
-// owned drainer never overlap, and neither burns a core waiting.
+// ano_log_flush runs it inline for a synchronous guarantee.
 static uint64_t drain(void)
 {
     ano_mutex_lock(&g_drainMtx);
@@ -626,8 +603,7 @@ static uint64_t drain(void)
     return n;
 }
 
-// Signal the parked drainer. Producers reach here only after seeing g_drainerParked, so the mutex
-// is uncontended except against the drainer's own park/unpark transitions.
+// Signal the parked drainer.
 static void wake_drainer(void)
 {
     ano_mutex_lock(&g_wakeMtx);
@@ -635,10 +611,8 @@ static void wake_drainer(void)
     ano_mutex_unlock(&g_wakeMtx);
 }
 
-// Park after an empty pass. The parked flag goes up first, then the ring is rechecked under it:
-// a producer that published before the flag went up is caught by the recheck, one that publishes
-// after it sees the flag and signals. The seq_cst store/load pair keeps that window to the
-// store-buffering interleaving, which the DRAIN_PARK_US timedwait cap bounds.
+// Park after an empty pass. The parked flag goes up first, then the ring is rechecked under it. The
+// seq_cst store/load pair and the DRAIN_PARK_US timedwait cap bound the lost-wakeup window.
 static void drainer_park(void)
 {
     ano_mutex_lock(&g_wakeMtx);
@@ -657,10 +631,8 @@ static void drainer_park(void)
     ano_mutex_unlock(&g_wakeMtx);
 }
 
-// The owned consumer. Drains continuously while there is work, so the ring stays empty
-// under load and producers never drain themselves. Parks on an empty pass until a producer's
-// wake (or the park cap), so an idle logger costs nothing and the first record after idle is
-// drained at wake latency. ano_log_flush still drains inline for callers that need it now.
+// The owned consumer. Drains continuously while there is work, parks on an empty pass until a
+// producer's wake or the park cap. ano_log_flush still drains inline for callers that need it now.
 static void *drainer_main(void *arg)
 {
     (void)arg;
@@ -693,8 +665,8 @@ static int log_buffered(ano_loglevel_t level, uint8_t sinks, const char *file, i
     uint16_t len  = (uint16_t)n;
     uint64_t need = log_span(len);
 
-    // No log_entry_t: an "entry" is a marker (tag + timestamp) plus inline text, laid straight into the
-    // ring's reserved cache lines below. The ring is the storage.
+    // An "entry" is a marker (tag + timestamp) plus inline text, laid into the ring's reserved cache
+    // lines below. The ring is the storage.
     uint64_t cap = log_lines(&g_ring);
     uint64_t pos = atomic_load_explicit(&g_ring.tail, memory_order_relaxed);
     uint64_t lastHead = 0;
@@ -704,10 +676,9 @@ static int log_buffered(ano_loglevel_t level, uint8_t sinks, const char *file, i
     for (;;) {
         uint64_t hd = atomic_load_explicit(&g_ring.head, memory_order_acquire); // full and reuse-safety
         if ((pos + need) - hd > cap) {   // would alias undrained: ring full
-            // Don't drain inline (that serialized every full producer on g_drainMtx and collapsed @8).
             // Back off and let the owned consumer free space, self-throttling to the drain rate. While
-            // head advances this is plain backpressure. If it stalls (a producer died mid-publish, leaving
-            // an unpassable gap) write this line through so a wedge degrades to direct output. The
+            // head advances this is plain backpressure. On a stall (a producer died mid-publish, leaving
+            // an unpassable gap) write this line through, degrading a wedge to direct output. The
             // reservation isn't claimed yet (no CAS), so bailing leaks no slot.
             waited = true;
             if (hd != lastHead) { lastHead = hd; stall = 0; backoff = FULL_BACKOFF_MIN_NS; }
@@ -722,8 +693,7 @@ static int log_buffered(ano_loglevel_t level, uint8_t sinks, const char *file, i
                 }
                 return 1;
             }
-            // A full ring normally means the drainer is awake and busy; if it is parked (a lost
-            // wakeup during the fill), signal it rather than spinning out its park cap.
+            // If the drainer is parked (a lost wakeup during the fill), signal it rather than spin out its park cap.
             if (atomic_load_explicit(&g_drainerParked, memory_order_seq_cst))
                 wake_drainer();
             ano_busywait(backoff);  // escalating, off the consumer's cache line between rechecks
@@ -751,7 +721,7 @@ static int log_buffered(ano_loglevel_t level, uint8_t sinks, const char *file, i
     // load). A parked drainer is signaled so the record drains at wake latency, not the park cap.
     if (atomic_load_explicit(&g_drainerParked, memory_order_seq_cst))
         wake_drainer();
-    return waited ? 1 : 0;   // 1: the ring was full, so we waited for the consumer to make room
+    return waited ? 1 : 0;   // 1: the ring was full, waited for the consumer to make room
 }
 
 // The NOW path: format eagerly, drain for order, write through with an fsync. Bypasses the ring
@@ -928,8 +898,8 @@ int ano_log_cleanup(void)
     atomic_store_explicit(&g_initialized, false, memory_order_release);
     atomic_store_explicit(&g_minLevel, INT_MAX, memory_order_relaxed);   // close the gate: enqueues now no-op
 
-    // Stop the owned consumer before tearing down the ring it reads. The signal cuts a parked
-    // drainer's timedwait short so the join doesn't ride out the park cap.
+    // Stop the owned consumer before tearing down the ring it reads. The signal cuts a parked drainer's
+    // timedwait short.
     atomic_store_explicit(&g_drainRun, false, memory_order_relaxed);
     wake_drainer();
     ano_thread_join(g_drainThread, NULL);

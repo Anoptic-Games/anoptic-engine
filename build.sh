@@ -114,7 +114,7 @@ fi
 mkdir -p ./build/${build_dir}
 cmake ${generator_args} -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
 
-# Scrub all object files so everything recompiles.
+# Scrub all object files.
 cmake --build ./build/${build_dir} --target ano_scrub
 
 # Build the project.
