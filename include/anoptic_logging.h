@@ -78,16 +78,25 @@ void ano_log_flush(void);
 
 /* Call-site Macros */
 
-// Pulls the file and line number from the code at compile-time.
-#define ano_log(level, ...)          ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
-#define ano_rlog(level, route, ...)  ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
+// _log : normal log, specify level.
+// _rlog: routed log, specify level and preferred route (output destinations).
+// _olog: origin log, specify level, includes callsite's source file name and line number.
+// _rolog: routed origin log, specify level, route, and includes callsite details as like olog.
+#define ano_log(level, ...)                 ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
+#define ano_rlog(level, route, ...)         ano_log_write((level), (route), NULL, 0, __VA_ARGS__)
+#define ano_olog(level, ...)                ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
+#define ano_rolog(level, route, ...)        ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
 
 #ifdef DEBUG_BUILD
-#define ano_debug_log(level, ...)          ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
-#define ano_debug_rlog(level, route, ...)  ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
+#define ano_debug_log(level, ...)           ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
+#define ano_debug_rlog(level, route, ...)   ano_log_write((level), (route), NULL, 0, __VA_ARGS__)
+#define ano_debug_olog(level, ...)          ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
+#define ano_debug_rolog(level, route, ...)  ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
 #else
-#define ano_debug_log(...)   ((void)0)
-#define ano_debug_rlog(...)  ((void)0)
+#define ano_debug_log(...)  ((void)0)
+#define ano_debug_rlog(...) ((void)0)
+#define ano_debug_olog(...) ((void)0)
+#define ano_debug_rolog(...)((void)0)
 #endif
 
 #endif // ANOPTIC_LOGGING_H

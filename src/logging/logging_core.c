@@ -191,10 +191,12 @@ static int fast_format(char *out, int cap, const char *fmt, va_list ap)
     return (int)(p - out);
 }
 
-// Compose "<LEVEL> <file>:<line>:  <message>" into out, no time prefix, no newline. The flusher adds the
-// time at emit. Returns the length clamped to cap-1 so an over-long line never overruns the entry. The
-// prefix is hand-rolled. The message goes through fast_format, falling back to vsnprintf for conversions
-// it cannot handle. format(printf, 6, 0) marks a printf forwarder so the vsnprintf passes -Wformat-nonliteral.
+// Compose "<LEVEL> <file>:<line>:  <message>" into out, no time prefix, no newline. A NULL file means
+// the caller named no origin (the ano_log/ano_rlog default), so the "<file>:<line>:" segment is omitted
+// entirely. The flusher adds the time at emit. Returns the length clamped to cap-1 so an over-long line
+// never overruns the entry. The prefix is hand-rolled. The message goes through fast_format, falling back
+// to vsnprintf for conversions it cannot handle. format(printf, 6, 0) marks a printf forwarder so the
+// vsnprintf passes -Wformat-nonliteral.
 __attribute__((format(printf, 6, 0)))
 static int format_line(char *out, int cap, ano_loglevel_t level,
                        const char *file, int line, const char *fmt, va_list ap)
@@ -203,11 +205,13 @@ static int format_line(char *out, int cap, ano_loglevel_t level,
     memcpy(p, (unsigned)level <= ANO_FATAL ? logPad[level] : "?????", 5);  // fixed 5, no strlen/pad
     p += 5;
     *p++ = ' ';
-    size_t fl = strnlen(file, 256);         // bounded scan: a freak file name can't crowd out the message
-    memcpy(p, file, fl); p += fl;
-    *p++ = ':';
-    p = put_u32(p, (uint32_t)(line < 0 ? 0 : line));
-    *p++ = ':'; *p++ = ' '; *p++ = ' ';
+    if (file != NULL) {
+        size_t fl = strnlen(file, 256);     // bounded scan: a freak file name can't crowd out the message
+        memcpy(p, file, fl); p += fl;
+        *p++ = ':';
+        p = put_u32(p, (uint32_t)(line < 0 ? 0 : line));
+        *p++ = ':'; *p++ = ' '; *p++ = ' ';
+    }
     int head = (int)(p - out);              // bounded <= 5+1+256+1+10+3, far under cap
     va_list apc; va_copy(apc, ap);
     int body = fast_format(out + head, cap - head, fmt, ap);            // common conversions, no libc
@@ -231,7 +235,7 @@ static int capture_deferred(char *out, int cap, const char *file, int line, cons
 {
     char *p = out, *end = out + cap;
     memcpy(p, &file, sizeof file); p += sizeof file;
-    memcpy(p, &line, sizeof line); p += sizeof line;
+    if (file != NULL) { memcpy(p, &line, sizeof line); p += sizeof line; }
     memcpy(p, &fmt,  sizeof fmt);  p += sizeof fmt;
     for (const char *f = fmt; *f; ++f) {
         if (*f != '%') continue;
@@ -296,16 +300,19 @@ static int format_deferred(char *out, int cap, ano_loglevel_t level, const char 
 {
     const char *b = blob;
     const char *file; memcpy(&file, b, sizeof file); b += sizeof file;
-    int line;         memcpy(&line, b, sizeof line); b += sizeof line;
+    int line = 0;
+    if (file != NULL) { memcpy(&line, b, sizeof line); b += sizeof line; }
     const char *fmt;  memcpy(&fmt,  b, sizeof fmt);  b += sizeof fmt;
 
     char *p = out, *end = out + cap;
     memcpy(p, (unsigned)level <= ANO_FATAL ? logPad[level] : "?????", 5); p += 5;
     *p++ = ' ';
-    size_t fl = strnlen(file, 256); memcpy(p, file, fl); p += fl;
-    *p++ = ':';
-    p = put_u32(p, (uint32_t)(line < 0 ? 0 : line));
-    *p++ = ':'; *p++ = ' '; *p++ = ' ';
+    if (file != NULL) {
+        size_t fl = strnlen(file, 256); memcpy(p, file, fl); p += fl;
+        *p++ = ':';
+        p = put_u32(p, (uint32_t)(line < 0 ? 0 : line));
+        *p++ = ':'; *p++ = ' '; *p++ = ' ';
+    }
 
     for (const char *f = fmt; *f; ++f) {
         if (*f != '%') { if (p < end) *p++ = *f; continue; }
