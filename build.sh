@@ -100,9 +100,13 @@ fi
 generator_args=""
 if command -v ninja >/dev/null 2>&1; then
     generator_args="-G Ninja"
-    # Reset a build dir configured with an older generator.
+    # Reset a build dir whose cache has a different generator or source root.
     cache="./build/${build_dir}/CMakeCache.txt"
+    src="$(pwd -P)"
     if [ -f "$cache" ] && ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
+        rm -rf "./build/${build_dir}"
+    fi
+    if [ -f "$cache" ] && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$src" "$cache"; then
         rm -rf "./build/${build_dir}"
     fi
 else
