@@ -122,10 +122,15 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     PbrFeatureFlags activeFeatures = ano_vk_get_active_pipelines_supported_features(&rendererState);
     ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
-    // Identify which textures are actually needed based on supported features
+    // Identify which textures are actually needed based on supported features, and their color
+    // space by USAGE: color slots (baseColor, emissive, *Color) decode sRGB; every other slot is
+    // linear data (normal, metallicRoughness, occlusion, ...) that an sRGB decode would warp.
+    // A texture referenced by both kinds keeps sRGB (set-once semantics).
     bool* textureNeeded = NULL;
+    bool* textureSrgb = NULL;
     if (data->textures_count > 0) {
         textureNeeded = calloc(data->textures_count, sizeof(bool));
+        textureSrgb = calloc(data->textures_count, sizeof(bool));
         for (size_t m = 0; m < data->materials_count; ++m) {
             cgltf_material* mat = &data->materials[m];
             PbrFeatureFlags matFeatures = ano_gltf_identify_material_features(mat);
@@ -137,6 +142,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if ((supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) && mat->pbr_metallic_roughness.base_color_texture.texture) {
                     size_t texIdx = mat->pbr_metallic_roughness.base_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
                 if ((supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) && mat->pbr_metallic_roughness.metallic_roughness_texture.texture) {
                     size_t texIdx = mat->pbr_metallic_roughness.metallic_roughness_texture.texture - data->textures;
@@ -154,6 +160,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             if ((supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) && mat->emissive_texture.texture) {
                 size_t texIdx = mat->emissive_texture.texture - data->textures;
                 textureNeeded[texIdx] = true;
+                textureSrgb[texIdx] = true;
             }
             if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
                 if (mat->clearcoat.clearcoat_texture.texture) {
@@ -189,12 +196,14 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (mat->specular.specular_color_texture.texture) {
                     size_t texIdx = mat->specular.specular_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
             }
             if (supportedFeatures & PBR_FEATURE_SHEEN) {
                 if (mat->sheen.sheen_color_texture.texture) {
                     size_t texIdx = mat->sheen.sheen_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
                 if (mat->sheen.sheen_roughness_texture.texture) {
                     size_t texIdx = mat->sheen.sheen_roughness_texture.texture - data->textures;
@@ -225,6 +234,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (mat->diffuse_transmission.diffuse_transmission_color_texture.texture) {
                     size_t texIdx = mat->diffuse_transmission.diffuse_transmission_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
             }
         }
@@ -268,6 +278,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             bool success = createTextureImage(
                 ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],
                 &loadedTextures[t], texPath, false,
+                textureSrgb[t], // color slots decode sRGB; data slots (normal/MR/occlusion) stay linear
                 &stagingBuffers[stagingCount++]
             );
             textureLoaded[t] = success;
@@ -611,6 +622,9 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
     if (textureNeeded) {
         free(textureNeeded);
+    }
+    if (textureSrgb) {
+        free(textureSrgb);
     }
     free(loadedTextures);
     free(loadedImages);

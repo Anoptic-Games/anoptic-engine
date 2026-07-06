@@ -31,7 +31,8 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 	// Set 2 (shadows) is bound for layout compatibility with the shared geometry stage; the additive
 	// fragment never samples it.
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = geometryStage | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
+	// FRAGMENT matches flat.c's range (one shared pcStage pushes across all camera prototypes).
+	pushConstantRange.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = 2u * sizeof(uint32_t); // transformBaseOffset + shadowFrustumIndex
 
