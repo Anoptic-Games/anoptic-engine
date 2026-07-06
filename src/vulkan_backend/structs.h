@@ -1082,6 +1082,7 @@ typedef struct RendererState
     AnoGlyphInstance*       textPending;
     uint32_t                textPendingCount;
     uint32_t                textVersion;
+    float                   textBounds[4];     // pending canvas px AABB (minXY, maxXY), inverted when blank
     // Async text lane: lag-0, rides asyncHiz's infrastructure. The
     // per-frame raster CB submits to ctx.computeQueue with no waits and signals
     // textTimeline == ordinal. The main submit waits it at FRAGMENT_SHADER.

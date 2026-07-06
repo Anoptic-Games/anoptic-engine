@@ -34,14 +34,14 @@
 32,"float solve_mono(float c0, float c1, float c2, float target)",,,,,,0,,,
 33,{,,,,,,0,,,
 34,float span = c2 - c0;,,,,,,0,,,
-35,float a = c0 - 2.0 * c1 + c2;,< 0.01%,< 0.01%,100%,,,0,4,,29
-36,float b = 2.0 * (c1 - c0);,< 0.01%,< 0.01%,59%,24%,18%,0,4,,29
-37,float c = c0 - target;,< 0.01%,< 0.01%,50%,50%,,0,2,,25
-38,"float d = max(b * b - 4.0 * a * c, 0.0);",0.02%,0.02%,30%,27%,21%,14,14,0,34
-39,float den = -b - (span < 0.0 ? -sqrt(d) : sqrt(d));,< 0.01%,< 0.01%,36%,31%,24%,8,12,< 0.01%,34
-40,if (den == 0.0),0.02%,0.02%,35%,27%,21%,14,8,,34
+35,float a = c0 - 2.0 * c1 + c2;,< 0.01%,< 0.01%,100%,,,5,4,,29
+36,float b = 2.0 * (c1 - c0);,< 0.01%,< 0.01%,80%,20%,,14,4,,29
+37,float c = c0 - target;,< 0.01%,< 0.01%,75%,25%,,8,2,,25
+38,"float d = max(b * b - 4.0 * a * c, 0.0);",0.01%,0.01%,50%,30%,15%,42,14,0,34
+39,float den = -b - (span < 0.0 ? -sqrt(d) : sqrt(d));,0.01%,0.01%,44%,28%,11%,42,12,< 0.01%,34
+40,if (den == 0.0),0.01%,0.01%,56%,17%,17%,42,8,,34
 41,return 0.0;,,,,,,0,,,
-42,"return clamp(2.0 * c / den, 0.0, 1.0);",< 0.01%,< 0.01%,36%,27%,20%,8,8,< 0.01%,34
+42,"return clamp(2.0 * c / den, 0.0, 1.0);",< 0.01%,< 0.01%,64%,21%,7%,42,8,< 0.01%,34
 43,},,,,,,0,,,
 44,,,,,,,0,,,
 45,"// Signed area swept between one monotone quad and the window's right edge, clipped to",,,,,,0,,,
@@ -49,28 +49,28 @@
 47,"float curve_area(float x0, float y0, float x1, float y1, float x2, float y2,",,,,,,0,,,
 48,"float w, float h)",,,,,,0,,,
 49,{,,,,,,0,,,
-50,if (y0 == y2),0.16%,0.16%,36%,31%,23%,124.08745247148289,4,,25
+50,if (y0 == y2),0.04%,0.04%,72%,11%,9%,213,4,,25
 51,return 0.0;,,,,,,0,,,
-52,"if (max(y0, y2) <= 0.0 || min(y0, y2) >= h || min(x0, x2) >= w)",0.17%,0.17%,49%,20%,19%,123.41307028360049,8,,25
+52,"if (max(y0, y2) <= 0.0 || min(y0, y2) >= h || min(x0, x2) >= w)",0.06%,0.06%,65%,20%,10%,213,8,,25
 53,return 0.0;,,,,,,0,,,
 54,,,,,,,0,,,
-55,if (x0 == x2),0.03%,0.03%,70%,15%,9%,14,2,,24
+55,if (x0 == x2),0.01%,0.01%,73%,15%,8%,73,2,,24
 56,{,,,,,,0,,,
-57,"float b = min(w, w - x0);",< 0.01%,< 0.01%,75%,25%,,0,2,,24
-58,"return (clamp(y2, 0.0, h) - clamp(y0, 0.0, h)) * b;",< 0.01%,< 0.01%,63%,16%,16%,0,7,,25
+57,"float b = min(w, w - x0);",,,,,,0,2,,24
+58,"return (clamp(y2, 0.0, h) - clamp(y0, 0.0, h)) * b;",< 0.01%,< 0.01%,50%,25%,25%,8,7,,25
 59,},,,,,,0,,,
 60,,,,,,,0,,,
 61,"float t0 = solve_mono(y0, y1, y2, 0.0);",,,,,,0,,,
 62,"float t1 = solve_mono(y0, y1, y2, h);",,,,,,0,,,
-63,if (t0 > t1),0.01%,0.01%,40%,37%,16%,14,3,,31
+63,if (t0 > t1),< 0.01%,< 0.01%,89%,11%,,25,3,,30
 64,{,,,,,,0,,,
 65,float tmp = t0;,,,,,,0,,,
 66,t0 = t1;,,,,,,0,,,
 67,t1 = tmp;,,,,,,0,,,
 68,},,,,,,0,,,
-69,"float ta = clamp(solve_mono(x0, x1, x2, 0.0), t0, t1);",< 0.01%,< 0.01%,67%,17%,17%,0,2,,31
-70,"float tb = clamp(solve_mono(x0, x1, x2, w), t0, t1);",< 0.01%,< 0.01%,80%,20%,,0,2,,33
-71,if (ta > tb),< 0.01%,< 0.01%,33%,33%,24%,8,3,,34
+69,"float ta = clamp(solve_mono(x0, x1, x2, 0.0), t0, t1);",< 0.01%,< 0.01%,60%,40%,,14,2,,31
+70,"float tb = clamp(solve_mono(x0, x1, x2, w), t0, t1);",,,,,,0,2,,32
+71,if (ta > tb),< 0.01%,< 0.01%,38%,25%,13%,25,3,,34
 72,{,,,,,,0,,,
 73,float tmp = ta;,,,,,,0,,,
 74,ta = tb;,,,,,,0,,,
@@ -79,16 +79,16 @@
 77,,,,,,,0,,,
 78,"float ax = x0 - 2.0 * x1 + x2, bx = 2.0 * (x1 - x0);",,,,,,0,,,
 79,"float ay = y0 - 2.0 * y1 + y2, by = 2.0 * (y1 - y0);",,,,,,0,,,
-80,"float xs = clamp((ax * t0 + bx) * t0 + x0, 0.0, w);",< 0.01%,< 0.01%,71%,29%,,0,4,,34
-81,"float ys = clamp((ay * t0 + by) * t0 + y0, 0.0, h);",< 0.01%,< 0.01%,57%,29%,14%,0,4,,34
+80,"float xs = clamp((ax * t0 + bx) * t0 + x0, 0.0, w);",< 0.01%,< 0.01%,50%,50%,,8,4,,34
+81,"float ys = clamp((ay * t0 + by) * t0 + y0, 0.0, h);",< 0.01%,< 0.01%,57%,29%,14%,14,4,,31
 82,float area = 0.0;,,,,,,0,,,
 83,"float ends[3] = float[3](ta, tb, t1);",,,,,,0,,,
 84,for (int k = 0; k < 3; k++),,,,,,0,,,
 85,{,,,,,,0,,,
 86,float te = ends[k];,,,,,,0,,,
-87,"float xe = clamp((ax * te + bx) * te + x0, 0.0, w);",0.01%,0.01%,39%,24%,18%,8,12,,33
-88,"float ye = clamp((ay * te + by) * te + y0, 0.0, h);",< 0.01%,< 0.01%,70%,11%,7%,5,12,,33
-89,area += (ye - ys) * (2.0 * w - xs - xe) * 0.5;,< 0.01%,< 0.01%,50%,30%,18%,8,13,,29
+87,"float xe = clamp((ax * te + bx) * te + x0, 0.0, w);",0.01%,0.01%,52%,39%,9%,73,12,,33
+88,"float ye = clamp((ay * te + by) * te + y0, 0.0, h);",< 0.01%,< 0.01%,60%,20%,20%,14,12,,33
+89,area += (ye - ys) * (2.0 * w - xs - xe) * 0.5;,< 0.01%,< 0.01%,80%,20%,,42,13,,28
 90,xs = xe;,,,,,,0,,,
 91,ys = ye;,,,,,,0,,,
 92,},,,,,,0,,,
@@ -100,25 +100,25 @@
 98,"float window_sum(GlyphEntry g, vec2 wpos, vec2 wdim)",,,,,,0,,,
 99,{,,,,,,0,,,
 100,uint i = g.pointOffset;,,,,,,0,,,
-101,vec2 p0 = unpackHalf2x16(points[i]) - wpos;,0.28%,0.28%,77%,20%,3%,206.0997798972854,8,0.03%,22
+101,vec2 p0 = unpackHalf2x16(points[i]) - wpos;,0.02%,0.02%,76%,17%,3%,73,8,0.02%,22
 102,i++;,,,,,,0,,,
 103,float area = 0.0;,,,,,,0,,,
-104,for (uint c = 0u; c < g.curveCount; c++),0.05%,0.05%,33%,20%,17%,41,9,,25
+104,for (uint c = 0u; c < g.curveCount; c++),0.02%,0.02%,31%,31%,21%,125,9,,25
 105,{,,,,,,0,,,
-106,if (points[i] == SENTINEL) // contour restart,0.31%,0.31%,39%,22%,20%,209.66272189349112,6,0.47%,25
+106,if (points[i] == SENTINEL) // contour restart,0.15%,0.15%,59%,27%,8%,625,6,0.19%,25
 107,{,,,,,,0,,,
 108,i++;,,,,,,0,,,
-109,p0 = unpackHalf2x16(points[i]) - wpos;,0.09%,0.09%,40%,29%,24%,71.94431554524363,7,0.01%,26
-110,i++;,0.11%,0.11%,42%,30%,24%,72.20930232558139,1,,24
+109,p0 = unpackHalf2x16(points[i]) - wpos;,0.04%,0.04%,37%,33%,17%,213,7,0.01%,26
+110,i++;,0.03%,0.03%,75%,10%,8%,125,1,,24
 111,},,,,,,0,,,
-112,vec2 p1 = unpackHalf2x16(points[i]) - wpos;,0.12%,0.12%,39%,30%,17%,71.7897435897436,7,0,26
-113,i++;,0.01%,0.01%,45%,32%,18%,8,1,,25
-114,vec2 p2 = unpackHalf2x16(points[i]) - wpos;,0.17%,0.17%,37%,24%,16%,120.4059040590406,7,0.08%,26
+112,vec2 p1 = unpackHalf2x16(points[i]) - wpos;,0.04%,0.04%,75%,10%,6%,213,7,0,26
+113,i++;,< 0.01%,< 0.01%,50%,42%,8%,25,1,,25
+114,vec2 p2 = unpackHalf2x16(points[i]) - wpos;,0.10%,0.10%,50%,34%,11%,365,7,0.10%,26
 115,i++;,,,,,,0,,,
-116,"area += curve_area(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, wdim.x, wdim.y);",0.09%,0.09%,58%,19%,13%,71.91923990498812,2,,22
+116,"area += curve_area(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, wdim.x, wdim.y);",0.05%,0.05%,63%,20%,16%,213,2,,22
 117,p0 = p2;,,,,,,0,,,
 118,},,,,,,0,,,
-119,return area / (wdim.x * wdim.y);,0.02%,0.02%,70%,17%,11%,14,3,< 0.01%,13
+119,return area / (wdim.x * wdim.y);,0.01%,0.01%,54%,29%,17%,73,3,< 0.01%,12
 120,},,,,,,0,,,
 121,,,,,,,0,,,
 122,// Text-space rect corners (relative to instance origin) -> em-space bbox under the,,,,,,0,,,
@@ -127,61 +127,112 @@
 125,{,,,,,,0,,,
 126,"vec2 c10 = vec2(rMax.x, rMin.y);",,,,,,0,,,
 127,"vec2 c01 = vec2(rMin.x, rMax.y);",,,,,,0,,,
-128,"vec2 e00 = vec2(dot(inv.xy, rMin), dot(inv.zw, rMin));",1.88%,1.88%,77%,11%,7%,1831.728782287823,4,,23
-129,"vec2 e11 = vec2(dot(inv.xy, rMax), dot(inv.zw, rMax));",0.20%,0.20%,99%,< 1%,,121.78391959798995,4,,24
-130,"vec2 e10 = vec2(dot(inv.xy, c10), dot(inv.zw, c10));",0.09%,0.09%,99%,1%,,70.65333333333334,2,,24
-131,"vec2 e01 = vec2(dot(inv.xy, c01), dot(inv.zw, c01));",0.11%,0.11%,99%,< 1%,,71.5278310940499,2,,24
-132,"lo = min(min(e00, e11), min(e10, e01));",1.06%,1.06%,36%,30%,20%,608.1819060506476,7,,24
-133,"hi = max(max(e00, e11), max(e10, e01));",5.52%,5.52%,49%,34%,9%,3075.761714412614,8,,23
+128,"vec2 e00 = vec2(dot(inv.xy, rMin), dot(inv.zw, rMin));",0.13%,0.13%,94%,3%,2%,625,8,,23
+129,"vec2 e11 = vec2(dot(inv.xy, rMax), dot(inv.zw, rMax));",< 0.01%,< 0.01%,100%,,,8,8,,24
+130,"vec2 e10 = vec2(dot(inv.xy, c10), dot(inv.zw, c10));",< 0.01%,< 0.01%,100%,,,5,4,,24
+131,"vec2 e01 = vec2(dot(inv.xy, c01), dot(inv.zw, c01));",< 0.01%,< 0.01%,100%,,,0,4,,24
+132,"lo = min(min(e00, e11), min(e10, e01));",0.02%,0.02%,25%,25%,25%,73,14,,24
+133,"hi = max(max(e00, e11), max(e10, e01));",0.03%,0.03%,46%,24%,22%,125,16,,23
 134,},,,,,,0,,,
 135,,,,,,,0,,,
 136,"// Premultiplied contribution of one instance over the text-space window [rMin, rMax]:",,,,,,0,,,
 137,// per-glyph coverage clamp times instance color.,,,,,,0,,,
 138,"vec4 shade_window(uint idx, vec2 rMin, vec2 rMax)",,,,,,0,,,
 139,{,,,,,,0,,,
-140,GlyphInstance gi = instances[idx];,22.70%,22.70%,49%,32%,8%,15119.485603224877,27,17.59%,22
-141,GlyphEntry g = glyphs[gi.glyphID];,6.63%,6.63%,38%,23%,23%,5252.157424522489,16,4.34%,23
-142,if (g.curveCount == 0u),6.21%,6.21%,40%,29%,18%,5150.690760280051,4,,18
+140,GlyphInstance gi = instances[idx];,< 0.01%,< 0.01%,50%,40%,10%,25,18,0.01%,20
+141,GlyphEntry g = glyphs[gi.glyphID];,< 0.01%,< 0.01%,58%,25%,17%,25,16,< 0.01%,21
+142,if (g.curveCount == 0u),< 0.01%,< 0.01%,57%,29%,14%,14,4,,16
 143,return vec4(0.0);,,,,,,0,,,
 144,"vec2 lo, hi;",,,,,,0,,,
-145,"em_box(gi.inv, rMin - gi.origin, rMax - gi.origin, lo, hi);",0.86%,0.86%,69%,23%,7%,603.5721040189126,4,,24
-146,if (lo.x >= g.bboxMax.x || hi.x <= g.bboxMin.x || lo.y >= g.bboxMax.y || hi.y <= g.bboxMin.y),3.89%,3.89%,45%,32%,15%,3075.8850393700786,5,,23
+145,"em_box(gi.inv, rMin - gi.origin, rMax - gi.origin, lo, hi);",< 0.01%,< 0.01%,67%,33%,,8,4,,24
+146,if (lo.x >= g.bboxMax.x || hi.x <= g.bboxMin.x || lo.y >= g.bboxMax.y || hi.y <= g.bboxMin.y),< 0.01%,< 0.01%,43%,29%,14%,14,5,,23
 147,return vec4(0.0);,,,,,,0,,,
-148,"float cov = clamp(window_sum(g, lo, hi - lo), 0.0, 1.0);",< 0.01%,< 0.01%,100%,,,0,2,,18
-149,return gi.color * cov;,0.35%,0.35%,43%,41%,15%,207.15469293163383,5,,11
+148,"float cov = clamp(window_sum(g, lo, hi - lo), 0.0, 1.0);",,,,,,0,2,,18
+149,return gi.color * cov;,< 0.01%,< 0.01%,50%,50%,,8,5,,10
 150,},,,,,,0,,,
 151,,,,,,,0,,,
-,textworld.frag
+,textraster.comp
 1,#version 450,,,,,,0,,,
 2,#extension GL_GOOGLE_include_directive : require,,,,,,0,,,
 3,,,,,,,0,,,
-4,// World-space Scanline Sweeper lane: per-fragment analytic coverage over the shared glyph,,,,,,0,,,
-5,// buffers. The em-space window is the fragment's panel-space footprint from screen,,,,,,0,,,
-6,"// derivatives. Output is premultiplied, blended src-over onto the HDR target.",,,,,,0,,,
-7,,,,,,,0,,,
-8,"#include ""textcoverage.glsl""",,,,,,0,,,
+4,// Scanline Sweeper overlay raster: integrates glyph coverage,,,,,,0,,,
+5,// per pixel using the shared math in textcoverage.glsl. One workgroup per 8x8 pixel,,,,,,0,,,
+6,// tile. The 64 lanes cooperatively cull instances against the tile in 64-instance,,,,,,0,,,
+7,"// chunks, then each in-extent pixel integrates the survivors and over-blends",,,,,,0,,,
+8,// premultiplied color into the overlay.,,,,,,0,,,
 9,,,,,,,0,,,
-10,layout(push_constant) uniform TextWorldPush {,,,,,,0,,,
-11,mat4  mvp;,,,,,,0,,,
-12,vec4  panel;,,,,,,0,,,
-13,"uvec2 range;  // first instance index, instance count",,,,,,0,,,
-14,} pc;,,,,,,0,,,
+10,"layout(local_size_x = 8, local_size_y = 8) in;",,,,,,0,,,
+11,,,,,,,0,,,
+12,"#include ""textcoverage.glsl""",,,,,,0,,,
+13,,,,,,,0,,,
+14,"layout(set = 0, binding = 3, rgba8) uniform writeonly image2D overlay;",,,,,,0,,,
 15,,,,,,,0,,,
-16,layout(location = 0) in vec2 panelPos;,,,,,,0,,,
-17,layout(location = 0) out vec4 outColor;,,,,,,0,,,
-18,,,,,,,0,,,
-19,void main(),,,,,,0,,,
-20,{,,,,,,0,,,
-21,vec2 fw = abs(dFdx(panelPos)) + abs(dFdy(panelPos));,0.07%,0.07%,46%,22%,9%,42,16,0.16%,8
-22,vec2 rMin = panelPos - 0.5 * fw;,< 0.01%,< 0.01%,48%,36%,12%,5,2,,7
-23,vec2 rMax = panelPos + 0.5 * fw;,< 0.01%,< 0.01%,100%,,,0,2,,7
-24,vec4 acc = vec4(0.0);,,,,,,0,,,
-25,for (uint i = 0u; i < pc.range.y; i++),4.05%,4.05%,32%,21%,20%,3070.8741681790684,19,,22
-26,{,,,,,,0,,,
-27,"vec4 src = shade_window(pc.range.x + i, rMin, rMax);",4.21%,4.21%,54%,37%,6%,3109.00620365434,2,,19
-28,acc = src + acc * (1.0 - src.a);,0.25%,0.25%,99%,< 1%,,208.03548387096774,5,,18
-29,},,,,,,0,,,
-30,outColor = acc;,,,,,,0,,,
-31,},0.04%,0.04%,47%,20%,16%,24.244444444444444,19,,4
-32,,,,,,,0,,,
+16,layout(push_constant) uniform TextRasterPush {,,,,,,0,,,
+17,uint  instanceCount;,,,,,,0,,,
+18,uint  flags;    // bit 0: opaque black backdrop (ANO_TEXT_OPAQUE self-test),,,,,,0,,,
+19,uvec2 extent;,,,,,,0,,,
+20,"uvec2 origin;   // dispatch region offset, pixels (tile-aligned; the CPU bounds",,,,,,0,,,
+21,// the dispatch to the pending text's pixel AABB),,,,,,0,,,
+22,} pc;,,,,,,0,,,
+23,,,,,,,0,,,
+24,const uint CHUNK = 64u; // instances per cooperative cull round == wg size,,,,,,0,,,
+25,,,,,,,0,,,
+26,shared uint sHit[CHUNK]; // per-lane tile-cull verdict for the current chunk,,,,,,0,,,
+27,shared uint sAny;        // chunk had any hit,,,,,,0,,,
+28,,,,,,,0,,,
+29,"// Does instance idx's glyph touch the screen rect [rMin,rMax]?",,,,,,0,,,
+30,"bool box_hits(uint idx, vec2 rMin, vec2 rMax)",,,,,,0,,,
+31,{,,,,,,0,,,
+32,GlyphInstance gi = instances[idx];,0.07%,0.07%,41%,20%,11%,365,13,0.94%,21
+33,GlyphEntry g = glyphs[gi.glyphID];,0.33%,0.33%,82%,6%,4%,1827,13,0.22%,23
+34,if (g.curveCount == 0u),0.12%,0.12%,81%,7%,6%,625,4,,16
+35,return false;,,,,,,0,,,
+36,"vec2 lo, hi;",,,,,,0,,,
+37,"em_box(gi.inv, rMin - gi.origin, rMax - gi.origin, lo, hi);",0.04%,0.04%,94%,4%,1%,213,4,,24
+38,return lo.x < g.bboxMax.x && hi.x > g.bboxMin.x && lo.y < g.bboxMax.y && hi.y > g.bboxMin.y;,< 0.01%,< 0.01%,36%,29%,29%,42,1,,21
+39,},,,,,,0,,,
+40,,,,,,,0,,,
+41,void main(),,,,,,0,,,
+42,{,,,,,,0,,,
+43,uvec2 px = gl_GlobalInvocationID.xy + pc.origin;,0.01%,0.01%,39%,22%,17%,42,8,< 0.01%,13
+44,bool valid = px.x < pc.extent.x && px.y < pc.extent.y;,< 0.01%,< 0.01%,100%,,,0,1,,13
+45,vec2 pixTL = vec2(px);,< 0.01%,< 0.01%,100%,,,0,2,,13
+46,vec2 tMin = vec2(gl_WorkGroupID.xy * 8u + pc.origin);,0.02%,0.02%,81%,13%,6%,73,4,,10
+47,"vec2 tMax = min(tMin + 8.0, vec2(pc.extent));",< 0.01%,< 0.01%,75%,25%,,8,7,,13
+48,,,,,,,0,,,
+49,vec4 acc = vec4(0.0);,,,,,,0,,,
+50,for (uint base = 0u; base < pc.instanceCount; base += CHUNK),0.05%,0.05%,41%,23%,10%,213,15,,26
+51,{,,,,,,0,,,
+52,if (gl_LocalInvocationIndex == 0u),0.01%,0.01%,40%,28%,12%,73,3,,16
+53,sAny = 0u;,< 0.01%,< 0.01%,38%,31%,15%,42,1,< 0.01%,15
+54,barrier();,0.01%,0.01%,44%,22%,17%,42,3,0,15
+55,uint i = base + gl_LocalInvocationIndex;,< 0.01%,< 0.01%,33%,22%,22%,25,2,,17
+56,"uint hit = (i < pc.instanceCount && box_hits(i, tMin, tMax)) ? 1u : 0u;",0.08%,0.08%,50%,18%,16%,365,6,,15
+57,sHit[gl_LocalInvocationIndex] = hit;,< 0.01%,< 0.01%,50%,42%,8%,25,2,< 0.01%,11
+58,if (hit != 0u),< 0.01%,< 0.01%,100%,,,5,1,,9
+59,"atomicOr(sAny, 1u);",< 0.01%,< 0.01%,50%,29%,14%,42,8,< 0.01%,10
+60,barrier();,0.15%,0.15%,86%,6%,3%,625,3,,9
+61,if (valid && sAny != 0u),0.05%,0.05%,53%,24%,12%,213,4,0.06%,10
+62,{,,,,,,0,,,
+63,for (uint j = 0u; j < CHUNK; j++),0.18%,0.18%,55%,15%,9%,1068,11,,27
+64,{,,,,,,0,,,
+65,if (sHit[j] != 0u),0.25%,0.25%,52%,24%,8%,1068,3,0.27%,12
+66,{,,,,,,0,,,
+67,"vec4 src = shade_window(base + j, pixTL, pixTL + 1.0);",0.02%,0.02%,76%,24%,,125,3,,23
+68,acc = src + acc * (1.0 - src.a);,< 0.01%,< 0.01%,75%,25%,,25,5,,10
+69,},,,,,,0,,,
+70,},,,,,,0,,,
+71,},,,,,,0,,,
+72,barrier(); // sHit/sAny are rewritten next chunk,0.23%,0.23%,87%,6%,3%,1068,3,,18
+73,},,,,,,0,,,
+74,,,,,,,0,,,
+75,if (!valid),< 0.01%,< 0.01%,100%,,,25,1,,6
+76,return;,,,,,,0,,,
+77,if ((pc.flags & 1u) != 0u),0.02%,0.02%,81%,7%,7%,73,4,,7
+78,"acc.a = 1.0; // opaque self-test: black backdrop, text rgb already premultiplied",,,,,,0,,,
+79,else if (acc == vec4(0.0)),0.02%,0.02%,78%,11%,7%,73,6,,7
+80,return; // untouched pixel,,,,,,0,,,
+81,"imageStore(overlay, ivec2(px), acc);",< 0.01%,< 0.01%,100%,,,0,1,,6
+82,},0.02%,0.02%,75%,16%,6%,73,17,,1
+83,,,,,,,0,,,
 
