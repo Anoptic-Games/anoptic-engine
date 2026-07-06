@@ -19,6 +19,7 @@ Comments:
 - Decorated banners (# ---- Section ----) -> keep. If many comments cut in file, place new banners where logical. Clearly distinguishable visual blocks > pararaphs of loose comments.
 - One clause each. Cut dragging run-on sentences down to their meaning.
 - A comment needing paragraphs means the code is unclear. Rename a local instead.
+- No ; - -- — sentence-splitters. Needing one means it's too long, so cut it. Arrows (a -> b) ok.
 - Use the shorter synonym when a dev reads it identically. eg: "longest formatted line" --> "max formatted line"
 - Never allow comments to split mid-sentence. Make a newline or use /* */ for paragraphs.
 - Keep my `/* Section */` banners and my own comments verbatim.

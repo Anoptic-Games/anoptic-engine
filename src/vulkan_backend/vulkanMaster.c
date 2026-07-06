@@ -4394,7 +4394,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	DeviceCapabilities capabilities;
 	ctx.physicalDevice = VK_NULL_HANDLE;
 
-	//!TODO replace empty char array with preffered device from VulkanSettings   
 	char* preferredDevice = getChosenDevice();
 	if (!pickPhysicalDevice(&ctx, &capabilities, &(ctx.queueFamilyIndices), preferredDevice))
 	{

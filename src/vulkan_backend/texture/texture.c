@@ -428,7 +428,6 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 		return false;
 	}
 
-	// TODO: Figure out if this case ever occurs
 	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
 		ano_log(ANO_ERROR, "Layout transition failure: %s", fileName);
@@ -439,7 +438,6 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 
 	generateMipmaps(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
 
-	// TODO: Figure out if this case ever occurs
 	/*if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);

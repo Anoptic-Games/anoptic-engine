@@ -1706,7 +1706,6 @@ VkFormat findSupportedFormat(VulkanContext* ctx, const VkFormat* candidates, uin
 		VkFormatProperties props;
 		vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice, format, &props);
 
-		// TODO: Figure out if both cases are really necessary (currently identical results)
 		if (tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) == features)
 		{
 			return format;
@@ -1881,7 +1880,7 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
-void createColorResources(VulkanContext* ctx) //TODO: This probably should be generalized later?
+void createColorResources(VulkanContext* ctx)
 {
 	// Geometry renders into an HDR float MSAA target (was the swapchain LDR format), so
 	// many-light dynamic range is preserved; a fullscreen tonemap pass encodes to the
@@ -2045,7 +2044,7 @@ bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state)
 }
 
 bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
-{ // Central to init, !TODO modify this to account for multiple descriptor sets, for multiple meshes
+{ // Central to init
 	// Global, light-cull and tonemap sets are per view per frame (each binds that view's
 	// camera UBO / froxel lists / HDR target); cull, update and scatter are one per frame.
 	enum { PERVIEW_SETS = MAX_FRAMES_IN_FLIGHT * ANO_VIEW_COUNT };

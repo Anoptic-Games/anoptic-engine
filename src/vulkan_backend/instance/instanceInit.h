@@ -132,7 +132,6 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state);
 void cleanupMonitors(Monitors* monitors);
 
 // More Function Prototypes
-// TODO: SSA can sort this out
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
 const char** getRequiredExtensions(uint32_t* extensionsCount);
