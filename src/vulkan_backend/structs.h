@@ -792,8 +792,8 @@ typedef struct ShadowLightInfo {
 typedef struct ShadowResources {
     VkBuffer        frustumBuffer;   // CullView[ANO_SHADOW_FRUSTUM_COUNT], written by shadowsetup.comp
     GpuAllocation   frustumAlloc;
-    VkBuffer        sampleVPBuffer;  // mat4[ANO_SHADOW_SAMPLE_VP_CAP], shadowsetup-written packed
-    GpuAllocation   sampleVPAlloc;   // viewProjs; fragment sampling reads it as a UBO
+    VkBuffer        sampleVPBuffer;  // mat4[CAP] viewProjs + vec4[CAP] depth-linearization params,
+    GpuAllocation   sampleVPAlloc;   // shadowsetup-written; fragment sampling + encode read it as a UBO
     VkDescriptorSet setupSet;        // shadowsetup.comp inputs/outputs
     VkDescriptorSet geomSet;         // moment render (flat.mesh / flat.vert) + frag sampling
     VkDescriptorSet blurAtlasSet;    // blur src = atlas array (X pass: atlas -> temp)

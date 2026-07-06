@@ -263,7 +263,23 @@ void main() {
     if (!gl_FrontFacing) {
         normal = -normal;
     }
-    
+
+    // Normal mapping via the screen-space cotangent frame (mirrors flat.frag).
+    if (mat.normalTexture != 0xFFFFFFFF) {
+        vec3 mapN = texture(textures[nonuniformEXT(mat.normalTexture)], fragTexCoord).xyz * 2.0 - 1.0;
+        mapN.xy *= mat.normalScale;
+        vec3 dp1 = dFdx(fragWorldPos);
+        vec3 dp2 = dFdy(fragWorldPos);
+        vec2 duv1 = dFdx(fragTexCoord);
+        vec2 duv2 = dFdy(fragTexCoord);
+        vec3 dp2perp = cross(dp2, normal);
+        vec3 dp1perp = cross(normal, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        normal = normalize(mat3(T * invmax, B * invmax, normal) * mapN);
+    }
+
     vec3 V = normalize(global.cameraPos.xyz - fragWorldPos);
     
     // Ambient + transmissive color

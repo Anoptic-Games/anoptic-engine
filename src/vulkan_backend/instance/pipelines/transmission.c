@@ -25,7 +25,8 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 
 	// 2. Setup layout
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = geometryStage | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
+	// FRAGMENT matches flat.c's range (one shared pcStage pushes across all camera prototypes).
+	pushConstantRange.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = 2u * sizeof(uint32_t); // transformBaseOffset + shadowFrustumIndex
 
@@ -48,12 +49,13 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	proto->type = PIPELINE_TRANSMISSION;
 	proto->implementationCount = 2;
 	proto->implementations = calloc(2, sizeof(PipelineImplementation));
-	proto->supportedFeatures = 
-		PBR_FEATURE_BASE_COLOR_FACTOR | 
-		PBR_FEATURE_BASE_COLOR_TEXTURE | 
-		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR | 
-		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE | 
-		PBR_FEATURE_OCCLUSION_TEXTURE | 
+	proto->supportedFeatures =
+		PBR_FEATURE_BASE_COLOR_FACTOR |
+		PBR_FEATURE_BASE_COLOR_TEXTURE |
+		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR |
+		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE |
+		PBR_FEATURE_NORMAL_TEXTURE |
+		PBR_FEATURE_OCCLUSION_TEXTURE |
 		PBR_FEATURE_ALPHA_MODE_OPAQUE | 
 		PBR_FEATURE_ALPHA_MODE_BLEND |
 		PBR_FEATURE_TRANSMISSION |

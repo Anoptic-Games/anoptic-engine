@@ -756,6 +756,7 @@ void recordCommandBuffer(uint32_t imageIndex)
         uint32_t maxDrawsS = rendererState.indirectBuffer.capacity;
         // Must equal the pipeline layout's push range flags exactly (task stage reads the same push).
         VkShaderStageFlags pcStageS = (useMeshS ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+            | VK_SHADER_STAGE_FRAGMENT_BIT // shadow_depth.frag reads shadowFrustumIndex (CDF depth linearization)
             | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
         const ShadowFrustumConfig* shadowCfgs = rendererState.shadowCfgMirror; // render-thread mirror (device copy not host-readable)
 
@@ -1258,6 +1259,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 bool useMesh = ctx.deviceCapabilities.meshShader;
                 // Must equal the layout's push range flags exactly (task stage reads the same push).
                 VkShaderStageFlags pcStage = (useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+                    | VK_SHADER_STAGE_FRAGMENT_BIT // matches the layouts' widened push range (shadow CDF linearization)
                     | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, pcStage, 0, sizeof(uint32_t), &baseOffset);
 
@@ -4044,7 +4046,8 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         // read it as a UBO. Allocated at the full shader-declared bound (mat4[64]) so the
         // descriptor range covers the declared size.
         VkBufferCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = (VkDeviceSize)(sizeof(float) * 16u) * ANO_SHADOW_SAMPLE_VP_CAP,
+            // mat4 viewProj + vec4 depthParams per frustum (shadow_sample.glsl / shadowsetup.comp).
+            .size = (VkDeviceSize)(sizeof(float) * (16u + 4u)) * ANO_SHADOW_SAMPLE_VP_CAP,
             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
         if (vkCreateBuffer(ctx->device, &vinfo, NULL, &sh->sampleVPBuffer) != VK_SUCCESS) return false;

@@ -34,7 +34,16 @@ layout(set = 0, binding = 2) readonly buffer LightSSBO       { LightData lights[
 layout(set = 0, binding = 3) writeonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
 // Duplicate of each frustum's viewProj in a tightly-packed array: the lighting fragments
 // read it as a UBO (constant-bank operands, no per-lane register block for the matrix).
-layout(set = 0, binding = 4) writeonly buffer ShadowSampleVPSSBO { mat4 sampleViewProj[]; };
+// Fixed 64 bound rides ANO_SHADOW_SAMPLE_VP_CAP / the frag-side UBO decl (shadow_sample.glsl).
+// depthParams linearizes light-space ZO depth for the CDF encode/reconstruct: d01 = (x + z*zo) /
+// (1 - y*zo). Ortho (directional) = identity (0,0,1); perspective (spot/point) = (r, 1-r, 0) with
+// r = near/far, mapping the hyperbolic ZO depth to a linear fraction of the near..far range. Raw
+// ZO left the whole scene past ~2% of the range inside the last CDF band and stretched the
+// contact ramp to meters — point/spot occluders only partially shadowed distant receivers.
+layout(set = 0, binding = 4) writeonly buffer ShadowSampleVPSSBO {
+    mat4 sampleViewProj[64];
+    vec4 sampleDepthParams[64];
+};
 
 // Right-handed lookAt, column-major (projects worldPos via M*worldPos), matching flat.vert's
 // effective proj*view convention so the extracted planes agree with the CPU camera planes.
@@ -119,6 +128,7 @@ void main() {
         // (which default to lightIndex 0 / type DIRECTIONAL) from spuriously rendering light 0.
         shadowFrustums[i].viewProj = mat4(0.0);
         sampleViewProj[i] = mat4(0.0);
+        sampleDepthParams[i] = vec4(0.0, 0.0, 1.0, 0.0); // identity transform, never sampled
         for (int p = 0; p < 6; ++p) shadowFrustums[i].frustumPlanes[p] = vec4(0.0, 0.0, 0.0, -1e30);
         return;
     }
@@ -131,6 +141,7 @@ void main() {
     vec3 lightForward = normalize(mat3(lx) * aim); // model-space aim; default == old -lx[2]
 
     mat4 viewProj;
+    vec4 depthParams = vec4(0.0, 0.0, 1.0, 0.0); // ortho default: d01 = zo (already linear)
     if (cfg.lightType == LIGHT_TYPE_DIRECTIONAL) {
         // Orthographic box centred on the world origin, looking along the light's travel direction.
         vec3 toLight = -lightForward;                  // surface -> light
@@ -156,6 +167,8 @@ void main() {
         float far  = max(L.range, 0.1);
         float near = max(far * 0.005, 0.02);
         viewProj = perspectiveRH_ZO(fovy, 1.0, near, far) * view;
+        float r = near / far;
+        depthParams = vec4(r, 1.0 - r, 0.0, 0.0);
     } else { // LIGHT_TYPE_POINT
         // One of 6 cube faces (cfg.faceIndex), 90 deg fovy so the faces tile all directions cleanly
         // for the fragment's dominant-axis face pick. Eye at the light.
@@ -165,10 +178,13 @@ void main() {
         float far  = max(L.range, 0.1);
         float near = max(far * 0.005, 0.02);
         viewProj = perspectiveRH_ZO(radians(90.0), 1.0, near, far) * view;
+        float r = near / far;
+        depthParams = vec4(r, 1.0 - r, 0.0, 0.0);
     }
 
     shadowFrustums[i].viewProj = viewProj;
     sampleViewProj[i] = viewProj;
+    sampleDepthParams[i] = depthParams;
     vec4 planes[6];
     extractPlanes(viewProj, planes);
     for (int p = 0; p < 6; ++p) shadowFrustums[i].frustumPlanes[p] = planes[p];

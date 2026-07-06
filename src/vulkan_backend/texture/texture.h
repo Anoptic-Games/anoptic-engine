@@ -31,8 +31,10 @@ typedef struct Texture8
 // Reads an image from storage and returns Vulkan-compatible 8-bit binary texture data
 Texture8 readTexture8bit(char* fileName);
 
-// Takes binary texture data and loads it into a Vulkan image object
-bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, VkBuffer* outStagingBuffer);
+// Takes binary texture data and loads it into a Vulkan image object. srgb selects R8G8B8A8_SRGB
+// (color textures: baseColor, emissive, *Color); false = UNORM for linear data textures (normal,
+// metallicRoughness, occlusion, ...) whose values an sRGB decode would warp.
+bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, bool srgb, VkBuffer* outStagingBuffer);
 
 bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height, VkBuffer* outStagingBuffer);
 
