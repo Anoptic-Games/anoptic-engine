@@ -28,9 +28,9 @@ layout(set = 2, binding = 3) uniform ShadowSampleVPUBO {
 // in LINEARIZED depth units — fractions of the light's near..far range (identical to raw ZO for the
 // ortho/directional slab, the space they were originally tuned in):
 //   DEPTH_BIAS   — constant occluder offset killing residual self-shadow acne; slope-scaled by nDotL.
-//   CONTACT_SOFT — within-band soft-step half-width. 0 = hard/exact step at the band mean (crisp
-//                  contact, no acne); larger softens the depth-direction contact transition for
-//                  low-res, at some contact accuracy (validated stable to ~0.03, frays past ~0.06).
+//   CONTACT_SOFT — soft-step width above each band's mean occluder depth. 0 = hard/exact step at
+//                  the mean (crisp contact, no acne); larger softens the depth-direction contact
+//                  transition for low-res, at some contact accuracy (stable to ~0.03, frays past ~0.06).
 //                  Silhouette-edge softness is independent of this (it comes from the coverage gradient).
 const float ANO_CDF_DEPTH_BIAS   = 0.0002;
 const float ANO_CDF_CONTACT_SOFT = 0.02;
