@@ -240,6 +240,14 @@ if(Vulkan_FOUND)
     # fp16 CDF-reconstruct variants of the lighting frags, used when the device has shaderFloat16.
     ano_add_shader(flat_fp16.frag flat.frag -DANO_CDF_FP16=1)
     ano_add_shader(transmission_fp16.frag transmission.frag -DANO_CDF_FP16=1)
+    # Alpha-tested cutout lane (glTF alphaMode MASK): camera frag (+ fp16 pairing), the
+    # uv-carrying depth geometry for its shadow casters, and the alpha-testing shadow frag.
+    ano_add_shader(flat_masked.frag flat.frag -DANO_ALPHA_MASK=1)
+    ano_add_shader(flat_masked_fp16.frag flat.frag -DANO_ALPHA_MASK=1 -DANO_CDF_FP16=1)
+    ano_add_shader(flat_depth_masked.mesh flat.mesh -DANO_DEPTH_MASKED)
+    ano_add_shader(flat_depth_masked_task.mesh flat.mesh -DANO_TASK_CULL -DANO_DEPTH_MASKED)
+    ano_add_shader(flat_depth_masked.vert flat.vert -DANO_DEPTH_MASKED)
+    ano_add_shader(shadow_depth_masked.frag shadow_depth.frag -DANO_ALPHA_MASK=1)
 
     add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
     # Everything linking anoptic_render loads shaders at runtime.

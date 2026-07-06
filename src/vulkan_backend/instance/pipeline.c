@@ -508,6 +508,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 
 	state->prototypes[PIPELINE_FLAT].descriptorLayout = state->bindlessTextures.layout;
 	state->prototypes[PIPELINE_FLAT_TWOSIDED].descriptorLayout = state->bindlessTextures.layout;
+	state->prototypes[PIPELINE_FLAT_MASKED].descriptorLayout = state->bindlessTextures.layout;
 	state->prototypes[PIPELINE_TRANSMISSION].descriptorLayout = state->bindlessTextures.layout;
 	state->prototypes[PIPELINE_ADDITIVE].descriptorLayout = state->bindlessTextures.layout;
 
@@ -527,6 +528,11 @@ bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state)
 	}
 
 	if (!ano_pipeline_flat_twosided_init(ctx, state, &state->prototypes[PIPELINE_FLAT_TWOSIDED]))
+	{
+		return false;
+	}
+
+	if (!ano_pipeline_flat_masked_init(ctx, state, &state->prototypes[PIPELINE_FLAT_MASKED]))
 	{
 		return false;
 	}
@@ -1327,6 +1333,33 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 
 	VkResult r = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &pipelineInfo, NULL, &state->shadowPipeline);
 
+	// Alpha-tested caster variant: the ANO_DEPTH_MASKED geometry (position + uv + packed indices)
+	// with shadow_depth_masked.frag (baseColor.a < alphaCutoff discard), drawing each frustum's
+	// MASKED partition after the solid one. All fixed state above is shared — only the stages
+	// differ; the task slot reuses taskModule (still live here), so this must precede the frees.
+	VkResult mr = VK_SUCCESS;
+	if (r == VK_SUCCESS) {
+		struct Buffer mGeomCode, mFragCode;
+		snprintf(path, sizeof(path), "resources/shaders/%s.spv",
+			useMesh ? (useTask ? "flat_depth_masked_task.mesh" : "flat_depth_masked.mesh") : "flat_depth_masked.vert");
+		if (!loadFile(path, &mGeomCode)) return false;
+		if (!loadFile("resources/shaders/shadow_depth_masked.frag.spv", &mFragCode)) return false;
+		VkShaderModule mGeomModule = createShaderModule(ctx->device, &mGeomCode);
+		VkShaderModule mFragModule = createShaderModule(ctx->device, &mFragCode);
+
+		VkPipelineShaderStageCreateInfo mStages[3] = { stages[0], stages[1], stages[2] };
+		mStages[1].module = mGeomModule; // keeps the shadowPass spec info
+		mStages[2].module = mFragModule;
+		pipelineInfo.pStages = useTask ? mStages : &mStages[1];
+
+		mr = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &pipelineInfo, NULL, &state->shadowPipelineMasked);
+
+		ano_aligned_free(mGeomCode.data);
+		ano_aligned_free(mFragCode.data);
+		vkDestroyShaderModule(ctx->device, mGeomModule, NULL);
+		vkDestroyShaderModule(ctx->device, mFragModule, NULL);
+	}
+
 	ano_aligned_free(geomCode.data);
 	ano_aligned_free(fragCode.data);
 	vkDestroyShaderModule(ctx->device, geomModule, NULL);
@@ -1335,6 +1368,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
 	if (r != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create shadow depth pipeline!"); return false; }
+	if (mr != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create masked shadow depth pipeline!"); return false; }
 
 	// --- Moment prefilter pipeline: fullscreen separable box over the atlas (X then Y) ---
 	// One combined-image-sampler (the blur source array) at set 0, plus a 16-byte push (dir + layer).
@@ -1476,6 +1510,11 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 	{
 		vkDestroyPipeline(ctx->device, state->shadowPipeline, NULL);
 		state->shadowPipeline = VK_NULL_HANDLE;
+	}
+	if (state->shadowPipelineMasked != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(ctx->device, state->shadowPipelineMasked, NULL);
+		state->shadowPipelineMasked = VK_NULL_HANDLE;
 	}
 	if (state->shadowBlurPipeline != VK_NULL_HANDLE)
 	{

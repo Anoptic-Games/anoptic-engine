@@ -18,12 +18,13 @@ const PipelineType ano_draw_pipelines[] = {
     PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission (depth-sorted "over" lane)
     PIPELINE_ADDITIVE,      // slot 2: order-independent additive glows (ONE/ONE; no sort, no shadow)
     PIPELINE_FLAT_TWOSIDED, // slot 3: opaque doubleSided materials (same shaders as slot 0, cullMode NONE)
+    PIPELINE_FLAT_MASKED,   // slot 4: alpha-tested cutout (glTF alphaMode MASK; LESS + depth write, no pre-pass)
 };
 
 // The cull UBO map (CullUBO.drawSlotOf) is indexed by a MATERIAL's pipelineType and is stored as
 // uvec4[4] in cull.comp: every material-carried (drawing) type must sit below 16. Types past 15
 // (compute passes) never appear in a material and map to no slot.
-_Static_assert(PIPELINE_FLAT_TWOSIDED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
+_Static_assert(PIPELINE_FLAT_MASKED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
 
 // out: number of drawing pipeline types == per-camera-view draw-slot stride.
 uint32_t ano_draw_pipeline_count(void) {
@@ -31,9 +32,10 @@ uint32_t ano_draw_pipeline_count(void) {
 }
 
 // out: total compacted-draw partitions. Camera views own every draw slot; each shadow frustum owns
-// one slot-0 partition (see components.h). Sizes the indirect/drawCount/compacted buffers + fills.
+// TWO caster partitions — solid at base + s, alpha-tested MASKED at base + FRUSTUM_COUNT + s (see
+// components.h). Sizes the indirect/drawCount/compacted buffers + fills.
 uint32_t ano_draw_partition_count(void) {
-    return ANO_VIEW_COUNT * ano_draw_pipeline_count() + ANO_SHADOW_FRUSTUM_COUNT;
+    return ANO_VIEW_COUNT * ano_draw_pipeline_count() + 2u * ANO_SHADOW_FRUSTUM_COUNT;
 }
 
 // in:  type — any PipelineType

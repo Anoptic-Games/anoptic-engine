@@ -298,6 +298,26 @@ static const RenderPassDef g_framePasses[] = {
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,
         .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
     },
+    // 4d. Alpha-tested cutout lane (glTF alphaMode MASK: foliage, chains). No pre-pass — a
+    //     fragment-less pre-pass can't discard, and EQUAL against its solid-quad depth would hole
+    //     the background — so this lane draws AFTER the opaque lanes with LESS + depth WRITE
+    //     (correctly occluded by opaque, correctly occluding the transparent lanes below), the
+    //     alpha discard + alpha-to-coverage shaping its coverage. Both color attachments load
+    //     (HDR + picking id: cutout survivors are pickable by silhouette). The depth barrier
+    //     orders the pre-passes' writes (RAW) and the opaque lanes' EQUAL reads (WAR) under this
+    //     pass's depth test+write.
+    {
+        .type                   = PASS_GRAPHICS,
+        .prototype              = PIPELINE_FLAT_MASKED,
+        .implementationIndex    = 0,  // masked variant (LESS + write + A2C)
+        .perView                = true,
+        .colorAttachmentCount   = 2,
+        .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,
+        .depthBarrierBefore     = true,
+        .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
+    },
     // 5. Transmissive geometry (depth-sorted "over" lane)
     {
         .type                   = PASS_GRAPHICS,
@@ -308,6 +328,7 @@ static const RenderPassDef g_framePasses[] = {
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // test against opaque depth (no write)
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // additive pass below loads this depth
+        .depthBarrierBefore     = true,                             // wait on the masked lane's depth writes
         .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
     },
     // 6. Additive glows (order-independent ONE/ONE). Drawn last so glows composite on top; depth-
@@ -885,24 +906,33 @@ void recordCommandBuffer(uint32_t imageIndex)
                     .layerCount = 1, .colorAttachmentCount = ANO_SHADOW_ATLAS_SUBLAYERS, .pColorAttachments = colorAtt, .pDepthAttachment = &depthAtt };
                 vkCmdBeginRendering(cmd, &ri);
 
-                // Shadow partitions are slot-0-only; the partition index is base + s, not by draw slot.
-                uint32_t partition = ANO_VIEW_COUNT * drawSlotCount + s;
-                uint32_t pcVals[2] = { partition * rendererState.culling.maxEntities, s }; // baseOffset, shadowFrustumIndex
-                vkCmdPushConstants(cmd, flatLayout, pcStageS, 0, sizeof(pcVals), pcVals);
+                // Two caster partitions per frustum: solid at base + s, alpha-tested MASKED at
+                // base + FRUSTUM_COUNT + s — drawn back-to-back into the same rendering instance
+                // (shared depth slice keeps nearest-occluder selection across both classes), each
+                // with its own pipeline (masked = uv+material geometry + alpha discard).
+                uint32_t shadowBase = ANO_VIEW_COUNT * drawSlotCount;
+                uint32_t partitions[2] = { shadowBase + s, shadowBase + ANO_SHADOW_FRUSTUM_COUNT + s };
+                for (uint32_t m = 0; m < 2u; m++) {
+                    uint32_t partition = partitions[m];
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m == 0u ? rendererState.shadowPipeline : rendererState.shadowPipelineMasked);
+                    uint32_t pcVals[2] = { partition * rendererState.culling.maxEntities, s }; // baseOffset, shadowFrustumIndex
+                    vkCmdPushConstants(cmd, flatLayout, pcStageS, 0, sizeof(pcVals), pcVals);
 
-                VkDeviceSize countOffset = (VkDeviceSize)partition * sizeof(uint32_t);
-                if (useMeshS) {
-                    VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDrawsS * sizeof(VkDrawMeshTasksIndirectCommandEXT);
-                    if (ctx.deviceCapabilities.drawIndirectCount)
-                        pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset, drawCountBuf, countOffset, maxDrawsS, sizeof(VkDrawMeshTasksIndirectCommandEXT));
-                    else
-                        pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset, entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
-                } else {
-                    VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDrawsS * sizeof(VkDrawIndexedIndirectCommand);
-                    if (ctx.deviceCapabilities.drawIndirectCount)
-                        vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset, drawCountBuf, countOffset, maxDrawsS, sizeof(VkDrawIndexedIndirectCommand));
-                    else
-                        vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset, entityCount, sizeof(VkDrawIndexedIndirectCommand));
+                    VkDeviceSize countOffset = (VkDeviceSize)partition * sizeof(uint32_t);
+                    if (useMeshS) {
+                        VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDrawsS * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+                        if (ctx.deviceCapabilities.drawIndirectCount)
+                            pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset, drawCountBuf, countOffset, maxDrawsS, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                        else
+                            pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset, entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+                    } else {
+                        VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDrawsS * sizeof(VkDrawIndexedIndirectCommand);
+                        if (ctx.deviceCapabilities.drawIndirectCount)
+                            vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset, drawCountBuf, countOffset, maxDrawsS, sizeof(VkDrawIndexedIndirectCommand));
+                        else
+                            vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset, entityCount, sizeof(VkDrawIndexedIndirectCommand));
+                    }
                 }
                 vkCmdEndRendering(cmd);
             }
@@ -1708,7 +1738,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     // (slot y) is the depth-sorted "over" lane (tpsort.comp). ANO_NO_DRAW_SLOT when a lane is absent.
     ubo->specialSlots[0] = ano_draw_slot_of(PIPELINE_ADDITIVE);
     ubo->specialSlots[1] = ano_draw_slot_of(PIPELINE_TRANSMISSION);
-    ubo->specialSlots[2] = ANO_NO_DRAW_SLOT;
+    ubo->specialSlots[2] = ano_draw_slot_of(PIPELINE_FLAT_MASKED); // casters -> per-frustum MASKED shadow partition
     ubo->specialSlots[3] = ANO_NO_DRAW_SLOT;
 
     // Task-shader meshlet cull (review priority 10): tells emitDraw to size mesh-path commands as

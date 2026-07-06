@@ -1,6 +1,16 @@
 #version 460
 #extension GL_EXT_mesh_shader : require
 
+// Compile modes: (default) full shading outputs; ANO_DEPTH_ONLY = position-only (camera depth
+// pre-pass + solid shadow casters); ANO_DEPTH_MASKED = position + uv + packed indices, no normal
+// (alpha-tested MASK casters: the shadow fragment samples baseColor.a and discards).
+#if !defined(ANO_DEPTH_ONLY) && !defined(ANO_DEPTH_MASKED)
+    #define ANO_WANT_SHADE 1
+#endif
+#if defined(ANO_WANT_SHADE) || defined(ANO_DEPTH_MASKED)
+    #define ANO_WANT_UV 1
+#endif
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 64, max_primitives = 126) out;
 
@@ -170,11 +180,14 @@ out gl_MeshPerVertexEXT {
     invariant vec4 gl_Position;
 } gl_MeshVerticesEXT[];
 
-#ifndef ANO_DEPTH_ONLY
 // Interstage diet: material (high 12 bits) | entity slot (low 20) share one flat scalar, and
 // world position is reconstructed fragment-side from gl_FragCoord (GlobalUBO.invVPPixel), so
 // each vertex carries 6 attribute scalars instead of 10 (TRAM/ISBE + mesh output footprint).
+// The masked-depth compile keeps only uv + packed (location 0 gap is legal).
+#ifdef ANO_WANT_SHADE
 layout(location = 0) out vec3 fragNormal[];
+#endif
+#ifdef ANO_WANT_UV
 layout(location = 1) out vec2 fragTexCoord[];
 layout(location = 2) flat out uint outPackedIndices[];
 #endif
@@ -230,8 +243,10 @@ void main() {
 
     // model + normal matrix are per-entity, compute once. Inverse-transpose is correct under non-uniform / negative / sheared scale.
     mat4 model = transformBuf.transforms[entityIndex];
-#ifndef ANO_DEPTH_ONLY
+#ifdef ANO_WANT_SHADE
     mat3 normalMatrix = transpose(inverse(mat3(model)));
+#endif
+#ifdef ANO_WANT_UV
     uint packedIndices = (materialIndex << 20) | entityIndex; // contract: material < 4096, slot < 2^20
 #endif
 
@@ -250,11 +265,12 @@ void main() {
             ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * vec4(worldPos, 1.0))
             : (global.viewProj * vec4(worldPos, 1.0));
 
-#ifndef ANO_DEPTH_ONLY
+#ifdef ANO_WANT_SHADE
         vec3 normal   = vec3(v.nx, v.ny, v.nz);
-        vec2 texCoord = vec2(v.u, v.v);
         fragNormal[i] = normalMatrix * normal;
-        fragTexCoord[i] = texCoord;
+#endif
+#ifdef ANO_WANT_UV
+        fragTexCoord[i] = vec2(v.u, v.v);
         outPackedIndices[i] = packedIndices;
 #endif
     }
