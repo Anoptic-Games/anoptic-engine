@@ -81,6 +81,8 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint debugView;      // RC debug visualization selector (0 = off)
     uint pad0;
     uint pad1;
+    mat4 viewProj;    // premultiplied camera clip transform (geometry stages; declared for layout)
+    mat4 invVPPixel;  // inv(viewProj) * (pixel -> NDC): world position from gl_FragCoord
 } global;
 
 // Clustered-forward froxel light lists (light-cull output).
@@ -166,11 +168,11 @@ float getSpotAttenuation(vec3 spotForward, vec3 L, float innerConeCos, float out
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
+// Interstage diet (flat.mesh): material | entity share one flat scalar, world position is
+// reconstructed from gl_FragCoord via global.invVPPixel instead of arriving as an attribute.
 layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragTexCoord;
-layout(location = 2) flat in uint inMaterialIndex;
-layout(location = 3) in vec3 fragWorldPos;
-layout(location = 4) flat in uint inEntityIndex;
+layout(location = 2) flat in uint inPackedIndices; // material (high 12 bits) | entity slot (low 20)
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out uint outId; // GPU slot of this fragment, for cursor picking (opaque pass only)
@@ -208,6 +210,13 @@ vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, 
 }
 
 void main() {
+    uint inMaterialIndex = inPackedIndices >> 20;
+    uint inEntityIndex   = inPackedIndices & 0xFFFFFu;
+    // World position from this fragment's own rasterized depth (exact, not a depth-buffer
+    // sample): one constant-bank mat4 + a divide replaces the vec3 interstage attribute.
+    vec4 wp4 = global.invVPPixel * vec4(gl_FragCoord.xyz, 1.0);
+    vec3 fragWorldPos = wp4.xyz / wp4.w;
+
     MaterialData mat = materialBuf.materials[inMaterialIndex];
     vec4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexture != 0xFFFFFFFF) {

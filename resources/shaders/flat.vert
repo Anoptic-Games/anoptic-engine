@@ -15,6 +15,19 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint frameCount;
     uint lightCount;
     vec4 cameraPos;
+    float cameraNear;
+    float cameraFar;
+    float screenWidth;
+    float screenHeight;
+    uint clusterDimX;
+    uint clusterDimY;
+    uint clusterDimZ;
+    uint maxLightsPerCluster;
+    uint lightingMode;
+    uint debugView;
+    uint pad0;
+    uint pad1;
+    mat4 viewProj; // proj * view premultiplied on CPU (mirrors flat.mesh)
 } global;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -62,11 +75,11 @@ layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadow
 invariant gl_Position;
 
 #ifndef ANO_DEPTH_ONLY
+// Interstage diet (mirrors flat.mesh): material (high 12) | entity slot (low 20) in one flat
+// scalar; world position reconstructed fragment-side from gl_FragCoord.
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec2 fragTexCoord;
-layout(location = 2) flat out uint outMaterialIndex;
-layout(location = 3) out vec3 fragWorldPos;
-layout(location = 4) flat out uint outEntityIndex; // slot index -> per-entity instance channel
+layout(location = 2) flat out uint outPackedIndices;
 #endif
 
 // ---------------------------------------------------------------------------
@@ -82,17 +95,16 @@ void main() {
     PackedVertex v = vertexBuf.vertices[gl_VertexIndex];
     vec3 position = vec3(v.px, v.py, v.pz);
 
+    // Affine transform + premultiplied viewProj (mirrors flat.mesh, same invariant contract).
     mat4 model = transformBuf.transforms[entityIndex];
-    vec4 worldPos = model * vec4(position, 1.0);
+    vec3 worldPos = mat3(model) * position + model[3].xyz;
 
-    gl_Position      = shadowPass ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
-                                  : (global.proj * global.view * worldPos);
+    gl_Position      = shadowPass ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * vec4(worldPos, 1.0))
+                                  : (global.viewProj * vec4(worldPos, 1.0));
 #ifndef ANO_DEPTH_ONLY
     // Inverse-transpose normal matrix: correct under non-uniform / negative / sheared scale.
     fragNormal       = transpose(inverse(mat3(model))) * vec3(v.nx, v.ny, v.nz);
     fragTexCoord     = vec2(v.u, v.v);
-    outMaterialIndex = entity.materialIndex;
-    fragWorldPos     = worldPos.xyz;
-    outEntityIndex   = entityIndex;
+    outPackedIndices = (entity.materialIndex << 20) | entityIndex; // contract: material < 4096, slot < 2^20
 #endif
 }

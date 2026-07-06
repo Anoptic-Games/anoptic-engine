@@ -40,6 +40,8 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint  debugView;
     uint  pad0;
     uint  pad1;
+    mat4  viewProj;    // premultiplied camera clip transform (geometry stages)
+    mat4  invVPPixel;  // pixel -> world unprojector (fragment stages)
     // Task-cull tail (mirrors vertex.h GlobalUBO; updateCullingBuffers writes it per view with
     // the SAME plane extraction / reprojection values as the entity cull's CullUBO).
     vec4  frustumPlanes[6];

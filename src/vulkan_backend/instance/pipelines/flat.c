@@ -84,7 +84,10 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
-	if (!loadFile("resources/shaders/flat.frag.spv", &fragShaderCode)) return false;
+	// fp16 CDF-reconstruct variant when the device has shaderFloat16 (ANO_FORCE_NO_FP16 pins fp32).
+	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_fp16.frag.spv"
+	                                                    : "resources/shaders/flat.frag.spv",
+	              &fragShaderCode)) return false;
 
 	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	VkShaderModule depthGeomShaderModule = createShaderModule(ctx->device, &depthGeomShaderCode);

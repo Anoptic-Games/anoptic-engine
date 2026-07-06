@@ -4,7 +4,7 @@
 // Additive lane (audit 4.7). Stripped flat.frag: no clustered-forward light loop, no shadow
 // sampling. Emits a premultiplied emissive/base contribution; the pipeline blends ONE/ONE, which is
 // commutative, so the cull pass's arbitrary draw order is correct (no sort needed). Shares the FLAT
-// geometry stage outputs (locations 0..4).
+// geometry stage outputs, consuming only texcoord + packed indices.
 
 struct MaterialData {
     uint      features;
@@ -81,15 +81,14 @@ layout(set = 0, binding = 9) readonly buffer InstanceSSBO {
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
-layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragTexCoord;
-layout(location = 2) flat in uint inMaterialIndex;
-layout(location = 3) in vec3 fragWorldPos;
-layout(location = 4) flat in uint inEntityIndex;
+layout(location = 2) flat in uint inPackedIndices; // material (high 12 bits) | entity slot (low 20)
 
 layout(location = 0) out vec4 outColor;
 
 void main() {
+    uint inMaterialIndex = inPackedIndices >> 20;
+    uint inEntityIndex   = inPackedIndices & 0xFFFFFu;
     MaterialData mat = materialBuf.materials[inMaterialIndex];
 
     vec4 base = mat.baseColorFactor;

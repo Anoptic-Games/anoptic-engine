@@ -70,7 +70,10 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
-	if (!loadFile("resources/shaders/transmission.frag.spv", &fragShaderCode)) return false;
+	// fp16 CDF-reconstruct variant when the device has shaderFloat16 (ANO_FORCE_NO_FP16 pins fp32).
+	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/transmission_fp16.frag.spv"
+	                                                    : "resources/shaders/transmission.frag.spv",
+	              &fragShaderCode)) return false;
 
 	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
