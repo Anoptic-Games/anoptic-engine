@@ -20,21 +20,29 @@ fi
 
 echo "Using glslangValidator: $glslang"
 
-# Define the shaders to compile
-shaders=(
-    flat.mesh flat.vert flat.frag transmission.frag additive.frag 
-    cull.comp tpsort.comp update.comp scatter.comp lightcull.comp
-    lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.frag
-    tonemap.vert tonemap.frag
-)
-
-for shader in "${shaders[@]}"; do
+# Dynamically discover shaders just like compile.sh
+for shader in *.mesh *.vert *.frag *.comp *.task; do
+    case "$shader" in
+        skinned.mesh|pose.comp|decal.vert|decal.frag) continue ;;
+    esac
     echo "  $shader -> $shader.spv (Debug)"
-    
-    # -V: Target Vulkan environment (defaults to standard SPIR-V generation)
-    # --target-env vulkan1.2: Matches your original Vulkan API target version
-    # -g: Generates the debug symbols that NVIDIA Nsight can read properly
     "$glslang" -V --target-env vulkan1.2 -gVS -o "$shader.spv" "$shader"
 done
+
+# Compile the missing debug variants
+echo "  flat.mesh -DANO_DEPTH_ONLY -> flat_depth.mesh.spv (Debug)"
+"$glslang" -V --target-env vulkan1.2 -gVS -DANO_DEPTH_ONLY -o flat_depth.mesh.spv flat.mesh
+
+echo "  flat.vert -DANO_DEPTH_ONLY -> flat_depth.vert.spv (Debug)"
+"$glslang" -V --target-env vulkan1.2 -gVS -DANO_DEPTH_ONLY -o flat_depth.vert.spv flat.vert
+
+echo "  flat.mesh -DANO_TASK_CULL -> flat_task.mesh.spv (Debug)"
+"$glslang" -V --target-env vulkan1.2 -gVS -DANO_TASK_CULL -o flat_task.mesh.spv flat.mesh
+
+echo "  flat.mesh -DANO_TASK_CULL -DANO_DEPTH_ONLY -> flat_depth_task.mesh.spv (Debug)"
+"$glslang" -V --target-env vulkan1.2 -gVS -DANO_TASK_CULL -DANO_DEPTH_ONLY -o flat_depth_task.mesh.spv flat.mesh
+
+echo "  hiz.comp -DRESOLVED_DEPTH -> hiz_resolve.comp.spv (Debug)"
+"$glslang" -V --target-env vulkan1.2 -gVS -DRESOLVED_DEPTH -o hiz_resolve.comp.spv hiz.comp
 
 echo "Debug shaders compiled successfully."

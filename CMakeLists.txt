@@ -173,25 +173,46 @@ if(Vulkan_FOUND)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-    # Shaders compile to SPIR-V in the build tree, committed .spv are the no-glslc fallback.
+    # Shaders compile to SPIR-V in the build tree, committed .spv are the no-compiler fallback.
     set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
     set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
-    if(NOT Vulkan_GLSLC_EXECUTABLE)
-        message(WARNING "glslc not found: staging committed resources/shaders/*.spv (may be stale).")
+
+    # Shader compiler by build type: Debug embeds SPIR-V debug info for Nsight source
+    # captures (glslangValidator -gVS; glslc -g is the lesser, no-NonSemantic fallback),
+    # Release strips it. Mirrors resources/shaders/compile{,_debug}.sh.
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
+        set(SHADER_COMPILER ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
+        set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gVS)
+        set(SHADER_COMPILE_TAG "glslangValidator -gVS")
+    elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLC_EXECUTABLE)
+        set(SHADER_COMPILER ${Vulkan_GLSLC_EXECUTABLE})
+        set(SHADER_COMPILE_ARGS --target-env=vulkan1.2 -g)
+        set(SHADER_COMPILE_TAG "glslc -g")
+    elseif(Vulkan_GLSLC_EXECUTABLE)
+        set(SHADER_COMPILER ${Vulkan_GLSLC_EXECUTABLE})
+        set(SHADER_COMPILE_ARGS --target-env=vulkan1.2)
+        set(SHADER_COMPILE_TAG "glslc")
+    else()
+        set(SHADER_COMPILER "")
+        message(WARNING "no shader compiler found: staging committed resources/shaders/*.spv (may be stale).")
     endif()
+    if(SHADER_COMPILER)
+        message(STATUS "Shader compiler: ${SHADER_COMPILE_TAG}")
+    endif()
+
     set(SPV_OUTPUTS "")
     # Shared GLSL includes, every shader rebuilds when one changes.
     set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl)
 
-    # Compile <source> to <output>.spv, or stage the committed .spv without glslc.
+    # Compile <source> to <output>.spv, or stage the committed .spv without a compiler.
     function(ano_add_shader output source)
-        if(Vulkan_GLSLC_EXECUTABLE)
+        if(SHADER_COMPILER)
             add_custom_command(
                     OUTPUT  ${SHADER_BIN_DIR}/${output}.spv
                     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
-                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${ARGN} ${SHADER_SRC_DIR}/${source} -o ${SHADER_BIN_DIR}/${output}.spv
+                    COMMAND ${SHADER_COMPILER} ${SHADER_COMPILE_ARGS} ${ARGN} -o ${SHADER_BIN_DIR}/${output}.spv ${SHADER_SRC_DIR}/${source}
                     DEPENDS ${SHADER_SRC_DIR}/${source} ${SHADER_INCLUDES}
-                    COMMENT "glslc ${source} ${ARGN} -> ${output}.spv"
+                    COMMENT "${SHADER_COMPILE_TAG} ${source} ${ARGN} -> ${output}.spv"
                     VERBATIM)
         else()
             add_custom_command(
@@ -199,7 +220,7 @@ if(Vulkan_FOUND)
                     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SRC_DIR}/${output}.spv ${SHADER_BIN_DIR}/${output}.spv
                     DEPENDS ${SHADER_SRC_DIR}/${output}.spv
-                    COMMENT "staging committed ${output}.spv (no glslc)"
+                    COMMENT "staging committed ${output}.spv (no compiler)"
                     VERBATIM)
         endif()
         set(SPV_OUTPUTS ${SPV_OUTPUTS} ${SHADER_BIN_DIR}/${output}.spv PARENT_SCOPE)

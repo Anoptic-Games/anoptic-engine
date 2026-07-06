@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Scanline Sweeper overlay raster: integrates glyph coverage
 // per pixel using the shared math in textcoverage.glsl. One workgroup per 8x8 pixel
