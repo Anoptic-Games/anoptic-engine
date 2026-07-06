@@ -538,6 +538,12 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	// Timeline semaphores (vk1.2): cross-queue ordering for the async Hi-Z build (review finding 2).
 	capabilities.timelineSemaphore = features12.timelineSemaphore;
 
+	// fp16 arithmetic (vk1.2 shaderFloat16): selects the *_fp16.frag lighting variants (fp16 CDF
+	// reconstruct, fewer live registers). Test hook forces the fp32 shaders on capable hardware.
+	capabilities.shaderFloat16 = features12.shaderFloat16;
+	if (getenv("ANO_FORCE_NO_FP16")) capabilities.shaderFloat16 = false;
+	ano_log(ANO_INFO, "CDF reconstruct: %s", capabilities.shaderFloat16 ? "fp16" : "fp32 (no shaderFloat16)");
+
 	//Queue family checks
 	struct QueueFamilyIndices indices = findQueueFamilies(device, NULL);
 	capabilities.graphics = indices.graphicsPresent;
@@ -977,6 +983,9 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.shaderOutputViewportIndex = queryFeatures12.shaderOutputViewportIndex;
 	// Async Hi-Z ordering (review finding 2); mirrors populateCapabilities.
 	features12.timelineSemaphore = queryFeatures12.timelineSemaphore;
+	// fp16 CDF reconstruct (the *_fp16.frag variants); enabled when present, use gated by
+	// deviceCapabilities.shaderFloat16 (which also honors ANO_FORCE_NO_FP16).
+	features12.shaderFloat16 = queryFeatures12.shaderFloat16;
 
 	// Mirror populateCapabilities: the fallback path activates when the feature is
 	// absent or the test override forces it off.
@@ -1657,6 +1666,22 @@ bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 		u->clusterDimY = ANO_CLUSTER_Y;
 		u->clusterDimZ = ANO_CLUSTER_Z;
 		u->maxLightsPerCluster = ANO_CLUSTER_MAX_LIGHTS;
+
+		// Premultiplied clip transform + fragment unprojector (see vertex.h). pixelToNdc maps
+		// (px, py, z, 1) to (2px/w - 1, 2py/h - 1, z, 1) for this view's extent; the Y flip
+		// already lives in proj, and the viewport is the standard positive-height 0..1 one.
+		multiplyMat4(u->viewProj, u->proj, u->view);
+		mat4 invVP, pixelToNdc;
+		if (!invertMat4(invVP, u->viewProj))
+			memcpy(invVP, u->viewProj, sizeof(mat4)); // singular (degenerate camera): harmless placeholder
+		memset(pixelToNdc, 0, sizeof(mat4));
+		pixelToNdc[0][0] = 2.0f / u->screenWidth;
+		pixelToNdc[1][1] = 2.0f / u->screenHeight;
+		pixelToNdc[2][2] = 1.0f;
+		pixelToNdc[3][0] = -1.0f;
+		pixelToNdc[3][1] = -1.0f;
+		pixelToNdc[3][3] = 1.0f;
+		multiplyMat4(u->invVPPixel, invVP, pixelToNdc);
 
 		memcpy(state->frames[state->frameIndex].views[v].uniformMapped, u, sizeof(GlobalUBO));
 	}

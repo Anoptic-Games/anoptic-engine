@@ -50,13 +50,20 @@ typedef struct GlobalUBO
 	uint32_t debugView;        //      196  (RC debug visualization; 0 = off)
 	uint32_t pad0;             //      200
 	uint32_t pad1;             //      204
+	// Camera clip transform + fragment unprojector, filled by updateUniformBuffer. viewProj is
+	// proj*view premultiplied so geometry stages read one constant-bank mat4 instead of hoisting
+	// the product into registers per workgroup. invVPPixel = inv(viewProj) * (pixel -> NDC) for
+	// THIS view's extent: fragment stages reconstruct world position from gl_FragCoord instead
+	// of carrying a vec3 interstage attribute.
+	mat4 viewProj;             // row: 208
+	mat4 invVPPixel;           //      272
 	// Task-shader meshlet cull tail, read ONLY by flat.task (other shaders declare a prefix).
 	// updateCullingBuffers writes these per view with the same values as the entity cull's CullUBO.
-	// 16-aligned at offset 208, std140 matches C layout.
-	float frustumPlanes[6][4]; // row: 208  this view's world-space frustum planes
-	mat4  prevViewProj;        //      304  reprojection for the meshlet Hi-Z test
-	float hizParams[4];        //      368  {pyramid baseW, baseH, mipCount (0 = off), 0}
-	float hizProj[4];          //      384  {proj00, proj11, proj22, proj32}
+	// 16-aligned at offset 336, std140 matches C layout.
+	float frustumPlanes[6][4]; // row: 336  this view's world-space frustum planes
+	mat4  prevViewProj;        //      432  reprojection for the meshlet Hi-Z test
+	float hizParams[4];        //      496  {pyramid baseW, baseH, mipCount (0 = off), 0}
+	float hizProj[4];          //      512  {proj00, proj11, proj22, proj32}
 } GlobalUBO;
 
 

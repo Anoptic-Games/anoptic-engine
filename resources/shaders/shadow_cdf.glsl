@@ -12,6 +12,13 @@
 #ifndef ANO_SHADOW_CDF_GLSL
 #define ANO_SHADOW_CDF_GLSL
 
+// ANO_CDF_FP16 (a -D of the *_fp16.frag.spv variants, selected at pipeline creation when the
+// device has shaderFloat16): the reconstruct walks the band data in fp16, halving the standing
+// texture-return registers. Encode and the fp32 reconstruct are untouched.
+#if ANO_CDF_FP16
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#endif
+
 const int   ANO_CDF_LAYERS = 4;
 const float ANO_CDF_LAYER_W = 0.25; // 1.0 / ANO_CDF_LAYERS
 
@@ -31,6 +38,36 @@ void anoEncodeLayered(float z, out vec4 subA, out vec4 subB) {
 // Layered visibility. subA/subB = the two prefiltered sublayer texels (band pairs), zr = receiver
 // light-space depth in [0,1], depthBias = occluder offset vs self-shadow acne, contactSoft = within-band
 // soft-step half-width in ZO depth units (0 = hard step at the band mean). Returns the lit factor in [0,1].
+#if ANO_CDF_FP16
+// fp16 band walk: the filtered (coverage, M) pairs are UNORM16-sourced [0,1] values, well inside
+// fp16 range. The receiver depth zr, the bias, and the contact smoothstep STAY fp32 — fp16 ulp
+// near 1.0 (~4.9e-4) would swallow the 2e-4 depth bias; mean is promoted before the smoothstep
+// for the same reason. Residual: mean itself is fp16-quantized (<= 1 ulp), which can dip up to
+// ~1.5% of coverage into the contact ramp on far-band receivers — below visibility.
+float anoLayeredShadow(vec4 subA32, vec4 subB32, float zr, float depthBias, float contactSoft) {
+    const float EPS = 1e-4;
+    zr -= depthBias;
+    // Unpack the 4 bands: (coverage_k, M_k).
+    f16vec4 subA = f16vec4(subA32);
+    f16vec4 subB = f16vec4(subB32);
+    float16_t cov[4] = float16_t[4](subA.x, subA.z, subB.x, subB.z);
+    float16_t M[4]   = float16_t[4](subA.y, subA.w, subB.y, subB.w);
+
+    float16_t occ = float16_t(0.0);
+    for (int k = 0; k < ANO_CDF_LAYERS; ++k) {
+        float c = float(cov[k]);
+        if (c < EPS) continue;                 // no occluders of this footprint in band k
+        float lo = float(k) * ANO_CDF_LAYER_W;
+        float hi = lo + ANO_CDF_LAYER_W;
+        if (zr >= hi) { occ += cov[k]; continue; } // whole band is nearer than the receiver -> fully occludes
+        if (zr <= lo) continue;                // whole band is behind the receiver -> does not occlude
+        // Receiver's own band: soft step rising from the band's mean occluder depth. Coverage weight keeps thin occluders faint.
+        float mean = float(M[k]) / c;
+        occ += cov[k] * float16_t(smoothstep(mean, mean + contactSoft + EPS, zr));
+    }
+    return clamp(1.0 - float(occ), 0.0, 1.0);
+}
+#else
 float anoLayeredShadow(vec4 subA, vec4 subB, float zr, float depthBias, float contactSoft) {
     const float EPS = 1e-4;
     zr -= depthBias;
@@ -52,6 +89,7 @@ float anoLayeredShadow(vec4 subA, vec4 subB, float zr, float depthBias, float co
     }
     return clamp(1.0 - occ, 0.0, 1.0);
 }
+#endif
 
 // Point-light cube face for direction d = fragWorldPos - lightPos. 0..5 = +X,-X,+Y,-Y,+Z,-Z.
 // MUST match shadowsetup.comp's cubeFaceBasis.

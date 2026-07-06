@@ -42,11 +42,11 @@ layout(set = 0, binding = 10, std430) readonly buffer SkinVertexBuffer { SkinVer
 // Visible-compacted bone matrices from pose.comp; paletteBase comes per-instance.
 layout(set = 0, binding = 11, std430) readonly buffer BonePaletteSSBO { mat4 palette[]; } paletteBuf;
 
+// Interstage matches flat.mesh: material (high 12) | entity slot (low 20) packed flat scalar;
+// world position reconstructed fragment-side from gl_FragCoord.
 layout(location = 0) out vec3 fragNormal[];
 layout(location = 1) out vec2 fragTexCoord[];
-layout(location = 2) flat out uint outMaterialIndex[];
-layout(location = 3) out vec3 fragWorldPos[];
-layout(location = 4) flat out uint outEntityIndex[];
+layout(location = 2) flat out uint outPackedIndices[];
 
 void main() {
     // SKELETON: for each vertex, skinned =

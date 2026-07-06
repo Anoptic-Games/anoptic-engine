@@ -174,6 +174,7 @@ typedef struct DeviceCapabilities // Add queue families, device extensions etc a
 	bool depthMaxResolve;       // VK_RESOLVE_MODE_MAX_BIT in supportedDepthResolveModes: enables the Hi-Z single-sample depth-resolve path (else per-sample MSAA reduce)
 	bool shaderOutputLayer;     // vk1.2 shaderOutputLayer(+ViewportIndex): vertex-stage gl_Layer, enables the single-pass layered shadow blur (else per-layer passes)
 	bool timelineSemaphore;     // vk1.2 timelineSemaphore: cross-queue ordering for the async Hi-Z build (review finding 2)
+	bool shaderFloat16;         // vk1.2 shaderFloat16: selects the *_fp16.frag lighting variants (fp16 CDF reconstruct); false loads the fp32 shaders
 } DeviceCapabilities;
 
 typedef struct QueueFamilyIndices // Stores whether different queue families exist, and which queue has been selected for each

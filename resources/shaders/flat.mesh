@@ -16,6 +16,19 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint frameCount;
     uint lightCount;
     vec4 cameraPos;
+    float cameraNear;
+    float cameraFar;
+    float screenWidth;
+    float screenHeight;
+    uint clusterDimX;
+    uint clusterDimY;
+    uint clusterDimZ;
+    uint maxLightsPerCluster;
+    uint lightingMode;
+    uint debugView;
+    uint pad0;
+    uint pad1;
+    mat4 viewProj; // proj * view premultiplied on CPU: one constant-bank read, no register hoist
 } global;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -158,24 +171,13 @@ out gl_MeshPerVertexEXT {
 } gl_MeshVerticesEXT[];
 
 #ifndef ANO_DEPTH_ONLY
+// Interstage diet: material (high 12 bits) | entity slot (low 20) share one flat scalar, and
+// world position is reconstructed fragment-side from gl_FragCoord (GlobalUBO.invVPPixel), so
+// each vertex carries 6 attribute scalars instead of 10 (TRAM/ISBE + mesh output footprint).
 layout(location = 0) out vec3 fragNormal[];
 layout(location = 1) out vec2 fragTexCoord[];
-layout(location = 2) flat out uint outMaterialIndex[];
-layout(location = 3) out vec3 fragWorldPos[];
-layout(location = 4) flat out uint outEntityIndex[]; // slot index -> per-entity instance channel
+layout(location = 2) flat out uint outPackedIndices[];
 #endif
-
-// ---------------------------------------------------------------------------
-// Meshlet index unpacking
-// ---------------------------------------------------------------------------
-
-uint getLocalIndex(uint baseByteOffset, uint triangleOffset, uint t, uint vertexInTriangle) {
-    uint byteOffset = baseByteOffset + triangleOffset + t * 3 + vertexInTriangle;
-    uint uintIdx = byteOffset / 4;
-    uint byteIdx = byteOffset % 4;
-    uint val = indexBuf.data[uintIdx];
-    return (val >> (byteIdx * 8)) & 0xFFu;
-}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -230,9 +232,12 @@ void main() {
     mat4 model = transformBuf.transforms[entityIndex];
 #ifndef ANO_DEPTH_ONLY
     mat3 normalMatrix = transpose(inverse(mat3(model)));
+    uint packedIndices = (materialIndex << 20) | entityIndex; // contract: material < 4096, slot < 2^20
 #endif
 
-    // Load vertices (strided loop)
+    // Load vertices (strided loop). Transforms are affine: mat3 rotate/scale + column-3
+    // translate keeps the w lanes (always 0,0,0,1) out of the live set. Both the depth-only
+    // and full compiles share this expression, preserving the invariant EQUAL-test contract.
     for (uint i = ti; i < vertexCount; i += 64) {
         uint vertexIdx = indexBuf.data[uniqueVertOffsetUint + vertexOffset + i];
         uint globalVertexIdx = globalVertexBase + vertexIdx;
@@ -240,27 +245,33 @@ void main() {
         PackedVertex v = vertexBuf.vertices[globalVertexIdx];
         vec3 position = vec3(v.px, v.py, v.pz);
 
-        vec4 worldPos = model * vec4(position, 1.0);
+        vec3 worldPos = mat3(model) * position + model[3].xyz;
         gl_MeshVerticesEXT[i].gl_Position = shadowPass
-            ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
-            : (global.proj * global.view * worldPos);
+            ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * vec4(worldPos, 1.0))
+            : (global.viewProj * vec4(worldPos, 1.0));
 
 #ifndef ANO_DEPTH_ONLY
         vec3 normal   = vec3(v.nx, v.ny, v.nz);
         vec2 texCoord = vec2(v.u, v.v);
         fragNormal[i] = normalMatrix * normal;
         fragTexCoord[i] = texCoord;
-        outMaterialIndex[i] = materialIndex;
-        fragWorldPos[i] = worldPos.xyz;
-        outEntityIndex[i] = entityIndex;
+        outPackedIndices[i] = packedIndices;
 #endif
     }
 
-    // Load triangles (strided loop, up to 126)
+    // Load triangles (strided loop, up to 126). A triangle's 3 byte-indices span at most two
+    // dwords of the packed stream: load both once and extract, instead of three separate
+    // load+shift round trips (was 21% of mesh samples as scoreboard stalls on reloads).
     for (uint i = ti; i < triangleCount; i += 64) {
-        uint i0 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 0);
-        uint i1 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 1);
-        uint i2 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 2);
+        uint byteBase = trianglesOffsetBytes + triangleOffset + i * 3u;
+        uint w0 = byteBase >> 2u;
+        uint b  = byteBase & 3u;
+        uint lo = indexBuf.data[w0];
+        uint hi = indexBuf.data[(byteBase + 2u) >> 2u]; // == lo when the triangle fits one dword
+
+        uint i0 = (lo >> (b << 3u)) & 0xFFu;
+        uint i1 = (((b == 3u) ? hi : lo) >> (((byteBase + 1u) & 3u) << 3u)) & 0xFFu;
+        uint i2 = (hi >> (((byteBase + 2u) & 3u) << 3u)) & 0xFFu;
 
         gl_PrimitiveTriangleIndicesEXT[i] = uvec3(i0, i1, i2);
     }

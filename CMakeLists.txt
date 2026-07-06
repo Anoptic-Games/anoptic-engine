@@ -237,6 +237,9 @@ if(Vulkan_FOUND)
     ano_add_shader(flat_depth_task.mesh flat.mesh -DANO_TASK_CULL -DANO_DEPTH_ONLY)
     # Hi-Z variant reading MAX-resolved depth, used when the device supports it.
     ano_add_shader(hiz_resolve.comp hiz.comp -DRESOLVED_DEPTH)
+    # fp16 CDF-reconstruct variants of the lighting frags, used when the device has shaderFloat16.
+    ano_add_shader(flat_fp16.frag flat.frag -DANO_CDF_FP16=1)
+    ano_add_shader(transmission_fp16.frag transmission.frag -DANO_CDF_FP16=1)
 
     add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
     # Everything linking anoptic_render loads shaders at runtime.
