@@ -83,6 +83,14 @@ target_link_libraries(anotest_strbench PRIVATE anoptic_core)
 add_test(NAME anoptic_strbench COMMAND anotest_strbench)
 set_tests_properties(anoptic_strbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
+# Compile-time string-id benchmark: ANOSTR_SID switch dispatch vs strcmp / anostr_eq /
+# runtime hash / intern_find, plus the bulk-keying cost SID deletes at startup.
+# DISABLED in ctest, run ./anotest_sidbench by hand from a -O3 build.
+add_executable(anotest_sidbench anotest_sidbench.c)
+target_link_libraries(anotest_sidbench PRIVATE anoptic_core)
+add_test(NAME anoptic_sidbench COMMAND anotest_sidbench)
+set_tests_properties(anoptic_sidbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
 # Testing for mesh optimizer
 add_executable(anotest_meshoptimizer anotest_meshoptimizer.c)
 target_link_libraries(anotest_meshoptimizer PRIVATE anoptic_core m)

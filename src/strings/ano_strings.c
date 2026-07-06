@@ -43,7 +43,7 @@ anostr_t anostr_view(const char *bytes, size_t len)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Hash: FNV-1a 64 over the bytes.
+// Hash: FNV-1a over the bytes, both widths. Runtime twins of ANOSTR_SID/ANOSTR_SID32.
 
 uint64_t anostr_hash(anostr_t s)
 {
@@ -52,6 +52,17 @@ uint64_t anostr_hash(anostr_t s)
     for (uint32_t i = 0; i < s.len; i++) {
         h ^= (uint8_t)p[i];
         h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+uint32_t anostr_hash32(anostr_t s)
+{
+    const char *p = anostr_bytes(&s);
+    uint32_t h = 0x811c9dc5u;
+    for (uint32_t i = 0; i < s.len; i++) {
+        h ^= (uint8_t)p[i];
+        h *= 0x01000193u;
     }
     return h;
 }
