@@ -1963,15 +1963,17 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	//   sets/frame:    (global+light-cull+tonemap) per view + cull+update+scatter shared
 	VkDescriptorPoolSize poolSize[5] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u);
-	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (4 SSBO) +
-	// shadow geom set (2 SSBO + 1 sampler), and 2 extra sets. Transparency sort (audit 4.7) adds
+	// +1u: shadow geom set binding 3 (packed sampling viewProjs read as a UBO).
+	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u + 1u);
+	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (5 SSBO,
+	// binding 4 = packed sampling viewProjs out) + shadow geom set (2 SSBO + 1 sampler + 1 UBO),
+	// and 2 extra sets. Transparency sort (audit 4.7) adds
 	// cull binding 10 (1 SSBO, the sort-key buffer) — the +1 in the shared term below.
 	// global now 12 SSBOs/view (binding 12 = per-light LightRuntime record); + lightsetup set (3 SSBO) shared.
 	// Text overlay adds per frame: raster set (3 SSBO + 1 storage
 	// image) + overlay sample set (1 sampler), 2 extra sets.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u + 3u);
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u + 3u + 1u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1: xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2320,9 +2322,12 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorImageInfo  atI   = { state->shadowSampler, state->shadowAtlasArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo  tmI   = { state->shadowSampler, state->shadowTempArrayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
-        VkWriteDescriptorSet w[9] = {};
-        // shadowsetup set (0 config, 1 transforms, 2 lights, 3 frustums-out) — all storage.
-        for (int j = 0; j < 4; ++j) {
+        VkDescriptorBufferInfo vpI = { sh->sampleVPBuffer, 0, VK_WHOLE_SIZE };
+
+        VkWriteDescriptorSet w[11] = {};
+        // shadowsetup set (0 config, 1 transforms, 2 lights, 3 frustums-out, 4 sampling
+        // viewProjs-out) — all storage.
+        for (int j = 0; j < 5; ++j) {
             w[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[j].dstSet = sh->setupSet;
             w[j].dstBinding = (uint32_t)j;
@@ -2330,27 +2335,32 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
             w[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         }
         w[0].pBufferInfo = &cfgI; w[1].pBufferInfo = &xfI; w[2].pBufferInfo = &ltI; w[3].pBufferInfo = &frI;
+        w[4].pBufferInfo = &vpI;
 
-        // shadow geom/sampling set (0 frustum viewProjs, 1 atlas array sampler, 2 per-light info).
-        w[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[4].dstSet = sh->geomSet; w[4].dstBinding = 0; w[4].descriptorCount = 1;
-        w[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[4].pBufferInfo = &frI;
+        // shadow geom/sampling set (0 frustum viewProjs, 1 atlas array sampler, 2 per-light info,
+        // 3 packed sampling viewProjs as a UBO).
         w[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[5].dstSet = sh->geomSet; w[5].dstBinding = 1; w[5].descriptorCount = 1;
-        w[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[5].pImageInfo = &atI;
+        w[5].dstSet = sh->geomSet; w[5].dstBinding = 0; w[5].descriptorCount = 1;
+        w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[5].pBufferInfo = &frI;
         w[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[6].dstSet = sh->geomSet; w[6].dstBinding = 2; w[6].descriptorCount = 1;
-        w[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[6].pBufferInfo = &infoI;
+        w[6].dstSet = sh->geomSet; w[6].dstBinding = 1; w[6].descriptorCount = 1;
+        w[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[6].pImageInfo = &atI;
+        w[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[7].dstSet = sh->geomSet; w[7].dstBinding = 2; w[7].descriptorCount = 1;
+        w[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[7].pBufferInfo = &infoI;
+        w[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[8].dstSet = sh->geomSet; w[8].dstBinding = 3; w[8].descriptorCount = 1;
+        w[8].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[8].pBufferInfo = &vpI;
 
         // moment-blur source sets: blurAtlasSet samples the atlas (X pass), blurTempSet the temp (Y pass).
-        w[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[7].dstSet = sh->blurAtlasSet; w[7].dstBinding = 0; w[7].descriptorCount = 1;
-        w[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[7].pImageInfo = &atI;
-        w[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w[8].dstSet = sh->blurTempSet; w[8].dstBinding = 0; w[8].descriptorCount = 1;
-        w[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[8].pImageInfo = &tmI;
+        w[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[9].dstSet = sh->blurAtlasSet; w[9].dstBinding = 0; w[9].descriptorCount = 1;
+        w[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[9].pImageInfo = &atI;
+        w[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[10].dstSet = sh->blurTempSet; w[10].dstBinding = 0; w[10].descriptorCount = 1;
+        w[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[10].pImageInfo = &tmI;
 
-        vkUpdateDescriptorSets(ctx->device, 9, w, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 11, w, 0, NULL);
     }
 }
 
@@ -3183,6 +3193,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		// the transient caster depth are shared single instances, destroyed after this loop.)
 		ShadowResources* sh = &rendererState.frames[i].shadow;
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
+		if (sh->sampleVPBuffer) vkDestroyBuffer(ctx->device, sh->sampleVPBuffer, NULL);
 	}
 	// Text overlay: frame-data + glyph curve/directory buffers, the CPU
 	// bake heap, and the FreeType backend. Pipelines die in ano_vk_cleanup_pipelines.

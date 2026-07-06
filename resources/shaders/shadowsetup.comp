@@ -32,6 +32,9 @@ layout(set = 0, binding = 0) readonly buffer ShadowConfigSSBO { ShadowFrustumCon
 layout(set = 0, binding = 1) readonly buffer TransformSSBO   { mat4 transforms[]; };
 layout(set = 0, binding = 2) readonly buffer LightSSBO       { LightData lights[]; };
 layout(set = 0, binding = 3) writeonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
+// Duplicate of each frustum's viewProj in a tightly-packed array: the lighting fragments
+// read it as a UBO (constant-bank operands, no per-lane register block for the matrix).
+layout(set = 0, binding = 4) writeonly buffer ShadowSampleVPSSBO { mat4 sampleViewProj[]; };
 
 // Right-handed lookAt, column-major (projects worldPos via M*worldPos), matching flat.vert's
 // effective proj*view convention so the extracted planes agree with the CPU camera planes.
@@ -115,6 +118,7 @@ void main() {
         // partition (the record loop also skips it). viewProj is unused. Prevents the headroom slots
         // (which default to lightIndex 0 / type DIRECTIONAL) from spuriously rendering light 0.
         shadowFrustums[i].viewProj = mat4(0.0);
+        sampleViewProj[i] = mat4(0.0);
         for (int p = 0; p < 6; ++p) shadowFrustums[i].frustumPlanes[p] = vec4(0.0, 0.0, 0.0, -1e30);
         return;
     }
@@ -164,6 +168,7 @@ void main() {
     }
 
     shadowFrustums[i].viewProj = viewProj;
+    sampleViewProj[i] = viewProj;
     vec4 planes[6];
     extractPlanes(viewProj, planes);
     for (int p = 0; p < 6; ++p) shadowFrustums[i].frustumPlanes[p] = planes[p];

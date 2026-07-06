@@ -106,7 +106,10 @@
 #define ANO_SHADOW_RT_POINT_COUNT  2u  // runtime point casters (6 frustums each)
 #define ANO_SHADOW_RT_FRUSTUM_COUNT (ANO_SHADOW_RT_SINGLE_COUNT + ANO_SHADOW_RT_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // 16
 #define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_STATIC_FRUSTUM_COUNT + ANO_SHADOW_RT_FRUSTUM_COUNT) // 42 (static 26 + runtime 16)
-_Static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 frustum bitmask");
+_Static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 frustum bitmask; shadow_sample.glsl's viewProj UBO is mat4[64]");
+// Fixed bound of the sampling-viewProj UBO array (shadow_sample.glsl declares mat4[64]); the
+// buffer allocates the full bound so the descriptor range covers the shader's declared size.
+#define ANO_SHADOW_SAMPLE_VP_CAP 64u
 #define ANO_SHADOW_RT_SINGLE_BASE ANO_SHADOW_STATIC_FRUSTUM_COUNT                          // single-pool first slot (26)
 #define ANO_SHADOW_RT_POINT_BASE  (ANO_SHADOW_RT_SINGLE_BASE + ANO_SHADOW_RT_SINGLE_COUNT) // point-pool first slot (30)
 #define ANO_SHADOW_NONE          0xFFFFFFFFu // "no shadow frustum" sentinel (ShadowLightInfo.baseFrustum / rowShadowBase)
@@ -787,6 +790,8 @@ typedef struct ShadowLightInfo {
 typedef struct ShadowResources {
     VkBuffer        frustumBuffer;   // CullView[ANO_SHADOW_FRUSTUM_COUNT], written by shadowsetup.comp
     GpuAllocation   frustumAlloc;
+    VkBuffer        sampleVPBuffer;  // mat4[ANO_SHADOW_SAMPLE_VP_CAP], shadowsetup-written packed
+    GpuAllocation   sampleVPAlloc;   // viewProjs; fragment sampling reads it as a UBO
     VkDescriptorSet setupSet;        // shadowsetup.comp inputs/outputs
     VkDescriptorSet geomSet;         // moment render (flat.mesh / flat.vert) + frag sampling
     VkDescriptorSet blurAtlasSet;    // blur src = atlas array (X pass: atlas -> temp)
