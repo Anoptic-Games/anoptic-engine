@@ -46,11 +46,12 @@ typedef struct TextRasterPush {
 static_assert(ANO_TEXT_WORLD_FIRST == ANO_RENDER_TEXT_MAX,
               "the public screen-text capacity is the pending region size");
 
-// Push-constant block shared with textworld.vert/.frag (88 B).
+// Push-constant block shared with textworld.vert/.frag (96 B).
 typedef struct TextWorldPush {
-    float    mvp[4][4]; // proj * view * model, this view
-    float    panel[4];  // panel pixel W,H | panel world W,H
-    uint32_t first;     // == ANO_TEXT_WORLD_FIRST
+    float    mvp[4][4];   // proj * view * model, this view
+    float    panel[4];    // panel pixel W,H | panel world W,H
+    float    viewport[2]; // this view's viewport W,H in screen px (quad pad scale)
+    uint32_t first;       // == ANO_TEXT_WORLD_FIRST
     uint32_t count;
 } TextWorldPush;
 
@@ -247,10 +248,11 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
-        // The world lane's fragment shader reads the three glyph buffers through the
-        // same set. The overlay storage image stays compute-only.
+        // The world lane reads the three glyph buffers through the same set: the
+        // fragment shader integrates, the vertex shader sizes per-glyph quads from
+        // instance + directory data. The overlay storage image stays compute-only.
         bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
-                               | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT : 0u);
+                               | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT : 0u);
     }
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -406,8 +408,8 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
 }
 
 // Builds the world-space text pipeline: the additive lane's raster recipe with
-// premultiplied src-over blending, a bufferless quad, and the raster set layout for
-// the glyph buffers. Its own layout carries the 88 B push.
+// premultiplied src-over blending, bufferless per-glyph quads, and the raster set
+// layout for the glyph buffers. Its own layout carries the 96 B push.
 static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkPushConstantRange push = {};
@@ -727,6 +729,8 @@ void ano_vk_text_record_world(RendererState* state, VkCommandBuffer cmd, uint32_
     push.panel[1] = ANO_TEXT_PANEL_PX_H;
     push.panel[2] = ANO_TEXT_PANEL_WORLD_W;
     push.panel[3] = ANO_TEXT_PANEL_WORLD_H;
+    push.viewport[0] = (float)state->viewExtent[view].width;
+    push.viewport[1] = (float)state->viewExtent[view].height;
     push.first = ANO_TEXT_WORLD_FIRST;
     push.count = state->textWorldCount;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state->textWorldPipeline);
@@ -735,7 +739,9 @@ void ano_vk_text_record_world(RendererState* state, VkCommandBuffer cmd, uint32_
     vkCmdPushConstants(cmd, state->textWorldLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof push, &push);
-    vkCmdDraw(cmd, 6, 1, 0, 0);
+    // One 6-vertex quad per glyph instance: the vertex shader sizes each quad to its
+    // glyph's padded bbox, so fragments only run where ink can be.
+    vkCmdDraw(cmd, 6, push.count, 0, 0);
 }
 
 void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
