@@ -649,7 +649,8 @@ void recordCommandBuffer(uint32_t imageIndex)
                 VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
                     ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
                     | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
-                memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                // UNIFORM_READ: the fragments read the packed sampling viewProjs as a UBO.
+                memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
@@ -4008,6 +4009,19 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         sh->frustumAlloc = gpu_alloc(&gpuAllocator, bmr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (sh->frustumAlloc.memory == VK_NULL_HANDLE) return false;
         vkBindBufferMemory(ctx->device, sh->frustumBuffer, sh->frustumAlloc.memory, sh->frustumAlloc.offset);
+
+        // Packed sampling viewProjs: shadowsetup writes it as an SSBO, the lighting fragments
+        // read it as a UBO. Allocated at the full shader-declared bound (mat4[64]) so the
+        // descriptor range covers the declared size.
+        VkBufferCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = (VkDeviceSize)(sizeof(float) * 16u) * ANO_SHADOW_SAMPLE_VP_CAP,
+            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE };
+        if (vkCreateBuffer(ctx->device, &vinfo, NULL, &sh->sampleVPBuffer) != VK_SUCCESS) return false;
+        VkMemoryRequirements vmr; vkGetBufferMemoryRequirements(ctx->device, sh->sampleVPBuffer, &vmr);
+        sh->sampleVPAlloc = gpu_alloc(&gpuAllocator, vmr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (sh->sampleVPAlloc.memory == VK_NULL_HANDLE) return false;
+        vkBindBufferMemory(ctx->device, sh->sampleVPBuffer, sh->sampleVPAlloc.memory, sh->sampleVPAlloc.offset);
     }
 
     // CDF-stats atlas + blur-temp: both RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS layers (2 MRT

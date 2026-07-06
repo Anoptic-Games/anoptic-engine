@@ -90,10 +90,10 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
-// --- Dynamic shadows (set 2), mirrors flat.frag ---
-struct ShadowCullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+// --- Dynamic shadows (set 2), mirrors flat.frag. Sampling viewProjs come from the packed
+// UBO shadow_sample.glsl declares (set 2, binding 3); the fat CullView records stay
+// geometry/task-stage only. ---
 struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
-layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { ShadowCullView shadowFrustums[]; } shadowFrustumBuf;
 layout(set = 2, binding = 1) uniform sampler2DArray shadowAtlas;
 layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
 

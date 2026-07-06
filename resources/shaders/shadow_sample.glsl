@@ -1,13 +1,20 @@
 // Layered Power CDF shadow sampling wrapper, shared by flat.frag and transmission.frag. Include AFTER
-// the set-2 declarations (sampler2DArray shadowAtlas + the ShadowFrustumSSBO `shadowFrustumBuf`), which
-// both lighting frags declare identically — this file references them by name. Returns the same
-// "1 lit .. 0 shadowed" factor the old PCF/MSM paths did, so the call sites are unchanged (they still
-// pass a FRUSTUM index; this maps it to the frustum's two atlas sublayers internally).
+// the set-2 declaration of `sampler2DArray shadowAtlas`, which both lighting frags declare identically
+// — this file references it by name. Returns the same "1 lit .. 0 shadowed" factor the old PCF/MSM
+// paths did, so the call sites are unchanged (they still pass a FRUSTUM index; this maps it to the
+// frustum's two atlas sublayers internally).
 
 #ifndef ANO_SHADOW_SAMPLE_GLSL
 #define ANO_SHADOW_SAMPLE_GLSL
 
 #include "shadow_cdf.glsl"
+
+// Per-frustum sampling viewProjs, packed by shadowsetup.comp beside the fat CullView records the
+// cull/geometry stages read. A UBO so the matrix rows become constant-bank operands instead of a
+// 16-register per-lane block (the light loop's index is dynamically uniform after scalarization;
+// point-light cube faces diverge at most 6 ways). The array bound rides the C-side static assert
+// ANO_SHADOW_FRUSTUM_COUNT <= 64 (structs.h); the buffer is allocated at the full 64.
+layout(set = 2, binding = 3) uniform ShadowSampleVPUBO { mat4 viewProj[64]; } shadowVPBuf;
 
 // Hardware-tunable knobs (the sandbox cannot run the renderer; tune visually on the GPU):
 //   DEPTH_BIAS   — constant occluder offset killing residual self-shadow acne; slope-scaled by nDotL.
@@ -21,7 +28,7 @@ const float ANO_CDF_CONTACT_SOFT = 0.02;
 // Reconstruct the lit factor for `worldPos` against shadow FRUSTUM `frustum` (its two atlas sublayers).
 // Outside the map or beyond the far plane returns 1.0 (lit) — no false self-shadowing at seams.
 float sampleShadowCDF(uint frustum, vec3 worldPos, float nDotL) {
-    vec4 lc = shadowFrustumBuf.shadowFrustums[frustum].viewProj * vec4(worldPos, 1.0);
+    vec4 lc = shadowVPBuf.viewProj[frustum] * vec4(worldPos, 1.0);
     vec3 proj = lc.xyz / lc.w;
     if (proj.z > 1.0 || proj.z < 0.0) return 1.0;
     vec2 uv = proj.xy * 0.5 + 0.5;

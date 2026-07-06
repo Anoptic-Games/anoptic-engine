@@ -398,9 +398,10 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     // --- Dynamic shadow set layouts (audit 4.7), created here so the FLAT/TRANSMISSION pipeline
     // layouts (set 2) and the shadowsetup compute pipeline can reference them. ---
 
-    // shadowsetup compute set: 0 config (in), 1 transforms (in), 2 lights (in), 3 frustums (out).
-    VkDescriptorSetLayoutBinding setupBindings[4] = {};
-    for (uint32_t b = 0; b < 4; ++b) {
+    // shadowsetup compute set: 0 config (in), 1 transforms (in), 2 lights (in), 3 frustums (out),
+    // 4 packed sampling viewProjs (out).
+    VkDescriptorSetLayoutBinding setupBindings[5] = {};
+    for (uint32_t b = 0; b < 5; ++b) {
         setupBindings[b].binding = b;
         setupBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         setupBindings[b].descriptorCount = 1;
@@ -408,18 +409,19 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     }
     VkDescriptorSetLayoutCreateInfo setupInfo = {};
     setupInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setupInfo.bindingCount = 4;
+    setupInfo.bindingCount = 5;
     setupInfo.pBindings = setupBindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &setupInfo, NULL, &state->shadowSetupSetLayout) != VK_SUCCESS)
         return false;
 
     // shadow geometry/sampling set (set 2): 0 shadow frustum viewProjs (geometry depth pass +
-    // fragment sampling; + the task meshlet cull, which tests shadow draws against the frustum
-    // planes), 1 shadow atlas array (fragment), 2 per-light shadow info (fragment).
+    // the task meshlet cull, which tests shadow draws against the frustum planes), 1 shadow
+    // atlas array (fragment), 2 per-light shadow info (fragment), 3 packed sampling viewProjs
+    // as a UBO (fragment — constant-bank matrix operands instead of a per-lane register block).
     VkShaderStageFlags geomStage = (ctx->deviceCapabilities.meshShader
         ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
         | (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
-    VkDescriptorSetLayoutBinding geomBindings[3] = {};
+    VkDescriptorSetLayoutBinding geomBindings[4] = {};
     geomBindings[0].binding = 0;
     geomBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     geomBindings[0].descriptorCount = 1;
@@ -432,9 +434,13 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     geomBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     geomBindings[2].descriptorCount = 1;
     geomBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    geomBindings[3].binding = 3;
+    geomBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    geomBindings[3].descriptorCount = 1;
+    geomBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo geomInfo = {};
     geomInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    geomInfo.bindingCount = 3;
+    geomInfo.bindingCount = 4;
     geomInfo.pBindings = geomBindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &geomInfo, NULL, &state->shadowGeomSetLayout) != VK_SUCCESS)
         return false;

@@ -91,10 +91,10 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
-// Dynamic shadows (set 2): shadow frustum viewProjs + moment atlas array + per-light placement.
-struct ShadowCullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+// Dynamic shadows (set 2): moment atlas array + per-light placement. The sampling viewProjs
+// come from the packed UBO shadow_sample.glsl declares (set 2, binding 3); the fat CullView
+// records (binding 0) are geometry/task-stage only.
 struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
-layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { ShadowCullView shadowFrustums[]; } shadowFrustumBuf;
 layout(set = 2, binding = 1) uniform sampler2DArray shadowAtlas;
 layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
 
@@ -256,30 +256,32 @@ void main() {
     uint lightListBase = clusterIdx * global.maxLightsPerCluster;
     uint clusterCount = clusterCountBuf.clusterLightCount[clusterIdx];
 
+    // Plain counted walk. A subgroup min-merge scalarization was tried here and MEASURED
+    // SLOWER (2026-07-06): warps are froxel-coherent already, and the per-iteration
+    // subgroupAny/subgroupMin ops cost ~18% of frame samples while regs only dropped 48->46.
     for (uint c = 0u; c < clusterCount; c++) {
         uint i = clusterIndexBuf.clusterLightIndices[lightListBase + c];
-        // One 64B runtime load per light: world pose, premultiplied radiance, range/cone/type.
-        LightRuntime lr = lightRuntimeBuf.entries[i];
-        vec3 lightPos = lr.posRange.xyz;
-        vec3 lightForward = lr.dirType.xyz;
-        float lightRange = lr.posRange.w;
-        uint lightType = uint(lr.dirType.w);
-        vec3 lightRadiance = lr.radInner.xyz; // color * intensity (premultiplied)
-        float innerConeCos = lr.radInner.w;
-        float outerConeCos = lr.outer.x;
+
+        // Split field loads: pose/type first; radiance at the end; spot cone terms only in the
+        // spot branch — keeps the 64B record out of the standing live set.
+        vec4 posRange = lightRuntimeBuf.entries[i].posRange; // xyz world position, w range
+        vec4 dirType = lightRuntimeBuf.entries[i].dirType;   // xyz world forward,  w float(type)
+        uint lightType = uint(dirType.w);
 
         vec3 L;
         float attenuation;
         if (lightType == LIGHT_TYPE_DIRECTIONAL) {
-            L = -lightForward;        // surface -> light
+            L = -dirType.xyz;         // surface -> light
             attenuation = 1.0;
         } else {
-            vec3 toLight = lightPos - fragWorldPos;
+            vec3 toLight = posRange.xyz - fragWorldPos;
             float dist = length(toLight);
             L = toLight / max(dist, 0.0001);
-            attenuation = getRangeAttenuation(lightRange, dist);
+            attenuation = getRangeAttenuation(posRange.w, dist);
             if (lightType == LIGHT_TYPE_SPOT) {
-                attenuation *= getSpotAttenuation(lightForward, L, innerConeCos, outerConeCos);
+                attenuation *= getSpotAttenuation(dirType.xyz, L,
+                                                  lightRuntimeBuf.entries[i].radInner.w,
+                                                  lightRuntimeBuf.entries[i].outer.x);
             }
         }
 
@@ -299,13 +301,13 @@ void main() {
             ShadowLightInfo si = shadowInfoBuf.info[i];
             if (si.castsShadow != 0u && si.frustumCount > 0u) {
                 if (lightType == LIGHT_TYPE_POINT)
-                    shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
+                    shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - posRange.xyz), fragWorldPos, nDotL);
                 else
                     shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
             }
         }
 
-        vec3 radiance = lightRadiance * attenuation * shadowFactor;
+        vec3 radiance = lightRuntimeBuf.entries[i].radInner.xyz * (attenuation * shadowFactor);
         accumulatedDirect += calculatePBR(baseColor.rgb, metallic, roughness, N, V, L) * radiance;
     }
 
