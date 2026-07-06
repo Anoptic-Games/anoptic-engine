@@ -397,7 +397,7 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkIma
 
 	return true;
 }
-bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, VkBuffer* outStagingBuffer)
+bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, bool srgb, VkBuffer* outStagingBuffer)
 {
 	//!TODO Add logic for 16-bit images
 	Texture8 texture = readTexture8bit(fileName);
@@ -406,6 +406,11 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 		ano_log(ANO_ERROR, "Failed to load texture image: %s", fileName);
 		return false;
 	}
+
+	// Color textures (baseColor, emissive, *Color) decode through sRGB; data textures (normal,
+	// metallicRoughness, occlusion, ...) are linear — an sRGB decode would warp them (a tangent-
+	// space normal's 0.5 zero-point lands at ~0.21).
+	VkFormat texFormat = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 
 	VkDeviceSize imageSize = texture.texWidth * texture.texHeight * 4;
 	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // Mipmap levels determined dynamically 
@@ -421,14 +426,14 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 
 	stbi_image_free(texture.pixels);
 
-	if (!createImage(ctx, &textureAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+	if (!createImage(ctx, &textureAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, texFormat, VK_IMAGE_TILING_OPTIMAL,
 					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
 	{
 		ano_log(ANO_ERROR, "Image creation failure: %s", fileName);
 		return false;
 	}
 
-	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	if(!transitionImageLayout(ctx, cmd, *textureImage, texFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
 		ano_log(ANO_ERROR, "Layout transition failure: %s", fileName);
 		return false;
@@ -436,16 +441,16 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 
 	copyBufferToImage(ctx, cmd, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
-	generateMipmaps(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
+	generateMipmaps(ctx, cmd, *textureImage, texFormat, texture.texWidth, texture.texHeight, texture.mipLevels);
 
-	/*if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
+	/*if(!transitionImageLayout(ctx, cmd, *textureImage, texFormat, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}*/
 
 	if (outStagingBuffer) *outStagingBuffer = stagingBuffer; else vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
-	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
+	if(!createTextureImageView(ctx, *textureImage, textureImageView, texFormat, texture.mipLevels))
 	{
 		ano_log(ANO_ERROR, "Image view creation failure: %s", fileName);
 		return false;

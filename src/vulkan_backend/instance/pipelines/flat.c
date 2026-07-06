@@ -35,7 +35,9 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	// shadow variant; the camera variant leaves it unread). The task stage resolves its draw from
 	// the same push, so its flag joins the range (vkCmdPushConstants must match exactly).
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = geometryStage | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
+	// FRAGMENT joins the range: shadow_depth.frag reads shadowFrustumIndex for the CDF depth
+	// linearization (vkCmdPushConstants stage masks must match this range exactly, everywhere).
+	pushConstantRange.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = 2u * sizeof(uint32_t);
 
@@ -64,6 +66,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 		PBR_FEATURE_BASE_COLOR_TEXTURE |
 		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR |
 		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE |
+		PBR_FEATURE_NORMAL_TEXTURE |
 		PBR_FEATURE_OCCLUSION_TEXTURE |
 		PBR_FEATURE_ALPHA_MODE_OPAQUE |
 		PBR_FEATURE_ALPHA_MODE_BLEND;

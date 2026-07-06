@@ -254,7 +254,27 @@ void main() {
     if (!gl_FrontFacing) {
         N = -N;
     }
-    
+
+    // Normal mapping via the screen-space cotangent frame (Schüler): derivatives of the
+    // reconstructed world position + uv recover the triangle's exact tangent plane, so no vertex
+    // tangents are carried — parameterization handedness (mirrored UV islands) comes out of the
+    // uv derivatives for free. Frame is built around the front-face-flipped N.
+    if (mat.normalTexture != 0xFFFFFFFF) {
+        vec3 mapN = texture(textures[nonuniformEXT(mat.normalTexture)], fragTexCoord).xyz * 2.0 - 1.0;
+        mapN.xy *= mat.normalScale;
+        vec3 dp1 = dFdx(fragWorldPos);
+        vec3 dp2 = dFdy(fragWorldPos);
+        vec2 duv1 = dFdx(fragTexCoord);
+        vec2 duv2 = dFdy(fragTexCoord);
+        vec3 dp2perp = cross(dp2, N);
+        vec3 dp1perp = cross(N, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        // Scale-invariant frame; epsilon keeps degenerate-uv quads (helper-lane edges) finite.
+        float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        N = normalize(mat3(T * invmax, B * invmax, N) * mapN);
+    }
+
     vec3 V = normalize(global.cameraPos.xyz - fragWorldPos);
     
     // -------------------------------------------------------------
