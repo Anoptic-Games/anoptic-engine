@@ -17,6 +17,8 @@ layout(push_constant) uniform TextRasterPush {
     uint  instanceCount;
     uint  flags;    // bit 0: opaque black backdrop (ANO_TEXT_OPAQUE self-test)
     uvec2 extent;
+    uvec2 origin;   // dispatch region offset, pixels (tile-aligned; the CPU bounds
+                    // the dispatch to the pending text's pixel AABB)
 } pc;
 
 const uint CHUNK = 64u; // instances per cooperative cull round == wg size
@@ -38,10 +40,10 @@ bool box_hits(uint idx, vec2 rMin, vec2 rMax)
 
 void main()
 {
-    uvec2 px = gl_GlobalInvocationID.xy;
+    uvec2 px = gl_GlobalInvocationID.xy + pc.origin;
     bool valid = px.x < pc.extent.x && px.y < pc.extent.y;
     vec2 pixTL = vec2(px);
-    vec2 tMin = vec2(gl_WorkGroupID.xy * 8u);
+    vec2 tMin = vec2(gl_WorkGroupID.xy * 8u + pc.origin);
     vec2 tMax = min(tMin + 8.0, vec2(pc.extent));
 
     vec4 acc = vec4(0.0);

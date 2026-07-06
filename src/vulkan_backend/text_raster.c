@@ -14,6 +14,7 @@
 #include "vulkan_backend/texture/texture.h"
 #include "vulkan_backend/vertex/vertex.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,12 +30,14 @@
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
-// Push-constant block shared with textraster.comp (16 B).
+// Push-constant block shared with textraster.comp (24 B).
 typedef struct TextRasterPush {
     uint32_t instanceCount;
     uint32_t flags;
     uint32_t extentW;
     uint32_t extentH;
+    uint32_t originX; // dispatch region offset, pixels (tile-aligned)
+    uint32_t originY;
 } TextRasterPush;
 
 // TextRasterPush.flags bits (mirrored in textraster.comp).
@@ -94,6 +97,39 @@ static const float g_osdOrigin[2] = { 24.0f, 40.0f };
 
 static bool g_textPinned; // ANO_TEXT_DEMO: hold the harness text, ignore later sets
 
+// Pixel-space AABB of the pending canvas [0, textPendingCount): per-instance glyph
+// em bbox through the columns of inverse(inv), the same interval arithmetic as
+// textworld.vert. Inverted bounds when nothing is inked. Runs at text-change cadence.
+static void text_pending_bounds(RendererState* state)
+{
+    float lo[2] = { 1e30f, 1e30f }, hi[2] = { -1e30f, -1e30f };
+    for (uint32_t i = 0; i < state->textPendingCount; i++)
+    {
+        const AnoGlyphInstance* gi = &state->textPending[i];
+        if (gi->glyphID >= state->textBake.glyphCount)
+            continue;
+        const AnoGlyphEntry* g = &state->textBake.glyphs[gi->glyphID];
+        float det = gi->inv[0] * gi->inv[3] - gi->inv[1] * gi->inv[2];
+        if (g->curveCount == 0 || det == 0.0f)
+            continue;
+        float colX[2] = { gi->inv[3] / det, -gi->inv[2] / det };
+        float colY[2] = { -gi->inv[1] / det, gi->inv[0] / det };
+        for (int a = 0; a < 2; a++)
+        {
+            float x0 = colX[a] * g->bboxMin[0], x1 = colX[a] * g->bboxMax[0];
+            float y0 = colY[a] * g->bboxMin[1], y1 = colY[a] * g->bboxMax[1];
+            float mn = gi->origin[a] + fminf(x0, x1) + fminf(y0, y1);
+            float mx = gi->origin[a] + fmaxf(x0, x1) + fmaxf(y0, y1);
+            lo[a] = fminf(lo[a], mn);
+            hi[a] = fmaxf(hi[a], mx);
+        }
+    }
+    state->textBounds[0] = lo[0];
+    state->textBounds[1] = lo[1];
+    state->textBounds[2] = hi[0];
+    state->textBounds[3] = hi[1];
+}
+
 // Recomposes the pending canonical after any source changed. The OSD region
 // [0, textOsdCount) is already in place, logic blocks append after it in registry
 // order, truncating at the region cap. The demo pin keeps the canvas OSD-only.
@@ -112,6 +148,7 @@ static void text_blocks_append(RendererState* state)
         }
     }
     state->textPendingCount = total;
+    text_pending_bounds(state);
     state->textVersion++;
 }
 
@@ -904,17 +941,47 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, NULL, 0, NULL, 1, &toCompute);
 
-    // Raster dispatch: 8x8 pixel tiles over the full overlay.
+    // Raster dispatch: 8x8 pixel tiles over the pending text's pixel bounds — the
+    // canvas was cleared above, everything outside stays transparent. The opaque
+    // self-test paints every pixel, so it keeps the full-canvas dispatch.
     TextRasterPush push = { .instanceCount = state->textInstanceCount, .flags = state->textFlags,
                             .extentW = state->imageExtent.width, .extentH = state->imageExtent.height };
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
-                            0, 1, &fr->textRasterSet, 0, NULL);
-    vkCmdPushConstants(cmd, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
-                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
-    vkCmdDispatch(cmd, (state->imageExtent.width + 7u) / 8u, (state->imageExtent.height + 7u) / 8u, 1);
+    uint32_t gx = 0, gy = 0;
+    if (state->textFlags & ANO_TEXT_RASTER_OPAQUE)
+    {
+        gx = (state->imageExtent.width + 7u) / 8u;
+        gy = (state->imageExtent.height + 7u) / 8u;
+    }
+    else if (state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0])
+    {
+        // 1 px pad for the raster's pixel window, clamp to the canvas, tile-align the origin.
+        int32_t x0 = (int32_t)floorf(state->textBounds[0] - 1.0f);
+        int32_t y0 = (int32_t)floorf(state->textBounds[1] - 1.0f);
+        int32_t x1 = (int32_t)ceilf(state->textBounds[2] + 1.0f);
+        int32_t y1 = (int32_t)ceilf(state->textBounds[3] + 1.0f);
+        x0 = x0 < 0 ? 0 : (x0 & ~7);
+        y0 = y0 < 0 ? 0 : (y0 & ~7);
+        if (x1 > (int32_t)state->imageExtent.width)  x1 = (int32_t)state->imageExtent.width;
+        if (y1 > (int32_t)state->imageExtent.height) y1 = (int32_t)state->imageExtent.height;
+        if (x1 > x0 && y1 > y0)
+        {
+            push.originX = (uint32_t)x0;
+            push.originY = (uint32_t)y0;
+            gx = ((uint32_t)(x1 - x0) + 7u) / 8u;
+            gy = ((uint32_t)(y1 - y0) + 7u) / 8u;
+        }
+    }
+    if (gx != 0 && gy != 0)
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
+                                0, 1, &fr->textRasterSet, 0, NULL);
+        vkCmdPushConstants(cmd, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+        vkCmdDispatch(cmd, gx, gy, 1);
+    }
 
     VkImageMemoryBarrier toSample = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
