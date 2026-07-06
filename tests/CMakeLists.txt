@@ -42,6 +42,15 @@ target_link_libraries(anotest_strings_sort PRIVATE anoptic_core)
 add_test(NAME anoptic_strings_sort COMMAND anotest_strings_sort)
 set_tests_properties(anoptic_strings_sort PROPERTIES TIMEOUT 60 LABELS "unit")
 
+# Property fuzzer + smoketest for the whole anostr_t surface: cross-kind agreement, every sort,
+# split/join, slice/splice, find/replace, builder, intern/dedupe/keep, hash<->SID twin, UTF
+# round-trips. Runs in ctest (fixed seed, fast); argv[1] scales the soak. Oracles: qsort(collate),
+# naive byte rebuilds, FNV twins.
+add_executable(anotest_strings_fuzz anotest_strings_fuzz.c)
+target_link_libraries(anotest_strings_fuzz PRIVATE anoptic_core)
+add_test(NAME anoptic_strings_fuzz COMMAND anotest_strings_fuzz)
+set_tests_properties(anoptic_strings_fuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;mem")
+
 # Collation sort benchmark: the 6000-item inventory. qsort+collate baseline vs anostr_sort
 # / sort_idx / sym_sort (cold + warm) vs byte floor, plus replace_all/cull/rune_sort.
 # DISABLED in ctest, run ./anotest_sortbench from a -O3 build (build.bat 7).
