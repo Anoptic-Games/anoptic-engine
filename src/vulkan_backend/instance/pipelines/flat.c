@@ -9,12 +9,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// Shared builder for the two opaque flat lanes (review finding 7): PIPELINE_FLAT rasterizes with
-// backface culling (glTF single-sided materials — the default — never need their backfaces), while
+// Shared builder for the flat lanes (review finding 7): PIPELINE_FLAT rasterizes with backface
+// culling (glTF single-sided materials — the default — never need their backfaces), while
 // PIPELINE_FLAT_TWOSIDED keeps cullMode NONE for doubleSided materials (the parser routes them).
 // Identical shaders/layout/state otherwise, so depth stays EQUAL-compatible across both lanes.
+// masked builds PIPELINE_FLAT_MASKED (glTF alphaMode MASK): the flat_masked frag (baseColor.a <
+// alphaCutoff discard) with LESS + depth WRITE + alpha-to-coverage — the cutout lane skips the
+// depth pre-pass, so its opaque variant owns its own depth instead of EQUAL-testing.
 static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto,
-                                PipelineType type, VkCullModeFlags cullMode)
+                                PipelineType type, VkCullModeFlags cullMode, bool masked)
 {
 	// 1. Setup cache
 	VkPipelineCacheCreateInfo cacheInfo = {};
@@ -66,6 +69,8 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 		PBR_FEATURE_ALPHA_MODE_BLEND;
 	if (cullMode == VK_CULL_MODE_NONE)
 		proto->supportedFeatures |= PBR_FEATURE_DOUBLE_SIDED; // only the uncull(ed) lane renders backfaces
+	if (masked)
+		proto->supportedFeatures |= PBR_FEATURE_ALPHA_MODE_MASK;
 
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback. The depth
 	// pre-pass variant (index 2) uses the ANO_DEPTH_ONLY compile of the same source (position
@@ -84,10 +89,14 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
-	// fp16 CDF-reconstruct variant when the device has shaderFloat16 (ANO_FORCE_NO_FP16 pins fp32).
-	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_fp16.frag.spv"
-	                                                    : "resources/shaders/flat.frag.spv",
-	              &fragShaderCode)) return false;
+	// fp16 CDF-reconstruct variant when the device has shaderFloat16 (ANO_FORCE_NO_FP16 pins fp32);
+	// the masked lane loads the ANO_ALPHA_MASK compile of the same source.
+	const char* fragPath = masked
+		? (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_masked_fp16.frag.spv"
+		                                         : "resources/shaders/flat_masked.frag.spv")
+		: (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_fp16.frag.spv"
+		                                         : "resources/shaders/flat.frag.spv");
+	if (!loadFile(fragPath, &fragShaderCode)) return false;
 
 	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	VkShaderModule depthGeomShaderModule = createShaderModule(ctx->device, &depthGeomShaderCode);
@@ -160,7 +169,9 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	multisampling.rasterizationSamples = ctx->msaaSamples;
 	multisampling.minSampleShading = 1.0f;
 	multisampling.pSampleMask = NULL;
-	multisampling.alphaToCoverageEnable = VK_FALSE;
+	// Masked lane: alpha-to-coverage dithers the exported cutout alpha across the MSAA samples
+	// (soft foliage edges from the MSAA already paid for); the frag's discard is the binary floor.
+	multisampling.alphaToCoverageEnable = masked ? VK_TRUE : VK_FALSE;
 	multisampling.alphaToOneEnable = VK_FALSE;
 
 	// Two color attachments: [0] HDR color, [1] R32_UINT picking id (audit 3.1). The id attachment
@@ -198,11 +209,13 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	// Opaque variant (index 0) reads the depth pre-pass result: test EQUAL against the pre-pass depth
 	// with NO depth write, so each visible pixel is shaded exactly once (the pre-pass, index 2, already
 	// laid down the nearest depth). The pre-pass itself uses depthWrite ON + LESS (built further below).
+	// The masked lane has no pre-pass (a fragment-less pre-pass can't discard; EQUAL against its
+	// solid-quad depth would hole the background): its variant owns depth with LESS + write.
 	VkPipelineDepthStencilStateCreateInfo depthStencil = {};
 	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 	depthStencil.depthTestEnable = VK_TRUE;
-	depthStencil.depthWriteEnable = VK_FALSE;
-	depthStencil.depthCompareOp = VK_COMPARE_OP_EQUAL;
+	depthStencil.depthWriteEnable = masked ? VK_TRUE : VK_FALSE;
+	depthStencil.depthCompareOp = masked ? VK_COMPARE_OP_LESS : VK_COMPARE_OP_EQUAL;
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.minDepthBounds = 0.0f;
 	depthStencil.maxDepthBounds = 1.0f;
@@ -247,10 +260,11 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	pipelineInfo.renderPass = VK_NULL_HANDLE;
 	pipelineInfo.subpass = 0;
 
-	// Opaque variant (index 0): EQUAL test, no depth write (the pre-pass owns depth).
+	// Opaque variant (index 0): EQUAL test, no depth write (the pre-pass owns depth). Masked:
+	// LESS + write (no pre-pass) + alpha-to-coverage.
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) return false;
 	proto->implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	proto->implementations[0].depthWrite = VK_FALSE;
+	proto->implementations[0].depthWrite = masked ? VK_TRUE : VK_FALSE;
 	proto->implementations[0].blendEnable = VK_FALSE;
 
 	// Blended variant (index 1). Bound by no g_framePass today, but must stay a valid 2-attachment
@@ -296,12 +310,17 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	prepassRendering.colorAttachmentCount = 0;
 	prepassRendering.depthAttachmentFormat = depthFormat;
 
+	// No fragment stage: alpha-to-coverage would read an unwritten alpha (masked lane's msaa state).
+	VkPipelineMultisampleStateCreateInfo prepassMs = multisampling;
+	prepassMs.alphaToCoverageEnable = VK_FALSE;
+
 	VkGraphicsPipelineCreateInfo prepassInfo = pipelineInfo; // inherit shared raster/viewport/msaa/layout
 	prepassInfo.pNext = &prepassRendering;
 	prepassInfo.stageCount = useTask ? 2 : 1;
 	prepassInfo.pStages = useTask ? depthStages : &depthStages[1];
 	prepassInfo.pDepthStencilState = &prepassDepth;
 	prepassInfo.pColorBlendState = &prepassBlend;
+	prepassInfo.pMultisampleState = &prepassMs;
 
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &prepassInfo, NULL, &proto->implementations[2].pipeline) != VK_SUCCESS) return false;
 	proto->implementations[2].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -323,12 +342,18 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 
 bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
-	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT, VK_CULL_MODE_BACK_BIT);
+	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT, VK_CULL_MODE_BACK_BIT, false);
 }
 
 bool ano_pipeline_flat_twosided_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
-	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT_TWOSIDED, VK_CULL_MODE_NONE);
+	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT_TWOSIDED, VK_CULL_MODE_NONE, false);
+}
+
+bool ano_pipeline_flat_masked_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
+{
+	// Cutout casters are thin (foliage, chains) and typically doubleSided: cullMode NONE.
+	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT_MASKED, VK_CULL_MODE_NONE, true);
 }
 
 void ano_pipeline_flat_cleanup(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)

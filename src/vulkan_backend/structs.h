@@ -714,8 +714,9 @@ typedef struct CullUBO
     // it spans the enum; padded to 16 (uvec4[4] in cull.comp). std140: uint32_t[16] == uvec4[4].
     uint32_t drawSlotOf[16];
     // Special draw slots (ano_draw_slot_of): [0] = additive lane (emits no shadow caster), [1] =
-    // transmission lane (the depth-sorted "over" lane). ANO_NO_DRAW_SLOT if that lane is absent.
-    // std140 uvec4 (16 B contiguous); cull.comp reads specialSlots.x / .y.
+    // transmission lane (the depth-sorted "over" lane), [2] = masked lane (casters emit into the
+    // per-frustum MASKED shadow partition at base + FRUSTUM_COUNT + s). ANO_NO_DRAW_SLOT if that
+    // lane is absent. std140 uvec4 (16 B contiguous); cull.comp reads specialSlots.x / .y / .z.
     uint32_t specialSlots[4];
     // Per-view screen-area cull knobs (review 4.9 step 1). One vec4 per view, tightly packed like
     // drawSlotOf so C float[ANO_VIEW_COUNT][4] mirrors GLSL vec4[ANO_VIEW_COUNT] with no std140
@@ -1150,6 +1151,9 @@ typedef struct RendererState
     // PipelineType): reuses the cull-compacted draw lists. A separable Gaussian prefilter (the
     // shadowBlur* fullscreen pipeline) then softens the moments before the lighting frags sample.
     VkPipeline              shadowPipeline;
+    VkPipeline              shadowPipelineMasked; // alpha-tested casters (MASK cutout): uv+material depth
+                                                  // geometry + baseColor.a discard; draws the per-frustum
+                                                  // masked partition after the solid one
     VkPipelineLayout        shadowLayout;
     VkDescriptorSetLayout   shadowGeomSetLayout; // moment render: shadow frustums + transforms + compacted indices + geometry
     VkPipelineCache         shadowCache;

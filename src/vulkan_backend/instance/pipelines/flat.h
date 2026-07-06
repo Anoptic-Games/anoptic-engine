@@ -15,6 +15,10 @@ bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePr
 // Ditto for the two-sided lane (cullMode NONE): opaque glTF doubleSided materials route here.
 bool ano_pipeline_flat_twosided_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto);
 
+// Alpha-tested cutout lane (glTF alphaMode MASK): flat_masked frag (alpha discard + alpha-to-
+// coverage), LESS + depth write (no pre-pass), cullMode NONE.
+bool ano_pipeline_flat_masked_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto);
+
 // Clean up flat pipeline resources
 void ano_pipeline_flat_cleanup(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto);
 

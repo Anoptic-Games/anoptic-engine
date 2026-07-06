@@ -363,8 +363,11 @@ void main() {
             }
         }
     }
-    // Shadow casters: opaque + transmission cast solid shadows into the slot-0 depth render.
-    // The additive lane casts none.
+    // Shadow casters: opaque + transmission cast solid shadows into the per-frustum solid
+    // partition (base + s); the MASKED lane's casters go to the per-frustum masked partition
+    // (base + FRUSTUM_COUNT + s), drawn by the alpha-testing shadow pipeline so cutouts shadow
+    // by silhouette. The additive lane casts none.
+    uint shadowSub = (slot == specialSlots.z) ? ANO_SHADOW_FRUSTUM_COUNT : 0u;
     if (slot != specialSlots.x) {
         // Shadow LOD matches view 0's level. Recompute view 0's screen-area metric here (the camera loop
         // may have skipped this caster): rpx = worldRadius * scale / dist, fed to lodSelect with view 0's
@@ -379,7 +382,7 @@ void main() {
         MeshData sData = (slevel == 0u) ? baseData : meshDrawData[baseMesh + slevel];
         for (uint s = 0u; s < ANO_SHADOW_FRUSTUM_COUNT; ++s) {
             if (isVisibleInShadow(s, worldCenter, worldRadius)) {
-                emitDraw(ANO_VIEW_COUNT * drawSlotCount + s, idx, sData, slevel);
+                emitDraw(ANO_VIEW_COUNT * drawSlotCount + shadowSub + s, idx, sData, slevel);
             }
         }
     }

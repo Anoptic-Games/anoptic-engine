@@ -22,6 +22,12 @@ typedef enum PipelineType
     PIPELINE_FLAT_TWOSIDED,     // Opaque flat WITHOUT backface culling: glTF doubleSided materials (review
                                 // finding 7). Same shaders/layout as PIPELINE_FLAT; cullMode NONE. Material-
                                 // carried types must stay below 16 (the drawSlotOf map — see components.c).
+    PIPELINE_FLAT_MASKED,       // Alpha-tested cutout (glTF alphaMode MASK: foliage, chains). flat shading
+                                // + baseColor.a < alphaCutoff discard + alpha-to-coverage; cullMode NONE.
+                                // Skips the depth pre-pass (a fragment-less pre-pass can't discard, and
+                                // EQUAL against solid-quad depth would hole the background): draws after
+                                // the opaque lanes with LESS + depth write. Casters render into their own
+                                // per-frustum shadow partition via the alpha-testing shadow pipeline.
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
     PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass (Path B)
@@ -58,11 +64,14 @@ uint32_t ano_draw_slot_of(PipelineType type);   // enum -> draw slot, ANO_NO_DRA
 
 // Total compacted-draw partitions across the indirect / drawCount / compacted buffers. Camera views
 // each get every draw slot (partition = view*drawSlotCount + slot, range [0, ANO_VIEW_COUNT*
-// drawSlotCount)); each shadow frustum gets a SINGLE slot-0 partition (ANO_VIEW_COUNT*drawSlotCount
-// + s) because the shadow depth render only ever rasterizes the opaque caster slot. Reserving every
-// draw slot per shadow frustum (the old ano_draw_pipeline_count()*ANO_FRUSTUM_COUNT sizing) made each
-// new draw lane cost 26 permanently-idle, frame-zeroed shadow partitions — the dominant VRAM waste at
-// a million entities. This is the single sizing source for those three buffers and their cull map.
+// drawSlotCount)); each shadow frustum gets TWO caster partitions: solid casters at base + s (one
+// mixed partition — the shadow depth render rasterizes all solid lanes with one pipeline) and
+// alpha-tested MASKED casters at base + ANO_SHADOW_FRUSTUM_COUNT + s (drawn by the alpha-testing
+// shadow pipeline; cutout casters in the solid partition would shadow as solid quads). Reserving
+// every draw slot per shadow frustum (the old ano_draw_pipeline_count()*ANO_FRUSTUM_COUNT sizing)
+// made each new draw lane cost 26 permanently-idle, frame-zeroed shadow partitions — the dominant
+// VRAM waste at a million entities; the masked class is the one deliberate exception, added ONCE.
+// This is the single sizing source for those three buffers and their cull map.
 uint32_t ano_draw_partition_count(void);
 
 typedef enum PassType

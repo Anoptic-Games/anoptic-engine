@@ -229,6 +229,14 @@ void main() {
         baseColor *= unpackUnorm4x8(inst.packed.x);
     }
 
+#if ANO_ALPHA_MASK
+    // Cutout lane (glTF alphaMode MASK): binary test per spec; the pipeline's alpha-to-coverage
+    // additionally dithers the surviving alpha across MSAA samples for soft edges.
+    if (baseColor.a < mat.alphaCutoff) {
+        discard;
+    }
+#endif
+
     float metallic = mat.metallicFactor;
     float roughness = mat.roughnessFactor;
     if (mat.metallicRoughnessTexture != 0xFFFFFFFF) {
@@ -326,6 +334,11 @@ void main() {
     vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion;
     vec3 finalColor = ambient + accumulatedDirect;
 
+#if ANO_ALPHA_MASK
+    // Alpha-to-coverage consumes outColor.a: export the surviving cutout alpha (>= cutoff here).
+    outColor = vec4(finalColor, baseColor.a);
+#else
     outColor = vec4(finalColor, 1.0);
+#endif
     outId = inEntityIndex; // 0xFFFFFFFF clear == no renderable under this pixel
 }

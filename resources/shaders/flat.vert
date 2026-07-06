@@ -3,6 +3,15 @@
 // Fallback geometry stage for devices without VK_EXT_mesh_shader.
 // Per-vertex half of flat.mesh: same SSBOs, same outputs.
 
+// Compile modes mirror flat.mesh: (default) full; ANO_DEPTH_ONLY = position-only;
+// ANO_DEPTH_MASKED = position + uv + packed indices (alpha-tested casters).
+#if !defined(ANO_DEPTH_ONLY) && !defined(ANO_DEPTH_MASKED)
+    #define ANO_WANT_SHADE 1
+#endif
+#if defined(ANO_WANT_SHADE) || defined(ANO_DEPTH_MASKED)
+    #define ANO_WANT_UV 1
+#endif
+
 // ---------------------------------------------------------------------------
 // Resources & bindings
 // ---------------------------------------------------------------------------
@@ -74,10 +83,12 @@ layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadow
 // EQUAL-test contract (mirrors flat.mesh): invariant pins position codegen so both compiles produce bit-identical clip positions.
 invariant gl_Position;
 
-#ifndef ANO_DEPTH_ONLY
 // Interstage diet (mirrors flat.mesh): material (high 12) | entity slot (low 20) in one flat
 // scalar; world position reconstructed fragment-side from gl_FragCoord.
+#ifdef ANO_WANT_SHADE
 layout(location = 0) out vec3 fragNormal;
+#endif
+#ifdef ANO_WANT_UV
 layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) flat out uint outPackedIndices;
 #endif
@@ -101,9 +112,11 @@ void main() {
 
     gl_Position      = shadowPass ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * vec4(worldPos, 1.0))
                                   : (global.viewProj * vec4(worldPos, 1.0));
-#ifndef ANO_DEPTH_ONLY
+#ifdef ANO_WANT_SHADE
     // Inverse-transpose normal matrix: correct under non-uniform / negative / sheared scale.
     fragNormal       = transpose(inverse(mat3(model))) * vec3(v.nx, v.ny, v.nz);
+#endif
+#ifdef ANO_WANT_UV
     fragTexCoord     = vec2(v.u, v.v);
     outPackedIndices = (entity.materialIndex << 20) | entityIndex; // contract: material < 4096, slot < 2^20
 #endif
