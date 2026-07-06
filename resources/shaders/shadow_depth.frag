@@ -19,6 +19,21 @@
 // payload.)
 #include "shadow_cdf.glsl"
 
+// Per-frustum depth linearization (shadowsetup.comp; mirrors shadow_sample.glsl): the CDF bands +
+// contact ramp operate on d01 = (x + z*zo) / (1 - y*zo) — a linear fraction of the light range —
+// not raw perspective ZO (which crushed the scene into the last band for point/spot frusta). The
+// push constant carries the frustum index; the transient depth attachment still keeps raw zo for
+// nearest-occluder selection (monotonic, unaffected).
+layout(set = 2, binding = 3) uniform ShadowSampleVPUBO {
+    mat4 viewProj[64];
+    vec4 depthParams[64];
+} shadowVPBuf;
+
+layout(push_constant) uniform PushConstants {
+    uint transformBaseOffset;
+    uint shadowFrustumIndex;
+} pc;
+
 #if ANO_ALPHA_MASK
 // Alpha-tested caster variant (glTF alphaMode MASK: foliage, chains). The geometry stage is the
 // ANO_DEPTH_MASKED compile (position + uv + packed indices, location 0 gap intentional): sample
@@ -105,5 +120,7 @@ void main() {
         discard;
     }
 #endif
-    anoEncodeLayered(gl_FragCoord.z, outSubA, outSubB);
+    vec4 dp = shadowVPBuf.depthParams[pc.shadowFrustumIndex];
+    float d01 = (dp.x + dp.z * gl_FragCoord.z) / (1.0 - dp.y * gl_FragCoord.z);
+    anoEncodeLayered(d01, outSubA, outSubB);
 }
