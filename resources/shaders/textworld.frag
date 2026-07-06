@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // World-space Scanline Sweeper lane: per-fragment analytic coverage over the shared glyph
 // buffers. The em-space window is the fragment's panel-space footprint from screen
