@@ -18,6 +18,9 @@
  *     semantics for long pieces;
  *   - intern/dedupe: symbol stability across variants and allocations, find-without-insert,
  *     sym_str round-trip, bit-identical dedupe, growth past the initial slot table;
+ *   - ANOSTR_SID / ANOSTR_SID32: published FNV-1a vectors as static_asserts, ICE contexts
+ *     (case label, enum, static initializer, array size), runtime-twin agreement with
+ *     anostr_hash/anostr_hash32 (embedded NUL and the 128-byte cap included);
  *   - a randomized round-trip soak (fixed seed; argv[1] scales iterations).
  * Exit 0 == pass; failures print what broke. */
 
@@ -350,6 +353,67 @@ static void test_intern(mi_heap_t *heap)
     CHECK(anostr_intern_find(t, anostr_lit("hull")) == a, "early symbol survives growth");
 }
 
+// Published FNV-1a test vectors (Noll's reference set): the hash itself, at compile time.
+static_assert(ANOSTR_SID("") == UINT64_C(0xcbf29ce484222325), "SID: FNV-1a 64 offset basis");
+static_assert(ANOSTR_SID("a") == UINT64_C(0xaf63dc4c8601ec8c), "SID: FNV-1a 64 'a'");
+static_assert(ANOSTR_SID("foobar") == UINT64_C(0x85944171f73967e8), "SID: FNV-1a 64 'foobar'");
+static_assert(ANOSTR_SID32("") == 0x811c9dc5u, "SID32: FNV-1a 32 offset basis");
+static_assert(ANOSTR_SID32("a") == 0xe40c292cu, "SID32: FNV-1a 32 'a'");
+static_assert(ANOSTR_SID32("foobar") == 0xbf9cf968u, "SID32: FNV-1a 32 'foobar'");
+
+// ICE contexts: enum value, array size, case label, static initializer.
+enum {
+    SID_ENUM_SPAWN = ANOSTR_SID32("player_spawn"),
+    SID_ARRAY_N    = (int)(ANOSTR_SID32("x") & 0xFF) + 1,
+};
+static char sid_array_size_probe[SID_ARRAY_N];
+static const anostr_sid sid_static_table[] = {
+    ANOSTR_SID("player_spawn"), ANOSTR_SID("player_death"), ANOSTR_SID("level_loaded"),
+};
+
+// A 128-byte literal sits exactly at ANOSTR_SID_MAX; anything longer refuses to compile.
+#define SID_16B "0123456789abcdef"
+#define SID_128B SID_16B SID_16B SID_16B SID_16B SID_16B SID_16B SID_16B SID_16B
+
+static int sid_dispatch(anostr_sid id)
+{
+    switch (id) {
+    case ANOSTR_SID("player_spawn"):  return 1;
+    case ANOSTR_SID("player_death"):  return 2;
+    case ANOSTR_SID("level_loaded"):  return 3;
+    default:                          return 0;
+    }
+}
+
+static void test_sid(void)
+{
+    // The whole point: a compile-time id and a runtime-hashed string meet in one key space.
+    CHECK(ANOSTR_SID("player_spawn") == anostr_hash(anostr_lit("player_spawn")),
+          "SID: equals anostr_hash of the same literal");
+    CHECK(ANOSTR_SID32("player_spawn") == anostr_hash32(anostr_lit("player_spawn")),
+          "SID32: equals anostr_hash32 of the same literal");
+    CHECK(ANOSTR_SID("a\0b") == anostr_hash(anostr_lit("a\0b")),
+          "SID: embedded NUL bytes count, matching anostr_lit");
+    CHECK(ANOSTR_SID(SID_128B) == anostr_hash(anostr_lit(SID_128B)),
+          "SID: agreement at the 128-byte cap");
+    CHECK(ANOSTR_SID("player_spawn") != ANOSTR_SID("player_death"),
+          "SID: distinct literals get distinct ids");
+
+    // switch dispatch on compile-time ids, keyed by runtime-computed hashes.
+    CHECK(sid_dispatch(anostr_hash(anostr_lit("player_spawn"))) == 1, "SID: case label hit 1");
+    CHECK(sid_dispatch(anostr_hash(anostr_lit("player_death"))) == 2, "SID: case label hit 2");
+    CHECK(sid_dispatch(anostr_hash(anostr_lit("who?"))) == 0, "SID: default for unknown");
+
+    CHECK(sid_static_table[2] == anostr_hash(anostr_lit("level_loaded")),
+          "SID: static initializer holds the right id");
+    CHECK((uint32_t)SID_ENUM_SPAWN == anostr_hash32(anostr_lit("player_spawn")),
+          "SID32: enum value holds the right id");
+    sid_array_size_probe[0] = 1;    // touch it so the probe array is real, not folded away
+    CHECK(sizeof sid_array_size_probe == (ANOSTR_SID32("x") & 0xFF) + 1
+              && sid_array_size_probe[0] == 1,
+          "SID32: usable as an array size");
+}
+
 // Randomized round-trip: build a random string via random-sized appends, freeze, and verify
 // contents, hash consistency, and a random slice against a plain reference buffer.
 static void soak(mi_heap_t *heap, uint32_t iterations)
@@ -404,6 +468,7 @@ int main(int argc, char **argv)
     test_find_concat_join(heap);
     test_split(heap);
     test_intern(heap);
+    test_sid();
 
     uint32_t iterations = 2000;
     if (argc > 1) iterations = (uint32_t)strtoul(argv[1], NULL, 10);
