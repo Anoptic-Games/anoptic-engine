@@ -50,6 +50,12 @@ if(NOT CMAKE_LINKER_TYPE AND NOT APPLE)
     endif()
 endif()
 
+# ANOSTR_SID's unrolled FNV expansion nests brackets past clang's default 256 cap
+# (gcc/MSVC have no such limit); any TU using compile-time string ids needs this.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-fbracket-depth=1024)
+endif()
+
 # Release LTO: ThinLTO on clang, fat -flto on gcc.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ANO_IPO_SUPPORTED OUTPUT ANO_IPO_DETAIL LANGUAGES C CXX)
@@ -152,6 +158,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/ui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 
 # Renderer (default on).

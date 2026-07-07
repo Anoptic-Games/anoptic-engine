@@ -85,6 +85,13 @@ add_custom_command(TARGET anotest_text POST_BUILD
 add_test(NAME anoptic_text COMMAND anotest_text)
 set_tests_properties(anoptic_text PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Testing for ``anoptic_ui.h`` (prim ABI, builder, reference evaluator). Oracles:
+# 64x64-supersampled coverage + separable-Gaussian-blurred masks, both in double.
+add_executable(anotest_ui anotest_ui.c)
+target_link_libraries(anotest_ui PRIVATE anoptic_core m)
+add_test(NAME anoptic_ui COMMAND anotest_ui)
+set_tests_properties(anoptic_ui PROPERTIES TIMEOUT 60 LABELS "unit")
+
 # String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
 # DISABLED in ctest, run ./anotest_strbench by hand from a -O3 build.
 add_executable(anotest_strbench anotest_strbench.c)
