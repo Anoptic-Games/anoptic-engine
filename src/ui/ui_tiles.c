@@ -9,6 +9,14 @@
 // instead of every prim. Runs at compose cadence (zero cost when the UI is idle). An
 // entry whose prim provably fully covers its tile carries a "solid" bit — the GPU then
 // skips the SDF and takes the flat fill (interior classification). Pure, any thread.
+//
+// PERF TODO (ui-render.md §3.7.3-4, deferred, measurement-gated):
+//  - opaque-truncation: when scattering, if an OVER-blend prim is opaque AND solid over a
+//    tile, reset that tile's list to it (everything beneath is occluded) — bounds list
+//    depth, the bigger layered-UI win than the solid bit alone.
+//  - sparse dispatch: emit only non-empty tiles + a compact active-tile list so the GPU
+//    skips empty tiles instead of the dense grid (helps big-bounds/mostly-empty UIs).
+//  - GPU binning: move this scatter to a compute pass for dense dynamic vector content.
 
 #include "anoptic_ui.h"
 

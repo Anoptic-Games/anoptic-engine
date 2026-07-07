@@ -112,6 +112,10 @@ void main()
         barrier();
     }
 
+    // PERF TODO (ui-render.md §3.7.2, deferred): glyphs still brute-scan every instance
+    // per tile even when UI prims are tiled. Tiling them (CPU glyph AABBs -> the same
+    // tile entries, kind-tagged) folds this into the prim walk and gives true unified
+    // text/UI z (a glyph could sit under a prim). The prim loop above is the pattern.
     uint glyphCount = (pc.flags & 2u) != 0u ? 0u : pc.instanceCount;
     for (uint base = 0u; base < glyphCount; base += CHUNK)
     {

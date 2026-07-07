@@ -406,20 +406,35 @@ What the UI lane inherits without modification (anchors current as of this pass)
 
 ## 6. Performance and memory envelope
 
-Estimates, calibrated against the measured text lane and published numbers; to be replaced by
-step-8 measurements.
+Measured 2026-07-07 (step 8), RTX 3090, SHADOWMAP mode, ANO_UI_DEMO (16 UI prims + the live
+OSD text over Sponza). GPU-timestamp sections, 120-frame averages, within-session back-to-back
+A/B. The in-frame overlay dispatch lands in the `composite` section (AFTER_LIGHTING →
+AFTER_COMPOSITE); async moves it to the compute queue, so `composite` then holds only the
+tonemap + overlay blend. `composite` is camera-independent (fullscreen passes), stable to
+~5 µs across the average, so no explicit scene freeze was needed for these numbers.
 
-- Raster cost: text lane in-frame measured +0.15 ms at torture-text scale, async-hidden to
-  composite-noise (`font-render.md` §10 steps 6-7); the sweeper paper logs 240 µs for large-
-  coverage 1440p text on an RTX 2060. A menu screen (full-screen 3-5 layer stack + text) is
-  the same order: tens of M prim-window evaluations, expected well under 0.5 ms on the 3090
-  class, fully hidden on the async queue against ~2 ms of graphics. Coherent middleware ships
-  entire game UIs in ≤1-1.6 ms on 2013 consoles — our structural budget is comfortable.
+- Async lane (§7 step 8): ON by default (the UI rides the text raster's async compute lane).
+  Demo `composite` 0.079 ms in-frame → 0.029 ms async — the async queue hides ~0.050 ms of
+  overlay dispatch off the graphics critical path (composite −63%; total frame ~1.51 → ~1.48
+  ms). The architectural win is bigger than the number: the overlay is entirely off the
+  graphics timeline, so it costs the frame ~nothing as the UI grows. ANO_FORCE_NO_ASYNC_TEXT
+  A/Bs it. Same conclusion the text lane reached — the visible saving scales with UI density.
+- Tile lists (§7 step 7): the per-tile prim walk replaces the O(tiles×prims) brute scan.
+  At demo scale it is within noise (16 prims: in-frame `composite` 0.083 brute → 0.079 ms
+  tiled windowed; 0.236 → 0.225 ms maximized, ~11 µs) because the scan is small next to the
+  shading; the win is O(tiles×prims), so it grows with prim count and tile count — the opaque
+  full-canvas grid (7,500 tiles at 800×600, 54,720 at 2560×1368) and denser UIs reach the
+  ~100 µs range. Interior classification tags 1,565 of the demo's 8,028 entries "solid",
+  skipping the SDF on those. ANO_FORCE_NO_UI_TILES A/Bs it.
+- Envelope check (unchanged conclusion): a full-screen 3-5 layer menu is tens of M prim-window
+  evaluations, well under 0.5 ms on the 3090 class and fully async-hidden against ~1.5 ms of
+  graphics. Coherent middleware ships entire game UIs in ≤1-1.6 ms on 2013 consoles — the
+  structural budget is comfortable.
 - CPU: compose (sort blocks, flatten clips, build tile lists) runs at UI-change cadence only;
   thousands of prims ≈ tens of µs class. Idle UI = one version compare per frame.
-- Memory: overlay already paid (≈42 MiB ×3 at 2560×1368). New: per-frame prim ring (4096
-  prims × 96 B × 3 ≈ 1.2 MiB), side tables (≤256 KiB ×3), tile lists (54,720 tiles × 8 B
-  header + spans, ≈1-2 MiB ×3 when step-2 lands), UI curve stream (tens of KiB). Everything
+- Memory: overlay already paid (≈42 MiB ×3 at 2560×1368). uiFrameBuffer is ~1.74 MiB ×3 =
+  ~5.2 MiB — prim ring (4096 × 96 B), side tables (≤256 KiB), UI curve stream (64 KiB), and
+  the tile lists (65,792 offset words ≈ 257 KiB + 262,144 entry words = 1 MiB). Everything
   host-visible v0; device-local promotion only if profiling asks.
 - Latency: logic tick → RCMD_UI_SET → next frame compose + async raster → same-frame
   composite. Identical to text: one logic tick + one frame, no added stages.
@@ -583,6 +598,18 @@ async, self-test gates at every step.
 8. Async lane switch-on (the CB is already in the text submit slot), A/B in-frame vs async,
    freeze-methodology numbers recorded here, `docs/ui/ui-render.md` updated with measured
    costs. PoC complete.
+   (Done 2026-07-07 — PoC COMPLETE. No new code: the UI prims live in text_record_raster,
+   which is exactly the CB the text lane submits on the async compute queue, so the UI
+   overlay was already latency-hidden by construction the moment step 3 rode that dispatch.
+   asyncText is on by default (textOverlay && asyncHiz && !ANO_FORCE_NO_ASYNC_TEXT). A/B
+   measured and recorded in §6: the async queue hides ~0.050 ms of overlay dispatch out of
+   the graphics `composite` section (0.079 → 0.029 ms) at demo scale, scaling with UI
+   density; the overlay is entirely off the graphics timeline. Composite is camera-
+   independent so its 120-frame average is freeze-stable without an explicit freeze. The UI
+   overlay renders correctly on the async lane (self-test + menu HW-verified with asyncText
+   on). All eight build-sequence steps are landed; the remaining items are the §7-step-7
+   deferrals (opaque-truncation, glyph tiling / true unified z, sparse dispatch, GPU
+   binning) and the §8 future paths below — all explicitly measurement-gated, none blocking.)
 
 Rough scope by the text precedent (2.5k lines total there): ABI+builder ≈ 300 lines C,
 reference evaluator + oracle tests ≈ 500, ui_raster.c ≈ 500, shader additions ≈ 300 GLSL,
