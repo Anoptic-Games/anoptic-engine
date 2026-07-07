@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
-#include <anoptic_math.h>   // canonical mat4 / Vector2 / Vector3 / Vector4
+#include <anoptic_math.h>   // mat4 / Vector2 / Vector3 / Vector4
 
 
 // Structs
@@ -32,11 +32,9 @@ typedef struct GlobalUBO
 	float time;
 	float deltaTime;
 	uint32_t frameCount;
-	uint32_t lightCount;   // number of active lights in the light SSBO (set 0, binding 8)
-	float cameraPos[4];    // world-space camera position (xyz; w unused), avoids per-fragment inverse(view)
-	// Clustered-forward froxel grid (see LIGHTING_SCALE.md). near/far + screen size map a
-	// fragment to its froxel; the light-cull pass and the fragment shader must agree on these.
-	// Two std140 16-byte rows; keep this tail in sync with every GlobalUBO GLSL mirror.
+	uint32_t lightCount;   // active lights in light SSBO (set 0, binding 8)
+	float cameraPos[4];    // world-space camera position (xyz, w unused)
+	// Clustered-forward froxel grid near/far + screen size, std140 rows.
 	float cameraNear;          // row: 160
 	float cameraFar;           //      164
 	float screenWidth;         //      168
@@ -45,43 +43,41 @@ typedef struct GlobalUBO
 	uint32_t clusterDimY;      //      180
 	uint32_t clusterDimZ;      //      184
 	uint32_t maxLightsPerCluster; //   188  (== ANO_CLUSTER_MAX_LIGHTS)
-	// Lighting/RC control row (RADIANCE_CASCADES.md). std140 16-byte row at offset 192; mirror
-	// in the GlobalUBO declarations that read it (flat.frag, transmission.frag, lightcull.comp).
+	// Lighting/RC control row, std140 offset 192.
 	uint32_t lightingMode;     // row: 192  (AnoLightingMode)
 	uint32_t debugView;        //      196  (RC debug visualization; 0 = off)
 	uint32_t pad0;             //      200
 	uint32_t pad1;             //      204
-	// Task-shader meshlet cull tail (review priority 10), read ONLY by flat.task (its GlobalUBO
-	// mirror declares the full struct; every other shader declares a prefix and is unaffected).
-	// updateCullingBuffers writes these per view with the SAME values as the entity cull's
-	// CullUBO: planes from the same extraction, prevViewProj/hizParams/hizProj with the same
-	// lag-slot + warmup gating. All 16-aligned at offset 208; std140 matches C layout exactly.
-	float frustumPlanes[6][4]; // row: 208  this view's world-space frustum planes
-	mat4  prevViewProj;        //      304  reprojection for the meshlet Hi-Z test
-	float hizParams[4];        //      368  {pyramid baseW, baseH, mipCount (0 = off), 0}
-	float hizProj[4];          //      384  {proj00, proj11, proj22, proj32}
+	// Camera clip transform + fragment unprojector.
+	mat4 viewProj;             // row: 208  proj*view premultiplied
+	mat4 invVPPixel;           //      272  inv(viewProj) * (pixel -> NDC)
+	// Task-shader meshlet cull tail.
+	float frustumPlanes[6][4]; // row: 336  this view's world-space frustum planes
+	mat4  prevViewProj;        //      432  reprojection for the meshlet Hi-Z test
+	float hizParams[4];        //      496  {pyramid baseW, baseH, mipCount (0 = off), 0}
+	float hizProj[4];          //      512  {proj00, proj11, proj22, proj32}
 } GlobalUBO;
 
 
 
 // Functions
 
-// Determines the rate at which to load data from memory throughout the vertices
+// Vertex input binding (load rate through the vertices).
 VkVertexInputBindingDescription getBindingDescription(void);
 
-// Determines how to extract vertex attributes from vertex data chunks !NOTE this function expects an array of two attribute descriptions
+// Extracts vertex attributes into an array of two attribute descriptions.
 void getAttributeDescriptions(VkVertexInputAttributeDescription*);
 
 // Performs matrix rotation
 void rotateMatrix(float mat[4][4], char axis, float angle);
 
-// Creates a view matrix from the provided values
+// Builds a view matrix.
 void lookAt(float mat[4][4], float eye[3], float center[3], float up[3]);
 
-// Performs a simple 3D translation
+// 3D translation.
 void translate(float mat[4][4], float x, float y, float z);
 
-// Creates a perspective matrix from the provided values
+// Builds a perspective matrix.
 void perspective(float matrix[4][4], float fovDegrees, float aspect, float near, float far);
 
 // Multiplies two 4x4 matrices: result = a * b
@@ -90,8 +86,7 @@ void multiplyMat4(mat4 result, const mat4 a, const mat4 b);
 // Extracts the 6 frustum planes from a view-projection matrix
 void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj);
 
-// Inverts a 4x4 matrix (general cofactor method). out = m^-1. Returns false (out untouched) if m is
-// singular. Layout-agnostic: out is m^-1 in the same storage convention as m.
+// Inverts a 4x4 matrix. out = m^-1, returns false if m is singular.
 bool invertMat4(mat4 out, const mat4 m);
 
 

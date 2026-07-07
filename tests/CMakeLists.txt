@@ -29,12 +29,76 @@ target_link_libraries(anotest_strings PRIVATE anoptic_core)
 add_test(NAME anoptic_strings COMMAND anotest_strings)
 set_tests_properties(anoptic_strings PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Testing for ``anoptic_strings_utf.h`` (UTF-8 iteration/encode, Unicode case + classification)
+add_executable(anotest_strings_utf anotest_strings_utf.c)
+target_link_libraries(anotest_strings_utf PRIVATE anoptic_core)
+add_test(NAME anoptic_strings_utf COMMAND anotest_strings_utf)
+set_tests_properties(anoptic_strings_utf PROPERTIES TIMEOUT 30 LABELS "unit")
+
+# Collation sort pipeline (prefix keys, radix, sym_sort cache) and transforms (replace_all,
+# cull, rune_sort). Oracle: qsort over anostr_collate, plus naive rebuilds for transforms.
+add_executable(anotest_strings_sort anotest_strings_sort.c)
+target_link_libraries(anotest_strings_sort PRIVATE anoptic_core)
+add_test(NAME anoptic_strings_sort COMMAND anotest_strings_sort)
+set_tests_properties(anoptic_strings_sort PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# Property fuzzer + smoketest for the whole anostr_t surface: cross-kind agreement, every sort,
+# split/join, slice/splice, find/replace, builder, intern/dedupe/keep, hash<->SID twin, UTF
+# round-trips. Runs in ctest (fixed seed, fast); argv[1] scales the soak. Oracles: qsort(collate),
+# naive byte rebuilds, FNV twins.
+add_executable(anotest_strings_fuzz anotest_strings_fuzz.c)
+target_link_libraries(anotest_strings_fuzz PRIVATE anoptic_core)
+add_test(NAME anoptic_strings_fuzz COMMAND anotest_strings_fuzz)
+set_tests_properties(anoptic_strings_fuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;mem")
+
+# Collation sort benchmark: the 6000-item inventory. qsort+collate baseline vs anostr_sort
+# / sort_idx / sym_sort (cold + warm) vs byte floor, plus replace_all/cull/rune_sort.
+# DISABLED in ctest, run ./anotest_sortbench from a -O3 build (build.bat 7).
+add_executable(anotest_sortbench anotest_sortbench.c)
+target_link_libraries(anotest_sortbench PRIVATE anoptic_core)
+add_test(NAME anoptic_sortbench COMMAND anotest_sortbench)
+set_tests_properties(anoptic_sortbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# String-ops benchmark: find / replace_all / cull / rune_sort across hit/miss/dense/sparse/
+# grow/shrink/no-match shapes, results checked. DISABLED in ctest, run from a -O3 build.
+add_executable(anotest_stropsbench anotest_stropsbench.c)
+target_link_libraries(anotest_stropsbench PRIVATE anoptic_core)
+add_test(NAME anoptic_stropsbench COMMAND anotest_stropsbench)
+set_tests_properties(anoptic_stropsbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# Logger stress: anostr_t values through %.*s under multi-producer fire. Latency percentiles
+# plus two oracles (no loss, byte-exact UTF-8). DISABLED in ctest, run from -O3.
+add_executable(anotest_logstrbench anotest_logstrbench.c)
+target_link_libraries(anotest_logstrbench PRIVATE anoptic_core)
+add_test(NAME anoptic_logstrbench COMMAND anotest_logstrbench)
+set_tests_properties(anoptic_logstrbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# Testing for ``anoptic_text.h`` (FreeType lifecycle, the glyph-curve bake, and the
+# multi-face Runic range bake). Fonts are staged next to the binary. The test chdirs
+# to its exe dir and loads them by relative path.
+add_executable(anotest_text anotest_text.c)
+target_link_libraries(anotest_text PRIVATE anoptic_core m)
+add_custom_command(TARGET anotest_text POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/resources/fonts ${CMAKE_CURRENT_BINARY_DIR}/resources/fonts
+        COMMENT "Staging fonts next to anotest_text"
+        VERBATIM)
+add_test(NAME anoptic_text COMMAND anotest_text)
+set_tests_properties(anoptic_text PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
-# Built so it cannot rot, DISABLED in ctest -- run ./anotest_strbench by hand from a -O3 build.
+# DISABLED in ctest, run ./anotest_strbench by hand from a -O3 build.
 add_executable(anotest_strbench anotest_strbench.c)
 target_link_libraries(anotest_strbench PRIVATE anoptic_core)
 add_test(NAME anoptic_strbench COMMAND anotest_strbench)
 set_tests_properties(anoptic_strbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# Compile-time string-id benchmark: ANOSTR_SID switch dispatch vs strcmp / anostr_eq /
+# runtime hash / intern_find, plus the bulk-keying cost SID deletes at startup.
+# DISABLED in ctest, run ./anotest_sidbench by hand from a -O3 build.
+add_executable(anotest_sidbench anotest_sidbench.c)
+target_link_libraries(anotest_sidbench PRIVATE anoptic_core)
+add_test(NAME anoptic_sidbench COMMAND anotest_sidbench)
+set_tests_properties(anoptic_sidbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
 # Testing for mesh optimizer
 add_executable(anotest_meshoptimizer anotest_meshoptimizer.c)

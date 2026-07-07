@@ -17,15 +17,7 @@
 
 #define INTERN_INITIAL_SLOTS 64u    // power of two; grows at 70% load
 
-struct anostr_intern_t {
-    mi_heap_t *heap;
-    uint32_t   count;       // interned strings; symbols are dense 0 .. count-1
-    uint32_t   slotMask;    // slot capacity - 1
-    uint32_t  *slots;       // sym + 1; 0 marks an empty slot
-    uint64_t  *hashes;      // per-symbol cached hash (fast probe reject, free growth)
-    anostr_t  *strs;        // per-symbol canonical value
-    uint32_t   arrCap;      // capacity of hashes/strs
-};
+// struct anostr_intern_t lives in ano_strings_internal.h (shared with anostr_sym_sort's cache).
 
 anostr_intern_t *anostr_intern_make(mi_heap_t *heap)
 {

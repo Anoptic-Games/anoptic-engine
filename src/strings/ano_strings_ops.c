@@ -31,6 +31,53 @@ size_t anostr_find(anostr_t s, anostr_t needle, size_t from)
     return ANOSTR_NPOS;
 }
 
+anostr_t anostr_replace_all(mi_heap_t *heap, anostr_t s, anostr_t needle, anostr_t repl)
+{
+    if (needle.len == 0 || needle.len > s.len)
+        return s;
+
+    // Pass one: count non-overlapping matches.
+    size_t matches = 0;
+    for (size_t at = 0; (at = anostr_find(s, needle, at)) != ANOSTR_NPOS; at += needle.len)
+        matches++;
+    if (matches == 0)
+        return s;   // untouched, same backing, no alloc
+
+    // Exact in u64: matches <= len/needle.len keeps both products < 2^64.
+    uint64_t total = repl.len >= needle.len
+        ? (uint64_t)s.len + (uint64_t)(repl.len - needle.len) * matches
+        : (uint64_t)s.len - (uint64_t)(needle.len - repl.len) * matches;
+    if (total > UINT32_MAX)
+        return anostr_empty();
+
+    // Pass two: gap and replacement memcpys into the destination.
+    char inlineBuf[ANOSTR_INLINE_CAP];
+    char *dst = inlineBuf;
+    if (total > ANOSTR_INLINE_CAP) {
+        if (heap == NULL)
+            return anostr_empty();
+        dst = mi_heap_malloc(heap, (size_t)total);
+        if (dst == NULL)
+            return anostr_empty();
+    }
+
+    const char *src = anostr_bytes(&s);
+    const char *rep = anostr_bytes(&repl);
+    size_t out = 0, from = 0;
+    for (size_t at = 0; (at = anostr_find(s, needle, at)) != ANOSTR_NPOS; ) {
+        memcpy(dst + out, src + from, at - from);
+        out += at - from;
+        memcpy(dst + out, rep, repl.len);
+        out += repl.len;
+        at += needle.len;
+        from = at;
+    }
+    memcpy(dst + out, src + from, s.len - from);
+
+    return total <= ANOSTR_INLINE_CAP ? anostr_make_inline_(dst, (size_t)total)
+                                      : anostr_make_long_(dst, (size_t)total);
+}
+
 anostr_t anostr_join(mi_heap_t *heap, anostr_t sep, const anostr_t *parts, size_t count)
 {
     if (count == 0 || parts == NULL)

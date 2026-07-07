@@ -20,17 +20,17 @@ struct Buffer
     char* data;
 };
 
-// Shader loading utilities shared by pipeline implementations.
-// filename is relative to the executable's own directory ("resources/shaders/x.spv"),
-// never an absolute or CWD-relative path -- see openEngineFile in pipeline.c.
+// Shader loading utilities.
+// filename is relative to the executable directory ("resources/shaders/x.spv").
 bool loadFile(const char* filename, struct Buffer* buffer);
 VkShaderModule createShaderModule(VkDevice device, struct Buffer* code);
 
-// Task meshlet-cull stage (review priority 10), shared by every mesh-drawing pipeline builder.
-// Storage for the specialization structs is caller-provided and must outlive pipeline creation;
-// the caller destroys *outModule after vkCreateGraphicsPipelines. Call only when state->taskCull.
+// Task meshlet-cull stage shared by mesh-drawing pipeline builders.
+// Caller-provided storage must outlive pipeline creation.
+// Caller destroys *outModule after vkCreateGraphicsPipelines.
+// Call only when state->taskCull.
 // in:  shadowPass/coneCull = flat.task constant_id 0/1 for this pipeline's lane
-// out: *stage ready to prepend to pStages; false on shader-load failure
+// out: *stage ready to prepend to pStages, false on shader-load failure
 typedef struct TaskStageStorage
 {
     VkSpecializationMapEntry entries[2];
@@ -45,6 +45,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state);
 bool ano_vk_init_pipelines(VulkanContext* ctx, RendererState* state);
+bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state); // compute prototypes (pipelines/compute.c)
 bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state); // fullscreen HDR->swapchain encode
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state);  // depth-only shadow pipeline + compare sampler
 void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state);

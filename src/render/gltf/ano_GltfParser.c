@@ -4,6 +4,7 @@
 #include "ano_GltfParser.h"
 #include <string.h>
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
@@ -11,7 +12,7 @@
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
 
-// Forward declaration for the internal recursive flatten walk (model_flatten).
+// Recursive flatten walk.
 static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
                          AnoRenderableDesc* out, uint32_t cap, uint32_t* idx);
 
@@ -22,18 +23,18 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     cgltf_result result = cgltf_parse_file(&options, fileName, &data);
     
     if (result != cgltf_result_success) {
-        printf("Failed to parse glTF file: %s\n", fileName);
+        ano_log(ANO_ERROR, "Failed to parse glTF file: %s", fileName);
         return NULL;
     }
     
     result = cgltf_load_buffers(&options, data, fileName);
     if (result != cgltf_result_success) {
-        printf("Failed to load glTF buffers for: %s\n", fileName);
+        ano_log(ANO_ERROR, "Failed to load glTF buffers for: %s", fileName);
         cgltf_free(data);
         return NULL;
     }
 
-    printf("Successfully parsed %s with cgltf!\n", fileName);
+    ano_debug_log(ANO_INFO, "Successfully parsed %s with cgltf!", fileName);
 
     ModelAsset* asset = calloc(1, sizeof(ModelAsset));
     strncpy(asset->name, fileName, 63);
@@ -68,7 +69,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             }
             
             if (!posAccessor || !prim->indices) {
-                printf("Warning: Primitive missing positions or indices. Skipping.\n");
+                ano_log(ANO_WARN, "Warning: Primitive missing positions or indices. Skipping.");
                 continue;
             }
             
@@ -95,9 +96,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
-            // Upload as an LOD chain (review 4.9 step 2). geometryPoolIndex is the chain BASE; the
-            // chain length lives in the base mesh's metadata (cull reads it). ANO_DEFAULT_LOD_COUNT
-            // is 4, so LOD chains are on engine-wide (set it to 1 for a single full-detail level).
+            // Upload as an LOD chain; geometryPoolIndex is the chain base.
             AnoLodConfig lodCfg = ano_lod_config_default(ANO_DEFAULT_LOD_COUNT);
             uint32_t lodBase = 0u, lodProduced = 0u;
             geometry_pool_upload_chain(
@@ -119,27 +118,26 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
     // Identify PBR features globally supported by the active pipelines
     PbrFeatureFlags activeFeatures = ano_vk_get_active_pipelines_supported_features(&rendererState);
-#ifdef DEBUG_BUILD
-    printf("[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X\n", activeFeatures);
-#endif
+    ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
-    // Identify which textures are actually needed based on supported features
+    // Mark needed textures and their color space; color slots decode sRGB, data slots stay linear.
     bool* textureNeeded = NULL;
+    bool* textureSrgb = NULL;
     if (data->textures_count > 0) {
         textureNeeded = calloc(data->textures_count, sizeof(bool));
+        textureSrgb = calloc(data->textures_count, sizeof(bool));
         for (size_t m = 0; m < data->materials_count; ++m) {
             cgltf_material* mat = &data->materials[m];
             PbrFeatureFlags matFeatures = ano_gltf_identify_material_features(mat);
             PbrFeatureFlags supportedFeatures = matFeatures & activeFeatures;
-#ifdef DEBUG_BUILD
-            printf("[GLTF DEBUG] Material %zu (%s): required features = 0x%08X, supported = 0x%08X\n",
+            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Material %zu (%s): required features = 0x%08X, supported = 0x%08X",
                    m, mat->name ? mat->name : "unnamed", matFeatures, supportedFeatures);
-#endif
 
             if (mat->has_pbr_metallic_roughness) {
                 if ((supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) && mat->pbr_metallic_roughness.base_color_texture.texture) {
                     size_t texIdx = mat->pbr_metallic_roughness.base_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
                 if ((supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) && mat->pbr_metallic_roughness.metallic_roughness_texture.texture) {
                     size_t texIdx = mat->pbr_metallic_roughness.metallic_roughness_texture.texture - data->textures;
@@ -157,6 +155,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             if ((supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) && mat->emissive_texture.texture) {
                 size_t texIdx = mat->emissive_texture.texture - data->textures;
                 textureNeeded[texIdx] = true;
+                textureSrgb[texIdx] = true;
             }
             if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
                 if (mat->clearcoat.clearcoat_texture.texture) {
@@ -192,12 +191,14 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (mat->specular.specular_color_texture.texture) {
                     size_t texIdx = mat->specular.specular_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
             }
             if (supportedFeatures & PBR_FEATURE_SHEEN) {
                 if (mat->sheen.sheen_color_texture.texture) {
                     size_t texIdx = mat->sheen.sheen_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
                 if (mat->sheen.sheen_roughness_texture.texture) {
                     size_t texIdx = mat->sheen.sheen_roughness_texture.texture - data->textures;
@@ -228,6 +229,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (mat->diffuse_transmission.diffuse_transmission_color_texture.texture) {
                     size_t texIdx = mat->diffuse_transmission.diffuse_transmission_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
             }
         }
@@ -255,16 +257,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     for (size_t t = 0; t < data->textures_count; ++t) {
         cgltf_texture* tex = &data->textures[t];
         if (tex->image && tex->image->uri && textureNeeded && textureNeeded[t]) {
-#ifdef DEBUG_BUILD
-            printf("[GLTF DEBUG] Loading texture %zu: %s\n", t, tex->image->uri);
-#endif
-            // Resolve the image URI against the glTF file's own directory, exactly as
-            // cgltf_load_buffers resolves .bin URIs (combine, then percent-decode the
-            // uri tail) -- both halves of a model share one base directory instead of
-            // textures silently depending on the process CWD.
+            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading texture %zu: %s", t, tex->image->uri);
+            // Resolve image URI against the glTF file's directory, then percent-decode the tail.
             char texPath[1024];
             if (strlen(fileName) + strlen(tex->image->uri) + 1 >= sizeof texPath) {
-                printf("Texture URI too long, skipping: %s\n", tex->image->uri);
+                ano_log(ANO_WARN, "Texture URI too long, skipping: %s", tex->image->uri);
                 textureLoaded[t] = false;
                 continue;
             }
@@ -273,6 +270,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             bool success = createTextureImage(
                 ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],
                 &loadedTextures[t], texPath, false,
+                textureSrgb[t], // sRGB color slots, linear data slots
                 &stagingBuffers[stagingCount++]
             );
             textureLoaded[t] = success;
@@ -289,9 +287,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 );
             }
         } else if (tex->image && tex->image->uri) {
-#ifdef DEBUG_BUILD
-            printf("[GLTF DEBUG] Skipping texture %zu: %s (not needed or unsupported by pipeline)\n", t, tex->image->uri);
-#endif
+            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Skipping texture %zu: %s (not needed or unsupported by pipeline)", t, tex->image->uri);
         }
     }
 
@@ -309,7 +305,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         totalPrimitives += data->meshes[m].primitives_count;
     }
     if (rendererState.materialBuffer.count + totalPrimitives > rendererState.materialBuffer.capacity) {
-        printf("Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.\n", 
+        ano_log(ANO_WARN, "Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.", 
                totalPrimitives, rendererState.materialBuffer.capacity, rendererState.materialBuffer.count);
     }
 
@@ -329,7 +325,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 matIdx = rendererState.materialBuffer.count++;
                 writeMaterial = true;
             } else {
-                // If capacity is exhausted, reuse index 0 (fallback)
+                // Fallback to index 0
                 matIdx = 0;
             }
             
@@ -588,17 +584,19 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.emissiveStrength = (float)prim->material->emissive_strength.emissive_strength;
                     }
                     
-                    // Pipeline routing (audit 4.7 transparency lanes; review finding 7 sidedness):
-                    //   transmission/volume         -> PIPELINE_TRANSMISSION (depth-sorted "over" lane)
-                    //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE (order-independent ONE/ONE)
-                    //   opaque + doubleSided         -> PIPELINE_FLAT_TWOSIDED (cullMode NONE)
-                    //   otherwise                    -> PIPELINE_FLAT (opaque, backface-culled)
-                    // alphaMode 2 == BLEND (set above). The additive branch is exclusive of transmission.
+                    // Pipeline routing:
+                    //   transmission/volume         -> PIPELINE_TRANSMISSION
+                    //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE
+                    //   alphaMode MASK               -> PIPELINE_FLAT_MASKED
+                    //   opaque + doubleSided         -> PIPELINE_FLAT_TWOSIDED
+                    //   otherwise                    -> PIPELINE_FLAT
                     uint32_t selectedPipeline = PIPELINE_FLAT;
                     if (supportedFeatures & (PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME)) {
                         selectedPipeline = PIPELINE_TRANSMISSION;
                     } else if (matData.emissiveStrength > 1.0f || matData.alphaMode == 2u) {
                         selectedPipeline = PIPELINE_ADDITIVE;
+                    } else if (matData.alphaMode == 1u) {
+                        selectedPipeline = PIPELINE_FLAT_MASKED;
                     } else if (matData.doubleSided) {
                         selectedPipeline = PIPELINE_FLAT_TWOSIDED;
                     }
@@ -614,6 +612,9 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
     if (textureNeeded) {
         free(textureNeeded);
+    }
+    if (textureSrgb) {
+        free(textureSrgb);
     }
     free(loadedTextures);
     free(loadedImages);
@@ -651,7 +652,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         }
     }
     
-    // Store Root Nodes (Fallback to all parentless nodes if scene is incomplete)
+    // Store root nodes (all parentless nodes)
     uint32_t rootCount = 0;
     for (size_t n = 0; n < data->nodes_count; ++n) {
         if (!data->nodes[n].parent) rootCount++;
@@ -669,12 +670,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     }
 
     cgltf_free(data);
-    printf("Successfully extracted ModelAsset: %s\n", fileName);
+    ano_debug_log(ANO_INFO, "Successfully extracted ModelAsset: %s", fileName);
     return asset;
 }
 
-// Walks the node subtree, appending one descriptor per mesh primitive. *idx counts ALL primitives
-// (so the caller learns the true total); a descriptor is written only while *idx < cap.
+// Walk node subtree, appending one descriptor per mesh primitive.
 static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
                          AnoRenderableDesc* out, uint32_t cap, uint32_t* idx) {
     const ModelNode* node = &asset->nodes[nodeIndex];

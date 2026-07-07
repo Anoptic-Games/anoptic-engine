@@ -16,11 +16,8 @@
 #include <libloaderapi.h>
 #include <mimalloc.h>
 
-// Windows paths are UTF-16 underneath -- the explicit -A form returns the active-codepage
-// transcoding, so an install directory with characters outside that codepage comes back
-// mangled and downstream opens fail. Known debt owed to the Resource Manager work
-// (docs/resourcesmg.md Part I): move to GetModuleFileNameW + UTF-8. Calling the -A form
-// explicitly (not the TCHAR macro) so a future -DUNICODE cannot silently break the build.
+// GetModuleFileNameA, not the TCHAR macro. The -A form mangles install paths outside the
+// active codepage. Debt: move to GetModuleFileNameW + UTF-8.
 // Output: directory of the running executable, no file name, by value.
 // length == 0 on failure or a path that does not fit MAXPATH - 1.
 ano_fspath ano_fs_gamepath(void) {
@@ -35,9 +32,7 @@ ano_fspath ano_fs_gamepath(void) {
     // Trim the executable file name, leaving its containing directory.
     while (len > 0 && pathBuffer[len - 1] != '\\' && pathBuffer[len - 1] != '/')
         len--;
-    // Drop the trailing separator -- but keep it for a drive root: "C:" alone is a
-    // DRIVE-RELATIVE path (the CWD on drive C), whereas "C:\" is the root itself.
-    // Mirrors the POSIX implementations keeping "/" for an exe at filesystem root.
+    // Drop the trailing separator, but keep it for a drive root ("C:" is drive-relative, "C:\" is the root).
     if (len > 3)
         len--;
 
@@ -47,8 +42,7 @@ ano_fspath ano_fs_gamepath(void) {
     return result;
 }
 
-// %APPDATA%\anoptic, created if absent (the Factorio convention). %APPDATA% is the roaming
-// user-data root and is set for every interactive session; no shell32 KnownFolder call needed.
+// %APPDATA%\anoptic, created if absent. %APPDATA% is the roaming user-data root, no shell32 KnownFolder call.
 ano_fspath ano_fs_userpath(void) {
     ano_fspath result = {0};
 
@@ -67,8 +61,8 @@ ano_fspath ano_fs_userpath(void) {
     return result;
 }
 
-// Input: none. Output: true on success.
-// Sets CWD to ano_fs_gamepath() so relative asset loads resolve regardless of launch directory.
+// Output: true on success.
+// Sets CWD to ano_fs_gamepath() so relative asset loads resolve.
 bool ano_fs_chdir_gamepath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
@@ -83,8 +77,7 @@ struct ano_file {
 };
 
 // Output: handle opened FILE_APPEND_DATA, or NULL on failure. OPEN_ALWAYS creates if absent.
-// FILE_SHARE_DELETE gives POSIX unlink parity: another process (or a test) may remove/replace
-// the log file while we hold it open, as it can on Linux/macOS.
+// FILE_SHARE_DELETE gives POSIX unlink parity: another process may remove/replace the file while open.
 ano_file *ano_fs_open_append(const char *path)
 {
     if (path == NULL)

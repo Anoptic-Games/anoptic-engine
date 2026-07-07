@@ -50,7 +50,6 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state);
 // Generic helper function for creating 2D image views
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels);
 
-// You know what this does
 bool createImageViews(VulkanContext* ctx, RendererState* state);
 
 
@@ -64,11 +63,7 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 // Creates uniform buffers for each frame
 bool createUniformBuffers(VulkanContext* ctx, RendererState* state);
 
-// Creates transform buffers for meshes
-
-
-// Updates the uniform buffer
-bool updateUniformBuffer(VulkanContext* ctx, RendererState* state);
+// updateUniformBuffer declared in vulkan_backend/frame/frame.h
 
 // Updates a mesh's transform matrices
 bool updateMeshTransforms(VulkanContext* ctx, RenderEntity* entity, float move);
@@ -79,8 +74,7 @@ void createColorResources(VulkanContext* ctx);
 // Creates a depth image and view for the current swapchain
 bool createDepthResources(VulkanContext* ctx, RendererState* state);
 
-// Hi-Z occlusion pyramid (review 4.9 step 3): per-view half-res R32F depth pyramids, recreated with
-// the swapchain. updateHiZDescriptorSets rebinds the per-mip compute sets to the (re)created views.
+// Per-view half-res R32F depth pyramids, recreated with the swapchain
 bool createHiZResources(VulkanContext* ctx, RendererState* state);
 void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state);
 
@@ -119,6 +113,9 @@ void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer);
 // Copies data from one GPU buffer to another
 bool copyBuffer(VulkanContext* ctx, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
+// One-shot staged upload: host data -> transient staging buffer -> dstBuffer (device-local)
+bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize);
+
 // Creates a command buffer
 bool createCommandBuffer(VulkanContext* ctx, RendererState* state);
 
@@ -129,11 +126,14 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state);
 void cleanupMonitors(Monitors* monitors);
 
 // More Function Prototypes
-// TODO: SSA can sort this out
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
 const char** getRequiredExtensions(uint32_t* extensionsCount);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
 void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger);
+
+// Cross-file helpers exposed by the instance/ split
+struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR *surface);
+void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator);
 
 #endif

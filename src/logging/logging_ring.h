@@ -10,7 +10,7 @@
 // emits, and frees the range with one `head` store. A slot is live iff its tag is committed and carries
 // the current lap (`cycle`), so reuse needs no zeroing. Only `tag` is synchronized. Timestamp and text
 // ride its release/acquire as plain memory.
-// Design: docs/logger.md. Migrates to anoptic_collections.h at the lock-free port.
+// Migrates to anoptic_collections.h at the lock-free port.
 
 #ifndef ANOPTICENGINE_LOGGING_RING_H
 #define ANOPTICENGINE_LOGGING_RING_H
@@ -31,6 +31,8 @@
 enum {
     ANO_LOG_COMMITTED = 1 << 0, // set on publish, so a committed tag is nonzero even at len 0
     ANO_LOG_DEFERRED  = 1 << 1, // body is a deferred-format capture blob, not finished text (§9 proto)
+    ANO_LOG_TOFILE    = 1 << 2, // sink: batched to the output file at drain
+    ANO_LOG_TOCON     = 1 << 3, // sink: echoed to the terminal at drain
 };
 
 // An entry's head line begins with this 16-byte marker. The rest of the head line and every
@@ -51,8 +53,8 @@ typedef union {
     // _Static_assert below proves it). It is chosen so `len` is the low 16 bits of `w`.
     struct {
         uint16_t len;       // stored text bytes, span = ceil((16 + len) / ANO_CL)
-        uint8_t  level;     // log_types_t copy, so the flusher routes by severity without the text
-        uint8_t  flags;     // ANO_LOG_COMMITTED + ANO_LOG_DEFERRED
+        uint8_t  level;     // ano_loglevel_t copy for the flusher's severity routing
+        uint8_t  flags;     // ANO_LOG_COMMITTED + ANO_LOG_DEFERRED + sink bits
         uint32_t cycle;     // lap number (pos >> shift), so a stale prior-lap tag is told from this lap's.
                             //   Lets the drainer reclaim by cycle check, no per-slot zeroing.
     };

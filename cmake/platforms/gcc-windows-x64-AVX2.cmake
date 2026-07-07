@@ -1,5 +1,6 @@
 # windows-x64-AVX2.cmake
 # Toolchain file for 64-bit Windows operating platforms with support for AVX2 vector extensions.
+# GCC fallback, clang/LLVM is the default (*_clang-windows-x64-mingw.cmake).
 
 message(STATUS "!! Using windows-x64-AVX2.cmake toolchain.")
 

@@ -32,4 +32,20 @@ static inline anostr_t anostr_make_long_(const char *bytes, size_t len)
     return s;
 }
 
+// The interning table, shared by ano_strings_intern.c (make/intern/grow) and
+// ano_strings_collate.c (anostr_sym_sort's key cache). Single mutator, like the mi_heap.
+struct anostr_intern_t {
+    mi_heap_t *heap;
+    uint32_t   count;       // interned strings, dense syms 0..count-1
+    uint32_t   slotMask;    // slot capacity minus 1
+    uint32_t  *slots;       // sym + 1, 0 marks empty
+    uint64_t  *hashes;      // per-symbol cached hash (fast probe reject)
+    anostr_t  *strs;        // canonical value per symbol
+    uint32_t   arrCap;      // hashes/strs capacity
+    // Collation-key cache, filled lazily by anostr_sym_sort. Watermark, no per-entry flag.
+    uint64_t  *collateKeys; // per-symbol prefix key, [0 .. collateKeyed)
+    uint32_t   collateKeyed;
+    uint32_t   collateKeyCap;
+};
+
 #endif // ANOPTIC_SRC_STRINGS_INTERNAL_H

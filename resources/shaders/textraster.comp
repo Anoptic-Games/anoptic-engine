@@ -1,0 +1,77 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Scanline Sweeper overlay raster: one workgroup per 8x8 tile integrates glyph coverage per pixel.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "textcoverage.glsl"
+
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D overlay;
+
+layout(push_constant) uniform TextRasterPush {
+    uint  instanceCount;
+    uint  flags;    // bit 0: opaque black backdrop
+    uvec2 extent;
+    uvec2 origin;   // dispatch region offset, pixels (tile-aligned)
+} pc;
+
+const uint CHUNK = 64u; // instances per cull round
+
+shared uint sHit[CHUNK]; // per-lane tile-cull verdict
+shared uint sAny;        // chunk had any hit
+
+// Does instance idx's glyph touch the screen rect [rMin,rMax]?
+bool box_hits(uint idx, vec2 rMin, vec2 rMax)
+{
+    GlyphInstance gi = instances[idx];
+    GlyphEntry g = glyphs[gi.glyphID];
+    if (g.curveCount == 0u)
+        return false;
+    vec2 lo, hi;
+    em_box(gi.inv, rMin - gi.origin, rMax - gi.origin, lo, hi);
+    return lo.x < g.bboxMax.x && hi.x > g.bboxMin.x && lo.y < g.bboxMax.y && hi.y > g.bboxMin.y;
+}
+
+void main()
+{
+    uvec2 px = gl_GlobalInvocationID.xy + pc.origin;
+    bool valid = px.x < pc.extent.x && px.y < pc.extent.y;
+    vec2 pixTL = vec2(px);
+    vec2 tMin = vec2(gl_WorkGroupID.xy * 8u + pc.origin);
+    vec2 tMax = min(tMin + 8.0, vec2(pc.extent));
+
+    vec4 acc = vec4(0.0);
+    for (uint base = 0u; base < pc.instanceCount; base += CHUNK)
+    {
+        if (gl_LocalInvocationIndex == 0u)
+            sAny = 0u;
+        barrier();
+        uint i = base + gl_LocalInvocationIndex;
+        uint hit = (i < pc.instanceCount && box_hits(i, tMin, tMax)) ? 1u : 0u;
+        sHit[gl_LocalInvocationIndex] = hit;
+        if (hit != 0u)
+            atomicOr(sAny, 1u);
+        barrier();
+        if (valid && sAny != 0u)
+        {
+            for (uint j = 0u; j < CHUNK; j++)
+            {
+                if (sHit[j] != 0u)
+                {
+                    vec4 src = shade_window(base + j, pixTL, pixTL + 1.0);
+                    acc = src + acc * (1.0 - src.a);
+                }
+            }
+        }
+        barrier();
+    }
+
+    if (!valid)
+        return;
+    if ((pc.flags & 1u) != 0u)
+        acc.a = 1.0; // opaque self-test: black backdrop
+    else if (acc == vec4(0.0))
+        return; // untouched pixel
+    imageStore(overlay, ivec2(px), acc);
+}

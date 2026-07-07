@@ -1,5 +1,6 @@
 # windows-x64.cmake
 # Toolchain file for 64-bit Windows platforms.
+# GCC fallback, clang/LLVM is the default (*_clang-windows-x64-mingw.cmake).
 
 message(STATUS "!! Using windows-x64.cmake toolchain.")
 

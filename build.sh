@@ -43,7 +43,7 @@ case $1 in
     run_tests=1
     ;;
   6)
-    # Headless: core + CTest, renderer explicitly disabled (no Vulkan probe)
+    # Headless: core + CTest, no renderer
     build_type="Debug"
     build_dir="Headless"
     toolchain_file="debug_clang-linux-x64.cmake"
@@ -51,9 +51,7 @@ case $1 in
     run_tests=1
     ;;
   7)
-    # Release (-O3) build with CTest enabled: optimized test + benchmark runs. Option 1 is the same
-    # -O3 full engine build without tests. Use this, NOT 3, to benchmark the logger -- 3 is a Debug
-    # (-O0) build and reports ~2x pessimistic numbers.
+    # Release (-O3) tests, use for benchmarks
     build_type="Release"
     build_dir="RelTests"
     toolchain_file="clang-linux-x64.cmake"
@@ -80,28 +78,62 @@ script_dir=$(dirname "$0")
 # Path to the toolchain file
 toolchain_path="$script_dir/cmake/platforms/${toolchain_file}"
 
-# macOS: Homebrew clang, no toolchain file (Apple clang rejects C23). Else: toolchain file.
+# macOS: Nix shell clang when present, else Homebrew LLVM. Other platforms use toolchain files.
 if [ "$(uname -s)" = "Darwin" ]; then
-    # || true: keep set -e from aborting here when llvm is absent; the check below reports it.
-    llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
-    if [ -z "$llvm_prefix" ] || [ ! -x "$llvm_prefix/bin/clang" ]; then
-        echo "Error: Homebrew LLVM clang not found. Install it with 'brew install llvm'."
-        exit 1
+    if [ -n "$IN_NIX_SHELL" ] && command -v clang >/dev/null 2>&1; then
+        platform_args="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+    else
+        # don't abort under set -e when llvm is absent
+        llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
+        if [ -z "$llvm_prefix" ] || [ ! -x "$llvm_prefix/bin/clang" ]; then
+            echo "Error: no Nix shell and no Homebrew LLVM clang found."
+            echo "Either 'nix develop' (flake provides all deps) or 'brew install llvm'."
+            exit 1
+        fi
+        platform_args="-DCMAKE_C_COMPILER=$llvm_prefix/bin/clang -DCMAKE_CXX_COMPILER=$llvm_prefix/bin/clang++"
     fi
-    platform_args="-DCMAKE_C_COMPILER=$llvm_prefix/bin/clang -DCMAKE_CXX_COMPILER=$llvm_prefix/bin/clang++"
 else
     platform_args="-DCMAKE_TOOLCHAIN_FILE=${toolchain_path}"
 fi
 
+# Configure with Ninja when available.
+generator_args=""
+if command -v ninja >/dev/null 2>&1; then
+    generator_args="-G Ninja"
+    # Reset a build dir whose cache has a different generator or source root.
+    cache="./build/${build_dir}/CMakeCache.txt"
+    src="$(pwd -P)"
+    if [ -f "$cache" ] && ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
+        rm -rf "./build/${build_dir}"
+    fi
+    if [ -f "$cache" ] && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$src" "$cache"; then
+        rm -rf "./build/${build_dir}"
+    fi
+else
+    echo "[anoptic] ninja not found; falling back to Makefiles (slower)." \
+         "Install it: brew install ninja / apt install ninja-build / pacman -S ninja"
+fi
+
 # Create build directory if not exist
 mkdir -p ./build/${build_dir}
+cmake ${generator_args} -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
 
-# Configure the build
-cmake -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
+# Scrub all object files.
+cmake --build ./build/${build_dir} --target ano_scrub
 
-# Build the project. Shader + asset staging is owned by CMake (root CMakeLists /
-# tests/CMakeLists) so every build flow gets it, not just this script.
-cmake --build ./build/${build_dir}
+# Build the project.
+cmake --build ./build/${build_dir} --parallel
+
+# Engine-only profiles must produce a binary, fail loudly if Vulkan was missing.
+if [ ${run_tests} -eq 0 ] && [ ! -e "./build/${build_dir}/anopticengine" ]; then
+    echo "Error: no anopticengine binary was produced." >&2
+    echo "CMake found no Vulkan SDK, so the renderer (and the engine target) was skipped" >&2
+    echo "-- see the CMake warning above. Options:" >&2
+    echo "  ./build.sh 6              headless engine + non-GPU tests (no Vulkan needed)" >&2
+    echo "  nix build .#renderer      full renderer package (Linux + GPU driver)" >&2
+    echo "  nix develop .#windows     Debug/Release Windows renderer from WSL/Linux" >&2
+    exit 1
+fi
 
 # Run the test suite
 if [ ${run_tests} -eq 1 ]; then
