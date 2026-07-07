@@ -11,25 +11,21 @@
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/frame/frame.h"
 
-// Submit this frame's recorded command buffers in the exact required order: the graphics submit
-// (plain, or the async-light-cull split prelude+main two-batch), then the async light-cull compute
-// submit, then the async Hi-Z compute submit. ordinal = this submit's 1-based timeline value.
-// Extracted verbatim from drawFrame; the graphics-submit failure returns became `return false` so
-// drawFrame can skip present (present waits renderFinished == the graphics submit signal).
+// Submit this frame's command buffers in order, graphics (plain or async-light-cull split
+// prelude+main two-batch), async light-cull compute, async Hi-Z compute. ordinal = 1-based timeline value.
 bool ano_frame_submit(uint64_t ordinal)
 {
 	VkSemaphore signalSemaphores[2] = {rendererState.frames[rendererState.frameIndex].renderFinished, rendererState.gfxTimeline};
 	uint64_t signalValues[2] = {0, ordinal};
 	uint64_t hizWaitValue = ordinal > 2u ? ordinal - 2u : 0u;
-	vkResetFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence)); // this goes here because multi-threading
+	vkResetFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence));
 	if (!rendererState.asyncLc)
 	{
 		VkSubmitInfo submitInfo = {};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		VkSemaphore waitSemaphores[3] = {rendererState.frames[rendererState.frameIndex].imageAvailable,
 			rendererState.hizTimeline, rendererState.textTimeline};
-		// Task meshlet cull samples the async-built pyramids (global set binding 13), joins the
-		// hizTimeline wait when active. The async text raster joins at FRAGMENT_SHADER.
+		// Task cull joins hizTimeline wait when active. Async text @ FRAGMENT_SHADER.
 		VkPipelineStageFlags waitStages[3] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
 				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
@@ -56,15 +52,9 @@ bool ano_frame_submit(uint64_t ordinal)
 	}
 	else
 	{
-		// Async light-cull split (finding 2 remainder), one atomic two-batch submit + fence.
-		// A (prelude CB): waits hizTimeline >= ordinal-2 at COMPUTE (the cull samples the lag-2
-		// pyramids) and lcTimeline >= ordinal-1 at TRANSFER (the lightBuffer copy must not
-		// overwrite the PRIOR frame's compute-queue light-cull read — the in-queue reach-back
-		// barrier cannot see the other queue); signals preludeTimeline = ordinal.
-		// B (main CB): waits imageAvailable at COLOR_OUT, hizTimeline >= ordinal-2 at
-		// EARLY_FRAGMENT_TESTS (depth-resolve WAR anchor), and lcTimeline == ordinal at
-		// FRAGMENT_SHADER (first froxel-list consumer; timeline waits may be submitted before
-		// their signal); signals renderFinished + gfxTimeline = ordinal as before.
+		// Async light-cull split, one atomic two-batch submit + fence.
+		// A prelude CB waits hizTimeline >= ordinal-2 @ COMPUTE, lcTimeline >= ordinal-1 @ TRANSFER, signals preludeTimeline = ordinal.
+		// B main CB waits imageAvailable @ COLOR_OUT, hizTimeline >= ordinal-2 @ EARLY_FRAG, lcTimeline == ordinal @ FRAGMENT, signals renderFinished + gfxTimeline.
 		uint64_t lcPrevValue = ordinal > 1u ? ordinal - 1u : 0u;
 		VkSemaphore aWaitSems[2] = { rendererState.hizTimeline, rendererState.lcTimeline };
 		VkPipelineStageFlags aWaitStages[2] = { VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT };
@@ -85,9 +75,7 @@ bool ano_frame_submit(uint64_t ordinal)
 
 		VkSemaphore bWaitSems[4] = { rendererState.frames[rendererState.frameIndex].imageAvailable,
 			rendererState.hizTimeline, rendererState.lcTimeline, rendererState.textTimeline };
-		// hizTimeline @ EARLY_FRAG (depth-resolve WAR) + TASK when the meshlet cull samples the
-		// async-built pyramids in this submit's geometry passes (global set binding 13).
-		// textTimeline == ordinal @ FRAGMENT.
+		// hizTimeline @ EARLY_FRAG + TASK for meshlet cull. textTimeline @ FRAGMENT.
 		VkPipelineStageFlags bWaitStages[4] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
 				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
@@ -113,8 +101,7 @@ bool ano_frame_submit(uint64_t ordinal)
 			return false;
 		}
 
-		// Light-cull compute submit: released by this frame's prelude, consumed by its main submit —
-		// it executes DURING the shadow region on the dedicated queue.
+		// Light-cull compute submit, released by this frame's prelude, consumed by its main submit.
 		VkPipelineStageFlags lcWaitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 		VkTimelineSemaphoreSubmitInfo lcTimelineInfo = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
 			.waitSemaphoreValueCount = 1, .pWaitSemaphoreValues = &ordinal,
@@ -125,8 +112,7 @@ bool ano_frame_submit(uint64_t ordinal)
 			.signalSemaphoreCount = 1, .pSignalSemaphores = &rendererState.lcTimeline };
 		if (vkQueueSubmit(ctx.computeQueue, 1, &lcSubmit, VK_NULL_HANDLE) != VK_SUCCESS)
 		{
-			// Keep the timeline monotonic so the main submit's wait cannot deadlock (the frame keeps
-			// the previous froxel lists); a failed submit here is device-loss territory anyway.
+			// Force-signal to keep the timeline monotonic.
 			ano_log(ANO_ERROR, "Failed to submit async light-cull command buffer!");
 			VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
 				.semaphore = rendererState.lcTimeline, .value = ordinal };
@@ -135,10 +121,7 @@ bool ano_frame_submit(uint64_t ordinal)
 	}
 	rendererState.timelineOrdinal = ordinal;
 
-	// Async Hi-Z compute submit (review finding 2): waits this frame's graphics (gfxTimeline ==
-	// ordinal: depth resolves done, prior readers of the slots being rewritten retired), signals
-	// hizTimeline == ordinal for the ordinal+2 graphics submit. Executes during the NEXT frame's
-	// graphics on the dedicated queue — off the critical path.
+	// Async Hi-Z compute submit, waits gfxTimeline == ordinal, signals hizTimeline == ordinal for the ordinal+2 graphics submit.
 	if (rendererState.asyncHiz)
 	{
 		VkPipelineStageFlags hizWaitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
@@ -151,8 +134,7 @@ bool ano_frame_submit(uint64_t ordinal)
 			.signalSemaphoreCount = 1, .pSignalSemaphores = &rendererState.hizTimeline };
 		if (vkQueueSubmit(ctx.computeQueue, 1, &hizSubmit, VK_NULL_HANDLE) != VK_SUCCESS)
 		{
-			// Keep the timeline monotonic so the ordinal+2 graphics wait cannot deadlock; a failed
-			// submit here is device-loss territory anyway.
+			// Force-signal to keep the timeline monotonic.
 			ano_log(ANO_ERROR, "Failed to submit async Hi-Z command buffer!");
 			VkSemaphoreSignalInfo signalInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
 				.semaphore = rendererState.hizTimeline, .value = ordinal };

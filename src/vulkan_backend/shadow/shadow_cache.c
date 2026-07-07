@@ -11,12 +11,7 @@
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/shadow/shadow.h"
 
-// Attach a runtime shadow caster: allocate a frustum block, stage its per-frustum config (active=1)
-// Invalidate a frustum block's cached atlas layers (review finding 8): its light was (re)attached,
-// detached, or its fields changed, so the persistent content no longer matches. Every call site is
-// a LIGHT change, so the block is also matrix-dirty: shadowsetup rewrites its viewProj from live
-// state this frame, and sampling old content with the new matrix would tear — the render budget
-// must not defer it. NONE/no-op safe.
+// Invalidate a frustum block's cached atlas layers and mark it matrix-dirty. NONE/no-op safe.
 void shadow_layers_invalidate(RendererState* st, uint32_t base, uint32_t count) {
     if (base == ANO_SHADOW_NONE) return;
     for (uint32_t f = 0; f < count && base + f < ANO_SHADOW_FRUSTUM_COUNT; f++) {
@@ -26,18 +21,10 @@ void shadow_layers_invalidate(RendererState* st, uint32_t base, uint32_t count) 
 }
 
 // --- Swept-bound motion exposure (review finding 8, deferred half) --------------------------------
-// A parametric mover's trajectory is a closed form, so one world sphere bounds its mesh for ALL time
-// (computed once at command time — motion itself never re-sends). A shadow frustum then re-renders
-// only while some mover's sphere reaches its light's influence volume, or its light rides a mover,
-// instead of any live mover dirtying every frustum. Movers with no finite bound (LINEAR/STREAMED,
-// degenerate params, ANO_FORCE_NO_SWEPT) count into moverUnboundedCount = the old blanket epoch.
-// Everything below is render-thread-only and command-driven: O(42) or O(movers) per command, zero
-// per-frame work beyond reading the counts.
+// One static world sphere bounds each parametric mover for all time; unbounded movers count moverUnboundedCount.
 
 // Conservative world-space sphere containing the slot's mesh over its WHOLE trajectory.
-// in: base pose (column-major; columns 0-2 linear part L, column 3 translation T), model-space mesh
-//     sphere (cm, rm), motion descriptor. Frobenius norm bounds the operator norm of L (<= sqrt(3)x
-//     over: conservative for any scale/shear).
+// in: base pose (columns 0-2 linear L, column 3 translation T), model mesh sphere (cm, rm), motion.
 // out: c/r; returns false when the trajectory has no finite bound.
 static bool mover_swept_bound(const mat4 base, const float cm[3], float rm,
                               const AnoMotionDescriptor* m, float c[3], float* r)
@@ -46,7 +33,7 @@ static bool mover_swept_bound(const mat4 base, const float cm[3], float rm,
     float frob = sqrtf(l0[0]*l0[0] + l0[1]*l0[1] + l0[2]*l0[2]
                      + l1[0]*l1[0] + l1[1]*l1[1] + l1[2]*l1[2]
                      + l2[0]*l2[0] + l2[1]*l2[1] + l2[2]*l2[2]);
-    float C[3] = { l0[0]*cm[0] + l1[0]*cm[1] + l2[0]*cm[2] + T[0],   // static world sphere: L*cm + T
+    float C[3] = { l0[0]*cm[0] + l1[0]*cm[1] + l2[0]*cm[2] + T[0],   // static world sphere L*cm + T
                    l0[1]*cm[0] + l1[1]*cm[1] + l2[1]*cm[2] + T[1],
                    l0[2]*cm[0] + l1[2]*cm[1] + l2[2]*cm[2] + T[2] };
     float Rw = frob * rm;
@@ -54,15 +41,13 @@ static bool mover_swept_bound(const mat4 base, const float cm[3], float rm,
 
     switch (m->type) {
     case (uint32_t)ANO_MOTION_SPIN:
-        // base * R about the LOCAL origin: position pinned at T, the mesh sweeps |x| <= |cm| + rm.
+        // base * R about the LOCAL origin, position pinned at T.
         if (speed <= 1e-4f) { c[0] = C[0]; c[1] = C[1]; c[2] = C[2]; *r = Rw; return true; } // GPU treats as static
         c[0] = T[0]; c[1] = T[1]; c[2] = T[2];
         *r = frob * (sqrtf(cm[0]*cm[0] + cm[1]*cm[1] + cm[2]*cm[2]) + rm);
         return true;
     case (uint32_t)ANO_MOTION_ORBIT: {
-        // R * base about a world axis through the ORIGIN: every rotation preserves the static world
-        // center's axial height and axis distance, so the sweep stays inside the sphere about the
-        // center's axis foot with radius = axis distance + Rw.
+        // R * base about a world axis through the ORIGIN; sweep sphere about the axis foot, radius = axis dist + Rw.
         if (speed <= 1e-4f) { c[0] = C[0]; c[1] = C[1]; c[2] = C[2]; *r = Rw; return true; }
         float ax = m->p0.v[0] / speed, ay = m->p0.v[1] / speed, az = m->p0.v[2] / speed;
         float h = C[0]*ax + C[1]*ay + C[2]*az;
@@ -75,7 +60,7 @@ static bool mover_swept_bound(const mat4 base, const float cm[3], float rm,
         if (speed <= 1e-4f) { c[0] = C[0]; c[1] = C[1]; c[2] = C[2]; *r = Rw; return true; }
         return false; // unbounded in time
     case (uint32_t)ANO_MOTION_KEPLER: {
-        // Focus at the base position; apoapsis a(1+e) bounds the whole ellipse from the focus.
+        // Apoapsis a(1+e) bounds the ellipse from the focus at the base position.
         float a = m->p0.v[0], e = m->p0.v[1];
         if (!(a > 0.0f) || !(e >= 0.0f) || e >= 1.0f) return false; // open/degenerate orbit
         c[0] = C[0]; c[1] = C[1]; c[2] = C[2];
@@ -83,13 +68,11 @@ static bool mover_swept_bound(const mat4 base, const float cm[3], float rm,
         return true;
     }
     default:
-        return false; // STREAMED / unknown: no closed form the CPU can bound
+        return false; // STREAMED / unknown, no closed form
     }
 }
 
-// Mover sphere vs a frustum's caster volume. An unbounded volume (radius < 0: directional, or
-// range <= 0) is exposed by any mover. Spot volumes use the conservative (pos, range) sphere; the
-// shadow frustum's far plane is the range, so the frustum is contained in it.
+// Mover sphere vs a frustum's caster volume. An unbounded volume (radius < 0) is exposed by any mover.
 static bool mover_exposes(const ShadowCasterVolume* v, const float c[3], float r) {
     if (v->radius < 0.0f) return true;
     float dx = c[0] - v->center[0], dy = c[1] - v->center[1], dz = c[2] - v->center[2];
@@ -113,7 +96,7 @@ static void mover_expose_rebuild(RendererState* st, MoverBound* mb) {
 }
 
 // Recompute a mover's bound from the slot mirrors + retained descriptor, then its exposure.
-// Mesh-less/unregistered slots bound to the pose origin (their LIGHT, if any, rides parent-mover).
+// Mesh-less/unregistered slots bound to the pose origin.
 static void mover_bound_refresh(RendererState* st, MoverBound* mb) {
     float cm[3] = { 0.0f, 0.0f, 0.0f }, rm = 0.0f;
     uint32_t mi = st->slotMeshIdx[mb->slot];
@@ -133,8 +116,8 @@ static void mover_bound_refresh(RendererState* st, MoverBound* mb) {
     mover_expose_rebuild(st, mb);
 }
 
-// Upsert the slot's mover record (motion established or changed). Growth failure poisons the
-// feature into the permanent blanket fallback (motionActiveCount) rather than under-dirtying.
+// Upsert the slot's mover record (motion established or changed).
+// Growth failure poisons the feature into the permanent blanket fallback.
 static void mover_set(RendererState* st, uint32_t slot, const AnoMotionDescriptor* m) {
     uint32_t idx = st->slotMoverIdx[slot];
     if (idx == ANO_RENDER_SLOT_UNMAPPED) {
@@ -158,8 +141,7 @@ static void mover_set(RendererState* st, uint32_t slot, const AnoMotionDescripto
     mover_bound_refresh(st, &st->movers[idx]);
 }
 
-// Drop the slot's mover record (motion cleared / slot destroyed): release its exposure
-// contributions, swap-remove, re-point the moved record's slot.
+// Drop the slot's mover record, release its exposure contributions, swap-remove, re-point the moved slot.
 static void mover_remove(RendererState* st, uint32_t slot) {
     uint32_t idx = st->slotMoverIdx[slot];
     if (idx == ANO_RENDER_SLOT_UNMAPPED) return;
@@ -175,15 +157,13 @@ static void mover_remove(RendererState* st, uint32_t slot) {
     st->slotMoverIdx[slot] = ANO_RENDER_SLOT_UNMAPPED;
 }
 
-// Slot's pose or mesh mirror changed (teleport / mesh swap): recompute its mover bound. No-op for
-// non-movers; RFIELD_ANIM itself lands via shadow_track_motion -> mover_set.
+// Slot's pose or mesh mirror changed, recompute its mover bound. No-op for non-movers.
 void mover_refresh_slot(RendererState* st, uint32_t slot) {
     if (slot < st->slotMotionCap && st->slotMoverIdx[slot] != ANO_RENDER_SLOT_UNMAPPED)
         mover_bound_refresh(st, &st->movers[st->slotMoverIdx[slot]]);
 }
 
-// Rebuild one frustum's exposure count from scratch (its caster volume changed or cleared),
-// fixing every mover's mask bit for this frustum. O(movers); casters change rarely.
+// Rebuild one frustum's exposure count from scratch, fixing every mover's mask bit for this frustum.
 static void shadow_expose_rebuild_frustum(RendererState* st, uint32_t s) {
     uint64_t bit = 1ull << s;
     bool live = st->shadowVolume[s].parentSlot != ANO_RENDER_SLOT_UNMAPPED;
@@ -198,15 +178,14 @@ static void shadow_expose_rebuild_frustum(RendererState* st, uint32_t s) {
 }
 
 // Refresh a frustum's cached world influence sphere from its parent's BASE pose mirror + offset.
-// A parent WITH motion gets a stale-by-design sphere: parent-mover frusta are per-frame dirty in
-// the record loop anyway, so their volume is never consulted.
+// A parent WITH motion gets a stale-by-design sphere, never consulted.
 static void shadow_volume_recompute(RendererState* st, uint32_t s) {
     ShadowCasterVolume* v = &st->shadowVolume[s];
     uint32_t p = v->parentSlot;
     if (p == ANO_RENDER_SLOT_UNMAPPED) return;
     if (st->shadowCfgMirror[s].lightType == LIGHT_TYPE_DIRECTIONAL || v->range <= 0.0f
         || p >= st->slotMotionCap) {
-        v->radius = -1.0f; // unbounded: any mover exposes
+        v->radius = -1.0f; // unbounded, any mover exposes
         return;
     }
     const float* b0 = st->slotBasePose[p][0]; const float* b1 = st->slotBasePose[p][1];
@@ -218,7 +197,7 @@ static void shadow_volume_recompute(RendererState* st, uint32_t s) {
 }
 
 // Install a caster's influence volume on its frustum block + retest every mover against it.
-// Call AFTER shadowCfgMirror is filled (recompute reads lightType). NONE/no-op safe.
+// Call AFTER shadowCfgMirror is filled. NONE/no-op safe.
 void shadow_volume_set(RendererState* st, uint32_t base, uint32_t count, uint32_t parentSlot,
                               const float off[3], float range) {
     if (base == ANO_SHADOW_NONE) return;
@@ -241,9 +220,7 @@ void shadow_volume_clear(RendererState* st, uint32_t base, uint32_t count) {
     }
 }
 
-// Parent slot teleported: refresh every caster volume it drives (static create-with-light rows and
-// runtime attaches both key volumes by parent slot). The light's world pose moved with it, so the
-// block is matrix-dirty: not deferrable by the render budget.
+// Parent slot teleported, refresh every caster volume it drives and mark the block matrix-dirty.
 void shadow_volumes_reparent(RendererState* st, uint32_t slot) {
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
         if (st->shadowVolume[s].parentSlot == slot) {
@@ -253,10 +230,7 @@ void shadow_volumes_reparent(RendererState* st, uint32_t slot) {
         }
 }
 
-// Per-slot mover bookkeeping (review finding 8): flags + swept-exposure records. Balanced across
-// create/update/destroy/recycle (destroy untracks with a NULL descriptor); slotMotionCap always
-// matches the slot capacity (ensureEntityCapacity grows it or fails the create). An UPDATE that
-// keeps motion on still re-upserts: the descriptor may have changed trajectory.
+// Per-slot mover bookkeeping (flags + swept-exposure records). Destroy untracks with a NULL descriptor.
 void shadow_track_motion(RendererState* st, uint32_t slot, const AnoMotionDescriptor* m) {
     if (slot >= st->slotMotionCap) return;
     uint8_t on = (m && m->type != (uint32_t)ANO_MOTION_STATIC) ? 1u : 0u;

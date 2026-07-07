@@ -59,7 +59,7 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 	*allocation = gpu_alloc(allocator, memRequirements, properties);
 	if (allocation->memory == VK_NULL_HANDLE) {
 		vkDestroyBuffer(ctx->device, *buffer, NULL);
-		*buffer = VK_NULL_HANDLE; // don't leave a dangling handle for teardown to double-free
+		*buffer = VK_NULL_HANDLE; // avoid dangling handle
 		return false;
 	}
 	vkBindBufferMemory(ctx->device, *buffer, allocation->memory, allocation->offset);
@@ -70,10 +70,10 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 
 
 bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
-{ // Central to init, specific to perspective uniforms (world translation, rotation and projection)
+{ // Central to init, perspective uniforms
 	VkDeviceSize bufferSize = sizeof(GlobalUBO);
 
-	// One camera UBO per view per frame: each view has its own view/proj/froxel params.
+	// One camera UBO per view per frame.
 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
@@ -94,7 +94,7 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 }
 
 void printMatrix(float mat[4][4])
-{ // Debug function previously used to sanity-check matrix operation results. Can prolly be removed
+{ // Debug matrix dump
 	ano_debug_log(ANO_INFO, "Matrix:");
 	for (int i = 0; i < 4; i++)
 	{
@@ -110,7 +110,7 @@ bool updateMeshTransforms(VulkanContext* ctx, RenderEntity* entity, float move)
 	static float angle = 0.0f;
 	const float pi = 3.14159265359f;
 
-	// Initialize transform matrix to identity
+	// Identity transform
 	for(int i = 0; i < 4; i++)
 	{
 		for(int j = 0; j < 4; j++)
@@ -183,7 +183,6 @@ uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropert
 
 bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize)
 { // Not central to init
-	// Create staging buffer
 	VkBuffer stagingBuffer;
 	GpuAllocation stagingAlloc;
 	VkMemoryPropertyFlags properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -194,11 +193,11 @@ bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, V
 		return false;
 	}
 
-	// Map the staging buffer's memory, copy the data, and then unmap
+	// Map and copy
 	void* mappedMemory = stagingAlloc.mapped;
 	memcpy(mappedMemory, data, bufferSize);
 
-	// Copy data from staging buffer to destination buffer
+	// Copy to destination
 	if (!copyBuffer(ctx, stagingBuffer, dstBuffer, bufferSize))
 	{
 		ano_log(ANO_ERROR, "Failed to copy buffers!");
@@ -283,9 +282,7 @@ bool createCommandBuffer(VulkanContext* ctx, RendererState* state)
 			ano_log(ANO_FATAL, "Failed to allocate command buffers!");
 			return false;
 		}
-		// Async light-cull (review finding 2 remainder): the frame's uploads + shared compute
-		// prelude record into their own CB, submitted ahead of the main one so the compute-queue
-		// light-cull can start off its completion signal.
+		// Async light-cull: uploads + shared compute prelude in their own CB, submitted ahead of main.
 		if (state->asyncLc
 			&& vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].preludeCommandBuffer)) != VK_SUCCESS)
 		{
@@ -317,10 +314,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		}
 	}
 
-	// Async Hi-Z timelines (review finding 2): gfxTimeline counts graphics submits (waited by that
-	// frame's compute build), hizTimeline counts builds (waited by the ordinal+2 graphics submit +
-	// the host before CB reuse). Both start at 0; ordinals are 1-based, so the first frames' waits
-	// (clamped to 0) pass immediately.
+	// Async Hi-Z timelines: gfxTimeline counts graphics submits, hizTimeline counts builds.
 	if (state->asyncHiz)
 	{
 		VkSemaphoreTypeCreateInfo timelineInfo = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -332,10 +326,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 			ano_log(ANO_FATAL, "Failed to create async Hi-Z timeline semaphores!");
 			return false;
 		}
-		// Async light-cull (finding 2 remainder): preludeTimeline counts prelude submits (waited by
-		// that frame's light-cull), lcTimeline counts light-culls (waited by the same frame's main
-		// submit at FRAGMENT_SHADER, the next frame's prelude at TRANSFER, and the host before CB
-		// reuse). Same 1-based ordinal scheme as the Hi-Z pair.
+		// Async light-cull: preludeTimeline counts prelude submits, lcTimeline counts light-culls.
 		if (state->asyncLc &&
 			(vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->preludeTimeline) != VK_SUCCESS ||
 			 vkCreateSemaphore(ctx->device, &timelineSem, NULL, &state->lcTimeline) != VK_SUCCESS))
@@ -345,9 +336,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		}
 	}
 
-	// GPU timestamp profiling. One query pool of ANO_TS_COUNT timestamps
-	// per frame in flight. Gated on the graphics queue family's timestampValidBits + a usable period;
-	// when unsupported the whole timing path is a no-op and rendering is unaffected.
+	// GPU timestamp profiling. One ANO_TS_COUNT query pool per frame in flight.
 	{
 		VkPhysicalDeviceProperties props;
 		vkGetPhysicalDeviceProperties(ctx->physicalDevice, &props);
@@ -376,10 +365,7 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 		}
 	}
 
-	// Picking readback buffers (audit 3.1): one tiny host-visible|coherent buffer per frame in
-	// flight, persistently mapped. The view-0 id texel under the cursor is copied here each frame and
-	// read after this slot's fence; backed by the persistent gpuAllocator so they survive swapchain
-	// recreate. Seeded to the no-hit sentinel so a pre-first-submission read maps to NO_PICK.
+	// Picking readback buffers. One host-visible|coherent buffer per frame in flight, persistently mapped.
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		if (!createDataBuffer(ctx, &gpuAllocator, sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,

@@ -12,15 +12,9 @@
 #include "vulkan_backend/gpu_alloc.h"
 #include "vulkan_backend/slot_upload.h"
 
-// Recreates one set of per-frame host-visible buffers at `newBytes`, preserving
-// the leading `copyBytes` of each (0 == discard: the buffer is GPU-regenerated
-// every frame, so its old contents are worthless). The old VkBuffer handles are
-// destroyed; their arena memory is NOT reclaimed (the GPU allocator is a bump
-// arena — see gpu_alloc.h), but geometric growth bounds the waste to ~the final
-// size and a teardown reset reclaims it. Writes the new handle/allocation back
-// into bufs[]/allocs[]; the caller re-derives typed mapped pointers from allocs.
+// Recreates each per-frame host-visible buffer at newBytes, preserving leading copyBytes (0 == discard).
 // in:  bufs/allocs [MAX_FRAMES_IN_FLIGHT], usage, newBytes (>0), copyBytes (<= old size)
-// out: true on success; false leaves already-grown frames valid but the set partial
+// out: true on success; false leaves the set partial
 static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
                           GpuAllocation allocs[MAX_FRAMES_IN_FLIGHT],
                           VkBufferUsageFlags usage, VkMemoryPropertyFlags props,
@@ -41,7 +35,7 @@ static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
         vkBindBufferMemory(ctx.device, nb, na.memory, na.offset);
         if (copyBytes && allocs[i].mapped && na.mapped)
             memcpy(na.mapped, allocs[i].mapped, (size_t)copyBytes);
-        vkDestroyBuffer(ctx.device, bufs[i], NULL); // handle only; arena keeps the memory
+        vkDestroyBuffer(ctx.device, bufs[i], NULL); // handle only
         bufs[i] = nb;
         allocs[i] = na;
     }
@@ -49,16 +43,12 @@ static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
 }
 
 // ---------------------------------------------------------------------------
-// SlotUpload: ×1 DEVICE_LOCAL per-slot buffer fed by a per-frame host-visible delta
-// staging ring. Replaces the former ×3
-// host-visible mapped buffers for the command-written per-slot data. Render-thread only.
-// Uses the file-global ctx/gpuAllocator like growBufferSet.
+// SlotUpload: x1 DEVICE_LOCAL per-slot buffer fed by a per-frame host-visible
+// delta staging ring. Render-thread only.
 // ---------------------------------------------------------------------------
 
-// Applies gfx+compute CONCURRENT sharing to a buffer the async light-cull touches across queue
-// families (an EXCLUSIVE buffer's contents are undefined to the other family without ownership-
-// transfer barriers; CONCURRENT trades that bookkeeping for a negligible access cost). fams must
-// outlive the vkCreateBuffer call.
+// Applies gfx+compute CONCURRENT sharing to a buffer the async light-cull touches across queue families.
+// fams must outlive the vkCreateBuffer call.
 void buffer_share_async_compute(VkBufferCreateInfo* bi, uint32_t fams[2])
 {
     fams[0] = ctx.queueFamilyIndices.graphicsFamily;
@@ -116,9 +106,8 @@ bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride, uint3
     return true;
 }
 
-// Grows every staging buffer + region list to hold >= need delta entries. Recreates the
-// staging buffers, so the caller must hold vkDeviceWaitIdle (init is already idle; at runtime
-// only a single-tick mass bulk trips it). Preserves the current frame's already-staged span.
+// Grows every staging buffer + region list to hold >= need delta entries. Caller holds vkDeviceWaitIdle.
+// Preserves the current frame's already-staged span.
 static bool slot_upload_grow_staging(SlotUpload* b, uint32_t need)
 {
     if (need <= b->stagingCap) return true;
@@ -154,8 +143,7 @@ static bool slot_upload_grow_staging(SlotUpload* b, uint32_t need)
 }
 
 // Queues element `index` <- value into frame f's delta staging, growing staging on overflow.
-// Best-effort: a host-OOM growth silently drops the write (matches the drop-on-OOM policy
-// elsewhere in the apply path).
+// Best-effort: a host-OOM growth silently drops the write.
 void slot_upload_stage(SlotUpload* b, uint32_t f, uint32_t index, const void* value)
 {
     if (b->staged[f] >= b->stagingCap) {
@@ -182,8 +170,7 @@ void slot_upload_flush(VkCommandBuffer cmd, SlotUpload* b, uint32_t f)
 }
 
 // Grows the device buffer to newCap elements, preserving [0, keep) via a one-shot GPU copy.
-// Caller holds vkDeviceWaitIdle. Old handle destroyed; arena memory not reclaimed (bump arena),
-// bounded by geometric growth like growBufferSet.
+// Caller holds vkDeviceWaitIdle.
 static bool slot_upload_grow_device(SlotUpload* b, uint32_t newCap, uint32_t keep)
 {
     VkBufferCreateInfo di = {
@@ -193,7 +180,7 @@ static bool slot_upload_grow_device(SlotUpload* b, uint32_t newCap, uint32_t kee
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     uint32_t fams[2];
-    if (b->computeShared) buffer_share_async_compute(&di, fams); // sharing survives growth
+    if (b->computeShared) buffer_share_async_compute(&di, fams);
     VkBuffer nb = VK_NULL_HANDLE;
     if (vkCreateBuffer(ctx.device, &di, NULL, &nb) != VK_SUCCESS) return false;
     VkMemoryRequirements mr;
@@ -216,18 +203,10 @@ static bool slot_upload_grow_device(SlotUpload* b, uint32_t newCap, uint32_t kee
 
 // Ensures the slot-indexed GPU buffers can hold at least `required` slots, growing
 // them (and the slot table's ceiling) if not. No-op when already large enough.
-//
-// Growth recreates every entity-scaled buffer larger and re-points all descriptor
-// sets at the new handles. Both are only legal while no in-flight frame references
-// the old buffers/descriptors, so a full vkDeviceWaitIdle precedes the work. Growth
-// fires only when a spawn crosses a chunk boundary (rare), so the stall is fine.
-//
-// Persistent slot data (initialTransform, motion, instanceData, entity mesh/material) is a
-// ×1 device-local SlotUpload, grown with a GPU copy of the live span; transform /
-// compactedIndices / indirect are GPU-regenerated each frame, so they are resized without a copy.
-//
+// Recreates every entity-scaled buffer and re-points all descriptor sets, so a full
+// vkDeviceWaitIdle precedes the work.
 // in:  state, required (slot count needed), frameIndex (frame being recorded)
-// out: true if capacity >= required afterward; false on OOM (caller drops the spawn)
+// out: true if capacity >= required afterward; false on OOM
 bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t frameIndex)
 {
     uint32_t oldCap = state->slots.slotCapacity;
@@ -249,7 +228,7 @@ bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t fram
     const VkMemoryPropertyFlags devProps = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
     bool ok =
-        // ×1 device-local authoritative per-slot data: GPU-copy the live [0,oldCap) span forward
+        // x1 device-local per-slot data: GPU-copy the live [0,oldCap) span forward
         slot_upload_grow_device(&state->initialTransformBuffer, newCap, oldCap) &&
         slot_upload_grow_device(&state->motionBuffer, newCap, oldCap) &&
         slot_upload_grow_device(&state->instanceDataBuffer, newCap, oldCap) &&
@@ -264,8 +243,7 @@ bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t fram
                       cmdStride * newCap * ano_draw_partition_count(), 0) &&
         growBufferSet(state->culling.sortKeysBuffer, state->culling.sortKeysAllocs, ssbo, devProps,
                       (VkDeviceSize)sizeof(float) * (VkDeviceSize)ANO_VIEW_COUNT * newCap, 0);
-    // Mover bookkeeping must track every slot (review finding 8): grow in lockstep or fail the
-    // create. The swept-exposure mirrors (pose/mesh/mover map) ride the same capacity.
+    // Mover bookkeeping tracks every slot: grow in lockstep or fail the create.
     if (ok) {
         uint32_t oldMc = state->slotMotionCap;
         uint8_t*  nm = (uint8_t*)realloc(state->slotMotion, newCap);
@@ -291,9 +269,7 @@ bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t fram
         return false;
     }
 
-    // Re-derive mapped pointers for the GPU-private buffers (NULL now they are DEVICE_LOCAL;
-    // never CPU-dereferenced). The four SlotUpload device buffers + their capacities were
-    // updated inside slot_upload_grow_device above; nothing to re-point here.
+    // Re-derive mapped pointers for the GPU-private buffers.
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         state->transformBuffer.mapped[i]               = (mat4*)state->transformBuffer.allocs[i].mapped;
         state->culling.compactedEntityIndicesMapped[i] = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
@@ -304,15 +280,10 @@ bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t fram
     state->culling.maxEntities      = newCap;
     render_slots_set_capacity(&state->slots, newCap);
 
-    // updateCullingBuffers already wrote this frame's CullUBO with the OLD
-    // maxEntities; the compacted-index partition stride (cull.comp) and the
-    // draw-time base offset both key off it, so realign it to newCap now or the
-    // growth frame reads pipeline-type partitions at the wrong stride.
+    // Realign this frame's CullUBO maxEntities to newCap.
     state->culling.ubo.mapped[frameIndex]->maxEntities = newCap;
 
-    // Re-point every descriptor at the new handles/ranges. Safe only because the
-    // device is idle. Before the descriptor sets exist (init-time growth) this is
-    // skipped; the init updateUboDescriptorSets call then binds the final buffers.
+    // Re-point every descriptor at the new handles/ranges. Skipped before the descriptor sets exist.
     if (state->frames[0].views[0].globalSet != VK_NULL_HANDLE)
         updateUboDescriptorSets(&ctx, state);
 

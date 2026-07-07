@@ -177,9 +177,7 @@ if(Vulkan_FOUND)
     set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
     set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
 
-    # Shader compiler by build type: Debug embeds SPIR-V debug info for Nsight source
-    # captures (glslangValidator -gVS; glslc -g is the lesser, no-NonSemantic fallback),
-    # Release strips it. Mirrors resources/shaders/compile{,_debug}.sh.
+    # Shader compiler by build type: Debug embeds SPIR-V debug info, Release strips it.
     if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
         set(SHADER_COMPILER ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
         set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gVS)
@@ -240,8 +238,7 @@ if(Vulkan_FOUND)
     # fp16 CDF-reconstruct variants of the lighting frags, used when the device has shaderFloat16.
     ano_add_shader(flat_fp16.frag flat.frag -DANO_CDF_FP16=1)
     ano_add_shader(transmission_fp16.frag transmission.frag -DANO_CDF_FP16=1)
-    # Alpha-tested cutout lane (glTF alphaMode MASK): camera frag (+ fp16 pairing), the
-    # uv-carrying depth geometry for its shadow casters, and the alpha-testing shadow frag.
+    # Alpha-tested cutout lane (glTF alphaMode MASK).
     ano_add_shader(flat_masked.frag flat.frag -DANO_ALPHA_MASK=1)
     ano_add_shader(flat_masked_fp16.frag flat.frag -DANO_ALPHA_MASK=1 -DANO_CDF_FP16=1)
     ano_add_shader(flat_depth_masked.mesh flat.mesh -DANO_DEPTH_MASKED)

@@ -16,22 +16,18 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache);
 
-	// Mesh stage on capable devices, vertex stage on the fallback path. Task meshlet cull
-	// (review priority 10): frustum + Hi-Z only — cullMode NONE means backfaces are visible,
-	// so the normal-cone test stays off for this lane.
+	// Mesh stage on capable devices, vertex stage on fallback.
 	bool useMesh = ctx->deviceCapabilities.meshShader;
 	bool useTask = state->taskCull;
 	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// 2. Setup layout
 	VkPushConstantRange pushConstantRange = {};
-	// FRAGMENT matches flat.c's range (one shared pcStage pushes across all camera prototypes).
 	pushConstantRange.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = 2u * sizeof(uint32_t); // transformBaseOffset + shadowFrustumIndex
 
-	// Set 2 = dynamic shadows (audit 4.7): fragment samples the shadow atlas (transparent geometry
-	// receives shadows too). Matches flat's layout.
+	// Set 2 = dynamic shadows.
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	pipelineLayoutInfo.setLayoutCount = 3;
@@ -61,10 +57,9 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		PBR_FEATURE_TRANSMISSION |
 		PBR_FEATURE_VOLUME |
 		PBR_FEATURE_IOR |
-		PBR_FEATURE_DOUBLE_SIDED;   // rasterizer uses cullMode NONE, so all geometry is double-sided
+		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE -> double-sided
 
-	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
-	// Paths are exe-relative; loadFile resolves them against ano_fs_gamepath().
+	// Load shaders: mesh on capable devices, vertex on fallback.
 	struct Buffer geomShaderCode;
 	char geomShaderPath[64];
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
@@ -72,7 +67,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
 
 	struct Buffer fragShaderCode;
-	// fp16 CDF-reconstruct variant when the device has shaderFloat16 (ANO_FORCE_NO_FP16 pins fp32).
+	// fp16 CDF-reconstruct variant when shaderFloat16 available.
 	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/transmission_fp16.frag.spv"
 	                                                    : "resources/shaders/transmission.frag.spv",
 	              &fragShaderCode)) return false;
@@ -180,7 +175,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	depthStencil.maxDepthBounds = 1.0f;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT; // geometry renders into the HDR target, not the swapchain
+	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT; // HDR target
 	VkFormat depthFormat = state->depthFormat;
 
 	VkPipelineRenderingCreateInfo renderingInfo = {};
@@ -189,8 +184,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	renderingInfo.pColorAttachmentFormats = &colorFormat;
 	renderingInfo.depthAttachmentFormat = depthFormat;
 
-	// Mesh path needs no vertex-input/input-assembly state; the fallback vertex path
-	// uses programmable vertex pulling (empty vertex input) + triangle-list assembly.
+	// Fallback vertex path uses programmable vertex pulling + triangle-list assembly.
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 

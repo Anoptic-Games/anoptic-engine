@@ -11,30 +11,18 @@
 #include "vulkan_backend/backend.h"
 
 // ---------------------------------------------------------------------------
-// Render world ownership. GLFW pins all window and event handling to the process
-// main thread (a hard requirement on macOS/Cocoa: glfwInit, glfwCreateWindow,
-// glfwPollEvents and surface creation must issue from the thread that runs
-// main()). So the render world — all of Vulkan AND GLFW: init, the frame loop,
-// glfwPollEvents, swapchain recreation, teardown — runs directly on the main
-// thread (see main()). The logic/ECS master runs on its OWN thread now and is the
-// sole render-command PRODUCER, coordinating only through the lock-free bridge
-// (engine policy: no mutexes outside the pre-existing Vulkan internals).
-//
-// Init is synchronous: main() calls initVulkan() (which creates the bridge)
-// BEFORE spawning the logic thread, so no readiness handshake is needed. Shutdown
-// is ordered so the producer always quiesces BEFORE the bridge dies: the render
-// loop exits on window close, main stops the logic thread and joins it, and only
-// then runs unInitVulkan() to destroy the bridge.
+// Render world (Vulkan + GLFW) runs on the main thread. The logic/ECS master
+// runs on its own thread as the sole render-command producer, coordinating
+// through the lock-free bridge.
+// Init: main() calls initVulkan() before spawning the logic thread.
+// Shutdown: producer quiesces before the bridge dies.
 // ---------------------------------------------------------------------------
 
-// Producer endpoint. Valid once initVulkan() has returned (the bridge is created
-// there and destroyed in unInitVulkan).
+// Producer endpoint. Valid after initVulkan() returns.
 AnoRenderBridge* anoRenderBridge(void) { return &rendererState.bridge; }
-// Producer endpoint — reserve the next free transform-ring slice. Returns false (out
-// untouched) when that slice is still in flight on the GPU (reclaimSeq has not caught
-// up): the caller drops the tick and the render side holds the last published slice.
-// Single-producer; does NOT advance produceSeq (commit does), so repeated begins without
-// a commit return the same slice.
+// Producer endpoint — reserve the next free transform-ring slice. Returns false
+// (out untouched) when that slice is still in flight on the GPU. Single-producer;
+// does NOT advance produceSeq (commit does).
 // in:  out (AnoStreamRegion*); out: filled on success; false if no free slice
 bool ano_render_stream_begin(AnoStreamRegion* out) {
     TransformStreamBuffer* ts = &rendererState.transformStream;
@@ -52,11 +40,8 @@ bool ano_render_stream_begin(AnoStreamRegion* out) {
     return true;
 }
 
-// Producer endpoint — publish a filled region as one {seq,count} control command. The
-// region's mapped writes precede this submit's release, so the render consumer sees them
-// after its acquire and the queue submit makes them GPU-visible (coherent memory).
-// Advances produceSeq only on a successful enqueue. false if the command ring is full
-// (slice left unpublished; it is reclaimed normally on the next cycle).
+// Producer endpoint — publish a filled region as one {seq,count} control command.
+// Advances produceSeq only on a successful enqueue. false if the command ring is full.
 // in:  region, count (clamped to capacity); out: true on enqueue
 bool ano_render_stream_commit(const AnoStreamRegion* region, uint32_t count) {
     TransformStreamBuffer* ts = &rendererState.transformStream;
@@ -69,10 +54,8 @@ bool ano_render_stream_commit(const AnoStreamRegion* region, uint32_t count) {
     return true;
 }
 
-// Producer endpoint — mass field change. Packs the batch + every flagged field array into
-// ONE render-owned block (mi heap, freed render-side after the change reaches all frames),
-// so the caller's arrays need only live until this returns. Backpressure: ring full ->
-// free the copy and return false (retry next tick), never drop.
+// Producer endpoint — mass field change. Packs the batch + every flagged field array
+// into ONE render-owned block. Ring full -> free the copy and return false.
 // in:  bridge, batch (count, shared fields mask, parallel arrays); out: true on enqueue
 bool ano_render_submit_bulk_update(AnoRenderBridge* bridge, const RenderUpdateBatch* batch) {
     if (!batch || batch->count == 0) return true;
@@ -112,8 +95,8 @@ bool ano_render_submit_bulk_update(AnoRenderBridge* bridge, const RenderUpdateBa
     return true;
 }
 
-// Producer endpoint — mass despawn. Copies the render_id array into one render-owned block
-// (freed render-side after the dead-mark reaches all frames). Same backpressure contract.
+// Producer endpoint — mass despawn. Copies the render_id array into one render-owned
+// block. Same backpressure contract.
 // in:  bridge, render_ids, count; out: true on enqueue
 bool ano_render_submit_bulk_destroy(AnoRenderBridge* bridge, const uint32_t* render_ids, uint32_t count) {
     if (count == 0) return true;

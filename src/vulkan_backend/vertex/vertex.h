@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
-#include <anoptic_math.h>   // canonical mat4 / Vector2 / Vector3 / Vector4
+#include <anoptic_math.h>   // mat4 / Vector2 / Vector3 / Vector4
 
 
 // Structs
@@ -32,10 +32,9 @@ typedef struct GlobalUBO
 	float time;
 	float deltaTime;
 	uint32_t frameCount;
-	uint32_t lightCount;   // number of active lights in the light SSBO (set 0, binding 8)
+	uint32_t lightCount;   // active lights in light SSBO (set 0, binding 8)
 	float cameraPos[4];    // world-space camera position (xyz, w unused)
-	// Clustered-forward froxel grid: near/far + screen size map a fragment to its froxel.
-	// Two std140 16-byte rows, mirrored in every GlobalUBO GLSL declaration.
+	// Clustered-forward froxel grid near/far + screen size, std140 rows.
 	float cameraNear;          // row: 160
 	float cameraFar;           //      164
 	float screenWidth;         //      168
@@ -44,22 +43,15 @@ typedef struct GlobalUBO
 	uint32_t clusterDimY;      //      180
 	uint32_t clusterDimZ;      //      184
 	uint32_t maxLightsPerCluster; //   188  (== ANO_CLUSTER_MAX_LIGHTS)
-	// Lighting/RC control row. std140 16-byte row at offset 192, mirrored in
-	// flat.frag, transmission.frag, lightcull.comp.
+	// Lighting/RC control row, std140 offset 192.
 	uint32_t lightingMode;     // row: 192  (AnoLightingMode)
 	uint32_t debugView;        //      196  (RC debug visualization; 0 = off)
 	uint32_t pad0;             //      200
 	uint32_t pad1;             //      204
-	// Camera clip transform + fragment unprojector, filled by updateUniformBuffer. viewProj is
-	// proj*view premultiplied so geometry stages read one constant-bank mat4 instead of hoisting
-	// the product into registers per workgroup. invVPPixel = inv(viewProj) * (pixel -> NDC) for
-	// THIS view's extent: fragment stages reconstruct world position from gl_FragCoord instead
-	// of carrying a vec3 interstage attribute.
-	mat4 viewProj;             // row: 208
-	mat4 invVPPixel;           //      272
-	// Task-shader meshlet cull tail, read ONLY by flat.task (other shaders declare a prefix).
-	// updateCullingBuffers writes these per view with the same values as the entity cull's CullUBO.
-	// 16-aligned at offset 336, std140 matches C layout.
+	// Camera clip transform + fragment unprojector.
+	mat4 viewProj;             // row: 208  proj*view premultiplied
+	mat4 invVPPixel;           //      272  inv(viewProj) * (pixel -> NDC)
+	// Task-shader meshlet cull tail.
 	float frustumPlanes[6][4]; // row: 336  this view's world-space frustum planes
 	mat4  prevViewProj;        //      432  reprojection for the meshlet Hi-Z test
 	float hizParams[4];        //      496  {pyramid baseW, baseH, mipCount (0 = off), 0}
@@ -73,7 +65,7 @@ typedef struct GlobalUBO
 // Vertex input binding (load rate through the vertices).
 VkVertexInputBindingDescription getBindingDescription(void);
 
-// Extracts vertex attributes from vertex data. NOTE: expects an array of two attribute descriptions.
+// Extracts vertex attributes into an array of two attribute descriptions.
 void getAttributeDescriptions(VkVertexInputAttributeDescription*);
 
 // Performs matrix rotation
@@ -94,8 +86,7 @@ void multiplyMat4(mat4 result, const mat4 a, const mat4 b);
 // Extracts the 6 frustum planes from a view-projection matrix
 void extractFrustumPlanes(Vector4 planes[6], const mat4 viewProj);
 
-// Inverts a 4x4 matrix (general cofactor method). out = m^-1. Returns false (out untouched) if m is
-// singular. Layout-agnostic: out is m^-1 in the same storage convention as m.
+// Inverts a 4x4 matrix. out = m^-1, returns false if m is singular.
 bool invertMat4(mat4 out, const mat4 m);
 
 

@@ -3,8 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Runtime light registry (audit 4.7 Phase 3): owns the dynamic light-palette region [base, base+cap),
-// plus the LightData param helpers. Render-thread only; no locks. See light_registry.c.
+// Runtime light registry owning light-palette region [base, base+cap) and LightData param helpers.
 
 #ifndef ANO_LIGHT_REGISTRY_H
 #define ANO_LIGHT_REGISTRY_H
@@ -27,7 +26,7 @@ uint32_t light_registry_compact(LightRegistry* r);
 
 // Build a GPU LightData from bridge params + a resolved parent slot (transformIndex) + local offset.
 LightData light_data_from_params(const RenderLightParams* p, uint32_t transformIndex, const float off[3]);
-// Partial RCMD_LIGHT_UPDATE: merge only the producer fields named in `fields` into a mirror LightData.
+// Merge only the producer fields named in `fields` into a mirror LightData.
 void     light_apply_fields(LightData* dst, const RenderLightParams* p, const float off[3], uint32_t fields);
 
 #endif // ANO_LIGHT_REGISTRY_H

@@ -13,10 +13,9 @@
 #include "vulkan_backend/slot_upload.h"
 #include "vulkan_backend/shadow/shadow.h"
 
-// Dynamic shadow resources (audit 4.7). Per frame: the GPU-written shadow frustum buffer and the
-// RGBA16 CDF-stats atlas + blur temp (2D arrays, per-sublayer render views + array sample views).
-// Shared (once): the transient caster-depth array (one slice per frustum) and the CPU shadow
-// config / per-light shadow info SlotUploads.
+// Dynamic shadow resources (audit 4.7).
+// Per frame: GPU-written frustum buffer + RGBA16 CDF-stats atlas + blur temp (2D arrays, per-sublayer render + array sample views).
+// Shared once: transient caster-depth array (one slice per frustum) + CPU shadow config / per-light info SlotUploads.
 // in:  ctx, state (lightBuffer.capacity known)
 // out: true on success; populates frames[].shadow.*, state->shadowDepth*, state->shadow{Config,Info}
 bool createShadowResources(VulkanContext* ctx, RendererState* state) {
@@ -34,9 +33,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         if (sh->frustumAlloc.memory == VK_NULL_HANDLE) return false;
         vkBindBufferMemory(ctx->device, sh->frustumBuffer, sh->frustumAlloc.memory, sh->frustumAlloc.offset);
 
-        // Packed sampling viewProjs: shadowsetup writes it as an SSBO, the lighting fragments
-        // read it as a UBO. Allocated at the full shader-declared bound (mat4[64]) so the
-        // descriptor range covers the declared size.
+        // Packed sampling viewProjs: SSBO write (shadowsetup) / UBO read (lighting), full shader bound mat4[64].
         VkBufferCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             // mat4 viewProj + vec4 depthParams per frustum (shadow_sample.glsl / shadowsetup.comp).
             .size = (VkDeviceSize)(sizeof(float) * (16u + 4u)) * ANO_SHADOW_SAMPLE_VP_CAP,
@@ -49,12 +46,10 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         vkBindBufferMemory(ctx->device, sh->sampleVPBuffer, sh->sampleVPAlloc.memory, sh->sampleVPAlloc.offset);
     }
 
-    // CDF-stats atlas + blur-temp: both RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS layers (2 MRT
-    // sublayers per frustum = 4 depth bands), single-sample, color-rendered + sampled. The atlas holds
-    // the final (blurred) per-band (coverage,M); temp is the separable-blur intermediate. ONE instance
-    // across frames in flight (review finding 8): content persists so clean frustums skip re-render.
-    // Both seeded to SHADER_READ — the atlas's rest state — so a first frame with nothing dirty (or
-    // the whole-array preserve transition) never sees UNDEFINED.
+    // CDF-stats atlas + blur-temp: RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS layers, single-sample, color-rendered + sampled.
+    // Atlas holds final blurred per-band (coverage,M); temp is the separable-blur intermediate.
+    // ONE instance across frames in flight (review finding 8).
+    // Both seeded to SHADER_READ.
     {
         VkImage* momentImgs[2]     = { &state->shadowAtlasImage, &state->shadowTempImage };
         GpuAllocation* momentAl[2] = { &state->shadowAtlasAlloc, &state->shadowTempAlloc };
@@ -107,17 +102,15 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         }
     }
 
-    // Dirty-frustum cache state (review finding 8): every layer starts invalid (renders on first
-    // activation); env hooks pin the pre-cache always-dirty behavior or freeze for the static-scene
-    // ceiling. Mover bookkeeping (slotMotion) is allocated by createMotionBuffer.
+    // Dirty-frustum cache state (review finding 8): every layer starts invalid.
+    // Mover bookkeeping (slotMotion) allocated by createMotionBuffer.
     state->shadowCacheMode = getenv("ANO_FORCE_NO_SHADOW_CACHE") ? 1u
                            : getenv("ANO_SHADOW_CACHE_FREEZE")   ? 2u : 0u;
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) state->shadowLayerValid[s] = false;
     state->shadowGlobalDirty = false;
     if (state->shadowCacheMode)
         ano_log(ANO_INFO, "Shadow cache: %s", state->shadowCacheMode == 1u ? "OFF (every frame dirty)" : "FREEZE");
-    // Swept-bound motion exposure (finding 8 deferred half): per-frustum caster volumes start
-    // uninstalled; ANO_FORCE_NO_SWEPT pins the old any-mover-dirties-everything epoch.
+    // Swept-bound motion exposure (finding 8 deferred half): per-frustum caster volumes start uninstalled.
     state->sweptExposure = getenv("ANO_FORCE_NO_SWEPT") == NULL;
     state->sweptPoisoned = false;
     if (!state->sweptExposure)
@@ -128,19 +121,15 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         state->shadowMatrixDirty[s] = false;
         state->shadowLastRendered[s] = 0u;
     }
-    // Content-refresh budget (0 = unlimited). Matrix-dirty renders are exempt, so this throttles
-    // only the lag-tolerant class; total renders/frame = mandatory + budget.
+    // Content-refresh budget (0 = unlimited). Matrix-dirty renders exempt.
     const char* budgetEnv = getenv("ANO_SHADOW_BUDGET");
     state->shadowRenderBudget = budgetEnv ? (uint32_t)atoi(budgetEnv) : 0u;
     if (state->shadowRenderBudget)
         ano_log(ANO_INFO, "Shadow cache: content re-render budget %u/frame (matrix-dirty exempt)",
                state->shadowRenderBudget);
 
-    // Transient nearest-occluder depth (never sampled): ONE image shared across frames in flight,
-    // one slice per shadow frustum so the per-frustum depth renders are mutually independent (no
-    // WAW barrier chain through a reused layer). Contents are frame-transient (loadOp CLEAR each
-    // render); the per-frame UNDEFINED->DEPTH transition carries the cross-frame WAR in its
-    // EARLY|LATE_FRAGMENT_TESTS source scope.
+    // Transient nearest-occluder depth (never sampled): ONE image shared across frames in flight, one slice per shadow frustum.
+    // Contents frame-transient (loadOp CLEAR each render).
     {
         VkImageCreateInfo dinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
         dinfo.imageType = VK_IMAGE_TYPE_2D;
@@ -168,9 +157,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         }
     }
 
-    // Shadow config + per-light info as SlotUploads (×1 device + delta staging) so the runtime caster
-    // lifecycle mutates them race-free, like lightBuffer. The init zero-fills the device (spare slots:
-    // active=0 / castsShadow=0); a casting create stages its frustum block via register_static_shadow.
+    // Shadow config + per-light info as SlotUploads (×1 device + delta staging).
     // shadowCfgMirror is the render-thread CPU copy the record loop gates on.
     if (!slot_upload_create(&state->shadowConfig, ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig), SLOT_STAGING_INIT, false)) return false;
     if (!slot_upload_create(&state->shadowInfo, state->lightBuffer.capacity, sizeof(ShadowLightInfo), SLOT_STAGING_INIT, false)) return false;

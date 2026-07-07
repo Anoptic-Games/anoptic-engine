@@ -1,11 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// Scanline Sweeper overlay raster: integrates glyph coverage
-// per pixel using the shared math in textcoverage.glsl. One workgroup per 8x8 pixel
-// tile. The 64 lanes cooperatively cull instances against the tile in 64-instance
-// chunks, then each in-extent pixel integrates the survivors and over-blends
-// premultiplied color into the overlay.
+// Scanline Sweeper overlay raster: one workgroup per 8x8 tile integrates glyph coverage per pixel.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -15,15 +11,14 @@ layout(set = 0, binding = 3, rgba8) uniform writeonly image2D overlay;
 
 layout(push_constant) uniform TextRasterPush {
     uint  instanceCount;
-    uint  flags;    // bit 0: opaque black backdrop (ANO_TEXT_OPAQUE self-test)
+    uint  flags;    // bit 0: opaque black backdrop
     uvec2 extent;
-    uvec2 origin;   // dispatch region offset, pixels (tile-aligned; the CPU bounds
-                    // the dispatch to the pending text's pixel AABB)
+    uvec2 origin;   // dispatch region offset, pixels (tile-aligned)
 } pc;
 
-const uint CHUNK = 64u; // instances per cooperative cull round == wg size
+const uint CHUNK = 64u; // instances per cull round
 
-shared uint sHit[CHUNK]; // per-lane tile-cull verdict for the current chunk
+shared uint sHit[CHUNK]; // per-lane tile-cull verdict
 shared uint sAny;        // chunk had any hit
 
 // Does instance idx's glyph touch the screen rect [rMin,rMax]?
@@ -69,13 +64,13 @@ void main()
                 }
             }
         }
-        barrier(); // sHit/sAny are rewritten next chunk
+        barrier();
     }
 
     if (!valid)
         return;
     if ((pc.flags & 1u) != 0u)
-        acc.a = 1.0; // opaque self-test: black backdrop, text rgb already premultiplied
+        acc.a = 1.0; // opaque self-test: black backdrop
     else if (acc == vec4(0.0))
         return; // untouched pixel
     imageStore(overlay, ivec2(px), acc);

@@ -22,7 +22,7 @@
 #include "vulkan_backend/text_raster.h"
 
 
-struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface) // Retrieves a record of all available swap chains and their capabilities
+struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface) // Available swap chains and capabilities
 {
 	struct SwapChainSupportDetails details;
 
@@ -67,7 +67,7 @@ VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, 
 }
 
 VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) 
-{ // Central init component, also used during re-sizes, should work fine as-is but may be extended if needed for arbitrary resolution rendering and scaling
+{ // Central init component, also used during resizes
 		if (capabilities.currentExtent.width != UINT32_MAX)
 		{
 			return capabilities.currentExtent;
@@ -77,14 +77,14 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 			int width, height;
 			if (getChosenBorderless())
 			{
-				// For borderless mode, use the primary monitor's resolution
+				// Borderless: primary monitor resolution
 				GLFWmonitor* primary = glfwGetPrimaryMonitor();
 				const GLFWvidmode* mode = glfwGetVideoMode(primary);
 				width = mode->width;
 				height = mode->height;
 			} else
 			{
-				// Otherwise, use the larger of the window size or primary monitor's resolution
+				// Larger of window size or primary monitor resolution
 				GLFWmonitor* primary = glfwGetPrimaryMonitor();
 				const GLFWvidmode* mode = glfwGetVideoMode(primary);
 				glfwGetWindowSize(window, &width, &height);
@@ -96,7 +96,7 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 				(uint32_t)(width),
 				(uint32_t)(height)
 			};
-			// Clamp our render dimensions between the min and max values
+			// Clamp render dimensions to min/max
 			actualExtent.width = (actualExtent.width < capabilities.minImageExtent.width) ? capabilities.minImageExtent.width : actualExtent.width;
 			actualExtent.width = (actualExtent.width > capabilities.maxImageExtent.width) ? capabilities.maxImageExtent.width : actualExtent.width;
 			actualExtent.height = (actualExtent.height < capabilities.minImageExtent.height) ? capabilities.minImageExtent.height : actualExtent.height;
@@ -113,9 +113,9 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
     VkPresentModeKHR chosenPresentMode = chooseSwapPresentMode(details.presentModes, details.presentModesCount, preferredMode);
     VkExtent2D chosenExtent = chooseSwapExtent(details.capabilities, window);
 
-    uint32_t imageCount = details.capabilities.minImageCount + 1; // It is recommended to request one more image than the minimum
+    uint32_t imageCount = details.capabilities.minImageCount + 1; // Request one more than minimum
     if (details.capabilities.maxImageCount > 0 && imageCount > details.capabilities.maxImageCount) 
-    { // If maximum image count is 0, it means there is no strict upper limit
+    { // maxImageCount 0 means no upper limit
         imageCount = details.capabilities.maxImageCount;
     }
 
@@ -134,22 +134,22 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
 
     if (indices.graphicsFamily != indices.presentFamily) 
     {
-        createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT; // Use concurrent sharing mode if graphics and present queues are different
+        createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT; // Concurrent when graphics != present queue
         createInfo.queueFamilyIndexCount = 2;
         createInfo.pQueueFamilyIndices = queueFamilyIndices;
     } 
     else 
     {
-        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; // Use exclusive mode if graphics and present queues are the same
+        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; // Exclusive when queues match
         createInfo.queueFamilyIndexCount = 0; // Optional
         createInfo.pQueueFamilyIndices = NULL; // Optional
     }
 
-    createInfo.preTransform = details.capabilities.currentTransform; // Don"t apply any pre-transformation to the image (e.g. rotation)
+    createInfo.preTransform = details.capabilities.currentTransform; // No pre-transform
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // Ignore alpha channel
     createInfo.presentMode = chosenPresentMode;
-    createInfo.clipped = VK_TRUE; // Discard pixels that are obscured, for example because another window is in front of them
-    createInfo.oldSwapchain = oldSwapChain; // When a swap chain is recreated, the old one must be passed here to aid in resource transfer
+    createInfo.clipped = VK_TRUE; // Discard obscured pixels
+    createInfo.oldSwapchain = oldSwapChain; // Old swapchain aids resource transfer on recreate
 
     VkSwapchainKHR swapChain;
     if (vkCreateSwapchainKHR(ctx->device, &createInfo, NULL, &swapChain) != VK_SUCCESS) 
@@ -157,7 +157,7 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
         return false;
     }
 
-    // Get the array of swap chain images
+    // Swap chain images
     vkGetSwapchainImagesKHR(ctx->device, swapChain, &imageCount, NULL);
     VkImage* swapChainImages = (VkImage*)malloc(imageCount * sizeof(VkImage));
     vkGetSwapchainImagesKHR(ctx->device, swapChain, &imageCount, swapChainImages);
@@ -165,9 +165,7 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
     state->swapChain = swapChain;
     state->imageFormat = chosenFormat.format;
     state->imageExtent = chosenExtent;
-    // Per-view render extents (review finding 6): view 0 fills the swapchain; auxiliary views
-    // render at their composite inset size — the SAME W/3 x H/3 integer math the tonemap composite
-    // uses for placement, so the inset samples its source 1:1 instead of minifying 3:1.
+    // Per-view render extents: view 0 fills swapchain, aux views inset at W/3 x H/3
     state->viewExtent[0] = chosenExtent;
     for (uint32_t v = 1; v < ANO_VIEW_COUNT; v++) {
         uint32_t iw = chosenExtent.width / 3u;  if (iw < 1u) iw = 1u;
@@ -209,7 +207,7 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
                 vr->depthImage = VK_NULL_HANDLE;
             }
 
-            // Avenue 1: single-sample depth-resolve target (memory owned by swapchainAllocator).
+            // Single-sample depth-resolve target
             if (vr->depthResolveView != VK_NULL_HANDLE)
             {
                 vkDestroyImageView(ctx->device, vr->depthResolveView, NULL);
@@ -221,8 +219,7 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
                 vr->depthResolveImage = VK_NULL_HANDLE;
             }
 
-            // Hi-Z pyramid (review 4.9 step 3): destroy the per-mip + sampled views and the image.
-            // hizAlloc.memory is owned by swapchainAllocator (no manual vkFreeMemory), like depthAlloc.
+            // Hi-Z pyramid: destroy per-mip + sampled views and image
             for (uint32_t m = 0; m < vr->hizMipCount; m++)
             {
                 if (vr->hizMipViews[m] != VK_NULL_HANDLE)
@@ -246,7 +243,7 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     }
 
 
-    // Per-view MSAA color + picking-id attachments (memory backed by swapchainAllocator, reset below).
+    // Per-view MSAA color + picking-id attachments
     for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
     {
         if (state->colorView[v])
@@ -274,7 +271,7 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
         state->pickIdImageAlloc[v].memory = VK_NULL_HANDLE;
     }
 
-    // Destroy per-view HDR resolve targets (memory backed by swapchainAllocator, reset below)
+    // Per-view HDR resolve targets
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
@@ -292,7 +289,7 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
             }
             vr->hdrColorAlloc.memory = VK_NULL_HANDLE;
 
-            // Picking id resolve target (view 0 only; the rest stay VK_NULL_HANDLE).
+            // Picking-id resolve target (view 0 only)
             if (vr->pickIdResolveView != VK_NULL_HANDLE)
             {
                 vkDestroyImageView(ctx->device, vr->pickIdResolveView, NULL);
@@ -307,10 +304,10 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
         }
     }
 
-    // Text overlay raster targets (memory backed by swapchainAllocator, reset below).
+    // Text overlay raster targets
     ano_vk_text_destroy_overlay(ctx, state);
 
-    // Do NOT destroy the swapchain here because recreateSwapChain needs oldSwapChain
+    // Swapchain kept for recreateSwapChain oldSwapChain
     if (state->images != NULL) {
         free(state->images);
         state->images = NULL;
@@ -322,7 +319,7 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
 
 void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 {
-	// Wait until the device is completely idle before tearing down any resources
+	// Wait for device idle
 	vkDeviceWaitIdle(ctx->device);
 
 	// This is completely unecessary and introduces a bug on reinit.
@@ -335,7 +332,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	// 	vkCreateSemaphore(ctx->device, &semaphoreInfo, NULL, &rendererState.frames[i].renderFinished);
 	// }
 
-    // First, clean up the previous swapchain
+    // Clean up previous swapchain
 	cleanupSwapChain(ctx, &rendererState);
     
 	int width = 0, height = 0;
@@ -346,7 +343,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 		glfwGetFramebufferSize(window, &width, &height);
 		glfwWaitEvents();
 	}
-    // Explicitly update these to ensure swapchain recreation has the correct values
+    // Update extents for recreation
     rendererState.imageExtent.width = width;
     rendererState.imageExtent.height = height;
 	// Save outdated swapchain
@@ -382,8 +379,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 		exit(1);
 	}
 
-	// Hi-Z pyramid (review 4.9 step 3): recreate at the new (half) resolution, then rebind its
-	// per-mip sets to the new pyramid + depth views (mirrors the tonemap-set rebind below).
+	// Hi-Z pyramid: recreate at new resolution, rebind per-mip sets
 	if (!createHiZResources(ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Hi-Z resources re-creation error, exiting!");
@@ -392,16 +388,16 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	}
 	updateHiZDescriptorSets(ctx, &rendererState);
 
-	// The per-view HDR resolve views were recreated above; rebind the tonemap sets to them.
+	// Rebind tonemap sets to recreated HDR resolve views
 	updateTonemapDescriptorSets(ctx, &rendererState);
 
-	// Text overlay images recreated in createColorResources. Rebind their sets.
+	// Rebind text overlay sets
 	ano_vk_text_update_sets(ctx, &rendererState);
 
 	vkResetCommandPool(ctx->device, rendererState.commandPool, 0);
 	if (rendererState.computeCommandPool != VK_NULL_HANDLE)
-		vkResetCommandPool(ctx->device, rendererState.computeCommandPool, 0); // async Hi-Z build CBs (idle-waited above)
-	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences prior to resuming render
+		vkResetCommandPool(ctx->device, rendererState.computeCommandPool, 0); // async Hi-Z build CBs
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) // Clear fences before resuming render
 	{
 		vkResetFences(ctx->device, 1, &(rendererState.frames[i].frameFence));
         rendererState.frames[i].frameSubmitted = false;
@@ -411,7 +407,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 }
 
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
-{ // Central init component, should be extended to allow for runtime mipmap definition and potential 3D texture support
+{ // Central init component
 	VkImageViewCreateInfo viewInfo = {};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;

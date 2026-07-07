@@ -1,10 +1,7 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-// Additive lane (audit 4.7). Stripped flat.frag: no clustered-forward light loop, no shadow
-// sampling. Emits a premultiplied emissive/base contribution; the pipeline blends ONE/ONE, which is
-// commutative, so the cull pass's arbitrary draw order is correct (no sort needed). Shares the FLAT
-// geometry stage outputs, consuming only texcoord + packed indices.
+// Additive lane. Stripped flat.frag: no light loop, no shadows. Premultiplied emissive/base, ONE/ONE blend.
 
 struct MaterialData {
     uint      features;
@@ -69,7 +66,7 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
 } materialBuf;
 
-// Per-entity instance channel (matches flat.frag). packed[0] = RGBA8 tint, packed[1] bit0 enables it.
+// Per-entity instance channel. packed[0] = RGBA8 tint, packed[1] bit0 enables it.
 const uint INST_FLAG_TINT = 1u;
 struct InstanceData {
     uvec4 packed;
@@ -107,8 +104,7 @@ void main() {
         emissive *= texture(textures[nonuniformEXT(mat.emissiveTexture)], fragTexCoord).rgb;
     }
 
-    // Premultiplied additive: contribution scales by alpha so authoring alpha acts as intensity.
-    // ONE/ONE blend then sums these in any order without artifacts.
+    // Premultiplied additive: alpha acts as intensity.
     vec3 col = (base.rgb + emissive) * base.a;
     outColor = vec4(col, base.a);
 }

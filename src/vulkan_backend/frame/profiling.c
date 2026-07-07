@@ -13,17 +13,11 @@
 #include "vulkan_backend/frame/frame.h"
 
 // --- Profiling harness ---------------------------------------------------------------------
-// Per-pass GPU timestamps as a fence-post: one timestamp (boundary enum in structs.h) at each
-// section boundary, region time = consecutive delta * timestampPeriod. All boundaries are written
-// unconditionally at top level (outside any render pass) so a skipped section yields a ~0 region,
-// never an unwritten query. BOTTOM_OF_PIPE marks "all prior work retired", so a delta is that
-// section's wall-clock including barrier stalls — coarse but apples-to-apples across lighting modes
-// on the single graphics queue. Period (ns/tick) + valid bits live on rendererState (set at init).
-static double   g_tsAccumMs[ANO_TS_COUNT - 1]; // accumulated per-region ms over the print window
-static uint32_t g_tsFrames = 0;             // frames accumulated since the last print
-#define ANO_PROFILE_PRINT_INTERVAL 120u     // print averaged stats every N frames
-// Shadow-frustum renders per frame (dirty-cache observability): accumulated in the record loop,
-// averaged into the profile line. Its own frame counter — record and stat-collect cadences differ.
+// Per-pass GPU timestamps as fence-posts: region time = consecutive delta * timestampPeriod.
+static double   g_tsAccumMs[ANO_TS_COUNT - 1]; // accumulated per-region ms
+static uint32_t g_tsFrames = 0;             // frames since last print
+#define ANO_PROFILE_PRINT_INTERVAL 120u     // frames per print
+// Shadow-frustum renders per frame, averaged into the profile line.
 uint64_t g_shadowRenderAccum = 0;
 uint32_t g_shadowRenderFrames = 0;
 
@@ -34,18 +28,14 @@ static VkDeviceSize allocator_used_bytes(const GpuAllocator* a) {
     return used;
 }
 
-// Stamp a section-boundary timestamp (BOTTOM_OF_PIPE = after all prior work). No-op when the queue
-// has no timestamp support. The frame-begin boundary is stamped separately at TOP_OF_PIPE.
+// Stamp a section-boundary timestamp. No-op when the queue has no timestamp support.
 void ano_ts(VkCommandBuffer cmd, uint32_t query) {
     if (rendererState.timestampValidBits)
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
             rendererState.frames[rendererState.frameIndex].timestampPool, query);
 }
 
-// Print the averaged per-pass GPU times + per-allocator resident VRAM for the active lighting mode.
-// shadowAtlas is the always-resident CDF-stats atlas (ANO_SHADOW_ATLAS_LAYERS
-// RGBA16 layers x ANO_SHADOW_DIM^2 x MAX_FRAMES_IN_FLIGHT), reported separately so RC-only VRAM is
-// not charged for the idle-but-resident atlas — the fairness break-out the harness requires.
+// Print averaged per-pass GPU times + per-allocator resident VRAM. shadowAtlas reported separately.
 static void ano_print_profiling(void) {
     static const char* const modeNames[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RC" };
     uint32_t m = rendererState.lightingMode;
@@ -63,9 +53,7 @@ static void ano_print_profiling(void) {
     double tex  = (double)allocator_used_bytes(&textureAllocator)   / MiB;
     double swap = (double)allocator_used_bytes(&swapchainAllocator) / MiB;
     double stg  = (double)allocator_used_bytes(&stagingAllocator)   / MiB;
-    // CDF stats atlas + blur temp (both RGBA16_UNORM = 8 B/texel, ATLAS_LAYERS = 2 sublayers/frustum)
-    // + the per-frustum transient nearest-occluder depth array (D32 = 4 B/texel). ONE shared instance
-    // of each across frames in flight (review finding 8).
+    // CDF stats atlas + blur temp (RGBA16, 2 sublayers/frustum) + transient depth array (D32), one shared instance each.
     double atlas = (double)((VkDeviceSize)ANO_SHADOW_ATLAS_LAYERS * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 8u * 2u
                             + (VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u) / MiB;
 
@@ -76,8 +64,8 @@ static void ano_print_profiling(void) {
     g_shadowRenderAccum = 0;
     g_shadowRenderFrames = 0;
 
-    // Mirror the readout on-screen, re-shaped at print cadence.
-    // Three style runs: white stats, the total colored by frame budget, the VRAM line dimmed.
+    // Mirror the readout on-screen.
+    // Three style runs: white stats, total colored by frame budget, VRAM line dimmed.
     char osd[512];
     int head = snprintf(osd, sizeof osd,
         "[%s] GPU ms  upload %.3f  compute %.3f  shadow %.3f (frusta %.1f/%u)\n"
@@ -103,9 +91,8 @@ static void ano_print_profiling(void) {
     }
 }
 
-// Read this frame slot's timestamps (its prior submission is fence-complete) and fold the per-pass
-// deltas into the running average; print every ANO_PROFILE_PRINT_INTERVAL frames. Masks to the
-// queue's valid bits and handles counter wraparound. No-op when timestamps are unsupported.
+// Fold this frame slot's per-pass timestamp deltas into the running average.
+// Print every ANO_PROFILE_PRINT_INTERVAL frames. No-op when timestamps are unsupported.
 void ano_collect_frame_stats(uint32_t frameIndex) {
     if (!rendererState.timestampValidBits) return;
     VkQueryPool pool = rendererState.frames[frameIndex].timestampPool;
@@ -127,17 +114,14 @@ void ano_collect_frame_stats(uint32_t frameIndex) {
     }
 }
 
-// Discard the in-progress timing window (e.g. on a lighting-mode change) so the next printed
-// average is pure for the new regime. Encapsulates g_tsAccumMs/g_tsFrames for out-of-module callers.
+// Discard the in-progress timing window so the next printed average is pure for the new regime.
 void ano_profile_reset_window(void) {
     for (int r = 0; r < ANO_TS_COUNT - 1; r++) g_tsAccumMs[r] = 0.0;
     g_tsFrames = 0;
 }
 
-// Read this frame slot's picking readback (fence-complete, like the timestamps): map the sampled
-// slot back to a render_id and emit REVENT_PICK_RESULT to the logic master when the hit changes
-// (audit 3.1). A cleared/unmapped slot collapses to ANO_RENDER_NO_PICK. On a full event ring, skip
-// latching so the change re-emits next frame (backpressure-safe).
+// Map this frame slot's picking readback to a render_id and emit REVENT_PICK_RESULT when the hit changes.
+// A cleared/unmapped slot collapses to ANO_RENDER_NO_PICK. On a full event ring, skip latching.
 void ano_collect_pick(uint32_t frameIndex) {
     uint32_t slot = *rendererState.frames[frameIndex].pickReadbackMapped;
     uint32_t rid  = (slot == 0xFFFFFFFFu) ? ANO_RENDER_NO_PICK

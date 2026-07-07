@@ -12,9 +12,7 @@
 
 #include <vulkan/vulkan.h>
 
-// Create the compute-pipeline prototypes (update / scatter / cull / Hi-Z / tpsort / light-cull /
-// light-setup / shadow-setup) + their descriptor set layouts. Extracted verbatim from the compute
-// block of ano_vk_init_pipelines, which now calls this after building the graphics prototypes.
+// Compute-pipeline prototypes + descriptor set layouts.
 bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 {
     // Compute Update Pipeline
@@ -111,8 +109,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         scatterBindings[b].descriptorCount = 1;
         scatterBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
-    // 0: StreamSlots (per-frame), 1: StreamTransforms (xform ring, dynamic offset selects
-    // the published slice), 2: TransformSSBO (written).
+    // 0: StreamSlots  1: StreamTransforms (dynamic)  2: TransformSSBO (written)
     scatterBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 
     VkDescriptorSetLayoutCreateInfo scatterLayoutInfo = {};
@@ -199,7 +196,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 
     VkShaderModule compShaderModule = createShaderModule(ctx->device, &compShaderCode);
 
-    // constant_id 1: useMeshShader (selects the indirect command format the cull pass writes)
+    // constant_id 1: useMeshShader
     VkBool32 compUseMeshShader = ctx->deviceCapabilities.meshShader ? VK_TRUE : VK_FALSE;
 
     VkSpecializationMapEntry compSpecMapEntry = {};
@@ -229,10 +226,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(compShaderCode.data);
     vkDestroyShaderModule(ctx->device, compShaderModule, NULL);
 
-    // Compute Hi-Z Pyramid Build Pipeline (review 4.9 step 3). One module, two implementations via the
-    // isReduce spec constant (constant_id 0): [0] = reduce (MSAA depth -> mip 0), [1] = downsample
-    // (mip srcMip -> srcMip+1). Push constant (24 B) = { int srcMip; ivec2 dstSize; ivec2 srcSize; }
-    // matching hiz.comp's std430 block. Shares state->hizSetLayout across both.
+    // Compute Hi-Z Pyramid Build Pipeline. [0] reduce, [1] downsample via isReduce spec constant (0).
+    // Push constant 24 B: { int srcMip; ivec2 dstSize; ivec2 srcSize; }
     VkPipelineCacheCreateInfo hizCacheInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
     vkCreatePipelineCache(ctx->device, &hizCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].cache);
 
@@ -258,11 +253,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (!loadFile("resources/shaders/hiz.comp.spv", &hizShaderCode)) return false;
     VkShaderModule hizShaderModule = createShaderModule(ctx->device, &hizShaderCode);
 
-    // Avenue 1: when depth MAX-resolve is supported, BOTH Hi-Z pipelines use the RESOLVED_DEPTH build so
-    // binding 2 is a single-sample sampler2D (the reduce reads the resolved depth; the downsample never
-    // samples binding 2 but must declare the same type + the layout the bound single-sample view provides,
-    // so both bind the resolve view — see updateHiZDescriptorSets). Without resolve support both use the
-    // base sampler2DMS module. Load the variant only when it will actually be used.
+    // Depth MAX-resolve: both Hi-Z pipelines use the resolved single-sample module, else the base sampler2DMS.
     struct Buffer hizResolveCode = {0};
     VkShaderModule hizResolveModule = VK_NULL_HANDLE;
     if (ctx->deviceCapabilities.depthMaxResolve)
@@ -271,9 +262,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         hizResolveModule = createShaderModule(ctx->device, &hizResolveCode);
     }
 
-    // Two spec constants: id 0 isReduce, id 1 msaaSamples (reduce source sample count, baked so the
-    // per-sample fetch loop unrolls; VkSampleCountFlagBits enum values equal the counts). msaaSamples
-    // was set in pickPhysicalDevice, before this function runs.
+    // Spec constants: id 0 isReduce, id 1 msaaSamples (reduce source sample count).
     struct HizSpecData { VkBool32 isReduce; int32_t msaaSamples; };
     VkSpecializationMapEntry hizSpecMap[2] = {
         { .constantID = 0, .offset = offsetof(struct HizSpecData, isReduce),    .size = sizeof(VkBool32) },
@@ -312,10 +301,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         vkDestroyShaderModule(ctx->device, hizResolveModule, NULL);
     }
 
-    // Compute Transparency-Sort Pipeline (audit 4.7). Reuses the cull descriptor set layout (it
-    // operates on the same indirect / drawCount / compacted / sortKeys buffers); one workgroup per
-    // camera view sorts that view's transmission partition back-to-front. No push constants (view =
-    // gl_WorkGroupID.x); shares cull's useMeshShader spec constant so the command stride matches.
+    // Compute Transparency-Sort Pipeline. Reuses the cull descriptor set layout; shares useMeshShader spec constant.
     VkPipelineCacheCreateInfo tpsortCacheInfo = {};
     tpsortCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
     vkCreatePipelineCache(ctx->device, &tpsortCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].cache);
@@ -417,8 +403,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(lightcullShaderCode.data);
     vkDestroyShaderModule(ctx->device, lightcullShaderModule, NULL);
 
-    // Compute Light-setup Pipeline: per-light world pose (worldPos/worldDir) precompute, so the
-    // fragment passes stop reloading the 64B transform + re-deriving lightPos/lightForward per fragment.
+    // Compute Light-setup Pipeline: per-light world pose (worldPos/worldDir) precompute.
     // 0: TransformSSBO (in)  1: LightSSBO (in)  2: LightRuntimeSSBO (out, 64B/light). Push constant: light count.
     VkDescriptorSetLayoutBinding lightsetupBindings[3] = {};
     for (uint32_t b = 0; b < 3; ++b) {
@@ -475,8 +460,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(lightsetupShaderCode.data);
     vkDestroyShaderModule(ctx->device, lightsetupShaderModule, NULL);
 
-    // Compute Shadow-setup Pipeline (audit 4.7): builds each shadow frustum's light-space viewProj
-    // + planes from the light's live transform. Set layout created in ano_vk_init_cull_layout.
+    // Compute Shadow-setup Pipeline: builds each shadow frustum's light-space viewProj + planes.
     VkPipelineLayoutCreateInfo shadowSetupLayoutInfo = {};
     shadowSetupLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     shadowSetupLayoutInfo.setLayoutCount = 1;

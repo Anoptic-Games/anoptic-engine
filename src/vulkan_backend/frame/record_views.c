@@ -12,9 +12,7 @@
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/frame/frame.h"
 
-// Per view: light-cull (this view's froxel lists) then the geometry passes into this view's HDR
-// target + depth, reading this view's cull partition; picking readback on view 0. Extracted verbatim
-// from the record path (runs after the transparency sort, before the composite).
+// Per view light-cull then geometry into this view's HDR target + depth, reading its cull partition. Picking readback on view 0.
 void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSlotCount)
 {
     // === Per view: light-cull (this view's froxel lists) then geometry into this view's
@@ -22,8 +20,7 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
     for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
         ViewResources* vr = &rendererState.frames[rendererState.frameIndex].views[v];
 
-        // This view's HDR resolve target: UNDEFINED -> COLOR_ATTACHMENT (geometry clears + the
-        // resolve overwrite the whole render area, so prior contents are not needed).
+        // This view's HDR resolve target: UNDEFINED -> COLOR_ATTACHMENT.
         {
             VkImageMemoryBarrier hdrToColor = {};
             hdrToColor.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -41,10 +38,7 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
                 0, 0, NULL, 0, NULL, 1, &hdrToColor);
         }
 
-        // Light-cull for this view: bins lights into this view's froxel grid using its frustum.
-        // Async mode records both views' dispatches into the compute-queue CB instead
-        // (recordLightcullCompute); the main submit's lcTimeline wait at FRAGMENT_SHADER replaces
-        // this barrier.
+        // Light-cull bins lights into this view's froxel grid. Async mode records dispatches into the compute-queue CB instead.
         if (entityCount > 0 && !rendererState.asyncLc) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                 rendererState.prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline);
@@ -61,15 +55,12 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
                 0, 1, &lcBarrier, 0, NULL, 0, NULL);
         }
 
-        // MSAA color + id targets are PER VIEW (review finding 6): no attachment is shared across
-        // views, so no inter-view reuse barrier — the views' raster is free to overlap.
-
+        // MSAA color + id targets are per view. No inter-view reuse barrier.
         for (int p = 0; p < (int)ano_frame_pass_count; p++) {
             const RenderPassDef* pass = &ano_frame_passes[p];
             if (pass->type != PASS_GRAPHICS) continue;
 
-            // Depth write->read hazard: the opaque pass EQUAL-tests the depth the pre-pass just wrote
-            // into this same image. Order the pre-pass's writes before this pass's reads/tests.
+            // Depth write->read hazard. Order the pre-pass's writes before this pass's reads/tests.
             if (pass->depthBarrierBefore) {
                 VkImageMemoryBarrier depthWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -86,7 +77,7 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
             clearDepth.depthStencil.depth = 1.0f;
             clearDepth.depthStencil.stencil = 0;
 
-            // color[0] = HDR; color[1] = R32_UINT picking id (only the opaque pass declares 2).
+            // color[0] = HDR, color[1] = R32_UINT picking id (only the opaque pass declares 2).
             VkRenderingAttachmentInfo color[2] = {};
             color[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             color[0].imageView = rendererState.colorView[v]; // this view's MSAA color
@@ -101,13 +92,11 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
             color[0].clearValue = clearColor;
 
             if (pass->colorAttachmentCount == 2) {
-                // Picking id: render the slot into the shared MSAA id image; clear to the no-hit
-                // sentinel. Integer formats MUST resolve SAMPLE_ZERO (never AVERAGE). Only view 0
-                // resolves to a readable single-sample target; other views render then discard it.
+                // Picking id into the shared MSAA id image, cleared to the no-hit sentinel. Integer formats MUST resolve SAMPLE_ZERO. Only view 0 resolves to a readable target.
                 color[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                 color[1].imageView = rendererState.pickIdView[v];
                 color[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                // CLEAR only with the first opaque pass; the two-sided lane LOADs its ids (finding 7).
+                // CLEAR only with the first opaque pass. The two-sided lane LOADs its ids.
                 color[1].loadOp = pass->colorLoadOp;
                 color[1].clearValue.color.uint32[0] = 0xFFFFFFFFu;
                 if (v == 0) {
@@ -170,15 +159,14 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     rendererState.prototypes[pass->prototype].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
 
-                // Compacted draws live in this (view, draw slot) partition, matching the partition
-                // cull.comp wrote them into: partition = view*drawSlotCount + slot.
+                // Compacted draws in this (view, draw slot) partition = view*drawSlotCount + slot.
                 uint32_t slot = ano_draw_slot_of(pass->prototype);
                 uint32_t partition = v * drawSlotCount + slot;
                 uint32_t baseOffset = partition * rendererState.culling.maxEntities;
                 bool useMesh = ctx.deviceCapabilities.meshShader;
-                // Must equal the layout's push range flags exactly (task stage reads the same push).
+                // Must equal the layout's push range flags exactly.
                 VkShaderStageFlags pcStage = (useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
-                    | VK_SHADER_STAGE_FRAGMENT_BIT // matches the layouts' widened push range (shadow CDF linearization)
+                    | VK_SHADER_STAGE_FRAGMENT_BIT // widened push range
                     | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
                 vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, pcStage, 0, sizeof(uint32_t), &baseOffset);
 
@@ -209,17 +197,14 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
                 }
             }
 
-            // World-space text panel: drawn in the additive pass (last MSAA
-            // color pass), resolves with the scene.
+            // World-space text panel drawn in the additive pass, resolves with the scene.
             if (pass->prototype == PIPELINE_ADDITIVE)
                 ano_vk_text_record_world(&rendererState, cmd, rendererState.frameIndex, v);
 
             vkCmdEndRendering(cmd);
         }
 
-        // Picking (audit 3.1): copy the cursor texel from view 0's resolved id image into this
-        // frame's readback buffer; ano_collect_pick reads it after this slot's fence next time round.
-        // Skip on a degenerate extent (minimized).
+        // Copy the cursor texel from view 0's resolved id image into this frame's readback buffer. Skip on a degenerate extent.
         if (v == 0 && rendererState.imageExtent.width > 0 && rendererState.imageExtent.height > 0) {
             VkImageMemoryBarrier toSrc = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -271,15 +256,11 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
     }
 }
 
-// Composite: tonemap each view's HDR target onto the swapchain (view 0 fullscreen, aux views as
-// picture-in-picture insets) + the text/UI overlay. Extracted verbatim from the record path.
+// Composite: tonemap each view's HDR target onto the swapchain (view 0 fullscreen, aux views as PiP insets) + the text/UI overlay.
 void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex)
 {
     // --- Composite: tonemap each view's HDR target onto the swapchain ---
-    // View 0 fills the screen; auxiliary views composite as picture-in-picture insets along the
-    // bottom-right. Each draw is the same ACES tonemap fullscreen triangle, scoped to its
-    // destination rect by viewport+scissor, sampling that view's HDR target via its tonemap set.
-    // Each view's HDR target was already moved to SHADER_READ at the end of its geometry pass.
+    // View 0 fills the screen, aux views as PiP insets along the bottom-right. Same ACES tonemap fullscreen triangle per view, scoped by viewport+scissor.
     {
         VkRenderingAttachmentInfo tmColor = {};
         tmColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -333,8 +314,7 @@ void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex)
             vkCmdDraw(cmd, 3, 1, 0, 0); // fullscreen triangle, scoped by viewport+scissor
         }
 
-        // Text/UI overlay over everything (main view AND the PiP insets): one fullscreen
-        // premultiplied blend sampling the compute-rastered overlay.
+        // Text/UI overlay over everything, one fullscreen premultiplied blend.
         ano_vk_text_record_composite(&rendererState, cmd, rendererState.frameIndex);
 
         vkCmdEndRendering(cmd);

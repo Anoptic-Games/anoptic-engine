@@ -23,10 +23,10 @@
 
 
 
-void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vulkan parameters
+void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameters
 {
 	// !TODO ADD INTERMEDIARY FUNCTION TO DESTROY ENTITY STRUCT ASSETS, CALL HERE
-	// !TODO Also texture samplers, image views, etc etc I basically gave up at this point since everything's gonna have to be generalized regardless
+	// !TODO Also texture samplers, image views, etc
 	if (ctx == NULL)
 	{
 		return;
@@ -74,15 +74,15 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			vkDestroyBuffer(ctx->device, rendererState.transformBuffer.buffer[i], NULL);
 		if(rendererState.lightRuntimeBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.lightRuntimeBuffer.buffer[i], NULL);
-		// initialTransform/motion/instanceData are SlotUploads now (destroyed below).
+		// initialTransform/motion/instanceData are SlotUploads, destroyed below
 		if(rendererState.transformStream.slotBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.transformStream.slotBuffer[i], NULL);
 		if(rendererState.materialBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.materialBuffer.buffer[i], NULL);
-		// lightBuffer is a SlotUpload now (destroyed below).
+		// lightBuffer is a SlotUpload, destroyed below
 		if(rendererState.indirectBuffer.buffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.indirectBuffer.buffer[i], NULL);
-		// culling.entity is a SlotUpload now (destroyed below).
+		// culling.entity is a SlotUpload, destroyed below
 		if(rendererState.culling.meshDataBuffer[i])
 			vkDestroyBuffer(ctx->device, rendererState.culling.meshDataBuffer[i], NULL);
 		if(rendererState.culling.meshBoundsBuffer[i])
@@ -101,19 +101,15 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 			if(rendererState.frames[i].views[v].clusterLightIndexBuffer)
 				vkDestroyBuffer(ctx->device, rendererState.frames[i].views[v].clusterLightIndexBuffer, NULL);
 		}
-		// Dynamic shadow resources (audit 4.7): per-frame frustum buffer. (The atlas/blur-temp and
-		// the transient caster depth are shared single instances, destroyed after this loop.)
+		// Per-frame shadow frustum + sampleVP buffers
 		ShadowResources* sh = &rendererState.frames[i].shadow;
 		if (sh->frustumBuffer) vkDestroyBuffer(ctx->device, sh->frustumBuffer, NULL);
 		if (sh->sampleVPBuffer) vkDestroyBuffer(ctx->device, sh->sampleVPBuffer, NULL);
 	}
-	// Text overlay: frame-data + glyph curve/directory buffers, the CPU
-	// bake heap, and the FreeType backend. Pipelines die in ano_vk_cleanup_pipelines.
+	// Text overlay: frame-data, glyph buffers, bake heap, FreeType backend
 	ano_vk_text_destroy(ctx, &rendererState);
 
-	// Shared shadow images (review finding 8: one atlas + blur temp across frames in flight) + the
-	// transient caster depth. layerView/tempLayerView are sized ANO_SHADOW_ATLAS_LAYERS (2 sublayers/
-	// frustum): destroy that count, not the per-frustum count, or the tail views leak.
+	// Shared shadow images: atlas, blur temp, transient caster depth
 	if (rendererState.shadowAtlasArrayView) vkDestroyImageView(ctx->device, rendererState.shadowAtlasArrayView, NULL);
 	if (rendererState.shadowTempArrayView) vkDestroyImageView(ctx->device, rendererState.shadowTempArrayView, NULL);
 	for (uint32_t s = 0; s < ANO_SHADOW_ATLAS_LAYERS; s++) {
@@ -126,18 +122,16 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		if (rendererState.shadowDepthSliceView[s]) vkDestroyImageView(ctx->device, rendererState.shadowDepthSliceView[s], NULL);
 	}
 	if (rendererState.shadowDepthImage) vkDestroyImage(ctx->device, rendererState.shadowDepthImage, NULL);
-	// Mover bookkeeping + swept-exposure mirrors (review finding 8).
+	// Mover bookkeeping + swept-exposure mirrors
 	if (rendererState.slotMotion)   { free(rendererState.slotMotion);   rendererState.slotMotion = NULL; }
 	if (rendererState.slotBasePose) { free(rendererState.slotBasePose); rendererState.slotBasePose = NULL; }
 	if (rendererState.slotMeshIdx)  { free(rendererState.slotMeshIdx);  rendererState.slotMeshIdx = NULL; }
 	if (rendererState.slotMoverIdx) { free(rendererState.slotMoverIdx); rendererState.slotMoverIdx = NULL; }
 	if (rendererState.movers)       { free(rendererState.movers);       rendererState.movers = NULL; }
-	// Shadow config mirror (the render-thread CPU copy; the device buffers are SlotUploads destroyed below).
+	// Shadow config mirror (render-thread CPU copy)
 	if (rendererState.shadowCfgMirror) { free(rendererState.shadowCfgMirror); rendererState.shadowCfgMirror = NULL; }
 
-	// SlotUpload buffers: ×1 device-local authoritative + per-frame host-visible delta staging
-	// + the malloc'd copy-region lists. (Backing memory itself is freed wholesale with the
-	// gpu allocator; here we destroy the VkBuffer handles and free the region arrays.)
+	// SlotUpload buffers: device handles + per-frame staging + region arrays
 	{
 		SlotUpload* ups[7] = { &rendererState.initialTransformBuffer, &rendererState.motionBuffer,
 			&rendererState.instanceDataBuffer, &rendererState.lightBuffer, &rendererState.culling.entity,
@@ -151,7 +145,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		}
 	}
 
-	// Single (non-per-frame) streamed-transform ring.
+	// Streamed-transform ring
 	if(rendererState.transformStream.xformRing)
 		vkDestroyBuffer(ctx->device, rendererState.transformStream.xformRing, NULL);
 
@@ -191,7 +185,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		}
 		if (rendererState.frames[i].pickReadback)
 		{
-			// Memory is owned by the persistent gpuAllocator (freed when it is destroyed); just the handle here.
+			// Handle only; memory owned by gpuAllocator
 			vkDestroyBuffer(ctx->device, rendererState.frames[i].pickReadback, NULL);
 			rendererState.frames[i].pickReadback = VK_NULL_HANDLE;
 		}
@@ -204,7 +198,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 		vkDestroyCommandPool(ctx->device, rendererState.commandPool, NULL);
 	}
 
-	// Async Hi-Z objects (review finding 2); NULL when asyncHiz was off.
+	// Async Hi-Z objects; NULL when asyncHiz off
 	if (rendererState.computeCommandPool != NULL)
 	{
 		vkDestroyCommandPool(ctx->device, rendererState.computeCommandPool, NULL);
@@ -217,7 +211,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees up the previously initialized Vu
 	{
 		vkDestroySemaphore(ctx->device, rendererState.hizTimeline, NULL);
 	}
-	// Async light-cull timelines (finding 2 remainder); NULL when asyncLc was off.
+	// Async light-cull timelines; NULL when asyncLc off
 	if (rendererState.preludeTimeline != NULL)
 	{
 		vkDestroySemaphore(ctx->device, rendererState.preludeTimeline, NULL);
