@@ -77,10 +77,12 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint clusterDimY;
     uint clusterDimZ;
     uint maxLightsPerCluster;
-    uint lightingMode;   // AnoLightingMode, gates shadow sampling below
+    uint lightingMode;   // AnoLightingMode
     uint debugView;      // RC debug visualization selector (0 = off)
     uint pad0;
     uint pad1;
+    mat4 viewProj;    // premultiplied camera clip transform
+    mat4 invVPPixel;  // world position from gl_FragCoord
 } global;
 
 // Clustered-forward froxel light lists (light-cull output).
@@ -91,10 +93,8 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
-// Dynamic shadows (set 2): shadow frustum viewProjs + moment atlas array + per-light placement.
-struct ShadowCullView { mat4 viewProj; vec4 frustumPlanes[6]; };
+// Dynamic shadows (set 2), moment atlas array + per-light placement.
 struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
-layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { ShadowCullView shadowFrustums[]; } shadowFrustumBuf;
 layout(set = 2, binding = 1) uniform sampler2DArray shadowAtlas;
 layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
 
@@ -106,14 +106,13 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
 } materialBuf;
 
 // ---------------------------------------------------------------------------
-// Punctual lights (KHR_lights_punctual). World position + direction derived from the driving entity's transform.
+// Punctual lights (KHR_lights_punctual).
 // ---------------------------------------------------------------------------
 const uint LIGHT_TYPE_DIRECTIONAL = 0u;
 const uint LIGHT_TYPE_POINT       = 1u;
 const uint LIGHT_TYPE_SPOT        = 2u;
 
 // Lighting mode (AnoLightingMode). Must match C-side lightTypeShadowMapped().
-// HYBRID keeps directional + spot maps, routes point lights to RC.
 const uint ANO_LIGHTING_SHADOWMAP = 0u;
 const uint ANO_LIGHTING_HYBRID    = 1u;
 const uint ANO_LIGHTING_RC        = 2u;
@@ -125,8 +124,7 @@ bool lightUsesShadowMap(uint lightType, uint mode) {
 
 // lightsetup.comp consumes LightData (binding 8) + transforms (binding 1), fragment reads packed LightRuntime (binding 12).
 
-// Per-light runtime, precomputed by lightsetup.comp: world pose + premultiplied radiance + range/cone/type in one 64B record.
-// Layout must match LightRuntime in lightsetup.comp / transmission.frag.
+// Per-light runtime, 64B record. Layout must match LightRuntime in lightsetup.comp / transmission.frag.
 struct LightRuntime {
     vec4 posRange;   // xyz world position, w range
     vec4 dirType;    // xyz world forward,  w float(type)
@@ -147,8 +145,7 @@ layout(set = 0, binding = 9) readonly buffer InstanceSSBO {
     InstanceData instances[];
 } instanceBuf;
 
-// glTF range-based attenuation: inverse-square with a smooth window cutoff.
-// range <= 0 means unbounded (pure inverse-square).
+// glTF range-based attenuation, inverse-square with smooth window cutoff.
 float getRangeAttenuation(float range, float dist) {
     float invSqr = 1.0 / max(dist * dist, 0.0001);
     if (range <= 0.0) {
@@ -158,7 +155,7 @@ float getRangeAttenuation(float range, float dist) {
     return f * f * invSqr;
 }
 
-// Spot cone falloff. spotForward is the aim, L points surface->light.
+// Spot cone falloff. spotForward is aim, L points surface -> light.
 float getSpotAttenuation(vec3 spotForward, vec3 L, float innerConeCos, float outerConeCos) {
     float cosAngle = dot(spotForward, -L);
     return smoothstep(outerConeCos, innerConeCos, cosAngle);
@@ -166,17 +163,16 @@ float getSpotAttenuation(vec3 spotForward, vec3 L, float innerConeCos, float out
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
+// Interstage diet (flat.mesh), material | entity in one flat scalar.
 layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragTexCoord;
-layout(location = 2) flat in uint inMaterialIndex;
-layout(location = 3) in vec3 fragWorldPos;
-layout(location = 4) flat in uint inEntityIndex;
+layout(location = 2) flat in uint inPackedIndices; // material (high 12 bits) | entity slot (low 20)
 
 layout(location = 0) out vec4 outColor;
-layout(location = 1) out uint outId; // GPU slot of this fragment, for cursor picking (opaque pass only)
+layout(location = 1) out uint outId; // GPU slot, cursor picking (opaque pass only)
 
 vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, vec3 L) {
-    // Clamp roughness, 0 collapses specular
+    // Clamp roughness
     roughness = max(roughness, 0.04);
 
     vec3 H = normalize(V + L);
@@ -208,6 +204,12 @@ vec3 calculatePBR(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, 
 }
 
 void main() {
+    uint inMaterialIndex = inPackedIndices >> 20;
+    uint inEntityIndex   = inPackedIndices & 0xFFFFFu;
+    // World position from this fragment's rasterized depth.
+    vec4 wp4 = global.invVPPixel * vec4(gl_FragCoord.xyz, 1.0);
+    vec3 fragWorldPos = wp4.xyz / wp4.w;
+
     MaterialData mat = materialBuf.materials[inMaterialIndex];
     vec4 baseColor = mat.baseColorFactor;
     if (mat.baseColorTexture != 0xFFFFFFFF) {
@@ -219,6 +221,13 @@ void main() {
     if ((inst.packed.y & INST_FLAG_TINT) != 0u) {
         baseColor *= unpackUnorm4x8(inst.packed.x);
     }
+
+#if ANO_ALPHA_MASK
+    // Cutout lane (glTF alphaMode MASK), binary alpha test.
+    if (baseColor.a < mat.alphaCutoff) {
+        discard;
+    }
+#endif
 
     float metallic = mat.metallicFactor;
     float roughness = mat.roughnessFactor;
@@ -237,7 +246,24 @@ void main() {
     if (!gl_FrontFacing) {
         N = -N;
     }
-    
+
+    // Normal mapping via screen-space cotangent frame (Schüler).
+    if (mat.normalTexture != 0xFFFFFFFF) {
+        vec3 mapN = texture(textures[nonuniformEXT(mat.normalTexture)], fragTexCoord).xyz * 2.0 - 1.0;
+        mapN.xy *= mat.normalScale;
+        vec3 dp1 = dFdx(fragWorldPos);
+        vec3 dp2 = dFdy(fragWorldPos);
+        vec2 duv1 = dFdx(fragTexCoord);
+        vec2 duv2 = dFdy(fragTexCoord);
+        vec3 dp2perp = cross(dp2, N);
+        vec3 dp1perp = cross(N, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        // Scale-invariant frame, epsilon keeps degenerate-uv quads finite.
+        float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        N = normalize(mat3(T * invmax, B * invmax, N) * mapN);
+    }
+
     vec3 V = normalize(global.cameraPos.xyz - fragWorldPos);
     
     // -------------------------------------------------------------
@@ -256,30 +282,29 @@ void main() {
     uint lightListBase = clusterIdx * global.maxLightsPerCluster;
     uint clusterCount = clusterCountBuf.clusterLightCount[clusterIdx];
 
+    // Plain counted walk.
     for (uint c = 0u; c < clusterCount; c++) {
         uint i = clusterIndexBuf.clusterLightIndices[lightListBase + c];
-        // One 64B runtime load per light: world pose, premultiplied radiance, range/cone/type.
-        LightRuntime lr = lightRuntimeBuf.entries[i];
-        vec3 lightPos = lr.posRange.xyz;
-        vec3 lightForward = lr.dirType.xyz;
-        float lightRange = lr.posRange.w;
-        uint lightType = uint(lr.dirType.w);
-        vec3 lightRadiance = lr.radInner.xyz; // color * intensity (premultiplied)
-        float innerConeCos = lr.radInner.w;
-        float outerConeCos = lr.outer.x;
+
+        // Split field loads, pose/type first.
+        vec4 posRange = lightRuntimeBuf.entries[i].posRange; // xyz world position, w range
+        vec4 dirType = lightRuntimeBuf.entries[i].dirType;   // xyz world forward,  w float(type)
+        uint lightType = uint(dirType.w);
 
         vec3 L;
         float attenuation;
         if (lightType == LIGHT_TYPE_DIRECTIONAL) {
-            L = -lightForward;        // surface -> light
+            L = -dirType.xyz;         // surface -> light
             attenuation = 1.0;
         } else {
-            vec3 toLight = lightPos - fragWorldPos;
+            vec3 toLight = posRange.xyz - fragWorldPos;
             float dist = length(toLight);
             L = toLight / max(dist, 0.0001);
-            attenuation = getRangeAttenuation(lightRange, dist);
+            attenuation = getRangeAttenuation(posRange.w, dist);
             if (lightType == LIGHT_TYPE_SPOT) {
-                attenuation *= getSpotAttenuation(lightForward, L, innerConeCos, outerConeCos);
+                attenuation *= getSpotAttenuation(dirType.xyz, L,
+                                                  lightRuntimeBuf.entries[i].radInner.w,
+                                                  lightRuntimeBuf.entries[i].outer.x);
             }
         }
 
@@ -287,25 +312,25 @@ void main() {
             continue;
         }
 
-        // Skip back-facing lights (BRDF scales by NdotL). nDotL reused below as shadow slope bias.
+        // Skip back-facing lights. nDotL reused below as shadow slope bias.
         float nDotL = max(dot(N, L), 0.0);
         if (nDotL <= 0.0) {
             continue;
         }
 
-        // Shadowing: directional/spot sample their frustum at baseFrustum, point lights pick a cube face by dominant axis.
+        // Shadowing, directional/spot sample frustum at baseFrustum, point lights pick cube face by dominant axis.
         float shadowFactor = 1.0;
         if (lightUsesShadowMap(lightType, global.lightingMode)) {
             ShadowLightInfo si = shadowInfoBuf.info[i];
             if (si.castsShadow != 0u && si.frustumCount > 0u) {
                 if (lightType == LIGHT_TYPE_POINT)
-                    shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - lightPos), fragWorldPos, nDotL);
+                    shadowFactor = sampleShadowCDF(si.baseFrustum + anoCubeFaceIndex(fragWorldPos - posRange.xyz), fragWorldPos, nDotL);
                 else
                     shadowFactor = sampleShadowCDF(si.baseFrustum, fragWorldPos, nDotL);
             }
         }
 
-        vec3 radiance = lightRadiance * attenuation * shadowFactor;
+        vec3 radiance = lightRuntimeBuf.entries[i].radInner.xyz * (attenuation * shadowFactor);
         accumulatedDirect += calculatePBR(baseColor.rgb, metallic, roughness, N, V, L) * radiance;
     }
 
@@ -315,6 +340,11 @@ void main() {
     vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion;
     vec3 finalColor = ambient + accumulatedDirect;
 
+#if ANO_ALPHA_MASK
+    // Alpha-to-coverage consumes outColor.a, export surviving cutout alpha.
+    outColor = vec4(finalColor, baseColor.a);
+#else
     outColor = vec4(finalColor, 1.0);
+#endif
     outId = inEntityIndex; // 0xFFFFFFFF clear == no renderable under this pixel
 }

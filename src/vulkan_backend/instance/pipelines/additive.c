@@ -9,10 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// Additive lane (audit 4.7 transparency). ONE/ONE blend is commutative, so the cull pass's
-// arbitrary atomic-append draw order is correct by construction — no sort, no OIT. Shares the FLAT
-// geometry stage (flat.mesh / flat.vert) and the 3-set layout (sets 0/1/2); the fragment shader is
-// the stripped additive.frag (premultiplied emissive, no froxel light loop, no shadow sampling).
+// Additive lane: ONE/ONE commutative blend, no sort. Shares FLAT geometry stage and 3-set layout. Fragment is additive.frag.
 bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
 	// 1. Setup cache
@@ -22,16 +19,13 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 
 	// Mesh stage on capable devices, vertex stage on the fallback path.
 	bool useMesh = ctx->deviceCapabilities.meshShader;
-	// Task meshlet cull (review priority 10): frustum + Hi-Z only — this lane renders uncull(ed)
-	// blended geometry, so the normal-cone test stays off.
+	// Task meshlet cull: frustum + Hi-Z, no normal-cone.
 	bool useTask = state->taskCull;
 	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
-	// 2. Setup layout (mirrors flat / transmission: sets 0/1/2 + geometry-stage push constant).
-	// Set 2 (shadows) is bound for layout compatibility with the shared geometry stage; the additive
-	// fragment never samples it.
+	// 2. Setup layout (sets 0/1/2 + geometry-stage push constant).
 	VkPushConstantRange pushConstantRange = {};
-	pushConstantRange.stageFlags = geometryStage | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
+	pushConstantRange.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT | (useTask ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	pushConstantRange.offset = 0;
 	pushConstantRange.size = 2u * sizeof(uint32_t); // transformBaseOffset + shadowFrustumIndex
 
@@ -59,10 +53,9 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 		PBR_FEATURE_EMISSIVE_TEXTURE |
 		PBR_FEATURE_EMISSIVE_STRENGTH |
 		PBR_FEATURE_ALPHA_MODE_BLEND |
-		PBR_FEATURE_DOUBLE_SIDED;   // rasterizer uses cullMode NONE, so all geometry is double-sided
+		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE
 
-	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
-	// Paths are exe-relative; loadFile resolves them against ano_fs_gamepath().
+	// Load shaders: mesh on capable devices, vertex on fallback.
 	struct Buffer geomShaderCode;
 	char geomShaderPath[64];
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
@@ -135,7 +128,7 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 	multisampling.alphaToCoverageEnable = VK_FALSE;
 	multisampling.alphaToOneEnable = VK_FALSE;
 
-	// Additive blend: dst += src. Commutative, so draw order is irrelevant (no sort needed).
+	// Additive blend: dst += src.
 	VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
 	colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	colorBlendAttachment.blendEnable = VK_TRUE;
@@ -159,8 +152,7 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 	dynamicState.dynamicStateCount = 2;
 	dynamicState.pDynamicStates = dynamicStates;
 
-	// Depth-tested against opaque depth (so additive behind solid geometry is hidden), but no
-	// depth write: many additive layers all contribute and never occlude each other.
+	// Depth-tested against opaque depth, no depth write.
 	VkPipelineDepthStencilStateCreateInfo depthStencil = {};
 	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 	depthStencil.depthTestEnable = VK_TRUE;
@@ -171,7 +163,7 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 	depthStencil.maxDepthBounds = 1.0f;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT; // geometry renders into the HDR target, not the swapchain
+	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT; // HDR target
 	VkFormat depthFormat = state->depthFormat;
 
 	VkPipelineRenderingCreateInfo renderingInfo = {};
@@ -180,8 +172,7 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 	renderingInfo.pColorAttachmentFormats = &colorFormat;
 	renderingInfo.depthAttachmentFormat = depthFormat;
 
-	// Mesh path needs no vertex-input/input-assembly state; the fallback vertex path
-	// uses programmable vertex pulling (empty vertex input) + triangle-list assembly.
+	// Fallback vertex path: empty vertex input + triangle-list assembly.
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 

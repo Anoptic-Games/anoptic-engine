@@ -1,30 +1,23 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
-// World-space Scanline Sweeper lane: per-fragment analytic coverage over the shared glyph
-// buffers. The em-space window is the fragment's panel-space footprint from screen
-// derivatives. Output is premultiplied, blended src-over onto the HDR target.
+// World-space per-glyph quads: each fragment integrates its glyph over the footprint window from screen derivatives. Output is premultiplied.
 
 #include "textcoverage.glsl"
 
 layout(push_constant) uniform TextWorldPush {
     mat4  mvp;
     vec4  panel;
-    uvec2 range;  // first instance index, instance count
+    vec2  viewport;
+    uvec2 range;  // first index, count
 } pc;
 
 layout(location = 0) in vec2 panelPos;
+layout(location = 1) flat in uint instIdx;
 layout(location = 0) out vec4 outColor;
 
 void main()
 {
     vec2 fw = abs(dFdx(panelPos)) + abs(dFdy(panelPos));
-    vec2 rMin = panelPos - 0.5 * fw;
-    vec2 rMax = panelPos + 0.5 * fw;
-    vec4 acc = vec4(0.0);
-    for (uint i = 0u; i < pc.range.y; i++)
-    {
-        vec4 src = shade_window(pc.range.x + i, rMin, rMax);
-        acc = src + acc * (1.0 - src.a);
-    }
-    outColor = acc;
+    outColor = shade_window(instIdx, panelPos - 0.5 * fw, panelPos + 0.5 * fw);
 }

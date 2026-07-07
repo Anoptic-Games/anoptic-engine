@@ -12,7 +12,7 @@
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
 
-// Forward declaration for the internal recursive flatten walk (model_flatten).
+// Recursive flatten walk.
 static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
                          AnoRenderableDesc* out, uint32_t cap, uint32_t* idx);
 
@@ -96,9 +96,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
             }
             
-            // Upload as an LOD chain (review 4.9 step 2). geometryPoolIndex is the chain BASE; the
-            // chain length lives in the base mesh's metadata (cull reads it). ANO_DEFAULT_LOD_COUNT
-            // is 4, so LOD chains are on engine-wide (set it to 1 for a single full-detail level).
+            // Upload as an LOD chain; geometryPoolIndex is the chain base.
             AnoLodConfig lodCfg = ano_lod_config_default(ANO_DEFAULT_LOD_COUNT);
             uint32_t lodBase = 0u, lodProduced = 0u;
             geometry_pool_upload_chain(
@@ -122,10 +120,12 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     PbrFeatureFlags activeFeatures = ano_vk_get_active_pipelines_supported_features(&rendererState);
     ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
-    // Identify which textures are actually needed based on supported features
+    // Mark needed textures and their color space; color slots decode sRGB, data slots stay linear.
     bool* textureNeeded = NULL;
+    bool* textureSrgb = NULL;
     if (data->textures_count > 0) {
         textureNeeded = calloc(data->textures_count, sizeof(bool));
+        textureSrgb = calloc(data->textures_count, sizeof(bool));
         for (size_t m = 0; m < data->materials_count; ++m) {
             cgltf_material* mat = &data->materials[m];
             PbrFeatureFlags matFeatures = ano_gltf_identify_material_features(mat);
@@ -137,6 +137,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if ((supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) && mat->pbr_metallic_roughness.base_color_texture.texture) {
                     size_t texIdx = mat->pbr_metallic_roughness.base_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
                 if ((supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) && mat->pbr_metallic_roughness.metallic_roughness_texture.texture) {
                     size_t texIdx = mat->pbr_metallic_roughness.metallic_roughness_texture.texture - data->textures;
@@ -154,6 +155,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             if ((supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) && mat->emissive_texture.texture) {
                 size_t texIdx = mat->emissive_texture.texture - data->textures;
                 textureNeeded[texIdx] = true;
+                textureSrgb[texIdx] = true;
             }
             if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
                 if (mat->clearcoat.clearcoat_texture.texture) {
@@ -189,12 +191,14 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (mat->specular.specular_color_texture.texture) {
                     size_t texIdx = mat->specular.specular_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
             }
             if (supportedFeatures & PBR_FEATURE_SHEEN) {
                 if (mat->sheen.sheen_color_texture.texture) {
                     size_t texIdx = mat->sheen.sheen_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
                 if (mat->sheen.sheen_roughness_texture.texture) {
                     size_t texIdx = mat->sheen.sheen_roughness_texture.texture - data->textures;
@@ -225,6 +229,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 if (mat->diffuse_transmission.diffuse_transmission_color_texture.texture) {
                     size_t texIdx = mat->diffuse_transmission.diffuse_transmission_color_texture.texture - data->textures;
                     textureNeeded[texIdx] = true;
+                    textureSrgb[texIdx] = true;
                 }
             }
         }
@@ -253,10 +258,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         cgltf_texture* tex = &data->textures[t];
         if (tex->image && tex->image->uri && textureNeeded && textureNeeded[t]) {
             ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading texture %zu: %s", t, tex->image->uri);
-            // Resolve the image URI against the glTF file's own directory, exactly as
-            // cgltf_load_buffers resolves .bin URIs (combine, then percent-decode the
-            // uri tail) -- both halves of a model share one base directory instead of
-            // textures silently depending on the process CWD.
+            // Resolve image URI against the glTF file's directory, then percent-decode the tail.
             char texPath[1024];
             if (strlen(fileName) + strlen(tex->image->uri) + 1 >= sizeof texPath) {
                 ano_log(ANO_WARN, "Texture URI too long, skipping: %s", tex->image->uri);
@@ -268,6 +270,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             bool success = createTextureImage(
                 ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],
                 &loadedTextures[t], texPath, false,
+                textureSrgb[t], // sRGB color slots, linear data slots
                 &stagingBuffers[stagingCount++]
             );
             textureLoaded[t] = success;
@@ -322,7 +325,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 matIdx = rendererState.materialBuffer.count++;
                 writeMaterial = true;
             } else {
-                // If capacity is exhausted, reuse index 0 (fallback)
+                // Fallback to index 0
                 matIdx = 0;
             }
             
@@ -581,17 +584,19 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.emissiveStrength = (float)prim->material->emissive_strength.emissive_strength;
                     }
                     
-                    // Pipeline routing (audit 4.7 transparency lanes; review finding 7 sidedness):
-                    //   transmission/volume         -> PIPELINE_TRANSMISSION (depth-sorted "over" lane)
-                    //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE (order-independent ONE/ONE)
-                    //   opaque + doubleSided         -> PIPELINE_FLAT_TWOSIDED (cullMode NONE)
-                    //   otherwise                    -> PIPELINE_FLAT (opaque, backface-culled)
-                    // alphaMode 2 == BLEND (set above). The additive branch is exclusive of transmission.
+                    // Pipeline routing:
+                    //   transmission/volume         -> PIPELINE_TRANSMISSION
+                    //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE
+                    //   alphaMode MASK               -> PIPELINE_FLAT_MASKED
+                    //   opaque + doubleSided         -> PIPELINE_FLAT_TWOSIDED
+                    //   otherwise                    -> PIPELINE_FLAT
                     uint32_t selectedPipeline = PIPELINE_FLAT;
                     if (supportedFeatures & (PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME)) {
                         selectedPipeline = PIPELINE_TRANSMISSION;
                     } else if (matData.emissiveStrength > 1.0f || matData.alphaMode == 2u) {
                         selectedPipeline = PIPELINE_ADDITIVE;
+                    } else if (matData.alphaMode == 1u) {
+                        selectedPipeline = PIPELINE_FLAT_MASKED;
                     } else if (matData.doubleSided) {
                         selectedPipeline = PIPELINE_FLAT_TWOSIDED;
                     }
@@ -607,6 +612,9 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
     if (textureNeeded) {
         free(textureNeeded);
+    }
+    if (textureSrgb) {
+        free(textureSrgb);
     }
     free(loadedTextures);
     free(loadedImages);
@@ -644,7 +652,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         }
     }
     
-    // Store Root Nodes (Fallback to all parentless nodes if scene is incomplete)
+    // Store root nodes (all parentless nodes)
     uint32_t rootCount = 0;
     for (size_t n = 0; n < data->nodes_count; ++n) {
         if (!data->nodes[n].parent) rootCount++;
@@ -666,8 +674,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     return asset;
 }
 
-// Walks the node subtree, appending one descriptor per mesh primitive. *idx counts ALL primitives
-// (so the caller learns the true total); a descriptor is written only while *idx < cap.
+// Walk node subtree, appending one descriptor per mesh primitive.
 static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
                          AnoRenderableDesc* out, uint32_t cap, uint32_t* idx) {
     const ModelNode* node = &asset->nodes[nodeIndex];
