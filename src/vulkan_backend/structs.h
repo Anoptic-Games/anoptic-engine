@@ -582,8 +582,9 @@ typedef struct RendererState
     // via the text raster dispatch. Gate uiOverlay: rides textOverlay, off on ANO_FORCE_NO_UI
     // or init failure (tables still resident + bound so the shader's bindings stay valid).
     bool                    uiOverlay;
-    uint32_t                uiPrimCount; // composed prim count fed to the push block (step 5 fills)
+    uint32_t                uiPrimCount; // composed prim count fed to the push block
     uint32_t                uiClipCount; // composed clip count (shader bound-check, fail closed)
+    float                   uiBounds[4]; // composed prim px AABB incl. shadow pads, inverted when blank
 
     // Hi-Z occlusion pyramid build. Pipeline in prototypes[PIPELINE_COMPUTE_HIZ]; hizSetLayout is the shared per-mip set layout.
     VkDescriptorSetLayout   hizSetLayout;

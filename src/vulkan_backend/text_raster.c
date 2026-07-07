@@ -43,9 +43,6 @@ typedef struct TextRasterPush {
     uint32_t uiClipCount;
 } TextRasterPush;
 
-// TextRasterPush.flags bits (mirrored in textraster.comp).
-#define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop, screenshot self-test
-
 // Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel sits above.
 #define ANO_TEXT_WORLD_FIRST 8192u
 static_assert(ANO_TEXT_WORLD_FIRST == ANO_RENDER_TEXT_MAX,
@@ -293,10 +290,13 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.size = sizeof(TextRasterPush);
 
+    // Set 1 = the bindless texture array (UI image prims sample it in compute).
+    VkDescriptorSetLayout setLayouts[2] = { state->textRasterSetLayout,
+                                            state->bindlessTextures.layout };
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &state->textRasterSetLayout;
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = setLayouts;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &push;
     if (vkCreatePipelineLayout(ctx->device, &pipelineLayoutInfo, NULL,
@@ -935,13 +935,27 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
         gx = (state->imageExtent.width + 7u) / 8u;
         gy = (state->imageExtent.height + 7u) / 8u;
     }
-    else if (state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0])
+    else if ((state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0])
+             || (state->uiPrimCount > 0 && state->uiBounds[2] > state->uiBounds[0]))
     {
+        // Union of the pending text and UI bounds (either may be absent; blank = inverted).
+        float u0 = 3.0e38f, v0 = 3.0e38f, u1 = -3.0e38f, v1 = -3.0e38f;
+        if (state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0]
+            && (state->textFlags & ANO_TEXT_RASTER_UIONLY) == 0u)
+        {
+            u0 = state->textBounds[0]; v0 = state->textBounds[1];
+            u1 = state->textBounds[2]; v1 = state->textBounds[3];
+        }
+        if (state->uiPrimCount > 0 && state->uiBounds[2] > state->uiBounds[0])
+        {
+            u0 = fminf(u0, state->uiBounds[0]); v0 = fminf(v0, state->uiBounds[1]);
+            u1 = fmaxf(u1, state->uiBounds[2]); v1 = fmaxf(v1, state->uiBounds[3]);
+        }
         // 1 px pad for the raster's pixel window, clamp to the canvas, tile-align the origin.
-        int32_t x0 = (int32_t)floorf(state->textBounds[0] - 1.0f);
-        int32_t y0 = (int32_t)floorf(state->textBounds[1] - 1.0f);
-        int32_t x1 = (int32_t)ceilf(state->textBounds[2] + 1.0f);
-        int32_t y1 = (int32_t)ceilf(state->textBounds[3] + 1.0f);
+        int32_t x0 = (int32_t)floorf(u0 - 1.0f);
+        int32_t y0 = (int32_t)floorf(v0 - 1.0f);
+        int32_t x1 = (int32_t)ceilf(u1 + 1.0f);
+        int32_t y1 = (int32_t)ceilf(v1 + 1.0f);
         x0 = x0 < 0 ? 0 : (x0 & ~7);
         y0 = y0 < 0 ? 0 : (y0 & ~7);
         if (x1 > (int32_t)state->imageExtent.width)  x1 = (int32_t)state->imageExtent.width;
@@ -961,6 +975,9 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
                                 0, 1, &fr->textRasterSet, 0, NULL);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
+                                1, 1, &state->bindlessTextures.set, 0, NULL);
         vkCmdPushConstants(cmd, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
         vkCmdDispatch(cmd, gx, gy, 1);

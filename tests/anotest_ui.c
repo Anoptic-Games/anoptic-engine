@@ -517,8 +517,162 @@ static void test_blend(void)
     CHECK(memcmp(lit, again, sizeof lit) == 0, "evaluation purity");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Standing demo scene: determinism golden + the GPU screenshot harness. The GPU path
+// (ANO_UI_OPAQUE) renders the same scene over an opaque black backdrop straight into
+// the sRGB swapchain; the reference mimics both quantizers (UNORM8 linear overlay,
+// then the sRGB encode) so the compare envelope is the text lane's.
+
+#define DEMO_ORIGIN_X 48.0f
+#define DEMO_ORIGIN_Y 120.0f
+
+static void demo_build(AnoUiPrim *prims, AnoUiClip *clips, AnoUiBuilder *b)
+{
+    ano_ui_builder_init(b, prims, 32, clips, 4, NULL, 0, NULL, 0);
+    ano_ui_demo_scene(b, DEMO_ORIGIN_X, DEMO_ORIGIN_Y);
+}
+
+static void test_demo(void)
+{
+    AnoUiPrim p1[32], p2[32];
+    AnoUiClip c1[4], c2[4];
+    AnoUiBuilder b1, b2;
+    demo_build(p1, c1, &b1);
+    demo_build(p2, c2, &b2);
+    CHECK(b1.primCount >= 12 && b1.clipCount == 2, "demo scene counts");
+    CHECK(b1.primCount == b2.primCount
+              && memcmp(p1, p2, b1.primCount * sizeof(AnoUiPrim)) == 0
+              && memcmp(c1, c2, b1.clipCount * sizeof(AnoUiClip)) == 0,
+          "demo scene bitwise-stable");
+    for (uint32_t i = 0; i < b1.primCount; i++)
+        CHECK(p1[i].clipRef == ANO_UI_REF_NONE || p1[i].clipRef < b1.clipCount,
+              "demo clip refs valid");
+    printf("  demo scene: %u prims, %u clips, bitwise-stable\n", b1.primCount, b1.clipCount);
+}
+
+// One swapchain byte triple for the demo scene over opaque black at pixel (px,py):
+// eval -> clamp -> UNORM8 overlay quantize -> sRGB encode -> byte.
+static void demo_pixel(const AnoUiScene *s, int px, int py, uint8_t out[3])
+{
+    float acc[4];
+    ano_ui_ref_eval(s, (float)px, (float)py, acc);
+    for (int c = 0; c < 3; c++) {
+        float lin = fminf(fmaxf(acc[c], 0.0f), 1.0f);
+        lin = roundf(lin * 255.0f) / 255.0f;
+        float e = lin <= 0.0031308f ? 12.92f * lin : 1.055f * powf(lin, 1.0f / 2.4f) - 0.055f;
+        out[c] = (uint8_t)lroundf(fminf(fmaxf(e, 0.0f), 1.0f) * 255.0f);
+    }
+}
+
+// --dump W H out.ppm : write the reference canvas (P6) for eyeballing.
+static int demo_dump(int argc, char **argv)
+{
+    if (argc < 5) {
+        printf("usage: anotest_ui --dump W H out.ppm\n");
+        return 2;
+    }
+    int w = atoi(argv[2]), h = atoi(argv[3]);
+    AnoUiPrim prims[32];
+    AnoUiClip clips[4];
+    AnoUiBuilder b;
+    demo_build(prims, clips, &b);
+    AnoUiScene s = ano_ui_scene(&b);
+    FILE *f = fopen(argv[4], "wb");
+    if (!f)
+        return 2;
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    for (int py = 0; py < h; py++)
+        for (int px = 0; px < w; px++) {
+            uint8_t rgb[3];
+            demo_pixel(&s, px, py, rgb);
+            fwrite(rgb, 1, 3, f);
+        }
+    fclose(f);
+    printf("wrote %dx%d reference canvas to %s\n", w, h, argv[4]);
+    return 0;
+}
+
+static int ppm_token(FILE *f) // next int, skipping whitespace and # comments
+{
+    int c, v = 0;
+    do {
+        c = fgetc(f);
+        if (c == '#')
+            while (c != '\n' && c != EOF)
+                c = fgetc(f);
+    } while (c == ' ' || c == '\n' || c == '\r' || c == '\t');
+    while (c >= '0' && c <= '9') {
+        v = v * 10 + (c - '0');
+        c = fgetc(f);
+    }
+    return v;
+}
+
+// --compare shot.ppm : RMS/max of an ANO_UI_OPAQUE screenshot against the reference.
+static int demo_compare(int argc, char **argv)
+{
+    if (argc < 3) {
+        printf("usage: anotest_ui --compare shot.ppm\n");
+        return 2;
+    }
+    FILE *f = fopen(argv[2], "rb");
+    if (!f) {
+        printf("cannot open %s\n", argv[2]);
+        return 2;
+    }
+    if (fgetc(f) != 'P' || fgetc(f) != '6') {
+        printf("not a P6 ppm\n");
+        fclose(f);
+        return 2;
+    }
+    int w = ppm_token(f), h = ppm_token(f), maxv = ppm_token(f);
+    if (maxv != 255) {
+        printf("unsupported maxval %d\n", maxv);
+        fclose(f);
+        return 2;
+    }
+    AnoUiPrim prims[32];
+    AnoUiClip clips[4];
+    AnoUiBuilder b;
+    demo_build(prims, clips, &b);
+    AnoUiScene s = ano_ui_scene(&b);
+    uint8_t *row = malloc((size_t)w * 3);
+    double sum2 = 0.0;
+    int worst = 0, wx = 0, wy = 0;
+    for (int py = 0; py < h; py++) {
+        if (fread(row, 3, (size_t)w, f) != (size_t)w) {
+            printf("short read at row %d\n", py);
+            free(row);
+            fclose(f);
+            return 2;
+        }
+        for (int px = 0; px < w; px++) {
+            uint8_t rgb[3];
+            demo_pixel(&s, px, py, rgb);
+            for (int c = 0; c < 3; c++) {
+                int d = abs((int)row[(size_t)px * 3 + c] - (int)rgb[c]);
+                sum2 += (double)d * d;
+                if (d > worst) {
+                    worst = d;
+                    wx = px;
+                    wy = py;
+                }
+            }
+        }
+    }
+    free(row);
+    fclose(f);
+    double rms = sqrt(sum2 / ((double)w * h * 3.0));
+    printf("compare %dx%d: rms %.4f/255 max %d/255 at (%d,%d)\n", w, h, rms, worst, wx, wy);
+    return rms <= 1.0 ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "--dump") == 0)
+        return demo_dump(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "--compare") == 0)
+        return demo_compare(argc, argv);
     uint32_t soak = argc > 1 ? (uint32_t)strtoul(argv[1], NULL, 10) : 1;
     if (soak < 1)
         soak = 1;
@@ -530,6 +684,7 @@ int main(int argc, char **argv)
     test_clip();
     test_shadow();
     test_blend();
+    test_demo();
     if (failures) {
         printf("anotest_ui: %d FAILURE(S)\n", failures);
         return 1;

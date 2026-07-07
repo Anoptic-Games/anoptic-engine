@@ -348,7 +348,8 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	samplerLayoutBinding.descriptorCount = state->bindlessTextures.maxTextures;
 	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	samplerLayoutBinding.pImmutableSamplers = NULL;
-	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// FRAGMENT for geometry sampling; COMPUTE for the UI overlay raster's image prims.
+	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorBindingFlags bindlessFlags = 
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
