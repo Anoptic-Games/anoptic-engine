@@ -1,9 +1,36 @@
-# Add module-specific source files to the executable
 target_sources(anoptic_render PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/vulkanMaster.c
+	${CMAKE_CURRENT_SOURCE_DIR}/frame/profiling.c
+	${CMAKE_CURRENT_SOURCE_DIR}/frame/update.c
+	${CMAKE_CURRENT_SOURCE_DIR}/frame/passes.c
+	${CMAKE_CURRENT_SOURCE_DIR}/frame/hiz.c
+	${CMAKE_CURRENT_SOURCE_DIR}/frame/record_views.c
+	${CMAKE_CURRENT_SOURCE_DIR}/frame/record.c
+	${CMAKE_CURRENT_SOURCE_DIR}/frame/submit.c
+	${CMAKE_CURRENT_SOURCE_DIR}/slot_upload.c
+	${CMAKE_CURRENT_SOURCE_DIR}/light_registry.c
+	${CMAKE_CURRENT_SOURCE_DIR}/shadow/shadow_cache.c
+	${CMAKE_CURRENT_SOURCE_DIR}/shadow/shadow_casters.c
+	${CMAKE_CURRENT_SOURCE_DIR}/shadow/shadow_resources.c
+	${CMAKE_CURRENT_SOURCE_DIR}/shadow/shadow_record.c
+	${CMAKE_CURRENT_SOURCE_DIR}/scene_buffers.c
+	${CMAKE_CURRENT_SOURCE_DIR}/bridge/apply.c
+	${CMAKE_CURRENT_SOURCE_DIR}/bridge/producer.c
+	${CMAKE_CURRENT_SOURCE_DIR}/render_api.c
 	${CMAKE_CURRENT_SOURCE_DIR}/components.c
-	${CMAKE_CURRENT_SOURCE_DIR}/instance/instanceInit.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/window.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/instance.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/device.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/swapchain.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/attachments.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/descriptors.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/commands.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/cleanup.c
 	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipeline.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/layouts.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/tonemap.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/shadow_pipe.c
+	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/compute.c
 	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/flat.c
 	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/transmission.c
 	${CMAKE_CURRENT_SOURCE_DIR}/instance/pipelines/additive.c

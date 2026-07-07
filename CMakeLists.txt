@@ -173,25 +173,44 @@ if(Vulkan_FOUND)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-    # Shaders compile to SPIR-V in the build tree, committed .spv are the no-glslc fallback.
+    # Shaders compile to SPIR-V in the build tree, committed .spv are the no-compiler fallback.
     set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
     set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
-    if(NOT Vulkan_GLSLC_EXECUTABLE)
-        message(WARNING "glslc not found: staging committed resources/shaders/*.spv (may be stale).")
+
+    # Shader compiler by build type: Debug embeds SPIR-V debug info, Release strips it.
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
+        set(SHADER_COMPILER ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
+        set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gVS)
+        set(SHADER_COMPILE_TAG "glslangValidator -gVS")
+    elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLC_EXECUTABLE)
+        set(SHADER_COMPILER ${Vulkan_GLSLC_EXECUTABLE})
+        set(SHADER_COMPILE_ARGS --target-env=vulkan1.2 -g)
+        set(SHADER_COMPILE_TAG "glslc -g")
+    elseif(Vulkan_GLSLC_EXECUTABLE)
+        set(SHADER_COMPILER ${Vulkan_GLSLC_EXECUTABLE})
+        set(SHADER_COMPILE_ARGS --target-env=vulkan1.2)
+        set(SHADER_COMPILE_TAG "glslc")
+    else()
+        set(SHADER_COMPILER "")
+        message(WARNING "no shader compiler found: staging committed resources/shaders/*.spv (may be stale).")
     endif()
+    if(SHADER_COMPILER)
+        message(STATUS "Shader compiler: ${SHADER_COMPILE_TAG}")
+    endif()
+
     set(SPV_OUTPUTS "")
     # Shared GLSL includes, every shader rebuilds when one changes.
     set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl)
 
-    # Compile <source> to <output>.spv, or stage the committed .spv without glslc.
+    # Compile <source> to <output>.spv, or stage the committed .spv without a compiler.
     function(ano_add_shader output source)
-        if(Vulkan_GLSLC_EXECUTABLE)
+        if(SHADER_COMPILER)
             add_custom_command(
                     OUTPUT  ${SHADER_BIN_DIR}/${output}.spv
                     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
-                    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.2 ${ARGN} ${SHADER_SRC_DIR}/${source} -o ${SHADER_BIN_DIR}/${output}.spv
+                    COMMAND ${SHADER_COMPILER} ${SHADER_COMPILE_ARGS} ${ARGN} -o ${SHADER_BIN_DIR}/${output}.spv ${SHADER_SRC_DIR}/${source}
                     DEPENDS ${SHADER_SRC_DIR}/${source} ${SHADER_INCLUDES}
-                    COMMENT "glslc ${source} ${ARGN} -> ${output}.spv"
+                    COMMENT "${SHADER_COMPILE_TAG} ${source} ${ARGN} -> ${output}.spv"
                     VERBATIM)
         else()
             add_custom_command(
@@ -199,7 +218,7 @@ if(Vulkan_FOUND)
                     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_BIN_DIR}
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SHADER_SRC_DIR}/${output}.spv ${SHADER_BIN_DIR}/${output}.spv
                     DEPENDS ${SHADER_SRC_DIR}/${output}.spv
-                    COMMENT "staging committed ${output}.spv (no glslc)"
+                    COMMENT "staging committed ${output}.spv (no compiler)"
                     VERBATIM)
         endif()
         set(SPV_OUTPUTS ${SPV_OUTPUTS} ${SHADER_BIN_DIR}/${output}.spv PARENT_SCOPE)
@@ -216,6 +235,16 @@ if(Vulkan_FOUND)
     ano_add_shader(flat_depth_task.mesh flat.mesh -DANO_TASK_CULL -DANO_DEPTH_ONLY)
     # Hi-Z variant reading MAX-resolved depth, used when the device supports it.
     ano_add_shader(hiz_resolve.comp hiz.comp -DRESOLVED_DEPTH)
+    # fp16 CDF-reconstruct variants of the lighting frags, used when the device has shaderFloat16.
+    ano_add_shader(flat_fp16.frag flat.frag -DANO_CDF_FP16=1)
+    ano_add_shader(transmission_fp16.frag transmission.frag -DANO_CDF_FP16=1)
+    # Alpha-tested cutout lane (glTF alphaMode MASK).
+    ano_add_shader(flat_masked.frag flat.frag -DANO_ALPHA_MASK=1)
+    ano_add_shader(flat_masked_fp16.frag flat.frag -DANO_ALPHA_MASK=1 -DANO_CDF_FP16=1)
+    ano_add_shader(flat_depth_masked.mesh flat.mesh -DANO_DEPTH_MASKED)
+    ano_add_shader(flat_depth_masked_task.mesh flat.mesh -DANO_TASK_CULL -DANO_DEPTH_MASKED)
+    ano_add_shader(flat_depth_masked.vert flat.vert -DANO_DEPTH_MASKED)
+    ano_add_shader(shadow_depth_masked.frag shadow_depth.frag -DANO_ALPHA_MASK=1)
 
     add_custom_target(anoptic_shaders DEPENDS ${SPV_OUTPUTS})
     # Everything linking anoptic_render loads shaders at runtime.
