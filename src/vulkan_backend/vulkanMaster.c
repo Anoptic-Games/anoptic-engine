@@ -15,6 +15,7 @@
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/gpu_alloc.h"
 #include "vulkan_backend/text_raster.h"
+#include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/frame/frame.h"
 #include "vulkan_backend/slot_upload.h"
 #include "vulkan_backend/light_registry.h"
@@ -381,6 +382,11 @@ bool initVulkan() // Initializes Vulkan
 	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
 	ano_log(ANO_INFO, "Async text raster: %s", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
 
+	// UI overlay lane gate rides the text lane (shared overlay image + raster CB).
+	// ANO_FORCE_NO_UI pins it off. Groundwork: gate only, lane lands per ui-render.md §7.
+	rendererState.uiOverlay = rendererState.textOverlay && !getenv("ANO_FORCE_NO_UI");
+	ano_log(ANO_INFO, "UI overlay: %s", rendererState.uiOverlay ? "enabled (groundwork stub)" : "off");
+
     // Mesh-shader entry points, loaded only on the mesh path.
     if (ctx.deviceCapabilities.meshShader) {
         pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
@@ -527,6 +533,9 @@ bool initVulkan() // Initializes Vulkan
 
 	// Text overlay font bake, glyph buffers, raster/blend pipelines, non-fatal.
 	ano_vk_text_init(&ctx, &rendererState);
+
+	// UI overlay lane, non-fatal (groundwork stub; rides the text overlay).
+	ano_vk_ui_init(&ctx, &rendererState);
 
 	// Depth-only shadow pipeline + compare sampler.
 	if (!ano_vk_init_shadow(&ctx, &rendererState))

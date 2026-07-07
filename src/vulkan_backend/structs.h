@@ -566,6 +566,11 @@ typedef struct RendererState
     uint32_t                textBlockCount;
     uint32_t                textOsdCount;      // instances the render-internal OSD text occupies
 
+    // UI overlay lane (docs/ui/ui-render.md): prims raster into the shared text/UI overlay.
+    // Gate uiOverlay: rides textOverlay, off on ANO_FORCE_NO_UI or init failure. Groundwork
+    // stub only — GPU objects land with build step 3.
+    bool                    uiOverlay;
+
     // Hi-Z occlusion pyramid build. Pipeline in prototypes[PIPELINE_COMPUTE_HIZ]; hizSetLayout is the shared per-mip set layout.
     VkDescriptorSetLayout   hizSetLayout;
 
