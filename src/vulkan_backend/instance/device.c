@@ -21,13 +21,11 @@
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/text_raster.h"
 
-// Hard-required device extensions. VK_EXT_mesh_shader is NOT here: it is optional
-// and appended dynamically in createLogicalDevice when the device supports it.
-// Devices without it take the vertex-shader fallback path.
-static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME }; // Should absolutely not be here, make dynamic and determined at runtime
+// Hard-required device extensions. VK_EXT_mesh_shader appended dynamically when supported.
+static const char* requiredExtensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME }; // Make dynamic, determined at runtime
 
 
-struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR *surface) { // Extend with more queue family checks as they become relevant
+struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR *surface) { // Extend with more queue family checks
 	//!TODO add error-case returns and associated checking to all invoking functions
 	struct QueueFamilyIndices indices = {};
 	indices.graphicsPresent = false;
@@ -45,13 +43,9 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	VkQueueFamilyProperties queueFamilies[queueFamilyCount];
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
-	// For now, we're selecting only the first queue family that satisfies each capability. This is to ensure the same family is used between operations whenever possible, for performance reasons.
-	// We might also add some extra logic to determine if any queue supports async transfers. If such, we could enable a dedicated transfer queue to further improve concurrency.
+	// Select the first queue family satisfying each capability.
 	//!TODO Implement these as required further into development
-	// Compute is the exception (review finding 2): prefer a DEDICATED compute family (compute
-	// without graphics) so ctx.computeQueue is a distinct queue the driver schedules concurrently
-	// with raster (async Hi-Z). Falls back to the first compute-capable family — usually the
-	// graphics family, i.e. the very same queue, which the async gate detects and disables on.
+	// Compute is the exception, preferring a DEDICATED compute family for a distinct async-Hi-Z queue, falling back to the first compute-capable family.
 	bool haveDedicatedCompute = false;
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here
@@ -85,7 +79,7 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 			vkGetPhysicalDeviceSurfaceSupportKHR(device, i, *surface, &presentSupport);	
 			if (presentSupport) 
 			{
-				if (indices.presentPresent == false) // Makes sure the primary present family gets selected, usually the same family as for graphics
+				if (indices.presentPresent == false) // Primary present family, usually the graphics family
 				{
 					indices.presentFamily = i;	
 				}
@@ -105,7 +99,7 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	return indices;
 }
 
-struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selects capabilities required for the instance, extend with checks and error states
+struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Select required capabilities, extend with checks and error states
 {
 	struct DeviceCapabilities capabilities;
 
@@ -126,36 +120,28 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	capabilities.float64 = features2.features.shaderFloat64;
 	capabilities.int64 = features2.features.shaderInt64;
 	capabilities.drawIndirectCount = features12.drawIndirectCount;
-	// Drivers leave meshShaderFeatures untouched when VK_EXT_mesh_shader is absent,
-	// so a true value here implies both the extension and the feature are usable.
+	// True only when VK_EXT_mesh_shader is present and the feature is usable.
 	capabilities.meshShader = meshShaderFeatures.meshShader;
-	// Test hook: force the vertex-shader fallback path on mesh-capable hardware.
+	// Test hook forces the vertex-shader fallback path on mesh-capable hardware.
 	if (getenv("ANO_FORCE_NO_MESH_SHADER")) capabilities.meshShader = false;
-	// Task (amplification) stage for the per-meshlet cull (review priority 10); only meaningful
-	// with the mesh path (the fallback vertex path has no meshlets to cull).
+	// Task (amplification) stage for the per-meshlet cull, mesh path only.
 	capabilities.taskShader = capabilities.meshShader && meshShaderFeatures.taskShader;
 
-	// Depth-resolve MAX support (avenue 1): a PROPERTY, not a feature. supportedDepthResolveModes must
-	// include SAMPLE_ZERO but MAX is optional; when present the Hi-Z build resolves depth to single-sample
-	// (farthest sample) so the reduce reads 1 sample/texel. Test hook forces the per-sample MSAA fallback.
+	// Depth-resolve MAX support (a property) lets the Hi-Z build resolve depth to a single farthest sample.
 	VkPhysicalDeviceDepthStencilResolveProperties dsResolve = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES };
 	VkPhysicalDeviceProperties2 props2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dsResolve };
 	vkGetPhysicalDeviceProperties2(device, &props2);
 	capabilities.depthMaxResolve = (dsResolve.supportedDepthResolveModes & VK_RESOLVE_MODE_MAX_BIT) != 0;
 	if (getenv("ANO_FORCE_NO_DEPTH_RESOLVE")) capabilities.depthMaxResolve = false;
 
-	// Vertex-stage gl_Layer (shadowblur.vert): the layered single-pass shadow blur needs it; the
-	// fallback renders per-layer views. Both vk1.2 features are required because glslang may emit
-	// either the ShaderLayer (SPIR-V 1.5) or ShaderViewportIndexLayerEXT capability for gl_Layer.
-	// Test hook forces the per-layer fallback on capable hardware.
+	// Vertex-stage gl_Layer for the layered shadow blur. Both features cover whichever SPIR-V capability glslang emits.
 	capabilities.shaderOutputLayer = features12.shaderOutputLayer && features12.shaderOutputViewportIndex;
 	if (getenv("ANO_FORCE_NO_SHADER_OUTPUT_LAYER")) capabilities.shaderOutputLayer = false;
 
-	// Timeline semaphores (vk1.2): cross-queue ordering for the async Hi-Z build (review finding 2).
+	// Timeline semaphores for cross-queue ordering in the async Hi-Z build.
 	capabilities.timelineSemaphore = features12.timelineSemaphore;
 
-	// fp16 arithmetic (vk1.2 shaderFloat16): selects the *_fp16.frag lighting variants (fp16 CDF
-	// reconstruct, fewer live registers). Test hook forces the fp32 shaders on capable hardware.
+	// fp16 arithmetic selects the *_fp16.frag lighting variants.
 	capabilities.shaderFloat16 = features12.shaderFloat16;
 	if (getenv("ANO_FORCE_NO_FP16")) capabilities.shaderFloat16 = false;
 	ano_log(ANO_INFO, "CDF reconstruct: %s", capabilities.shaderFloat16 ? "fp16" : "fp32 (no shaderFloat16)");
@@ -168,7 +154,7 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device) // Selec
 	return capabilities;
 }
 
-bool checkDeviceExtensionSupport(VkPhysicalDevice device) { // Rework extensions system entirely, add interface for defining them and modify this logic to work with that
+bool checkDeviceExtensionSupport(VkPhysicalDevice device) { // Rework extensions system, add a definition interface
 	size_t requiredExtensionsCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
 	
 	uint32_t extensionCount;
@@ -192,15 +178,15 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) { // Rework extensions
 		if (!found) 
 		{
 			free(availableExtensions);
-			return false; // Required extension not found
+			return false; // Required extension missing
 		}
 	}
 
 	free(availableExtensions);
-	return true; // All required extensions found
+	return true; // All found
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly extend and integrate with device capability checks, expose via interface
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Extend and integrate with capability checks, expose via interface
 {
 	struct QueueFamilyIndices indices = findQueueFamilies(device, surface);
 	bool extensionsSupported = checkDeviceExtensionSupport(device);
@@ -223,13 +209,10 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 
 	vkGetPhysicalDeviceFeatures2(device, &features2);
 
-	// geometryShader and shaderFloat64 are intentionally NOT required: no shader
-	// stage or pipeline in the engine consumes them. Apple Silicon / MoltenVK
-	// exposes neither (Metal has no geometry-shader stage and no fp64), and
-	// gating on them would reject otherwise-capable devices for no reason.
+	// geometryShader and shaderFloat64 intentionally NOT required, nothing consumes them.
 	bool physicalRequirements = features2.features.shaderInt64 && features2.features.samplerAnisotropy;
 
-	// Check specifically required Vulkan 1.2, dynamic rendering, and mesh shader features
+	// Required Vulkan 1.2, dynamic rendering, and mesh shader features
 	bool requiredFeatures12 = features12.descriptorIndexing &&
 	                          features12.shaderSampledImageArrayNonUniformIndexing &&
 	                          features12.runtimeDescriptorArray &&
@@ -239,18 +222,14 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 	bool requiredDynamicRendering = dynamicRenderingFeature.dynamicRendering;
 	bool requiredMultiDraw = features2.features.multiDrawIndirect;
 
-	// Mesh shader is preferred but NOT required: devices without it render via the
-	// vertex-shader fallback path. Everything below is needed by BOTH paths.
+	// Mesh shader preferred but NOT required, the fallback path handles its absence.
 	if (!requiredFeatures12 || !requiredDynamicRendering || !requiredMultiDraw) {
 		ano_log(ANO_WARN, "Device rejected: lacks required Vulkan 1.2, dynamic rendering, or multiDrawIndirect features.");
 		return false;
 	}
 	if (!meshShaderFeatures.meshShader) {
 		ano_log(ANO_WARN, "Device lacks VK_EXT_mesh_shader: will use the vertex-shader fallback path.");
-		// The vertex fallback packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
-		// (read as gl_InstanceIndex); a nonzero firstInstance in an indirect draw requires
-		// drawIndirectFirstInstance. A device with neither mesh shaders nor this feature would
-		// mis-draw, so reject it here instead of failing silently. The mesh path needs neither.
+		// Vertex fallback packs the draw ordinal into firstInstance, requiring drawIndirectFirstInstance.
 		if (!features2.features.drawIndirectFirstInstance) {
 			ano_log(ANO_WARN, "Device rejected: also lacks drawIndirectFirstInstance, so the vertex "
 			             "fallback path cannot draw correctly.");
@@ -258,8 +237,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 		}
 	}
 
-	// 1x-only sample support cannot render (no 1x path). Intersection mirrors
-	// getMaxUsableSampleCount.
+	// 1x-only sample support cannot render. Mirrors getMaxUsableSampleCount.
 	VkPhysicalDeviceVulkan12Properties vk12Props = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
 	VkPhysicalDeviceProperties2 props2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vk12Props };
 	vkGetPhysicalDeviceProperties2(device, &props2);
@@ -278,38 +256,26 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) // Greatly
 
 VkSampleCountFlagBits getMaxUsableSampleCount(VulkanContext* ctx)
 {
-	// framebufferIntegerColorSampleCounts lives in VkPhysicalDeviceVulkan12Properties (a 1.2 property),
-	// not base limits, so query it via properties2 (core since 1.1; the instance targets 1.3).
+	// framebufferIntegerColorSampleCounts lives in VkPhysicalDeviceVulkan12Properties, queried via properties2.
 	VkPhysicalDeviceVulkan12Properties vk12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
 	VkPhysicalDeviceProperties2 physicalDeviceProperties2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &vk12 };
 	vkGetPhysicalDeviceProperties2(ctx->physicalDevice, &physicalDeviceProperties2);
 	VkPhysicalDeviceProperties physicalDeviceProperties = physicalDeviceProperties2.properties;
 
-	// The per-view depth target is now ALSO sampled (Hi-Z occlusion pyramid, review 4.9 step 3), so the
-	// chosen count must satisfy sampledImageDepthSampleCounts too: the spec permits it to be a strict
-	// subset of framebufferDepthSampleCounts, which would otherwise trip VUID-VkImageCreateInfo-samples-02258
-	// when the depth image is created with SAMPLED_BIT. No-op where sampled depth matches the framebuffer.
-	// Likewise the picking id attachment (audit 3.1) is an INTEGER color format (R32_UINT) MSAA target,
-	// governed by framebufferIntegerColorSampleCounts — which the spec also permits to be a strict subset
-	// of framebufferColorSampleCounts — so fold it in too, or the shared MSAA id image trips the same VUID
-	// on hardware where integer-color MSAA is narrower. No-op where it matches the framebuffer count.
+	// Fold in sampledImageDepthSampleCounts (sampled Hi-Z depth) and framebufferIntegerColorSampleCounts (R32_UINT picking id).
 	VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts
 	                          & physicalDeviceProperties.limits.framebufferDepthSampleCounts
 	                          & physicalDeviceProperties.limits.sampledImageDepthSampleCounts
 	                          & vk12.framebufferIntegerColorSampleCounts;
 
-	// MSAA policy (review finding 5): honor the configured preference instead of the device max —
-	// the unconditional max (8x on desktop) taxed every raster pass in both views with ~2x the
-	// sample work of 4x for marginal visual return. Preference is clamped to what the device
-	// supports; below 2 is raised to 2 (the 1x no-resolve path is not built). ANO_MSAA overrides
-	// for A/B testing without a rebuild.
+	// Honor the configured MSAA preference over the device max, clamped to support and raised to 2. ANO_MSAA overrides.
 	uint32_t preferred = getChosenMsaaSamples();
 	const char* msaaEnv = getenv("ANO_MSAA");
 	if (msaaEnv) preferred = (uint32_t)atoi(msaaEnv);
 	if (preferred < 2u) { ano_log(ANO_WARN, "MSAA preference %u below minimum, using 2x", preferred); preferred = 2u; }
 	VkSampleCountFlags mask = 0;
 	for (uint32_t s = 2u; s <= preferred && s <= 64u; s <<= 1) mask |= s; // sample flags are their counts
-	// Preference window empty: take any supported >=2x count. isDeviceSuitable guarantees one.
+	// Preference window empty, take any supported >=2x count.
 	VkSampleCountFlags preferredCounts = counts & mask;
 	counts = preferredCounts ? preferredCounts : (counts & ~(VkSampleCountFlags)VK_SAMPLE_COUNT_1_BIT);
 
@@ -376,8 +342,8 @@ static VkDeviceSize maxDeviceLocalHeapSize(const VkPhysicalDeviceMemoryPropertie
 	return maxSize;
 }
 
-bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Further extend selection logic, split device discovery into dedicated function
-{																																				 //   and retain device attributes in public interface for use in UI or logic
+bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Extend selection logic, split out device discovery, retain attributes for UI
+{
 	bool foundPreferredDevice = false;
 	// ANO_DEVICE (caseless name substring) pins the adapter. Suitability checks still apply.
 	const char* envDevice = getenv("ANO_DEVICE");
@@ -391,9 +357,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		return false;
 	}
 
-	// Allocate memory for the names of every detected device.
-	// Zeroed: unsuitable devices and slots past an early preferred-device break are never
-	// written, and cleanupVulkan frees all deviceCount slots; NULL keeps free() a no-op.
+	// Names of every detected device. Zeroed so unwritten slots free() as no-ops.
 	ctx->availableDevices = (char**)mi_calloc(ctx->deviceCount, sizeof(char*));
 
 	VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * ctx->deviceCount);
@@ -439,7 +403,7 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 			}
 
 		
-			// Rank suitable devices: mesh-shader capability first, then DEVICE_LOCAL memory.
+			// Rank suitable devices by mesh-shader capability first, then DEVICE_LOCAL memory.
 			VkDeviceSize currentMemorySize = maxDeviceLocalHeapSize(&memProperties);
 			bool currentMesh = deviceHasMeshShader(devices[i]);
 
@@ -542,28 +506,22 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	deviceFeatures.samplerAnisotropy = features2.features.samplerAnisotropy;
 	deviceFeatures.multiDrawIndirect = features2.features.multiDrawIndirect;
 	deviceFeatures.geometryShader = features2.features.geometryShader;
-	// Vertex fallback path packs the draw ordinal into VkDrawIndexedIndirectCommand.firstInstance
-	// (read as gl_InstanceIndex), which requires this feature for a nonzero value in an indirect draw.
+	// Vertex fallback packs the draw ordinal into firstInstance, requiring this feature.
 	deviceFeatures.drawIndirectFirstInstance = features2.features.drawIndirectFirstInstance;
-	// The opaque pass renders two color attachments with different per-attachment state
-	// ([0] HDR blends, [1] R32_UINT picking id never blends and masks differently), which
-	// the spec only allows with independentBlend (VUID-VkPipelineColorBlendStateCreateInfo-
-	// pAttachments-00605). Universally supported on desktop hardware.
+	// Two color attachments with differing per-attachment blend state require independentBlend.
 	deviceFeatures.independentBlend = features2.features.independentBlend;
 
-	// We'll have 4 unique queues at the very most
+	// At most 4 unique queues
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
 	uint32_t uniqueQueueFamilies[4] = {indices->graphicsFamily, indices->presentFamily, indices->computeFamily, indices->transferFamily};
 	uint32_t queueCount = 0;
-	// Function-scoped so its address stays valid until vkCreateDevice; every queue
-	// shares priority 1.0. A block-local would dangle once each loop iteration's
-	// scope exits, leaving pQueuePriorities pointing at dead stack (stack-use-after-scope).
+	// Function-scoped so its address stays valid until vkCreateDevice. Every queue shares priority 1.0.
 	const float queuePriority = 1.0f;
 	
 	for (uint32_t i = 0; i < 4; i++)
 	{
 		bool uniqueFamily = true;
-		// Check whether we already have a queue set up for the specific family index
+		// Skip family indices already added
 		for (uint32_t x = 0; x < i; x++)
 		{
 			if (uniqueQueueFamilies[i] == uniqueQueueFamilies[x])
@@ -584,10 +542,10 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 		}
 	}
 	
-	// creating the device
+	// Create the device
 	VkPhysicalDeviceVulkan12Features features12 = {};
 	features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-	// Only request what the device actually supports based on the query
+	// Request only what the device supports
 	features12.descriptorIndexing = queryFeatures12.descriptorIndexing;
 	features12.shaderSampledImageArrayNonUniformIndexing = queryFeatures12.shaderSampledImageArrayNonUniformIndexing;
 	features12.runtimeDescriptorArray = queryFeatures12.runtimeDescriptorArray;
@@ -595,18 +553,15 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	features12.descriptorBindingVariableDescriptorCount = queryFeatures12.descriptorBindingVariableDescriptorCount;
 	features12.descriptorBindingSampledImageUpdateAfterBind = queryFeatures12.descriptorBindingSampledImageUpdateAfterBind;
 	features12.drawIndirectCount = queryFeatures12.drawIndirectCount;
-	// Vertex-stage gl_Layer for the layered shadow blur (mirrors populateCapabilities: both
-	// features cover whichever SPIR-V capability glslang emitted for gl_Layer).
+	// Vertex-stage gl_Layer for the layered shadow blur, both features cover glslang's emitted capability.
 	features12.shaderOutputLayer = queryFeatures12.shaderOutputLayer;
 	features12.shaderOutputViewportIndex = queryFeatures12.shaderOutputViewportIndex;
-	// Async Hi-Z ordering (review finding 2); mirrors populateCapabilities.
+	// Async Hi-Z ordering.
 	features12.timelineSemaphore = queryFeatures12.timelineSemaphore;
-	// fp16 CDF reconstruct (the *_fp16.frag variants); enabled when present, use gated by
-	// deviceCapabilities.shaderFloat16 (which also honors ANO_FORCE_NO_FP16).
+	// fp16 CDF reconstruct, enabled when present, gated by deviceCapabilities.shaderFloat16.
 	features12.shaderFloat16 = queryFeatures12.shaderFloat16;
 
-	// Mirror populateCapabilities: the fallback path activates when the feature is
-	// absent or the test override forces it off.
+	// Fallback path activates when the feature is absent or the override forces it off.
 	bool meshSupported = queryMeshShaderFeatures.meshShader && !getenv("ANO_FORCE_NO_MESH_SHADER");
 
 	VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {};
@@ -625,8 +580,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	dynamicRenderingFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
 	dynamicRenderingFeature.dynamicRendering = queryDynamicRendering.dynamicRendering;
 
-	// Only chain the mesh-shader feature struct when we will actually enable the
-	// extension; chaining it otherwise is invalid usage on non-mesh devices.
+	// Chain the mesh-shader feature struct only when enabling the extension.
 	dynamicRenderingFeature.pNext = meshSupported ? (void*)&meshShaderFeatures : NULL;
 	features11.pNext = &dynamicRenderingFeature; // 1.1 features -> dynamic rendering -> [mesh shader] -> NULL
 	features12.pNext = &features11;
@@ -639,8 +593,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	createInfo.pQueueCreateInfos = queueCreateInfos;
 	createInfo.pEnabledFeatures = &deviceFeatures;
 
-	// Build the enabled-extension list: the hard-required set, plus VK_EXT_mesh_shader
-	// only when the device supports it (and the fallback is not forced).
+	// Build the enabled-extension list, required set plus VK_EXT_mesh_shader when supported.
 	uint32_t requiredExtensionCount = sizeof(requiredExtensions) / sizeof(requiredExtensions[0]);
 	const char* enabledExtensions[8];
 	uint32_t enabledExtensionCount = 0;
@@ -649,9 +602,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	if (meshSupported)
 		enabledExtensions[enabledExtensionCount++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
 	#ifdef __APPLE__
-	// Vulkan spec: when a physical device exposes VK_KHR_portability_subset it
-	// MUST be enabled, or vkCreateDevice fails. MoltenVK always exposes it.
-	// String literal avoids pulling in the beta-gated vulkan_beta.h header.
+	// VK_KHR_portability_subset MUST be enabled when exposed. String literal avoids vulkan_beta.h.
 	enabledExtensions[enabledExtensionCount++] = "VK_KHR_portability_subset";
 	#endif
 
@@ -665,7 +616,7 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 		
-	// get queue handles
+	// Queue handles
 	vkGetDeviceQueue(*device, indices->graphicsFamily, 0, graphicsQueue);
 	if (*graphicsQueue == NULL)
 	{

@@ -21,9 +21,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // re-recorded every frame, submitted once
 	beginInfo.pInheritanceInfo = NULL;// Optional
 	
-	// Async light-cull (review finding 2 remainder): the uploads + shared compute prelude record
-	// into their own CB, submitted ahead of the main one (its completion signal releases the
-	// compute-queue light-cull). Off async, everything records into the one frame CB as before.
+	// Async light-cull records uploads + shared compute prelude into a separate CB submitted ahead of the main one.
 	VkCommandBuffer cmd = rendererState.asyncLc
 		? rendererState.frames[rendererState.frameIndex].preludeCommandBuffer
 		: rendererState.frames[rendererState.frameIndex].commandBuffer;
@@ -33,25 +31,16 @@ void recordCommandBuffer(uint32_t imageIndex)
 		ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
 	}
 
-	// Profiling: reset this frame's query pool and stamp the frame-begin boundary (outside any
-	// render pass). The five section boundaries below are stamped unconditionally at top level;
-	// split submits execute in submission order on the one graphics queue, so the reset (prelude
-	// CB) still precedes every stamp in the main CB.
+	// Profiling reset of this frame's query pool plus the frame-begin timestamp.
 	if (rendererState.timestampValidBits) {
 		vkCmdResetQueryPool(cmd, rendererState.frames[rendererState.frameIndex].timestampPool, 0, ANO_TS_COUNT);
 		vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 			rendererState.frames[rendererState.frameIndex].timestampPool, ANO_TS_FRAME_BEGIN);
 	}
 
-    // Each view's HDR resolve target is moved to COLOR_ATTACHMENT inside the per-view loop below
-    // (UNDEFINED -> COLOR: the geometry clear + resolve overwrite the whole render area).
+    // Each view's HDR resolve target moves to COLOR_ATTACHMENT inside the per-view loop below.
 
-    // Upload this frame's staged per-slot deltas into the DEVICE_LOCAL authoritative buffers
-    // before any pass reads them. One vkCmdCopyBuffer per buffer, bracketed by a single
-    // read->transfer / transfer->read barrier: the first scope reaches back across submission
-    // order on this (single graphics) queue, so prior frames' shader reads of the shared buffers
-    // complete before the copy writes; the second makes the writes visible to this frame's
-    // update/cull/geometry reads. Skipped entirely when nothing changed this frame.
+    // Upload this frame's staged per-slot deltas into the DEVICE_LOCAL buffers before any pass reads them.
     {
         SlotUpload* ups[7] = {
             &rendererState.initialTransformBuffer, &rendererState.motionBuffer,
@@ -63,12 +52,7 @@ void recordCommandBuffer(uint32_t imageIndex)
         bool any = false;
         for (int u = 0; u < 7; u++) if (ups[u]->staged[fi]) { any = true; break; }
         if (any) {
-            // These buffers are only ever read by the shader stages below: compute (update/cull/
-            // lightcull), the geometry stage (entity buffer; + task when the meshlet cull is on),
-            // and fragment (instance data + lights). So both the WAR (pre) and the visibility
-            // (post) scopes are exactly that stage set, not ALL_COMMANDS. The pre barrier's first
-            // scope still reaches prior submissions on this single queue, so earlier frames'
-            // shader reads finish before the copy overwrites.
+            // Pre (WAR) and post (visibility) scopes are exactly the shader stages that read these buffers.
             VkPipelineStageFlags shaderStages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
                 | (ctx.deviceCapabilities.meshShader ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
                 | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0)
@@ -89,23 +73,18 @@ void recordCommandBuffer(uint32_t imageIndex)
     uint32_t entityCount = rendererState.entityCount;
 
     // === Shared (view-independent) compute: update, scatter, cull ===
-    // The cull dispatch is single-pass multi-frustum — it tests each entity against every view's
-    // frustum and writes all views' partitions at once, so it runs here, not per view.
+    // Cull is single-pass multi-frustum, testing each entity against every view, so it runs here not per view.
     if (entityCount > 0) {
         uint32_t streamCount = rendererState.transformStream.count[rendererState.frameIndex];
-        uint32_t lightCount = rendererState.lightBuffer.count; // active light rows (lightsetup dispatch size)
+        uint32_t lightCount = rendererState.lightBuffer.count; // active light rows
         for (int p = 0; p < (int)ano_frame_pass_count; p++) {
             const RenderPassDef* pass = &ano_frame_passes[p];
             if (pass->type != PASS_COMPUTE || pass->perView) continue;
             if (pass->prototype == PIPELINE_COMPUTE_SCATTER && streamCount == 0)
-                continue; // nothing streamed this frame: skip the scatter pass entirely
+                continue; // nothing streamed this frame
 
             if (pass->prototype == PIPELINE_COMPUTE_CULL) {
-                // Zero the per-partition draw counts. The full indirect-buffer fill (several MB:
-                // stride x capacity x partitions) is only needed on the fallback path, where the
-                // fixed-count vkCmdDraw*Indirect reads every slot and unwritten commands must decode
-                // as no-op draws. On the indirect-count path nothing reads past drawCount — cull
-                // appends [0, count) and tpsort bounds by drawCounts — so the fill is skipped.
+                // Zero the per-partition draw counts, and fill the full indirect buffer only on the fallback path.
                 if (!ctx.deviceCapabilities.drawIndirectCount) {
                     VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
                         ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
@@ -122,13 +101,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &fillBarrier, 0, NULL, 0, NULL);
 
-                // Hi-Z occlusion (review 4.9 step 3): the cull samples binding 11 = the PREVIOUS frame-
-                // in-flight slot's pyramids (built last frame); the task meshlet cull samples the same
-                // images per view (global set binding 13), so its stage joins the dst scope. Order that
-                // build's writes before those reads (no layout change — they rest in SHADER_READ). First
-                // frame: the prev slot was never built but is seeded to SHADER_READ, so the barrier is a
-                // harmless no-op. Async build (review finding 2): the writes happened on the compute
-                // queue; the submit's hizTimeline wait carries them instead (its stage set gains TASK).
+                // Hi-Z occlusion cull reads the previous frame slot's pyramids, so order that build's writes before these reads.
                 if (!rendererState.asyncHiz) {
                     uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
                     VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
@@ -161,8 +134,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP  ? rendererState.frames[rendererState.frameIndex].lightsetupSet :
                                                                   rendererState.frames[rendererState.frameIndex].cullSet;
 
-            // Scatter binding 1 (xform ring) is STORAGE_BUFFER_DYNAMIC: bind the
-            // published slice by per-frame dynamic offset; other passes have none.
+            // Scatter binding 1 is STORAGE_BUFFER_DYNAMIC, bound by per-frame dynamic offset (others have none).
             uint32_t dynCount = pass->prototype == PIPELINE_COMPUTE_SCATTER ? 1u : 0u;
             const uint32_t* dynOff = pass->prototype == PIPELINE_COMPUTE_SCATTER
                 ? &rendererState.transformStream.dynOffset[rendererState.frameIndex] : NULL;
@@ -181,7 +153,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
                 dispatchX = (ANO_SHADOW_FRUSTUM_COUNT + 63u) / 64u; // one invocation per shadow frustum
             } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
-                dispatchX = (lightCount + 63u) / 64u; // one invocation per light (local_size_x = 64)
+                dispatchX = (lightCount + 63u) / 64u; // one invocation per light
             } else {
                 uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
                 dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
@@ -192,34 +164,24 @@ void recordCommandBuffer(uint32_t imageIndex)
             memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
-                // ONE barrier for lightsetup + shadowsetup (mutually independent: disjoint writes, no
-                // cross-reads, adjacent in the pass table — lightsetup emits none below). Shadow
-                // frustums feed the cull (compute), the depth render (mesh/vertex; + the task meshlet
-                // cull, which tests shadow draws against the frustum planes), and the fragment
-                // sampler; the light runtime feeds the light-cull (compute) and the fragment passes
-                // (set 0 binding 12). Union: COMPUTE | geom | FRAGMENT.
+                // One barrier covers lightsetup + shadowsetup (disjoint writes), dst scope is COMPUTE, geom, and FRAGMENT.
                 VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
                     ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
                     | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
-                // UNIFORM_READ: the fragments read the packed sampling viewProjs as a UBO.
+                // UNIFORM_READ for fragments reading the packed sampling viewProjs as a UBO.
                 memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
-                // No barrier: shadowsetup (next pass, independent) carries the shared one above.
+                // No barrier, shadowsetup carries the shared one above.
             } else if (pass->prototype == PIPELINE_COMPUTE_UPDATE || pass->prototype == PIPELINE_COMPUTE_SCATTER) {
-                // update -> scatter is a WAW on streamed slots (scatter must win); both -> cull is a read.
+                // update -> scatter is a WAW on streamed slots, both -> cull is a read.
                 memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else {
-                // The cull pass feeds the indirect commands (DRAW_INDIRECT) and the compacted/entity
-                // SSBOs read by the geometry stage (mesh or vertex; + the task meshlet cull, which
-                // resolves its draw from the compacted indices) AND the transparency-sort compute
-                // pass (tpsort), which reads the compacted draws + depth keys and rewrites the
-                // transmission partition. So the barrier reaches COMPUTE as well as DRAW_INDIRECT|geom,
-                // and dst includes SHADER_WRITE (tpsort overwrites cull's writes — WAW).
+                // Cull feeds indirect commands + entity/compacted SSBOs for geometry and the tpsort compute pass, so dst reaches DRAW_INDIRECT, geom, and COMPUTE.
                 VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
                     ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
                     | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
@@ -235,9 +197,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
 
-    // Async light-cull: the prelude CB ends here; everything below records into the main CB.
-    // Between the two submits the compute queue runs both views' light-culls off the prelude's
-    // completion signal, overlapping the shadow region below.
+    // Async light-cull ends the prelude CB here, everything below records into the main CB.
     if (rendererState.asyncLc) {
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
             ano_log(ANO_ERROR, "Failed to record prelude command buffer!");
@@ -246,8 +206,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
     }
 
-    // Transition swapchain image to color attachment optimal (consumed by the composite at the
-    // frame's end; recorded here so the prelude CB never touches the swapchain).
+    // Transition swapchain image to color attachment optimal.
     {
         VkImageMemoryBarrier swapChainBarrier = {};
         swapChainBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -273,10 +232,7 @@ void recordCommandBuffer(uint32_t imageIndex)
     ano_ts(cmd, ANO_TS_AFTER_SHADOW);
 
     // === Transparency sort: reorder each camera view's transmission partition back-to-front ===
-    // tpsort.comp reads cull's compacted draws + per-draw depth keys and rewrites the transmission
-    // partition in place so the "over" blend in the per-view transmission pass composites farthest-
-    // first instead of in cull's arbitrary atomic-append order. One workgroup per camera view. Runs
-    // after cull (whose post-barrier now reaches COMPUTE) and before the per-view geometry passes.
+    // tpsort rewrites the transmission partition back-to-front from cull's compacted draws + depth keys, one workgroup per view.
     if (entityCount > 0 && ano_draw_slot_of(PIPELINE_TRANSMISSION) != ANO_NO_DRAW_SLOT) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
             rendererState.prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].pipeline);
@@ -285,9 +241,7 @@ void recordCommandBuffer(uint32_t imageIndex)
             &rendererState.frames[rendererState.frameIndex].cullSet, 0, NULL);
         vkCmdDispatch(cmd, ANO_VIEW_COUNT, 1, 1); // one workgroup per camera view
 
-        // Sort writes (compacted indices + indirect commands) -> the geometry stage's indirect +
-        // SSBO reads in the per-view transmission pass below (task stage included: it resolves the
-        // reordered compacted indices per draw).
+        // Sort writes -> the geometry stage's indirect + SSBO reads in the per-view transmission pass below.
         VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
             ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
             | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
@@ -304,8 +258,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_LIGHTING);
 
-    // Text overlay raster (in-frame path): clear + dispatch + hand the
-    // overlay to the composite's fragment stage.
+    // Text overlay raster (in-frame path) clears, dispatches, and hands the overlay to the composite.
     ano_vk_text_record(&rendererState, cmd, rendererState.frameIndex);
 
     ano_record_composite(cmd, imageIndex);

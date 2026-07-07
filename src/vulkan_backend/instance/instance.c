@@ -22,10 +22,10 @@
 #include "vulkan_backend/text_raster.h"
 
 
-VkResult createInstance(VulkanContext* ctx) // Central component of the init process, should be generalized and given packages of selected extensions, parameters etc
+VkResult createInstance(VulkanContext* ctx) // Central component of the init process
 {
 	const char* validationLayers[] = 
-	{ //!TODO get this thing out of here as soon as we have a config parser
+	{ //!TODO move to config parser
 		"VK_LAYER_KHRONOS_validation",
 	};
 	size_t validationCount = sizeof(validationLayers) / sizeof(validationLayers[0]);
@@ -43,14 +43,11 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	createInfo.pApplicationInfo = &appInfo;
 
 	#ifdef __APPLE__
-	// MoltenVK is a non-conformant (portability) driver. The loader only
-	// enumerates it when this flag is set; the matching VK_KHR_portability_enumeration
-	// instance extension is requested in getRequiredExtensions().
+	// MoltenVK portability driver requires this flag
 	createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 	#endif
 
-	// Enable validation layers if necessary
-	// Here we assume they are not necessary
+	// Validation layers disabled
 	createInfo.enabledLayerCount = 0;
 
 	// Enable necessary extensions
@@ -99,7 +96,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 
 uint32_t g_ValidationErrors = 0;
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Validation messenger callback: prints VALIDATION/PERFORMANCE messages, counts WARNING+ into g_ValidationErrors (GENERAL is dropped)
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Validation messenger callback
 	VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType,
 	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -110,7 +107,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( // Validation messenger cal
 	{
 		return VK_FALSE;
 	}
-	// Route by layer severity. %s copied at capture.
+	// Route by layer severity
 	if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
 		ano_log(ANO_ERROR, "Validation layer: %s", pCallbackData->pMessage);
 	else if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
@@ -146,7 +143,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create
 	createInfo->pfnUserCallback = debugCallback;
 }
 
-void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) // Installs the standalone steady-state messenger; instance create/destroy is covered separately via VkInstanceCreateInfo.pNext
+void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger) // Installs the standalone steady-state messenger
 {
 	#ifndef DEBUG_BUILD
 	return;
@@ -170,7 +167,7 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 
 
 
-const char** getRequiredExtensions(uint32_t* extensionsCount) // Central component of init, returns extensions required by GLFW + optional validators, should be extended
+const char** getRequiredExtensions(uint32_t* extensionsCount) // Returns extensions required by GLFW + optional validators
 {
 	uint32_t glfwExtensionCount = 0;
 	const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -182,8 +179,7 @@ const char** getRequiredExtensions(uint32_t* extensionsCount) // Central compone
 	#endif
 
 	#ifdef __APPLE__
-	// Pairs with VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR so the loader
-	// will surface the MoltenVK portability driver.
+	// MoltenVK portability extension
 	totalExtensionCount += 1;
 	#endif
 
@@ -208,7 +204,7 @@ const char** getRequiredExtensions(uint32_t* extensionsCount) // Central compone
 	return extensions;
 }
 
-VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* surface) // Creates a window surface using GLFW, for our Vulkan instance to draw to.
+VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* surface) // Creates a GLFW window surface
 {
 	if (glfwCreateWindowSurface(instance, window, NULL, surface) != VK_SUCCESS)
 	{
@@ -221,7 +217,7 @@ VkResult createSurface(VkInstance instance, GLFWwindow* window, VkSurfaceKHR* su
 
 
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount)
-{ // Central to init, review during validation layer fix
+{ // Central to init
 	uint32_t layerCount;
 	vkEnumerateInstanceLayerProperties(&layerCount, NULL);
 

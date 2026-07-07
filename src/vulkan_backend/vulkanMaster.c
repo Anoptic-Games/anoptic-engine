@@ -27,8 +27,7 @@
 
 // Variables
 
-// Promoted from file-static to a plain global (declared extern in backend.h) so the
-// split backend TUs can reach it. See backend.h for the shadowing note on instanceInit.c.
+// Global, declared extern in backend.h.
 VulkanContext ctx;
 PFN_vkCmdDrawMeshTasksEXT pfnVkCmdDrawMeshTasksEXT = NULL;
 PFN_vkCmdDrawMeshTasksIndirectEXT pfnVkCmdDrawMeshTasksIndirectEXT = NULL;
@@ -59,12 +58,11 @@ void unInitVulkan() // A celebration
 		if (rendererState.frames[i].frameSubmitted)
 		{
 			vkWaitForFences(ctx.device, 1, &(rendererState.frames[i].frameFence), VK_TRUE, UINT64_MAX);
-			rendererState.frames[i].frameSubmitted = false; // reset the status
+			rendererState.frames[i].frameSubmitted = false;
 		}
     }
 
-	// Async Hi-Z / light-cull / text: drain last signaled ordinals
-	// before teardown destroys the pool/semaphores/images.
+	// Drain last signaled async Hi-Z / light-cull / text ordinals before teardown.
 	if (rendererState.asyncHiz && rendererState.hizTimeline != VK_NULL_HANDLE
 		&& ctx.device != VK_NULL_HANDLE && rendererState.timelineOrdinal > 0)
 	{
@@ -81,8 +79,7 @@ void unInitVulkan() // A celebration
 		vkWaitSemaphores(ctx.device, &waitInfo, UINT64_MAX);
 	}
 
-	// ECS<->render bridge teardown. CPU-only; safe on a zeroed state (early-init
-	// failure) since the destroys guard NULL and the heap free is gated below.
+	// ECS<->render bridge teardown.
 	ano_render_bridge_destroy(&rendererState.bridge);
 	render_slots_destroy(&rendererState.slots);
 	light_registry_destroy(&rendererState.lightRegistry);
@@ -109,8 +106,7 @@ void unInitVulkan() // A celebration
 	}
 
 	#ifdef DEBUG_BUILD
-	// Validation summary: g_ValidationErrors counts every WARNING+ message routed to
-	// debugCallback over the run. 0 == validation-clean; nonzero is a regression to chase.
+	// WARNING+ validation messages this run.
 	ano_log(ANO_INFO, "Validation messages (warning+) this run: %u", g_ValidationErrors);
 	#endif
 }
@@ -144,12 +140,11 @@ void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t fra
                 geometry_pool_free(&state->globalGeometryPool, task.handle);
                 break;
             case RESOURCE_TYPE_BINDLESS_TEXTURE:
-                // For now bindless_register_texture handles index. 
-                // We'd add a bindless_free_texture(ctx, &state->bindlessTextures, task.handle) eventually
+                // bindless_register_texture handles index, no free yet.
                 break;
         }
     }
-    q->count = 0; // Clear queue for next time we hit this frame
+    q->count = 0;
 }
 
 // Graphics operations
@@ -169,33 +164,26 @@ void drawFrame()
 		return;
 	}
 
-    // Discrete ECS->render transitions arrive via the bridge from the logic
-    // thread; they are drained in render_apply_commands (below). No producer runs
-    // on this thread anymore.
+    // ECS->render transitions arrive via the bridge, drained in render_apply_commands.
 
     if (rendererState.frames[rendererState.frameIndex].frameSubmitted == true)
     {
         vkWaitForFences(ctx.device, 1, &(rendererState.frames[rendererState.frameIndex].frameFence), VK_TRUE, UINT64_MAX);
 
-        // This slot's prior submission is complete: its per-pass timestamps are ready to read.
+        // Per-pass timestamps ready to read.
         ano_collect_frame_stats(rendererState.frameIndex);
 
-        // Same fence-gated readback for picking: this slot's id-texel copy has retired.
+        // Fence-gated picking readback, id-texel copy retired.
         ano_collect_pick(rendererState.frameIndex);
 
-        // Reclaim streamed-transform ring slices the GPU is finished reading. Hold-last-
-        // value means several in-flight frames can share one seq (one slice), so this
-        // slot completing does NOT free its slice — a sibling may still read it. The safe
-        // bound is the OLDEST still-in-flight frame's seq: after we wait slot frameIndex,
-        // that is slot (frameIndex+1) % N (the next to be reused). Everything strictly
-        // below its seq is unreferenced.
+        // Reclaim streamed-transform ring slices below the oldest in-flight frame's seq.
         uint32_t oldest = (rendererState.frameIndex + 1u) % MAX_FRAMES_IN_FLIGHT;
         uint64_t qmin = rendererState.transformStream.frameSeq[oldest];
         atomic_store_explicit(&rendererState.transformStream.reclaimSeq,
                               qmin ? qmin - 1u : 0u, memory_order_release);
     }
 
-    // Process any deferred deletions that were waiting for this frame's previous commands to finish
+    // Process deferred deletions for this frame.
     flush_deletion_queue(&ctx, &rendererState, rendererState.frameIndex);
     
 	uint32_t imageIndex;
@@ -221,11 +209,10 @@ void drawFrame()
 	updateTransformBuffer(&ctx, &rendererState, rendererState.frameIndex);
 	updateCullingBuffers(&ctx, &rendererState, rendererState.frameIndex);
 
-	// Ingest discrete ECS->render state transitions for this frame slot.
+	// Ingest ECS->render transitions for this frame slot.
 	render_apply_commands(&rendererState, rendererState.frameIndex);
 
 	// Copy pending on-screen text into this slot's frame buffer (post-fence).
-	// Must precede record and async submit.
 	ano_vk_text_frame_refresh(&rendererState, rendererState.frameIndex);
 
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
@@ -235,13 +222,11 @@ void drawFrame()
 
 	//updateUniformBuffer(&ctx, &rendererState);
 
-	// Async Hi-Z (review finding 2): 1-based ordinal of THIS submit. Monotonic across swapchain
-	// recreates (unlike frame slots/fences), so timeline signal values never repeat.
+	// Async Hi-Z 1-based ordinal, monotonic across swapchain recreates.
 	uint64_t ordinal = rendererState.timelineOrdinal + 1u;
 	if (rendererState.asyncHiz)
 	{
-		// This slot's compute CB trails its graphics submit and is not covered by frameFence:
-		// host-wait its own prior signal (MAX_FRAMES_IN_FLIGHT ordinals back) before re-recording.
+		// Host-wait this slot's prior compute signal (MAX_FRAMES_IN_FLIGHT ordinals back) before re-recording.
 		if (ordinal > (uint64_t)MAX_FRAMES_IN_FLIGHT)
 		{
 			uint64_t prior = ordinal - (uint64_t)MAX_FRAMES_IN_FLIGHT;
@@ -251,30 +236,23 @@ void drawFrame()
 		}
 		recordHiZCompute(rendererState.frameIndex);
 	}
-	// Async light-cull CB for this frame (reuse is fence-safe — see recordLightcullCompute).
+	// Async light-cull CB for this frame (see recordLightcullCompute).
 	if (rendererState.asyncLc)
 		recordLightcullCompute(rendererState.frameIndex);
 
-	// Async text raster: submits first with no waits, overlaps the
-	// graphics frame. The main submit waits textTimeline == ordinal at FRAGMENT_SHADER.
+	// Async text raster, submits first with no waits, overlaps graphics.
 	ano_vk_text_submit_async(&ctx, &rendererState, rendererState.frameIndex, ordinal);
 
-	// Graphics submit. Async Hi-Z adds a second wait — hizTimeline >= ordinal-2 at the cull's
-	// COMPUTE stage (the lag-2 pyramid it samples) | EARLY_FRAGMENT_TESTS (chain anchor for the
-	// depth-resolve WAR flip in recordCommandBuffer) — and a second signal, gfxTimeline = ordinal
-	// (waited by this frame's compute build). Values on binary semaphores are ignored per spec.
-	// renderFinished/gfxTimeline are signaled by whichever submit ends the frame (present waits
-	// signalSemaphores[0]).
+	// Graphics submit.
 	if (!ano_frame_submit(ordinal)) return;
 
-    // Presentation should happen *before* submitting commands for a new frame, so we're actually taking advantage of buffering
+    // Present before submitting a new frame's commands.
 
 	VkPresentInfoKHR presentInfo = {};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	
 	presentInfo.waitSemaphoreCount = 1;
-	// Wait the graphics submit's frame-end signal (== the former signalSemaphores[0], now internal
-	// to ano_frame_submit): renderFinished for this frame slot.
+	// Wait the graphics submit's frame-end signal (renderFinished for this slot).
 	presentInfo.pWaitSemaphores = &rendererState.frames[rendererState.frameIndex].renderFinished;
 	VkSwapchainKHR swapChains[] = {rendererState.swapChain};
 	presentInfo.swapchainCount = 1;
@@ -298,16 +276,16 @@ void drawFrame()
 
 	//printUniformTransferState();
 
-	rendererState.frameIndex += 1; // Iterate and reset the frame-in-flight index
+	rendererState.frameIndex += 1; // Advance frame-in-flight index
 	if (rendererState.frameIndex == MAX_FRAMES_IN_FLIGHT)
 	{
 		rendererState.frameIndex = 0;
 	}
-	rendererState.globalFrame += 1; // monotonic; gates slot-quarantine retirement
+	rendererState.globalFrame += 1; // Gates slot-quarantine retirement
 }
 
 
-bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, or NULL on failure
+bool initVulkan() // Initializes Vulkan
 {
 
 	// Window initialization
@@ -324,7 +302,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 	if (window == NULL)
 	{
-		// Handle error
 		ano_log(ANO_FATAL, "Window initialization failed.");
 		unInitVulkan();
 		return 0;
@@ -333,7 +310,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
 
 	ctx.enableValidationLayers = true;
-	rendererState.frameIndex = 0; // Tracks which frame is being processed
+	rendererState.frameIndex = 0; // Current frame-in-flight index
 
 	// Initialize Vulkan
 	if (createInstance(&ctx) != VK_SUCCESS)
@@ -372,13 +349,8 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Async Hi-Z gate (review finding 2). Needs a compute queue on a family DISTINCT from graphics
-	// (findQueueFamilies prefers a dedicated one; same-family means the very same VkQueue — no
-	// overlap possible), timeline semaphores for the cross-queue ordering, and the single-sample MAX
-	// depth resolve (the raster resolve stays on graphics; only the pyramid reduce/downsample moves,
-	// so the compute CB never needs graphics-only stages). ANO_FORCE_NO_ASYNC_HIZ pins the in-frame
-	// build for A/B. Must be decided before depth/Hi-Z resources (sharing mode + rest layouts) and
-	// createSyncObjects (timelines) run.
+	// Async Hi-Z gate needs dedicated compute queue, timeline semaphores, depth-max-resolve.
+	// ANO_FORCE_NO_ASYNC_HIZ pins the in-frame build.
 	rendererState.asyncHiz = ctx.deviceCapabilities.timelineSemaphore
 	                      && ctx.deviceCapabilities.depthMaxResolve
 	                      && ctx.queueFamilyIndices.computePresent
@@ -386,36 +358,30 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	                      && !getenv("ANO_FORCE_NO_ASYNC_HIZ");
 	ano_log(ANO_INFO, "Async Hi-Z build: %s", rendererState.asyncHiz ? "on (dedicated compute queue)" : "off (in-frame)");
 
-	// Async light-cull gate (review finding 2 remainder): rides asyncHiz's infrastructure (dedicated
-	// compute queue, compute command pool, timeline support), so forcing the Hi-Z build in-frame also
-	// falls this back. ANO_FORCE_NO_ASYNC_LC pins the in-frame light-cull alone for A/B. Must be
-	// decided before buffer creation (CONCURRENT sharing) and createSyncObjects (timelines).
+	// Async light-cull gate rides asyncHiz infrastructure.
+	// ANO_FORCE_NO_ASYNC_LC pins the in-frame light-cull.
 	rendererState.asyncLc = rendererState.asyncHiz && !getenv("ANO_FORCE_NO_ASYNC_LC");
 	ano_log(ANO_INFO, "Async light-cull: %s", rendererState.asyncLc ? "on (split submit, overlaps shadows)" : "off (in-frame)");
 
-	// Task-shader meshlet cull gate (review priority 10). Flips together: the TASK stage in every
-	// mesh-drawing pipeline + its layouts/pushes/barriers, and cull.comp's indirect groupCountX
-	// convention (CullUBO.taskParams). ANO_FORCE_NO_TASK pins direct mesh dispatch for A/B. Must be
-	// decided before the descriptor layouts and pipelines are built.
+	// Task-shader meshlet cull gate.
+	// ANO_FORCE_NO_TASK pins direct mesh dispatch.
 	rendererState.taskCull = ctx.deviceCapabilities.meshShader
 	                      && ctx.deviceCapabilities.taskShader
 	                      && !getenv("ANO_FORCE_NO_TASK");
 	ano_log(ANO_INFO, "Task meshlet cull: %s", rendererState.taskCull ? "on (frustum+cone, Hi-Z with occlusion toggle)" : "off (direct mesh dispatch)");
 
-	// Text overlay gate. A later font/bake init failure clears it non-fatally.
+	// Text overlay gate, cleared non-fatally on later font/bake failure.
 	// ANO_FORCE_NO_TEXT pins it off.
 	rendererState.textOverlay = !getenv("ANO_FORCE_NO_TEXT");
 	ano_log(ANO_INFO, "Text overlay: %s", rendererState.textOverlay ? "enabled (pending font init)" : "off (forced)");
 
-	// Async text lane gate: rides asyncHiz's infrastructure.
-	// ano_vk_text_init downgrades it non-fatally if the lane's objects fail.
+	// Async text lane gate rides asyncHiz infrastructure.
 	// ANO_FORCE_NO_ASYNC_TEXT pins the in-frame raster.
 	rendererState.asyncText = rendererState.textOverlay && rendererState.asyncHiz
 	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
 	ano_log(ANO_INFO, "Async text raster: %s", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
 
-    // Mesh-shader entry points only exist on the mesh path. The fallback path draws
-    // via core vkCmdDrawIndexedIndirect[Count] and needs none of these.
+    // Mesh-shader entry points, loaded only on the mesh path.
     if (ctx.deviceCapabilities.meshShader) {
         pfnVkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksEXT");
         pfnVkCmdDrawMeshTasksIndirectEXT = (PFN_vkCmdDrawMeshTasksIndirectEXT)vkGetDeviceProcAddr(ctx.device, "vkCmdDrawMeshTasksIndirectEXT");
@@ -477,8 +443,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Async Hi-Z build CBs (review finding 2): the graphics-family pool is invalid on the compute
-	// queue, so the per-frame build CBs come from their own compute-family pool.
+	// Async Hi-Z build CBs from their own compute-family pool.
 	if (rendererState.asyncHiz)
 	{
 		VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -506,15 +471,14 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		}
 	}
 
-	createColorResources(&ctx); // Make this a bool and add check
+	createColorResources(&ctx); // TODO: make bool + check
 
 	if(!createDepthResources(&ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Quitting init: depth resource creation failure!");
 	}
 
-	// Hi-Z occlusion pyramid images (review 4.9 step 3). Built each frame from depth; the per-mip
-	// descriptor sets are allocated/written after the layout + pool exist (below).
+	// Hi-Z occlusion pyramid images, built each frame from depth.
 	if(!createHiZResources(&ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Quitting init: Hi-Z resource creation failure!");
@@ -561,11 +525,10 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Text overlay: font bake + glyph buffers + raster/blend
-	// pipelines. Non-fatal: failure logs and turns the overlay off.
+	// Text overlay font bake, glyph buffers, raster/blend pipelines, non-fatal.
 	ano_vk_text_init(&ctx, &rendererState);
 
-	// Depth-only shadow pipeline + compare sampler (reuses the flat pipeline layout, so after pipelines).
+	// Depth-only shadow pipeline + compare sampler.
 	if (!ano_vk_init_shadow(&ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Quitting init: shadow pipeline failure!");
@@ -587,10 +550,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Slot-indexed buffers start at INITIAL_ENTITY_CAPACITY and grow on demand
-	// (ensureEntityCapacity); material/light are distinct-element palettes on their
-	// own capacity axis. maxEntities is the starting slot count, no longer a ceiling.
-	// The buffer creation itself is hoisted into ano_vk_create_scene_resources (scene_buffers.c).
+	// Slot-indexed buffers start at INITIAL_ENTITY_CAPACITY and grow on demand.
 	uint32_t maxEntities = INITIAL_ENTITY_CAPACITY;
 	if (!ano_vk_create_scene_resources())
 	{
@@ -599,20 +559,16 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Parse + register the scene's glTF assets (hoisted into ano_render_load_scene_assets, render_api.c).
-	// On a fatal parse failure it has already run unInitVulkan, so just propagate the failure.
+	// Parse + register the scene's glTF assets.
 	if (!ano_render_load_scene_assets())
 		return false;
 
 
-	// ECS <-> render bridge: render-owned slot authority + command/event rings.
-	// The logic master now composes the whole scene and emits its creates through this command ring —
-	// the same path a runtime spawn takes — so nothing is written to the per-slot GPU buffers here.
+	// ECS <-> render bridge, render-owned slot authority + command/event rings.
 	rendererState.renderHeap = mi_heap_new();
 	if (!rendererState.renderHeap ||
 	    !render_slots_init(&rendererState.slots, rendererState.renderHeap, maxEntities, MAX_FRAMES_IN_FLIGHT) ||
-	    // Events ring widened to 4096: it now also carries forwarded input (key REPEAT bursts), and
-	    // render must never block emitting it, so the ring absorbs the spikes (audit 4.11).
+	    // Events ring widened to 4096.
 	    !ano_render_bridge_init(&rendererState.bridge, rendererState.renderHeap, 4096, 4096))
 	{
 		ano_log(ANO_FATAL, "Quitting init: render bridge / slot authority failure!");
@@ -620,17 +576,12 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 		return false;
 	}
 
-	// Runtime light registry (audit 4.7 Phase 3). Palette rows [0, ANO_STATIC_LIGHT_COUNT) are the
-	// STATIC region the logic master fills with scene light-entities (create-with-light, static shadow
-	// budget); the registry owns the dynamic remainder [ANO_STATIC_LIGHT_COUNT, capacity) for runtime
-	// attach/detach. A FIXED base (not the live scene-light count) lets logic own the static light_index
-	// namespace independently of when/whether it has spawned the scene lights.
+	// Runtime light registry, static rows [0, ANO_STATIC_LIGHT_COUNT), dynamic remainder to capacity.
 	light_registry_init(&rendererState.lightRegistry, ANO_STATIC_LIGHT_COUNT,
 	                    rendererState.lightBuffer.capacity - ANO_STATIC_LIGHT_COUNT,
 	                    MAX_FRAMES_IN_FLIGHT);
 
-	// Stream render_id ring now that renderHeap exists: CPU-only, parallel to xformRing,
-	// producer-written and render-resolved. Freed wholesale on mi_heap_destroy at teardown.
+	// Stream render_id ring, CPU-only, parallel to xformRing.
 	rendererState.transformStream.idRing = mi_heap_malloc(rendererState.renderHeap,
 	    (size_t)rendererState.transformStream.ringSlices * STREAM_CAPACITY * sizeof(uint32_t));
 	if (!rendererState.transformStream.idRing)
@@ -641,11 +592,7 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 	}
 	rendererState.globalFrame = 0;
 
-	// Zero the light palette + shadow config/info device buffers once (hardening): an unwritten row
-	// then reads enabled=0 / active=0 / castsShadow=0 (inert) instead of uninitialized memory, which
-	// the cull/fragment would treat as a phantom light/caster. The logic master spawns the scene
-	// asynchronously; each create is staged + uploaded by the normal per-frame path (render_apply_commands
-	// + recordCommandBuffer) as it arrives, so there is no init scene seed beyond this zero-fill.
+	// Zero the light palette + shadow config/info device buffers once.
 	{
 		VkCommandBuffer up = beginSingleTimeCommands(&ctx);
 		vkCmdFillBuffer(up, rendererState.lightBuffer.device, 0,
@@ -666,7 +613,6 @@ bool initVulkan() // Initializes Vulkan, returns a pointer to VulkanComponents, 
 
 
 
-	// HERE
 	if (!createDescriptorPool(&ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Quitting init: UBO descriptor pool creation failure!");

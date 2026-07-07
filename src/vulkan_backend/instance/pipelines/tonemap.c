@@ -13,15 +13,12 @@
 
 #include <vulkan/vulkan.h>
 
-// Bespoke fullscreen tonemap pass: encodes the HDR resolve target to the swapchain. Not a
-// PipelineType prototype (no cull/compaction, no g_framePasses entry) — standalone state on
-// RendererState. Vertex stage is a vertex-bufferless fullscreen triangle (gl_VertexIndex);
-// fragment samples set 0 binding 0 (the per-frame hdrColorView) and writes the swapchain.
+// Fullscreen tonemap pass: encodes the HDR resolve target to the swapchain.
 // in:  ctx, state (imageFormat = swapchain target format must be set)
 // out: true on success; populates state->tonemap{SetLayout,Layout,Cache,Pipeline}
 bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 {
-	// Set layout: one combined image sampler (the HDR resolve), fragment-only.
+	// One combined image sampler, fragment-only.
 	VkDescriptorSetLayoutBinding samplerBinding = {};
 	samplerBinding.binding = 0;
 	samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -68,7 +65,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	stages[1].module = fragModule;
 	stages[1].pName = "main";
 
-	// No vertex buffers: the vertex shader synthesizes a fullscreen triangle from gl_VertexIndex.
+	// No vertex buffers, fullscreen triangle from gl_VertexIndex.
 	VkPipelineVertexInputStateCreateInfo vertexInput = {};
 	vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
@@ -88,7 +85,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.lineWidth = 1.0f;
 
-	// Tonemap writes the single-sample swapchain directly: no MSAA, no resolve.
+	// Writes single-sample swapchain directly, no MSAA.
 	VkPipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -113,7 +110,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	dynamicState.dynamicStateCount = 2;
 	dynamicState.pDynamicStates = dynamicStates;
 
-	// Tonemap targets the swapchain LDR format (no depth attachment).
+	// Swapchain LDR format, no depth attachment.
 	VkFormat colorFormat = state->imageFormat;
 	VkPipelineRenderingCreateInfo renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;

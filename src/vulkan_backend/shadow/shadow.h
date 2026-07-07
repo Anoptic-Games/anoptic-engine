@@ -3,10 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Module-private header for the shadow/ domain: the dirty-frustum cache + swept-bound movers
-// (shadow_cache.c), runtime frustum pools + caster attach/detach + static registration
-// (shadow_casters.c), createShadowResources (shadow_resources.c) and — from phase 2 — the shadow
-// region of the record path (shadow_record.c). Cross-file/cross-module surface only.
+// Module-private header for the shadow/ domain. Cross-file/cross-module surface only.
 
 #ifndef ANO_SHADOW_H
 #define ANO_SHADOW_H
@@ -18,14 +15,14 @@
 #include <anoptic_render.h>           // AnoMotionDescriptor
 
 // --- shadow/shadow_cache.c ---------------------------------------------------
-// Invalidate a frustum block's cached atlas layers (its light (re)attached/detached/changed).
+// Invalidate a frustum block's cached atlas layers.
 void shadow_layers_invalidate(RendererState* st, uint32_t base, uint32_t count);
-// Install / clear a caster's influence volume on its frustum block; reparent volumes a slot drives.
+// Install/clear a caster's influence volume on its frustum block.
 void shadow_volume_set(RendererState* st, uint32_t base, uint32_t count, uint32_t parentSlot,
                        const float off[3], float range);
 void shadow_volume_clear(RendererState* st, uint32_t base, uint32_t count);
 void shadow_volumes_reparent(RendererState* st, uint32_t slot);
-// Swept-exposure mover upkeep for a slot; (re)bind a slot's parametric mover from a motion descriptor.
+// Swept-exposure mover upkeep for a slot.
 void mover_refresh_slot(RendererState* st, uint32_t slot);
 void shadow_track_motion(RendererState* st, uint32_t slot, const AnoMotionDescriptor* m);
 
@@ -39,8 +36,7 @@ void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t light
                             uint32_t frameIndex, uint32_t parentSlot, float range);
 
 // --- shadow/shadow_record.c --------------------------------------------------
-// The shadow region of the record path: classify + budget dirty frustums, per-frustum depth render
-// into the atlas, two blur phases (four phase barriers). Called from recordCommandBuffer.
+// The shadow region of the record path. Called from recordCommandBuffer.
 void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSlotCount);
 
 // --- shadow/shadow_resources.c -----------------------------------------------

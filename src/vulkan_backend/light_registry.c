@@ -10,8 +10,7 @@
 #include "vulkan_backend/light_registry.h"
 
 // ---------------------------------------------------------------------------
-// Runtime light registry (audit 4.7 Phase 3). Render-thread only; no locks. Owns the dynamic light
-// palette region [base, base+capacity). See LightRegistry in structs.h.
+// Runtime light registry. Render-thread only, no locks. Owns dynamic light palette [base, base+capacity).
 // ---------------------------------------------------------------------------
 
 void light_registry_init(LightRegistry* r, uint32_t base, uint32_t capacity, uint32_t framesInFlight) {
@@ -55,7 +54,7 @@ static bool lr_reserve_ids(LightRegistry* r, uint32_t need) {
     if (need <= r->idCapacity) return true;
     uint32_t nc = r->idCapacity ? r->idCapacity : 16u;
     while (nc < need) {
-        if (nc > (0xFFFFFFFFu / 2u)) { nc = need; break; } // cap the doubling so nc cannot wrap to 0
+        if (nc > (0xFFFFFFFFu / 2u)) { nc = need; break; } // doubling cap
         nc *= 2u;
     }
     uint32_t* p = realloc(r->idToRow, (size_t)nc * sizeof(uint32_t));
@@ -69,7 +68,7 @@ static void lr_push_free(LightRegistry* r, uint32_t row) {
     if (r->freeCount >= r->freeCapacity) {
         uint32_t nc = r->freeCapacity ? r->freeCapacity * 2u : 16u;
         uint32_t* p = realloc(r->freeRows, (size_t)nc * sizeof(uint32_t));
-        if (!p) return; // OOM: row leaks (stays unused), no corruption
+        if (!p) return; // OOM, row leaks
         r->freeRows = p; r->freeCapacity = nc;
     }
     r->freeRows[r->freeCount++] = row;
@@ -79,21 +78,20 @@ static void lr_push_quarantine(LightRegistry* r, uint32_t row, uint64_t safeFram
     if (r->quarantineCount >= r->quarantineCapacity) {
         uint32_t nc = r->quarantineCapacity ? r->quarantineCapacity * 2u : 16u;
         LightRowQuarantine* p = realloc(r->quarantine, (size_t)nc * sizeof(LightRowQuarantine));
-        if (!p) return; // OOM: row stays QUARANTINED forever (never reused), no corruption
+        if (!p) return; // OOM, row stays quarantined
         r->quarantine = p; r->quarantineCapacity = nc;
     }
     r->quarantine[r->quarantineCount++] = (LightRowQuarantine){ .row = row, .safeFrame = safeFrame };
 }
 
-// Attach: map light_id to a fresh row driven by parentRid. Returns the ABSOLUTE palette row, or
-// ANO_RENDER_SLOT_UNMAPPED on capacity exhaustion / OOM / already-mapped id (producer error -> drop).
+// Map light_id to a fresh row driven by parentRid. Returns ABSOLUTE palette row, or UNMAPPED on exhaustion/OOM/double-attach.
 uint32_t light_registry_alloc(LightRegistry* r, uint32_t light_id, uint32_t parentRid) {
-    if (light_id == ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED; // sentinel reserved; also guards light_id+1u wrap
+    if (light_id == ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED; // sentinel reserved
     if (!lr_reserve_ids(r, light_id + 1u)) return ANO_RENDER_SLOT_UNMAPPED;
     if (r->idToRow[light_id] != ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED; // double-attach
     uint32_t row;
     if (r->freeCount > 0u) {
-        row = r->freeRows[--r->freeCount];           // reuse a quarantine-expired hole
+        row = r->freeRows[--r->freeCount];           // reuse expired hole
     } else {
         if (r->highWater >= r->capacity) return ANO_RENDER_SLOT_UNMAPPED; // palette full
         if (!lr_reserve_rows(r, r->highWater + 1u)) return ANO_RENDER_SLOT_UNMAPPED;
@@ -118,8 +116,7 @@ uint32_t light_registry_parent_of(const LightRegistry* r, uint32_t light_id) {
     return (row == ANO_RENDER_SLOT_UNMAPPED) ? ANO_RENDER_SLOT_UNMAPPED : r->rowParent[row];
 }
 
-// Detach one light_id: quarantine its row and unmap the id. Returns the ABSOLUTE row to disable
-// (caller stages enabled=0), or ANO_RENDER_SLOT_UNMAPPED if the id was not mapped.
+// Quarantine light_id's row and unmap the id. Returns ABSOLUTE row to disable, or UNMAPPED if not mapped.
 uint32_t light_registry_detach(LightRegistry* r, uint32_t light_id, uint64_t currentFrame) {
     if (light_id >= r->idCapacity) return ANO_RENDER_SLOT_UNMAPPED;
     uint32_t row = r->idToRow[light_id];
@@ -131,9 +128,8 @@ uint32_t light_registry_detach(LightRegistry* r, uint32_t light_id, uint64_t cur
     return r->base + row;
 }
 
-// Detach every light attached to parentRid (parent-DESTROY cascade). Writes up to `max` ABSOLUTE
-// rows to disable into out_rows; returns the count. Call in a loop while it returns `max`. O(highWater)
-// per call — a sibling-list index is the scale upgrade; runtime light churn is bounded for now.
+// Detach every light attached to parentRid. Writes up to `max` ABSOLUTE rows to disable into out_rows, returns the count.
+// Call in a loop while it returns `max`.
 uint32_t light_registry_detach_children(LightRegistry* r, uint32_t parentRid,
                                                uint64_t currentFrame, uint32_t* out_rows, uint32_t max) {
     uint32_t n = 0;
@@ -158,31 +154,25 @@ void light_registry_collect(LightRegistry* r, uint64_t currentFrame) {
             r->rowState[q.row] = LIGHT_ROW_FREE;
             lr_push_free(r, q.row);
         } else {
-            r->quarantine[w++] = q; // not yet safe: keep
+            r->quarantine[w++] = q; // not yet safe
         }
     }
     r->quarantineCount = w;
 }
 
-// Ascending compare for the free-row sort below. Subtraction would overflow on uint32_t.
+// Ascending u32 compare.
 static int lr_cmp_u32_asc(const void* a, const void* b) {
     uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
     return (x > y) - (x < y);
 }
 
-// High-water compaction: peel the trailing contiguous run of FREE rows off the top so the published
-// cull light count (base + highWater) shrinks after a permanent drop in live lights, instead of
-// staying pinned at the historical peak. Mirrors render_slots_compact (audit 4.5). Only FREE rows
-// peel — QUARANTINED rows still inside their framesInFlight reuse window stay counted (an in-flight
-// frame may still read them, and a peel-then-regrow would reuse the index too early). Call AFTER
-// collect (so newly-expired rows are FREE) and BEFORE publishing the count. Returns rows reclaimed.
+// Peel the trailing contiguous run of FREE rows off the top, shrinking the published cull light count. Returns rows reclaimed.
+// Call AFTER collect and BEFORE publishing the count.
 uint32_t light_registry_compact(LightRegistry* r) {
     if (r->freeCount == 0u) return 0u;
-    // Sort ascending so the trailing free run is a suffix; non-trailing holes stay a valid prefix
-    // free-list (alloc pops from the end — order is irrelevant to correctness).
+    // Sort ascending so the trailing free run is a suffix.
     qsort(r->freeRows, r->freeCount, sizeof(uint32_t), lr_cmp_u32_asc);
     uint32_t before = r->highWater;
-    // freeCount>0 short-circuits before the highWater-1u read, so highWater==0 can't underflow.
     while (r->freeCount > 0u && r->freeRows[r->freeCount - 1u] == r->highWater - 1u) {
         r->freeCount--;
         r->highWater--;
@@ -190,8 +180,7 @@ uint32_t light_registry_compact(LightRegistry* r) {
     return before - r->highWater;
 }
 
-// Spot/dir aim into LightData.localDir, defaulting a zero vector to model -Z (reproduces the prior
-// -lx[2] forward). The shader normalizes after rotating by the parent, so a non-unit dir is fine.
+// Aim into LightData.localDir, defaulting a zero vector to model -Z.
 static void light_set_dir(LightData* L, const float d[3]) {
     bool zero = (d[0] == 0.0f && d[1] == 0.0f && d[2] == 0.0f);
     L->localDir[0] = zero ? 0.0f : d[0];
@@ -213,9 +202,7 @@ LightData light_data_from_params(const RenderLightParams* p, uint32_t transformI
     return L;
 }
 
-// Partial RCMD_LIGHT_UPDATE: merge only the producer fields named in `fields` (ANO_LIGHT_FIELD_*) into
-// an existing mirror LightData; unnamed fields keep their current value. transformIndex/enabled are
-// render-derived and refreshed by the caller, not here.
+// Merge only the producer fields named in `fields` into an existing mirror LightData. Unnamed fields keep their value.
 void light_apply_fields(LightData* dst, const RenderLightParams* p, const float off[3], uint32_t fields) {
     if (fields & ANO_LIGHT_FIELD_COLOR)     { dst->color[0] = p->color[0]; dst->color[1] = p->color[1]; dst->color[2] = p->color[2]; }
     if (fields & ANO_LIGHT_FIELD_INTENSITY) dst->intensity = p->intensity;

@@ -4,26 +4,10 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #endif
 
-// Layered Power CDF shadow pass fragment stage. Writes the nearest occluder's one-hot (coverage=1, M=z)
-// into the depth band containing z, across two MRT color targets (the two atlas sublayers). gl_FragCoord.z
-// is the light-space depth in [0,1] (Vulkan ZO, viewport depth 0..1), produced identically by flat.mesh
-// and flat.vert under the shadowPass spec constant, so no extra varying is threaded across the two
-// geometry paths. The depth attachment (test on) keeps the nearest occluder per texel; the box prefilter
-// then averages these one-hots into per-band (coverage, coverage*meanDepth).
-//
-// The geometry stage is now the ANO_DEPTH_ONLY compile of flat.mesh / flat.vert, which emits NO
-// user outputs — so this stage declares no inputs and the interfaces match exactly on both
-// geometry paths. (History: when the fat modules fed this pass, the inputs had to be declared to
-// mirror locations 0-4, because one driver dropped the vertex stage's rasterizer output entirely
-// on a stage-interface mismatch. Matched-empty linkage avoids both the mismatch and the dead ISBE
-// payload.)
+// Layered Power CDF shadow pass fragment stage. Writes the nearest occluder's one-hot into the depth band containing z, across two MRT color targets.
 #include "shadow_cdf.glsl"
 
-// Per-frustum depth linearization (shadowsetup.comp; mirrors shadow_sample.glsl): the CDF bands +
-// contact ramp operate on d01 = (x + z*zo) / (1 - y*zo) — a linear fraction of the light range —
-// not raw perspective ZO (which crushed the scene into the last band for point/spot frusta). The
-// push constant carries the frustum index; the transient depth attachment still keeps raw zo for
-// nearest-occluder selection (monotonic, unaffected).
+// Per-frustum depth linearization (mirrors shadow_sample.glsl).
 layout(set = 2, binding = 3) uniform ShadowSampleVPUBO {
     mat4 viewProj[64];
     vec4 depthParams[64];
@@ -35,10 +19,7 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 #if ANO_ALPHA_MASK
-// Alpha-tested caster variant (glTF alphaMode MASK: foliage, chains). The geometry stage is the
-// ANO_DEPTH_MASKED compile (position + uv + packed indices, location 0 gap intentional): sample
-// baseColor.a and discard below the cutoff so cutout casters shadow by silhouette, not quad.
-// MaterialData mirrors flat.frag (full struct for the std430 stride).
+// Alpha-tested caster variant (glTF alphaMode MASK). MaterialData mirrors flat.frag.
 struct MaterialData {
     uint      features;
     uint      baseColorTexture;
@@ -103,7 +84,7 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
 layout(location = 1) in vec2 fragTexCoord;
-layout(location = 2) flat in uint inPackedIndices; // material (high 12 bits) | entity slot (low 20)
+layout(location = 2) flat in uint inPackedIndices; // material | entity slot
 #endif
 
 layout(location = 0) out vec4 outSubA; // bands 0/1: (cov0,M0,cov1,M1)

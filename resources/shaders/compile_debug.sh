@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Compile the engine's GLSL shaders to SPIR-V with Debug Symbols.
-# Discovers glslangValidator on its own ($VULKAN_SDK/bin, then PATH)
+# Discovers glslangValidator in $VULKAN_SDK/bin, then PATH.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Discover glslangValidator instead of glslc
+# Discover glslangValidator
 if [ -n "${VULKAN_SDK:-}" ] && [ -x "$VULKAN_SDK/bin/glslangValidator" ]; then
     glslang="$VULKAN_SDK/bin/glslangValidator"
 else
@@ -20,7 +20,7 @@ fi
 
 echo "Using glslangValidator: $glslang"
 
-# Dynamically discover shaders just like compile.sh
+# Discover shaders
 for shader in *.mesh *.vert *.frag *.comp *.task; do
     case "$shader" in
         skinned.mesh|pose.comp|decal.vert|decal.frag) continue ;;

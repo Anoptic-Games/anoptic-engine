@@ -24,12 +24,7 @@
 
 // TODO: add a generalized function to loop over
 
-// Open a shipped engine file named relative to the executable's own directory
-// ("resources/shaders/x.spv"). Resolving against ano_fs_gamepath() -- never the CWD or a
-// compile-time source path -- means the same binary works from the build tree, an
-// installed tree, and a nix store path alike; the build stages resources/ next to every
-// binary that loads them (root CMakeLists). Interim shim until the Resource Manager owns
-// asset paths.
+// Open a shipped engine file resolved against ano_fs_gamepath()
 static FILE* openEngineFile(const char* relative)
 {
 	ano_fspath dir = ano_fs_gamepath();
@@ -97,9 +92,7 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 	return shaderModule;
 }
 
-// Task meshlet-cull stage (review priority 10): loads flat.task and fills a TASK stage with the
-// lane's {shadowPass, coneCull} specialization. One shared module load per pipeline builder; the
-// caller destroys *outModule after pipeline creation. See pipeline.h for the storage contract.
+// Load flat.task and fill a TASK stage with the {shadowPass, coneCull} specialization
 bool ano_pipeline_task_stage(VulkanContext* ctx, VkBool32 shadowPass, VkBool32 coneCull,
                              TaskStageStorage* store, VkShaderModule* outModule,
                              VkPipelineShaderStageCreateInfo* stage)
@@ -182,8 +175,7 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 		vkDestroyDescriptorSetLayout(ctx->device, state->tonemapSetLayout, NULL);
 		state->tonemapSetLayout = VK_NULL_HANDLE;
 	}
-	// Text overlay: the bespoke composite blend pipeline + the raster set
-	// layout. The PIPELINE_COMPUTE_TEXTRASTER prototype is freed by the generic loop below.
+	// Text overlay: composite blend pipeline + raster set layout
 	if (state->textOverlayPipeline != VK_NULL_HANDLE)
 	{
 		vkDestroyPipeline(ctx->device, state->textOverlayPipeline, NULL);
@@ -204,8 +196,7 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 		vkDestroyDescriptorSetLayout(ctx->device, state->textRasterSetLayout, NULL);
 		state->textRasterSetLayout = VK_NULL_HANDLE;
 	}
-	// Hi-Z build set layout (review 4.9 step 3). Its PIPELINE_COMPUTE_HIZ prototype (layout/cache/2
-	// implementations) is freed by the generic prototype loop below.
+	// Hi-Z build set layout
 	if (state->hizSetLayout != VK_NULL_HANDLE)
 	{
 		vkDestroyDescriptorSetLayout(ctx->device, state->hizSetLayout, NULL);
@@ -217,8 +208,7 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 		state->tonemapCache = VK_NULL_HANDLE;
 	}
 
-	// Shadow depth pass (standalone): pipeline + cache + sampler + the two shadow set layouts.
-	// (The shadowsetup compute prototype is freed by the generic prototype loop below.)
+	// Shadow depth pass: pipeline + cache + sampler + two shadow set layouts
 	if (state->shadowPipeline != VK_NULL_HANDLE)
 	{
 		vkDestroyPipeline(ctx->device, state->shadowPipeline, NULL);

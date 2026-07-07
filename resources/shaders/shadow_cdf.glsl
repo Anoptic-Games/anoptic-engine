@@ -1,23 +1,15 @@
 // Layered Power CDF shadow maps (LVSM-style). Partition light-space depth into ANO_SHADOW_CDF_LAYERS
-// bands, store per band two linearly-filterable quantities: coverage (fraction of the footprint whose
-// nearest occluder is in the band) and M = coverage*meanDepth. Occlusion = sum over bands of
-// coverage * a soft step rising from the band's mean occluder depth — a 4-point weighted CDF. Band
-// edges bucket the ENCODE only; the reconstruct never gates on them (gating stepped at the edges:
-// a receiver crossing one promoted a still-ramping band to full instantly, and counted its own
-// footprint's straddling coverage as occlusion past the bias). Soft penumbra comes from the
-// filtered coverage gradient.
-//
+// bands; per band store coverage (footprint fraction whose nearest occluder is in the band) and
+// M = coverage*meanDepth. Occlusion = sum_k coverage * soft step from the band's mean occluder depth.
+// Band edges bucket the ENCODE only.
 // Storage packs two (coverage, M) pairs per RGBA16 texel (band0/1 in sublayer A, band2/3 in sublayer B).
 // Uniform splits: band k spans [k/N, (k+1)/N]. Keep N + packing in sync with structs.h.
-//
-// Shared by the atlas write (shadow_depth.frag, MRT) and the reconstruct (shadow_sample.glsl). Pure math.
+// Shared by the atlas write (shadow_depth.frag, MRT) and the reconstruct (shadow_sample.glsl).
 
 #ifndef ANO_SHADOW_CDF_GLSL
 #define ANO_SHADOW_CDF_GLSL
 
-// ANO_CDF_FP16 (a -D of the *_fp16.frag.spv variants, selected at pipeline creation when the
-// device has shaderFloat16): the reconstruct walks the band data in fp16, halving the standing
-// texture-return registers. Encode and the fp32 reconstruct are untouched.
+// ANO_CDF_FP16: the reconstruct walks the band data in fp16. Override with: -D of *_fp16.frag.spv variants.
 #if ANO_CDF_FP16
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #endif
@@ -25,9 +17,8 @@
 const int   ANO_CDF_LAYERS = 4;
 const float ANO_CDF_LAYER_W = 0.25; // 1.0 / ANO_CDF_LAYERS
 
-// Encode a nearest-occluder depth z in [0,1] into the two MRT sublayer texels: a one-hot (coverage=1,
-// M=z) in the band containing z, zero elsewhere. The box prefilter averages these into per-band
-// (coverage, coverage*meanDepth). Cleared texels stay (0,0,0,0) = lit.
+// Encode nearest-occluder depth z in [0,1] into the two MRT sublayer texels: one-hot (coverage=1, M=z)
+// in the band containing z, zero elsewhere. Cleared texels stay (0,0,0,0) = lit.
 void anoEncodeLayered(float z, out vec4 subA, out vec4 subB) {
     subA = vec4(0.0);
     subB = vec4(0.0);
@@ -38,23 +29,15 @@ void anoEncodeLayered(float z, out vec4 subA, out vec4 subB) {
     else             { subB.z = 1.0; subB.w = z; }
 }
 
-// Layered visibility. subA/subB = the two prefiltered sublayer texels (band pairs), zr = receiver
-// light-space depth in [0,1], depthBias = occluder offset vs self-shadow acne, contactSoft = soft-step
-// width above each band's mean (0 = hard step at the mean). Returns the lit factor in [0,1].
-// occ = sum_k cov_k * smoothstep(mean_k, mean_k + contactSoft, zr): C1-continuous in zr, so no
-// softness jump where zr crosses a band edge. The two compares are exact early-outs, not gates
-// (mean_k is confined to [lo,hi], so zr <= lo -> step 0, zr >= hi+soft -> step 1); they keep the
-// M/cov divide to the at-most-two bands whose ramp spans zr.
+// Layered visibility. subA/subB = the two prefiltered sublayer texels, zr = receiver light-space depth
+// in [0,1], depthBias = occluder offset, contactSoft = soft-step width above each band's mean. Returns
+// the lit factor in [0,1]. occ = sum_k cov_k * smoothstep(mean_k, mean_k + contactSoft, zr).
 #if ANO_CDF_FP16
-// fp16 band walk: the filtered (coverage, M) pairs are UNORM16-sourced [0,1] values, well inside
-// fp16 range. The receiver depth zr, the bias, and the contact smoothstep STAY fp32 — fp16 ulp
-// near 1.0 (~4.9e-4) would swallow the 2e-4 depth bias; mean is promoted before the smoothstep
-// for the same reason. Residual: mean itself is fp16-quantized (<= 1 ulp), which can dip up to
-// ~1.5% of coverage into the contact ramp on far-band receivers — below visibility.
+// fp16 band walk: (coverage, M) pairs in fp16; zr, bias, and the contact smoothstep stay fp32.
 float anoLayeredShadow(vec4 subA32, vec4 subB32, float zr, float depthBias, float contactSoft) {
     const float EPS = 1e-4;
     zr -= depthBias;
-    // Unpack the 4 bands: (coverage_k, M_k).
+    // Bands: (coverage_k, M_k).
     f16vec4 subA = f16vec4(subA32);
     f16vec4 subB = f16vec4(subB32);
     float16_t cov[4] = float16_t[4](subA.x, subA.z, subB.x, subB.z);
@@ -63,14 +46,14 @@ float anoLayeredShadow(vec4 subA32, vec4 subB32, float zr, float depthBias, floa
     float16_t occ = float16_t(0.0);
     for (int k = 0; k < ANO_CDF_LAYERS; ++k) {
         float c = float(cov[k]);
-        if (c < EPS) continue;                 // no occluders of this footprint in band k
+        if (c < EPS) continue;                 // band k empty
         float lo = float(k) * ANO_CDF_LAYER_W;
-        if (zr <= lo) continue;                                    // ramp not started: step = 0 exactly
-        if (zr >= lo + ANO_CDF_LAYER_W + contactSoft + EPS) {      // ramp complete: step = 1 exactly
+        if (zr <= lo) continue;                                    // ramp not started
+        if (zr >= lo + ANO_CDF_LAYER_W + contactSoft + EPS) {      // ramp complete
             occ += cov[k];
             continue;
         }
-        // Soft step rising from the band's mean occluder depth. Coverage weight keeps thin occluders faint.
+        // Soft step from band mean.
         float mean = float(M[k]) / c;
         occ += cov[k] * float16_t(smoothstep(mean, mean + contactSoft + EPS, zr));
     }
@@ -80,21 +63,21 @@ float anoLayeredShadow(vec4 subA32, vec4 subB32, float zr, float depthBias, floa
 float anoLayeredShadow(vec4 subA, vec4 subB, float zr, float depthBias, float contactSoft) {
     const float EPS = 1e-4;
     zr -= depthBias;
-    // Unpack the 4 bands: (coverage_k, M_k).
+    // Bands: (coverage_k, M_k).
     float cov[4] = float[4](subA.x, subA.z, subB.x, subB.z);
     float M[4]   = float[4](subA.y, subA.w, subB.y, subB.w);
 
     float occ = 0.0;
     for (int k = 0; k < ANO_CDF_LAYERS; ++k) {
         float c = cov[k];
-        if (c < EPS) continue;                 // no occluders of this footprint in band k
+        if (c < EPS) continue;                 // band k empty
         float lo = float(k) * ANO_CDF_LAYER_W;
-        if (zr <= lo) continue;                                    // ramp not started: step = 0 exactly
-        if (zr >= lo + ANO_CDF_LAYER_W + contactSoft + EPS) {      // ramp complete: step = 1 exactly
+        if (zr <= lo) continue;                                    // ramp not started
+        if (zr >= lo + ANO_CDF_LAYER_W + contactSoft + EPS) {      // ramp complete
             occ += c;
             continue;
         }
-        // Soft step rising from the band's mean occluder depth. Coverage weight keeps thin occluders faint.
+        // Soft step from band mean.
         float mean = M[k] / c;
         occ += c * smoothstep(mean, mean + contactSoft + EPS, zr);
     }

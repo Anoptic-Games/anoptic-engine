@@ -76,12 +76,12 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint clusterDimY;
     uint clusterDimZ;
     uint maxLightsPerCluster;
-    uint lightingMode;   // AnoLightingMode, gates shadow sampling below
-    uint debugView;      // RC debug visualization selector (0 = off)
+    uint lightingMode;   // AnoLightingMode
+    uint debugView;      // RC debug visualization selector, 0 = off
     uint pad0;
     uint pad1;
-    mat4 viewProj;    // premultiplied camera clip transform (geometry stages; declared for layout)
-    mat4 invVPPixel;  // inv(viewProj) * (pixel -> NDC): world position from gl_FragCoord
+    mat4 viewProj;    // premultiplied camera clip transform
+    mat4 invVPPixel;  // world position from gl_FragCoord
 } global;
 
 // Clustered-forward froxel light lists (see flat.frag).
@@ -92,9 +92,7 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
     uint clusterLightIndices[];
 } clusterIndexBuf;
 
-// --- Dynamic shadows (set 2), mirrors flat.frag. Sampling viewProjs come from the packed
-// UBO shadow_sample.glsl declares (set 2, binding 3); the fat CullView records stay
-// geometry/task-stage only. ---
+// Dynamic shadows (set 2), mirrors flat.frag.
 struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
 layout(set = 2, binding = 1) uniform sampler2DArray shadowAtlas;
 layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
@@ -106,13 +104,13 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
 } materialBuf;
 
-// Punctual lights (KHR_lights_punctual). World position + direction derived from the driving entity's transform.
+// Punctual lights (KHR_lights_punctual).
 const uint LIGHT_TYPE_DIRECTIONAL = 0u;
 const uint LIGHT_TYPE_POINT       = 1u;
 const uint LIGHT_TYPE_SPOT        = 2u;
 
 // ---------------------------------------------------------------------------
-// Lighting mode (AnoLightingMode). Must match C-side lightTypeShadowMapped() and flat.frag's lightUsesShadowMap.
+// Lighting mode (AnoLightingMode).
 // ---------------------------------------------------------------------------
 const uint ANO_LIGHTING_SHADOWMAP = 0u;
 const uint ANO_LIGHTING_HYBRID    = 1u;
@@ -123,9 +121,7 @@ bool lightUsesShadowMap(uint lightType, uint mode) {
     return lightType != LIGHT_TYPE_POINT; // ANO_LIGHTING_HYBRID
 }
 
-// lightsetup.comp consumes LightData (binding 8) + transforms (binding 1), fragment reads packed LightRuntime (binding 12).
-
-// Per-light runtime, precomputed by lightsetup.comp: world pose + premultiplied radiance + range/cone/type in one 64B record.
+// Per-light runtime from lightsetup.comp, world pose + radiance + range/cone/type in 64B.
 // Layout must match LightRuntime in lightsetup.comp / flat.frag.
 struct LightRuntime {
     vec4 posRange;   // xyz world position, w range
@@ -137,7 +133,7 @@ layout(set = 0, binding = 12) readonly buffer LightRuntimeSSBO {
     LightRuntime entries[];
 } lightRuntimeBuf;
 
-// Per-entity instance channel (matches flat.frag). packed[0] = RGBA8 tint, packed[1] = flags, packed[2..3]/params reserved.
+// Per-entity instance channel (matches flat.frag).
 const uint INST_FLAG_TINT = 1u;
 struct InstanceData {
     uvec4 packed;
@@ -147,8 +143,8 @@ layout(set = 0, binding = 9) readonly buffer InstanceSSBO {
     InstanceData instances[];
 } instanceBuf;
 
-// glTF range-based attenuation: inverse-square with a smooth window cutoff.
-// range <= 0 means unbounded (pure inverse-square).
+// glTF range attenuation, inverse-square with smooth window cutoff.
+// range <= 0 means unbounded.
 float getRangeAttenuation(float range, float dist) {
     float invSqr = 1.0 / max(dist * dist, 0.0001);
     if (range <= 0.0) {
@@ -158,7 +154,7 @@ float getRangeAttenuation(float range, float dist) {
     return f * f * invSqr;
 }
 
-// Spot cone falloff. spotForward is the aim, L points surface->light.
+// Spot cone falloff, L points surface -> light.
 float getSpotAttenuation(vec3 spotForward, vec3 L, float innerConeCos, float outerConeCos) {
     float cosAngle = dot(spotForward, -L);
     return smoothstep(outerConeCos, innerConeCos, cosAngle);
@@ -166,7 +162,7 @@ float getSpotAttenuation(vec3 spotForward, vec3 L, float innerConeCos, float out
 
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 
-// Interstage diet (mirrors flat.frag): packed indices + gl_FragCoord world reconstruction.
+// Interstage diet (mirrors flat.frag), packed indices + world reconstruction.
 layout(location = 0) in vec3 fragNormal;
 layout(location = 1) in vec2 fragTexCoord;
 layout(location = 2) flat in uint inPackedIndices; // material (high 12 bits) | entity slot (low 20)
@@ -174,7 +170,7 @@ layout(location = 2) flat in uint inPackedIndices; // material (high 12 bits) | 
 layout(location = 0) out vec4 outColor;
 
 vec3 calculatePBRDirect(vec3 albedo, float metallic, float roughness, vec3 N, vec3 V, vec3 L, float transmission) {
-    // Clamp roughness, 0 collapses specular
+    // Clamp roughness
     roughness = max(roughness, 0.04);
 
     vec3 H = normalize(V + L);
@@ -236,7 +232,7 @@ void main() {
     // Resolve thickness
     float thickness = mat.thicknessFactor;
     if (mat.thicknessTexture != 0xFFFFFFFF) {
-        thickness *= texture(textures[nonuniformEXT(mat.thicknessTexture)], fragTexCoord).g; // GLTF thickness is in G channel
+        thickness *= texture(textures[nonuniformEXT(mat.thicknessTexture)], fragTexCoord).g; // G channel
     }
     
     // Beer-Lambert law for volume absorption
@@ -286,7 +282,7 @@ void main() {
     vec3 ambient = vec3(0.05) * baseColor.rgb * occlusion * (1.0 - transmission);
     vec3 transmissive = baseColor.rgb * transmissionTint * transmission;
     
-    // Clustered forward: accumulate only this fragment's froxel lights (see flat.frag).
+    // Clustered forward, accumulate this fragment's froxel lights (see flat.frag).
     vec3 accumulatedDirect = vec3(0.0);
     uint tileX = uint(clamp(gl_FragCoord.x / global.screenWidth, 0.0, 0.99999) * float(global.clusterDimX));
     uint tileY = uint(clamp(gl_FragCoord.y / global.screenHeight, 0.0, 0.99999) * float(global.clusterDimY));
@@ -300,7 +296,7 @@ void main() {
 
     for (uint c = 0u; c < clusterCount; c++) {
         uint i = clusterIndexBuf.clusterLightIndices[lightListBase + c];
-        // One 64B runtime load per light: world pose, premultiplied radiance, range/cone/type.
+        // One 64B runtime load per light.
         LightRuntime lr = lightRuntimeBuf.entries[i];
         vec3 lightPos = lr.posRange.xyz;
         vec3 lightForward = lr.dirType.xyz;
@@ -329,7 +325,7 @@ void main() {
             continue;
         }
 
-        // Skip back-facing lights (calculatePBRDirect scales by NdotL, no back lobe). nDotL reused below as shadow slope bias.
+        // Skip back-facing lights, nDotL reused as shadow slope bias.
         float nDotL = max(dot(normal, L), 0.0);
         if (nDotL <= 0.0) {
             continue;

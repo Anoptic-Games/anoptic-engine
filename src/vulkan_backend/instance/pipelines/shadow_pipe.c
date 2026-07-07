@@ -14,19 +14,13 @@
 
 #include <vulkan/vulkan.h>
 
-// Dynamic shadow depth pipeline (audit 4.7). Uses the depth-only FLAT geometry variant
-// (flat_depth.mesh/flat_depth.vert = ANO_DEPTH_ONLY compile, position-only outputs)
-// with the shadowPass specialization constant set, so the depth render projects by a shadow
-// frustum's viewProj into the single-sample shadow atlas. No color attachment; depth bias on to
-// suppress acne. Reuses the FLAT pipeline layout (sets 0/1/2 + the 2-uint push). Also creates the
-// depth-compare sampler the fragment shaders PCF with. Must run after ano_vk_init_pipelines.
+// Dynamic shadow depth pipeline: depth-only FLAT geometry variant + shadowPass spec constant.
+// Run after ano_vk_init_pipelines.
 // in:  ctx, state (prototypes[PIPELINE_FLAT].layout must exist)
 // out: true on success; populates state->shadow{Pipeline,Cache,Sampler}
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 {
-	// Plain linear/clamp sampler for the moment atlas: the CDF reconstruction happens in-shader, so
-	// there is no hardware depth-compare. Linear filtering gives the 2x2 bilinear of the (affine,
-	// filterable) optimized moments — both for the lighting frags and the separable blur taps.
+	// Linear/clamp sampler for the moment atlas.
 	VkSamplerCreateInfo samplerInfo = {};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 	samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -48,9 +42,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	bool useTask = state->taskCull;
 	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
-	// Depth-only geometry variant (ANO_DEPTH_ONLY compile of flat.mesh/flat.vert): position-only
-	// outputs — the shadow render consumes no attributes, and slimming the ISBE payload here is a
-	// direct occupancy win on the caster geometry. shadow_depth.frag declares no inputs to match.
+	// Depth-only geometry variant (ANO_DEPTH_ONLY compile of flat.mesh/flat.vert).
 	struct Buffer geomCode, fragCode;
 	char path[64];
 	snprintf(path, sizeof(path), "resources/shaders/%s.spv",
@@ -60,9 +52,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkShaderModule geomModule = createShaderModule(ctx->device, &geomCode);
 	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
 
-	// Task meshlet cull (review priority 10), shadow variant: frustum-only against the draw's
-	// shadow frustum planes — one shadow partition mixes both sidedness lanes' casters (cone
-	// would hole doubleSided shadows) and no shadow Hi-Z exists.
+	// Task meshlet cull, shadow variant: frustum-only.
 	VkShaderModule taskModule = VK_NULL_HANDLE;
 	TaskStageStorage taskStore;
 	VkPipelineShaderStageCreateInfo taskStageInfo = {};
@@ -75,7 +65,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkSpecializationInfo specInfo = { .mapEntryCount = 1, .pMapEntries = &specEntry, .dataSize = sizeof(VkBool32), .pData = &shadowPassTrue };
 
 	VkPipelineShaderStageCreateInfo stages[3] = {};
-	stages[0] = taskStageInfo; // leading slot; skipped when the task path is off
+	stages[0] = taskStageInfo; // leading task slot
 	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[1].stage = geometryStage;
 	stages[1].module = geomModule;
@@ -94,17 +84,15 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkPipelineRasterizationStateCreateInfo rasterizer = {};
 	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-	// NONE stays (review finding 7): each frustum has ONE shadow partition mixing both sidedness
-	// lanes' casters, and a doubleSided caster (curtains, foliage) culled here would drop its shadow.
+	// NONE: one partition mixes both sidedness lanes' casters.
 	rasterizer.cullMode = VK_CULL_MODE_NONE;
 	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.lineWidth = 1.0f;
-	// No rasterizer depth bias: MSM acne suppression lives in the moment bias (alpha) + a sample-time
-	// depth offset, so the stored moments describe the true geometric depth (gl_FragCoord.z).
+	// No rasterizer depth bias.
 
 	VkPipelineMultisampleStateCreateInfo multisampling = {};
 	multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // shadow atlas is single-sample
+	multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // single-sample shadow atlas
 
 	VkPipelineDepthStencilStateCreateInfo depthStencil = {};
 	depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -113,9 +101,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 	depthStencil.maxDepthBounds = 1.0f;
 
-	// Two CDF-stats color attachments (the two atlas sublayers = 4 depth bands, MRT), blending disabled —
-	// the depth test keeps the nearest occluder, so each write is a plain overwrite of that fragment. The
-	// blur pipeline below reuses statsBlend[0] (single attachment). All bands share the same blend state.
+	// Two CDF-stats color attachments (MRT sublayers), blending disabled. Blur reuses statsBlend[0].
 	VkPipelineColorBlendAttachmentState statsBlend[2] = {};
 	for (int i = 0; i < 2; i++) {
 		statsBlend[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -138,8 +124,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 	inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-	// Two CDF stats color targets (MRT sublayers) + a transient depth (nearest-occluder select; never
-	// sampled). The blur pipeline below reuses statsFormat[0] (single attachment).
+	// Two CDF stats color targets (MRT sublayers) + transient depth. Blur reuses statsFormat[0].
 	VkFormat statsFormat[2] = { ANO_SHADOW_STATS_FORMAT, ANO_SHADOW_STATS_FORMAT };
 	VkPipelineRenderingCreateInfo renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
@@ -160,15 +145,13 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	pipelineInfo.pDepthStencilState = &depthStencil;
 	pipelineInfo.pColorBlendState = &colorBlending;
 	pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.layout = state->prototypes[PIPELINE_FLAT].layout; // reuse flat's sets 0/1/2 + push
+	pipelineInfo.layout = state->prototypes[PIPELINE_FLAT].layout; // flat's sets 0/1/2 + push
 	pipelineInfo.renderPass = VK_NULL_HANDLE;
 
 	VkResult r = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &pipelineInfo, NULL, &state->shadowPipeline);
 
-	// Alpha-tested caster variant: the ANO_DEPTH_MASKED geometry (position + uv + packed indices)
-	// with shadow_depth_masked.frag (baseColor.a < alphaCutoff discard), drawing each frustum's
-	// MASKED partition after the solid one. All fixed state above is shared — only the stages
-	// differ; the task slot reuses taskModule (still live here), so this must precede the frees.
+	// Alpha-tested caster variant: ANO_DEPTH_MASKED geometry + shadow_depth_masked.frag.
+	// Shares fixed state, only stages differ. Must precede the shader frees (reuses taskModule).
 	VkResult mr = VK_SUCCESS;
 	if (r == VK_SUCCESS) {
 		struct Buffer mGeomCode, mFragCode;
@@ -180,7 +163,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 		VkShaderModule mFragModule = createShaderModule(ctx->device, &mFragCode);
 
 		VkPipelineShaderStageCreateInfo mStages[3] = { stages[0], stages[1], stages[2] };
-		mStages[1].module = mGeomModule; // keeps the shadowPass spec info
+		mStages[1].module = mGeomModule; // keeps shadowPass spec info
 		mStages[2].module = mFragModule;
 		pipelineInfo.pStages = useTask ? mStages : &mStages[1];
 
@@ -203,10 +186,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (mr != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create masked shadow depth pipeline!"); return false; }
 
 	// --- Moment prefilter pipeline: fullscreen separable box over the atlas (X then Y) ---
-	// One combined-image-sampler (the blur source array) at set 0, plus a 16-byte push (dir + layer).
-	// Vertex stage: shadowblur.vert (fullscreen triangle + gl_Layer from the push constant) when the
-	// device has vertex-stage gl_Layer, so both blur directions render as ONE layered pass each;
-	// else the plain fullscreen triangle (tonemap.vert) with per-layer passes. Frag: shadowblur.frag.
+	// One combined-image-sampler at set 0 + 16-byte push (dir + layer).
+	// Vertex: shadowblur.vert (layered) with vertex-stage gl_Layer, else tonemap.vert. Frag: shadowblur.frag.
 	VkDescriptorSetLayoutBinding blurBinding = {};
 	blurBinding.binding = 0;
 	blurBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -217,8 +198,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (vkCreateDescriptorSetLayout(ctx->device, &blurSetInfo, NULL, &state->shadowBlurSetLayout) != VK_SUCCESS) {
 		ano_log(ANO_FATAL, "Failed to create shadow blur set layout!"); return false; }
 
-	// vec2 dir + int layer + int pad. VERTEX included for shadowblur.vert's gl_Layer routing; the
-	// fallback vertex stage ignores it (the record loop always pushes VERTEX|FRAGMENT to match).
+	// vec2 dir + int layer + int pad. VERTEX for shadowblur.vert's gl_Layer routing.
 	VkPushConstantRange blurPush = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16 };
 	VkPipelineLayoutCreateInfo blurLayoutInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = 1, .pSetLayouts = &state->shadowBlurSetLayout,

@@ -52,17 +52,14 @@ bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
 
 bool createLightBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxLights) {
     (void)ctx;
-    // Light palette: ×1 device-local + delta staging (count tracks live lights; create-with-light
-    // and RCMD_LIGHT_* commands stage into it). slot_upload_create zeroes count.
+    // Light palette: ×1 device-local + delta staging.
     return slot_upload_create(&state->lightBuffer, maxLights, sizeof(LightData), SLOT_STAGING_INIT, true);
 }
 
 
 bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     (void)ctx;
-    // Mover bookkeeping for the shadow cache (review finding 8): per-slot non-static-motion flags
-    // plus the swept-exposure mirrors (base pose, mesh index, mover-record map), all grown alongside
-    // the slot table by ensureEntityCapacity.
+    // Mover bookkeeping for the shadow cache: per-slot motion flags + swept-exposure mirrors.
     state->slotMotion   = (uint8_t*)calloc(maxEntities, 1u);
     state->slotBasePose = (mat4*)calloc(maxEntities, sizeof(mat4));
     state->slotMeshIdx  = (uint32_t*)malloc((size_t)maxEntities * sizeof(uint32_t));
@@ -76,22 +73,17 @@ bool createMotionBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEn
     state->movers = NULL;
     state->moverCount = state->moverCap = 0u;
     state->moverUnboundedCount = 0u;
-    // ×1 device-local + delta staging. Fresh slots are written by their CREATE before being
-    // read (a slot is < slotHighWater only after allocation), so no host-side zero-fill is needed.
+    // ×1 device-local + delta staging.
     return slot_upload_create(&state->motionBuffer, maxEntities, sizeof(AnoMotionDescriptor), SLOT_STAGING_INIT, false);
 }
 
-// Slot-indexed per-entity instance channel (tint/flags/scalars). ×1 device-local + delta
-// staging; a CREATE always writes the slot (inert {0} for a recycled hole) before it is read.
-// in:  ctx, state, maxEntities (initial slot count)
-// out: true on success; false on buffer/alloc failure
+// Slot-indexed per-entity instance channel (tint/flags/scalars). ×1 device-local + delta staging.
 bool createInstanceDataBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     (void)ctx;
     return slot_upload_create(&state->instanceDataBuffer, maxEntities, sizeof(AnoInstanceData), SLOT_STAGING_INIT, false);
 }
 
-// Creates one host-visible storage buffer per frame and writes its handle/alloc/mapped
-// pointer back through the out params. Helper for the streamed-transform lane.
+// Per-frame host-visible storage buffer set for the streamed-transform lane.
 static bool createMappedSsboSet(VulkanContext* ctx, VkDeviceSize bytes,
                                 VkBuffer outBufs[MAX_FRAMES_IN_FLIGHT],
                                 GpuAllocation outAllocs[MAX_FRAMES_IN_FLIGHT],
@@ -113,23 +105,18 @@ static bool createMappedSsboSet(VulkanContext* ctx, VkDeviceSize bytes,
     return true;
 }
 
-// Streamed-transform lane (Path B v2 — zero-copy mapped ring). Per-frame resolved-slot
-// buffers (render-written, scatter binding 0) plus ONE producer-written transform ring
-// of ringSlices slices (scatter binding 1 via dynamic offset). The parallel render_id
-// ring (idRing) is CPU-only and allocated from renderHeap in initVulkan once it exists.
-// in:  ctx, state, capacity (STREAM_CAPACITY)
-// out: true on success; false on buffer/alloc failure
+// Streamed-transform lane: per-frame resolved-slot buffers + one producer-written transform ring.
 bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capacity) {
     TransformStreamBuffer* ts = &state->transformStream;
     ts->capacity    = capacity;
     ts->ringSlices  = (uint32_t)MAX_FRAMES_IN_FLIGHT + 2u;   // headroom over frames in flight
-    ts->sliceStride = (VkDeviceSize)capacity * sizeof(mat4); // 16-byte aligned; dynamic-offset unit
+    ts->sliceStride = (VkDeviceSize)capacity * sizeof(mat4); // 16-byte aligned dynamic-offset unit
     ts->produceSeq  = 0;
     atomic_store_explicit(&ts->reclaimSeq, 0, memory_order_relaxed);
     ts->curSeq      = 0;
     ts->curCount    = 0;
-    ts->resolveGen  = 1;                                     // != stagedGen[*] (0) -> first stage runs
-    ts->idRing      = NULL;                                  // render-heap; set in initVulkan
+    ts->resolveGen  = 1;                                     // first stage runs
+    ts->idRing      = NULL;                                  // render-heap, set in initVulkan
     for (int f = 0; f < MAX_FRAMES_IN_FLIGHT; f++) {
         ts->count[f]     = 0;
         ts->dynOffset[f] = 0;
@@ -144,7 +131,7 @@ bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capa
         return false;
     }
 
-    // Single producer-written transform ring: ringSlices slices of `capacity` mat4s.
+    // Single producer-written transform ring of ringSlices slices.
     VkBufferCreateInfo bufferInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size  = (VkDeviceSize)ts->ringSlices * ts->sliceStride,
@@ -170,9 +157,7 @@ bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capa
     return true;
 }
 
-// props selects the backing memory: the live transform buffer is GPU-private
-// (DEVICE_LOCAL, regenerated by update.comp every frame, never CPU-touched), whereas
-// initialTransform stays HOST_VISIBLE until the Slice-2 staging migration owns it.
+// props selects backing memory (live transform = DEVICE_LOCAL, initialTransform = HOST_VISIBLE).
 bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxEntities, VkMemoryPropertyFlags props) {
     buf->capacity = maxEntities;
     buf->count = 0;
@@ -205,10 +190,7 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
     return true;
 }
 
-// Per-light fragment runtime record (LightRuntime = 4x vec4 = 64B/light: pose + color*intensity +
-// range/cone/type). ×MAX_FRAMES_IN_FLIGHT DEVICE_LOCAL, written by lightsetup.comp each frame and read by
-// the fragment passes — same storage class as the transform buffer, so it reuses TransformBuffer (mapped[]
-// stays NULL for device-local). Fixed at the light palette capacity (never grown, like lightBuffer).
+// Per-light fragment runtime record (4x vec4 = 64B). ×MAX_FRAMES_IN_FLIGHT DEVICE_LOCAL, written by lightsetup.comp.
 bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxLights, VkMemoryPropertyFlags props) {
     buf->capacity = maxLights;
     buf->count = 0;
@@ -221,7 +203,7 @@ bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t
         bufferInfo.size = bufferSize;
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        // Async light-cull reads the pose records on the compute family (lightsetup writes on graphics).
+        // Async light-cull reads on compute family.
         uint32_t fams[2];
         if (rendererState.asyncLc) buffer_share_async_compute(&bufferInfo, fams);
 
@@ -247,12 +229,10 @@ bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t
 
 bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxDraws) {
     state->indirectBuffer.capacity = maxDraws;
-    // Size for the larger of the two command formats so one allocation serves both
-    // paths: VkDrawMeshTasksIndirectCommandEXT (12 B) or VkDrawIndexedIndirectCommand (20 B).
+    // Larger of the two command formats (mesh-tasks 12 B, indexed 20 B).
     VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
         ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
-    // Partitioned: each camera view owns every draw slot, each shadow frustum owns one slot-0
-    // partition (ano_draw_partition_count(), see components.h), each holding up to maxDraws commands.
+    // Partitioned by ano_draw_partition_count(), maxDraws commands per partition.
     VkDeviceSize bufferSize = cmdStride * maxDraws * ano_draw_partition_count();
 
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -272,7 +252,7 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
         VkMemoryRequirements memReqs;
         vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memReqs);
 
-        // GPU-private: vkCmdFillBuffer + cull.comp write it, draw-indirect reads it; never CPU-touched.
+        // GPU-private, written by vkCmdFillBuffer + cull.comp, read by draw-indirect.
         state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (state->indirectBuffer.allocs[i].memory == VK_NULL_HANDLE) {
             vkDestroyBuffer(ctx->device, state->indirectBuffer.buffer[i], NULL);
@@ -286,16 +266,12 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
     return true;
 }
 
-// Clustered-forward froxel light lists. Fixed size (ANO_CLUSTER_COUNT froxels), independent of
-// entity/light count, so these are a one-time DEVICE_LOCAL allocation off the growth path. Per
-// frame: the light-cull compute writes them and the same frame's fragment passes read them.
-// in:  ctx, state
-// out: true on success; populates frames[i].clusterLight{Count,Index}Buffer/Alloc
+// Clustered-forward froxel light lists. Fixed size (ANO_CLUSTER_COUNT), one-time DEVICE_LOCAL allocation.
 bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
     VkDeviceSize countSize = (VkDeviceSize)sizeof(uint32_t) * ANO_CLUSTER_COUNT;
     VkDeviceSize indexSize = (VkDeviceSize)sizeof(uint32_t) * ANO_CLUSTER_COUNT * ANO_CLUSTER_MAX_LIGHTS;
 
-    // Per view per frame: each view's light-cull bins lights against its own frustum.
+    // Per view per frame.
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
             ViewResources* vr = &state->frames[i].views[v];
@@ -303,8 +279,7 @@ bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
             info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
             info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            // Async light-cull writes the lists on the compute family; the fragment passes read
-            // them on graphics.
+            // Async light-cull writes on compute family, fragment passes read on graphics.
             uint32_t fams[2];
             if (rendererState.asyncLc) buffer_share_async_compute(&info, fams);
             VkMemoryRequirements memReqs;
@@ -332,32 +307,27 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     state->culling.maxEntities = maxEntities;
     uint32_t maxMeshes = ANO_MAX_MESHES; // must match the descriptor ranges in instanceInit.c
 
-    // Per-view screen-area cull + LOD thresholds (review 4.9 steps 1-2); runtime-overridable per
-    // view via ano_render_set_view_cull_threshold / ano_render_set_view_lod_threshold. Same default
-    // for every view; tune at runtime.
+    // Per-view screen-area cull + LOD thresholds, runtime-overridable per view.
     for (uint32_t v = 0; v < ANO_VIEW_COUNT; ++v) {
         state->cullPixelThreshold[v] = ANO_CULL_PIXEL_THRESHOLD_DEFAULT;
         state->lodPixelThreshold[v]  = ANO_LOD_PIXEL_THRESHOLD_DEFAULT;
-        state->hizEnable[v] = 0u;                          // Hi-Z occlusion off by default (review 4.9 step 3)
+        state->hizEnable[v] = 0u;                          // Hi-Z occlusion off by default
         for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
-            memset(state->viewProjHist[f][v], 0, sizeof(mat4)); // first frames: zero matrix -> reprojection skipped
+            memset(state->viewProjHist[f][v], 0, sizeof(mat4)); // zero matrix -> reprojection skipped
     }
-    // Test hook: enable view 0's occlusion test from startup (same effect as the H key) for
-    // headless A/B of the Hi-Z consumption path (in-frame lag-1 vs async lag-2, review finding 2).
+    // Test hook, enables view 0 occlusion from startup (same as the H key).
     if (getenv("ANO_HIZ_ON")) state->hizEnable[0] = 1u;
-    state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // shadow LOD offset relative to view-0 LOD (0 = exact match)
+    state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // shadow LOD offset relative to view-0
     
-    VkDeviceSize meshDataSize = sizeof(uint32_t) * 9 * maxMeshes; // MeshData: 9 u32 (8 + lodCount)
+    VkDeviceSize meshDataSize = sizeof(uint32_t) * 9 * maxMeshes; // MeshData 9 u32 (8 + lodCount)
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
     VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_partition_count();
     VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_partition_count();
-    // Transparency sort keys: one float per camera draw slot (only the transmission partition writes
-    // them, but sizing per camera-view keeps the index = view*maxEntities + writeIdx trivially in range).
+    // Transparency sort keys, one float per camera draw slot.
     VkDeviceSize sortKeysSize = sizeof(float) * (VkDeviceSize)ANO_VIEW_COUNT * maxEntities;
     VkDeviceSize uboSize = sizeof(CullUBO);
     
-    // Per-slot mesh/material (meshIndex, materialIndex): ×1 device-local + delta staging,
-    // replacing the former per-frame host-visible entityBuffer.
+    // Per-slot mesh/material, ×1 device-local + delta staging.
     if (!slot_upload_create(&state->culling.entity, maxEntities, sizeof(uint32_t) * 2u, SLOT_STAGING_INIT, false))
         return false;
 
@@ -404,7 +374,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         countInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         vkCreateBuffer(ctx->device, &countInfo, NULL, &state->culling.drawCountBuffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.drawCountBuffer[i], &memReqs);
-        // GPU-private: zeroed by vkCmdFillBuffer, atomic-incremented by cull.comp, read by draw-indirect-count.
+        // GPU-private, zeroed by vkCmdFillBuffer, incremented by cull.comp, read by draw-indirect-count.
         state->culling.drawCountAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (state->culling.drawCountAllocs[i].memory == VK_NULL_HANDLE) {
             vkDestroyBuffer(ctx->device, state->culling.drawCountBuffer[i], NULL);
@@ -421,7 +391,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         compactedInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         vkCreateBuffer(ctx->device, &compactedInfo, NULL, &state->culling.compactedEntityIndicesBuffer[i]);
         vkGetBufferMemoryRequirements(ctx->device, state->culling.compactedEntityIndicesBuffer[i], &memReqs);
-        // GPU-private: written by cull.comp (compaction), read by the geometry stage.
+        // GPU-private, written by cull.comp, read by the geometry stage.
         state->culling.compactedEntityIndicesAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (state->culling.compactedEntityIndicesAllocs[i].memory == VK_NULL_HANDLE) {
             vkDestroyBuffer(ctx->device, state->culling.compactedEntityIndicesBuffer[i], NULL);
@@ -430,7 +400,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         vkBindBufferMemory(ctx->device, state->culling.compactedEntityIndicesBuffer[i], state->culling.compactedEntityIndicesAllocs[i].memory, state->culling.compactedEntityIndicesAllocs[i].offset);
         state->culling.compactedEntityIndicesMapped[i] = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
 
-        // Sort Keys Buffer (transparency sort): GPU-private, written by cull.comp, read by tpsort.comp.
+        // Sort Keys Buffer, GPU-private, written by cull.comp, read by tpsort.comp.
         VkBufferCreateInfo sortKeysInfo = {};
         sortKeysInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         sortKeysInfo.size = sortKeysSize;
@@ -478,7 +448,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
     };
     
-    // Winding matches the glTF convention (CCW front under frontFace=CCW + Y-flip projection). Per triangle (a,b,c) -> (a,c,b).
+    // glTF CCW winding. Per triangle (a,b,c) -> (a,c,b).
     const uint32_t cubeIndices[] = {
         0, 2, 1, 2, 0, 3, // front
         1, 6, 5, 6, 1, 2, // right
@@ -521,11 +491,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
     return true;
 }
 
-// Create every slot-indexed / palette scene buffer + the shadow resources in one shot (hoisted from
-// initVulkan's buffer-creation block; uses the file-global ctx / rendererState). The slot-indexed
-// buffers start at INITIAL_ENTITY_CAPACITY and grow on demand (ensureEntityCapacity); material/light
-// are distinct-element palettes on their own capacity axis.
-// out: true on success; false on any buffer/alloc failure (caller drops into unInitVulkan).
+// Create every slot-indexed / palette scene buffer + shadow resources in one shot.
 bool ano_vk_create_scene_resources(void)
 {
 	rendererState.entityCount = 0;
