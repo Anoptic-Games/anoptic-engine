@@ -8,6 +8,7 @@
 // prototype, and a composite blend pipeline sharing the tonemap set/pipeline layout.
 
 #include "vulkan_backend/text_raster.h"
+#include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include "vulkan_backend/texture/texture.h"
@@ -29,7 +30,8 @@
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
-// Push-constant block shared with textraster.comp (24 B).
+// Push-constant block shared with textraster.comp (32 B; the shader may declare a
+// prefix of it). uiPrimCount/uiClipCount stay 0 until the UI compose lands (step 5).
 typedef struct TextRasterPush {
     uint32_t instanceCount;
     uint32_t flags;
@@ -37,6 +39,8 @@ typedef struct TextRasterPush {
     uint32_t extentH;
     uint32_t originX; // dispatch region offset, pixels (tile-aligned)
     uint32_t originY;
+    uint32_t uiPrimCount;
+    uint32_t uiClipCount;
 } TextRasterPush;
 
 // TextRasterPush.flags bits (mirrored in textraster.comp).
@@ -262,23 +266,25 @@ static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
     return true;
 }
 
-// Builds the compute raster prototype: 3 SSBOs + 1 storage image, 16 B push.
+// Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 4 UI-table
+// SSBOs (bindings 4-7: prim/clip/paint/stop regions of uiFrameBuffer), 32 B push.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[4] = {};
-    for (uint32_t b = 0; b < 4; ++b)
+    VkDescriptorSetLayoutBinding bindings[8] = {};
+    for (uint32_t b = 0; b < 8; ++b)
     {
         bindings[b].binding = b;
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
-        // World lane reads the three glyph buffers through the same set, overlay image compute-only.
+        // World lane reads the three glyph buffers through the same set; the overlay
+        // image and the UI tables are compute-only.
         bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
                                | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT : 0u);
     }
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = 8;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->textRasterSetLayout) != VK_SUCCESS)
         return false;
@@ -882,6 +888,8 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
         writes[4].pImageInfo = &sampleInfo;
         vkUpdateDescriptorSets(ctx->device, 5, writes, 0, NULL);
     }
+    // UI table bindings 4-7 ride the same sets; ui_raster.c owns their writes.
+    ano_vk_ui_write_sets(ctx, state);
 }
 
 // The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
@@ -919,7 +927,8 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
     // Raster dispatch: 8x8 pixel tiles over the pending text's pixel bounds, outside
     // stays transparent. The opaque self-test keeps the full-canvas dispatch.
     TextRasterPush push = { .instanceCount = state->textInstanceCount, .flags = state->textFlags,
-                            .extentW = state->imageExtent.width, .extentH = state->imageExtent.height };
+                            .extentW = state->imageExtent.width, .extentH = state->imageExtent.height,
+                            .uiPrimCount = state->uiPrimCount, .uiClipCount = state->uiClipCount };
     uint32_t gx = 0, gy = 0;
     if (state->textFlags & ANO_TEXT_RASTER_OPAQUE)
     {
