@@ -67,8 +67,7 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state);
 // Creates transform buffers for meshes
 
 
-// Updates the uniform buffer
-bool updateUniformBuffer(VulkanContext* ctx, RendererState* state);
+// updateUniformBuffer moved to frame/update.c (declared in vulkan_backend/frame/frame.h).
 
 // Updates a mesh's transform matrices
 bool updateMeshTransforms(VulkanContext* ctx, RenderEntity* entity, float move);
@@ -137,5 +136,10 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
 const char** getRequiredExtensions(uint32_t* extensionsCount);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
 void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger);
+
+// Cross-file helpers exposed by the instance/ split (device.c / instance.c definitions consumed by
+// commands.c / cleanup.c). Formerly file-local to instanceInit.c.
+struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR *surface);
+void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator);
 
 #endif
