@@ -326,3 +326,53 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4])
     for (int k = 0; k < 4; k++)
         out[k] = acc[k];
 }
+
+// Contribution of one tile entry: normal shade, or (solid bit) coverage forced to 1 with
+// the SDF skipped — the flat fill through clip and paint. Mirrors the GPU tiled branch.
+static void shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t py, float src[4])
+{
+    uint32_t idx = entry & ANO_UI_ENTRY_INDEX_MASK;
+    if (!(entry & ANO_UI_ENTRY_SOLID)) {
+        ano_ui_ref_shade(s, idx, (float)px, (float)py, src);
+        return;
+    }
+    const AnoUiPrim *p = &s->prims[idx];
+    float cov = 1.0f;
+    if (p->clipRef != ANO_UI_REF_NONE)
+        cov *= clip_cov(s, p->clipRef, (float)px, (float)py);
+    float fill[4];
+    ano_ui_ref_paint(s, p->paintRef, px + 0.5f, py + 0.5f, p->color, fill);
+    for (int k = 0; k < 4; k++)
+        src[k] = fill[k] * cov;
+}
+
+// Painter's-order blend at one pixel through the tile grid: the same loop as
+// ano_ui_ref_eval but over pixel (px,py)'s tile list only. Bit-identical to the brute
+// evaluation when the grid covers every prim; the GPU tiled path mirrors THIS.
+void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
+                           uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
+                           const uint32_t *entries, int32_t px, int32_t py, float out[4])
+{
+    float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    int32_t tx = (px - ox) / 8, ty = (py - oy) / 8;
+    if (px < ox || py < oy || tx >= (int32_t)tilesX || ty >= (int32_t)tilesY) {
+        for (int k = 0; k < 4; k++) out[k] = 0.0f;
+        return;
+    }
+    uint32_t tile = (uint32_t)ty * tilesX + (uint32_t)tx;
+    for (uint32_t k = offsets[tile]; k < offsets[tile + 1]; k++) {
+        uint32_t entry = entries[k];
+        float src[4];
+        shade_entry(s, entry, px, py, src);
+        if ((s->prims[entry & ANO_UI_ENTRY_INDEX_MASK].flags & ANO_UI_BLEND_MASK) == ANO_UI_BLEND_ADD) {
+            acc[0] += src[0];
+            acc[1] += src[1];
+            acc[2] += src[2];
+        } else {
+            for (int i = 0; i < 4; i++)
+                acc[i] = src[i] + acc[i] * (1.0f - src[3]);
+        }
+    }
+    for (int k = 0; k < 4; k++)
+        out[k] = acc[k];
+}

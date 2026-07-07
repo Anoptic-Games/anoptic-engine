@@ -59,6 +59,30 @@ void main()
     vec4 acc = vec4(0.0);
 
     // UI prims underlay the glyphs; ADD prims light rgb without occluding.
+    if ((pc.flags & 8u) != 0u)
+    {
+        // Tiled: this workgroup IS a tile of the dispatch grid; walk only its prim list
+        // (built CPU-side to match the grid). A solid entry skips the SDF.
+        uint tileIdx = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        uint eBeg = uiTileOff[tileIdx];
+        uint eEnd = uiTileOff[tileIdx + 1u];
+        if (valid)
+        {
+            for (uint e = eBeg; e < eEnd; e++)
+            {
+                uint entry = uiTileEnt[e];
+                uint idx = entry & UI_ENTRY_INDEX_MASK;
+                vec4 src = (entry & UI_ENTRY_SOLID) != 0u
+                         ? ui_shade_solid(idx, pixTL, pc.uiClipCount, pc.uiPaintCount)
+                         : ui_shade(idx, pixTL, pc.uiClipCount, pc.uiPaintCount);
+                if ((uiPrims[idx].flags & UI_BLEND_MASK) == UI_BLEND_ADD)
+                    acc.rgb += src.rgb;
+                else
+                    acc = src + acc * (1.0 - src.a);
+            }
+        }
+    }
+    else
     for (uint base = 0u; base < pc.uiPrimCount; base += CHUNK)
     {
         if (gl_LocalInvocationIndex == 0u)

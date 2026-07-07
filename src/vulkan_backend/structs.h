@@ -53,6 +53,10 @@
 #define ANO_UI_MAX_PAINTS        256u
 #define ANO_UI_MAX_STOPS         1024u
 #define ANO_UI_MAX_CURVE_WORDS   16384u // packed path curve stream (binding 8), 64 KiB/slot
+// Per-tile prim lists (binding 9 offsets, 10 entries). Offset words cover the max 8px
+// grid (2560x1368 = 54720 tiles) + slack + the trailing total, 256-word aligned.
+#define ANO_UI_TILE_OFFSET_WORDS 65792u
+#define ANO_UI_MAX_TILE_ENTRIES  262144u
 // UI glyph labels live in their own region of the text frame buffer, above the world
 // panel, so the plain glyph loop never draws them (UI_GLYPHS prims do, z-interleaved).
 #define ANO_UI_GLYPH_FIRST       16384u
@@ -494,6 +498,11 @@ typedef struct PerFrameResources
     GpuAllocation       uiFrameAlloc;
     void*               uiFrameMapped;
     uint32_t            uiSlotVersion;   // uiVersion this slot's tables last copied
+    // Per-tile prim lists (§3.7): built into this slot's tile regions in the record path;
+    // the key skips the rebuild unless the version OR dispatch grid changed.
+    uint32_t            uiTileVersion;   // 0 = never built / invalid
+    int32_t             uiTileOx, uiTileOy;
+    uint32_t            uiTileGx, uiTileGy;
     VkDescriptorSet     textRasterSet;   // curves + directory + frame data + storage image
     VkDescriptorSet     textOverlaySet;  // sampled overlay for composite
     VkCommandBuffer     textCommandBuffer; // async text raster CB, NULL when asyncText off
@@ -605,6 +614,8 @@ typedef struct RendererState
     AnoUiStop*              uiPendingStops;
     uint32_t*               uiPendingCurves;
     AnoGlyphInstance*       uiPendingGlyphs;
+    uint32_t*               uiTileCursor;        // per-tile fill cursor scratch (tile build)
+    bool                    uiTilesEnabled;      // !ANO_FORCE_NO_UI_TILES, resolved at init
     uint32_t                uiPendingPrimCount;
     uint32_t                uiPendingClipCount;
     uint32_t                uiPendingPaintCount;

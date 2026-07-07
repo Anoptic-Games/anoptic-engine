@@ -33,9 +33,10 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	// Transparency sort adds cull binding 10 (1 SSBO sort-key), the +1 shared term below.
 	// global 12 SSBOs/view (binding 12 = per-light LightRuntime), + lightsetup set (3 SSBO) shared.
 	// Text overlay adds per frame: raster set (3 SSBO + 1 storage image) + overlay sample set (1 sampler), 2 sets.
-	// UI lane adds per frame: raster-set bindings 4-8 (5 SSBO: prim/clip/paint/stop/curve).
+	// UI lane adds per frame: raster-set bindings 4-10 (7 SSBO: prim/clip/paint/stop/curve
+	// + per-tile offsets/entries).
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u + 3u + 1u + 5u);
+	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u + 3u + 1u + 7u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1 xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;

@@ -699,6 +699,98 @@ static void test_blend(void)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Per-tile lists: the tiled walk must be BIT-IDENTICAL to the brute painter's-order
+// evaluation. Prims outside a pixel's tile contribute coverage 0 (they are outside their
+// influence box), and a solid entry's forced coverage 1 is exact, so equality is exact.
+
+static void demo_build(AnoUiPrim *prims, AnoUiClip *clips, AnoUiPaint *paints,
+                       AnoUiStop *stops, uint32_t *curves, AnoUiBuilder *b);
+
+// Tile-grid a scene from its prim-influence union, then compare tiled vs brute at every
+// pixel the grid covers (plus a margin, where both must read empty). Returns worst delta.
+static double tiles_check(const AnoUiScene *s, const char *name)
+{
+    float lo[2] = { 1e30f, 1e30f }, hi[2] = { -1e30f, -1e30f };
+    for (uint32_t i = 0; i < s->primCount; i++) {
+        float mn[2], mx[2];
+        ano_ui_prim_aabb(&s->prims[i], mn, mx);
+        lo[0] = fminf(lo[0], mn[0]); lo[1] = fminf(lo[1], mn[1]);
+        hi[0] = fmaxf(hi[0], mx[0]); hi[1] = fmaxf(hi[1], mx[1]);
+    }
+    int32_t ox = (int32_t)floorf(lo[0] / 8.0f) * 8, oy = (int32_t)floorf(lo[1] / 8.0f) * 8;
+    uint32_t tilesX = (uint32_t)(((int32_t)ceilf(hi[0]) - ox + 7) / 8);
+    uint32_t tilesY = (uint32_t)(((int32_t)ceilf(hi[1]) - oy + 7) / 8);
+    uint32_t nTiles = tilesX * tilesY;
+    uint32_t *offsets = malloc((size_t)(nTiles + 1) * 4);
+    uint32_t *cursor = malloc((size_t)nTiles * 4);
+    uint32_t entryCap = 1u << 20;
+    uint32_t *entries = malloc((size_t)entryCap * 4);
+    bool ok = false;
+    uint32_t nEntries = ano_ui_tile_build(s, ox, oy, tilesX, tilesY, offsets, nTiles + 1,
+                                          entries, entryCap, cursor, &ok);
+    CHECK(ok, "tile build fits caps");
+    uint32_t nSolid = 0;
+    for (uint32_t k = 0; k < nEntries; k++)
+        if (entries[k] & ANO_UI_ENTRY_SOLID) nSolid++;
+    double worst = 0.0;
+    for (int32_t py = oy - 4; py < oy + (int32_t)tilesY * 8 + 4; py++)
+        for (int32_t px = ox - 4; px < ox + (int32_t)tilesX * 8 + 4; px++) {
+            float a[4], t[4];
+            ano_ui_ref_eval(s, (float)px, (float)py, a);
+            ano_ui_ref_eval_tiled(s, ox, oy, tilesX, tilesY, offsets, entries, px, py, t);
+            for (int k = 0; k < 4; k++)
+                worst = fmax(worst, fabs((double)a[k] - (double)t[k]));
+        }
+    printf("  tiles %-8s %ux%u  %u entries (%u solid)  worst |tiled-brute| %.9f\n",
+           name, tilesX, tilesY, nEntries, nSolid, worst);
+    free(offsets); free(cursor); free(entries);
+    return worst;
+}
+
+static void test_tiles(uint32_t soak)
+{
+    // Demo scene: every prim kind, a clip, a gradient, a path.
+    AnoUiPrim prims[32];
+    AnoUiClip clips[4];
+    AnoUiPaint paints[8];
+    AnoUiStop stops[16];
+    uint32_t curves[256];
+    AnoUiBuilder b;
+    demo_build(prims, clips, paints, stops, curves, &b);
+    AnoUiScene s = ano_ui_scene(&b);
+    // The demo has shadows; the tiled path clips a shadow at its 3-sigma AABB exactly as
+    // the GPU brute cull (ui_box_hits) does, while the uncalled reference keeps the whole
+    // Gaussian tail — so the only difference is that sub-1/255 tail, not an assignment bug.
+    CHECK(tiles_check(&s, "demo") <= 2e-3, "demo tiled matches brute within the shadow-cull tail");
+
+    // Shadow-free random rrects (fills, rings, blends) on fractional tile-straddling
+    // positions must be EXACTLY equal: outside its AABB an rrect contributes coverage 0,
+    // and a solid entry's forced coverage 1 is exact.
+    test_rng rng = rng_make(0x7113ED00u);
+    for (uint32_t it = 0; it < 1u + soak; it++) {
+        AnoUiPrim rp[24];
+        AnoUiBuilder rb;
+        ano_ui_builder_init(&rb, rp, 24, NULL, 0, NULL, 0, NULL, 0);
+        uint32_t n = 6 + rng_below(&rng, 14);
+        for (uint32_t i = 0; i < n; i++) {
+            float x = 20.0f + (float)rng_below(&rng, 2000) * 0.1f;
+            float y = 20.0f + (float)rng_below(&rng, 1500) * 0.1f;
+            float w = 10.0f + (float)rng_below(&rng, 600) * 0.1f;
+            float h = 10.0f + (float)rng_below(&rng, 400) * 0.1f;
+            float rr = (float)rng_below(&rng, 12);
+            float col[4] = { 0.5f, 0.4f, 0.6f, 0.3f + (float)rng_below(&rng, 70) * 0.01f };
+            float radii[4] = { rr, rr, rr, rr };
+            ano_ui_rrect(&rb, (float[2]){ x, y }, (float[2]){ x + w, y + h }, radii, col,
+                         rng_below(&rng, 4) == 0 ? 2.0f : 0.0f, ANO_UI_REF_NONE,
+                         ANO_UI_REF_NONE, rng_below(&rng, 3) == 0 ? ANO_UI_BLEND_ADD : 0u);
+        }
+        AnoUiScene rs = ano_ui_scene(&rb);
+        if (tiles_check(&rs, "random") != 0.0)
+            CHECK(false, "random rrects tiled == brute (bit-identical)");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Standing demo scene: determinism golden + the GPU screenshot harness. The GPU path
 // (ANO_UI_OPAQUE) renders the same scene over an opaque black backdrop straight into
 // the sRGB swapchain; the reference mimics both quantizers (UNORM8 linear overlay,
@@ -884,6 +976,7 @@ int main(int argc, char **argv)
     test_clip();
     test_gradient();
     test_path();
+    test_tiles(soak);
     test_shadow();
     test_blend();
     test_demo();

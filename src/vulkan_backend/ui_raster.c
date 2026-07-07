@@ -32,10 +32,15 @@
 #define ANO_UI_STOP_BYTES  (ANO_UI_MAX_STOPS * (uint32_t)sizeof(AnoUiStop))
 #define ANO_UI_CURVE_OFF   (ANO_UI_STOP_OFF + ANO_UI_STOP_BYTES)
 #define ANO_UI_CURVE_BYTES (ANO_UI_MAX_CURVE_WORDS * 4u)
-#define ANO_UI_FRAME_BYTES (ANO_UI_CURVE_OFF + ANO_UI_CURVE_BYTES)
+#define ANO_UI_TILEOFF_OFF   (ANO_UI_CURVE_OFF + ANO_UI_CURVE_BYTES)
+#define ANO_UI_TILEOFF_BYTES (ANO_UI_TILE_OFFSET_WORDS * 4u)
+#define ANO_UI_TILEENT_OFF   (ANO_UI_TILEOFF_OFF + ANO_UI_TILEOFF_BYTES)
+#define ANO_UI_TILEENT_BYTES (ANO_UI_MAX_TILE_ENTRIES * 4u)
+#define ANO_UI_FRAME_BYTES   (ANO_UI_TILEENT_OFF + ANO_UI_TILEENT_BYTES)
 
 static_assert((ANO_UI_CLIP_OFF % 256u) == 0 && (ANO_UI_PAINT_OFF % 256u) == 0
-                  && (ANO_UI_STOP_OFF % 256u) == 0 && (ANO_UI_CURVE_OFF % 256u) == 0,
+                  && (ANO_UI_STOP_OFF % 256u) == 0 && (ANO_UI_CURVE_OFF % 256u) == 0
+                  && (ANO_UI_TILEOFF_OFF % 256u) == 0 && (ANO_UI_TILEENT_OFF % 256u) == 0,
               "region offsets must satisfy the worst-case storage-buffer alignment");
 
 // Conservative pixel AABB of the pending prims (shadow prims reach 3 sigma; identity
@@ -215,8 +220,11 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
         state->uiPendingCurves = mi_heap_malloc(state->textHeap, ANO_UI_CURVE_BYTES);
         state->uiPendingGlyphs = mi_heap_malloc(state->textHeap,
                                                 ANO_UI_MAX_GLYPHS * sizeof(AnoGlyphInstance));
+        state->uiTileCursor = mi_heap_malloc(state->textHeap, ANO_UI_TILE_OFFSET_WORDS * 4u);
+        state->uiTilesEnabled = getenv("ANO_FORCE_NO_UI_TILES") == NULL;
         if (!state->uiPendingPrims || !state->uiPendingClips || !state->uiPendingPaints
-            || !state->uiPendingStops || !state->uiPendingCurves || !state->uiPendingGlyphs)
+            || !state->uiPendingStops || !state->uiPendingCurves || !state->uiPendingGlyphs
+            || !state->uiTileCursor)
         {
             ano_log(ANO_WARN, "UI overlay disabled: pending table allocation failed.");
             state->uiPendingPrims = NULL;
@@ -324,6 +332,44 @@ void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
         state->uiBounds[k] = state->uiPendingBounds[k];
 }
 
+// Builds this slot's per-tile prim lists for the dispatch grid, scattering the pending
+// prims (the pure ano_ui_tile_build) straight into the slot's mapped tile regions. The
+// entry indices reference the same prims the slot's binding-4 region holds. Cached on
+// (version, grid) so an idle UI rebuilds nothing. See ui_raster.h.
+bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex,
+                           int32_t ox, int32_t oy, uint32_t gx, uint32_t gy)
+{
+    if (!state->uiTilesEnabled || !state->uiOverlay || state->uiPendingPrims == NULL
+        || state->uiTileCursor == NULL)
+        return false;
+    if ((uint64_t)gx * (uint64_t)gy + 1u > ANO_UI_TILE_OFFSET_WORDS)
+        return false; // grid too large for the offset region -> brute
+    PerFrameResources* fr = &state->frames[frameIndex];
+    if (fr->uiFrameBuffer == VK_NULL_HANDLE || fr->uiFrameMapped == NULL)
+        return false;
+    if (fr->uiTileVersion == state->uiVersion && fr->uiTileVersion != 0
+        && fr->uiTileOx == ox && fr->uiTileOy == oy && fr->uiTileGx == gx && fr->uiTileGy == gy)
+        return true; // slot already holds these tiles
+
+    AnoUiScene s = { state->uiPendingPrims, state->uiPendingPrimCount,
+                     NULL, 0, NULL, 0, NULL, 0, NULL, 0 };
+    uint32_t* offsets = (uint32_t*)((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEOFF_OFF);
+    uint32_t* entries = (uint32_t*)((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEENT_OFF);
+    bool ok = false;
+    uint32_t total = ano_ui_tile_build(&s, ox, oy, gx, gy, offsets, ANO_UI_TILE_OFFSET_WORDS,
+                                       entries, ANO_UI_MAX_TILE_ENTRIES, state->uiTileCursor, &ok);
+    if (!ok)
+    {
+        fr->uiTileVersion = 0; // entry overflow: rebuild next time, brute this frame
+        return false;
+    }
+    fr->uiTileVersion = state->uiVersion;
+    fr->uiTileOx = ox; fr->uiTileOy = oy; fr->uiTileGx = gx; fr->uiTileGy = gy;
+    ano_log(ANO_INFO, "UI tiles: %ux%u grid, %u prims -> %u entries (slot %u)",
+            gx, gy, state->uiPendingPrimCount, total, frameIndex);
+    return true;
+}
+
 // Writes bindings 4-7 of every slot's shared raster set. When a slot's table buffer
 // is absent (creation failure), the bindings point at the slot's text frame buffer:
 // any valid SSBO keeps the set legal, and pinned-zero counts mean it is never read.
@@ -334,7 +380,7 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         PerFrameResources* fr = &state->frames[i];
-        VkDescriptorBufferInfo infos[5];
+        VkDescriptorBufferInfo infos[7];
         if (fr->uiFrameBuffer != VK_NULL_HANDLE)
         {
             infos[0] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, 0, ANO_UI_PRIM_BYTES };
@@ -342,14 +388,16 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
             infos[2] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_PAINT_OFF, ANO_UI_PAINT_BYTES };
             infos[3] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_STOP_OFF, ANO_UI_STOP_BYTES };
             infos[4] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_CURVE_OFF, ANO_UI_CURVE_BYTES };
+            infos[5] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_TILEOFF_OFF, ANO_UI_TILEOFF_BYTES };
+            infos[6] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_TILEENT_OFF, ANO_UI_TILEENT_BYTES };
         }
         else
         {
-            for (int k = 0; k < 5; k++)
+            for (int k = 0; k < 7; k++)
                 infos[k] = (VkDescriptorBufferInfo){ fr->textFrameBuffer, 0, VK_WHOLE_SIZE };
         }
-        VkWriteDescriptorSet writes[5] = {};
-        for (uint32_t w = 0; w < 5; ++w)
+        VkWriteDescriptorSet writes[7] = {};
+        for (uint32_t w = 0; w < 7; ++w)
         {
             writes[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[w].dstSet = fr->textRasterSet;
@@ -358,7 +406,8 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
             writes[w].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[w].pBufferInfo = &infos[w];
         }
-        vkUpdateDescriptorSets(ctx->device, 5, writes, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
+        fr->uiTileVersion = 0; // a (re)bound slot buffer holds no tiles yet — force a rebuild
     }
 }
 
