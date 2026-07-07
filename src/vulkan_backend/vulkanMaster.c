@@ -213,8 +213,9 @@ void drawFrame()
 	// Ingest ECS->render transitions for this frame slot.
 	render_apply_commands(&rendererState, rendererState.frameIndex);
 
-	// Copy pending on-screen text into this slot's frame buffer (post-fence).
+	// Copy pending on-screen text + UI tables into this slot's buffers (post-fence).
 	ano_vk_text_frame_refresh(&rendererState, rendererState.frameIndex);
+	ano_vk_ui_frame_refresh(&rendererState, rendererState.frameIndex);
 
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
 	if (rendererState.asyncLc)

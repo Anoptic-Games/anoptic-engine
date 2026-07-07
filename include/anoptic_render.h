@@ -33,6 +33,7 @@ It is the bridge betwixt engine <===> renderer.
 #include <stdbool.h>
 #include <anoptic_math.h> // mat4, Vector4
 #include <anoptic_text.h> // AnoFontBake, AnoGlyphInstance (logic-side text shaping)
+#include <anoptic_ui.h>   // AnoUiPrim/Clip/Paint/Stop + builder (logic-side UI layout)
 
 // ---------------------------------------------------------------------------
 // Renderer lifecycle (render world; runs on the main thread)
@@ -229,6 +230,8 @@ typedef enum RenderCommandKind
     RCMD_LIGHT_DETACH,      // remove an attached light (addressed by light_id)
     RCMD_TEXT_SET,          // replace a screen-text block's shaped instances (addressed by text_id); see ano_render_text_set
     RCMD_TEXT_CLEAR,        // remove a screen-text block (addressed by text_id)
+    RCMD_UI_SET,            // replace a UI block's prim stream + tables (addressed by ui_id); see ano_render_ui_set
+    RCMD_UI_CLEAR,          // remove a UI block (addressed by ui_id)
 } RenderCommandKind;
 
 // Which payload fields a CREATE/UPDATE carries. A single UPDATE may set several
@@ -320,6 +323,39 @@ typedef struct RenderTextBlock
     const AnoGlyphInstance *instances;  // [count] shaped glyphs (48-byte GPU ABI)
 } RenderTextBlock;
 
+// Per-block caps for RCMD_UI_SET (the composed union across blocks additionally caps at
+// the render-side table sizes; a block that would overflow the union is skipped whole,
+// never truncated — truncation would corrupt clip/paint/glyph references).
+#define ANO_RENDER_UI_MAX_PRIMS  1024u
+#define ANO_RENDER_UI_MAX_CLIPS  64u
+#define ANO_RENDER_UI_MAX_PAINTS 64u
+#define ANO_RENDER_UI_MAX_STOPS  256u
+#define ANO_RENDER_UI_MAX_GLYPHS 2048u
+
+// One UI block (RCMD_UI_SET): a z-ordered prim stream with its side tables and shaped
+// glyph labels, addressed by a producer-owned ui_id (its namespace, like text_id). SET
+// is a full replace; CLEAR removes the block. Blocks compose ascending by (layer,
+// creation order); within a block, prim index IS paint order. References are BLOCK-
+// LOCAL (prim clipRef/paintRef into this block's tables, UI_GLYPHS aux0 into glyphs[])
+// and are rebased render-side at compose. Positions are overlay pixels; scroll adds to
+// every position at compose (reserved for a future scroll verb, 0 today). Submit via
+// ano_render_ui_set, which packs everything into one render-owned allocation.
+typedef struct RenderUiBlock
+{
+    uint32_t layer;
+    float    scroll[2];
+    uint32_t primCount;
+    uint32_t clipCount;
+    uint32_t paintCount;
+    uint32_t stopCount;
+    uint32_t glyphCount;
+    const AnoUiPrim        *prims;
+    const AnoUiClip        *clips;
+    const AnoUiPaint       *paints;
+    const AnoUiStop        *stops;
+    const AnoGlyphInstance *glyphs;
+} RenderUiBlock;
+
 // Zero-copy producer write-region for the streamed-transform lane (Path B v2). Rather
 // than copy a per-tick batch through the command ring, the producer reserves the next
 // free GPU ring slice (ano_render_stream_begin), writes its render_ids + live world
@@ -362,6 +398,8 @@ typedef struct RenderCommand
     const RenderDestroyBatch *destroy;  // RCMD_BULK_DESTROY only
     const RenderTextBlock *text;        // RCMD_TEXT_SET only (render-owned copy; the registry adopts it)
     uint32_t          text_id;          // RCMD_TEXT_SET/CLEAR : producer-owned logical block handle
+    const RenderUiBlock *ui;            // RCMD_UI_SET only (render-owned copy; the registry adopts it)
+    uint32_t          ui_id;            // RCMD_UI_SET/CLEAR : producer-owned logical block handle
     bool              bulk_owned;       // render side frees the batch block after consumption (set by the bulk submit helpers)
     uint64_t          stream_seq;       // RCMD_STREAM_TRANSFORMS: published ring-slice token
     uint32_t          stream_count;     // RCMD_STREAM_TRANSFORMS: entries in the slice
@@ -429,6 +467,19 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
                          const AnoGlyphInstance *instances, uint32_t count);
 bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
+
+// UI blocks (the v0 logic->render UI path; docs/ui/ui-render.md §3.9). `set` packs the
+// builder's tables plus the shaped glyph labels into one render-owned block and REPLACES
+// block ui_id's contents; caller arrays need only live until the call returns. Text
+// semantics carry over: `clear` is idempotent, count-0 (empty builder) clears, false ==
+// ring full (retry), a dropped SET is merely stale. An INVALID block — per-block caps
+// exceeded, out-of-range clip/paint/glyph references, or a kind this transport does not
+// carry yet (UI_PATH) — is dropped with a warning and returns true, so backpressure
+// retry loops never spin on bad input. UI_GLYPHS prims index glyphs[] block-locally.
+bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
+                       const AnoUiBuilder *ui,
+                       const AnoGlyphInstance *glyphs, uint32_t glyphCount);
+bool ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id);
 
 // ---------------------------------------------------------------------------
 // Back-channel: render -> logic

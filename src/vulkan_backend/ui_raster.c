@@ -3,11 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// UI overlay lane: GPU plumbing (docs/ui/ui-render.md §7 step 3). Owns the per-frame
-// table buffers and their raster-set bindings 4-7; the prim math lives in src/ui and
-// ports into textraster.comp at step 4; compose/bridge arrive at step 5. The lane is
-// visually inert here: uiPrimCount/uiClipCount stay 0, the dispatch never reads the
-// tables, frame totals are unchanged.
+// UI overlay lane (docs/ui/ui-render.md): per-frame table buffers on raster-set
+// bindings 4-7, the logic-block registry with its compose (layer-sorted, block-local
+// refs rebased), and the per-slot refresh. The prim math lives in src/ui and its GLSL
+// twin in uicoverage.glsl; the dispatch itself is the text raster's.
 
 #include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
@@ -18,6 +17,7 @@
 #include <string.h>
 
 #include <anoptic_logging.h>
+#include <anoptic_memory.h>
 #include <anoptic_ui.h>
 
 // Region layout inside one uiFrameBuffer, in binding order 4-7. Offsets must satisfy
@@ -36,16 +36,114 @@ static_assert((ANO_UI_CLIP_OFF % 256u) == 0 && (ANO_UI_PAINT_OFF % 256u) == 0
                   && (ANO_UI_STOP_OFF % 256u) == 0,
               "region offsets must satisfy the worst-case storage-buffer alignment");
 
-// Composes the standing demo scene into every frame slot (static content, no per-frame
-// refresh). The live variant adds one IMAGE prim (bindless index 0, the first scene
-// texture — registered before the first frame); the self-test variant stays inside the
+// Conservative pixel AABB of the pending prims (shadow prims reach 3 sigma; identity
+// inv assumption of v0). Inverted bounds when nothing is composed.
+static void ui_pending_bounds(RendererState* state)
+{
+    float b0 = 3.0e38f, b1 = 3.0e38f, b2 = -3.0e38f, b3 = -3.0e38f;
+    for (uint32_t i = 0; i < state->uiPendingPrimCount; i++)
+    {
+        const AnoUiPrim* p = &state->uiPendingPrims[i];
+        float pad = p->kind == ANO_UI_SHADOW ? 3.0f * p->param[0] + 1.0f : 1.0f;
+        b0 = fminf(b0, p->origin[0] - p->half[0] - pad);
+        b1 = fminf(b1, p->origin[1] - p->half[1] - pad);
+        b2 = fmaxf(b2, p->origin[0] + p->half[0] + pad);
+        b3 = fmaxf(b3, p->origin[1] + p->half[1] + pad);
+    }
+    state->uiPendingBounds[0] = b0; state->uiPendingBounds[1] = b1;
+    state->uiPendingBounds[2] = b2; state->uiPendingBounds[3] = b3;
+}
+
+// Recomposes the pending tables from the live blocks: ascending layer (registry
+// creation order breaks ties), block-local clip/paint/stop/glyph references rebased,
+// scroll folded into every position. A block that would overflow a table budget is
+// skipped WHOLE — truncation would corrupt references. Bumps uiVersion.
+static void ui_compose(RendererState* state)
+{
+    if (state->uiPendingPrims == NULL || state->uiPinned)
+        return;
+    uint32_t order[ANO_UI_MAX_BLOCKS];
+    for (uint32_t i = 0; i < state->uiBlockCount; i++)
+        order[i] = i;
+    for (uint32_t i = 1; i < state->uiBlockCount; i++)
+    { // stable insertion sort by layer
+        uint32_t v = order[i], key = state->uiBlocks[v].blk->layer;
+        int32_t j = (int32_t)i - 1;
+        while (j >= 0 && state->uiBlocks[order[j]].blk->layer > key)
+        {
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = v;
+    }
+    uint32_t np = 0, nc = 0, na = 0, ns = 0, ng = 0;
+    for (uint32_t oi = 0; oi < state->uiBlockCount; oi++)
+    {
+        const RenderUiBlock* blk = state->uiBlocks[order[oi]].blk;
+        if (np + blk->primCount > ANO_UI_MAX_PRIMS || nc + blk->clipCount > ANO_UI_MAX_CLIPS
+            || na + blk->paintCount > ANO_UI_MAX_PAINTS || ns + blk->stopCount > ANO_UI_MAX_STOPS
+            || ng + blk->glyphCount > ANO_UI_MAX_GLYPHS)
+        {
+            ano_log(ANO_WARN, "UI compose: ui_id %u skipped (table budget).",
+                    state->uiBlocks[order[oi]].id);
+            continue;
+        }
+        float sx = blk->scroll[0], sy = blk->scroll[1];
+        for (uint32_t i = 0; i < blk->primCount; i++)
+        {
+            AnoUiPrim p = blk->prims[i];
+            p.origin[0] += sx;
+            p.origin[1] += sy;
+            if (p.clipRef != ANO_UI_REF_NONE)
+                p.clipRef += nc;
+            if (p.paintRef != ANO_UI_REF_NONE)
+                p.paintRef += na;
+            if (p.kind == ANO_UI_GLYPHS)
+                p.aux0 = ANO_UI_GLYPH_FIRST + ng + p.aux0;
+            state->uiPendingPrims[np++] = p;
+        }
+        for (uint32_t i = 0; i < blk->clipCount; i++)
+        {
+            AnoUiClip c = blk->clips[i];
+            c.rect[0] += sx; c.rect[1] += sy;
+            c.rect[2] += sx; c.rect[3] += sy;
+            c.rrCenter[0] += sx;
+            c.rrCenter[1] += sy;
+            state->uiPendingClips[nc++] = c;
+        }
+        for (uint32_t i = 0; i < blk->paintCount; i++)
+        {
+            AnoUiPaint pa = blk->paints[i];
+            pa.stopFirst += ns;
+            state->uiPendingPaints[na++] = pa;
+        }
+        memcpy(&state->uiPendingStops[ns], blk->stops, (size_t)blk->stopCount * sizeof(AnoUiStop));
+        ns += blk->stopCount;
+        for (uint32_t i = 0; i < blk->glyphCount; i++)
+        {
+            AnoGlyphInstance g = blk->glyphs[i];
+            g.origin[0] += sx;
+            g.origin[1] += sy;
+            state->uiPendingGlyphs[ng++] = g;
+        }
+    }
+    state->uiPendingPrimCount = np;
+    state->uiPendingClipCount = nc;
+    state->uiPendingPaintCount = na;
+    state->uiPendingStopCount = ns;
+    state->uiPendingGlyphCount = ng;
+    ui_pending_bounds(state);
+    state->uiVersion++;
+}
+
+// Composes the standing demo scene into the pending tables and PINS composition, so
+// the self-test canvas stays exactly this regardless of bridge traffic. The live
+// variant adds one IMAGE prim (bindless index 0); the self-test stays inside the
 // reference evaluator's reach.
 static void ui_compose_demo(RendererState* state, bool selftest)
 {
-    AnoUiPrim prims[32];
-    AnoUiClip clips[4];
     AnoUiBuilder b;
-    ano_ui_builder_init(&b, prims, 32, clips, 4, NULL, 0, NULL, 0);
+    ano_ui_builder_init(&b, state->uiPendingPrims, 32, state->uiPendingClips, 4, NULL, 0, NULL, 0);
     ano_ui_demo_scene(&b, 48.0f, 120.0f);
     if (!selftest)
     {
@@ -54,27 +152,15 @@ static void ui_compose_demo(RendererState* state, bool selftest)
         ano_ui_image(&b, (float[2]){ 428.0f, 120.0f }, (float[2]){ 568.0f, 225.0f }, r12,
                      0, 0.0f, white, ANO_UI_REF_NONE, 0);
     }
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-    {
-        uint8_t* dst = state->frames[i].uiFrameMapped;
-        memcpy(dst, prims, b.primCount * sizeof(AnoUiPrim));
-        memcpy(dst + ANO_UI_CLIP_OFF, clips, b.clipCount * sizeof(AnoUiClip));
-    }
-    state->uiPrimCount = b.primCount;
-    state->uiClipCount = b.clipCount;
-    // Conservative pixel bounds incl. shadow pads (identity inv assumption of v0).
-    float b0 = 3.0e38f, b1 = 3.0e38f, b2 = -3.0e38f, b3 = -3.0e38f;
-    for (uint32_t i = 0; i < b.primCount; i++)
-    {
-        float pad = prims[i].kind == ANO_UI_SHADOW ? 3.0f * prims[i].param[0] + 1.0f : 1.0f;
-        b0 = fminf(b0, prims[i].origin[0] - prims[i].half[0] - pad);
-        b1 = fminf(b1, prims[i].origin[1] - prims[i].half[1] - pad);
-        b2 = fmaxf(b2, prims[i].origin[0] + prims[i].half[0] + pad);
-        b3 = fmaxf(b3, prims[i].origin[1] + prims[i].half[1] + pad);
-    }
-    state->uiBounds[0] = b0; state->uiBounds[1] = b1;
-    state->uiBounds[2] = b2; state->uiBounds[3] = b3;
-    ano_log(ANO_INFO, "UI overlay: demo scene composed (%u prims, %u clips%s)",
+    state->uiPendingPrimCount = b.primCount;
+    state->uiPendingClipCount = b.clipCount;
+    state->uiPendingPaintCount = 0;
+    state->uiPendingStopCount = 0;
+    state->uiPendingGlyphCount = 0;
+    ui_pending_bounds(state);
+    state->uiVersion++;
+    state->uiPinned = true;
+    ano_log(ANO_INFO, "UI overlay: demo scene composed (%u prims, %u clips%s, pinned)",
             b.primCount, b.clipCount, selftest ? ", self-test" : "");
 }
 
@@ -102,6 +188,24 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
         }
         state->frames[i].uiFrameMapped = state->frames[i].uiFrameAlloc.mapped;
     }
+
+    // Pending compose tables on the text heap (dies with it at teardown).
+    if (state->uiOverlay)
+    {
+        state->uiPendingPrims = mi_heap_malloc(state->textHeap, ANO_UI_PRIM_BYTES);
+        state->uiPendingClips = mi_heap_malloc(state->textHeap, ANO_UI_CLIP_BYTES);
+        state->uiPendingPaints = mi_heap_malloc(state->textHeap, ANO_UI_PAINT_BYTES);
+        state->uiPendingStops = mi_heap_malloc(state->textHeap, ANO_UI_STOP_BYTES);
+        state->uiPendingGlyphs = mi_heap_malloc(state->textHeap,
+                                                ANO_UI_MAX_GLYPHS * sizeof(AnoGlyphInstance));
+        if (!state->uiPendingPrims || !state->uiPendingClips || !state->uiPendingPaints
+            || !state->uiPendingStops || !state->uiPendingGlyphs)
+        {
+            ano_log(ANO_WARN, "UI overlay disabled: pending table allocation failed.");
+            state->uiPendingPrims = NULL;
+            state->uiOverlay = false;
+        }
+    }
     ano_log(ANO_INFO, "UI overlay: tables resident (%u KiB x%u slots)%s",
             ANO_UI_FRAME_BYTES / 1024u, (unsigned)MAX_FRAMES_IN_FLIGHT,
             state->uiOverlay ? "" : ", compose pinned off");
@@ -114,6 +218,90 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
     if (state->uiOverlay && (selftest || getenv("ANO_UI_DEMO") != NULL))
         ui_compose_demo(state, selftest);
     return true;
+}
+
+// Adopts a logic-submitted block (RCMD_UI_SET), replacing ui_id's contents. Ownership
+// of blk transfers here, freed on replace/clear/teardown or drop. Render thread only.
+void ano_vk_ui_block_set(RendererState* state, uint32_t ui_id, const RenderUiBlock* blk)
+{
+    if (blk == NULL)
+        return;
+    if (!state->uiOverlay || state->uiPendingPrims == NULL)
+    {
+        mi_free((void*)blk);
+        return;
+    }
+    for (uint32_t i = 0; i < state->uiBlockCount; i++)
+    {
+        if (state->uiBlocks[i].id == ui_id)
+        {
+            mi_free((void*)state->uiBlocks[i].blk);
+            state->uiBlocks[i].blk = blk;
+            ui_compose(state);
+            return;
+        }
+    }
+    if (state->uiBlockCount >= ANO_UI_MAX_BLOCKS)
+    {
+        ano_log(ANO_WARN, "UI bridge: block registry full (%u); ui_id %u dropped.",
+                ANO_UI_MAX_BLOCKS, ui_id);
+        mi_free((void*)blk);
+        return;
+    }
+    state->uiBlocks[state->uiBlockCount].id = ui_id;
+    state->uiBlocks[state->uiBlockCount].blk = blk;
+    state->uiBlockCount++;
+    ui_compose(state);
+}
+
+// Removes a block (RCMD_UI_CLEAR), idempotent. Order-preserving compaction.
+void ano_vk_ui_block_clear(RendererState* state, uint32_t ui_id)
+{
+    for (uint32_t i = 0; i < state->uiBlockCount; i++)
+    {
+        if (state->uiBlocks[i].id != ui_id)
+            continue;
+        mi_free((void*)state->uiBlocks[i].blk);
+        for (uint32_t j = i + 1; j < state->uiBlockCount; j++)
+            state->uiBlocks[j - 1] = state->uiBlocks[j];
+        state->uiBlockCount--;
+        if (state->uiOverlay && state->uiPendingPrims != NULL)
+            ui_compose(state);
+        return;
+    }
+}
+
+// Copies pending tables into this slot's mapped buffers when stale and publishes the
+// slot-current counts/bounds the record path pushes. Glyph labels land in the text
+// frame buffer's UI region [ANO_UI_GLYPH_FIRST, +ANO_UI_MAX_GLYPHS) — above the
+// pending and world regions, so neither the plain glyph loop nor the world draw
+// touches them.
+void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
+{
+    if (!state->uiOverlay || state->uiPendingPrims == NULL)
+        return;
+    PerFrameResources* fr = &state->frames[frameIndex];
+    if (fr->uiSlotVersion != state->uiVersion && fr->uiFrameMapped != NULL)
+    {
+        uint8_t* dst = fr->uiFrameMapped;
+        memcpy(dst, state->uiPendingPrims,
+               (size_t)state->uiPendingPrimCount * sizeof(AnoUiPrim));
+        memcpy(dst + ANO_UI_CLIP_OFF, state->uiPendingClips,
+               (size_t)state->uiPendingClipCount * sizeof(AnoUiClip));
+        memcpy(dst + ANO_UI_PAINT_OFF, state->uiPendingPaints,
+               (size_t)state->uiPendingPaintCount * sizeof(AnoUiPaint));
+        memcpy(dst + ANO_UI_STOP_OFF, state->uiPendingStops,
+               (size_t)state->uiPendingStopCount * sizeof(AnoUiStop));
+        if (fr->textFrameMapped != NULL)
+            memcpy((AnoGlyphInstance*)fr->textFrameMapped + ANO_UI_GLYPH_FIRST,
+                   state->uiPendingGlyphs,
+                   (size_t)state->uiPendingGlyphCount * sizeof(AnoGlyphInstance));
+        fr->uiSlotVersion = state->uiVersion;
+    }
+    state->uiPrimCount = state->uiPendingPrimCount;
+    state->uiClipCount = state->uiPendingClipCount;
+    for (int k = 0; k < 4; k++)
+        state->uiBounds[k] = state->uiPendingBounds[k];
 }
 
 // Writes bindings 4-7 of every slot's shared raster set. When a slot's table buffer
@@ -155,6 +343,11 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
 
 void ano_vk_ui_destroy(VulkanContext* ctx, RendererState* state)
 {
+    for (uint32_t i = 0; i < state->uiBlockCount; i++)
+        mi_free((void*)state->uiBlocks[i].blk);
+    state->uiBlockCount = 0;
+    // Pending tables die with the text heap (torn down in ano_vk_text_destroy).
+    state->uiPendingPrims = NULL;
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         if (state->frames[i].uiFrameBuffer != VK_NULL_HANDLE)

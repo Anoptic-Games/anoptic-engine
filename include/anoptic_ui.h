@@ -127,6 +127,10 @@ void ano_ui_builder_init(AnoUiBuilder *b,
                          AnoUiPaint *paints, uint32_t paintCap,
                          AnoUiStop *stops, uint32_t stopCap);
 
+// Premultiplied linear from sRGB-authored straight rgba — the ABI is linear, and
+// linear values read brighter than their sRGB-intuited numbers suggest.
+void ano_ui_color_srgb(const float srgba[4], float out[4]);
+
 // Rounded rect from a min/max box. radii = per-corner (tl, tr, br, bl), clamped to
 // non-negative and scaled down together if adjacent corners would overlap.
 // borderWidth 0 fills; > 0 draws a ring of that width inside the boundary.
