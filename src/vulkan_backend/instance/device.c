@@ -391,8 +391,10 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		return false;
 	}
 
-	// Allocate memory for the names of every detected device
-	ctx->availableDevices = (char**)mi_malloc(sizeof(char*) * ctx->deviceCount);
+	// Allocate memory for the names of every detected device.
+	// Zeroed: unsuitable devices and slots past an early preferred-device break are never
+	// written, and cleanupVulkan frees all deviceCount slots; NULL keeps free() a no-op.
+	ctx->availableDevices = (char**)mi_calloc(ctx->deviceCount, sizeof(char*));
 
 	VkPhysicalDevice* devices = (VkPhysicalDevice*)calloc(1, sizeof(VkPhysicalDevice) * ctx->deviceCount);
 
