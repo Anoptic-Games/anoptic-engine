@@ -47,6 +47,12 @@
 // Max live logic-submitted screen-text blocks; excess dropped.
 #define ANO_TEXT_MAX_BLOCKS      64u
 
+// UI overlay lane table capacities (per-frame regions of uiFrameBuffer; ui-render.md §3.2).
+#define ANO_UI_MAX_PRIMS         4096u
+#define ANO_UI_MAX_CLIPS         256u
+#define ANO_UI_MAX_PAINTS        256u
+#define ANO_UI_MAX_STOPS         1024u
+
 // Default per-view screen-area cull threshold (px). Runtime ano_render_set_view_cull_threshold, 0 disables.
 #define ANO_CULL_PIXEL_THRESHOLD_DEFAULT  1.5f
 
@@ -474,6 +480,12 @@ typedef struct PerFrameResources
     VkBuffer            textFrameBuffer;
     GpuAllocation       textFrameAlloc;
     void*               textFrameMapped;
+    // UI overlay lane frame data: one host-visible buffer holding the prim/clip/paint/stop
+    // regions (raster-set bindings 4-7). Created whenever textOverlay is up so the shared
+    // set's bindings stay valid even with the UI gate off.
+    VkBuffer            uiFrameBuffer;
+    GpuAllocation       uiFrameAlloc;
+    void*               uiFrameMapped;
     VkDescriptorSet     textRasterSet;   // curves + directory + frame data + storage image
     VkDescriptorSet     textOverlaySet;  // sampled overlay for composite
     VkCommandBuffer     textCommandBuffer; // async text raster CB, NULL when asyncText off
@@ -566,10 +578,12 @@ typedef struct RendererState
     uint32_t                textBlockCount;
     uint32_t                textOsdCount;      // instances the render-internal OSD text occupies
 
-    // UI overlay lane (docs/ui/ui-render.md): prims raster into the shared text/UI overlay.
-    // Gate uiOverlay: rides textOverlay, off on ANO_FORCE_NO_UI or init failure. Groundwork
-    // stub only — GPU objects land with build step 3.
+    // UI overlay lane (docs/ui/ui-render.md): prims raster into the shared text/UI overlay
+    // via the text raster dispatch. Gate uiOverlay: rides textOverlay, off on ANO_FORCE_NO_UI
+    // or init failure (tables still resident + bound so the shader's bindings stay valid).
     bool                    uiOverlay;
+    uint32_t                uiPrimCount; // composed prim count fed to the push block (step 5 fills)
+    uint32_t                uiClipCount; // composed clip count (shader bound-check, fail closed)
 
     // Hi-Z occlusion pyramid build. Pipeline in prototypes[PIPELINE_COMPUTE_HIZ]; hizSetLayout is the shared per-mip set layout.
     VkDescriptorSetLayout   hizSetLayout;

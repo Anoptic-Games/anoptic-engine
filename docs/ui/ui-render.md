@@ -462,6 +462,23 @@ async, self-test gates at every step.
    clean. Suite 19/19 on build.sh 3.)
 3. GPU plumbing, visually inert: buffers, descriptor writes, pipeline, empty dispatch wired
    into the text CB path behind `ANO_FORCE_NO_UI`. Validation-clean, frame totals unchanged.
+   (Done 2026-07-07: no second pipeline — per §3.8 the prims ride the text raster dispatch,
+   so plumbing = per-slot uiFrameBuffer (prim 384 + clip 12 + paint 12 + stop 32 KiB regions,
+   256-aligned offsets, host-visible persistently mapped, 440 KiB ×3 ≈ +1.2 MiB observed on
+   the gpu allocator), textRasterSetLayout grown 4→8 bindings (4-7 = table regions,
+   COMPUTE-only stages), TextRasterPush 24→32 B carrying uiPrimCount/uiClipCount (zero until
+   step 5; the shader still declares the 24 B prefix), pool sizing +4 SSBO/frame,
+   ano_vk_ui_write_sets hooked onto ano_vk_text_update_sets so resize rebinds ride free.
+   Robustness choices: tables are created whenever textOverlay is up — ANO_FORCE_NO_UI pins
+   the counts to 0 instead of leaving bindings unwritten, so the step-4 shader's static use
+   of bindings 4-7 can never dangle; a failed table creation clears uiOverlay and falls the
+   bindings back to the slot's textFrameBuffer (valid SSBO, never read at count 0).
+   Hardware-verified on the desktop: debug run validation-clean (0 hits) with the text lane
+   fully live, "tables resident (440 KiB x3 slots)" boot line, suite 19/19, release+debug
+   builds clean. Frame totals are unchanged by construction (zero new commands recorded;
+   cross-session ms vary with desktop load per the standing A/B-within-session rule). Live
+   window-resize recheck deferred to the step-4 on-screen pass, where an actual consumer
+   makes it observable.)
 4. Prim raster in-frame: extend the raster shader with the prim loop (before the glyph loop),
    `ANO_UI_OPAQUE`-style self-test canvas vs the reference evaluator (RMS gate), resize +
    teardown clean. Rrect/shadow/image/solid paints land here.
