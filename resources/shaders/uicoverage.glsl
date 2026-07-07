@@ -1,8 +1,9 @@
-// UI prim ABI twin of include/anoptic_ui.h (AnoUiPrim 96 B, AnoUiClip 48 B,
-// AnoUiPaint 48 B, AnoUiStop 32 B — offsets pinned by static_asserts there).
-// The prim evaluator ports here from src/ui/ui_raster_ref.c statement for statement
-// at build step 4 (docs/ui/ui-render.md §7); until then this include declares the
-// data contract only and no shader consumes it.
+// UI prim evaluator + ABI twins of include/anoptic_ui.h (AnoUiPrim 96 B, AnoUiClip
+// 48 B, AnoUiPaint 48 B, AnoUiStop 32 B — offsets pinned by static_asserts there).
+// The coverage/shadow math mirrors src/ui/ui_raster_ref.c statement for statement;
+// fix bugs THERE first, then re-port. Declares set 0 bindings 4-7 and the set 1
+// bindless texture array. Include AFTER textcoverage.glsl (reuses its em_box); the
+// including shader needs GL_EXT_nonuniform_qualifier.
 
 // Mirrors AnoUiPrimKind.
 const uint UI_RRECT  = 0u;
@@ -56,3 +57,135 @@ struct UiStop {
     vec4 color;     // premultiplied linear
     vec4 t;         // x = t, yzw padding
 };
+
+layout(std430, set = 0, binding = 4) readonly buffer UiPrims  { UiPrim  uiPrims[];  };
+layout(std430, set = 0, binding = 5) readonly buffer UiClips  { UiClip  uiClips[];  };
+layout(std430, set = 0, binding = 6) readonly buffer UiPaints { UiPaint uiPaints[]; };
+layout(std430, set = 0, binding = 7) readonly buffer UiStops  { UiStop  uiStops[];  };
+
+layout(set = 1, binding = 0) uniform sampler2D uiTextures[];
+
+// Exact signed distance to the rounded box (per-corner radii, y-down quadrant select).
+// p relative to the box center. Mirrors ano_ui_ref_sd_rrect.
+float ui_sd_rrect(vec2 p, vec2 halfExt, vec4 radii)
+{
+    float r = p.x >= 0.0 ? (p.y >= 0.0 ? radii.z : radii.y)
+                         : (p.y >= 0.0 ? radii.w : radii.x);
+    vec2 q = abs(p) - halfExt + r;
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r;
+}
+
+// Rational erf (Wallace's constants). Mirrors ui_erf in ui_raster_ref.c.
+float ui_erf(float x)
+{
+    float s = x >= 0.0 ? 1.0 : -1.0, a = abs(x);
+    float y = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
+    y *= y;
+    return s - s / (y * y);
+}
+
+float ui_gaussian(float x, float sigma)
+{
+    return exp(-(x * x) / (2.0 * sigma * sigma)) / (2.5066282746310002 * sigma);
+}
+
+// Closed-form blur of the rounded box along x for the row at offset y from center.
+float ui_shadow_x(float x, float y, float sigma, float corner, vec2 halfExt)
+{
+    float delta = min(halfExt.y - corner - abs(y), 0.0);
+    float curved = halfExt.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
+    float k = 0.70710678 / sigma;
+    return 0.5 * (ui_erf((x + curved) * k) - ui_erf((x - curved) * k));
+}
+
+// Gaussian-blurred rounded box at p (relative to center): erf along x, 4-sample
+// quadrature along y truncated at 3 sigma. Mirrors ano_ui_ref_shadow.
+float ui_shadow(vec2 p, vec2 halfExt, float corner, float sigma)
+{
+    float low = p.y - halfExt.y, high = p.y + halfExt.y;
+    float start = clamp(-3.0 * sigma, low, high);
+    float end = clamp(3.0 * sigma, low, high);
+    float stepY = (end - start) / 4.0;
+    float y = start + stepY * 0.5;
+    float value = 0.0;
+    for (int i = 0; i < 4; i++)
+    {
+        value += ui_shadow_x(p.x, p.y - y, sigma, corner, halfExt) * ui_gaussian(y, sigma) * stepY;
+        y += stepY;
+    }
+    return value;
+}
+
+// Window coverage of one clip entry in overlay space: exact rect overlap times the
+// rounded term's ramp. Invalid non-NONE refs fail CLOSED. Mirrors clip_cov.
+float ui_clip_cov(uint ref, uint clipCount, vec2 pxTL)
+{
+    if (ref >= clipCount)
+        return 0.0;
+    UiClip c = uiClips[ref];
+    float ox = max(0.0, min(pxTL.x + 1.0, c.rect.z) - max(pxTL.x, c.rect.x));
+    float oy = max(0.0, min(pxTL.y + 1.0, c.rect.w) - max(pxTL.y, c.rect.y));
+    float cov = ox * oy;
+    if (c.rrHalf.x >= 0.0)
+        cov *= clamp(0.5 - ui_sd_rrect(pxTL + 0.5 - c.rrCenter, c.rrHalf, c.rrRadii), 0.0, 1.0);
+    return cov;
+}
+
+// Premultiplied contribution of prim idx over the unit window at pxTL. Mirrors
+// ano_ui_ref_shade for RRECT/SHADOW; IMAGE additionally samples the bindless array
+// (outside the CPU reference's reach — the self-test scene carries no images).
+// PATH/GLYPHS land with their own lanes.
+vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount)
+{
+    UiPrim p = uiPrims[idx];
+    vec2 d = pxTL + 0.5 - p.origin;
+    vec2 l = vec2(dot(p.inv.xy, d), dot(p.inv.zw, d));
+    float cov;
+    vec4 texel = vec4(1.0);
+    if (p.kind == UI_RRECT || p.kind == UI_IMAGE)
+    {
+        float sd = ui_sd_rrect(l, p.halfExt, p.radii);
+        cov = clamp(0.5 - sd, 0.0, 1.0);
+        if (p.kind == UI_RRECT)
+        {
+            float w = p.param.x;
+            if (w > 0.0)
+                cov -= clamp(0.5 - (sd + w), 0.0, 1.0); // ring: outer minus eroded
+        }
+        else
+        {
+            vec2 uv = l / (2.0 * p.halfExt) + 0.5;
+            texel = textureLod(uiTextures[nonuniformEXT(p.aux0)], uv, p.param.x);
+            texel.rgb *= texel.a; // straight-alpha source -> premultiplied
+        }
+    }
+    else if (p.kind == UI_SHADOW)
+    {
+        float a = ui_shadow(l, p.halfExt, p.radii.x, p.param.x);
+        if ((p.flags & UI_FLAG_INNER) != 0u)
+        {
+            float sd = ui_sd_rrect(l, p.halfExt, p.radii);
+            a = (1.0 - a) * clamp(0.5 - sd, 0.0, 1.0); // blur of the complement, masked inside
+        }
+        cov = a;
+    }
+    else
+    {
+        return vec4(0.0);
+    }
+    if (p.clipRef != UI_REF_NONE)
+        cov *= ui_clip_cov(p.clipRef, clipCount, pxTL);
+    return p.color * texel * cov;
+}
+
+// Does prim idx's padded box touch the screen rect [rMin,rMax]? Shadow prims pad by
+// their 3-sigma reach, everything else by the 1 px AA ramp.
+bool ui_box_hits(uint idx, vec2 rMin, vec2 rMax)
+{
+    UiPrim p = uiPrims[idx];
+    float pad = (p.kind == UI_SHADOW) ? 3.0 * p.param.x + 1.0 : 1.0;
+    vec2 lo, hi;
+    em_box(p.inv, rMin - p.origin, rMax - p.origin, lo, hi);
+    vec2 ext = p.halfExt + pad;
+    return lo.x < ext.x && hi.x > -ext.x && lo.y < ext.y && hi.y > -ext.y;
+}

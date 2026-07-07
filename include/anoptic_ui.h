@@ -169,6 +169,12 @@ uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bbox
 uint32_t ano_ui_clip(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                      const float rrMin[2], const float rrMax[2], const float rrRadii[4]);
 
+// Standing demo scene, the GPU self-test target (ui-render.md §7 step 4): deterministic,
+// reference-evaluable prims only (no IMAGE/PATH/GLYPHS). Needs caps >= 16 prims / 4
+// clips. The render-side demo compose and the offline screenshot compare both build
+// exactly this; keep it bitwise-stable.
+void ano_ui_demo_scene(AnoUiBuilder *b, float originX, float originY);
+
 // ---------------------------------------------------------------------------------------------
 // Reference evaluator (validation): scalar mirror of the GPU prim math, exported so
 // tests and the GPU self-test harness drive one implementation (the

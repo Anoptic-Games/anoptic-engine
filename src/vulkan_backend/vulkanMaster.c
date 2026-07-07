@@ -385,7 +385,7 @@ bool initVulkan() // Initializes Vulkan
 	// UI overlay lane gate rides the text lane (shared overlay image + raster dispatch).
 	// ANO_FORCE_NO_UI pins compose off; the table buffers stay resident under textOverlay.
 	rendererState.uiOverlay = rendererState.textOverlay && !getenv("ANO_FORCE_NO_UI");
-	ano_log(ANO_INFO, "UI overlay: %s", rendererState.uiOverlay ? "enabled (lane plumbing, inert)" : "off");
+	ano_log(ANO_INFO, "UI overlay: %s", rendererState.uiOverlay ? "enabled" : "off");
 
     // Mesh-shader entry points, loaded only on the mesh path.
     if (ctx.deviceCapabilities.meshShader) {

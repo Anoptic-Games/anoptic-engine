@@ -482,6 +482,27 @@ async, self-test gates at every step.
 4. Prim raster in-frame: extend the raster shader with the prim loop (before the glyph loop),
    `ANO_UI_OPAQUE`-style self-test canvas vs the reference evaluator (RMS gate), resize +
    teardown clean. Rrect/shadow/image/solid paints land here.
+   (Done 2026-07-07: uicoverage.glsl carries the evaluator, a statement-for-statement port
+   of ui_raster_ref.c (sd_rrect, rational erf, 4-sample shadow quadrature, fail-closed clip
+   multiply) plus the two GPU-only pieces — UI_IMAGE sampling the bindless array (set 1 on
+   the raster pipeline layout; the array's stage flags gained COMPUTE; index is dynamically
+   uniform through the shared-mask loop, nonuniformEXT-wrapped anyway) and ui_box_hits tile
+   culling (shadow prims pad by 3 sigma). textraster.comp runs the prim chunk-cull loop
+   before the glyph loop — same sHit pattern, per-prim ADD/OVER register blend — and the
+   dispatch bounds are the union of text and UI AABBs. Standing demo scene
+   (src/ui/ui_demo.c, ANO_UI_DEMO, 13 prims + 2 clips + a live-only image prim composed
+   once into all three slots): drop shadow, plate, ring, rect-clipped overflow bar, inner
+   shadow, capsules, additive button glow, footer wash clipped by the panel's rounded
+   silhouette. Self-test: ANO_UI_OPAQUE pins opaque backdrop + full-canvas dispatch + glyph
+   skip (flags bit 1); anotest_ui gained --dump/--compare (P6, both quantizers mimicked:
+   UNORM8 linear overlay then sRGB encode). Hardware-verified: screenshot vs reference over
+   the full 2560×1368 canvas RMS 0.0384/255, max 13/255 on one plate-edge AA pixel — 13 ≈
+   12.92 is exactly one linear LSB through the sRGB dark-end slope, i.e. the documented
+   UNORM8-overlay envelope (text precedent 0.034/255); live demo composites correctly under
+   the OSD/HUD glyphs; two real windowed resize cycles (1600×900, 2100×1150) validation-
+   clean with the demo intact — the step-3 deferral closed. Suite 19/19. Observation for
+   step 5: ABI colors are linear, so designer-authored sRGB values read brighter on screen —
+   add an sRGB-authoring helper alongside the bridge verbs.)
 5. Bridge verbs + logic demo: RCMD_UI_SET/CLEAR, registry, compose/version/refresh; main.c
    demo — a menu panel with hover/click buttons (logic-side hit-testing over the input
    back-channel), a HUD bar with glyph labels via UI_GLYPHS, layered over the world demo.
