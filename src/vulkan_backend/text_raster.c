@@ -43,10 +43,15 @@ typedef struct TextRasterPush {
     uint32_t uiClipCount;
 } TextRasterPush;
 
-// Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel sits above.
+// Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel next, UI
+// glyph labels from ANO_UI_GLYPH_FIRST — all inside one frame buffer.
 #define ANO_TEXT_WORLD_FIRST 8192u
 static_assert(ANO_TEXT_WORLD_FIRST == ANO_RENDER_TEXT_MAX,
               "the public screen-text capacity is the pending region size");
+static_assert(ANO_TEXT_WORLD_FIRST < ANO_UI_GLYPH_FIRST
+                  && (ANO_UI_GLYPH_FIRST + ANO_UI_MAX_GLYPHS) * sizeof(AnoGlyphInstance)
+                         <= ANO_TEXT_FRAME_BYTES,
+              "frame-buffer regions must not overlap");
 
 // Push-constant block shared with textworld.vert/.frag (96 B).
 typedef struct TextWorldPush {
@@ -662,8 +667,8 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
             { sizeof W_GREEK - 1, 34.0f, { 0.75f, 0.95f, 0.80f, 1.0f } },
         };
         const float worldOrigin[2] = { 24.0f, 76.0f };
-        uint32_t worldCap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance)
-                          - ANO_TEXT_WORLD_FIRST;
+        // The world region ends where the UI glyph-label region begins.
+        uint32_t worldCap = ANO_UI_GLYPH_FIRST - ANO_TEXT_WORLD_FIRST;
         anostr_t worldText = anostr_view(g_worldText, sizeof g_worldText - 1);
         uint32_t count = 0;
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)

@@ -207,7 +207,8 @@ if(Vulkan_FOUND)
 
     set(SPV_OUTPUTS "")
     # Shared GLSL includes, every shader rebuilds when one changes.
-    set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl)
+    set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl
+        ${SHADER_SRC_DIR}/textcoverage.glsl ${SHADER_SRC_DIR}/uicoverage.glsl)
 
     # Compile <source> to <output>.spv, or stage the committed .spv without a compiler.
     function(ano_add_shader output source)

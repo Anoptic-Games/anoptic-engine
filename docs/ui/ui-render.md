@@ -508,6 +508,31 @@ async, self-test gates at every step.
    back-channel), a HUD bar with glyph labels via UI_GLYPHS, layered over the world demo.
    This is the milestone that exercises the full stated intent: logic-side layout, bridge
    submission, on-device render, layering.
+   (Done 2026-07-07 — INTENT-COMPLETE, HW-verified interactively. Protocol: RenderUiBlock
+   (layer, scroll, five counted tables packed in ONE adopted allocation, block-LOCAL
+   clip/paint/glyph refs), ano_render_ui_set validates producer-side and drops invalid
+   blocks as a warned no-op returning true — backpressure retry loops can never spin on
+   bad input; ring-full stays the retryable false. Render side: 64-entry id-keyed
+   registry (text semantics verbatim), compose = stable layer sort + whole-block skip on
+   table-budget overflow (truncation would corrupt refs) + ref rebase (clipRef/paintRef/
+   stopFirst/UI_GLYPHS aux0) + scroll fold + bounds; per-slot refresh copies pending
+   tables and publishes slot-current counts (the text protocol). UI glyph labels live in
+   their own frame-buffer region [ANO_UI_GLYPH_FIRST=16384, +5120) so the plain glyph
+   loop never double-draws them; the world region is clamped to end there; UI_GLYPHS
+   evaluates in-shader as a per-pixel range walk of shade_window, tinted and clipped.
+   ANO_UI_DEMO/_OPAQUE now PIN composition (registry still adopts) so the self-test
+   canvas is bridge-proof. Logic demo (main.c): menu_layout/menu_hit are the single
+   source of truth for both rendering and hit-testing; hover tracks the cursor and
+   resubmits ON CHANGE only; M toggles, RESUME closes, OPTIONS increments its own label,
+   QUIT closes (demo no-op); persistent status bar once the first snapshot publishes the
+   viewport. Driven end-to-end on hardware via XTEST synthetic input: bar, open, hover
+   highlight + glow, OPTIONS (2) after two clicks, RESUME close — all screenshot-
+   verified, validation-clean; the pinned self-test re-measured bit-identical
+   (RMS 0.0384/255, max 13/255, same pixel). Found + fixed along the way: SHADER_INCLUDES
+   in the root lists file was missing textcoverage.glsl/uicoverage.glsl, so include-only
+   shader edits never recompiled their .spv — a latent build bug the text lane had been
+   masking by co-editing textraster.comp. sRGB authoring helper ano_ui_color_srgb landed
+   with the demo. Suite 19/19, release+debug clean.)
 6. Gradients + clip table + dither + UI_PATH (runtime monotone-quad bake through the text
    bake's split machinery, importer orientation-fix). Reference gates extend per feature.
 7. Per-tile lists + interior/opaque classification at compose, indirect dispatch, glyph

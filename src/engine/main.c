@@ -190,6 +190,140 @@ static bool hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
 	return ano_render_text_set(bridge, text_id, inst, shaped);
 }
 
+// Logic-side UI (v0 bridge): layout, styling, and hit-testing live HERE; the renderer
+// only receives prim blocks. Two blocks: a persistent status bar and an M-toggled menu
+// whose hover/click state resubmits the block on change (never per tick).
+#define HUD_UI_BAR   1u
+#define HUD_UI_MENU  2u
+#define HUD_UI_GCAP  96u
+
+// Menu geometry from the viewport: one source of truth for rendering AND hit-testing.
+typedef struct MenuLayout {
+	float panel[4];      // minX minY maxX maxY
+	float button[3][4];
+} MenuLayout;
+
+static void menu_layout(uint32_t vpW, uint32_t vpH, MenuLayout* out)
+{
+	float x0 = (float)vpW * 0.5f - 160.0f, y0 = (float)vpH * 0.5f - 150.0f;
+	out->panel[0] = x0; out->panel[1] = y0;
+	out->panel[2] = x0 + 320.0f; out->panel[3] = y0 + 300.0f;
+	for (int i = 0; i < 3; i++) {
+		float by = y0 + 84.0f + (float)i * 64.0f;
+		out->button[i][0] = x0 + 20.0f;  out->button[i][1] = by;
+		out->button[i][2] = x0 + 300.0f; out->button[i][3] = by + 48.0f;
+	}
+}
+
+// Cursor (framebuffer px, the overlay's space) -> hovered button, -1 when none.
+static int menu_hit(const MenuLayout* m, float cx, float cy)
+{
+	for (int i = 0; i < 3; i++)
+		if (cx >= m->button[i][0] && cx <= m->button[i][2]
+		    && cy >= m->button[i][1] && cy <= m->button[i][3])
+			return i;
+	return -1;
+}
+
+// Shapes one horizontally-centered label into the block's glyph array and emits its
+// UI_GLYPHS prim (aux block-local). Baseline set for optical centering (~0.7 em caps).
+static void ui_label(AnoUiBuilder* b, const AnoFontBake* bake, anostr_t text, float sizePx,
+                     const float rect[4], const float color[4],
+                     AnoGlyphInstance* glyphs, uint32_t* gcount)
+{
+	if (bake == NULL || *gcount >= HUD_UI_GCAP) return;
+	float w, h;
+	ano_text_measure(bake, text, sizePx, &w, &h);
+	float ox = rect[0] + ((rect[2] - rect[0]) - w) * 0.5f;
+	float baseline = rect[1] + ((rect[3] - rect[1]) + 0.70f * sizePx) * 0.5f;
+	uint32_t first = *gcount;
+	uint32_t n = ano_text_shape(bake, text, sizePx, (float[2]){ ox, baseline }, color,
+	                            glyphs + first, HUD_UI_GCAP - first, NULL);
+	if (n > HUD_UI_GCAP - first) n = HUD_UI_GCAP - first;
+	*gcount = first + n;
+	float lo[2] = { ox - 2.0f, baseline - bake->ascender * sizePx - 2.0f };
+	float hi[2] = { ox + w + 2.0f, baseline - bake->descender * sizePx + 2.0f };
+	float white[4] = { 1, 1, 1, 1 };
+	ano_ui_glyphs(b, lo, hi, first, n, white, ANO_UI_REF_NONE, 0);
+}
+
+// Builds + submits the menu block (or clears it). false == ring full, retry next tick.
+static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const MenuLayout* m,
+                        bool visible, int hovered, uint32_t optionsCount)
+{
+	if (!visible)
+		return ano_render_ui_clear(bridge, HUD_UI_MENU);
+	AnoUiPrim prims[24];
+	AnoGlyphInstance glyphs[HUD_UI_GCAP];
+	uint32_t gcount = 0;
+	AnoUiBuilder b;
+	ano_ui_builder_init(&b, prims, 24, NULL, 0, NULL, 0, NULL, 0);
+	float shadow[4], plate[4], rim[4], btn[4], btnHot[4], btnRim[4], label[4], title[4], glow[4];
+	ano_ui_color_srgb((float[4]){ 0.00f, 0.00f, 0.00f, 0.60f }, shadow);
+	ano_ui_color_srgb((float[4]){ 0.13f, 0.14f, 0.17f, 0.97f }, plate);
+	ano_ui_color_srgb((float[4]){ 0.62f, 0.65f, 0.70f, 1.0f }, rim);
+	ano_ui_color_srgb((float[4]){ 0.22f, 0.24f, 0.30f, 1.0f }, btn);
+	ano_ui_color_srgb((float[4]){ 0.28f, 0.45f, 0.80f, 1.0f }, btnHot);
+	ano_ui_color_srgb((float[4]){ 0.75f, 0.80f, 0.88f, 0.90f }, btnRim);
+	ano_ui_color_srgb((float[4]){ 0.92f, 0.94f, 0.97f, 1.0f }, label);
+	ano_ui_color_srgb((float[4]){ 1.00f, 0.80f, 0.35f, 1.0f }, title);
+	ano_ui_color_srgb((float[4]){ 0.25f, 0.45f, 0.85f, 0.0f }, glow); // ADD: rgb only
+	float r12[4] = { 12, 12, 12, 12 }, r8[4] = { 8, 8, 8, 8 };
+	ano_ui_shadow(&b, (float[2]){ m->panel[0] + 6, m->panel[1] + 10 },
+	              (float[2]){ m->panel[2] + 6, m->panel[3] + 10 }, 12.0f, 9.0f, shadow,
+	              ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, plate, 0.0f,
+	             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, rim, 2.0f,
+	             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	float titleRect[4] = { m->panel[0], m->panel[1] + 14, m->panel[2], m->panel[1] + 58 };
+	ui_label(&b, bake, anostr_lit("MENU"), 26.0f, titleRect, title, glyphs, &gcount);
+	for (int i = 0; i < 3; i++) {
+		bool hot = hovered == i;
+		if (hot)
+			ano_ui_shadow(&b, &m->button[i][0], &m->button[i][2], 8.0f, 8.0f, glow,
+			              ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
+		ano_ui_rrect(&b, &m->button[i][0], &m->button[i][2], r8, hot ? btnHot : btn, 0.0f,
+		             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+		ano_ui_rrect(&b, &m->button[i][0], &m->button[i][2], r8, btnRim, hot ? 2.0f : 1.0f,
+		             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+		char text[32];
+		int len;
+		if (i == 1 && optionsCount > 0)
+			len = snprintf(text, sizeof text, "OPTIONS (%u)", optionsCount);
+		else
+			len = snprintf(text, sizeof text, "%s", (const char*[]){ "RESUME", "OPTIONS", "QUIT" }[i]);
+		if (len > 0)
+			ui_label(&b, bake, anostr_view(text, (size_t)len), 20.0f, m->button[i],
+			         label, glyphs, &gcount);
+	}
+	return ano_render_ui_set(bridge, HUD_UI_MENU, 128, &b, glyphs, gcount);
+}
+
+// The persistent status bar, bottom-left. Submitted once when the viewport is known.
+static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, uint32_t vpH)
+{
+	AnoUiPrim prims[8];
+	AnoGlyphInstance glyphs[HUD_UI_GCAP];
+	uint32_t gcount = 0;
+	AnoUiBuilder b;
+	ano_ui_builder_init(&b, prims, 8, NULL, 0, NULL, 0, NULL, 0);
+	float shadow[4], plate[4], rim[4], label[4];
+	ano_ui_color_srgb((float[4]){ 0.00f, 0.00f, 0.00f, 0.50f }, shadow);
+	ano_ui_color_srgb((float[4]){ 0.10f, 0.11f, 0.13f, 0.92f }, plate);
+	ano_ui_color_srgb((float[4]){ 0.50f, 0.54f, 0.60f, 1.0f }, rim);
+	ano_ui_color_srgb((float[4]){ 0.88f, 0.90f, 0.94f, 1.0f }, label);
+	float rect[4] = { 24.0f, (float)vpH - 68.0f, 24.0f + 420.0f, (float)vpH - 24.0f };
+	float r10[4] = { 10, 10, 10, 10 };
+	ano_ui_shadow(&b, (float[2]){ rect[0] + 4, rect[1] + 6 }, (float[2]){ rect[2] + 4, rect[3] + 6 },
+	              10.0f, 6.0f, shadow, ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &rect[0], &rect[2], r10, plate, 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &rect[0], &rect[2], r10, rim, 1.5f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ui_label(&b, bake, anostr_lit("UI bridge v0 · M toggles menu"), 20.0f, rect, label,
+	         glyphs, &gcount);
+	return ano_render_ui_set(bridge, HUD_UI_BAR, 16, &b, glyphs, gcount);
+}
+
 void* anoLogicThreadMain(void* arg)
 {
 	(void)arg;
@@ -255,6 +389,12 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t camSeq = 0;
 	uint64_t lastSnapLog = ano_timestamp_us();
 
+	// UI demo state: layout + hit-testing live here; blocks resubmit on CHANGE only.
+	bool     menuVisible = false, menuDirty = false, barSubmitted = false;
+	int      menuHovered = -1;
+	uint32_t optionsCount = 0;
+	uint32_t vpW = 0, vpH = 0; // last-known framebuffer size (RenderSnapshot)
+
 	while (!atomic_load(&g_logicShouldStop))
 	{
 		uint64_t now = ano_timestamp_us();
@@ -274,11 +414,35 @@ void* anoLogicThreadMain(void* arg)
 					case GLFW_KEY_D:            inD = down;    break;
 					case GLFW_KEY_SPACE:        inUp = down;   break;
 					case GLFW_KEY_LEFT_CONTROL: inDown = down; break;
+					case GLFW_KEY_M:
+						if (ie->u.key.action == GLFW_PRESS) {
+							menuVisible = !menuVisible;
+							menuHovered = -1;
+							menuDirty = true;
+						}
+						break;
 					default: break;
 					}
 				} else if (ie->kind == ANO_INPUT_MOUSE_BUTTON) {
 					if (ie->u.button.button == GLFW_MOUSE_BUTTON_RIGHT)
 						looking = (ie->u.button.action == GLFW_PRESS);
+					else if (ie->u.button.button == GLFW_MOUSE_BUTTON_LEFT
+					         && ie->u.button.action == GLFW_PRESS
+					         && menuVisible && vpW != 0) {
+						// Click resolves against the same layout the block rendered.
+						MenuLayout ml;
+						menu_layout(vpW, vpH, &ml);
+						switch (menu_hit(&ml, prevCx, prevCy)) {
+						case 0: menuVisible = false; menuDirty = true; break;   // RESUME
+						case 1: optionsCount++;      menuDirty = true; break;   // OPTIONS
+						case 2:                                                  // QUIT
+							menuVisible = false;
+							menuDirty = true;
+							ano_log(ANO_INFO, "Menu: quit selected (demo no-op).");
+							break;
+						default: break;
+						}
+					}
 				} else if (ie->kind == ANO_INPUT_CURSOR_POS) {
 					float cx = ie->u.cursor.x, cy = ie->u.cursor.y;
 					if (looking && haveCursor) {
@@ -333,12 +497,37 @@ void* anoLogicThreadMain(void* arg)
 		if (bake != NULL && !noticeCleared && noticeDeadline != 0 && now > noticeDeadline)
 			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE);
 
+		// Menu hover tracks the cursor; any state change resubmits the block (full
+		// replace). A full ring keeps it dirty for the next tick.
+		if (menuVisible && vpW != 0) {
+			MenuLayout ml;
+			menu_layout(vpW, vpH, &ml);
+			int h = menu_hit(&ml, prevCx, prevCy);
+			if (h != menuHovered) {
+				menuHovered = h;
+				menuDirty = true;
+			}
+		}
+		if (menuDirty && vpW != 0) {
+			MenuLayout ml;
+			menu_layout(vpW, vpH, &ml);
+			if (submit_menu(bridge, bake, &ml, menuVisible, menuHovered, optionsCount))
+				menuDirty = false;
+		}
+
 		// Snapshot path: log the renderer's published frame id ~once/sec, and refresh the camera
 		// readout block on the same cadence (REPLACE semantics).
 		{
 			RenderSnapshot snap;
 			if (noticeDeadline == 0 && ano_render_acquire_snapshot(bridge, &snap))
 				noticeDeadline = now + 15000000ull; // first published frame: arm the notice
+			if (ano_render_acquire_snapshot(bridge, &snap)) {
+				vpW = snap.vpWidth;
+				vpH = snap.vpHeight;
+			}
+			// UI status bar: once the viewport is known (backpressure-retried per tick).
+			if (!barSubmitted && vpH != 0)
+				barSubmitted = submit_bar(bridge, bake, vpH);
 			if (ano_render_acquire_snapshot(bridge, &snap) && now - lastSnapLog > 1000000) {
 				ano_debug_log(ANO_INFO, "Snapshot: frameId %llu, viewport %ux%u",
 				       (unsigned long long)snap.frameId, snap.vpWidth, snap.vpHeight);

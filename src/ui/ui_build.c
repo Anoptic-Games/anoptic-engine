@@ -10,6 +10,18 @@
 
 #include <math.h>
 
+// In: straight sRGB rgba. Out: premultiplied linear (the ABI's color space).
+void ano_ui_color_srgb(const float srgba[4], float out[4])
+{
+    for (int i = 0; i < 3; i++)
+    {
+        float c = fminf(fmaxf(srgba[i], 0.0f), 1.0f);
+        float lin = c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+        out[i] = lin * srgba[3];
+    }
+    out[3] = srgba[3];
+}
+
 // In: b (bound arrays), counts zeroed here. Caller owns all arrays; NULL+cap 0 legal.
 void ano_ui_builder_init(AnoUiBuilder *b,
                          AnoUiPrim *prims, uint32_t primCap,

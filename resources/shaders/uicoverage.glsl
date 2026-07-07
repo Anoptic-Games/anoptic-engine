@@ -169,6 +169,20 @@ vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount)
         }
         cov = a;
     }
+    else if (p.kind == UI_GLYPHS)
+    {
+        // Glyph labels z-interleaved with the prims: walk the range in register-blend
+        // order (shade_window bbox-rejects cheaply), tint, clip. aux0 was rebased at
+        // compose into the frame buffer's UI glyph region.
+        vec4 gacc = vec4(0.0);
+        for (uint g = 0u; g < p.aux1; g++)
+        {
+            vec4 s = shade_window(p.aux0 + g, pxTL, pxTL + 1.0);
+            gacc = s + gacc * (1.0 - s.a);
+        }
+        float cc = p.clipRef != UI_REF_NONE ? ui_clip_cov(p.clipRef, clipCount, pxTL) : 1.0;
+        return gacc * p.color * cc;
+    }
     else
     {
         return vec4(0.0);
