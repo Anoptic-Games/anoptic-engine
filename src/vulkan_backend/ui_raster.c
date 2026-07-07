@@ -30,10 +30,12 @@
 #define ANO_UI_PAINT_BYTES (ANO_UI_MAX_PAINTS * (uint32_t)sizeof(AnoUiPaint))
 #define ANO_UI_STOP_OFF    (ANO_UI_PAINT_OFF + ANO_UI_PAINT_BYTES)
 #define ANO_UI_STOP_BYTES  (ANO_UI_MAX_STOPS * (uint32_t)sizeof(AnoUiStop))
-#define ANO_UI_FRAME_BYTES (ANO_UI_STOP_OFF + ANO_UI_STOP_BYTES)
+#define ANO_UI_CURVE_OFF   (ANO_UI_STOP_OFF + ANO_UI_STOP_BYTES)
+#define ANO_UI_CURVE_BYTES (ANO_UI_MAX_CURVE_WORDS * 4u)
+#define ANO_UI_FRAME_BYTES (ANO_UI_CURVE_OFF + ANO_UI_CURVE_BYTES)
 
 static_assert((ANO_UI_CLIP_OFF % 256u) == 0 && (ANO_UI_PAINT_OFF % 256u) == 0
-                  && (ANO_UI_STOP_OFF % 256u) == 0,
+                  && (ANO_UI_STOP_OFF % 256u) == 0 && (ANO_UI_CURVE_OFF % 256u) == 0,
               "region offsets must satisfy the worst-case storage-buffer alignment");
 
 // Conservative pixel AABB of the pending prims (shadow prims reach 3 sigma; identity
@@ -76,12 +78,13 @@ static void ui_compose(RendererState* state)
         }
         order[j + 1] = v;
     }
-    uint32_t np = 0, nc = 0, na = 0, ns = 0, ng = 0;
+    uint32_t np = 0, nc = 0, na = 0, ns = 0, ng = 0, ncw = 0;
     for (uint32_t oi = 0; oi < state->uiBlockCount; oi++)
     {
         const RenderUiBlock* blk = state->uiBlocks[order[oi]].blk;
         if (np + blk->primCount > ANO_UI_MAX_PRIMS || nc + blk->clipCount > ANO_UI_MAX_CLIPS
             || na + blk->paintCount > ANO_UI_MAX_PAINTS || ns + blk->stopCount > ANO_UI_MAX_STOPS
+            || ncw + blk->curveCount > ANO_UI_MAX_CURVE_WORDS
             || ng + blk->glyphCount > ANO_UI_MAX_GLYPHS)
         {
             ano_log(ANO_WARN, "UI compose: ui_id %u skipped (table budget).",
@@ -100,6 +103,8 @@ static void ui_compose(RendererState* state)
                 p.paintRef += na;
             if (p.kind == ANO_UI_GLYPHS)
                 p.aux0 = ANO_UI_GLYPH_FIRST + ng + p.aux0;
+            else if (p.kind == ANO_UI_PATH)
+                p.aux0 += ncw; // block-local word offset -> pending-buffer offset
             state->uiPendingPrims[np++] = p;
         }
         for (uint32_t i = 0; i < blk->clipCount; i++)
@@ -115,10 +120,16 @@ static void ui_compose(RendererState* state)
         {
             AnoUiPaint pa = blk->paints[i];
             pa.stopFirst += ns;
+            // Scroll translates the gradient with content: shift the xform origin so a
+            // point at overlay (x+sx) reads the pre-scroll value at x.
+            pa.xform[2] -= pa.xform[0] * sx + pa.xform[1] * sy;
+            pa.xform[5] -= pa.xform[3] * sx + pa.xform[4] * sy;
             state->uiPendingPaints[na++] = pa;
         }
         memcpy(&state->uiPendingStops[ns], blk->stops, (size_t)blk->stopCount * sizeof(AnoUiStop));
         ns += blk->stopCount;
+        memcpy(&state->uiPendingCurves[ncw], blk->curves, (size_t)blk->curveCount * sizeof(uint32_t));
+        ncw += blk->curveCount;
         for (uint32_t i = 0; i < blk->glyphCount; i++)
         {
             AnoGlyphInstance g = blk->glyphs[i];
@@ -131,6 +142,7 @@ static void ui_compose(RendererState* state)
     state->uiPendingClipCount = nc;
     state->uiPendingPaintCount = na;
     state->uiPendingStopCount = ns;
+    state->uiPendingCurveCount = ncw;
     state->uiPendingGlyphCount = ng;
     ui_pending_bounds(state);
     state->uiVersion++;
@@ -143,7 +155,10 @@ static void ui_compose(RendererState* state)
 static void ui_compose_demo(RendererState* state, bool selftest)
 {
     AnoUiBuilder b;
-    ano_ui_builder_init(&b, state->uiPendingPrims, 32, state->uiPendingClips, 4, NULL, 0, NULL, 0);
+    ano_ui_builder_init(&b, state->uiPendingPrims, 32, state->uiPendingClips, 4,
+                        state->uiPendingPaints, ANO_UI_MAX_PAINTS,
+                        state->uiPendingStops, ANO_UI_MAX_STOPS);
+    ano_ui_builder_curves(&b, state->uiPendingCurves, ANO_UI_MAX_CURVE_WORDS);
     ano_ui_demo_scene(&b, 48.0f, 120.0f);
     if (!selftest)
     {
@@ -154,8 +169,9 @@ static void ui_compose_demo(RendererState* state, bool selftest)
     }
     state->uiPendingPrimCount = b.primCount;
     state->uiPendingClipCount = b.clipCount;
-    state->uiPendingPaintCount = 0;
-    state->uiPendingStopCount = 0;
+    state->uiPendingPaintCount = b.paintCount;
+    state->uiPendingStopCount = b.stopCount;
+    state->uiPendingCurveCount = b.curveCount;
     state->uiPendingGlyphCount = 0;
     ui_pending_bounds(state);
     state->uiVersion++;
@@ -196,10 +212,11 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
         state->uiPendingClips = mi_heap_malloc(state->textHeap, ANO_UI_CLIP_BYTES);
         state->uiPendingPaints = mi_heap_malloc(state->textHeap, ANO_UI_PAINT_BYTES);
         state->uiPendingStops = mi_heap_malloc(state->textHeap, ANO_UI_STOP_BYTES);
+        state->uiPendingCurves = mi_heap_malloc(state->textHeap, ANO_UI_CURVE_BYTES);
         state->uiPendingGlyphs = mi_heap_malloc(state->textHeap,
                                                 ANO_UI_MAX_GLYPHS * sizeof(AnoGlyphInstance));
         if (!state->uiPendingPrims || !state->uiPendingClips || !state->uiPendingPaints
-            || !state->uiPendingStops || !state->uiPendingGlyphs)
+            || !state->uiPendingStops || !state->uiPendingCurves || !state->uiPendingGlyphs)
         {
             ano_log(ANO_WARN, "UI overlay disabled: pending table allocation failed.");
             state->uiPendingPrims = NULL;
@@ -214,7 +231,7 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
     // self-test: opaque backdrop, full-canvas dispatch, glyph loop skipped.
     bool selftest = getenv("ANO_UI_OPAQUE") != NULL;
     if (selftest)
-        state->textFlags |= ANO_TEXT_RASTER_OPAQUE | ANO_TEXT_RASTER_UIONLY;
+        state->textFlags |= ANO_TEXT_RASTER_OPAQUE | ANO_TEXT_RASTER_UIONLY | ANO_TEXT_RASTER_NODITHER;
     if (state->uiOverlay && (selftest || getenv("ANO_UI_DEMO") != NULL))
         ui_compose_demo(state, selftest);
     return true;
@@ -292,6 +309,8 @@ void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
                (size_t)state->uiPendingPaintCount * sizeof(AnoUiPaint));
         memcpy(dst + ANO_UI_STOP_OFF, state->uiPendingStops,
                (size_t)state->uiPendingStopCount * sizeof(AnoUiStop));
+        memcpy(dst + ANO_UI_CURVE_OFF, state->uiPendingCurves,
+               (size_t)state->uiPendingCurveCount * sizeof(uint32_t));
         if (fr->textFrameMapped != NULL)
             memcpy((AnoGlyphInstance*)fr->textFrameMapped + ANO_UI_GLYPH_FIRST,
                    state->uiPendingGlyphs,
@@ -300,6 +319,7 @@ void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
     }
     state->uiPrimCount = state->uiPendingPrimCount;
     state->uiClipCount = state->uiPendingClipCount;
+    state->uiPaintCount = state->uiPendingPaintCount;
     for (int k = 0; k < 4; k++)
         state->uiBounds[k] = state->uiPendingBounds[k];
 }
@@ -314,21 +334,22 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         PerFrameResources* fr = &state->frames[i];
-        VkDescriptorBufferInfo infos[4];
+        VkDescriptorBufferInfo infos[5];
         if (fr->uiFrameBuffer != VK_NULL_HANDLE)
         {
             infos[0] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, 0, ANO_UI_PRIM_BYTES };
             infos[1] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_CLIP_OFF, ANO_UI_CLIP_BYTES };
             infos[2] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_PAINT_OFF, ANO_UI_PAINT_BYTES };
             infos[3] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_STOP_OFF, ANO_UI_STOP_BYTES };
+            infos[4] = (VkDescriptorBufferInfo){ fr->uiFrameBuffer, ANO_UI_CURVE_OFF, ANO_UI_CURVE_BYTES };
         }
         else
         {
-            for (int k = 0; k < 4; k++)
+            for (int k = 0; k < 5; k++)
                 infos[k] = (VkDescriptorBufferInfo){ fr->textFrameBuffer, 0, VK_WHOLE_SIZE };
         }
-        VkWriteDescriptorSet writes[4] = {};
-        for (uint32_t w = 0; w < 4; ++w)
+        VkWriteDescriptorSet writes[5] = {};
+        for (uint32_t w = 0; w < 5; ++w)
         {
             writes[w].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[w].dstSet = fr->textRasterSet;
@@ -337,7 +358,7 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
             writes[w].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[w].pBufferInfo = &infos[w];
         }
-        vkUpdateDescriptorSets(ctx->device, 4, writes, 0, NULL);
+        vkUpdateDescriptorSets(ctx->device, 5, writes, 0, NULL);
     }
 }
 

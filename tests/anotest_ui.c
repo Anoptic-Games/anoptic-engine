@@ -380,6 +380,187 @@ static void test_clip(void)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Gradient paints: a solid rrect filled by each gradient kind; deep-interior windows
+// have coverage 1, so the evaluator's output there IS the resolved fill. Truth is an
+// independent analytic t plus a two-stop clamp-and-lerp, so the check exercises the
+// builder's xform setup, the parameter map, and the stop interpolation end to end.
+
+static void grad2_truth(const float c0[4], const float c1[4], double t, float out[4])
+{
+    double u = t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t; // CSS pad
+    for (int k = 0; k < 4; k++)
+        out[k] = (float)(c0[k] + (c1[k] - c0[k]) * u);
+}
+
+static void test_gradient(void)
+{
+    AnoUiPrim prims[1];
+    AnoUiPaint paints[1];
+    AnoUiStop stops[2], in[2];
+    AnoUiBuilder b;
+    float white[4] = { 1, 1, 1, 1 };
+    // Alpha-1 stops so premultiplied == straight and the lerp oracle stays simple.
+    float c0[4] = { 0.05f, 0.10f, 0.20f, 1.0f };
+    float c1[4] = { 0.80f, 0.60f, 0.30f, 1.0f };
+    for (int k = 0; k < 4; k++) { in[0].color[k] = c0[k]; in[1].color[k] = c1[k]; }
+    in[0].t = 0.0f; in[1].t = 1.0f;
+    float mn[2] = { 20, 20 }, mx[2] = { 120, 100 };
+    float r10[4] = { 10, 10, 10, 10 };
+
+    // Deep interior of the box (windows fully inside, coverage exactly 1).
+    const int ix0 = 45, iy0 = 45, ix1 = 95, iy1 = 75;
+
+    struct { const char *name; int kind; float a[2], b2, ang; } cases[] = {
+        { "linear", 0, { 30, 110 }, 0, 0 },   // t along x: 0 at x=30, 1 at x=110
+        { "radial", 1, { 70, 60 }, 45, 0 },    // center (70,60), radius 45
+        { "conic",  2, { 70, 60 }, 0, 0.0f },  // center (70,60), start angle 0
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        ano_ui_builder_init(&b, prims, 1, NULL, 0, paints, 1, stops, 2);
+        uint32_t g = ANO_UI_REF_NONE;
+        if (cases[c].kind == 0)
+            g = ano_ui_paint_linear(&b, (float[2]){ cases[c].a[0], 0 },
+                                    (float[2]){ cases[c].a[1], 0 }, in, 2);
+        else if (cases[c].kind == 1)
+            g = ano_ui_paint_radial(&b, cases[c].a, cases[c].b2, in, 2);
+        else
+            g = ano_ui_paint_conic(&b, cases[c].a, cases[c].ang, in, 2);
+        CHECK(g == 0u, "gradient paint pushed at index 0");
+        ano_ui_rrect(&b, mn, mx, r10, white, 0.0f, g, ANO_UI_REF_NONE, 0);
+        AnoUiScene s = ano_ui_scene(&b);
+        double worst = 0.0;
+        for (int py = iy0; py < iy1; py++)
+            for (int px = ix0; px < ix1; px++) {
+                float out[4], want[4];
+                ano_ui_ref_eval(&s, (float)px, (float)py, out);
+                double gx = px + 0.5, gy = py + 0.5, t;
+                if (cases[c].kind == 0)
+                    t = (gx - cases[c].a[0]) / (cases[c].a[1] - cases[c].a[0]);
+                else if (cases[c].kind == 1)
+                    t = sqrt((gx - cases[c].a[0]) * (gx - cases[c].a[0])
+                             + (gy - cases[c].a[1]) * (gy - cases[c].a[1])) / cases[c].b2;
+                else
+                    t = atan2(gy - cases[c].a[1], gx - cases[c].a[0]) / 6.283185307179586 + 0.5;
+                grad2_truth(c0, c1, t, want);
+                for (int k = 0; k < 4; k++)
+                    worst = fmax(worst, fabs(out[k] - want[k]));
+            }
+        printf("  gradient %-7s interior worst %.7f\n", cases[c].name, worst);
+        CHECK(worst <= 1e-5, "gradient fill matches analytic");
+    }
+
+    // Base modulation: a tint on the fill prim scales the resolved paint component-wise.
+    ano_ui_builder_init(&b, prims, 1, NULL, 0, paints, 1, stops, 2);
+    uint32_t g = ano_ui_paint_linear(&b, (float[2]){ 30, 0 }, (float[2]){ 110, 0 }, in, 2);
+    float tint[4] = { 0.5f, 0.5f, 0.5f, 0.5f };
+    ano_ui_rrect(&b, mn, mx, r10, tint, 0.0f, g, ANO_UI_REF_NONE, 0);
+    AnoUiScene s = ano_ui_scene(&b);
+    double mworst = 0.0;
+    for (int py = iy0; py < iy1; py++)
+        for (int px = ix0; px < ix1; px++) {
+            float out[4], want[4];
+            ano_ui_ref_eval(&s, (float)px, (float)py, out);
+            grad2_truth(c0, c1, (px + 0.5 - 30) / 80.0, want);
+            for (int k = 0; k < 4; k++)
+                mworst = fmax(mworst, fabs(out[k] - want[k] * 0.5f));
+        }
+    printf("  gradient modulate  worst %.7f\n", mworst);
+    CHECK(mworst <= 1e-5, "base tint modulates the gradient fill");
+
+    // Fail-closed: a paintRef past the table is transparent (a truncated table must not
+    // leak). The builder never emits this; force it to mirror the shader's bound check.
+    prims[0].paintRef = 7u; // paintCount is 1
+    float out[4];
+    ano_ui_ref_eval(&s, 70.0f, 60.0f, out);
+    CHECK(out[0] == 0.0f && out[3] == 0.0f, "out-of-range paint fails closed");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Path fill: an axis-aligned rectangle baked as a 4-line path must reproduce the exact
+// box coverage (curve_area is exact on straight edges), which validates the baker, the
+// monotone sweep, the binary16 pack round-trip, and the winding auto-orientation. A
+// reversed winding must still fill; an oppositely wound inner contour must punch a hole.
+
+static void test_path(void)
+{
+    AnoUiPrim prims[1];
+    uint32_t curves[512];
+    AnoUiBuilder b;
+    float white[4] = { 1, 1, 1, 1 };
+    // Integer, small-half-extent coords so binary16 is effectively exact.
+    RectTruth rt = { 20, 20, 100, 80 };
+
+    // Clockwise-on-screen rectangle (4 lines, auto-closed).
+    AnoUiPathSeg cw[] = {
+        { ANO_UI_SEG_MOVE, { 20, 20, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 100, 20, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 100, 80, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 20, 80, 0, 0 } },
+    };
+    ano_ui_builder_init(&b, prims, 1, NULL, 0, NULL, 0, NULL, 0);
+    ano_ui_builder_curves(&b, curves, 512);
+    uint32_t idx = ano_ui_path_fill(&b, cw, 4, white, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+    CHECK(idx == 0u, "path prim emitted");
+    AnoUiScene s = ano_ui_scene(&b);
+    double iworst = 0.0, eworst = 0.0;
+    for (int py = 30; py < 70; py++)
+        for (int px = 30; px < 90; px++) {
+            float out[4];
+            ano_ui_ref_eval(&s, (float)px, (float)py, out);
+            iworst = fmax(iworst, fabs(out[3] - 1.0));
+        }
+    // Edge windows away from the corners: exact box coverage.
+    for (int px = 30; px < 90; px++) {
+        float top[4], bot[4];
+        ano_ui_ref_eval(&s, (float)px, 19.0f, top); // straddles y=20
+        ano_ui_ref_eval(&s, (float)px, 80.0f, bot); // straddles y=80
+        eworst = fmax(eworst, fabs(top[3] - truth_rect(&rt, px, 19)));
+        eworst = fmax(eworst, fabs(bot[3] - truth_rect(&rt, px, 80)));
+    }
+    printf("  path rect interior %.6f  edge %.6f  (%u words, %u seg)\n",
+           iworst, eworst, b.curveCount, prims[0].aux1);
+    CHECK(iworst <= 2e-3, "path rect interior filled");
+    CHECK(eworst <= 4e-3, "path rect straight edges ~exact");
+
+    // Reversed winding fills identically (auto-orientation).
+    AnoUiPathSeg ccw[] = {
+        { ANO_UI_SEG_MOVE, { 20, 20, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 20, 80, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 100, 80, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 100, 20, 0, 0 } },
+    };
+    ano_ui_builder_init(&b, prims, 1, NULL, 0, NULL, 0, NULL, 0);
+    ano_ui_builder_curves(&b, curves, 512);
+    ano_ui_path_fill(&b, ccw, 4, white, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+    AnoUiScene s2 = ano_ui_scene(&b);
+    float c[4];
+    ano_ui_ref_eval(&s2, 60.0f, 50.0f, c);
+    CHECK(fabs(c[3] - 1.0) <= 2e-3, "reversed winding still fills");
+
+    // Hole: outer CW + inner oppositely wound -> covered between, empty inside the inner.
+    AnoUiPathSeg holed[] = {
+        { ANO_UI_SEG_MOVE, { 20, 20, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 100, 20, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 100, 80, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 20, 80, 0, 0 } },
+        { ANO_UI_SEG_MOVE, { 45, 38, 0, 0 } }, // inner, reversed winding
+        { ANO_UI_SEG_LINE, { 45, 62, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 75, 62, 0, 0 } },
+        { ANO_UI_SEG_LINE, { 75, 38, 0, 0 } },
+    };
+    ano_ui_builder_init(&b, prims, 1, NULL, 0, NULL, 0, NULL, 0);
+    ano_ui_builder_curves(&b, curves, 512);
+    ano_ui_path_fill(&b, holed, 8, white, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+    AnoUiScene s3 = ano_ui_scene(&b);
+    float between[4], inside[4];
+    ano_ui_ref_eval(&s3, 28.0f, 50.0f, between); // in the ring
+    ano_ui_ref_eval(&s3, 60.0f, 50.0f, inside);   // in the hole
+    printf("  path hole ring %.4f  hole %.4f\n", between[3], inside[3]);
+    CHECK(fabs(between[3] - 1.0) <= 2e-3, "filled between outer and hole");
+    CHECK(inside[3] <= 2e-3, "inner contour punches a hole");
+}
+
+// ---------------------------------------------------------------------------------------------
 // Shadow vs blurred-mask ground truth: 4x supersampled rrect mask, separable discrete
 // Gaussian (radius 4 sigma, double), box-downsampled; evaluator sampled at pixel centers.
 
@@ -526,9 +707,11 @@ static void test_blend(void)
 #define DEMO_ORIGIN_X 48.0f
 #define DEMO_ORIGIN_Y 120.0f
 
-static void demo_build(AnoUiPrim *prims, AnoUiClip *clips, AnoUiBuilder *b)
+static void demo_build(AnoUiPrim *prims, AnoUiClip *clips, AnoUiPaint *paints,
+                       AnoUiStop *stops, uint32_t *curves, AnoUiBuilder *b)
 {
-    ano_ui_builder_init(b, prims, 32, clips, 4, NULL, 0, NULL, 0);
+    ano_ui_builder_init(b, prims, 32, clips, 4, paints, 8, stops, 16);
+    ano_ui_builder_curves(b, curves, 256);
     ano_ui_demo_scene(b, DEMO_ORIGIN_X, DEMO_ORIGIN_Y);
 }
 
@@ -536,18 +719,29 @@ static void test_demo(void)
 {
     AnoUiPrim p1[32], p2[32];
     AnoUiClip c1[4], c2[4];
+    AnoUiPaint pa1[8], pa2[8];
+    AnoUiStop st1[16], st2[16];
+    uint32_t cv1[256], cv2[256];
     AnoUiBuilder b1, b2;
-    demo_build(p1, c1, &b1);
-    demo_build(p2, c2, &b2);
-    CHECK(b1.primCount >= 12 && b1.clipCount == 2, "demo scene counts");
+    demo_build(p1, c1, pa1, st1, cv1, &b1);
+    demo_build(p2, c2, pa2, st2, cv2, &b2);
+    CHECK(b1.primCount >= 12 && b1.clipCount == 2 && b1.paintCount == 1 && b1.curveCount > 0,
+          "demo scene counts");
     CHECK(b1.primCount == b2.primCount
               && memcmp(p1, p2, b1.primCount * sizeof(AnoUiPrim)) == 0
-              && memcmp(c1, c2, b1.clipCount * sizeof(AnoUiClip)) == 0,
+              && memcmp(c1, c2, b1.clipCount * sizeof(AnoUiClip)) == 0
+              && b1.paintCount == b2.paintCount
+              && memcmp(pa1, pa2, b1.paintCount * sizeof(AnoUiPaint)) == 0
+              && b1.stopCount == b2.stopCount
+              && memcmp(st1, st2, b1.stopCount * sizeof(AnoUiStop)) == 0
+              && b1.curveCount == b2.curveCount
+              && memcmp(cv1, cv2, b1.curveCount * sizeof(uint32_t)) == 0,
           "demo scene bitwise-stable");
     for (uint32_t i = 0; i < b1.primCount; i++)
         CHECK(p1[i].clipRef == ANO_UI_REF_NONE || p1[i].clipRef < b1.clipCount,
               "demo clip refs valid");
-    printf("  demo scene: %u prims, %u clips, bitwise-stable\n", b1.primCount, b1.clipCount);
+    printf("  demo scene: %u prims, %u clips, %u paints, %u curve words, bitwise-stable\n",
+           b1.primCount, b1.clipCount, b1.paintCount, b1.curveCount);
 }
 
 // One swapchain byte triple for the demo scene over opaque black at pixel (px,py):
@@ -574,8 +768,11 @@ static int demo_dump(int argc, char **argv)
     int w = atoi(argv[2]), h = atoi(argv[3]);
     AnoUiPrim prims[32];
     AnoUiClip clips[4];
+    AnoUiPaint paints[8];
+    AnoUiStop stops[16];
+    uint32_t curves[256];
     AnoUiBuilder b;
-    demo_build(prims, clips, &b);
+    demo_build(prims, clips, paints, stops, curves, &b);
     AnoUiScene s = ano_ui_scene(&b);
     FILE *f = fopen(argv[4], "wb");
     if (!f)
@@ -633,8 +830,11 @@ static int demo_compare(int argc, char **argv)
     }
     AnoUiPrim prims[32];
     AnoUiClip clips[4];
+    AnoUiPaint paints[8];
+    AnoUiStop stops[16];
+    uint32_t curves[256];
     AnoUiBuilder b;
-    demo_build(prims, clips, &b);
+    demo_build(prims, clips, paints, stops, curves, &b);
     AnoUiScene s = ano_ui_scene(&b);
     uint8_t *row = malloc((size_t)w * 3);
     double sum2 = 0.0;
@@ -682,6 +882,8 @@ int main(int argc, char **argv)
     test_sdf(soak);
     test_coverage();
     test_clip();
+    test_gradient();
+    test_path();
     test_shadow();
     test_blend();
     test_demo();

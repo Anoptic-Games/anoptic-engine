@@ -89,14 +89,23 @@ static_assert(sizeof(AnoUiClip) == 48 && offsetof(AnoUiClip, rrCenter) == 16
                   && offsetof(AnoUiClip, rrRadii) == 32,
               "GPU ABI: 48-byte clip entry");
 
-// Gradient paint ABI, frozen now, evaluated from build step 6 on (ui-render.md §7).
-// No builder verbs exist yet; prims reference ANO_UI_REF_NONE until then.
+// Paint kinds for AnoUiPaint.kind. A prim's paintRef selects one (RRECT and PATH
+// fills); ANO_UI_REF_NONE leaves the prim's own color as the flat fill. The gradient
+// parameter t comes from the pixel through xform (g = xform * [px,py,1]): linear
+// t = g.x, radial t = |g|, conic t = atan2(g.y,g.x)/2pi + 0.5.
+#define ANO_UI_GRAD_LINEAR 0u
+#define ANO_UI_GRAD_RADIAL 1u
+#define ANO_UI_GRAD_CONIC  2u
+
+// Gradient paint ABI. Stops live in the block's stop array [stopFirst, +stopCount),
+// sorted ascending by t, interpolated in premultiplied linear; t clamps to the end
+// stops (CSS pad). Referenced by AnoUiPrim.paintRef.
 typedef struct AnoUiPaint {
-    uint32_t kind;      // linear/radial/conic (constants land with step 6)
+    uint32_t kind;      // ANO_UI_GRAD_*
     uint32_t stopFirst;
     uint32_t stopCount;
     uint32_t flags;
-    float    xform[6];  // 2x3 pixel->gradient space
+    float    xform[6];  // 2x3 pixel->gradient space, rows: g.x = xform[0..2].(px,py,1)
     float    pad[2];
 } AnoUiPaint;
 
@@ -114,18 +123,24 @@ static_assert(sizeof(AnoUiPaint) == 48 && sizeof(AnoUiStop) == 32, "GPU ABI: pai
 // paint order (later prims render on top).
 
 typedef struct AnoUiBuilder {
-    AnoUiPrim  *prims;  uint32_t primCap;  uint32_t primCount;
-    AnoUiClip  *clips;  uint32_t clipCap;  uint32_t clipCount;
-    AnoUiPaint *paints; uint32_t paintCap; uint32_t paintCount;
-    AnoUiStop  *stops;  uint32_t stopCap;  uint32_t stopCount;
+    AnoUiPrim  *prims;   uint32_t primCap;   uint32_t primCount;
+    AnoUiClip  *clips;   uint32_t clipCap;   uint32_t clipCount;
+    AnoUiPaint *paints;  uint32_t paintCap;  uint32_t paintCount;
+    AnoUiStop  *stops;   uint32_t stopCap;   uint32_t stopCount;
+    uint32_t   *curves;  uint32_t curveCap;  uint32_t curveCount; // packed path curve words
 } AnoUiBuilder;
 
-// Zeroes counts and binds the caller arrays. Any table may be NULL with cap 0.
+// Zeroes counts and binds the caller arrays. Any table may be NULL with cap 0. The
+// curve buffer starts detached (paths need ano_ui_builder_curves before ano_ui_path_fill).
 void ano_ui_builder_init(AnoUiBuilder *b,
                          AnoUiPrim *prims, uint32_t primCap,
                          AnoUiClip *clips, uint32_t clipCap,
                          AnoUiPaint *paints, uint32_t paintCap,
                          AnoUiStop *stops, uint32_t stopCap);
+
+// Attaches the curve-stream scratch buffer that ano_ui_path_fill bakes into (packed
+// binary16 point words, the text sweeper's grammar). Detach with NULL/cap 0.
+void ano_ui_builder_curves(AnoUiBuilder *b, uint32_t *curves, uint32_t curveCap);
 
 // Premultiplied linear from sRGB-authored straight rgba — the ABI is linear, and
 // linear values read brighter than their sRGB-intuited numbers suggest.
@@ -153,12 +168,32 @@ uint32_t ano_ui_image(AnoUiBuilder *b, const float rectMin[2], const float rectM
                       const float radii[4], uint32_t texIndex, float lod,
                       const float tint[4], uint32_t clipRef, uint32_t flags);
 
-// Filled path covering curve stream entries [curveOffset, curveOffset+curveCount).
-// bbox is the conservative pixel bounds used for culling. Curve baking machinery
-// lands with build step 6; the verb only packs the reference.
+// Filled path covering curve stream words [curveOffset, ...) for curveCount monotone
+// quads. bbox is the conservative pixel bounds used for culling and the prim-local
+// origin. Low-level: the caller supplies a pre-baked stream. Most callers want
+// ano_ui_path_fill, which bakes arbitrary segments.
 uint32_t ano_ui_path(AnoUiBuilder *b, const float bboxMin[2], const float bboxMax[2],
                      uint32_t curveOffset, uint32_t curveCount, const float color[4],
                      uint32_t paintRef, uint32_t clipRef, uint32_t flags);
+
+// One path segment (overlay pixels, y-down). MOVE opens a contour; LINE/QUAD extend it
+// from the previous point; each contour auto-closes back to its opening point.
+#define ANO_UI_SEG_MOVE 0u // start a new contour at (p[0], p[1])
+#define ANO_UI_SEG_LINE 1u // straight edge to (p[0], p[1])
+#define ANO_UI_SEG_QUAD 2u // quadratic to (p[2], p[3]) via control (p[0], p[1])
+typedef struct AnoUiPathSeg {
+    uint32_t kind;
+    float    p[4];
+} AnoUiPathSeg;
+
+// Fills a path (contours of lines/quads, auto-closed) with color/paint, baking it into
+// the builder's attached curve buffer as monotone quads. Fill is nonzero-winding and
+// caller-winding-independent; holes come from oppositely wound inner contours. The
+// prim's bbox and prim-local frame are derived from the points. Returns the prim index,
+// or ANO_UI_REF_NONE when a table or the curve buffer is full or the path is empty.
+uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t segCount,
+                          const float color[4], uint32_t paintRef, uint32_t clipRef,
+                          uint32_t flags);
 
 // Glyph range [first, first+count) of the frame's AnoGlyphInstance array, z-ordered
 // with the surrounding prims. bbox is the shaped text's conservative pixel bounds.
@@ -172,6 +207,25 @@ uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bbox
 // by the CALLER (intersect rects; innermost rounded term wins) — one entry per prim.
 uint32_t ano_ui_clip(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                      const float rrMin[2], const float rrMax[2], const float rrRadii[4]);
+
+// ---------------------------------------------------------------------------------------------
+// Paints: push a gradient's stops + descriptor into the builder's paint/stop tables and
+// return the paintRef for a fill prim (RRECT / PATH). stops are copied and sorted
+// ascending by t here; each color is premultiplied linear (use ano_ui_color_srgb).
+// Return ANO_UI_REF_NONE when a table is full or stopCount is 0.
+
+// Linear gradient: t runs 0 at p0 to 1 at p1 along the p0->p1 axis, constant across it.
+uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[2],
+                             const AnoUiStop *stops, uint32_t stopCount);
+
+// Radial gradient: t = |pixel - center| / radius, 0 at the center, 1 on the circle.
+uint32_t ano_ui_paint_radial(AnoUiBuilder *b, const float center[2], float radius,
+                             const AnoUiStop *stops, uint32_t stopCount);
+
+// Conic (angular) gradient about center: t sweeps 0..1 once around, 0 at startAngle
+// (radians, y-down so positive turns clockwise on screen). A hard seam at startAngle.
+uint32_t ano_ui_paint_conic(AnoUiBuilder *b, const float center[2], float startAngle,
+                            const AnoUiStop *stops, uint32_t stopCount);
 
 // Standing demo scene, the GPU self-test target (ui-render.md §7 step 4): deterministic,
 // reference-evaluable prims only (no IMAGE/PATH/GLYPHS). Needs caps >= 16 prims / 4
@@ -189,13 +243,15 @@ typedef struct AnoUiScene {
     const AnoUiClip  *clips;  uint32_t clipCount;
     const AnoUiPaint *paints; uint32_t paintCount;
     const AnoUiStop  *stops;  uint32_t stopCount;
+    const uint32_t   *curves; uint32_t curveCount; // packed path curve words
 } AnoUiScene;
 
 // The builder's current contents as a scene view (no copy).
 static inline AnoUiScene ano_ui_scene(const AnoUiBuilder *b)
 {
     return (AnoUiScene){ b->prims, b->primCount, b->clips, b->clipCount,
-                         b->paints, b->paintCount, b->stops, b->stopCount };
+                         b->paints, b->paintCount, b->stops, b->stopCount,
+                         b->curves, b->curveCount };
 }
 
 // Exact signed distance to the prim-space rounded box (per-corner radii, y-down
@@ -206,8 +262,14 @@ float ano_ui_ref_sd_rrect(const float p[2], const float half[2], const float rad
 // quadrature along y), evaluated at p relative to the box center. Returns [0,1].
 float ano_ui_ref_shadow(const float p[2], const float half[2], float corner, float sigma);
 
+// Resolved paint color at pixel (px,py) modulated by base, premultiplied linear.
+// paintRef == ANO_UI_REF_NONE returns base unchanged; an out-of-range ref fails CLOSED
+// (transparent), the clip-table policy. The GPU twin is ui_paint_eval.
+void ano_ui_ref_paint(const AnoUiScene *s, uint32_t paintRef, float px, float py,
+                      const float base[4], float out[4]);
+
 // Premultiplied contribution of one prim over the unit pixel window [px,px+1)x[py,py+1),
-// clip applied. PATH/GLYPHS evaluate to zero here (they validate in their own lanes).
+// clip and paint applied. PATH/GLYPHS evaluate to zero here (they validate in their own lanes).
 void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, float out[4]);
 
 // Painter's-order evaluation of the whole scene at one pixel (premultiplied linear,

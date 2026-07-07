@@ -52,6 +52,7 @@
 #define ANO_UI_MAX_CLIPS         256u
 #define ANO_UI_MAX_PAINTS        256u
 #define ANO_UI_MAX_STOPS         1024u
+#define ANO_UI_MAX_CURVE_WORDS   16384u // packed path curve stream (binding 8), 64 KiB/slot
 // UI glyph labels live in their own region of the text frame buffer, above the world
 // panel, so the plain glyph loop never draws them (UI_GLYPHS prims do, z-interleaved).
 #define ANO_UI_GLYPH_FIRST       16384u
@@ -591,6 +592,7 @@ typedef struct RendererState
     bool                    uiOverlay;
     uint32_t                uiPrimCount; // prim count in the CURRENT slot's tables (push block)
     uint32_t                uiClipCount; // clip count, ditto (shader bound-check, fail closed)
+    uint32_t                uiPaintCount; // paint count, ditto (gradient fail-closed bound)
     float                   uiBounds[4]; // current px AABB incl. shadow pads, inverted when blank
     // UI block registry (v0 bridge) + the composed pending tables (textHeap allocations),
     // copied per slot by ano_vk_ui_frame_refresh when uiVersion moves.
@@ -601,11 +603,13 @@ typedef struct RendererState
     AnoUiClip*              uiPendingClips;
     AnoUiPaint*             uiPendingPaints;
     AnoUiStop*              uiPendingStops;
+    uint32_t*               uiPendingCurves;
     AnoGlyphInstance*       uiPendingGlyphs;
     uint32_t                uiPendingPrimCount;
     uint32_t                uiPendingClipCount;
     uint32_t                uiPendingPaintCount;
     uint32_t                uiPendingStopCount;
+    uint32_t                uiPendingCurveCount;
     uint32_t                uiPendingGlyphCount;
     float                   uiPendingBounds[4];
     uint32_t                uiVersion;

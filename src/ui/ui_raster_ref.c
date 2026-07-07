@@ -12,12 +12,107 @@
 // madebyevan.com/shaders/fast-rounded-rectangle-shadows). docs/ui/ui-render.md §3.3-3.6.
 
 #include "anoptic_ui.h"
+#include "ui_path.h"
 
 #include <math.h>
 
 static float clamp01(float x)
 {
     return fminf(fmaxf(x, 0.0f), 1.0f);
+}
+
+static float clampf(float v, float lo, float hi)
+{
+    return fminf(fmaxf(v, lo), hi);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Path fill: the same monotone-quad sweep the glyph lane uses (mirrors curve_area in
+// textcoverage.glsl / text_raster_ref.c), walked over the scene's shared curve stream.
+
+// Single monotone-component root hitting target, clamped [0,1], citardauq form.
+static float solve_mono(float c0, float c1, float c2, float target)
+{
+    float span = c2 - c0;
+    float a = c0 - 2.0f * c1 + c2;
+    float b = 2.0f * (c1 - c0);
+    float c = c0 - target;
+    float d = b * b - 4.0f * a * c;
+    if (d < 0.0f) d = 0.0f;
+    float den = -b - (span < 0.0f ? -sqrtf(d) : sqrtf(d));
+    if (den == 0.0f) return 0.0f;
+    return clampf(2.0f * c / den, 0.0f, 1.0f);
+}
+
+// Signed area between one monotone quad and the window's right edge, clipped to [0,w]x[0,h];
+// coordinates arrive window-local. Mirrors curve_area().
+static float curve_area(float x0, float y0, float x1, float y1, float x2, float y2,
+                        float w, float h)
+{
+    if (y0 == y2)
+        return 0.0f;
+    if (fmaxf(y0, y2) <= 0.0f || fminf(y0, y2) >= h || fminf(x0, x2) >= w)
+        return 0.0f;
+    if (x0 == x2)
+    {
+        float bb = fminf(w, w - x0);
+        return (clampf(y2, 0.0f, h) - clampf(y0, 0.0f, h)) * bb;
+    }
+    float t0 = solve_mono(y0, y1, y2, 0.0f);
+    float t1 = solve_mono(y0, y1, y2, h);
+    if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+    float ta = clampf(solve_mono(x0, x1, x2, 0.0f), t0, t1);
+    float tb = clampf(solve_mono(x0, x1, x2, w), t0, t1);
+    if (ta > tb) { float tmp = ta; ta = tb; tb = tmp; }
+    float ax = x0 - 2.0f * x1 + x2, bx = 2.0f * (x1 - x0);
+    float ay = y0 - 2.0f * y1 + y2, by = 2.0f * (y1 - y0);
+    float xs = clampf((ax * t0 + bx) * t0 + x0, 0.0f, w);
+    float ys = clampf((ay * t0 + by) * t0 + y0, 0.0f, h);
+    float area = 0.0f;
+    float ends[3] = { ta, tb, t1 };
+    for (int k = 0; k < 3; k++)
+    {
+        float te = ends[k];
+        float xe = clampf((ax * te + bx) * te + x0, 0.0f, w);
+        float ye = clampf((ay * te + by) * te + y0, 0.0f, h);
+        area += (ye - ys) * (2.0f * w - xs - xe) * 0.5f;
+        xs = xe;
+        ys = ye;
+    }
+    return area;
+}
+
+static float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 0xFFFFu)); }
+static float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
+
+// Coverage of one path over the window at (wx,wy) size (ww,wh), prim-local space: one
+// stream walk from word `off` over curveCount monotone quads (SENTINEL restarts a
+// contour), normalized by window area. Mirrors ui_path_sum in uicoverage.glsl.
+static float ui_path_sum(const AnoUiScene *s, uint32_t off, uint32_t curveCount,
+                         float wx, float wy, float ww, float wh)
+{
+    uint32_t i = off;
+    float p0x = half_lo(s->curves[i]) - wx, p0y = half_hi(s->curves[i]) - wy;
+    i++;
+    float area = 0.0f;
+    for (uint32_t c = 0; c < curveCount; c++)
+    {
+        if (s->curves[i] == ANO_UI_CURVE_SENTINEL)
+        {
+            i++;
+            p0x = half_lo(s->curves[i]) - wx;
+            p0y = half_hi(s->curves[i]) - wy;
+            i++;
+        }
+        float p1x = half_lo(s->curves[i]) - wx, p1y = half_hi(s->curves[i]) - wy;
+        i++;
+        float p2x = half_lo(s->curves[i]) - wx, p2y = half_hi(s->curves[i]) - wy;
+        i++;
+        area += curve_area(p0x, p0y, p1x, p1y, p2x, p2y, ww, wh);
+        p0x = p2x;
+        p0y = p2y;
+    }
+    return area / (ww * wh);
 }
 
 // In: p relative to box center (prim space, y-down), half extents, per-corner radii
@@ -97,9 +192,70 @@ static float clip_cov(const AnoUiScene *s, uint32_t ref, float px, float py)
     return cov;
 }
 
+// Interpolated stop color at parameter t, premultiplied linear, clamped to the end
+// stops (CSS pad). Stops are sorted ascending by t; a small linear scan suffices.
+static void ui_stop_color(const AnoUiScene *s, uint32_t first, uint32_t count, float t,
+                          float out[4])
+{
+    const AnoUiStop *st = s->stops;
+    if (t <= st[first].t) {
+        for (int k = 0; k < 4; k++) out[k] = st[first].color[k];
+        return;
+    }
+    uint32_t last = first + count - 1;
+    if (t >= st[last].t) {
+        for (int k = 0; k < 4; k++) out[k] = st[last].color[k];
+        return;
+    }
+    for (uint32_t i = 0; i + 1 < count; i++) {
+        float t0 = st[first + i].t, t1 = st[first + i + 1].t;
+        if (t < t1) {
+            float f = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0f;
+            const float *a = st[first + i].color, *b = st[first + i + 1].color;
+            for (int k = 0; k < 4; k++) out[k] = a[k] + (b[k] - a[k]) * f;
+            return;
+        }
+    }
+    for (int k = 0; k < 4; k++) out[k] = st[last].color[k];
+}
+
+// In: scene, paintRef, overlay pixel (px,py), base tint. Out: resolved fill,
+// premultiplied linear, modulated by base. NONE returns base; an out-of-range paint or
+// stop range fails CLOSED (transparent), matching clip_cov. Mirrors ui_paint_eval.
+void ano_ui_ref_paint(const AnoUiScene *s, uint32_t paintRef, float px, float py,
+                      const float base[4], float out[4])
+{
+    if (paintRef == ANO_UI_REF_NONE) {
+        for (int k = 0; k < 4; k++) out[k] = base[k];
+        return;
+    }
+    if (paintRef >= s->paintCount) {
+        out[0] = out[1] = out[2] = out[3] = 0.0f;
+        return;
+    }
+    const AnoUiPaint *pa = &s->paints[paintRef];
+    if (pa->stopCount == 0 || pa->stopFirst + pa->stopCount > s->stopCount) {
+        out[0] = out[1] = out[2] = out[3] = 0.0f;
+        return;
+    }
+    float gx = pa->xform[0] * px + pa->xform[1] * py + pa->xform[2];
+    float gy = pa->xform[3] * px + pa->xform[4] * py + pa->xform[5];
+    float t;
+    if (pa->kind == ANO_UI_GRAD_RADIAL)
+        t = sqrtf(gx * gx + gy * gy);
+    else if (pa->kind == ANO_UI_GRAD_CONIC)
+        t = atan2f(gy, gx) * 0.15915494309189535f + 0.5f;
+    else
+        t = gx; // linear
+    float col[4];
+    ui_stop_color(s, pa->stopFirst, pa->stopCount, t, col);
+    for (int k = 0; k < 4; k++)
+        out[k] = col[k] * base[k];
+}
+
 // In: scene, prim index, window origin (px,py). Out: the prim's premultiplied
-// contribution over [px,px+1)x[py,py+1), clip applied. IMAGE/PATH/GLYPHS are zero
-// here — they validate in their own lanes (texture sampling, curve walk, glyph walk).
+// contribution over [px,px+1)x[py,py+1), clip and paint applied. IMAGE/PATH/GLYPHS are
+// zero here — they validate in their own lanes (texture sampling, curve walk, glyph walk).
 void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, float out[4])
 {
     out[0] = out[1] = out[2] = out[3] = 0.0f;
@@ -128,13 +284,25 @@ void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, fl
         cov = a;
         break;
     }
+    case ANO_UI_PATH: {
+        // Window box in prim-local space (v0 paths use identity inv, so local TL is the
+        // pixel TL minus the origin); walk the shared curve stream over it.
+        if (s->curves == NULL || p->aux0 >= s->curveCount)
+            return;
+        cov = clamp01(ui_path_sum(s, p->aux0, p->aux1, l[0] - 0.5f, l[1] - 0.5f, 1.0f, 1.0f));
+        break;
+    }
     default:
         return;
     }
     if (p->clipRef != ANO_UI_REF_NONE)
         cov *= clip_cov(s, p->clipRef, px, py);
+    // Fill = paint (gradient) or the prim's own color, sampled at the window center in
+    // overlay space; shadows carry no paint so this passes their color through.
+    float fill[4];
+    ano_ui_ref_paint(s, p->paintRef, px + 0.5f, py + 0.5f, p->color, fill);
     for (int i = 0; i < 4; i++)
-        out[i] = p->color[i] * cov;
+        out[i] = fill[i] * cov;
 }
 
 // Painter's-order register blend at one pixel: ascending index, src over acc (later

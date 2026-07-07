@@ -19,6 +19,11 @@ const uint UI_BLEND_MASK = 0x3u;
 const uint UI_FLAG_INNER = 0x4u;
 const uint UI_REF_NONE   = 0xFFFFFFFFu;
 
+// Mirrors the gradient kinds (AnoUiPaint.kind).
+const uint UI_GRAD_LINEAR = 0u;
+const uint UI_GRAD_RADIAL = 1u;
+const uint UI_GRAD_CONIC  = 2u;
+
 // Mirrors AnoUiPrim (96 B).
 struct UiPrim {
     vec4  inv;      // 2x2 pixel->prim inverse, rows
@@ -62,6 +67,7 @@ layout(std430, set = 0, binding = 4) readonly buffer UiPrims  { UiPrim  uiPrims[
 layout(std430, set = 0, binding = 5) readonly buffer UiClips  { UiClip  uiClips[];  };
 layout(std430, set = 0, binding = 6) readonly buffer UiPaints { UiPaint uiPaints[]; };
 layout(std430, set = 0, binding = 7) readonly buffer UiStops  { UiStop  uiStops[];  };
+layout(std430, set = 0, binding = 8) readonly buffer UiCurves { uint    uiCurvePoints[]; };
 
 layout(set = 1, binding = 0) uniform sampler2D uiTextures[];
 
@@ -131,11 +137,78 @@ float ui_clip_cov(uint ref, uint clipCount, vec2 pxTL)
     return cov;
 }
 
+// Interpolated stop color at t, premultiplied linear, clamped to the end stops (CSS
+// pad). Mirrors ui_stop_color in ui_raster_ref.c.
+vec4 ui_stop_color(uint first, uint count, float t)
+{
+    if (t <= uiStops[first].t.x)
+        return uiStops[first].color;
+    uint last = first + count - 1u;
+    if (t >= uiStops[last].t.x)
+        return uiStops[last].color;
+    for (uint i = 0u; i + 1u < count; i++)
+    {
+        float t0 = uiStops[first + i].t.x, t1 = uiStops[first + i + 1u].t.x;
+        if (t < t1)
+        {
+            float f = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0;
+            return mix(uiStops[first + i].color, uiStops[first + i + 1u].color, f);
+        }
+    }
+    return uiStops[last].color;
+}
+
+// Resolved fill at overlay pixel px modulated by base. NONE returns base; an out-of-
+// range paint/stop range fails CLOSED. Mirrors ano_ui_ref_paint.
+vec4 ui_paint_eval(uint paintRef, uint paintCount, vec2 px, vec4 base)
+{
+    if (paintRef == UI_REF_NONE)
+        return base;
+    if (paintRef >= paintCount)
+        return vec4(0.0);
+    UiPaint pa = uiPaints[paintRef];
+    if (pa.stopCount == 0u)
+        return vec4(0.0);
+    vec2 g = vec2(pa.xform01.x * px.x + pa.xform01.y * px.y + pa.xform01.z,
+                  pa.xform01.w * px.x + pa.xform2.x * px.y + pa.xform2.y);
+    float t = pa.kind == UI_GRAD_RADIAL ? length(g)
+            : pa.kind == UI_GRAD_CONIC  ? atan(g.y, g.x) * 0.15915494309189535 + 0.5
+                                        : g.x;
+    return ui_stop_color(pa.stopFirst, pa.stopCount, t) * base;
+}
+
+// Path coverage over the window at wpos size wdim (prim-local): one stream walk from
+// word `off` over curveCount monotone quads (SENTINEL restarts a contour), normalized by
+// window area. Reuses curve_area/SENTINEL from textcoverage.glsl. Mirrors ui_path_sum.
+float ui_path_sum(uint off, uint curveCount, vec2 wpos, vec2 wdim)
+{
+    uint i = off;
+    vec2 p0 = unpackHalf2x16(uiCurvePoints[i]) - wpos;
+    i++;
+    float area = 0.0;
+    for (uint c = 0u; c < curveCount; c++)
+    {
+        if (uiCurvePoints[i] == SENTINEL)
+        {
+            i++;
+            p0 = unpackHalf2x16(uiCurvePoints[i]) - wpos;
+            i++;
+        }
+        vec2 p1 = unpackHalf2x16(uiCurvePoints[i]) - wpos;
+        i++;
+        vec2 p2 = unpackHalf2x16(uiCurvePoints[i]) - wpos;
+        i++;
+        area += curve_area(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, wdim.x, wdim.y);
+        p0 = p2;
+    }
+    return area / (wdim.x * wdim.y);
+}
+
 // Premultiplied contribution of prim idx over the unit window at pxTL. Mirrors
-// ano_ui_ref_shade for RRECT/SHADOW; IMAGE additionally samples the bindless array
+// ano_ui_ref_shade for RRECT/SHADOW/PATH; IMAGE additionally samples the bindless array
 // (outside the CPU reference's reach — the self-test scene carries no images).
-// PATH/GLYPHS land with their own lanes.
-vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount)
+// GLYPHS lands in its own range walk. paintCount bounds the gradient fail-closed.
+vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount, uint paintCount)
 {
     UiPrim p = uiPrims[idx];
     vec2 d = pxTL + 0.5 - p.origin;
@@ -169,6 +242,13 @@ vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount)
         }
         cov = a;
     }
+    else if (p.kind == UI_PATH)
+    {
+        // Prim-local window box (identity inv in v0), swept over the shared curve stream.
+        vec2 lo, hi;
+        em_box(p.inv, pxTL - p.origin, pxTL + 1.0 - p.origin, lo, hi);
+        cov = clamp(ui_path_sum(p.aux0, p.aux1, lo, hi - lo), 0.0, 1.0);
+    }
     else if (p.kind == UI_GLYPHS)
     {
         // Glyph labels z-interleaved with the prims: walk the range in register-blend
@@ -189,7 +269,8 @@ vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount)
     }
     if (p.clipRef != UI_REF_NONE)
         cov *= ui_clip_cov(p.clipRef, clipCount, pxTL);
-    return p.color * texel * cov;
+    // Fill = gradient paint or the prim color (NONE), times any image texel.
+    return ui_paint_eval(p.paintRef, paintCount, pxTL + 0.5, p.color) * texel * cov;
 }
 
 // Does prim idx's padded box touch the screen rect [rMin,rMax]? Shadow prims pad by
