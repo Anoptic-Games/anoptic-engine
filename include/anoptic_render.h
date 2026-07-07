@@ -14,7 +14,7 @@
  * the opaque AnoRenderBridge handle below. The transport mechanism (the lock-free
  * SPSC rings, the bridge struct, the render->logic event protocol, the logic-side
  * DisplayState projection) is private to the render_bridge module under src/ and
- * is never exposed here. Design of record: docs/artifacts/VK_BACKEND_INTEROP.md.
+ * is never exposed here.
  */
 
 /*
@@ -32,6 +32,7 @@ It is the bridge betwixt engine <===> renderer.
 #include <stdint.h>
 #include <stdbool.h>
 #include <anoptic_math.h> // mat4, Vector4
+#include <anoptic_text.h> // AnoFontBake, AnoGlyphInstance (logic-side text shaping)
 
 // ---------------------------------------------------------------------------
 // Renderer lifecycle (render world; runs on the main thread)
@@ -91,6 +92,14 @@ uint32_t anoRenderAssetPrimitives(uint32_t asset_id, const mat4 root, AnoRendera
 // (ground slab, debug markers) the logic master builds without an asset.
 uint32_t anoRenderFallbackMesh(void);
 uint32_t anoRenderDefaultMaterial(void);
+
+// The renderer's baked font, for LOGIC-SIDE shaping: game code shapes
+// UTF-8 into AnoGlyphInstance arrays with ano_text_shape/_runs against this bake on any
+// thread (the bake is immutable plain data, published before the logic thread starts)
+// and ships the instances through ano_render_text_set below. NULL when the text stack
+// failed init (missing font) — ano_text_shape over NULL yields 0 instances, so callers
+// degrade to no text without a special path. Valid after initVulkan(); read-only.
+const AnoFontBake *anoRenderTextBake(void);
 
 // Light-palette rows [0, anoRenderStaticLightBase()) are the STATIC region the logic master fills
 // with scene light-entities (RCMD_CREATE carrying light params + light_index in this range; casting
@@ -158,8 +167,8 @@ enum {
                                         // frame); off->on re-allocates if the runtime budget allows.
 };
 
-// Occlusion model selector, profiled head-to-head against radiance cascades (see
-// docs/artifacts/RADIANCE_CASCADES.md). Drives, per light type, whether a light's direct
+// Occlusion model selector, profiled head-to-head against radiance cascades.
+// Drives, per light type, whether a light's direct
 // occlusion is sampled from its conventional shadow map this frame or carried by the radiance
 // cascade field. The renderer also gates the shadow depth render itself on this, so a type that
 // is RC-occluded pays no shadow-map render cost (the memory/bandwidth win under measurement).
@@ -218,6 +227,8 @@ typedef enum RenderCommandKind
     RCMD_LIGHT_ATTACH,      // attach a runtime light to a renderable (render_id = parent); see ano_render_light_attach
     RCMD_LIGHT_UPDATE,      // change an attached light's params/offset (addressed by light_id)
     RCMD_LIGHT_DETACH,      // remove an attached light (addressed by light_id)
+    RCMD_TEXT_SET,          // replace a screen-text block's shaped instances (addressed by text_id); see ano_render_text_set
+    RCMD_TEXT_CLEAR,        // remove a screen-text block (addressed by text_id)
 } RenderCommandKind;
 
 // Which payload fields a CREATE/UPDATE carries. A single UPDATE may set several
@@ -291,6 +302,24 @@ typedef struct RenderDestroyBatch
     const uint32_t *render_ids;  // [count] logical names to retire (unresolved ids are skipped)
 } RenderDestroyBatch;
 
+// The screen-text region's total instance capacity. One block never exceeds it (a larger
+// submit truncates); the render side composes all live blocks after its own internal text
+// (profiling OSD) into the same region, truncating in block order if the union overflows.
+#define ANO_RENDER_TEXT_MAX 8192u
+
+// One screen-text block (RCMD_TEXT_SET): shaped glyph instances, addressed by a
+// producer-owned text_id (its namespace to assign and recycle, like light_id). SET
+// REPLACES the block's previous contents (creating it if new); CLEAR removes it. The
+// producer shapes with ano_text_shape/_runs against anoRenderTextBake() — instances are
+// screen-space pixels, composited over the frame after the render-internal overlay text.
+// Submit via ano_render_text_set, which copies the array into one render-owned block —
+// the caller's array need only live until that call returns.
+typedef struct RenderTextBlock
+{
+    uint32_t                count;
+    const AnoGlyphInstance *instances;  // [count] shaped glyphs (48-byte GPU ABI)
+} RenderTextBlock;
+
 // Zero-copy producer write-region for the streamed-transform lane (Path B v2). Rather
 // than copy a per-tick batch through the command ring, the producer reserves the next
 // free GPU ring slice (ano_render_stream_begin), writes its render_ids + live world
@@ -331,6 +360,8 @@ typedef struct RenderCommand
     const RenderCreateBatch *batch;     // RCMD_BULK_CREATE only
     const RenderUpdateBatch *update;    // RCMD_BULK_UPDATE only
     const RenderDestroyBatch *destroy;  // RCMD_BULK_DESTROY only
+    const RenderTextBlock *text;        // RCMD_TEXT_SET only (render-owned copy; the registry adopts it)
+    uint32_t          text_id;          // RCMD_TEXT_SET/CLEAR : producer-owned logical block handle
     bool              bulk_owned;       // render side frees the batch block after consumption (set by the bulk submit helpers)
     uint64_t          stream_seq;       // RCMD_STREAM_TRANSFORMS: published ring-slice token
     uint32_t          stream_count;     // RCMD_STREAM_TRANSFORMS: entries in the slice
@@ -386,6 +417,18 @@ bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
                                     const RenderLightParams *params, float ox, float oy, float oz,
                                     uint32_t fields);
 bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
+
+// Screen-text blocks (the v0 logic->render text path). `set` copies the
+// shaped instances into one render-owned block (count truncated to ANO_RENDER_TEXT_MAX)
+// and REPLACES block text_id's contents — the caller's array need only live until the
+// call returns. `clear` removes the block (idempotent; unknown text_id is a no-op).
+// Backpressure: false == ring full. Unlike CREATE/DESTROY, a dropped SET is harmless to
+// skip — it is a full replace, so the block is merely stale until the producer's next
+// set — but a producer that must not miss a one-shot set (or a clear) should retry.
+// A set with count 0 clears the block. All blocks die with the renderer at shutdown.
+bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
+                         const AnoGlyphInstance *instances, uint32_t count);
+bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
 
 // ---------------------------------------------------------------------------
 // Back-channel: render -> logic

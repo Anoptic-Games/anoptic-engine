@@ -5,7 +5,7 @@
 
 /* Benchmark for anoptic_strings.h: anostr_compare / anostr_eq vs naive strcmp-style memcmp,
  * validating the German-string claim that len + 4-byte prefix answer most compares in-register
- * without dereferencing the heap (docs/string_progress.md 5.3, 6.8).
+ * without dereferencing the heap.
  *
  * Series:
  *   - inline (<= 12B) keys, random: the no-allocation tier;
@@ -14,7 +14,7 @@
  * each as anostr_compare vs plain memcmp over the same data.
  *
  * Prints a percentile table (bench.h) and exits 0 always: benchmarks assert nothing, they
- * report. Built always, DISABLED in ctest -- run by hand from a Release (-O3) build (build 7).
+ * report. Built always, DISABLED in ctest. Run by hand from a Release (-O3) build (build 7).
  * argv[1] scales the number of compare pairs. */
 
 #include <stdio.h>
@@ -27,7 +27,7 @@
 #include "templates/rng.h"
 
 #define PAIRS_DEFAULT 100000u
-#define BATCH 64u   // compares per timed sample: one rdtsc read costs more than one compare
+#define BATCH 64u   // compares per timed sample
 
 // A volatile sink so the compare results cannot be optimized away.
 static volatile int g_sink;

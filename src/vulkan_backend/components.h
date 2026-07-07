@@ -13,59 +13,45 @@
 
 typedef enum PipelineType
 {
-    PIPELINE_FLAT = 0,          // Flat-shaded geometry (replaces PIPELINE_BASIC)
+    PIPELINE_FLAT = 0,          // Flat-shaded geometry
     PIPELINE_PARTICLE,          // Point-sprite / billboard particles
-    PIPELINE_SDF_COMPOSITE,     // SDF raymarching compositing pass (future)
-    PIPELINE_UI,                // UI overlay (future)
-    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects (depth-sorted "over" lane)
-    PIPELINE_ADDITIVE,          // Order-independent additive (ONE/ONE) glows: stars, engine fire, weapon FX
-    PIPELINE_FLAT_TWOSIDED,     // Opaque flat WITHOUT backface culling: glTF doubleSided materials (review
-                                // finding 7). Same shaders/layout as PIPELINE_FLAT; cullMode NONE. Material-
-                                // carried types must stay below 16 (the drawSlotOf map — see components.c).
+    PIPELINE_SDF_COMPOSITE,     // SDF raymarching compositing pass
+    PIPELINE_UI,                // UI overlay
+    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects
+    PIPELINE_ADDITIVE,          // Order-independent additive (ONE/ONE) glows
+    PIPELINE_FLAT_TWOSIDED,     // Opaque flat, cullMode NONE (glTF doubleSided)
+    PIPELINE_FLAT_MASKED,       // Alpha-tested cutout (glTF alphaMode MASK), cullMode NONE
     PIPELINE_COMPUTE_CULL,      // GPU compute culling
     PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
-    PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass (Path B)
-    PIPELINE_COMPUTE_TPSORT,    // transparency back-to-front sort of the "over" lane (compute, never draws)
-    // --- Skeletons: enum slots reserved so the per-type buffers (indirect/drawCount/
-    // compacted indices) and the prototype table size for them, but no pipeline is
-    // created and no g_framePasses entry drives them yet. See render_bridge.h notes
-    // and resources/shaders/{decal,skinned,pose}.* for the planned shape.
+    PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass
+    PIPELINE_COMPUTE_TPSORT,    // transparency back-to-front sort of the "over" lane
+    // Skeleton slots: buffers/prototype table size for them, no pipeline created yet
     PIPELINE_DECAL,             // (skeleton) projected / UV-overlay decal draw stream
-    PIPELINE_SKINNED,           // (skeleton) skinned-mesh draw stream (own vertex stage + bone palette)
-    PIPELINE_COMPUTE_LIGHTCULL, // clustered-forward froxel light assignment (compute, never draws)
-    PIPELINE_COMPUTE_SHADOWSETUP, // per-shadow-frustum light-space viewProj + frustum-plane build (compute, never draws)
-    PIPELINE_COMPUTE_LIGHTSETUP, // per-light world pose (worldPos/worldDir) precompute (compute, never draws)
-    PIPELINE_COMPUTE_HIZ,       // hierarchical-Z depth pyramid build for occlusion cull (compute, never draws)
-    PIPELINE_TYPE_COUNT         // Sentinel — array sizing, not a real type
+    PIPELINE_SKINNED,           // (skeleton) skinned-mesh draw stream
+    PIPELINE_COMPUTE_LIGHTCULL, // clustered-forward froxel light assignment
+    PIPELINE_COMPUTE_SHADOWSETUP, // per-shadow-frustum light-space viewProj + frustum-plane build
+    PIPELINE_COMPUTE_LIGHTSETUP, // per-light world pose precompute
+    PIPELINE_COMPUTE_HIZ,       // hierarchical-Z depth pyramid build for occlusion cull
+    PIPELINE_COMPUTE_TEXTRASTER,// Scanline Sweeper glyph coverage raster into the text overlay
+    PIPELINE_TYPE_COUNT         // Sentinel, array sizing
 } PipelineType;
 
-// Draw partitions (render config). cull.comp compacts visible draws into per-pipeline
-// partitions of the indirect / drawCount / compacted-index buffers, indexed by draw slot.
-// Only pipeline types that actually emit draws get a partition: the COMPUTE_* passes never
-// draw and PARTICLE / SDF_COMPOSITE / UI / DECAL / SKINNED are unimplemented skeletons, so
-// sizing by PIPELINE_TYPE_COUNT would reserve — and vkCmdFillBuffer-zero every frame — most
-// of the per-slot GPU footprint as permanently-idle VRAM (the dominant cost at a million
-// entities). This list is the single source of truth: order defines the slot index, length
-// defines the partition count the buffers and the cull UBO map size to. To add a drawing
-// pipeline, append it here and give it a g_framePasses entry; nothing else resizes by hand.
+// Drawing pipeline types get an indirect/drawCount/compacted-index partition, indexed by draw slot.
+// Single source of truth: order defines slot index, length defines partition count.
 #define ANO_NO_DRAW_SLOT 0xFFFFFFFFu
 
 extern const PipelineType ano_draw_pipelines[]; // drawing pipeline types, in slot order
 uint32_t ano_draw_pipeline_count(void);         // number of drawing types == per-camera-view draw-slot stride
 uint32_t ano_draw_slot_of(PipelineType type);   // enum -> draw slot, ANO_NO_DRAW_SLOT if it never draws
 
-// Total compacted-draw partitions across the indirect / drawCount / compacted buffers. Camera views
-// each get every draw slot (partition = view*drawSlotCount + slot, range [0, ANO_VIEW_COUNT*
-// drawSlotCount)); each shadow frustum gets a SINGLE slot-0 partition (ANO_VIEW_COUNT*drawSlotCount
-// + s) because the shadow depth render only ever rasterizes the opaque caster slot. Reserving every
-// draw slot per shadow frustum (the old ano_draw_pipeline_count()*ANO_FRUSTUM_COUNT sizing) made each
-// new draw lane cost 26 permanently-idle, frame-zeroed shadow partitions — the dominant VRAM waste at
-// a million entities. This is the single sizing source for those three buffers and their cull map.
+// Total compacted-draw partitions. Camera views get every draw slot (partition = view*drawSlotCount
+// + slot); each shadow frustum gets a solid caster partition and an alpha-tested MASKED one.
+// Single sizing source for the three buffers and their cull map.
 uint32_t ano_draw_partition_count(void);
 
 typedef enum PassType
 {
-    PASS_COMPUTE,       // compute dispatch (culling, SDF evaluation, etc.)
+    PASS_COMPUTE,       // compute dispatch
     PASS_GRAPHICS,      // rasterization pass
 } PassType;
 
@@ -74,9 +60,7 @@ typedef struct RenderPassDef
     PassType            type;
     PipelineType        prototype;              // which pipeline prototype to bind
     uint32_t            implementationIndex;    // which variant (opaque, transparent, etc.)
-    // Recorded once per view (audit 4.8) vs once per frame. Per-view passes (light-cull, the
-    // geometry passes) run inside the view loop binding that view's sets/targets; view-independent
-    // passes (update, scatter, cull) run once before it. cull is single-pass multi-frustum.
+    // Recorded once per view vs once per frame
     bool                perView;
 
     // Graphics-only:
@@ -85,15 +69,12 @@ typedef struct RenderPassDef
     VkFormat                depthFormat;
     VkAttachmentLoadOp      colorLoadOp;
     VkAttachmentLoadOp      depthLoadOp;
-    // STORE when a later pass must read this pass's depth (e.g. opaque -> transmission).
-    // DONT_CARE discards it: fine on immediate-mode GPUs that leave depth in memory, but
-    // on a tile-based renderer (Apple/MoltenVK) the next pass's LOAD then gets garbage.
+    // STORE when a later pass must read this pass's depth (opaque -> transmission)
     VkAttachmentStoreOp     depthStoreOp;
     VkClearValue            colorClear;
     VkClearValue            depthClear;
     VkResolveModeFlagBits   resolveMode;
-    // Emit a depth write->read barrier (LATE->EARLY fragment tests) on this view's depth image before
-    // this pass begins. Set on the opaque pass so its EQUAL test waits on the depth pre-pass's writes.
+    // Emit a depth write->read barrier on this view's depth image before this pass begins
     bool                    depthBarrierBefore;
 
     // Compute-only:
@@ -185,20 +166,18 @@ typedef struct PipelineImplementation
     VkBool32             blendEnable;   // opaque vs. transparent
 } PipelineImplementation;
 
-// A logical pipeline class. Known at compile time. Created at init.
-// Owns the layout (shared by all its implementations) and the cache.
+// A logical pipeline class. Owns the layout and the cache.
 typedef struct PipelinePrototype
 {
     PipelineType                type;
     VkPipelineLayout            layout;           // shared across all implementations
     VkDescriptorSetLayout       descriptorLayout; // material descriptor layout
     uint32_t                    implementationCount;
-    PipelineImplementation*     implementations;  // allocated as a flat array, not FAM
+    PipelineImplementation*     implementations;  // flat array
     VkPipelineCache             cache;
     PbrFeatureFlags             supportedFeatures; // PBR features supported by this pipeline
 } PipelinePrototype;
 
-// Forward declaration of RendererState to avoid circular dependencies
 struct RendererState;
 
 // Pure compatibility check helper
@@ -207,7 +186,6 @@ bool ano_vk_check_feature_compatibility(PbrFeatureFlags pipelineFeatures, PbrFea
 // Query features globally supported by all active graphics pipelines
 PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct RendererState* state);
 
-// Forward declaration of MaterialData to allow initialization helper
 struct MaterialData;
 void ano_vk_init_default_material_data(struct MaterialData* mat);
 

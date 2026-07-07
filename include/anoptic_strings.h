@@ -104,7 +104,7 @@ static inline const char *anostr_bytes(const anostr_t *s)
 }
 
 // Format-argument adapter: pass a value to any printf-family "%.*s" conversion, the logger included -- no anostr_to_cstr copy:
-//     ano_log_info("loading %.*s", anostr_fmt(path));
+//     ano_log(ANO_INFO, "loading %.*s", anostr_fmt(path));
 #define anostr_fmt(s) (int)anostr_len((s)), anostr_bytes((const anostr_t[]){ (s) })
 
 // ---------------------------------------------------------------------------------------------
@@ -157,7 +157,11 @@ static inline int anostr_compare(anostr_t a, anostr_t b)
 // FNV-1a 64 over the bytes. 
 // Not cryptographic; for tables and dedup. 
 // Equal strings hash equal regardless of variant or backing heap.
+// The runtime twin of ANOSTR_SID: anostr_hash(anostr_lit(x)) == ANOSTR_SID(x).
 uint64_t anostr_hash(anostr_t s);
+
+// FNV-1a 32 over the bytes. The runtime twin of ANOSTR_SID32.
+uint32_t anostr_hash32(anostr_t s);
 
 // ---------------------------------------------------------------------------------------------
 // Slicing and promotion.
@@ -185,6 +189,12 @@ char *anostr_to_cstr(mi_heap_t *heap, anostr_t s);
 // Byte index of the first occurrence of needle at or after `from`; ANOSTR_NPOS if absent.
 // An empty needle matches immediately at min(from, len). Total: any `from` is safe.
 size_t anostr_find(anostr_t s, anostr_t needle, size_t from);
+
+// Every needle replaced by repl, left to right, non-overlapping ("aaa"/"aa" once).
+// Byte-level, matches land on rune boundaries.
+// Zero matches or empty needle return s unchanged.
+// Empty string if the result exceeds UINT32_MAX or allocation fails.
+anostr_t anostr_replace_all(mi_heap_t *heap, anostr_t s, anostr_t needle, anostr_t repl);
 
 // a ++ b. Allocates from heap only when the result exceeds the inline cap. 
 // Returns the empty string if the total exceeds UINT32_MAX or allocation fails.
@@ -219,7 +229,7 @@ bool anostr_split_next(anostr_split_t *it, anostr_t *piece);
 // One canonical copy of each distinct string lives in the table's heap; a symbol is a dense u32 (0 .. count-1) you compare and switch on. 
 // Same threading rule as the heap underneath: one owner thread mutates (intern/dedupe); concurrent readers need external ordering.
 // No destroy function on purpose -- the table and every canonical byte die with the heap.
-// This is the RUNTIME identity table; compile-time _sid hashes are a separate primitive.
+// This is the RUNTIME identity table; ANOSTR_SID below is the compile-time sibling.
 typedef uint32_t anostr_sym;
 #define ANOSTR_SYM_NONE UINT32_MAX
 
@@ -247,6 +257,53 @@ anostr_t anostr_dedupe(anostr_intern_t *t, anostr_t s);
 
 // Distinct strings interned so far; symbols are dense 0 .. count-1.
 size_t anostr_intern_count(const anostr_intern_t *t);
+
+// ---------------------------------------------------------------------------------------------
+// Compile-time string ids: a literal hashed at build time to an integer constant expression.
+// No runtime hashing, no stored string -- nothing reaches the binary but the number.
+// A true ICE: usable as a case label, enum value, static initializer, or array size:
+//     switch (event) { case ANOSTR_SID("player_spawn"): ... }
+// FNV-1a, the same function as anostr_hash/anostr_hash32, so compile-time ids and
+// runtime-hashed strings meet in one key space:
+//     ANOSTR_SID(x) == anostr_hash(anostr_lit(x)); likewise SID32/hash32.
+// Default to 64-bit ids; ANOSTR_SID32 is for stores where 4 bytes matter.
+// Bytes hashed = sizeof - 1 (embedded NULs count, like anostr_lit). Literals longer than
+// ANOSTR_SID_MAX bytes fail to compile ("array size is negative").
+// Literal indexing in an ICE is a GNU extension (gnu23 build policy; clang and gcc fold it
+// at every -O level, -O0 included).
+typedef uint64_t anostr_sid;
+typedef uint32_t anostr_sid32;
+
+#define ANOSTR_SID_MAX 128u
+
+// One FNV-1a step, masked to the target width; identity past the literal's last byte.
+#define ANOSTR_SID_B_(s, i) ((i) < sizeof(s) - 1 ? (uint64_t)(uint8_t)(s)[i] : UINT64_C(0))
+#define ANOSTR_SID_1_(s, i, h, p, m) \
+    ((((h) ^ ANOSTR_SID_B_(s, i)) * ((i) < sizeof(s) - 1 ? (p) : UINT64_C(1))) & (m))
+// Unroll tiers: 4, 16, 64, then ANOSTR_SID_MAX bytes.
+#define ANOSTR_SID_4_(s, i, h, p, m) \
+    ANOSTR_SID_1_(s, (i) + 3, ANOSTR_SID_1_(s, (i) + 2, \
+    ANOSTR_SID_1_(s, (i) + 1, ANOSTR_SID_1_(s, i, h, p, m), p, m), p, m), p, m)
+#define ANOSTR_SID_16_(s, i, h, p, m) \
+    ANOSTR_SID_4_(s, (i) + 12, ANOSTR_SID_4_(s, (i) + 8, \
+    ANOSTR_SID_4_(s, (i) + 4, ANOSTR_SID_4_(s, i, h, p, m), p, m), p, m), p, m)
+#define ANOSTR_SID_64_(s, i, h, p, m) \
+    ANOSTR_SID_16_(s, (i) + 48, ANOSTR_SID_16_(s, (i) + 32, \
+    ANOSTR_SID_16_(s, (i) + 16, ANOSTR_SID_16_(s, i, h, p, m), p, m), p, m), p, m)
+#define ANOSTR_SID_ALL_(s, h, p, m) \
+    ANOSTR_SID_64_(s, 64u, ANOSTR_SID_64_(s, 0u, h, p, m), p, m)
+// Overlong literal: negative array size, a compile error in any context.
+#define ANOSTR_SID_GUARD_(s) (0 * sizeof(char[1 - 2 * (sizeof(s) - 1 > ANOSTR_SID_MAX)]))
+
+#define ANOSTR_SID(strlit)                                                        \
+    ((anostr_sid)(ANOSTR_SID_ALL_("" strlit, UINT64_C(0xcbf29ce484222325),        \
+                                  UINT64_C(0x100000001b3), UINT64_MAX)            \
+                  + ANOSTR_SID_GUARD_("" strlit)))
+
+#define ANOSTR_SID32(strlit)                                                      \
+    ((anostr_sid32)(ANOSTR_SID_ALL_("" strlit, UINT64_C(0x811c9dc5),              \
+                                    UINT64_C(0x01000193), UINT64_C(0xffffffff))   \
+                    + ANOSTR_SID_GUARD_("" strlit)))
 
 // ---------------------------------------------------------------------------------------------
 // The builder: the ONLY mutation path. 

@@ -3,41 +3,37 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include <anoptic_memory.h>
+#include <anoptic_logging.h>
 #include "vulkan_backend/components.h"
 #include "vulkan_backend/structs.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-// Render config: the pipeline types that emit draws, in partition (draw-slot) order. This —
-// not PIPELINE_TYPE_COUNT — sizes the indirect / drawCount / compacted-index buffers and the
-// cull UBO draw-slot map. See components.h for the rationale.
+// Pipeline types that emit draws, in partition (draw-slot) order.
 const PipelineType ano_draw_pipelines[] = {
-    PIPELINE_FLAT,          // slot 0: opaque flat-shaded geometry (backface-culled; review finding 7)
-    PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission (depth-sorted "over" lane)
-    PIPELINE_ADDITIVE,      // slot 2: order-independent additive glows (ONE/ONE; no sort, no shadow)
-    PIPELINE_FLAT_TWOSIDED, // slot 3: opaque doubleSided materials (same shaders as slot 0, cullMode NONE)
+    PIPELINE_FLAT,          // slot 0: opaque flat-shaded geometry
+    PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission
+    PIPELINE_ADDITIVE,      // slot 2: additive glows
+    PIPELINE_FLAT_TWOSIDED, // slot 3: opaque doubleSided materials
+    PIPELINE_FLAT_MASKED,   // slot 4: alpha-tested cutout
 };
 
-// The cull UBO map (CullUBO.drawSlotOf) is indexed by a MATERIAL's pipelineType and is stored as
-// uvec4[4] in cull.comp: every material-carried (drawing) type must sit below 16. Types past 15
-// (compute passes) never appear in a material and map to no slot.
-_Static_assert(PIPELINE_FLAT_TWOSIDED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
+// Material-carried pipeline types must sit below 16 (drawSlotOf is uvec4[4] in cull.comp).
+_Static_assert(PIPELINE_FLAT_MASKED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
 
 // out: number of drawing pipeline types == per-camera-view draw-slot stride.
 uint32_t ano_draw_pipeline_count(void) {
     return (uint32_t)(sizeof(ano_draw_pipelines) / sizeof(ano_draw_pipelines[0]));
 }
 
-// out: total compacted-draw partitions. Camera views own every draw slot; each shadow frustum owns
-// one slot-0 partition (see components.h). Sizes the indirect/drawCount/compacted buffers + fills.
+// out: total compacted-draw partitions.
 uint32_t ano_draw_partition_count(void) {
-    return ANO_VIEW_COUNT * ano_draw_pipeline_count() + ANO_SHADOW_FRUSTUM_COUNT;
+    return ANO_VIEW_COUNT * ano_draw_pipeline_count() + 2u * ANO_SHADOW_FRUSTUM_COUNT;
 }
 
 // in:  type — any PipelineType
 // out: its compacted draw-partition index, or ANO_NO_DRAW_SLOT if the type never draws
-//      (compute passes, unimplemented skeletons). Linear scan over the tiny draw list.
 uint32_t ano_draw_slot_of(PipelineType type) {
     for (uint32_t i = 0; i < ano_draw_pipeline_count(); ++i) {
         if (ano_draw_pipelines[i] == type) return i;
@@ -50,7 +46,7 @@ void ano_vk_register_mesh(RenderPrimitives* primitives, MeshData data) {
         uint32_t newCapacity = primitives->meshCapacity == 0 ? 8 : primitives->meshCapacity * 2;
         void* temp = realloc(primitives->meshes, sizeof(MeshData) * newCapacity);
         if (!temp) {
-            printf("Error: Failed to reallocate memory for meshes!\n");
+            ano_log(ANO_ERROR, "Error: Failed to reallocate memory for meshes!");
             return;
         }
         primitives->meshes = temp;
@@ -78,7 +74,7 @@ void ano_vk_register_texture(RenderPrimitives* primitives, TextureData data) {
         uint32_t newCapacity = primitives->textureCapacity == 0 ? 8 : primitives->textureCapacity * 2;
         void* temp = realloc(primitives->textureBuffers, sizeof(TextureData) * newCapacity);
         if (!temp) {
-            printf("Error: Failed to reallocate memory for textures!\n");
+            ano_log(ANO_ERROR, "Error: Failed to reallocate memory for textures!");
             return;
         }
         primitives->textureBuffers = temp;
@@ -107,7 +103,7 @@ void ano_vk_cleanup_primitives(RenderPrimitives* primitives) {
         primitives->meshes = NULL;
     }
     primitives->meshCount = 0;
-    primitives->meshCapacity = 0; // must track the freed pointer; else re-register skips realloc and derefs NULL
+    primitives->meshCapacity = 0;
 
     if (primitives->textureBuffers) {
         free(primitives->textureBuffers);
@@ -139,8 +135,8 @@ PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct Rend
 
 void ano_vk_init_default_material_data(struct MaterialData* mat) {
     memset(mat, 0, sizeof(struct MaterialData));
-    
-    // Initialize all texture indices to 0xFFFFFFFF (no texture sentinel)
+
+    // Texture indices: 0xFFFFFFFF no-texture sentinel.
     mat->baseColorTexture = 0xFFFFFFFF;
     mat->metallicRoughnessTexture = 0xFFFFFFFF;
     mat->normalTexture = 0xFFFFFFFF;

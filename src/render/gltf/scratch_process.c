@@ -39,7 +39,7 @@ void processGltfMeshes(VulkanContext* ctx, GltfElements* elements)
         }
 
         // Create texture buffer
-        printf("Creating mesh#%d texture!\n", i);
+        ano_debug_log(ANO_INFO, "Creating mesh#%d texture!", i);
         uploadTextureDataToGPU(components, elements, mesh);
     } 
 }

@@ -1,8 +1,20 @@
 #version 460
 #extension GL_EXT_mesh_shader : require
 
+// Compile modes: default = full shading, ANO_DEPTH_ONLY = position-only, ANO_DEPTH_MASKED = position + uv + packed indices.
+#if !defined(ANO_DEPTH_ONLY) && !defined(ANO_DEPTH_MASKED)
+    #define ANO_WANT_SHADE 1
+#endif
+#if defined(ANO_WANT_SHADE) || defined(ANO_DEPTH_MASKED)
+    #define ANO_WANT_UV 1
+#endif
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(triangles, max_vertices = 64, max_primitives = 126) out;
+
+// ---------------------------------------------------------------------------
+// Resources & bindings
+// ---------------------------------------------------------------------------
 
 layout(set = 0, binding = 0) uniform GlobalUBO {
     mat4 view;
@@ -12,6 +24,19 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
     uint frameCount;
     uint lightCount;
     vec4 cameraPos;
+    float cameraNear;
+    float cameraFar;
+    float screenWidth;
+    float screenHeight;
+    uint clusterDimX;
+    uint clusterDimY;
+    uint clusterDimZ;
+    uint maxLightsPerCluster;
+    uint lightingMode;
+    uint debugView;
+    uint pad0;
+    uint pad1;
+    mat4 viewProj; // proj * view premultiplied on CPU
 } global;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
@@ -49,12 +74,11 @@ struct MeshData {
     uint vertexOffset;
     uint classicIndexCount;  // fallback path only
     uint classicFirstIndex;  // fallback path only
-    uint boundsOffset;       // byte offset of per-meshlet bounds block in indexBuf (sphere + normal cone)
-    uint lodCount;           // # contiguous LOD meshes from this base (unread here; present for std430 stride)
+    uint boundsOffset;       // byte offset of per-meshlet bounds block
+    uint lodCount;           // contiguous LOD mesh count
 };
 
-// cull.comp packs the selected LOD level into the high bits of the compacted entity index; the low
-// 29 bits are the entity index, the top 3 the level. The selected mesh is entities[idx].meshIndex + level.
+// cull.comp packs LOD level in top 3 bits, entity index in low 29.
 #define ANO_LOD_LEVEL_SHIFT  29u
 #define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
 
@@ -62,10 +86,7 @@ layout(set = 0, binding = 6, std430) readonly buffer MeshSSBO {
     MeshData meshDrawData[];
 } meshBuf;
 
-// Per-material flags. Only doubleSided is read here, to exempt double-sided meshlets
-// from backface cone culling. Bound at set 0 / binding 2 to match flat.frag's MaterialSSBO
-// (the graphics descriptor set is shared across the mesh and fragment stages). The full
-// struct is declared so std430 strides match; unread fields are inert padding here.
+// Per-material data. Only doubleSided is read. Full struct for std430 stride.
 struct MaterialData {
     uint      features;
     uint      baseColorTexture;
@@ -134,11 +155,7 @@ layout(set = 0, binding = 7) readonly buffer CompactedEntityIndices {
 } compactedBuf;
 
 #ifdef ANO_TASK_CULL
-// Task-launched variant (review priority 10): flat.task frustum/cone/Hi-Z-culls this draw's
-// meshlets and emits one mesh workgroup per SURVIVOR; the payload maps gl_WorkGroupID.x back to
-// the meshlet index AND carries the draw's compacted entry — gl_DrawID is UNDEFINED in a mesh
-// stage behind a task stage (VUID 09631), so the entity/LOD resolution reads packedEntity
-// instead. Layout MUST match flat.task's TaskPayload.
+// Task-launched variant. Layout must match flat.task's TaskPayload.
 taskPayloadSharedEXT struct TaskPayload {
     uint packedEntity;
     uint meshletIds[32];
@@ -147,44 +164,37 @@ taskPayloadSharedEXT struct TaskPayload {
 
 layout(push_constant) uniform PushConstants {
     uint transformBaseOffset;
-    uint shadowFrustumIndex; // depth pass only: which shadow frustum's viewProj to project by
+    uint shadowFrustumIndex; // shadow frustum viewProj index
 } pc;
 
-// Depth-only shadow pass: project by a light's shadow frustum (set 2) into the shadow atlas.
+// Shadow pass: project by a light's shadow frustum (set 2).
 layout(constant_id = 0) const bool shadowPass = false;
 
 struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; } shadowBuf;
 
-// EQUAL-test contract: the depth pre-pass runs the ANO_DEPTH_ONLY compile of this same source
-// (position-only outputs, ~3.5x less ISBE per meshlet) and the opaque pass EQUAL-tests against
-// the depth it wrote — the two compiles MUST produce bit-identical clip positions. invariant on
-// gl_Position pins the position codegen in both variants; sharing one source keeps the
-// expression tree identical. The shadow render also uses the depth-only variant (no equality
-// coupling there; gl_FragCoord.z feeds the CDF encode within the same rasterization).
+// EQUAL-test contract: invariant gl_Position pins bit-identical clip positions across compiles.
 out gl_MeshPerVertexEXT {
     invariant vec4 gl_Position;
 } gl_MeshVerticesEXT[];
 
-#ifndef ANO_DEPTH_ONLY
+// Interstage: material (high 12 bits) | entity slot (low 20) in one flat scalar.
+// Masked-depth compile keeps only uv + packed (location 0 gap is legal).
+#ifdef ANO_WANT_SHADE
 layout(location = 0) out vec3 fragNormal[];
+#endif
+#ifdef ANO_WANT_UV
 layout(location = 1) out vec2 fragTexCoord[];
-layout(location = 2) flat out uint outMaterialIndex[];
-layout(location = 3) out vec3 fragWorldPos[];
-layout(location = 4) flat out uint outEntityIndex[]; // slot index -> per-entity instance channel
+layout(location = 2) flat out uint outPackedIndices[];
 #endif
 
-uint getLocalIndex(uint baseByteOffset, uint triangleOffset, uint t, uint vertexInTriangle) {
-    uint byteOffset = baseByteOffset + triangleOffset + t * 3 + vertexInTriangle;
-    uint uintIdx = byteOffset / 4;
-    uint byteIdx = byteOffset % 4;
-    uint val = indexBuf.data[uintIdx];
-    return (val >> (byteIdx * 8)) & 0xFFu;
-}
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 
 void main() {
 #ifdef ANO_TASK_CULL
-    // Forwarded by flat.task: gl_DrawID must not be read behind a task stage (VUID 09631).
+    // Forwarded by flat.task, gl_DrawID unreadable behind a task stage.
     uint packed = IN.packedEntity;
 #else
     uint packed = compactedBuf.entityIndices[pc.transformBaseOffset + gl_DrawID];
@@ -193,7 +203,7 @@ void main() {
     uint lodLevel    = packed >> ANO_LOD_LEVEL_SHIFT;
 
     EntityInfo entity = entityBuf.entities[entityIndex];
-    uint meshIndex = entity.meshIndex + lodLevel;   // base + the LOD level cull selected for this draw
+    uint meshIndex = entity.meshIndex + lodLevel;   // base + cull-selected LOD level
     uint materialIndex = entity.materialIndex;
 
     MeshData mData = meshBuf.meshDrawData[meshIndex];
@@ -207,9 +217,7 @@ void main() {
     uint uniqueVertOffsetUint   = uniqueVertOffsetBytes / 4;
     uint globalVertexBase       = vertexOffsetBytes / 32;
 
-    // Task-launched path: gl_WorkGroupID.x indexes the payload's survivor list (flat.task already
-    // frustum/cone/Hi-Z-culled this draw's meshlets — the old in-mesh cone-cull stopgap lives on
-    // there, canonically). Direct path: one workgroup per meshlet, cull.comp sized the dispatch.
+    // Task path: gl_WorkGroupID.x indexes the payload survivor list. Direct path: one workgroup per meshlet.
 #ifdef ANO_TASK_CULL
     uint m = IN.meshletIds[gl_WorkGroupID.x];
 #else
@@ -229,15 +237,16 @@ void main() {
 
     uint ti = gl_LocalInvocationID.x;
 
-    // model + normal matrix are per-entity (loop-invariant): compute once, reuse across the
-    // strided vertex loop. Inverse-transpose is correct under non-uniform / negative / sheared
-    // scale; equals mat3(model) for rotation + uniform scale. docs/math_conventions.md.
+    // model + normal matrix per-entity, computed once.
     mat4 model = transformBuf.transforms[entityIndex];
-#ifndef ANO_DEPTH_ONLY
+#ifdef ANO_WANT_SHADE
     mat3 normalMatrix = transpose(inverse(mat3(model)));
 #endif
+#ifdef ANO_WANT_UV
+    uint packedIndices = (materialIndex << 20) | entityIndex; // material < 4096, slot < 2^20
+#endif
 
-    // Load vertices (strided loop to handle arbitrary vertex count)
+    // Load vertices (strided loop). Affine transform: mat3 rotate/scale + column-3 translate.
     for (uint i = ti; i < vertexCount; i += 64) {
         uint vertexIdx = indexBuf.data[uniqueVertOffsetUint + vertexOffset + i];
         uint globalVertexIdx = globalVertexBase + vertexIdx;
@@ -245,27 +254,32 @@ void main() {
         PackedVertex v = vertexBuf.vertices[globalVertexIdx];
         vec3 position = vec3(v.px, v.py, v.pz);
 
-        vec4 worldPos = model * vec4(position, 1.0);
+        vec3 worldPos = mat3(model) * position + model[3].xyz;
         gl_MeshVerticesEXT[i].gl_Position = shadowPass
-            ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * worldPos)
-            : (global.proj * global.view * worldPos);
+            ? (shadowBuf.shadowFrustums[pc.shadowFrustumIndex].viewProj * vec4(worldPos, 1.0))
+            : (global.viewProj * vec4(worldPos, 1.0));
 
-#ifndef ANO_DEPTH_ONLY
+#ifdef ANO_WANT_SHADE
         vec3 normal   = vec3(v.nx, v.ny, v.nz);
-        vec2 texCoord = vec2(v.u, v.v);
         fragNormal[i] = normalMatrix * normal;
-        fragTexCoord[i] = texCoord;
-        outMaterialIndex[i] = materialIndex;
-        fragWorldPos[i] = worldPos.xyz;
-        outEntityIndex[i] = entityIndex;
+#endif
+#ifdef ANO_WANT_UV
+        fragTexCoord[i] = vec2(v.u, v.v);
+        outPackedIndices[i] = packedIndices;
 #endif
     }
 
-    // Load triangles (strided loop to handle arbitrary primitive count up to 126)
+    // Load triangles (strided loop, up to 126). 3 byte-indices span at most two dwords, load both and extract.
     for (uint i = ti; i < triangleCount; i += 64) {
-        uint i0 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 0);
-        uint i1 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 1);
-        uint i2 = getLocalIndex(trianglesOffsetBytes, triangleOffset, i, 2);
+        uint byteBase = trianglesOffsetBytes + triangleOffset + i * 3u;
+        uint w0 = byteBase >> 2u;
+        uint b  = byteBase & 3u;
+        uint lo = indexBuf.data[w0];
+        uint hi = indexBuf.data[(byteBase + 2u) >> 2u]; // == lo when triangle fits one dword
+
+        uint i0 = (lo >> (b << 3u)) & 0xFFu;
+        uint i1 = (((b == 3u) ? hi : lo) >> (((byteBase + 1u) & 3u) << 3u)) & 0xFFu;
+        uint i2 = (hi >> (((byteBase + 2u) & 3u) << 3u)) & 0xFFu;
 
         gl_PrimitiveTriangleIndicesEXT[i] = uvec3(i0, i1, i2);
     }

@@ -1,20 +1,22 @@
 #version 450
-#extension GL_EXT_nonuniform_qualifier : require  // index hizPyramid[] by the (dynamically uniform) view
+#extension GL_EXT_nonuniform_qualifier : require  // index hizPyramid[] by view
 
 layout(local_size_x = 256) in;
+
+// ---------------------------------------------------------------------------
+// Resources & bindings
+// ---------------------------------------------------------------------------
 
 struct EntityInfo {
     uint meshIndex;
     uint materialIndex;
 };
 
-// Must match ANO_VIEW_COUNT (structs.h). One frustum per render view; this dispatch tests every
-// entity against all of them (single-pass multi-frustum) and writes a per-view partition.
+// Must match structs.h ANO_VIEW_COUNT. One frustum per render view.
 #define ANO_VIEW_COUNT 2u
 
 struct CullView {
-    mat4 viewProj;        // frustum is pre-extracted CPU-side; viewProj still used for the screen-area
-                          // cull distance + the transmission sort key (both read its .w == -view_z)
+    mat4 viewProj;        // .w == -view_z: screen-area cull + transmission sort key
     vec4 frustumPlanes[6];
 };
 
@@ -23,34 +25,28 @@ layout(set = 0, binding = 0) uniform CullUBO {
     uint  viewCount;      // active views (<= ANO_VIEW_COUNT)
     uint  entityCount;
     uint  maxEntities;    // per-partition capacity
-    uint  drawSlotCount;  // per-camera-view draw-slot stride; camera partition = view*drawSlotCount + slot
-    // PipelineType -> draw slot; ANO_NO_DRAW_SLOT (0xFFFFFFFF) means the type never draws.
-    // Packed uvec4[4]: index t as drawSlotOf[t >> 2][t & 3]. Built CPU-side from ano_draw_*.
+    uint  drawSlotCount;  // per-view draw-slot stride. camera partition = view*drawSlotCount + slot
+    // PipelineType -> draw slot. 0xFFFFFFFF (ANO_NO_DRAW_SLOT) means the type never draws.
+    // Packed uvec4[4]: index t as drawSlotOf[t >> 2][t & 3].
     uvec4 drawSlotOf[4];
-    // Special draw slots (CPU-built from ano_draw_slot_of). x = additive lane (casts no shadow),
-    // y = transmission lane (the depth-sorted "over" lane). 0xFFFFFFFF if that lane is absent.
+    // Special draw slots. x = additive lane (no shadow), y = transmission lane (depth-sorted).
+    // 0xFFFFFFFF if that lane is absent.
     uvec4 specialSlots;
-    // Per-view screen-area cull knobs (review 4.9 step 1; mirrors CullUBO.viewCullParams in
-    // structs.h). .x = screenAreaScale (cot(fovY/2) * half viewport height in px), .y =
-    // pixelThresholdSq (min drawn pixel radius squared; 0 = test off). .z = lodThresholdPx, .w = lodBias.
+    // Per-view screen-area cull knobs. Mirrors structs.h viewCullParams.
+    // .x = screenAreaScale (cot(fovY/2) * half viewport height px), .y = pixelThresholdSq (0 = off),
+    // .z = lodThresholdPx, .w = lodBias.
     vec4 viewCullParams[ANO_VIEW_COUNT];
-    // Shadow LOD offset (review 4.9 step 2, revised): shadow casters select the primary camera view's
-    // (view 0) LOD so a caster's shadow silhouette tracks its visible geometry; this is an extra RELATIVE
-    // offset on top (0 = exact match, + = coarser shadow). Trails viewCullParams; mirrors CullUBO in structs.h.
+    // Shadow LOD offset relative to view 0's LOD (0 = exact, + = coarser). Mirrors structs.h.
     int shadowLodBias;
-    // std140 auto-aligns the mat4 array below to the next 16-byte multiple after shadowLodBias (offset
-    // 464); the C struct carries an explicit 12-byte pad to match (a GLSL int[] pad would be 16B-strided).
-    // Hi-Z occlusion (review 4.9 step 3, single-phase). Per camera view: prevViewProj reprojects this
-    // entity's bounds into LAST frame's screen (the pyramid sampled here was built last frame). hizParams
-    // = {baseW, baseH, mipCount, pad}; mipCount==0 disables the test (default off). hizProj = {proj00,
-    // proj11, proj22, proj32} of the current projection for the screen-space radius + ZO nearest-depth.
+    // std140 pads to 16B after shadowLodBias; C struct pads 12B to match.
+    // Hi-Z occlusion. prevViewProj reprojects entity bounds into last frame's screen.
+    // hizParams = {baseW, baseH, mipCount, pad}, mipCount==0 disables (default off).
+    // hizProj = {proj00, proj11, proj22, proj32}.
     mat4 prevViewProj[ANO_VIEW_COUNT];
     vec4 hizParams[ANO_VIEW_COUNT];
     vec4 hizProj[ANO_VIEW_COUNT];
-    // Task-shader meshlet cull (review priority 10). x != 0: every mesh-drawing pipeline carries a
-    // task stage (flat.task, 32 meshlets per task workgroup), so emitDraw sizes groupCountX as
-    // ceil(meshletCount/32) task workgroups instead of one mesh workgroup per meshlet. Mirrors
-    // RendererState.taskCull; the two MUST agree or draws launch wrong-sized grids.
+    // Task-shader meshlet cull. x != 0: every mesh pipeline carries a task stage (flat.task, 32 meshlets/workgroup).
+    // Mirrors RendererState.taskCull, must agree.
     uvec4 taskParams;
 };
 
@@ -70,13 +66,11 @@ struct MeshData {
     uint vertexOffset;       // byte offset into the vertex mega-buffer
     uint classicIndexCount;  // fallback: VkDrawIndexedIndirectCommand.indexCount
     uint classicFirstIndex;  // fallback: firstIndex (u32 index units)
-    uint boundsOffset;       // byte offset of per-meshlet bounds block; unused here, consumed by flat.mesh cone cull
-    uint lodCount;           // review 4.9 step 2: # contiguous LOD meshes from this base (1 == no LOD)
+    uint boundsOffset;       // byte offset of per-meshlet bounds block
+    uint lodCount;           // # contiguous LOD meshes from this base (1 == no LOD)
 };
 
-// LOD level is packed into the high bits of the compacted entity index so flat.mesh can resolve the
-// selected mesh as entities[idx].meshIndex + level. ANO_MAX_LOD (8) needs 3 bits; 29 bits of index
-// addresses 512M entities. flat.mesh / flat.vert must mask with ANO_ENTITY_INDEX_MASK.
+// LOD level in high bits of the compacted entity index: 3 bits (ANO_MAX_LOD 8) + 29-bit index.
 #define ANO_LOD_LEVEL_SHIFT  29u
 #define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
 
@@ -88,16 +82,13 @@ layout(set = 0, binding = 4) readonly buffer MeshBoundsSSBO {
     vec4 meshBounds[];
 };
 
-// Selects the indirect command format written below. The mesh path identifies the
-// entity via the compacted-index buffer + gl_DrawID. The fallback path instead packs
-// the draw ordinal into firstInstance (read as gl_InstanceIndex), since Metal/MoltenVK
-// has no DrawIndex builtin to translate gl_DrawID in a vertex shader.
+// Selects the indirect command format below. Mesh path: entity via compacted-index buffer + gl_DrawID.
+// Fallback path: draw ordinal packed into firstInstance (gl_InstanceIndex).
 layout(constant_id = 1) const bool useMeshShader = true;
 
-// Raw u32 view of the indirect buffer so one shader writes either command format:
-//   mesh path     -> VkDrawMeshTasksIndirectCommandEXT (3 u32: groupCountX/Y/Z)
-//   fallback path -> VkDrawIndexedIndirectCommand      (5 u32: indexCount, instanceCount,
-//                                                       firstIndex, vertexOffset, firstInstance)
+// Raw u32 view of the indirect buffer:
+//   mesh path     -> VkDrawMeshTasksIndirectCommandEXT (3 u32)
+//   fallback path -> VkDrawIndexedIndirectCommand (5 u32)
 layout(set = 0, binding = 5) buffer IndirectBuffer {
     uint indirectData[];
 };
@@ -173,27 +164,24 @@ layout(set = 0, binding = 8) readonly buffer MaterialSSBO {
     MaterialData materials[];
 };
 
-// Shadow frustums (audit 4.7): GPU-built by shadowsetup.comp. Tested here exactly like the camera
-// frustums; survivors are written into one slot-0 partition each, packed after the camera partitions
-// (ANO_VIEW_COUNT*drawSlotCount + s). Must match structs.h. CullView = viewProj + 6 planes; this
-// pass uses only the planes.
-#define ANO_SHADOW_FRUSTUM_COUNT 42u  // must match structs.h (static 26 + runtime 16; inactive slots get reject-all planes)
+// Shadow frustums, GPU-built by shadowsetup.comp. Survivors written into one slot-0 partition each
+// after the camera partitions (ANO_VIEW_COUNT*drawSlotCount + s). Must match structs.h; uses only the 6 planes.
+#define ANO_SHADOW_FRUSTUM_COUNT 42u  // must match structs.h (static 26 + runtime 16)
 layout(set = 0, binding = 9) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; };
 
-// Per-draw depth key for the Phase 2 transparency sort. cull writes one key per CAMERA transmission
-// draw at sortKeys[view*maxEntities + writeIdx]; tpsort.comp reads them to reorder that camera
-// view's transmission partition back-to-front. Sized for camera partitions only (ANO_VIEW_COUNT*
-// maxEntities), indexed by the same per-view writeIdx the partition uses.
+// Per-draw depth key for the transparency sort, at sortKeys[view*maxEntities + writeIdx].
+// tpsort.comp reorders the partition back-to-front. Sized for camera partitions only.
 layout(set = 0, binding = 10) writeonly buffer SortKeys { float sortKeys[]; };
 
-// Per-camera-view Hi-Z occlusion pyramids (review 4.9 step 3). One sampler per camera view; the cull
-// samples hizPyramid[view] (LAST frame's pyramid for that view, bound CPU-side to the prior frame-in-
-// flight slot). Indexed by the dynamically-uniform `view` via nonuniformEXT (the enabled feature is the
-// non-uniform variant). Only camera views have a pyramid; the shadow loop never samples it.
+// Per-camera-view Hi-Z occlusion pyramids. hizPyramid[view] is last frame's pyramid for that view.
+// Indexed by the dynamically-uniform `view` via nonuniformEXT.
 layout(set = 0, binding = 11) uniform sampler2D hizPyramid[ANO_VIEW_COUNT];
 
-// World-space bounding sphere vs one view's 6 frustum planes. The sphere (worldCenter,
-// worldRadius) is computed once per entity by the caller and reused across all views.
+// ---------------------------------------------------------------------------
+// Visibility tests
+// ---------------------------------------------------------------------------
+
+// World-space bounding sphere vs one view's 6 frustum planes.
 bool isVisibleIn(uint view, vec4 worldCenter, float worldRadius) {
     for (int i = 0; i < 6; i++) {
         if (dot(views[view].frustumPlanes[i], worldCenter) < -worldRadius) {
@@ -212,18 +200,20 @@ bool isVisibleInShadow(uint s, vec4 worldCenter, float worldRadius) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Draw emission
+// ---------------------------------------------------------------------------
+
 // Append one compacted draw for entity idx (at LOD level) into partition partIdx. mData is the
-// SELECTED level's mesh data (the mesh path's groupCountX and the fallback path's index/vertex
-// offsets both come from it); the level is packed alongside idx so the draw stage resolves the same
-// mesh. Returns the draw's position within the partition (writeIdx) for the parallel sort key.
+// selected level's mesh data. Returns the draw's position in the partition (writeIdx).
 uint emitDraw(uint partIdx, uint idx, MeshData mData, uint level) {
     uint writeIdx = atomicAdd(drawCounts[partIdx], 1);
     uint destIdx = partIdx * maxEntities + writeIdx;
     if (useMeshShader) {
         uint b = destIdx * 3u;
         indirectData[b + 0u] = taskParams.x != 0u
-            ? (mData.meshletCount + 31u) / 32u     // task path: 32-meshlet task workgroups (flat.task)
-            : mData.meshletCount;                  // direct path: one mesh workgroup per meshlet
+            ? (mData.meshletCount + 31u) / 32u     // task path: 32-meshlet workgroups (flat.task)
+            : mData.meshletCount;                  // direct path: one workgroup per meshlet
         indirectData[b + 1u] = 1u;
         indirectData[b + 2u] = 1u;
     } else {
@@ -238,11 +228,12 @@ uint emitDraw(uint partIdx, uint idx, MeshData mData, uint level) {
     return writeIdx;
 }
 
-// Select an LOD level from the projected pixel radius rpx. thresholdPx is the rpx at which level 1
-// begins; each halving of rpx below it drops one further level (the automatic level). bias shifts
-// that selection for debug/tuning: +1 forces one level coarser, -1 one finer; it still applies when
-// distance LOD is off (thresholdPx<=0), so a bias can force coarse meshes for inspection. The final
-// level is clamped to [0, lodCount-1], so a large +bias pins everything to the coarsest level.
+// ---------------------------------------------------------------------------
+// LOD selection
+// ---------------------------------------------------------------------------
+
+// Select an LOD level from the projected pixel radius rpx. thresholdPx = the rpx where level 1 begins,
+// each halving below it drops one more level. bias offsets the selection (+coarser, -finer). Clamped to [0, lodCount-1].
 uint lodSelect(float rpx, uint lodCount, float thresholdPx, int bias) {
     if (lodCount <= 1u) return 0u;
     int autoLevel = 0;
@@ -256,17 +247,16 @@ uint lodSelect(float rpx, uint lodCount, float thresholdPx, int bias) {
     return uint(level);
 }
 
-// Hi-Z occlusion test (review 4.9 step 3, single-phase). Reproject the world bounding sphere into LAST
-// frame's screen via prevViewProj[view], form a conservative screen-space AABB, pick the pyramid mip
-// whose texels are ~the AABB size, MAX (farthest) depth over the AABB's 4 corner texels (texelFetch =
-// point-sample, so no filtering averages depths), and report occluded iff the sphere's NEAREST point is
-// still behind that farthest occluder. Standard ZO depth (near=0/far=1): nearest = smallest ndc depth,
-// reject when nearestNdc > hizMax. Conservative throughout (clamped UVs, nearest depth, point MAX) so it
-// never culls visible geometry — at worst it misses an occlusion (draws something hidden). Returns false
-// (keep) whenever data is unusable: disabled (mipCount<1), sphere straddling/behind last-frame eye, or
-// the nearest point at/behind the eye.
+// ---------------------------------------------------------------------------
+// Hi-Z occlusion
+// ---------------------------------------------------------------------------
+
+// Hi-Z occlusion test. Reproject the world sphere into last frame's screen via prevViewProj[view],
+// form a conservative screen AABB, pick the pyramid mip matching its size, take MAX depth over the 4
+// corner texels, report occluded iff the sphere's nearest point is behind that farthest occluder.
+// Returns false (keep) when unusable: disabled, sphere straddling/behind the eye, nearest point behind eye.
 bool isOccluded(uint view, vec4 worldCenter, float worldRadius) {
-    if (hizParams[view].z < 1.0) return false;                      // mipCount 0 => test off (default)
+    if (hizParams[view].z < 1.0) return false;                      // mipCount 0 => test off
     vec4 clip = prevViewProj[view] * worldCenter;
     if (clip.w <= 0.0) return false;                                // straddles/behind last-frame eye
     float invW = 1.0 / clip.w;
@@ -286,14 +276,18 @@ bool isOccluded(uint view, vec4 worldCenter, float worldRadius) {
             texelFetch(hizPyramid[nonuniformEXT(view)], ivec2(tmax.x, tmin.y), lvl).r),
         max(texelFetch(hizPyramid[nonuniformEXT(view)], ivec2(tmin.x, tmax.y), lvl).r,
             texelFetch(hizPyramid[nonuniformEXT(view)], tmax, lvl).r));
-    // Nearest point of the sphere (closest to the eye), projected to ZO NDC. clip.w == -viewZ == dist;
-    // nearW == dist - radius; clip.z(vz) = proj22*vz + proj32, ndc = clip.z / clip.w.
+    // Nearest sphere point projected to ZO NDC. clip.w == -viewZ == dist, nearW == dist - radius.
+    // ndc = (proj22*vz + proj32) / clip.w.
     float nearW = clip.w - worldRadius;
     if (nearW <= 0.0) return false;                                 // nearest point at/behind the eye
     float vzNear = -nearW;
     float nearestNdc = (hizProj[view].z * vzNear + hizProj[view].w) / nearW;
     return nearestNdc > hizMax;
 }
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -304,88 +298,68 @@ void main() {
 
     EntityInfo entity = entities[idx];
 
-    // Transform-only entities (e.g. pure lights) carry no geometry; skip them.
+    // Transform-only entities (e.g. pure lights) carry no geometry.
     if (entity.meshIndex == 0xFFFFFFFFu) {
         return;
     }
 
     mat4 model = transforms[idx];
-    // entity.meshIndex is the LOD base (level 0). Bounds + the frustum/screen-area test use the base
-    // (LOD-invariant, so an entity never pops in/out as its level changes); the per-view draw uses the
-    // selected level's mesh data (base + level). lodCount lives in the base mesh's metadata.
+    // entity.meshIndex is the LOD base (level 0). Bounds + frustum/screen-area test use the base.
+    // The per-view draw uses the selected level's mesh data (base + level).
     uint baseMesh = entity.meshIndex;
     vec4 bounds = meshBounds[baseMesh];
     MeshData baseData = meshDrawData[baseMesh];
     uint lodCount = baseData.lodCount;
 
-    // Look up material and pipeline type, then map it to its compacted draw partition.
-    // Types that never draw (compute passes, unimplemented skeletons) map to the sentinel
-    // and emit nothing — partitions exist only for drawing pipeline types (see ano_draw_*).
+    // Look up pipeline type, map it to its compacted draw partition. Non-drawing types map to the sentinel.
     uint pipelineType = materials[entity.materialIndex].pipelineType;
     uint slot = drawSlotOf[pipelineType >> 2u][pipelineType & 3u];
     if (slot == 0xFFFFFFFFu) {
         return;
     }
 
-    // World bounding sphere: computed once, tested against every view's frustum below.
+    // World bounding sphere, tested against every view's frustum below.
     vec4 worldCenter = model * vec4(bounds.xyz, 1.0);
     float maxScale = max(max(length(model[0].xyz), length(model[1].xyz)), length(model[2].xyz));
     float worldRadius = bounds.w * maxScale;
 
-    // Single-pass multi-frustum: read this entity once, test it against every camera frustum and
-    // every shadow frustum, append one compacted draw per frustum it survives. Camera partitions own
-    // [0, ANO_VIEW_COUNT*drawSlotCount) as view*drawSlotCount + slot; shadow partitions own the
-    // contiguous range above as one slot-0 partition per frustum (ANO_VIEW_COUNT*drawSlotCount + s).
+    // Single-pass multi-frustum: test against every camera + shadow frustum, append one draw per survivor.
+    // Camera partitions = view*drawSlotCount + slot, shadow partitions = ANO_VIEW_COUNT*drawSlotCount + s.
     for (uint view = 0u; view < viewCount; ++view) {
         if (isVisibleIn(view, worldCenter, worldRadius)) {
-            // dist = clip.w == -view_z (positive in front of the eye) under the RH zero-to-one
-            // perspective (docs/math_conventions.md). Drives both the screen-area cull and the
-            // transmission sort key, so compute it once.
+            // dist = clip.w == -view_z, positive in front of the eye. Drives screen-area cull + sort key.
             float dist = (views[view].viewProj * worldCenter).w;
-            // Screen-area cull (review 4.9 step 1): projected pixel radius rpx = worldRadius *
-            // screenAreaScale / dist; drop draws below this view's threshold. Compared squared to
-            // avoid the divide: rpx^2 < thresh^2  <=>  (worldRadius*scale)^2 < threshSq * dist^2.
-            // dist <= 0 (center at/behind the eye) bypasses the test so straddling geometry is kept;
-            // thresholdSq == 0 disables it entirely for this view.
+            // Screen-area cull: rpx = worldRadius * scale / dist, drop draws below the threshold.
+            // Compared squared: (worldRadius*scale)^2 < threshSq * dist^2. dist <= 0 bypasses, thresholdSq 0 disables.
             float rnum = worldRadius * viewCullParams[view].x;
             if (dist > 0.0 && rnum * rnum < viewCullParams[view].y * dist * dist) {
                 continue;
             }
-            // Hi-Z occlusion cull (review 4.9 step 3): reject entities fully behind last frame's depth
-            // pyramid for this view. Per-view gated (mipCount 0 = off, the default until toggled on);
-            // camera views only (the shadow loop below never samples the pyramid).
+            // Hi-Z occlusion cull: reject entities behind last frame's depth pyramid. Per-view gated, camera views only.
             if (isOccluded(view, worldCenter, worldRadius)) {
                 continue;
             }
-            // LOD select (review 4.9 step 2): rpx = rnum / dist is the projected pixel radius this
-            // view already needs for the cull; reuse it. Only divides when LOD is present (lodCount>1).
+            // LOD select: rpx = rnum / dist. Only divides when LOD is present (lodCount>1).
             uint level = 0u;
             if (lodCount > 1u && dist > 0.0) {
                 level = lodSelect(rnum / dist, lodCount, viewCullParams[view].z, int(viewCullParams[view].w));
             }
             MeshData mData = (level == 0u) ? baseData : meshDrawData[baseMesh + level];
             uint w = emitDraw(view * drawSlotCount + slot, idx, mData, level);
-            // Only the "over" (transmission) lane is depth-sorted. Larger key = farther; tpsort.comp
-            // sorts descending so the farthest draws first (back-to-front).
+            // Transmission lane only. Larger key = farther, tpsort.comp sorts descending (back-to-front).
             if (slot == specialSlots.y) {
                 sortKeys[view * maxEntities + w] = dist;
             }
         }
     }
-    // Shadow casters: opaque + transmission (glass) cast solid shadows into the single slot-0 depth
-    // render; the additive lane (glows, engine plumes) casts none — an emissive throwing a hard black
-    // shadow is never wanted. Alpha-aware shadows for glass are a later refinement.
+    // Shadow casters: opaque + transmission cast solid shadows into the per-frustum solid partition
+    // (base + s); the MASKED lane's casters go to the per-frustum masked partition (base + FRUSTUM_COUNT + s),
+    // drawn by the alpha-testing shadow pipeline. The additive lane casts none.
+    uint shadowSub = (slot == specialSlots.z) ? ANO_SHADOW_FRUSTUM_COUNT : 0u;
     if (slot != specialSlots.x) {
-        // Shadow LOD matches the primary camera view (view 0): a caster renders the shadow at the SAME
-        // level the main view draws it at, so a close mesh's fine geometry is not shadowed by a coarse
-        // silhouette. Recompute view 0's screen-area metric here (a shadow caster need not be inside the
-        // camera frustum, so the camera loop above may have skipped it): rpx = worldRadius * scale / dist,
-        // fed to the same lodSelect the main view uses with view 0's threshold + bias. shadowLodBias is a
-        // RELATIVE offset added on top (0 = exact match, + = coarser shadow, for perf). A caster at/behind
-        // the camera (dist<=0) has no meaningful projected size, so rpx=0 leaves it at the bias-only level
-        // (finest for a near caster — the safe, consistent choice). Same level for every shadow frustum,
-        // so resolve it once. sData MUST match the token level: both the mesh path's groupCountX and the
-        // fallback indirect index/vertex range come from the mesh data.
+        // Shadow LOD matches view 0's level. Recompute view 0's screen-area metric here: rpx = worldRadius
+        // * scale / dist, fed to lodSelect with view 0's threshold + bias + shadowLodBias (+ = coarser).
+        // dist<=0 leaves rpx=0. Same level for every shadow frustum.
         uint slevel = 0u;
         if (lodCount > 1u) {
             float cdist = (viewCount > 0u) ? (views[0].viewProj * worldCenter).w : 0.0;
@@ -395,7 +369,7 @@ void main() {
         MeshData sData = (slevel == 0u) ? baseData : meshDrawData[baseMesh + slevel];
         for (uint s = 0u; s < ANO_SHADOW_FRUSTUM_COUNT; ++s) {
             if (isVisibleInShadow(s, worldCenter, worldRadius)) {
-                emitDraw(ANO_VIEW_COUNT * drawSlotCount + s, idx, sData, slevel);
+                emitDraw(ANO_VIEW_COUNT * drawSlotCount + shadowSub + s, idx, sData, slevel);
             }
         }
     }

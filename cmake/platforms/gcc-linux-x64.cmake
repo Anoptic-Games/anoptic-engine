@@ -1,5 +1,6 @@
 # linux-x64.cmake
 # Toolchain file for 64-bit Linux platforms.
+# GCC fallback, clang/LLVM is the default (clang-linux-x64.cmake).
 
 message(STATUS "!! Using linux-x64.cmake toolchain.")
 

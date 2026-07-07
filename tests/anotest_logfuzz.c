@@ -3,13 +3,13 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Standalone fuzzer for the lock-free MPSC logger. Many producer threads hammer ano_log_* with
+// Standalone fuzzer for the lock-free MPSC logger. Many producer threads hammer ano_log_write with
 // randomized but ALWAYS well-typed input while a flusher thread drains on short random intervals.
 // Two streams of input share one harness:
-//   1) variable-length CONTENT logged safely as ano_log_enqueue(level, file, line, "%s", randstr),
+//   1) variable-length CONTENT logged safely as ano_log_write(level, route, file, line, "%s", randstr),
 //      lengths spanning a few bytes up to past one ring entry (exercises spanning, wrap, full-ring
-//      wait). Random level, occasional ano_log_immediate, occasional ano_log_output_dir between two
-//      valid dirs.
+//      wait). Random level, occasional NOW route, occasional ano_log_output_dir between two
+//      valid dirs. Routes stay FILE-bound so the line-count oracle holds.
 //   2) the deferred FORMATTER, fuzzed by a fixed table of literal format strings each paired with
 //      correctly-typed randomized args. A random fmt is NEVER paired with random args -- only fixed
 //      (literal-fmt, typed-arg) templates, chosen at random per call.
@@ -64,7 +64,7 @@ const char *__tsan_default_suppressions(void)
 #define PATH_B     ANO_TEST_OUTDIR "/anolog_fuzz_alt/anoptic.log"
 
 #define PRODUCERS      6
-#define DEFAULT_ITERS  4000     // per producer; ~few seconds, overflows the ring repeatedly
+#define DEFAULT_ITERS  4000     // per producer, overflows the ring repeatedly
 #define MAX_CONTENT    600      // > one ring entry (64/128B line) to force spanning/wrap, < message cap
 
 // Total records actually enqueued, summed across all producers. The drop-nothing oracle.
@@ -90,28 +90,28 @@ static void formatter_case(test_rng *s)
     const char *sv = strs[rng_below(s, sizeof strs / sizeof strs[0])];
 
     switch (rng_below(s, 18)) {
-    case 0:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt d=%d", i); break;
-    case 1:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt u=%u", u); break;
-    case 2:  ano_log_enqueue(LOG_WARN,  __FILE_NAME__, __LINE__, "fmt x=%x", u); break;
-    case 3:  ano_log_enqueue(LOG_WARN,  __FILE_NAME__, __LINE__, "fmt X=%X", u); break;
-    case 4:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt o=%o", u); break;
-    case 5:  ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, "fmt lld=%lld", ll); break;
-    case 6:  ano_log_enqueue(LOG_ERROR, __FILE_NAME__, __LINE__, "fmt llu=%llu", ull); break;
-    case 7:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt f=%.3f", d); break;
-    case 8:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt e=%e", d); break;
-    case 9:  ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt g=%g", d); break;
-    case 10: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt c=%c", ch); break;
-    case 11: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt s=[%s]", sv); break;
-    case 12: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt wd=[%*d]", w, i); break;
-    case 13: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt pf=[%.*f]", pr, d); break;
-    case 14: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt wpf=[%*.*f]", w, pr, d); break;
-    case 15: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt mix=%d/%s/%x", i, sv, u); break;
-    case 16: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt zpd=[%05d]", i); break;
-    case 17: ano_log_enqueue(LOG_INFO,  __FILE_NAME__, __LINE__, "fmt ws=[%-8.3s]", sv); break;
+    case 0:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt d=%d", i); break;
+    case 1:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt u=%u", u); break;
+    case 2:  ano_log_write(ANO_WARN,  0, __FILE_NAME__, __LINE__, "fmt x=%x", u); break;
+    case 3:  ano_log_write(ANO_WARN,  0, __FILE_NAME__, __LINE__, "fmt X=%X", u); break;
+    case 4:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt o=%o", u); break;
+    case 5:  ano_log_write(ANO_ERROR, 0, __FILE_NAME__, __LINE__, "fmt lld=%lld", ll); break;
+    case 6:  ano_log_write(ANO_ERROR, 0, __FILE_NAME__, __LINE__, "fmt llu=%llu", ull); break;
+    case 7:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt f=%.3f", d); break;
+    case 8:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt e=%e", d); break;
+    case 9:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt g=%g", d); break;
+    case 10: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt c=%c", ch); break;
+    case 11: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt s=[%s]", sv); break;
+    case 12: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt wd=[%*d]", w, i); break;
+    case 13: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt pf=[%.*f]", pr, d); break;
+    case 14: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt wpf=[%*.*f]", w, pr, d); break;
+    case 15: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt mix=%d/%s/%x", i, sv, u); break;
+    case 16: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt zpd=[%05d]", i); break;
+    case 17: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt ws=[%-8.3s]", sv); break;
     }
 }
 
-static const log_types_t LEVELS[] = { LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR };
+static const ano_loglevel_t LEVELS[] = { ANO_INFO, ANO_WARN, ANO_ERROR };
 
 static void *producer(void *arg)
 {
@@ -122,16 +122,16 @@ static void *producer(void *arg)
 
     for (int it = 0; it < g_iters && !atomic_load_explicit(&g_stop, memory_order_relaxed); it++) {
         uint32_t pick = rng_below(&s, 100);
-        log_types_t lvl = LEVELS[rng_below(&s, sizeof LEVELS / sizeof LEVELS[0])];
+        ano_loglevel_t lvl = LEVELS[rng_below(&s, sizeof LEVELS / sizeof LEVELS[0])];
 
         if (pick < 2) {
             // Occasional output-dir swap between two valid dirs. Records still all land in one of the
             // two files we sum, so the oracle holds. This call itself enqueues nothing.
             ano_log_output_dir((rng_next(&s) & 1) ? DIR_A : DIR_B);
         } else if (pick < 5) {
-            // Occasional immediate (FATAL/sync path). emit_one writes exactly one file line.
+            // Occasional NOW route. FILE named explicitly, so one file line and no echo.
             rng_fill_printable(&s, content, 1, MAX_CONTENT);
-            ano_log_immediate(lvl, __FILE_NAME__, __LINE__, "%s", content);
+            ano_log_write(lvl, ANO_NOW | ANO_FILE, __FILE_NAME__, __LINE__, "%s", content);
             local++;
         } else if (pick < 45) {
             // Deferred formatter via fixed literal + typed args.
@@ -140,7 +140,7 @@ static void *producer(void *arg)
         } else {
             // Variable-length random CONTENT, logged safely as "%s".
             rng_fill_printable(&s, content, 1, MAX_CONTENT);
-            if (ano_log_enqueue(lvl, __FILE_NAME__, __LINE__, "%s", content) < 0)
+            if (ano_log_write(lvl, 0, __FILE_NAME__, __LINE__, "%s", content) < 0)
                 atomic_fetch_add(&g_worker_fail, 1);   // never expected: 0 or 1 only
             local++;
         }
@@ -175,7 +175,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "logfuzz: ano_log_init failed\n");
         return 1;
     }
-    ano_log_set_level(LOG_DEBUG);   // gate open: nothing dropped by severity, counts stay exact
+    ano_log_set_level(ANO_INFO);    // gate open: nothing dropped by severity, counts stay exact
     ano_log_output_dir(DIR_A);
 
     atomic_store(&g_enqueued, 0);
@@ -210,7 +210,7 @@ int main(int argc, char **argv)
     printf("logfuzz: producers=%d iters=%d enqueued=%llu lines=%llu\n",
            PRODUCERS, g_iters, (unsigned long long)enq, (unsigned long long)lines);
 
-    // Counted above; drop the files and directories so a manual run leaves nothing behind.
+    // Drop the test files and directories.
     remove(PATH_A);
     remove(PATH_B);
     scratch_remove_dir(DIR_A);

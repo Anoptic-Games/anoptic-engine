@@ -7,6 +7,8 @@
 
 #include "vulkan_backend/texture/texture.h" 
 
+#include <anoptic_logging.h>
+
 extern GpuAllocator textureAllocator;
 extern GpuAllocator stagingAllocator;
 
@@ -23,8 +25,8 @@ Texture8 readTexture8bit(char* fileName)
 uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta, VkImageView view, VkSampler sampler)
 {
 	if (bta->textureCount >= bta->maxTextures) {
-		printf("ERROR: Bindless texture array full!\n");
-		return 0; // Or return a fallback texture index
+		ano_log(ANO_ERROR, "ERROR: Bindless texture array full!");
+		return 0;
 	}
 
 	uint32_t index = bta->textureCount;
@@ -39,7 +41,7 @@ uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta
 	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrite.dstSet = bta->set;
 	descriptorWrite.dstBinding = 0;
-	descriptorWrite.dstArrayElement = index; // The index in the array to update
+	descriptorWrite.dstArrayElement = index;
 	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	descriptorWrite.descriptorCount = 1;
 	descriptorWrite.pImageInfo = &imageInfo;
@@ -101,8 +103,7 @@ bool transitionImageLayout(VulkanContext* ctx, VkCommandBuffer cmd, VkImage imag
 		destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	} else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 	{
-		// Seed-only: no prior contents to preserve; first real use re-transitions. Lands the image
-		// in a defined layout as a fragment-sampled source (e.g. the per-view HDR composite target).
+		// Transition to fragment-sampled read layout.
 		barrier.srcAccessMask = 0;
 		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
@@ -110,12 +111,11 @@ bool transitionImageLayout(VulkanContext* ctx, VkCommandBuffer cmd, VkImage imag
 		destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 	} else
 	{
-		printf("Unsupported layout transition!\n");
+		ano_log(ANO_ERROR, "Unsupported layout transition!");
 		return false;
 	}
 
-	// Aspect follows the FORMAT, not the target layout: a depth image seeded straight to
-	// SHADER_READ (async Hi-Z depth-resolve rest state) still needs the DEPTH aspect.
+	// Aspect follows the format.
 	if (format == VK_FORMAT_D32_SFLOAT || hasStencilComponent(format))
 	{
 		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -194,9 +194,7 @@ bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t wid
 	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	imageInfo.usage = usage;
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	// Two or more DISTINCT families (caller guarantees distinctness) -> CONCURRENT: contents stay
-	// valid across queues with no ownership-transfer barrier pairs (async Hi-Z crosses graphics <->
-	// compute every frame; review finding 2). Single/absent list keeps EXCLUSIVE.
+	// Two+ distinct families -> CONCURRENT sharing, otherwise EXCLUSIVE.
 	if (shareFamilies != NULL && shareFamilyCount >= 2)
 	{
 		imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -204,11 +202,11 @@ bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t wid
 		imageInfo.pQueueFamilyIndices = shareFamilies;
 	}
 	imageInfo.samples = numSamples;
-	imageInfo.flags = 0; // Optional
+	imageInfo.flags = 0; // optional
 
 	if (vkCreateImage(ctx->device, &imageInfo, NULL, image) != VK_SUCCESS)
 	{
-		printf("Failed to create image!\n");
+		ano_log(ANO_ERROR, "Failed to create image!");
 		return false;
 	}
 
@@ -218,7 +216,7 @@ bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t wid
 	*imageAlloc = gpu_alloc(allocator, memRequirements, properties);
 	if (imageAlloc->memory == VK_NULL_HANDLE) {
 		vkDestroyImage(ctx->device, *image, NULL);
-		*image = VK_NULL_HANDLE; // don't leave a dangling handle for teardown to double-free
+		*image = VK_NULL_HANDLE; // clear dangling handle
 		return false;
 	}
 	vkBindImageMemory(ctx->device, *image, imageAlloc->memory, imageAlloc->offset);
@@ -235,19 +233,19 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 
 bool generateMipmaps(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
 {
-	// Check that we can actually do linear filtering first..
+	// Require linear filtering support.
 	VkFormatProperties formatProperties;
 	vkGetPhysicalDeviceFormatProperties(ctx->physicalDevice, imageFormat, &formatProperties);
 	if (!(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
-	{ // Change this to an alt case using software generation
-		printf("Texture image does not support bilinear filtering!\n");
+	{ // TODO software-generation fallback
+		ano_log(ANO_ERROR, "Texture image does not support bilinear filtering!");
 		return false;
 	}
 
 	VkCommandBuffer commandBuffer = cmd == VK_NULL_HANDLE ? beginSingleTimeCommands(ctx) : cmd;
 
 	VkImageMemoryBarrier barrier =
-	{// Zero-initialization to ensure no garbage is carried over
+	{// Zero-initialize
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 		.pNext = NULL,
 		.srcAccessMask = 0,
@@ -280,7 +278,7 @@ bool generateMipmaps(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkF
 
 	for (uint32_t i = 1; i < mipLevels; i++)
 	{
-		printf("Mip dimensions at level %d: %d,	%d\n", i, mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1);
+		ano_debug_log(ANO_INFO, "Mip dimensions at level %d: %d,	%d", i, mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1);
 		barrier.subresourceRange.baseMipLevel = i - 1;
 		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -366,22 +364,21 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkIma
 
 	if(!createImage(ctx, &textureAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
 	{
-		printf("Image creation failure!\n");
+		ano_log(ANO_ERROR, "Image creation failure!");
 		return false;
 	}
 
 	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
 	{
-		printf("Layout transition failure!\n");
+		ano_olog(ANO_ERROR, "Layout transition failure!");
 		return false;
 	}
 
 	copyBufferToImage(ctx, cmd, stagingBuffer, *textureImage, width, height);
 
-	// Instead of mipmaps, just transition to SHADER_READ_ONLY_OPTIMAL
 	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
 	{
-		printf("Layout transition failure!\n");
+		ano_olog(ANO_ERROR, "Layout transition failure!");
 		return false;
 	}
 
@@ -389,26 +386,29 @@ bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkIma
 	
 	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
 	{
-		printf("Image view creation failure!\n");
+		ano_log(ANO_ERROR, "Image view creation failure!");
 		return false;
 	}
 
 	return true;
 }
-bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, VkBuffer* outStagingBuffer)
+bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, bool srgb, VkBuffer* outStagingBuffer)
 {
 	//!TODO Add logic for 16-bit images
 	Texture8 texture = readTexture8bit(fileName);
 	if (!texture.pixels)
 	{
-		printf("Failed to load texture image: %s\n", fileName);
+		ano_log(ANO_ERROR, "Failed to load texture image: %s", fileName);
 		return false;
 	}
 
-	VkDeviceSize imageSize = texture.texWidth * texture.texHeight * 4;
-	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // Mipmap levels determined dynamically 
+	// sRGB for color textures, linear UNORM for data textures.
+	VkFormat texFormat = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 
-	printf("Texture mip levels: %d\n", texture.mipLevels);
+	VkDeviceSize imageSize = texture.texWidth * texture.texHeight * 4;
+	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // dynamic mip levels
+
+	ano_debug_log(ANO_INFO, "Texture mip levels: %d", texture.mipLevels);
 
 	VkBuffer stagingBuffer;
 	GpuAllocation stagingAlloc;
@@ -419,35 +419,33 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 
 	stbi_image_free(texture.pixels);
 
-	if (!createImage(ctx, &textureAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+	if (!createImage(ctx, &textureAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, texFormat, VK_IMAGE_TILING_OPTIMAL,
 					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
 	{
-		printf("Image creation failure: %s\n", fileName);
+		ano_log(ANO_ERROR, "Image creation failure: %s", fileName);
 		return false;
 	}
 
-	// TODO: Figure out if this case ever occurs
-	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	if(!transitionImageLayout(ctx, cmd, *textureImage, texFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
-		printf("Layout transition failure: %s\n", fileName);
+		ano_log(ANO_ERROR, "Layout transition failure: %s", fileName);
 		return false;
 	}
 
 	copyBufferToImage(ctx, cmd, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texWidth);
 
-	generateMipmaps(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, texture.texWidth, texture.texHeight, texture.mipLevels);
+	generateMipmaps(ctx, cmd, *textureImage, texFormat, texture.texWidth, texture.texHeight, texture.mipLevels);
 
-	// TODO: Figure out if this case ever occurs
-	/*if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
+	/*if(!transitionImageLayout(ctx, cmd, *textureImage, texFormat, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture.mipLevels))
 	{
 		printf("Layout transition failure: %s\n", fileName);
 		return false;
 	}*/
 
 	if (outStagingBuffer) *outStagingBuffer = stagingBuffer; else vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
-	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
+	if(!createTextureImageView(ctx, *textureImage, textureImageView, texFormat, texture.mipLevels))
 	{
-		printf("Image view creation failure: %s\n", fileName);
+		ano_log(ANO_ERROR, "Image view creation failure: %s", fileName);
 		return false;
 	}
 	
@@ -463,7 +461,7 @@ bool createTextureImageView(VulkanContext* ctx, VkImage textureImage, VkImageVie
 
 
 bool createTextureSampler(VulkanContext* ctx, RendererState* state)
-{ // DONE? Turns out maxLod is ignored if the texture in question doesn't have that many levels. I'm sure we'll need more samplers at some point, but we don't need one per texture
+{ // One shared sampler suffices.
 	VkSamplerCreateInfo samplerInfo = {};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 	samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -472,7 +470,7 @@ bool createTextureSampler(VulkanContext* ctx, RendererState* state)
 	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 
-	//TODO Physical device properties should be sampled once in the program's lifetime and cached
+	//TODO Cache physical device properties once.
 	VkPhysicalDeviceProperties properties = {};
 	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &properties);
 	
@@ -486,11 +484,11 @@ bool createTextureSampler(VulkanContext* ctx, RendererState* state)
 	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	samplerInfo.mipLodBias = 0.0f;
 	samplerInfo.minLod = 0.0f;
-	samplerInfo.maxLod = 20.0f; // This would technically be a 524K texture, I'm sure it's large enough
+	samplerInfo.maxLod = 20.0f; // 524K texture cap
 	
 	if (vkCreateSampler(ctx->device, &samplerInfo, NULL, &state->textureSampler) != VK_SUCCESS)
 	{
-		printf("Failed to create texture sampler!\n");
+		ano_log(ANO_FATAL, "Failed to create texture sampler!");
 		return false;
 	}
 	return true;

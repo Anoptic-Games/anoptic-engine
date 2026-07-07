@@ -7,21 +7,17 @@
  * endpoint (ano_render_submit). The hot-path push/pop and the in-src endpoints
  * stay inlined in the private render_bridge.h, while only the cold init/destroy and
  * the public (non-inline) submit live here. Platform-agnostic and GPU-free,
- * part of anoptic_core. Public contract: include/anoptic_render.h.
- * Design of record: docs/artifacts/VK_BACKEND_INTEROP.md. */
+ * part of anoptic_core. Public contract: include/anoptic_render.h. */
 
 #include "render_bridge.h"
 
 #include <stdint.h>
 #include <string.h>
 
-// Catch accidental growth of the events-ring element (copied byte-by-byte per push/pop and sized
-// capacity * this). It is exactly 32 B today and intentionally held there; growing a union arm past
-// it is a deliberate decision (ring footprint, copy cost), so this fires to force that decision.
+// Guard the events-ring element size (copied per push/pop, sized capacity * this). Held at 32 B.
 _Static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
 
-// Smallest power of two >= v, with a floor of 2. Returns 0 only on overflow
-// (v > 2^31), which the caller treats as failure.
+// Smallest power of two >= v, floor of 2. Returns 0 on overflow (v > 2^31).
 static uint32_t next_pow2_u32(uint32_t v)
 {
     if (v < 2u) return 2u;
@@ -88,16 +84,15 @@ void ano_render_bridge_destroy(AnoRenderBridge *bridge)
     ano_spsc_destroy(&bridge->events);
 }
 
-// Public producer endpoint (anoptic_render.h). Non-inline by design, so the engine
-// entry point reaches it through the opaque handle without seeing the ring.
+// Public producer endpoint (anoptic_render.h). Non-inline, reached through the opaque handle.
 // The in-src consumer/event endpoints stay inlined in render_bridge.h.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd)
 {
     return ano_spsc_push(&bridge->commands, cmd);
 }
 
-// Runtime light endpoints (audit 4.7). Build a POD RenderCommand and push it through the same SPSC
-// command ring; backpressure contract is ano_render_submit's (false == ring full, retry).
+// Runtime light endpoints. Build a POD RenderCommand and push it through the SPSC command ring.
+// Backpressure contract is ano_render_submit's (false == ring full, retry).
 bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_t parent_render_id,
                              const RenderLightParams *params, float ox, float oy, float oz)
 {
@@ -129,9 +124,43 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
-// Back-channel logic-master endpoints (anoptic_render.h). Non-inline so the logic master reaches
-// them through the opaque handle; the matching render-side producer/consumer halves are the inline
-// helpers in render_bridge.h.
+// Screen-text endpoints (v0 bridge). `set` packs the block header and the instance copy
+// into one render-owned allocation, freed render-side on replace/clear/shutdown. count 0 == clear.
+// Backpressure contract is ano_render_submit's.
+bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
+                         const AnoGlyphInstance *instances, uint32_t count)
+{
+    if (count == 0u)
+        return ano_render_text_clear(bridge, text_id);
+    if (instances == NULL)
+        return true; // invalid pair (count without data): no-op
+    if (count > ANO_RENDER_TEXT_MAX)
+        count = ANO_RENDER_TEXT_MAX; // clamp to the region
+    size_t bytes = sizeof(RenderTextBlock) + (size_t)count * sizeof(AnoGlyphInstance);
+    char *blk = mi_malloc(bytes);
+    if (blk == NULL)
+        return false;
+    RenderTextBlock *b = (RenderTextBlock *)blk;
+    AnoGlyphInstance *inst = (AnoGlyphInstance *)(blk + sizeof(RenderTextBlock));
+    memcpy(inst, instances, (size_t)count * sizeof(AnoGlyphInstance));
+    b->count = count;
+    b->instances = inst;
+    RenderCommand c = { .kind = RCMD_TEXT_SET, .text_id = text_id, .text = b, .bulk_owned = true };
+    if (!ano_spsc_push(&bridge->commands, &c)) {
+        mi_free(blk);
+        return false;
+    }
+    return true;
+}
+
+bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
+{
+    RenderCommand c = { .kind = RCMD_TEXT_CLEAR, .text_id = text_id };
+    return ano_spsc_push(&bridge->commands, &c);
+}
+
+// Back-channel logic-master endpoints (anoptic_render.h). Non-inline, reached through the opaque handle.
+// The matching render-side producer/consumer halves are the inline helpers in render_bridge.h.
 bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out)
 {
     return ano_spsc_pop(&bridge->events, out);
