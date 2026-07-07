@@ -535,6 +535,28 @@ async, self-test gates at every step.
    with the demo. Suite 19/19, release+debug clean.)
 6. Gradients + clip table + dither + UI_PATH (runtime monotone-quad bake through the text
    bake's split machinery, importer orientation-fix). Reference gates extend per feature.
+   (Done 2026-07-07 — HW-verified. Gradients: linear/radial/conic paint verbs
+   (ano_ui_paint_*), stop interpolation in premultiplied linear with CSS-pad clamp,
+   paint fill routed through the RRECT/PATH tail (base-tint modulate), scroll-compensated
+   xform at compose; ano_ui_ref_paint + ui_paint_eval twins; oracle vs independent
+   analytic t worst ~1e-7. Dither: interleaved-gradient-noise 1 LSB at the imageStore
+   quantize (overlay is UNORM8 linear), gated off by ANO_TEXT_RASTER_NODITHER so the
+   exact self-test compare survives. UI_PATH: src/ui/ui_path.c bakes arbitrary
+   lines/quads into the shared monotone-quad binary16 stream (reuses the text bake's
+   ano_quad_split_monotone / ano_half_pack via a narrow ui_path.h — no cross-module
+   private-header leak), nonzero-winding auto-orientation (total endpoint shoelace picks
+   the global sign, so caller winding is irrelevant and oppositely wound inner contours
+   punch holes); prim-local binary16 coords with identity inv (curve_area reused from
+   textcoverage.glsl); per-slot curve region on raster-set binding 8 (uiFrameBuffer +
+   64 KiB/slot), compose copies + rebases PATH aux0, bridge packs a 6th array +
+   validates PATH aux range. Reference gates: path rect reproduces exact box coverage
+   (interior/edge error 0.0 at integer coords), hole + reversed-winding oracles pass.
+   The standing self-test scene gained a gradient strip + a play-triangle path (both
+   reference-evaluable), so the GPU --compare now validates gradient + path on-device:
+   RMS 0.111/255, max 13/255 = the same sRGB dark-slope envelope as before, zero
+   validation. Bridge curve/paint transport exercised end to end by the main.c menu
+   (gradient plate + play-triangle on RESUME). Importer orientation-fix folded into the
+   winding auto-orientation; a true glTF/SVG path importer stays out of scope.)
 7. Per-tile lists + interior/opaque classification at compose, indirect dispatch, glyph
    interleave (true unified z). A/B against the brute scan; keep both paths a build flag
    until the win is measured.

@@ -16,14 +16,22 @@ layout(set = 0, binding = 3, rgba8) uniform writeonly image2D overlay;
 
 layout(push_constant) uniform TextRasterPush {
     uint  instanceCount;
-    uint  flags;    // bit 0: opaque black backdrop; bit 1: skip glyphs (UI self-test)
+    uint  flags;    // bit 0: opaque black backdrop; bit 1: skip glyphs; bit 2: no dither
     uvec2 extent;
     uvec2 origin;   // dispatch region offset, pixels (tile-aligned)
     uint  uiPrimCount;
     uint  uiClipCount;
+    uint  uiPaintCount;
 } pc;
 
 const uint CHUNK = 64u; // entries per cull round
+
+// Interleaved gradient noise (Jimenez): a per-pixel value in [0,1), one hash. Used at
+// amplitude 1 LSB to break 8-bit banding in dark gradients and shadow falloffs.
+float ign(vec2 p)
+{
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
 
 shared uint sHit[CHUNK]; // per-lane tile-cull verdict
 shared uint sAny;        // chunk had any hit
@@ -69,7 +77,7 @@ void main()
                 if (sHit[j] != 0u)
                 {
                     uint idx = base + j;
-                    vec4 src = ui_shade(idx, pixTL, pc.uiClipCount);
+                    vec4 src = ui_shade(idx, pixTL, pc.uiClipCount, pc.uiPaintCount);
                     if ((uiPrims[idx].flags & UI_BLEND_MASK) == UI_BLEND_ADD)
                         acc.rgb += src.rgb;
                     else
@@ -112,5 +120,8 @@ void main()
         acc.a = 1.0; // opaque self-test: black backdrop
     else if (acc == vec4(0.0))
         return; // untouched pixel
+    // 1-LSB triangle-free dither before the 8-bit store; skipped for the exact self-test.
+    if ((pc.flags & 4u) == 0u)
+        acc += (ign(vec2(px)) - 0.5) * (1.0 / 255.0);
     imageStore(overlay, ivec2(px), acc);
 }

@@ -330,6 +330,7 @@ typedef struct RenderTextBlock
 #define ANO_RENDER_UI_MAX_CLIPS  64u
 #define ANO_RENDER_UI_MAX_PAINTS 64u
 #define ANO_RENDER_UI_MAX_STOPS  256u
+#define ANO_RENDER_UI_MAX_CURVES 8192u // packed path curve words per block
 #define ANO_RENDER_UI_MAX_GLYPHS 2048u
 
 // One UI block (RCMD_UI_SET): a z-ordered prim stream with its side tables and shaped
@@ -348,11 +349,13 @@ typedef struct RenderUiBlock
     uint32_t clipCount;
     uint32_t paintCount;
     uint32_t stopCount;
+    uint32_t curveCount; // packed path curve words in curves[]
     uint32_t glyphCount;
     const AnoUiPrim        *prims;
     const AnoUiClip        *clips;
     const AnoUiPaint       *paints;
     const AnoUiStop        *stops;
+    const uint32_t         *curves;
     const AnoGlyphInstance *glyphs;
 } RenderUiBlock;
 

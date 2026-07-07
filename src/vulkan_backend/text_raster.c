@@ -30,8 +30,8 @@
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
-// Push-constant block shared with textraster.comp (32 B; the shader may declare a
-// prefix of it). uiPrimCount/uiClipCount stay 0 until the UI compose lands (step 5).
+// Push-constant block shared with textraster.comp (36 B; the shader may declare a
+// prefix of it). uiPrimCount/uiClipCount/uiPaintCount stay 0 with no UI compose.
 typedef struct TextRasterPush {
     uint32_t instanceCount;
     uint32_t flags;
@@ -41,6 +41,7 @@ typedef struct TextRasterPush {
     uint32_t originY;
     uint32_t uiPrimCount;
     uint32_t uiClipCount;
+    uint32_t uiPaintCount;
 } TextRasterPush;
 
 // Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel next, UI
@@ -268,12 +269,12 @@ static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
     return true;
 }
 
-// Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 4 UI-table
-// SSBOs (bindings 4-7: prim/clip/paint/stop regions of uiFrameBuffer), 32 B push.
+// Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 5 UI-table
+// SSBOs (bindings 4-8: prim/clip/paint/stop/curve regions of uiFrameBuffer), 36 B push.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[8] = {};
-    for (uint32_t b = 0; b < 8; ++b)
+    VkDescriptorSetLayoutBinding bindings[9] = {};
+    for (uint32_t b = 0; b < 9; ++b)
     {
         bindings[b].binding = b;
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
@@ -286,7 +287,7 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     }
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 8;
+    layoutInfo.bindingCount = 9;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->textRasterSetLayout) != VK_SUCCESS)
         return false;
@@ -933,7 +934,8 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
     // stays transparent. The opaque self-test keeps the full-canvas dispatch.
     TextRasterPush push = { .instanceCount = state->textInstanceCount, .flags = state->textFlags,
                             .extentW = state->imageExtent.width, .extentH = state->imageExtent.height,
-                            .uiPrimCount = state->uiPrimCount, .uiClipCount = state->uiClipCount };
+                            .uiPrimCount = state->uiPrimCount, .uiClipCount = state->uiClipCount,
+                            .uiPaintCount = state->uiPaintCount };
     uint32_t gx = 0, gy = 0;
     if (state->textFlags & ANO_TEXT_RASTER_OPAQUE)
     {

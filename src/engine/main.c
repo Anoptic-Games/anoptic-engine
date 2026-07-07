@@ -254,13 +254,17 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	if (!visible)
 		return ano_render_ui_clear(bridge, HUD_UI_MENU);
 	AnoUiPrim prims[24];
+	AnoUiPaint paints[2];
+	AnoUiStop stops[4];
+	uint32_t curves[128];
 	AnoGlyphInstance glyphs[HUD_UI_GCAP];
 	uint32_t gcount = 0;
 	AnoUiBuilder b;
-	ano_ui_builder_init(&b, prims, 24, NULL, 0, NULL, 0, NULL, 0);
-	float shadow[4], plate[4], rim[4], btn[4], btnHot[4], btnRim[4], label[4], title[4], glow[4];
+	ano_ui_builder_init(&b, prims, 24, NULL, 0, paints, 2, stops, 4);
+	ano_ui_builder_curves(&b, curves, 128);
+	float shadow[4], white[4], rim[4], btn[4], btnHot[4], btnRim[4], label[4], title[4], glow[4];
 	ano_ui_color_srgb((float[4]){ 0.00f, 0.00f, 0.00f, 0.60f }, shadow);
-	ano_ui_color_srgb((float[4]){ 0.13f, 0.14f, 0.17f, 0.97f }, plate);
+	ano_ui_color_srgb((float[4]){ 1.00f, 1.00f, 1.00f, 1.0f }, white); // gradient carrier
 	ano_ui_color_srgb((float[4]){ 0.62f, 0.65f, 0.70f, 1.0f }, rim);
 	ano_ui_color_srgb((float[4]){ 0.22f, 0.24f, 0.30f, 1.0f }, btn);
 	ano_ui_color_srgb((float[4]){ 0.28f, 0.45f, 0.80f, 1.0f }, btnHot);
@@ -268,12 +272,20 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	ano_ui_color_srgb((float[4]){ 0.92f, 0.94f, 0.97f, 1.0f }, label);
 	ano_ui_color_srgb((float[4]){ 1.00f, 0.80f, 0.35f, 1.0f }, title);
 	ano_ui_color_srgb((float[4]){ 0.25f, 0.45f, 0.85f, 0.0f }, glow); // ADD: rgb only
+	// Vertical plate gradient (lighter top -> darker bottom) submitted through the bridge.
+	AnoUiStop plateStops[2];
+	ano_ui_color_srgb((float[4]){ 0.17f, 0.18f, 0.22f, 0.97f }, plateStops[0].color);
+	plateStops[0].t = 0.0f;
+	ano_ui_color_srgb((float[4]){ 0.09f, 0.10f, 0.13f, 0.97f }, plateStops[1].color);
+	plateStops[1].t = 1.0f;
+	uint32_t plateGrad = ano_ui_paint_linear(&b, (float[2]){ m->panel[0], m->panel[1] },
+	                                         (float[2]){ m->panel[0], m->panel[3] }, plateStops, 2);
 	float r12[4] = { 12, 12, 12, 12 }, r8[4] = { 8, 8, 8, 8 };
 	ano_ui_shadow(&b, (float[2]){ m->panel[0] + 6, m->panel[1] + 10 },
 	              (float[2]){ m->panel[2] + 6, m->panel[3] + 10 }, 12.0f, 9.0f, shadow,
 	              ANO_UI_REF_NONE, 0);
-	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, plate, 0.0f,
-	             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, white, 0.0f,
+	             plateGrad, ANO_UI_REF_NONE, 0);
 	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, rim, 2.0f,
 	             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	float titleRect[4] = { m->panel[0], m->panel[1] + 14, m->panel[2], m->panel[1] + 58 };
@@ -297,6 +309,15 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 			ui_label(&b, bake, anostr_view(text, (size_t)len), 20.0f, m->button[i],
 			         label, glyphs, &gcount);
 	}
+	// Filled play-triangle on RESUME, baked to monotone quads and sent over the bridge
+	// curve transport (exercises the full submit -> compose -> GPU path for UI_PATH).
+	float rb0 = m->button[0][0], rcy = 0.5f * (m->button[0][1] + m->button[0][3]);
+	AnoUiPathSeg play[3] = {
+		{ ANO_UI_SEG_MOVE, { rb0 + 22.0f, rcy - 9.0f, 0.0f, 0.0f } },
+		{ ANO_UI_SEG_LINE, { rb0 + 38.0f, rcy, 0.0f, 0.0f } },
+		{ ANO_UI_SEG_LINE, { rb0 + 22.0f, rcy + 9.0f, 0.0f, 0.0f } },
+	};
+	ano_ui_path_fill(&b, play, 3, label, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	return ano_render_ui_set(bridge, HUD_UI_MENU, 128, &b, glyphs, gcount);
 }
 

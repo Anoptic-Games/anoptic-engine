@@ -15,6 +15,7 @@
 // TextRasterPush.flags bits (wire format, mirrored in textraster.comp).
 #define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop + full-canvas dispatch (self-test)
 #define ANO_TEXT_RASTER_UIONLY 0x2u // skip the glyph loop (the UI self-test isolates prims)
+#define ANO_TEXT_RASTER_NODITHER 0x4u // skip the 1-LSB store dither (exact self-test compare)
 
 // One-time init on the render thread: FreeType up, fonts loaded + baked, GPU buffers
 // and pipelines built. Always returns true: failure logs and clears state->textOverlay.
