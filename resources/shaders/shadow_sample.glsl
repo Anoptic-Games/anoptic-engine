@@ -33,7 +33,7 @@ layout(set = 2, binding = 3) uniform ShadowSampleVPUBO {
 //                  transition for low-res, at some contact accuracy (stable to ~0.03, frays past ~0.06).
 //                  Silhouette-edge softness is independent of this (it comes from the coverage gradient).
 const float ANO_CDF_DEPTH_BIAS   = 0.0002;
-const float ANO_CDF_CONTACT_SOFT = 0.02;
+const float ANO_CDF_CONTACT_SOFT = 0.2;
 
 // Reconstruct the lit factor for `worldPos` against shadow FRUSTUM `frustum` (its two atlas sublayers).
 // Outside the map or beyond the far plane returns 1.0 (lit) — no false self-shadowing at seams.
