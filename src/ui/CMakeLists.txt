@@ -4,4 +4,5 @@ target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/ui_demo.c
         ${CMAKE_CURRENT_SOURCE_DIR}/ui_path.c
         ${CMAKE_CURRENT_SOURCE_DIR}/ui_raster_ref.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui_tiles.c
 )

@@ -269,12 +269,13 @@ static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
     return true;
 }
 
-// Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 5 UI-table
-// SSBOs (bindings 4-8: prim/clip/paint/stop/curve regions of uiFrameBuffer), 36 B push.
+// Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 7 UI-table
+// SSBOs (bindings 4-10: prim/clip/paint/stop/curve regions + per-tile offsets/entries of
+// uiFrameBuffer), 36 B push.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[9] = {};
-    for (uint32_t b = 0; b < 9; ++b)
+    VkDescriptorSetLayoutBinding bindings[11] = {};
+    for (uint32_t b = 0; b < 11; ++b)
     {
         bindings[b].binding = b;
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
@@ -287,7 +288,7 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     }
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 9;
+    layoutInfo.bindingCount = 11;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->textRasterSetLayout) != VK_SUCCESS)
         return false;
@@ -975,6 +976,13 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
             gy = ((uint32_t)(y1 - y0) + 7u) / 8u;
         }
     }
+    // Per-tile prim lists: build this slot's grid to match the dispatch (§3.7). On
+    // success the shader reads its tile's prims instead of the brute chunk scan; any
+    // failure (disabled, grid/entry overflow) leaves the flag clear and falls back.
+    if (gx != 0 && gy != 0 && state->uiPrimCount > 0
+        && ano_vk_ui_build_tiles(state, frameIndex, (int32_t)push.originX, (int32_t)push.originY, gx, gy))
+        push.flags |= ANO_TEXT_RASTER_TILED;
+
     if (gx != 0 && gy != 0)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,

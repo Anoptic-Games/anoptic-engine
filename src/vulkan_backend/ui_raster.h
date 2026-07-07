@@ -37,6 +37,13 @@ void ano_vk_ui_block_clear(RendererState* state, uint32_t ui_id);
 // wait, next to ano_vk_text_frame_refresh.
 void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex);
 
+// Builds this slot's per-tile prim lists for the dispatch grid (§3.7): origin (ox,oy) in
+// overlay px, gx*gy tiles of 8px. Rebuilds only when the version or grid changed for the
+// slot. Returns true when the slot's tile buffers are valid for a tiled dispatch; false
+// (tiles disabled, grid too large, or entry overflow) means fall back to the brute scan.
+bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex,
+                           int32_t ox, int32_t oy, uint32_t gx, uint32_t gy);
+
 // Frame-independent teardown, handle-guarded; frees adopted blocks.
 void ano_vk_ui_destroy(VulkanContext* ctx, RendererState* state);
 

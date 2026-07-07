@@ -276,4 +276,37 @@ void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, fl
 // the register blend loop the GPU lane mirrors).
 void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4]);
 
+// ---------------------------------------------------------------------------------------------
+// Per-tile prim lists (ui-render.md §3.7 step 2-3): the CPU-coarse stage of the scaling
+// ladder, built at compose cadence so the GPU walks only the prims that touch each 8x8
+// tile instead of scanning them all. A tile entry is a prim index with a "solid" high
+// bit — set when the prim fully covers the tile (coverage provably 1), so the GPU skips
+// the SDF and takes the flat fill (interior classification). Glyphs are NOT tiled here.
+
+#define ANO_UI_TILE_PX          8u          // tile edge, matches the 8x8 compute workgroup
+#define ANO_UI_ENTRY_SOLID      0x80000000u // tile entry: prim fully covers the tile
+#define ANO_UI_ENTRY_INDEX_MASK 0x7FFFFFFFu
+
+// Padded pixel AABB of one prim: its influence region (half extent + the 1px AA ramp, or
+// 3*sigma for a shadow). Identity-inv only (v0). Matches the GPU cull and pending bounds.
+void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2]);
+
+// Builds a dense tile grid (tilesX*tilesY tiles of 8px, top-left at ox,oy in overlay px)
+// from the scene's prims. Writes offsets[0..tilesX*tilesY] (tile t owns entries
+// [offsets[t], offsets[t+1])) and the prim-index entry stream; cursor is tilesX*tilesY
+// scratch. Returns the entry count. Sets *ok false (and bails) if offsetsCap (needs
+// tilesX*tilesY+1) or entryCap is too small — the caller then falls back to the brute scan.
+uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
+                           uint32_t tilesX, uint32_t tilesY,
+                           uint32_t *offsets, uint32_t offsetsCap,
+                           uint32_t *entries, uint32_t entryCap,
+                           uint32_t *cursor, bool *ok);
+
+// Painter's-order evaluation at one pixel through the tile grid: mirrors ano_ui_ref_eval
+// but walks only pixel (px,py)'s tile list. Bit-identical to ano_ui_ref_eval when the
+// grid covers the pixel; the GPU tiled path mirrors THIS. Glyphs are not included.
+void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
+                           uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
+                           const uint32_t *entries, int32_t px, int32_t py, float out[4]);
+
 #endif

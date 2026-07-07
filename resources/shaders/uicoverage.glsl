@@ -68,8 +68,14 @@ layout(std430, set = 0, binding = 5) readonly buffer UiClips  { UiClip  uiClips[
 layout(std430, set = 0, binding = 6) readonly buffer UiPaints { UiPaint uiPaints[]; };
 layout(std430, set = 0, binding = 7) readonly buffer UiStops  { UiStop  uiStops[];  };
 layout(std430, set = 0, binding = 8) readonly buffer UiCurves { uint    uiCurvePoints[]; };
+layout(std430, set = 0, binding = 9) readonly buffer UiTileOff { uint uiTileOff[]; };   // tile t: [uiTileOff[t], uiTileOff[t+1])
+layout(std430, set = 0, binding = 10) readonly buffer UiTileEnt { uint uiTileEnt[]; };  // prim index | ENTRY_SOLID
 
 layout(set = 1, binding = 0) uniform sampler2D uiTextures[];
+
+// Tile-entry solid bit: the prim fully covers this tile (coverage provably 1).
+const uint UI_ENTRY_SOLID      = 0x80000000u;
+const uint UI_ENTRY_INDEX_MASK = 0x7FFFFFFFu;
 
 // Exact signed distance to the rounded box (per-corner radii, y-down quadrant select).
 // p relative to the box center. Mirrors ano_ui_ref_sd_rrect.
@@ -271,6 +277,18 @@ vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount, uint paintCount)
         cov *= ui_clip_cov(p.clipRef, clipCount, pxTL);
     // Fill = gradient paint or the prim color (NONE), times any image texel.
     return ui_paint_eval(p.paintRef, paintCount, pxTL + 0.5, p.color) * texel * cov;
+}
+
+// A tile entry the builder proved fully covers this tile: skip the SDF (coverage is 1),
+// take the flat fill through clip and paint. RRECT-only by construction. Mirrors the
+// reference shade_entry solid branch.
+vec4 ui_shade_solid(uint idx, vec2 pxTL, uint clipCount, uint paintCount)
+{
+    UiPrim p = uiPrims[idx];
+    float cov = 1.0;
+    if (p.clipRef != UI_REF_NONE)
+        cov *= ui_clip_cov(p.clipRef, clipCount, pxTL);
+    return ui_paint_eval(p.paintRef, paintCount, pxTL + 0.5, p.color) * cov;
 }
 
 // Does prim idx's padded box touch the screen rect [rMin,rMax]? Shadow prims pad by
