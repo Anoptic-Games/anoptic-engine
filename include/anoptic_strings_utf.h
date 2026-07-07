@@ -29,7 +29,15 @@
 #ifndef ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
 #define ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
 
-#include <uchar.h>
+#ifdef __APPLE__
+    // macOS doesn't have <uchar.h>, so we define the types manually
+    #include <stdint.h>
+    typedef uint16_t char16_t;
+    typedef uint32_t char32_t;
+#else
+    #include <uchar.h>
+#endif
+
 
 #include "anoptic_strings.h"
 
