@@ -198,9 +198,10 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
     }
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        if (!createDataBuffer(ctx, &gpuAllocator, ANO_UI_FRAME_BYTES,
+        if (!ano_vk_text_create_buffer(ctx, ANO_UI_FRAME_BYTES,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              state->asyncText,
                               &state->frames[i].uiFrameBuffer, &state->frames[i].uiFrameAlloc))
         {
             ano_log(ANO_WARN, "UI overlay disabled: table buffer creation failed.");

@@ -181,6 +181,10 @@ uint32_t ano_ui_path(AnoUiBuilder *b, const float bboxMin[2], const float bboxMa
 #define ANO_UI_SEG_MOVE 0u // start a new contour at (p[0], p[1])
 #define ANO_UI_SEG_LINE 1u // straight edge to (p[0], p[1])
 #define ANO_UI_SEG_QUAD 2u // quadratic to (p[2], p[3]) via control (p[0], p[1])
+
+// Contour separator word in the packed curve stream (both binary16 halves +inf), the
+// text sweeper's grammar. Part of the ABI: bridge validation and the evaluators walk it.
+#define ANO_UI_CURVE_SENTINEL 0x7C007C00u
 typedef struct AnoUiPathSeg {
     uint32_t kind;
     float    p[4];

@@ -71,6 +71,20 @@
         chmod -R u+w "$sourceRoot/external/${name}"
       '';
 
+      # Warns on shell entry when the repo's recorded submodule gitlinks disagree with the
+      # flake pins (a stale-submodule `git add -A` regressed the 2026-06-24 dep bump twice).
+      submodulePinCheck = ''
+        if git rev-parse --git-dir >/dev/null 2>&1; then
+          for pair in external/glfw=${glfw-src.rev} external/mimalloc=${mimalloc-src.rev} external/freetype=${freetype-src.rev} external/cgltf=${cgltf-src.rev}; do
+            p="''${pair%%=*}" want="''${pair#*=}"
+            rec="$(git ls-tree HEAD "$p" 2>/dev/null | awk '{ print $3 }')"
+            if [ -n "$rec" ] && [ "$rec" != "$want" ]; then
+              echo "[anoptic] WARNING: $p gitlink $rec != flake pin $want — stale submodule commit. Run 'git submodule update --init' and commit the corrected pointer." >&2
+            fi
+          done
+        fi
+      '';
+
       # Shared derivation shape for the engine packages.
       mkEngine =
         {
@@ -115,7 +129,7 @@
           nativeBuildInputs = commonNativeTools;
           shellHook = ''
             echo "[anoptic] Linux target — $(clang --version | head -1)"
-          '';
+          '' + submodulePinCheck;
         };
 
         # Windows cross shell, configure with: cmake $cmakeFlags -G Ninja -S . -B build/Windows
@@ -132,7 +146,7 @@
           shellHook = ''
             echo "[anoptic] Windows target — $($CC --version | head -1)"
             echo "[anoptic] configure with: cmake \$cmakeFlags -G Ninja -S . -B build/Windows"
-          '';
+          '' + submodulePinCheck;
         };
       };
 
@@ -156,7 +170,7 @@
           VK_ICD_FILENAMES = "${darwinPkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json";
           shellHook = ''
             echo "[anoptic] macOS target — $(clang --version | head -1)"
-          '';
+          '' + submodulePinCheck;
         };
       };
 
