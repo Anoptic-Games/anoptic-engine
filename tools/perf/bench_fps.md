@@ -1,6 +1,6 @@
 # Performance harness & methodology
 
-How we measure anopticengine frame throughput reproducibly. The engine-side instrumentation and the interpretation rules here are platform-agnostic; the *driver* that positions the window and reads the log is per-platform. Today only the Windows driver exists (`tools/perf/bench_fps_win64.py`); Linux and macOS drivers are TODO and must implement the same contract described below.
+How we measure anopticengine frame throughput reproducibly. The engine-side instrumentation and the interpretation rules here are platform-agnostic; the *driver* that positions the window and reads the log is per-platform. Windows (`bench_fps_win64.py`) and Linux (`bench_fps_linux.py`) drivers live in this directory; a macOS driver is TODO and must implement the same contract described below.
 
 ## Engine-side contract (shared across all targets)
 
@@ -41,8 +41,18 @@ Pass via the child process environment. Perf-relevant:
 ## Drivers
 
 - **Windows:** `tools/perf/bench_fps_win64.py` (win32 + pywin32). Modes: default resolution sweep, `--res WxH`, `--no-menu` (static HUD), `--churn` (resize storm), `--env KEY=VAL`. Prints a table with a `front` column — treat any `BG!!` row as invalid.
-- **Linux (TODO `bench_fps_linux.py`):** X11/Wayland. Foreground+geometry via EWMH (`wmctrl`/`xdotool` or python-ewmh); DPI/scale from the compositor; menu key via `XTEST`/`xdotool key m`.
+- **Linux:** `tools/perf/bench_fps_linux.py` (X11/Xwayland). Same modes/flags as the Windows driver. Window discovery by PID (`xdotool search --pid`, `_NET_WM_PID`; 'Vulkan'-title fallback); forced+verified foreground via `xdotool windowactivate --sync` confirmed against `getactivewindow`; borderless render surface via `_MOTIF_WM_HINTS` strip + `windowsize --sync`; menu key via XTEST (`xdotool key m`). X11 hands out physical pixels and the driver commands exact pixel sizes, so there's no DPI mislabel to defeat — `swap=` stays the resolution authority. Tools come from Nix, never apt: `nix shell nixpkgs#xdotool nixpkgs#wmctrl nixpkgs#xorg.xprop`. Drives X11/Xwayland clients only (not native-Wayland GLFW windows). Its `parse_stream()` also replays a captured `anoptic.log` offline for parser checks with no X server.
 - **macOS (TODO `bench_fps_macos.py`):** Cocoa. Front via `NSRunningApplication.activate` / `osascript`; window geometry via CGWindowList (see the `screenshot-macos` skill for the CGWindow precedent); key via CGEvent.
+
+## Reproducing a benchmark on a second machine
+
+Most "our numbers don't match" reports are an environment mismatch, not a real perf delta. Before comparing two boxes, confirm in order:
+
+- **Same code.** Both on the same branch/commit (`git rev-parse HEAD` must match). The release-visible `[frame]` line and the release `[profile]` line only exist past the commit that added them — on an older tree `[frame]` is absent entirely and `[profile]` is `ano_debug_log` (debug builds only). A silent release log almost always means wrong branch.
+- **Clean checkout.** `git pull --recurse-submodules`; submodules initialised (`git submodule update --init --recursive`). A phantom or unfetched submodule is a local-clone problem, never a shared-config one — `.git/config` is per-clone and git never transmits it.
+- **Same build.** Same toolchain via the flake. A non-nix build is not the reference build and will diverge.
+- **Same measurement.** Same driver, same `--res`, foreground-verified (`FRONT`, never `BG!!`), warmup dropped.
+- **Compare `swap=` before `total=`.** If swap VRAM differs, the render resolutions differ and nothing downstream is comparable — fix that first. Across different GPUs, expect `total=` to scale with pixel count (lighting, composite) while the fixed-atlas shadow pass stays roughly constant; that internal consistency is the signature of an honest measurement.
 
 ## Reference baseline
 

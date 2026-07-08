@@ -46,7 +46,7 @@
 *.pdb
 *.save
 *.py
-# ...except the checked-in perf harness drivers (see docs/profiling.md).
+# ...except the checked-in perf harness drivers (see tools/perf/README.md).
 !tools/perf/bench_fps_*.py
 
 # macOS metadata

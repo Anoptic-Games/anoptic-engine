@@ -3,7 +3,7 @@
 
 This is the Windows-specific driver only. The measurement METHODOLOGY -- the engine
 log contract it parses, the foreground/DPI/warmup rules, and how to read the numbers --
-is platform-agnostic and lives in docs/profiling.md. Ports to the other targets belong
+is platform-agnostic and lives in tools/perf/README.md. Ports to the other targets belong
 beside this file as bench_fps_linux.py (X11/Wayland) and bench_fps_macos.py (Cocoa),
 implementing the SAME contract with each platform's own window/DPI/foreground primitives.
 
@@ -111,7 +111,7 @@ def run_once(exe, w, h, dur, menu, churn, env):
     fps, tot, sw, fru = [], [], [], []
     pf = re.compile(r"\[frame\] ([0-9.]+) fps")
     pg = re.compile(r"total=([0-9.]+)"); ps = re.compile(r"swap=([0-9.]+)"); pr = re.compile(r"frusta ([0-9.]+)")
-    resizes, nxt, f = 0, 0.0, None
+    resizes, nxt, f, part = 0, 0.0, None, ""
     while (t := time.perf_counter() - t0) < dur:
         if churn and hwnd and t >= nxt:
             cw, ch = CHURN_SIZES[resizes % len(CHURN_SIZES)]
@@ -121,8 +121,11 @@ def run_once(exe, w, h, dur, menu, churn, env):
         if f is None:
             if os.path.exists(log): f = open(log, encoding="utf-8", errors="replace")
             else: time.sleep(0.01); continue
-        line = f.readline()
-        if not line: time.sleep(0.003); continue
+        chunk = f.readline()
+        if not chunk: time.sleep(0.003); continue
+        part += chunk
+        if not part.endswith("\n"): continue    # torn mid-append: wait for the rest of the line
+        line, part = part, ""
         m = pf.search(line);  m and fps.append(float(m.group(1)))
         if "profile mode=" in line:
             g = pg.search(line); g and tot.append(float(g.group(1)))
