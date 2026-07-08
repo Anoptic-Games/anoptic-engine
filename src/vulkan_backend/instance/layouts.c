@@ -338,7 +338,12 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	if (indexingProps.maxDescriptorSetUpdateAfterBindSampledImages < uabLimit)
 		uabLimit = indexingProps.maxDescriptorSetUpdateAfterBindSampledImages;
 
-	state->bindlessTextures.maxTextures = uabLimit < 4096u ? uabLimit : 4096u;
+	// The limits count every sampler in a pipeline layout, so the fixed bindings sharing
+	// layouts with this array (shadow atlas, Hi-Z pyramid) need headroom reserved here.
+	const uint32_t fixedSamplerReserve = 16u;
+	uint32_t uabBudget = uabLimit > fixedSamplerReserve ? uabLimit - fixedSamplerReserve : 1u;
+
+	state->bindlessTextures.maxTextures = uabBudget < 4096u ? uabBudget : 4096u;
 	state->bindlessTextures.textureCount = 0;
 	ano_log(ANO_INFO, "Bindless texture array: maxTextures = %u (device update-after-bind limit %u)",
 		state->bindlessTextures.maxTextures, uabLimit);
