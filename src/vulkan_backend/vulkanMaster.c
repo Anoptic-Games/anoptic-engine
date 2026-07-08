@@ -284,6 +284,8 @@ void drawFrame()
 		rendererState.frameIndex = 0;
 	}
 	rendererState.globalFrame += 1; // Gates slot-quarantine retirement
+
+	ano_frame_mark(); // Wall-clock fps/frametime, counted only on the presented-frame path.
 }
 
 
