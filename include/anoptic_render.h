@@ -476,9 +476,10 @@ bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
 // block ui_id's contents; caller arrays need only live until the call returns. Text
 // semantics carry over: `clear` is idempotent, count-0 (empty builder) clears, false ==
 // ring full (retry), a dropped SET is merely stale. An INVALID block — per-block caps
-// exceeded, out-of-range clip/paint/glyph references, or a kind this transport does not
-// carry yet (UI_PATH) — is dropped with a warning and returns true, so backpressure
-// retry loops never spin on bad input. UI_GLYPHS prims index glyphs[] block-locally.
+// exceeded, out-of-range clip/paint/glyph references, or a UI_PATH whose curve walk
+// (ANO_UI_CURVE_SENTINEL grammar) would read past the stream — is dropped with a warning
+// and returns true, so backpressure retry loops never spin on bad input. UI_GLYPHS prims
+// index glyphs[] block-locally.
 bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
                        const AnoUiBuilder *ui,
                        const AnoGlyphInstance *glyphs, uint32_t glyphCount);

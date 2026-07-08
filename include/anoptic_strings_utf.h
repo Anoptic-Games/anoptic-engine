@@ -29,13 +29,14 @@
 #ifndef ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
 #define ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
 
-#ifdef __APPLE__
-    // macOS doesn't have <uchar.h>, so we define the types manually
-    #include <stdint.h>
-    typedef uint16_t char16_t;
-    typedef uint32_t char32_t;
-#else
+// <uchar.h> is C11 but reached Apple's SDK only with the macOS 15 era; probe the header
+// itself, not the OS. The shim covers the one type this API uses, with the standard's
+// exact definition (char16_t is uint_least16_t, C17 7.28).
+#if __has_include(<uchar.h>)
     #include <uchar.h>
+#else
+    #include <stdint.h>
+    typedef uint_least16_t char16_t;
 #endif
 
 

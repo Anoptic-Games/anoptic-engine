@@ -112,6 +112,10 @@ void main()
         barrier();
     }
 
+    // Dither is UI-scoped: gradients and shadow falloffs band at 8 bits, analytic glyph
+    // coverage does not. Sampled before the glyph blend so pure-text pixels stay exact.
+    bool uiTouched = acc != vec4(0.0);
+
     // PERF TODO (ui-render.md §3.7.2, deferred): glyphs still brute-scan every instance
     // per tile even when UI prims are tiled. Tiling them (CPU glyph AABBs -> the same
     // tile entries, kind-tagged) folds this into the prim walk and gives true unified
@@ -148,8 +152,9 @@ void main()
         acc.a = 1.0; // opaque self-test: black backdrop
     else if (acc == vec4(0.0))
         return; // untouched pixel
-    // 1-LSB triangle-free dither before the 8-bit store; skipped for the exact self-test.
-    if ((pc.flags & 4u) == 0u)
+    // 1-LSB triangle-free dither before the 8-bit store, UI-touched pixels only;
+    // skipped for the exact self-test.
+    if ((pc.flags & 4u) == 0u && uiTouched)
         acc += (ign(vec2(px)) - 0.5) * (1.0 / 255.0);
     imageStore(overlay, ivec2(px), acc);
 }
