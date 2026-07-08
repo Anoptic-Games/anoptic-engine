@@ -50,6 +50,12 @@ if(NOT CMAKE_LINKER_TYPE AND NOT APPLE)
     endif()
 endif()
 
+# ANOSTR_SID's unrolled FNV expansion nests brackets past clang's default 256 cap
+# (gcc/MSVC have no such limit); any TU using compile-time string ids needs this.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-fbracket-depth=1024)
+endif()
+
 # Release LTO: ThinLTO on clang, fat -flto on gcc.
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ANO_IPO_SUPPORTED OUTPUT ANO_IPO_DETAIL LANGUAGES C CXX)
@@ -152,6 +158,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/ui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 
 # Renderer (default on).
@@ -178,10 +185,13 @@ if(Vulkan_FOUND)
     set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
 
     # Shader compiler by build type: Debug embeds SPIR-V debug info, Release strips it.
+    # -gV over -gVS: glslang's embedded source mis-attributes DebugTypeMember line info
+    # across #include boundaries and spirv-val rejects the module (seen on textworld.vert);
+    # -gV keeps the NonSemantic debug info and tools read source from the paths on disk.
     if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
         set(SHADER_COMPILER ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
-        set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gVS)
-        set(SHADER_COMPILE_TAG "glslangValidator -gVS")
+        set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gV)
+        set(SHADER_COMPILE_TAG "glslangValidator -gV")
     elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLC_EXECUTABLE)
         set(SHADER_COMPILER ${Vulkan_GLSLC_EXECUTABLE})
         set(SHADER_COMPILE_ARGS --target-env=vulkan1.2 -g)
@@ -200,7 +210,8 @@ if(Vulkan_FOUND)
 
     set(SPV_OUTPUTS "")
     # Shared GLSL includes, every shader rebuilds when one changes.
-    set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl)
+    set(SHADER_INCLUDES ${SHADER_SRC_DIR}/shadow_cdf.glsl ${SHADER_SRC_DIR}/shadow_sample.glsl
+        ${SHADER_SRC_DIR}/textcoverage.glsl ${SHADER_SRC_DIR}/uicoverage.glsl)
 
     # Compile <source> to <output>.spv, or stage the committed .spv without a compiler.
     function(ano_add_shader output source)

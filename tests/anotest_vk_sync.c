@@ -110,8 +110,11 @@ int main() {
     badFenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     badFenceInfo.flags = 0xFFFFFFFF; // Invalid flags
 
-    VkFence badFence;
+    VkFence badFence = VK_NULL_HANDLE;
     vkCreateFence(ctx->device, &badFenceInfo, NULL, &badFence);
+    // Some drivers create the object anyway; destroy it or vkDestroyDevice reports a leak.
+    if (badFence != VK_NULL_HANDLE)
+        vkDestroyFence(ctx->device, badFence, NULL);
 
     unInitVulkan();
 

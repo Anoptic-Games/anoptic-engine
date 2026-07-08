@@ -8,6 +8,7 @@
 // prototype, and a composite blend pipeline sharing the tonemap set/pipeline layout.
 
 #include "vulkan_backend/text_raster.h"
+#include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include "vulkan_backend/texture/texture.h"
@@ -29,7 +30,8 @@
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
-// Push-constant block shared with textraster.comp (24 B).
+// Push-constant block shared with textraster.comp (68 B; the shader may declare a
+// prefix of it). uiPrimCount/uiClipCount/uiPaintCount stay 0 with no UI compose.
 typedef struct TextRasterPush {
     uint32_t instanceCount;
     uint32_t flags;
@@ -37,15 +39,25 @@ typedef struct TextRasterPush {
     uint32_t extentH;
     uint32_t originX; // dispatch region offset, pixels (tile-aligned)
     uint32_t originY;
+    uint32_t uiPrimCount;
+    uint32_t uiClipCount;
+    uint32_t uiPaintCount;
+    int32_t  uiTileOx; // UI tile grid (TILED only), origin/extent in TILES; keyed on
+    int32_t  uiTileOy; // UI bounds alone so text motion never reshapes it
+    uint32_t uiTileGx;
+    uint32_t uiTileGy;
+    float    textB[4]; // pending text px AABB: tiles outside skip the glyph walk
 } TextRasterPush;
 
-// TextRasterPush.flags bits (mirrored in textraster.comp).
-#define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop, screenshot self-test
-
-// Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel sits above.
+// Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel next, UI
+// glyph labels from ANO_UI_GLYPH_FIRST — all inside one frame buffer.
 #define ANO_TEXT_WORLD_FIRST 8192u
 static_assert(ANO_TEXT_WORLD_FIRST == ANO_RENDER_TEXT_MAX,
               "the public screen-text capacity is the pending region size");
+static_assert(ANO_TEXT_WORLD_FIRST < ANO_UI_GLYPH_FIRST
+                  && (ANO_UI_GLYPH_FIRST + ANO_UI_MAX_GLYPHS) * sizeof(AnoGlyphInstance)
+                         <= ANO_TEXT_FRAME_BYTES,
+              "frame-buffer regions must not overlap");
 
 // Push-constant block shared with textworld.vert/.frag (96 B).
 typedef struct TextWorldPush {
@@ -122,25 +134,44 @@ static void text_pending_bounds(RendererState* state)
 }
 
 // Recomposes the pending canonical after any source changed. OSD region
-// [0, textOsdCount) stays, logic blocks append in registry order, capped. Demo pin
-// keeps the canvas OSD-only.
+// [0, textOsdCount) stays (render-internal, shaped in device px), logic blocks append
+// in registry order with the overlay's logical->px surface fold (origin scales, the
+// px->em inv divides — the glyph curves rasterize at full device resolution), capped.
+// Demo pin keeps the canvas OSD-only.
 static void text_blocks_append(RendererState* state)
 {
     uint32_t cap = ANO_TEXT_WORLD_FIRST;
     uint32_t total = state->textOsdCount < cap ? state->textOsdCount : cap;
+    float s = state->uiScale > 0.0f ? state->uiScale : 1.0f;
     if (!g_textPinned)
     {
         for (uint32_t i = 0; i < state->textBlockCount && total < cap; i++)
         {
             const RenderTextBlock* b = state->textBlocks[i].blk;
             uint32_t n = b->count < cap - total ? b->count : cap - total;
-            memcpy(state->textPending + total, b->instances, (size_t)n * sizeof(AnoGlyphInstance));
+            for (uint32_t j = 0; j < n; j++)
+            {
+                AnoGlyphInstance g = b->instances[j];
+                g.origin[0] *= s;
+                g.origin[1] *= s;
+                for (int k = 0; k < 4; k++)
+                    g.inv[k] /= s;
+                state->textPending[total + j] = g;
+            }
             total += n;
         }
     }
     state->textPendingCount = total;
     text_pending_bounds(state);
     state->textVersion++;
+}
+
+// Overlay surface scale changed: re-fold the retained logic blocks at the new scale.
+// The OSD reshapes itself on its own cadence and stays device-px.
+void ano_vk_text_rescale(RendererState* state)
+{
+    if (state->textOverlay && state->textPending != NULL)
+        text_blocks_append(state);
 }
 
 void ano_vk_text_set(RendererState* state, anostr_t text, float sizePx,
@@ -234,7 +265,7 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
 }
 
 // createDataBuffer with optional CONCURRENT graphics+compute sharing.
-static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
+bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc)
 {
@@ -262,23 +293,26 @@ static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
     return true;
 }
 
-// Builds the compute raster prototype: 3 SSBOs + 1 storage image, 16 B push.
+// Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 7 UI-table
+// SSBOs (bindings 4-10: prim/clip/paint/stop/curve regions + per-tile offsets/entries of
+// uiFrameBuffer), 36 B push.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[4] = {};
-    for (uint32_t b = 0; b < 4; ++b)
+    VkDescriptorSetLayoutBinding bindings[11] = {};
+    for (uint32_t b = 0; b < 11; ++b)
     {
         bindings[b].binding = b;
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
-        // World lane reads the three glyph buffers through the same set, overlay image compute-only.
+        // World lane reads the three glyph buffers through the same set; the overlay
+        // image and the UI tables are compute-only.
         bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
                                | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT : 0u);
     }
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
+    layoutInfo.bindingCount = 11;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->textRasterSetLayout) != VK_SUCCESS)
         return false;
@@ -287,10 +321,13 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.size = sizeof(TextRasterPush);
 
+    // Set 1 = the bindless texture array (UI image prims sample it in compute).
+    VkDescriptorSetLayout setLayouts[2] = { state->textRasterSetLayout,
+                                            state->bindlessTextures.layout };
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &state->textRasterSetLayout;
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = setLayouts;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &push;
     if (vkCreatePipelineLayout(ctx->device, &pipelineLayoutInfo, NULL,
@@ -598,29 +635,27 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     // Static glyph data: staged upload to device-local, CONCURRENT-shared with compute when async.
     VkDeviceSize curveBytes = (VkDeviceSize)state->textBake.pointCount * sizeof(uint32_t);
     VkDeviceSize glyphBytes = (VkDeviceSize)state->textBake.glyphCount * sizeof(AnoGlyphEntry);
-    bool ok = text_create_buffer(ctx, curveBytes,
+    bool ok = ano_vk_text_create_buffer(ctx, curveBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, state->asyncText,
                    &state->textCurveBuffer, &state->textCurveAlloc)
             && stagingTransfer(ctx, state->textBake.points, state->textCurveBuffer, curveBytes)
-            && text_create_buffer(ctx, glyphBytes,
+            && ano_vk_text_create_buffer(ctx, glyphBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, state->asyncText,
                    &state->textGlyphBuffer, &state->textGlyphAlloc)
             && stagingTransfer(ctx, state->textBake.glyphs, state->textGlyphBuffer, glyphBytes);
 
-    // Per-frame frame data: host-visible, persistently mapped.
+    // Per-frame frame data: host-visible, persistently mapped. CONCURRENT when async
+    // splits its readers across families (world draw on graphics, raster on compute).
     for (uint32_t i = 0; ok && i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        GpuAllocation alloc;
-        ok = createDataBuffer(ctx, &gpuAllocator, ANO_TEXT_FRAME_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        ok = ano_vk_text_create_buffer(ctx, ANO_TEXT_FRAME_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              state->asyncText,
                               &state->frames[i].textFrameBuffer, &state->frames[i].textFrameAlloc);
         if (ok)
-        {
-            alloc = state->frames[i].textFrameAlloc;
-            state->frames[i].textFrameMapped = alloc.mapped;
-        }
+            state->frames[i].textFrameMapped = state->frames[i].textFrameAlloc.mapped;
     }
 
     if (!ok || !text_init_raster_pipeline(ctx, state) || !text_init_overlay_pipeline(ctx, state))
@@ -656,8 +691,8 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
             { sizeof W_GREEK - 1, 34.0f, { 0.75f, 0.95f, 0.80f, 1.0f } },
         };
         const float worldOrigin[2] = { 24.0f, 76.0f };
-        uint32_t worldCap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance)
-                          - ANO_TEXT_WORLD_FIRST;
+        // The world region ends where the UI glyph-label region begins.
+        uint32_t worldCap = ANO_UI_GLYPH_FIRST - ANO_TEXT_WORLD_FIRST;
         anostr_t worldText = anostr_view(g_worldText, sizeof g_worldText - 1);
         uint32_t count = 0;
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -882,6 +917,8 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
         writes[4].pImageInfo = &sampleInfo;
         vkUpdateDescriptorSets(ctx->device, 5, writes, 0, NULL);
     }
+    // UI table bindings 4-7 ride the same sets; ui_raster.c owns their writes.
+    ano_vk_ui_write_sets(ctx, state);
 }
 
 // The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
@@ -919,20 +956,38 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
     // Raster dispatch: 8x8 pixel tiles over the pending text's pixel bounds, outside
     // stays transparent. The opaque self-test keeps the full-canvas dispatch.
     TextRasterPush push = { .instanceCount = state->textInstanceCount, .flags = state->textFlags,
-                            .extentW = state->imageExtent.width, .extentH = state->imageExtent.height };
+                            .extentW = state->imageExtent.width, .extentH = state->imageExtent.height,
+                            .uiPrimCount = state->uiPrimCount, .uiClipCount = state->uiClipCount,
+                            .uiPaintCount = state->uiPaintCount,
+                            .textB = { state->textBounds[0], state->textBounds[1],
+                                       state->textBounds[2], state->textBounds[3] } };
     uint32_t gx = 0, gy = 0;
     if (state->textFlags & ANO_TEXT_RASTER_OPAQUE)
     {
         gx = (state->imageExtent.width + 7u) / 8u;
         gy = (state->imageExtent.height + 7u) / 8u;
     }
-    else if (state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0])
+    else if ((state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0])
+             || (state->uiPrimCount > 0 && state->uiBounds[2] > state->uiBounds[0]))
     {
+        // Union of the pending text and UI bounds (either may be absent; blank = inverted).
+        float u0 = 3.0e38f, v0 = 3.0e38f, u1 = -3.0e38f, v1 = -3.0e38f;
+        if (state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0]
+            && (state->textFlags & ANO_TEXT_RASTER_UIONLY) == 0u)
+        {
+            u0 = state->textBounds[0]; v0 = state->textBounds[1];
+            u1 = state->textBounds[2]; v1 = state->textBounds[3];
+        }
+        if (state->uiPrimCount > 0 && state->uiBounds[2] > state->uiBounds[0])
+        {
+            u0 = fminf(u0, state->uiBounds[0]); v0 = fminf(v0, state->uiBounds[1]);
+            u1 = fmaxf(u1, state->uiBounds[2]); v1 = fmaxf(v1, state->uiBounds[3]);
+        }
         // 1 px pad for the raster's pixel window, clamp to the canvas, tile-align the origin.
-        int32_t x0 = (int32_t)floorf(state->textBounds[0] - 1.0f);
-        int32_t y0 = (int32_t)floorf(state->textBounds[1] - 1.0f);
-        int32_t x1 = (int32_t)ceilf(state->textBounds[2] + 1.0f);
-        int32_t y1 = (int32_t)ceilf(state->textBounds[3] + 1.0f);
+        int32_t x0 = (int32_t)floorf(u0 - 1.0f);
+        int32_t y0 = (int32_t)floorf(v0 - 1.0f);
+        int32_t x1 = (int32_t)ceilf(u1 + 1.0f);
+        int32_t y1 = (int32_t)ceilf(v1 + 1.0f);
         x0 = x0 < 0 ? 0 : (x0 & ~7);
         y0 = y0 < 0 ? 0 : (y0 & ~7);
         if (x1 > (int32_t)state->imageExtent.width)  x1 = (int32_t)state->imageExtent.width;
@@ -945,6 +1000,20 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
             gy = ((uint32_t)(y1 - y0) + 7u) / 8u;
         }
     }
+    // Per-tile prim lists over the UI bounds alone (§3.7) — the shader maps dispatch
+    // tiles into the grid, so a moving text bound never invalidates it. On success the
+    // shader reads its tile's prims instead of the brute chunk scan; any failure
+    // (disabled, grid/entry overflow) leaves the flag clear and falls back.
+    if (gx != 0 && gy != 0 && state->uiPrimCount > 0
+        && ano_vk_ui_build_tiles(state, frameIndex))
+    {
+        push.uiTileOx = fr->uiTileOx / 8;
+        push.uiTileOy = fr->uiTileOy / 8;
+        push.uiTileGx = fr->uiTileGx;
+        push.uiTileGy = fr->uiTileGy;
+        push.flags |= ANO_TEXT_RASTER_TILED;
+    }
+
     if (gx != 0 && gy != 0)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -952,6 +1021,9 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
                                 0, 1, &fr->textRasterSet, 0, NULL);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
+                                1, 1, &state->bindlessTextures.set, 0, NULL);
         vkCmdPushConstants(cmd, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
         vkCmdDispatch(cmd, gx, gy, 1);
