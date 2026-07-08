@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <anoptic_logging.h>
+#include <anoptic_time.h>
 
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/backend.h"
@@ -20,6 +21,10 @@ static uint32_t g_tsFrames = 0;             // frames since last print
 // Shadow-frustum renders per frame, averaged into the profile line.
 uint64_t g_shadowRenderAccum = 0;
 uint32_t g_shadowRenderFrames = 0;
+
+// Wall-clock throughput window: presented frames since the last [frame] line, and its start stamp.
+static uint64_t g_wallLastUs = 0;
+static uint32_t g_wallFrames = 0;
 
 // Live VRAM use of a bump allocator: sum of each block's high-water offset.
 static VkDeviceSize allocator_used_bytes(const GpuAllocator* a) {
@@ -119,6 +124,23 @@ void ano_collect_frame_stats(uint32_t frameIndex) {
 void ano_profile_reset_window(void) {
     for (int r = 0; r < ANO_TS_COUNT - 1; r++) g_tsAccumMs[r] = 0.0;
     g_tsFrames = 0;
+}
+
+// Wall-clock frame throughput. Called once per presented frame from drawFrame. Independent of
+// GPU timestamp support: the profile line above stops printing when constant swapchain recreation
+// starves the timestamp reads, but this keeps measuring. Logs achieved fps + mean wall frametime
+// once per real second via ano_log (release-visible, same policy as the profile line).
+void ano_frame_mark(void) {
+    uint64_t now = ano_timestamp_us();
+    if (g_wallLastUs == 0) { g_wallLastUs = now; return; } // seed, uncounted
+    g_wallFrames++;
+    uint64_t dt = now - g_wallLastUs;
+    if (dt >= 1000000ull) {
+        double fps = (double)g_wallFrames * 1e6 / (double)dt;
+        ano_log(ANO_INFO, "[frame] %.1f fps  %.3f ms wall", fps, (double)dt / (double)g_wallFrames / 1000.0);
+        g_wallFrames = 0;
+        g_wallLastUs = now;
+    }
 }
 
 // Map this frame slot's picking readback to a render_id and emit REVENT_PICK_RESULT when the hit changes.
