@@ -241,7 +241,7 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
 }
 
 // createDataBuffer with optional CONCURRENT graphics+compute sharing.
-static bool text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
+bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc)
 {
@@ -611,29 +611,27 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     // Static glyph data: staged upload to device-local, CONCURRENT-shared with compute when async.
     VkDeviceSize curveBytes = (VkDeviceSize)state->textBake.pointCount * sizeof(uint32_t);
     VkDeviceSize glyphBytes = (VkDeviceSize)state->textBake.glyphCount * sizeof(AnoGlyphEntry);
-    bool ok = text_create_buffer(ctx, curveBytes,
+    bool ok = ano_vk_text_create_buffer(ctx, curveBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, state->asyncText,
                    &state->textCurveBuffer, &state->textCurveAlloc)
             && stagingTransfer(ctx, state->textBake.points, state->textCurveBuffer, curveBytes)
-            && text_create_buffer(ctx, glyphBytes,
+            && ano_vk_text_create_buffer(ctx, glyphBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, state->asyncText,
                    &state->textGlyphBuffer, &state->textGlyphAlloc)
             && stagingTransfer(ctx, state->textBake.glyphs, state->textGlyphBuffer, glyphBytes);
 
-    // Per-frame frame data: host-visible, persistently mapped.
+    // Per-frame frame data: host-visible, persistently mapped. CONCURRENT when async
+    // splits its readers across families (world draw on graphics, raster on compute).
     for (uint32_t i = 0; ok && i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        GpuAllocation alloc;
-        ok = createDataBuffer(ctx, &gpuAllocator, ANO_TEXT_FRAME_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        ok = ano_vk_text_create_buffer(ctx, ANO_TEXT_FRAME_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              state->asyncText,
                               &state->frames[i].textFrameBuffer, &state->frames[i].textFrameAlloc);
         if (ok)
-        {
-            alloc = state->frames[i].textFrameAlloc;
-            state->frames[i].textFrameMapped = alloc.mapped;
-        }
+            state->frames[i].textFrameMapped = state->frames[i].textFrameAlloc.mapped;
     }
 
     if (!ok || !text_init_raster_pipeline(ctx, state) || !text_init_overlay_pipeline(ctx, state))

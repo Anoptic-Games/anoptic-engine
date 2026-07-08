@@ -22,6 +22,12 @@
 // and pipelines built. Always returns true: failure logs and clears state->textOverlay.
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state);
 
+// createDataBuffer with optional CONCURRENT graphics+compute sharing, for buffers the
+// async lane reads on both families. The UI lane's tables ride the same dispatch.
+bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
+                               VkMemoryPropertyFlags props, bool shared,
+                               VkBuffer* buffer, GpuAllocation* alloc);
+
 // Size-dependent overlay images (one per frame in flight, swapchain extent). Called
 // from createColorResources.
 void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state);
