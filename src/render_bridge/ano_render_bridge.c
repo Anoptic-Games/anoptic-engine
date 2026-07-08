@@ -161,10 +161,37 @@ bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
+// Replays the evaluators' curve-stream walk for one PATH prim (aux0 = first word,
+// aux1 = monotone-quad count): a start word, then per quad an optional
+// SENTINEL + restart word ahead of the control + end words. Bounds every read the
+// walk will make, so a hand-built block can never run the GPU or ref walker past
+// the stream. The builder's own bakes always pass.
+static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
+                               uint32_t off, uint32_t quads)
+{
+    if (quads == 0u || off >= curveCount || curves[off] == ANO_UI_CURVE_SENTINEL)
+        return false;
+    uint32_t i = off + 1u;
+    for (uint32_t c = 0; c < quads; c++) {
+        if (i >= curveCount)
+            return false; // separator-test read
+        if (curves[i] == ANO_UI_CURVE_SENTINEL) {
+            i++;
+            if (i >= curveCount || curves[i] == ANO_UI_CURVE_SENTINEL)
+                return false; // contour restart must be a point
+            i++;
+        }
+        if (i + 1u >= curveCount)
+            return false; // control + end reads
+        i += 2u;
+    }
+    return true;
+}
+
 // Block-local reference validation for one UI prim. Invalid blocks drop producer-side
 // (returning true) so backpressure retry loops never spin on bad input.
 static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, uint32_t glyphs,
-                          uint32_t curves)
+                          const uint32_t *curves, uint32_t curveCount)
 {
     if (p->clipRef != ANO_UI_REF_NONE && p->clipRef >= clips)
         return false;
@@ -172,9 +199,7 @@ static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, u
         return false;
     if (p->kind == ANO_UI_GLYPHS && (p->aux0 > glyphs || p->aux1 > glyphs - p->aux0))
         return false;
-    // PATH aux0 = curve word offset, aux1 = monotone-quad count; the baker keeps them in
-    // range, this just rejects a hand-built block that points past the stream.
-    if (p->kind == ANO_UI_PATH && (p->aux1 == 0u || p->aux0 >= curves))
+    if (p->kind == ANO_UI_PATH && !ui_path_walk_valid(curves, curveCount, p->aux0, p->aux1))
         return false;
     return true;
 }
@@ -196,7 +221,7 @@ bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
     }
     for (uint32_t i = 0; i < ui->primCount; i++) {
         if (!ui_prim_valid(&ui->prims[i], ui->clipCount, ui->paintCount, glyphCount,
-                           ui->curveCount)) {
+                           ui->curves, ui->curveCount)) {
             ano_log(ANO_WARN, "UI bridge: ui_id %u dropped (prim %u invalid).", ui_id, i);
             return true;
         }

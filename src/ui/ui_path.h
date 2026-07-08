@@ -13,9 +13,8 @@
 
 #include <stdint.h>
 
-// Contour separator in the packed point stream (both binary16 halves = +inf). Identical
-// to ANO_TEXT_POINT_SENTINEL — the two lanes share one grammar.
-#define ANO_UI_CURVE_SENTINEL 0x7C007C00u
+// The contour separator ANO_UI_CURVE_SENTINEL is public ABI (anoptic_ui.h) — bridge
+// validation replays the walk. Identical to ANO_TEXT_POINT_SENTINEL; one grammar.
 
 // One quadratic Bezier in bake space (double while processing): p0, p1 (control), p2.
 typedef struct AnoQuad {
