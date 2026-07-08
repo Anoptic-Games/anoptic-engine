@@ -137,4 +137,6 @@ tools/ucd/
 !.claude/skills/**
 !.claude/hooks/
 !.claude/hooks/**
+!.claude/tools/
+!.claude/tools/**
 docs/study/
