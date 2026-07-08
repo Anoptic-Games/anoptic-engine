@@ -14,10 +14,13 @@
 // global orientation, so an outer contour of either winding fills, and oppositely wound
 // inner contours punch holes.
 
+#include <stddef.h>
+
 #include "anoptic_ui.h"
 #include "ui_path.h"
 
-static_assert(sizeof(AnoQuad) == 48, "AnoQuad ABI must match src/text/text_internal.h");
+static_assert(sizeof(AnoQuad) == 48 && offsetof(AnoQuad, y) == 24,
+              "AnoQuad ABI must match src/text/text_internal.h");
 
 // Pre-split quad budget per fill; a rounded panel or a glyph-like icon fits easily.
 #define UI_PATH_MAX_QUADS 512
