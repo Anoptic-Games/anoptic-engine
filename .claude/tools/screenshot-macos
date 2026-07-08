@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# screenshot-macos: capture one on-screen macOS app window to a PNG. macOS-only.
+# screencapture + a CGWindowList helper. Never osascript (Accessibility is denied).
+# Run from a plain shell. Never inside `nix develop`.
+#
+# Usage: screenshot-macos <app-owner-substring> <outfile.png>
+#   owner = process name substring, case-insensitive. The Anoptic engine is "anoptic"
+#   (its window title "Vulkan" never matches).
+#   exit 2 = no matching on-screen window yet. Wait and retry.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+src="$here/screenshot-macos-winid.swift"
+bin="$here/.screenshot-macos-winid"   # gitignored
+
+needle="${1:?usage: screenshot-macos <app-owner-substring> <outfile.png>}"
+out="${2:?usage: screenshot-macos <app-owner-substring> <outfile.png>}"
+
+[ "$(uname -s)" = Darwin ] || { echo "screenshot-macos: macOS only (this host is $(uname -s))" >&2; exit 1; }
+
+# Rebuild helper when missing or stale.
+if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ]; then
+  xcrun swiftc -O "$src" -o "$bin"
+fi
+
+wid="$("$bin" "$needle" || true)"
+[ -n "$wid" ] || { echo "screenshot-macos: no on-screen window with owner matching '$needle'" >&2; exit 2; }
+screencapture -x -o -l"$wid" "$out"
+echo "screenshot-macos: captured window $wid (owner ~ '$needle') -> $out"
