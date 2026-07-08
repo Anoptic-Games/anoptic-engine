@@ -594,17 +594,23 @@ async, self-test gates at every step.
    (counting-sort scatter, src/ui/ui_tiles.c) + ano_ui_ref_eval_tiled, unit-proved
    BIT-IDENTICAL to the brute painter's-order eval (shadow-free scenes exact; the only
    delta is a shadow's Gaussian tail beyond its 3-sigma AABB, which the GPU brute cull
-   clips the same way). GPU: tiles built into the slot's uiFrameBuffer regions in the
-   record path (bindings 9/10), cached on (uiVersion, grid) so an idle UI rebuilds
-   nothing; a direct dispatch (grid == workgroups) — no indirect needed, the CPU knows
-   the count; ANO_TEXT_RASTER_TILED push flag selects the tiled vs brute inner loop;
-   ANO_FORCE_NO_UI_TILES falls back. Overflow (grid > offset region, entries > cap) auto-
-   falls back to brute. HW A/B on the opaque self-test: tiled and brute BOTH give
-   RMS 0.111/255, max 13/255 at the same pixel (byte-identical), matching the reference;
-   zero validation. DEFERRED (noted, measurement-gated): opaque-truncation (drop entries
-   under an opaque tile-cover — the list-shortening half of §3.7.3), glyph tiling + true
-   unified text/UI z (glyphs stay the brute per-tile scan for now; §3.7.2's interleave),
-   sparse dispatch over only non-empty tiles, and the §3.7.4 GPU binning pass.)
+   clips the same way). GPU: tiles built heap-side (the mapped regions can be write-
+   combined; the counting sort reads back what it writes) and memcpy'd into the slot's
+   uiFrameBuffer regions in the record path (bindings 9/10). The grid is keyed on the
+   UI bounds alone — 8px-snapped, canvas-clamped, a pure function of uiVersion — and
+   the shader maps dispatch tiles into it through the push block, so a moving text
+   bound reshaping the union dispatch never rebuilds static UI tiles; an idle UI
+   rebuilds nothing. A direct dispatch (union grid == workgroups) — no indirect
+   needed, the CPU knows the count; ANO_TEXT_RASTER_TILED push flag selects the tiled
+   vs brute inner loop; ANO_FORCE_NO_UI_TILES falls back. Overflow (grid > offset
+   region, entries > cap) auto-falls back to brute. HW A/B on the opaque self-test:
+   tiled and brute BOTH give RMS 0.111/255, max 13/255 at the same pixel
+   (byte-identical), matching the reference; zero validation. DEFERRED (noted,
+   measurement-gated): opaque-truncation (drop entries under an opaque tile-cover —
+   the list-shortening half of §3.7.3), glyph tiling + true unified text/UI z (glyphs
+   stay the brute per-tile scan, though tiles outside the pending text bounds now skip
+   the walk wholesale; §3.7.2's interleave), sparse dispatch over only non-empty
+   tiles, and the §3.7.4 GPU binning pass.)
 8. Async lane switch-on (the CB is already in the text submit slot), A/B in-frame vs async,
    freeze-methodology numbers recorded here, `docs/ui/ui-render.md` updated with measured
    costs. PoC complete.

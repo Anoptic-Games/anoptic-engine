@@ -22,6 +22,18 @@ layout(push_constant) uniform TextRasterPush {
     uint  uiPrimCount;
     uint  uiClipCount;
     uint  uiPaintCount;
+    // UI tile grid (TILED only): keyed on UI bounds alone, so it need not match the
+    // dispatch grid. Origin/extent in TILES; scalars keep the C layout padding-free.
+    int   uiTileOx;
+    int   uiTileOy;
+    uint  uiTileGx;
+    uint  uiTileGy;
+    // Pending text px AABB: tiles outside it skip the glyph walk entirely (the union
+    // dispatch region covers UI-only tiles no glyph can touch).
+    float textB0;
+    float textB1;
+    float textB2;
+    float textB3;
 } pc;
 
 const uint CHUNK = 64u; // entries per cull round
@@ -61,13 +73,15 @@ void main()
     // UI prims underlay the glyphs; ADD prims light rgb without occluding.
     if ((pc.flags & 8u) != 0u)
     {
-        // Tiled: this workgroup IS a tile of the dispatch grid; walk only its prim list
-        // (built CPU-side to match the grid). A solid entry skips the SDF.
-        uint tileIdx = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
-        uint eBeg = uiTileOff[tileIdx];
-        uint eEnd = uiTileOff[tileIdx + 1u];
-        if (valid)
+        // Tiled: map this workgroup's 8px tile into the UI grid (both origins are
+        // tile-aligned, so the mapping is exact); outside the grid no prim reaches.
+        // A solid entry skips the SDF.
+        ivec2 tw = ivec2(pc.origin / 8u + gl_WorkGroupID.xy) - ivec2(pc.uiTileOx, pc.uiTileOy);
+        if (valid && uint(tw.x) < pc.uiTileGx && uint(tw.y) < pc.uiTileGy)
         {
+            uint tileIdx = uint(tw.y) * pc.uiTileGx + uint(tw.x);
+            uint eBeg = uiTileOff[tileIdx];
+            uint eEnd = uiTileOff[tileIdx + 1u];
             for (uint e = eBeg; e < eEnd; e++)
             {
                 uint entry = uiTileEnt[e];
@@ -120,7 +134,11 @@ void main()
     // per tile even when UI prims are tiled. Tiling them (CPU glyph AABBs -> the same
     // tile entries, kind-tagged) folds this into the prim walk and gives true unified
     // text/UI z (a glyph could sit under a prim). The prim loop above is the pattern.
+    // Until then, tiles outside the pending text bounds skip the walk wholesale.
     uint glyphCount = (pc.flags & 2u) != 0u ? 0u : pc.instanceCount;
+    if (tMin.x > pc.textB2 + 1.0 || tMax.x < pc.textB0 - 1.0
+        || tMin.y > pc.textB3 + 1.0 || tMax.y < pc.textB1 - 1.0)
+        glyphCount = 0u;
     for (uint base = 0u; base < glyphCount; base += CHUNK)
     {
         if (gl_LocalInvocationIndex == 0u)

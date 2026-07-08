@@ -30,7 +30,7 @@
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
-// Push-constant block shared with textraster.comp (36 B; the shader may declare a
+// Push-constant block shared with textraster.comp (68 B; the shader may declare a
 // prefix of it). uiPrimCount/uiClipCount/uiPaintCount stay 0 with no UI compose.
 typedef struct TextRasterPush {
     uint32_t instanceCount;
@@ -42,6 +42,11 @@ typedef struct TextRasterPush {
     uint32_t uiPrimCount;
     uint32_t uiClipCount;
     uint32_t uiPaintCount;
+    int32_t  uiTileOx; // UI tile grid (TILED only), origin/extent in TILES; keyed on
+    int32_t  uiTileOy; // UI bounds alone so text motion never reshapes it
+    uint32_t uiTileGx;
+    uint32_t uiTileGy;
+    float    textB[4]; // pending text px AABB: tiles outside skip the glyph walk
 } TextRasterPush;
 
 // Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel next, UI
@@ -953,7 +958,9 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
     TextRasterPush push = { .instanceCount = state->textInstanceCount, .flags = state->textFlags,
                             .extentW = state->imageExtent.width, .extentH = state->imageExtent.height,
                             .uiPrimCount = state->uiPrimCount, .uiClipCount = state->uiClipCount,
-                            .uiPaintCount = state->uiPaintCount };
+                            .uiPaintCount = state->uiPaintCount,
+                            .textB = { state->textBounds[0], state->textBounds[1],
+                                       state->textBounds[2], state->textBounds[3] } };
     uint32_t gx = 0, gy = 0;
     if (state->textFlags & ANO_TEXT_RASTER_OPAQUE)
     {
@@ -993,12 +1000,19 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
             gy = ((uint32_t)(y1 - y0) + 7u) / 8u;
         }
     }
-    // Per-tile prim lists: build this slot's grid to match the dispatch (§3.7). On
-    // success the shader reads its tile's prims instead of the brute chunk scan; any
-    // failure (disabled, grid/entry overflow) leaves the flag clear and falls back.
+    // Per-tile prim lists over the UI bounds alone (§3.7) — the shader maps dispatch
+    // tiles into the grid, so a moving text bound never invalidates it. On success the
+    // shader reads its tile's prims instead of the brute chunk scan; any failure
+    // (disabled, grid/entry overflow) leaves the flag clear and falls back.
     if (gx != 0 && gy != 0 && state->uiPrimCount > 0
-        && ano_vk_ui_build_tiles(state, frameIndex, (int32_t)push.originX, (int32_t)push.originY, gx, gy))
+        && ano_vk_ui_build_tiles(state, frameIndex))
+    {
+        push.uiTileOx = fr->uiTileOx / 8;
+        push.uiTileOy = fr->uiTileOy / 8;
+        push.uiTileGx = fr->uiTileGx;
+        push.uiTileGy = fr->uiTileGy;
         push.flags |= ANO_TEXT_RASTER_TILED;
+    }
 
     if (gx != 0 && gy != 0)
     {
