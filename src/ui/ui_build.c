@@ -36,6 +36,42 @@ void ano_ui_builder_init(AnoUiBuilder *b,
     b->curves = NULL;   b->curveCap = 0;        b->curveCount = 0;
 }
 
+// In: prim, isotropic logical->device surface scale s > 0. Folds the scale in place:
+// geometry scales; RRECT border and SHADOW sigma are lengths and scale with it; IMAGE
+// lod shifts by -log2(s). Identity inv stays identity (prim space IS device pixels
+// after the fold). PATH/GLYPHS payloads fold separately.
+void ano_ui_prim_scale(AnoUiPrim *p, float s)
+{
+    p->origin[0] *= s; p->origin[1] *= s;
+    p->half[0] *= s;   p->half[1] *= s;
+    for (int i = 0; i < 4; i++)
+        p->radii[i] *= s;
+    if (p->kind == ANO_UI_RRECT || p->kind == ANO_UI_SHADOW)
+        p->param[0] *= s;
+    else if (p->kind == ANO_UI_IMAGE)
+        p->param[0] = fmaxf(0.0f, p->param[0] - log2f(s));
+}
+
+// In: clip, surface scale s > 0. rect and rounded term scale; the rrHalf[0] < 0
+// sentinel stays negative.
+void ano_ui_clip_scale(AnoUiClip *c, float s)
+{
+    for (int i = 0; i < 4; i++)
+        c->rect[i] *= s;
+    c->rrCenter[0] *= s; c->rrCenter[1] *= s;
+    c->rrHalf[0] *= s;   c->rrHalf[1] *= s;
+    for (int i = 0; i < 4; i++)
+        c->rrRadii[i] *= s;
+}
+
+// In: paint, surface scale s > 0. The 2x3 reads device pixels after the fold: linear
+// columns divide by s, the gradient-space translation column is untouched.
+void ano_ui_paint_scale(AnoUiPaint *p, float s)
+{
+    p->xform[0] /= s; p->xform[1] /= s;
+    p->xform[3] /= s; p->xform[4] /= s;
+}
+
 // In: b, curve scratch buffer + word capacity (NULL/0 detaches). Bakes accumulate here.
 void ano_ui_builder_curves(AnoUiBuilder *b, uint32_t *curves, uint32_t curveCap)
 {

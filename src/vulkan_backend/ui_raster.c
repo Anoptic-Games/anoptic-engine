@@ -63,12 +63,16 @@ static void ui_pending_bounds(RendererState* state)
 
 // Recomposes the pending tables from the live blocks: ascending layer (registry
 // creation order breaks ties), block-local clip/paint/stop/glyph references rebased,
-// scroll folded into every position. A block that would overflow a table budget is
-// skipped WHOLE — truncation would corrupt references. Bumps uiVersion.
+// scroll folded into every position (logical units), then the overlay's surface fold
+// (logical -> device px, docs/ui/ui-render.md §3.11) — the single point the scale is
+// ever applied; everything downstream is device pixels. A block that would overflow
+// a table budget is skipped WHOLE — truncation would corrupt references. Bumps
+// uiVersion.
 static void ui_compose(RendererState* state)
 {
     if (state->uiPendingPrims == NULL || state->uiPinned)
         return;
+    float s = state->uiScale > 0.0f ? state->uiScale : 1.0f;
     uint32_t order[ANO_UI_MAX_BLOCKS];
     for (uint32_t i = 0; i < state->uiBlockCount; i++)
         order[i] = i;
@@ -102,6 +106,7 @@ static void ui_compose(RendererState* state)
             AnoUiPrim p = blk->prims[i];
             p.origin[0] += sx;
             p.origin[1] += sy;
+            ano_ui_prim_scale(&p, s);
             if (p.clipRef != ANO_UI_REF_NONE)
                 p.clipRef += nc;
             if (p.paintRef != ANO_UI_REF_NONE)
@@ -119,6 +124,7 @@ static void ui_compose(RendererState* state)
             c.rect[2] += sx; c.rect[3] += sy;
             c.rrCenter[0] += sx;
             c.rrCenter[1] += sy;
+            ano_ui_clip_scale(&c, s);
             state->uiPendingClips[nc++] = c;
         }
         for (uint32_t i = 0; i < blk->paintCount; i++)
@@ -126,20 +132,24 @@ static void ui_compose(RendererState* state)
             AnoUiPaint pa = blk->paints[i];
             pa.stopFirst += ns;
             // Scroll translates the gradient with content: shift the xform origin so a
-            // point at overlay (x+sx) reads the pre-scroll value at x.
+            // point at overlay (x+sx) reads the pre-scroll value at x. Logical-space
+            // shift with the authored columns, then the surface fold.
             pa.xform[2] -= pa.xform[0] * sx + pa.xform[1] * sy;
             pa.xform[5] -= pa.xform[3] * sx + pa.xform[4] * sy;
+            ano_ui_paint_scale(&pa, s);
             state->uiPendingPaints[na++] = pa;
         }
         memcpy(&state->uiPendingStops[ns], blk->stops, (size_t)blk->stopCount * sizeof(AnoUiStop));
         ns += blk->stopCount;
-        memcpy(&state->uiPendingCurves[ncw], blk->curves, (size_t)blk->curveCount * sizeof(uint32_t));
+        ano_ui_curves_scale(blk->curves, &state->uiPendingCurves[ncw], blk->curveCount, s);
         ncw += blk->curveCount;
         for (uint32_t i = 0; i < blk->glyphCount; i++)
         {
             AnoGlyphInstance g = blk->glyphs[i];
-            g.origin[0] += sx;
-            g.origin[1] += sy;
+            g.origin[0] = (g.origin[0] + sx) * s;
+            g.origin[1] = (g.origin[1] + sy) * s;
+            for (int k = 0; k < 4; k++)
+                g.inv[k] /= s; // px -> em shrinks as the glyph grows
             state->uiPendingGlyphs[ng++] = g;
         }
     }
@@ -278,6 +288,15 @@ void ano_vk_ui_block_set(RendererState* state, uint32_t ui_id, const RenderUiBlo
     state->uiBlocks[state->uiBlockCount].blk = blk;
     state->uiBlockCount++;
     ui_compose(state);
+}
+
+// Overlay surface scale changed (monitor migration, DPI change): re-fold the retained
+// logical blocks at the new scale. The registry is the source of truth, so no logic
+// resubmission is needed; a pinned self-test canvas stays pinned.
+void ano_vk_ui_rescale(RendererState* state)
+{
+    if (state->uiOverlay && state->uiPendingPrims != NULL)
+        ui_compose(state);
 }
 
 // Removes a block (RCMD_UI_CLEAR), idempotent. Order-preserving compaction.

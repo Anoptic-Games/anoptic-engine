@@ -521,6 +521,11 @@ typedef struct RendererState
     // Latest cursor position in framebuffer pixels (origin top-left). Render thread only.
     float                   cursorX, cursorY;
 
+    // Overlay surface scale: logical units -> framebuffer pixels (the platform content
+    // scale; 0 until the window exists, treated as 1). Written by window.c on the main
+    // thread, read by the compose fold and the snapshot publish. Render thread only.
+    float                   uiScale;
+
     // GPU id-buffer picking: per-view MSAA R32_UINT id attachment, resolved for view 0.
     VkImage                 pickIdImage[ANO_VIEW_COUNT];
     GpuAllocation           pickIdImageAlloc[ANO_VIEW_COUNT];

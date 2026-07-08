@@ -346,6 +346,16 @@ same prim stream as a diegetic panel in the 3D scene — derivative-window AA, p
 correct, holograms/cockpit screens for free. Same data, two consumers, zero drift by
 construction. Out of v0 scope; the include split is designed in from step 1.
 
+### 3.11 Logical units and surfaces (2026-07-08)
+
+Block coordinates are logical units of the block's surface. A surface owns the mapping from logical units to device pixels, and the renderer folds that mapping into the composed tables exactly once, at compose, next to the scroll fold (`ano_ui_prim_scale` / `ano_ui_clip_scale` / `ano_ui_paint_scale` / `ano_ui_curves_scale` in src/ui; glyph instances fold origin by s and the px->em inv by 1/s). Everything downstream of compose — pending bounds, tile lists, the dispatch, both evaluators — is device pixels, so the analytic machinery of §3.3-§3.5 is untouched and the AA window stays the exact 1 px box filter. Sharpness holds by construction: the fold scales geometry before evaluation, curves and glyphs rasterize at full device resolution, and nothing is ever resampled.
+
+v0 defines one surface, the screen overlay (`ANO_UI_SURFACE_OVERLAY`, a `RenderUiBlock` header field). Its scale is the platform content scale (2.0 on Retina, fractional on Wayland, 1.0 where window and framebuffer coincide), owned render-side as `rendererState.uiScale` — window.c seeds it at window creation and tracks `glfwSetWindowContentScaleCallback`; a change re-folds the retained registry blocks through `ano_vk_ui_rescale` / `ano_vk_text_rescale` with zero logic traffic, because the registry holds logical content. The `RenderSnapshot` publishes `uiWidth`/`uiHeight` (framebuffer / uiScale, fractional under fractional scaling) and `uiScale`; cursor events arrive in the same logical space, so logic-side layout and hit-testing are a direct compare and never see a pixel. Render-internal consumers keep device px: the picking readback samples the id image at the framebuffer-px cursor, and the profiling OSD and the pinned demo/self-test canvases compose unscaled, which keeps the screenshot gates bitwise-stable.
+
+Text blocks ride the same contract: `RCMD_TEXT_SET` instances are shaped in logical units and folded at text compose, so HUD labels hold physical size next to the UI plates.
+
+This contract is what lets future consumers slot in without ABI motion. An offscreen texture panel is a surface whose scale is a texel density chosen at creation; a world-placed 3D panel is a surface whose fold is a world transform consumed by the §3.10 fragment twin. In every case block content, the builder verbs, and the bridge protocol stay unchanged; only the fold differs. Resizes and repositions are logic-side re-layouts against the snapshot's logical extent; scale changes are render-side re-folds; the two never mix.
+
 ## 4. Reuse inventory
 
 What the UI lane inherits without modification (anchors current as of this pass):

@@ -129,25 +129,44 @@ static void text_pending_bounds(RendererState* state)
 }
 
 // Recomposes the pending canonical after any source changed. OSD region
-// [0, textOsdCount) stays, logic blocks append in registry order, capped. Demo pin
-// keeps the canvas OSD-only.
+// [0, textOsdCount) stays (render-internal, shaped in device px), logic blocks append
+// in registry order with the overlay's logical->px surface fold (origin scales, the
+// px->em inv divides — the glyph curves rasterize at full device resolution), capped.
+// Demo pin keeps the canvas OSD-only.
 static void text_blocks_append(RendererState* state)
 {
     uint32_t cap = ANO_TEXT_WORLD_FIRST;
     uint32_t total = state->textOsdCount < cap ? state->textOsdCount : cap;
+    float s = state->uiScale > 0.0f ? state->uiScale : 1.0f;
     if (!g_textPinned)
     {
         for (uint32_t i = 0; i < state->textBlockCount && total < cap; i++)
         {
             const RenderTextBlock* b = state->textBlocks[i].blk;
             uint32_t n = b->count < cap - total ? b->count : cap - total;
-            memcpy(state->textPending + total, b->instances, (size_t)n * sizeof(AnoGlyphInstance));
+            for (uint32_t j = 0; j < n; j++)
+            {
+                AnoGlyphInstance g = b->instances[j];
+                g.origin[0] *= s;
+                g.origin[1] *= s;
+                for (int k = 0; k < 4; k++)
+                    g.inv[k] /= s;
+                state->textPending[total + j] = g;
+            }
             total += n;
         }
     }
     state->textPendingCount = total;
     text_pending_bounds(state);
     state->textVersion++;
+}
+
+// Overlay surface scale changed: re-fold the retained logic blocks at the new scale.
+// The OSD reshapes itself on its own cadence and stays device-px.
+void ano_vk_text_rescale(RendererState* state)
+{
+    if (state->textOverlay && state->textPending != NULL)
+        text_blocks_append(state);
 }
 
 void ano_vk_text_set(RendererState* state, anostr_t text, float sizePx,

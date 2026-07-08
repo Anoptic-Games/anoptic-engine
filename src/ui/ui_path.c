@@ -32,6 +32,19 @@ static uint32_t pack_pt(double x, double y)
     return (uint32_t)ano_half_pack((float)x) | ((uint32_t)ano_half_pack((float)y) << 16);
 }
 
+// In: count packed point words (in == out is legal), isotropic surface scale s > 0.
+// Out: each binary16 pair scaled. The contour sentinel's +inf halves scale to +inf,
+// so separators survive untouched.
+void ano_ui_curves_scale(const uint32_t *in, uint32_t *out, uint32_t count, float s)
+{
+    for (uint32_t i = 0; i < count; i++)
+    {
+        uint32_t w = in[i];
+        out[i] = (uint32_t)ano_half_pack(ano_half_unpack((uint16_t)(w & 0xFFFFu)) * s)
+               | ((uint32_t)ano_half_pack(ano_half_unpack((uint16_t)(w >> 16)) * s) << 16);
+    }
+}
+
 // A quad traversed backwards: swap endpoints, keep the control.
 static AnoQuad quad_rev(const AnoQuad *q)
 {
