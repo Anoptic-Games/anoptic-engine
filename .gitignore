@@ -46,6 +46,8 @@
 *.pdb
 *.save
 *.py
+# ...except the checked-in perf harness drivers (see docs/profiling.md).
+!tools/perf/bench_fps_*.py
 
 # macOS metadata
 .DS_Store
@@ -137,4 +139,6 @@ tools/ucd/
 !.claude/skills/**
 !.claude/hooks/
 !.claude/hooks/**
+!.claude/tools/
+!.claude/tools/**
 docs/study/

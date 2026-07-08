@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""anopticengine FPS / GPU-pass benchmark harness -- WINDOWS (win64) DRIVER.
+
+This is the Windows-specific driver only. The measurement METHODOLOGY -- the engine
+log contract it parses, the foreground/DPI/warmup rules, and how to read the numbers --
+is platform-agnostic and lives in docs/profiling.md. Ports to the other targets belong
+beside this file as bench_fps_linux.py (X11/Wayland) and bench_fps_macos.py (Cocoa),
+implementing the SAME contract with each platform's own window/DPI/foreground primitives.
+
+What is Windows-specific here (and must be re-implemented per platform):
+  - win32 window discovery by PID, borderless resize, MoveWindow
+  - forced + VERIFIED foreground via the SetForegroundWindow focus-steal-lock workaround
+  - per-monitor-DPI-aware-v2 so monitor rects/sizes are PHYSICAL pixels
+  - 'M' menu toggle synthesized as a Win32 key message with a real scancode
+
+What is shared (engine side, same on every target) -- lines in anoptic.log:
+  [frame] <fps> fps <ms> ms wall            -- wall-clock throughput (profiling.c: ano_frame_mark)
+  [profile mode=...] total=<ms> (frusta N/42) ... swap=<MiB>   -- GPU-pass profile + VRAM
+
+Requires: Windows, pywin32. Dev-only tool; not built or shipped.
+
+Examples:
+  python tools/perf/bench_fps_win64.py                          # resolution sweep, menu open
+  python tools/perf/bench_fps_win64.py --res 3840x2160 --dur 30
+  python tools/perf/bench_fps_win64.py --no-menu                # static HUD only
+  python tools/perf/bench_fps_win64.py --churn                  # resize-storm stress (one row)
+  python tools/perf/bench_fps_win64.py --env ANO_SHADOW_BUDGET=2
+"""
+import argparse, ctypes, os, re, subprocess, sys, time
+
+# Per-monitor-DPI-aware v2 (-4) BEFORE using win32, so monitor rects are PHYSICAL px
+# (otherwise a scaled desktop reports logical sizes and you mislabel the render resolution).
+try: ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+except Exception:
+    try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception: pass
+import win32gui, win32process, win32con, win32api  # noqa: E402
+
+SWEEP_DEFAULT = [(640, 360), (960, 540), (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)]
+CHURN_SIZES   = [(640, 480), (1920, 1080), (900, 1500), (2560, 1440), (480, 900),
+                 (1600, 900), (1280, 720), (2200, 1300), (720, 1280), (1100, 1900)]
+CHURN_MS = 33.0
+PRINT_INTERVAL = 120  # engine ANO_PROFILE_PRINT_INTERVAL; 120 rendered frames per profile line
+
+
+def _find_window(pid):
+    hits = []
+    def cb(h, _):
+        if win32gui.IsWindowVisible(h) and win32process.GetWindowThreadProcessId(h)[1] == pid:
+            hits.append(h)
+    win32gui.EnumWindows(cb, None)
+    return hits[0] if hits else None
+
+
+def _bring_to_front(hwnd):
+    """Defeat the SetForegroundWindow focus-steal lock (synthetic ALT tap), then CONFIRM front.
+    A background/occluded window mismeasures the GPU passes -- never trust a row that isn't front."""
+    for _ in range(5):
+        win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+        win32api.keybd_event(0x12, 0, 0, 0)                            # ALT down
+        win32api.keybd_event(0x12, 0, win32con.KEYEVENTF_KEYUP, 0)     # ALT up
+        try: win32gui.SetForegroundWindow(hwnd)
+        except Exception: pass
+        win32gui.BringWindowToTop(hwnd)
+        time.sleep(0.15)
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+    return win32gui.GetForegroundWindow() == hwnd
+
+
+def _borderless(hwnd, x, y, w, h):
+    st = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+    st = (st & ~win32con.WS_OVERLAPPEDWINDOW) | win32con.WS_POPUP | win32con.WS_VISIBLE
+    win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, st)
+    win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, x, y, w, h,
+                          win32con.SWP_FRAMECHANGED | win32con.SWP_SHOWWINDOW)
+
+
+def _toggle_menu(hwnd):
+    sc = 0x32  # scancode 'M'; GLFW maps by scancode, so lParam must carry it
+    win32api.PostMessage(hwnd, win32con.WM_KEYDOWN, 0x4D, (sc << 16) | 1)
+    time.sleep(0.03)
+    win32api.PostMessage(hwnd, win32con.WM_KEYUP, 0x4D, (0xC0 << 24) | (sc << 16) | 1)
+
+
+def _median(a):
+    s = sorted(a)
+    return s[len(s) // 2] if s else 0.0
+
+
+def run_once(exe, w, h, dur, menu, churn, env):
+    log = os.path.join(os.path.dirname(exe), "anoptic.log")
+    for _ in range(50):                          # prior process may still hold the handle
+        try: os.remove(log); break
+        except FileNotFoundError: break
+        except PermissionError: time.sleep(0.1)
+
+    p = subprocess.Popen([exe], env=env)
+    t0 = time.perf_counter()
+    hwnd = None
+    while time.perf_counter() - t0 < 15 and not hwnd:
+        hwnd = _find_window(p.pid); time.sleep(0.1)
+
+    front = False
+    if hwnd:
+        _borderless(hwnd, 0, 0, w, h)
+        front = _bring_to_front(hwnd)
+        if menu:
+            _toggle_menu(hwnd)
+
+    fps, tot, sw, fru = [], [], [], []
+    pf = re.compile(r"\[frame\] ([0-9.]+) fps")
+    pg = re.compile(r"total=([0-9.]+)"); ps = re.compile(r"swap=([0-9.]+)"); pr = re.compile(r"frusta ([0-9.]+)")
+    resizes, nxt, f = 0, 0.0, None
+    while (t := time.perf_counter() - t0) < dur:
+        if churn and hwnd and t >= nxt:
+            cw, ch = CHURN_SIZES[resizes % len(CHURN_SIZES)]
+            try: win32gui.MoveWindow(hwnd, 0, 0, cw, ch, True)
+            except Exception: pass
+            resizes += 1; nxt = resizes * (CHURN_MS / 1000.0)
+        if f is None:
+            if os.path.exists(log): f = open(log, encoding="utf-8", errors="replace")
+            else: time.sleep(0.01); continue
+        line = f.readline()
+        if not line: time.sleep(0.003); continue
+        m = pf.search(line);  m and fps.append(float(m.group(1)))
+        if "profile mode=" in line:
+            g = pg.search(line); g and tot.append(float(g.group(1)))
+            s = ps.search(line); s and sw.append(float(s.group(1)))
+            r = pr.search(line); r and fru.append(float(r.group(1)))
+
+    subprocess.run(["taskkill", "/PID", str(p.pid), "/F"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try: p.wait(timeout=5)
+    except Exception: pass
+
+    fps, tot, fru = fps[2:], tot[4:], fru[4:]    # drop warmup
+    wf, gt = _median(fps), _median(tot)
+    cap = 1000.0 / gt if gt else 0.0
+    ratio = wf / cap if cap else 0.0
+    return {"front": front, "swap": (sw[-1] if sw else 0.0), "wall_fps": wf,
+            "gpu_ms": gt, "gpu_cap": cap, "ratio": ratio, "frusta": _median(fru),
+            "bound": "GPU" if ratio > 0.9 else "CPU/present"}
+
+
+def main():
+    ap = argparse.ArgumentParser(description="anopticengine wall-clock FPS / GPU-pass bench -- WINDOWS driver.")
+    ap.add_argument("--exe", default=r"build\Release\anopticengine.exe")
+    ap.add_argument("--res", help="single WxH, e.g. 1920x1080 (default: resolution sweep)")
+    ap.add_argument("--dur", type=float, default=15.0, help="seconds per data point")
+    ap.add_argument("--no-menu", action="store_true", help="static HUD only (no menu open)")
+    ap.add_argument("--churn", action="store_true", help="resize-storm stress; single row")
+    ap.add_argument("--env", action="append", default=[], help="KEY=VAL engine env var (repeatable)")
+    args = ap.parse_args()
+
+    exe = os.path.abspath(args.exe)
+    if not os.path.exists(exe):
+        sys.exit(f"exe not found: {exe} (build it, e.g. build.bat 1)")
+    env = dict(os.environ)
+    for kv in args.env:
+        k, _, v = kv.partition("="); env[k] = v
+    if args.env: print("engine env: " + "  ".join(args.env))
+
+    if args.churn:
+        sizes = [(3840, 2160)]  # base res; the run cycles CHURN_SIZES internally
+    elif args.res:
+        w, h = (int(x) for x in args.res.lower().split("x")); sizes = [(w, h)]
+    else:
+        sizes = SWEEP_DEFAULT
+
+    print(f"{'res':>11} {'front':>5} {'swapMiB':>8} {'wallFPS':>8} {'GPUms':>7} "
+          f"{'GPUcap':>7} {'wall/cap':>8} {'frusta':>7}  bound")
+    for (w, h) in sizes:
+        r = run_once(exe, w, h, args.dur, not args.no_menu, args.churn, env)
+        label = "churn" if args.churn else f"{w}x{h}"
+        print(f"{label:>11} {'FRONT' if r['front'] else 'BG!!':>5} {r['swap']:8.1f} "
+              f"{r['wall_fps']:8.1f} {r['gpu_ms']:7.3f} {r['gpu_cap']:7.0f} "
+              f"{r['ratio']:8.2f} {r['frusta']:7.1f}  {r['bound']}")
+
+
+if __name__ == "__main__":
+    main()

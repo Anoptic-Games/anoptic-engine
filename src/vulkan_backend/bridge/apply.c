@@ -10,6 +10,7 @@
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/text_raster.h"
+#include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/slot_upload.h"
 #include "vulkan_backend/light_registry.h"
 #include "vulkan_backend/shadow/shadow.h"
@@ -324,6 +325,15 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
 
         case RCMD_TEXT_CLEAR:
             ano_vk_text_block_clear(state, cmd.text_id);
+            break;
+
+        case RCMD_UI_SET:
+            // Same adoption contract as text blocks.
+            ano_vk_ui_block_set(state, cmd.ui_id, cmd.ui);
+            break;
+
+        case RCMD_UI_CLEAR:
+            ano_vk_ui_block_clear(state, cmd.ui_id);
             break;
 
         default:

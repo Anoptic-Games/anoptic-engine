@@ -47,6 +47,23 @@
 // Max live logic-submitted screen-text blocks; excess dropped.
 #define ANO_TEXT_MAX_BLOCKS      64u
 
+// UI overlay lane table capacities (per-frame regions of uiFrameBuffer; ui-render.md §3.2).
+#define ANO_UI_MAX_PRIMS         4096u
+#define ANO_UI_MAX_CLIPS         256u
+#define ANO_UI_MAX_PAINTS        256u
+#define ANO_UI_MAX_STOPS         1024u
+#define ANO_UI_MAX_CURVE_WORDS   16384u // packed path curve stream (binding 8), 64 KiB/slot
+// Per-tile prim lists (binding 9 offsets, 10 entries). Offset words cover the max 8px
+// grid (2560x1368 = 54720 tiles) + slack + the trailing total, 256-word aligned.
+#define ANO_UI_TILE_OFFSET_WORDS 65792u
+#define ANO_UI_MAX_TILE_ENTRIES  262144u
+// UI glyph labels live in their own region of the text frame buffer, above the world
+// panel, so the plain glyph loop never draws them (UI_GLYPHS prims do, z-interleaved).
+#define ANO_UI_GLYPH_FIRST       16384u
+#define ANO_UI_MAX_GLYPHS        5120u
+// Max live logic-submitted UI blocks; excess dropped.
+#define ANO_UI_MAX_BLOCKS        64u
+
 // Default per-view screen-area cull threshold (px). Runtime ano_render_set_view_cull_threshold, 0 disables.
 #define ANO_CULL_PIXEL_THRESHOLD_DEFAULT  1.5f
 
@@ -474,6 +491,18 @@ typedef struct PerFrameResources
     VkBuffer            textFrameBuffer;
     GpuAllocation       textFrameAlloc;
     void*               textFrameMapped;
+    // UI overlay lane frame data: one host-visible buffer holding the prim/clip/paint/stop
+    // regions (raster-set bindings 4-7). Created whenever textOverlay is up so the shared
+    // set's bindings stay valid even with the UI gate off.
+    VkBuffer            uiFrameBuffer;
+    GpuAllocation       uiFrameAlloc;
+    void*               uiFrameMapped;
+    uint32_t            uiSlotVersion;   // uiVersion this slot's tables last copied
+    // Per-tile prim lists (§3.7): built into this slot's tile regions in the record path;
+    // the key skips the rebuild unless the version OR dispatch grid changed.
+    uint32_t            uiTileVersion;   // 0 = never built / invalid
+    int32_t             uiTileOx, uiTileOy;
+    uint32_t            uiTileGx, uiTileGy;
     VkDescriptorSet     textRasterSet;   // curves + directory + frame data + storage image
     VkDescriptorSet     textOverlaySet;  // sampled overlay for composite
     VkCommandBuffer     textCommandBuffer; // async text raster CB, NULL when asyncText off
@@ -491,6 +520,11 @@ typedef struct RendererState
 
     // Latest cursor position in framebuffer pixels (origin top-left). Render thread only.
     float                   cursorX, cursorY;
+
+    // Overlay surface scale: logical units -> framebuffer pixels (the platform content
+    // scale; 0 until the window exists, treated as 1). Written by window.c on the main
+    // thread, read by the compose fold and the snapshot publish. Render thread only.
+    float                   uiScale;
 
     // GPU id-buffer picking: per-view MSAA R32_UINT id attachment, resolved for view 0.
     VkImage                 pickIdImage[ANO_VIEW_COUNT];
@@ -565,6 +599,39 @@ typedef struct RendererState
     struct { uint32_t id; const RenderTextBlock* blk; } textBlocks[ANO_TEXT_MAX_BLOCKS];
     uint32_t                textBlockCount;
     uint32_t                textOsdCount;      // instances the render-internal OSD text occupies
+
+    // UI overlay lane (docs/ui/ui-render.md): prims raster into the shared text/UI overlay
+    // via the text raster dispatch. Gate uiOverlay: rides textOverlay, off on ANO_FORCE_NO_UI
+    // or init failure (tables still resident + bound so the shader's bindings stay valid).
+    bool                    uiOverlay;
+    uint32_t                uiPrimCount; // prim count in the CURRENT slot's tables (push block)
+    uint32_t                uiClipCount; // clip count, ditto (shader bound-check, fail closed)
+    uint32_t                uiPaintCount; // paint count, ditto (gradient fail-closed bound)
+    float                   uiBounds[4]; // current px AABB incl. shadow pads, inverted when blank
+    // UI block registry (v0 bridge) + the composed pending tables (textHeap allocations),
+    // copied per slot by ano_vk_ui_frame_refresh when uiVersion moves.
+    struct { uint32_t id; const RenderUiBlock* blk; } uiBlocks[ANO_UI_MAX_BLOCKS];
+    uint32_t                uiBlockCount;
+    bool                    uiPinned;            // ANO_UI_DEMO/_OPAQUE: registry adopts, compose suppressed
+    bool                    uiComposeDirty;      // block set/clear/rescale mark; frame refresh flushes once
+    AnoUiPrim*              uiPendingPrims;
+    AnoUiClip*              uiPendingClips;
+    AnoUiPaint*             uiPendingPaints;
+    AnoUiStop*              uiPendingStops;
+    uint32_t*               uiPendingCurves;
+    AnoGlyphInstance*       uiPendingGlyphs;
+    uint32_t*               uiTileCursor;        // per-tile fill cursor scratch (tile build)
+    uint32_t*               uiTileScratch;       // heap-side tile build target (offsets then
+                                                 // entries), memcpy'd to the slot's mapped regions
+    bool                    uiTilesEnabled;      // !ANO_FORCE_NO_UI_TILES, resolved at init
+    uint32_t                uiPendingPrimCount;
+    uint32_t                uiPendingClipCount;
+    uint32_t                uiPendingPaintCount;
+    uint32_t                uiPendingStopCount;
+    uint32_t                uiPendingCurveCount;
+    uint32_t                uiPendingGlyphCount;
+    float                   uiPendingBounds[4];
+    uint32_t                uiVersion;
 
     // Hi-Z occlusion pyramid build. Pipeline in prototypes[PIPELINE_COMPUTE_HIZ]; hizSetLayout is the shared per-mip set layout.
     VkDescriptorSetLayout   hizSetLayout;

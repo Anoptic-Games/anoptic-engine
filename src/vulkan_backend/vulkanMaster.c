@@ -15,6 +15,7 @@
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/gpu_alloc.h"
 #include "vulkan_backend/text_raster.h"
+#include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/frame/frame.h"
 #include "vulkan_backend/slot_upload.h"
 #include "vulkan_backend/light_registry.h"
@@ -212,8 +213,9 @@ void drawFrame()
 	// Ingest ECS->render transitions for this frame slot.
 	render_apply_commands(&rendererState, rendererState.frameIndex);
 
-	// Copy pending on-screen text into this slot's frame buffer (post-fence).
+	// Copy pending on-screen text + UI tables into this slot's buffers (post-fence).
 	ano_vk_text_frame_refresh(&rendererState, rendererState.frameIndex);
+	ano_vk_ui_frame_refresh(&rendererState, rendererState.frameIndex);
 
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
 	if (rendererState.asyncLc)
@@ -282,6 +284,8 @@ void drawFrame()
 		rendererState.frameIndex = 0;
 	}
 	rendererState.globalFrame += 1; // Gates slot-quarantine retirement
+
+	ano_frame_mark(); // Wall-clock fps/frametime, counted only on the presented-frame path.
 }
 
 
@@ -380,6 +384,11 @@ bool initVulkan() // Initializes Vulkan
 	rendererState.asyncText = rendererState.textOverlay && rendererState.asyncHiz
 	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
 	ano_log(ANO_INFO, "Async text raster: %s", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
+
+	// UI overlay lane gate rides the text lane (shared overlay image + raster dispatch).
+	// ANO_FORCE_NO_UI pins compose off; the table buffers stay resident under textOverlay.
+	rendererState.uiOverlay = rendererState.textOverlay && !getenv("ANO_FORCE_NO_UI");
+	ano_log(ANO_INFO, "UI overlay: %s", rendererState.uiOverlay ? "enabled" : "off");
 
     // Mesh-shader entry points, loaded only on the mesh path.
     if (ctx.deviceCapabilities.meshShader) {
@@ -527,6 +536,9 @@ bool initVulkan() // Initializes Vulkan
 
 	// Text overlay font bake, glyph buffers, raster/blend pipelines, non-fatal.
 	ano_vk_text_init(&ctx, &rendererState);
+
+	// UI overlay lane table buffers, non-fatal (rides the text overlay's raster set).
+	ano_vk_ui_init(&ctx, &rendererState);
 
 	// Depth-only shadow pipeline + compare sampler.
 	if (!ano_vk_init_shadow(&ctx, &rendererState))

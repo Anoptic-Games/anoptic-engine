@@ -198,6 +198,12 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         memcpy(snap.frustum, ubo->views[0].frustumPlanes, sizeof snap.frustum);
         snap.vpWidth  = state->imageExtent.width;
         snap.vpHeight = state->imageExtent.height;
+        // Overlay surface in logical units: the space UI layout, hit-testing, and
+        // cursor events share (anoptic_render.h RenderSnapshot contract).
+        float s = state->uiScale > 0.0f ? state->uiScale : 1.0f;
+        snap.uiScale  = s;
+        snap.uiWidth  = (float)state->imageExtent.width / s;
+        snap.uiHeight = (float)state->imageExtent.height / s;
         snap.frameId  = state->globalFrame;
         ano_render_publish_snapshot(&state->bridge, &snap);
     }

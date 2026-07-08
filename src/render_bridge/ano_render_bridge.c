@@ -14,6 +14,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <anoptic_logging.h>
+
 // Guard the events-ring element size (copied per push/pop, sized capacity * this). Held at 32 B.
 _Static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
 
@@ -156,6 +158,123 @@ bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
 bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
 {
     RenderCommand c = { .kind = RCMD_TEXT_CLEAR, .text_id = text_id };
+    return ano_spsc_push(&bridge->commands, &c);
+}
+
+// Replays the evaluators' curve-stream walk for one PATH prim (aux0 = first word,
+// aux1 = monotone-quad count): a start word, then per quad an optional
+// SENTINEL + restart word ahead of the control + end words. Bounds every read the
+// walk will make, so a hand-built block can never run the GPU or ref walker past
+// the stream. The builder's own bakes always pass.
+static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
+                               uint32_t off, uint32_t quads)
+{
+    if (quads == 0u || off >= curveCount || curves[off] == ANO_UI_CURVE_SENTINEL)
+        return false;
+    uint32_t i = off + 1u;
+    for (uint32_t c = 0; c < quads; c++) {
+        if (i >= curveCount)
+            return false; // separator-test read
+        if (curves[i] == ANO_UI_CURVE_SENTINEL) {
+            i++;
+            if (i >= curveCount || curves[i] == ANO_UI_CURVE_SENTINEL)
+                return false; // contour restart must be a point
+            i++;
+        }
+        if (i + 1u >= curveCount)
+            return false; // control + end reads
+        i += 2u;
+    }
+    return true;
+}
+
+// Block-local reference validation for one UI prim. Invalid blocks drop producer-side
+// (returning true) so backpressure retry loops never spin on bad input.
+static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, uint32_t glyphs,
+                          const uint32_t *curves, uint32_t curveCount)
+{
+    if (p->clipRef != ANO_UI_REF_NONE && p->clipRef >= clips)
+        return false;
+    if (p->paintRef != ANO_UI_REF_NONE && p->paintRef >= paints)
+        return false;
+    if (p->kind == ANO_UI_GLYPHS && (p->aux0 > glyphs || p->aux1 > glyphs - p->aux0))
+        return false;
+    if (p->kind == ANO_UI_PATH && !ui_path_walk_valid(curves, curveCount, p->aux0, p->aux1))
+        return false;
+    return true;
+}
+
+// UI endpoints (v0 bridge). `set` packs the builder's tables + glyph labels into one
+// render-owned allocation, freed render-side on replace/clear/shutdown. Empty == clear.
+bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
+                       const AnoUiBuilder *ui,
+                       const AnoGlyphInstance *glyphs, uint32_t glyphCount)
+{
+    if (ui == NULL || ui->primCount == 0u)
+        return ano_render_ui_clear(bridge, ui_id);
+    if (ui->primCount > ANO_RENDER_UI_MAX_PRIMS || ui->clipCount > ANO_RENDER_UI_MAX_CLIPS
+        || ui->paintCount > ANO_RENDER_UI_MAX_PAINTS || ui->stopCount > ANO_RENDER_UI_MAX_STOPS
+        || ui->curveCount > ANO_RENDER_UI_MAX_CURVES
+        || glyphCount > ANO_RENDER_UI_MAX_GLYPHS || (glyphCount > 0u && glyphs == NULL)) {
+        ano_log(ANO_WARN, "UI bridge: ui_id %u dropped (per-block caps or bad glyph pair).", ui_id);
+        return true;
+    }
+    for (uint32_t i = 0; i < ui->primCount; i++) {
+        if (!ui_prim_valid(&ui->prims[i], ui->clipCount, ui->paintCount, glyphCount,
+                           ui->curves, ui->curveCount)) {
+            ano_log(ANO_WARN, "UI bridge: ui_id %u dropped (prim %u invalid).", ui_id, i);
+            return true;
+        }
+    }
+    size_t primB = (size_t)ui->primCount * sizeof(AnoUiPrim);
+    size_t clipB = (size_t)ui->clipCount * sizeof(AnoUiClip);
+    size_t paintB = (size_t)ui->paintCount * sizeof(AnoUiPaint);
+    size_t stopB = (size_t)ui->stopCount * sizeof(AnoUiStop);
+    size_t curveB = (size_t)ui->curveCount * sizeof(uint32_t);
+    size_t glyphB = (size_t)glyphCount * sizeof(AnoGlyphInstance);
+    char *blk = mi_malloc(sizeof(RenderUiBlock) + primB + clipB + paintB + stopB + curveB + glyphB);
+    if (blk == NULL)
+        return false;
+    RenderUiBlock *b = (RenderUiBlock *)blk;
+    char *at = blk + sizeof(RenderUiBlock);
+    b->layer = layer;
+    b->surface = ANO_UI_SURFACE_OVERLAY;
+    b->scroll[0] = 0.0f;
+    b->scroll[1] = 0.0f;
+    b->primCount = ui->primCount;
+    b->clipCount = ui->clipCount;
+    b->paintCount = ui->paintCount;
+    b->stopCount = ui->stopCount;
+    b->curveCount = ui->curveCount;
+    b->glyphCount = glyphCount;
+    b->prims = (const AnoUiPrim *)at;
+    memcpy(at, ui->prims, primB);
+    at += primB;
+    b->clips = (const AnoUiClip *)at;
+    if (clipB) memcpy(at, ui->clips, clipB);
+    at += clipB;
+    b->paints = (const AnoUiPaint *)at;
+    if (paintB) memcpy(at, ui->paints, paintB);
+    at += paintB;
+    b->stops = (const AnoUiStop *)at;
+    if (stopB) memcpy(at, ui->stops, stopB);
+    at += stopB;
+    b->curves = (const uint32_t *)at;
+    if (curveB) memcpy(at, ui->curves, curveB);
+    at += curveB;
+    b->glyphs = (const AnoGlyphInstance *)at;
+    if (glyphB) memcpy(at, glyphs, glyphB);
+    RenderCommand c = { .kind = RCMD_UI_SET, .ui_id = ui_id, .ui = b, .bulk_owned = true };
+    if (!ano_spsc_push(&bridge->commands, &c)) {
+        mi_free(blk);
+        return false;
+    }
+    return true;
+}
+
+bool ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id)
+{
+    RenderCommand c = { .kind = RCMD_UI_CLEAR, .ui_id = ui_id };
     return ano_spsc_push(&bridge->commands, &c);
 }
 

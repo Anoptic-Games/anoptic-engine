@@ -12,9 +12,21 @@
 
 #include "vulkan_backend/structs.h"
 
+// TextRasterPush.flags bits (wire format, mirrored in textraster.comp).
+#define ANO_TEXT_RASTER_OPAQUE 0x1u // opaque black backdrop + full-canvas dispatch (self-test)
+#define ANO_TEXT_RASTER_UIONLY 0x2u // skip the glyph loop (the UI self-test isolates prims)
+#define ANO_TEXT_RASTER_NODITHER 0x4u // skip the 1-LSB store dither (exact self-test compare)
+#define ANO_TEXT_RASTER_TILED    0x8u // UI prims come from per-tile lists, not the brute scan
+
 // One-time init on the render thread: FreeType up, fonts loaded + baked, GPU buffers
 // and pipelines built. Always returns true: failure logs and clears state->textOverlay.
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state);
+
+// createDataBuffer with optional CONCURRENT graphics+compute sharing, for buffers the
+// async lane reads on both families. The UI lane's tables ride the same dispatch.
+bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
+                               VkMemoryPropertyFlags props, bool shared,
+                               VkBuffer* buffer, GpuAllocation* alloc);
 
 // Size-dependent overlay images (one per frame in flight, swapchain extent). Called
 // from createColorResources.
@@ -48,6 +60,10 @@ void ano_vk_text_set_runs(RendererState* state, anostr_t text, const AnoTextRun*
 // textVersion.
 void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderTextBlock* blk);
 void ano_vk_text_block_clear(RendererState* state, uint32_t text_id);
+
+// Re-folds the retained logic blocks after state->uiScale changed (window.c's
+// content-scale path). The render-internal OSD stays device-px.
+void ano_vk_text_rescale(RendererState* state);
 
 // Copies pending text into this slot's mapped frame buffer when stale. Call after the
 // slot's fence wait and before its record/submit.

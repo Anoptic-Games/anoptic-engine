@@ -29,8 +29,11 @@ int main() {
     badInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     badInfo.size = 0; // Invalid size
     badInfo.usage = 0; // Invalid usage
-    VkBuffer badBuffer;
+    VkBuffer badBuffer = VK_NULL_HANDLE;
     vkCreateBuffer(ctx->device, &badInfo, NULL, &badBuffer);
+    // Some drivers create the object anyway; destroy it or vkDestroyDevice reports a leak.
+    if (badBuffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(ctx->device, badBuffer, NULL);
 
     unInitVulkan();
 

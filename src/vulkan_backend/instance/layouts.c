@@ -338,7 +338,12 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	if (indexingProps.maxDescriptorSetUpdateAfterBindSampledImages < uabLimit)
 		uabLimit = indexingProps.maxDescriptorSetUpdateAfterBindSampledImages;
 
-	state->bindlessTextures.maxTextures = uabLimit < 4096u ? uabLimit : 4096u;
+	// The limits count every sampler in a pipeline layout, so the fixed bindings sharing
+	// layouts with this array (shadow atlas, Hi-Z pyramid) need headroom reserved here.
+	const uint32_t fixedSamplerReserve = 16u;
+	uint32_t uabBudget = uabLimit > fixedSamplerReserve ? uabLimit - fixedSamplerReserve : 1u;
+
+	state->bindlessTextures.maxTextures = uabBudget < 4096u ? uabBudget : 4096u;
 	state->bindlessTextures.textureCount = 0;
 	ano_log(ANO_INFO, "Bindless texture array: maxTextures = %u (device update-after-bind limit %u)",
 		state->bindlessTextures.maxTextures, uabLimit);
@@ -348,7 +353,8 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	samplerLayoutBinding.descriptorCount = state->bindlessTextures.maxTextures;
 	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	samplerLayoutBinding.pImmutableSamplers = NULL;
-	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// FRAGMENT for geometry sampling; COMPUTE for the UI overlay raster's image prims.
+	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorBindingFlags bindlessFlags = 
 		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
