@@ -10,6 +10,8 @@ Make sure to use `--recursive` to fetch all submodules!
 git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
 ```
 
+Keep the submodules in sync when pulling: run `git submodule update --init --recursive` after every pull, or set it once with `git config submodule.recurse true`. The pinned revisions are mirrored in `flake.nix`, and the Nix dev shells warn on entry when the repo's recorded pointers disagree with the flake pins. Never let a bulk `git add -A` / `git commit -a` sweep a stale submodule pointer into an unrelated commit — that silently downgrades dependencies for everyone; stage `external/*` paths deliberately or not at all.
+
 ### Runtime Features
 
 - **ECS**: Generational entity handles over chunked sparse-set component stores, built to manage large numbers of entities with dynamic properties and behaviors.
