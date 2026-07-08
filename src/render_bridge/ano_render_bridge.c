@@ -238,6 +238,7 @@ bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
     RenderUiBlock *b = (RenderUiBlock *)blk;
     char *at = blk + sizeof(RenderUiBlock);
     b->layer = layer;
+    b->surface = ANO_UI_SURFACE_OVERLAY;
     b->scroll[0] = 0.0f;
     b->scroll[1] = 0.0f;
     b->primCount = ui->primCount;

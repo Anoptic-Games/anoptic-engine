@@ -197,15 +197,16 @@ static bool hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
 #define HUD_UI_MENU  2u
 #define HUD_UI_GCAP  96u
 
-// Menu geometry from the viewport: one source of truth for rendering AND hit-testing.
+// Menu geometry from the logical viewport (RenderSnapshot.uiWidth/uiHeight): one
+// source of truth for rendering AND hit-testing, in overlay logical units end to end.
 typedef struct MenuLayout {
 	float panel[4];      // minX minY maxX maxY
 	float button[3][4];
 } MenuLayout;
 
-static void menu_layout(uint32_t vpW, uint32_t vpH, MenuLayout* out)
+static void menu_layout(float vpW, float vpH, MenuLayout* out)
 {
-	float x0 = (float)vpW * 0.5f - 160.0f, y0 = (float)vpH * 0.5f - 150.0f;
+	float x0 = vpW * 0.5f - 160.0f, y0 = vpH * 0.5f - 150.0f;
 	out->panel[0] = x0; out->panel[1] = y0;
 	out->panel[2] = x0 + 320.0f; out->panel[3] = y0 + 300.0f;
 	for (int i = 0; i < 3; i++) {
@@ -215,7 +216,7 @@ static void menu_layout(uint32_t vpW, uint32_t vpH, MenuLayout* out)
 	}
 }
 
-// Cursor (framebuffer px, the overlay's space) -> hovered button, -1 when none.
+// Cursor (overlay logical units, the layout's own space) -> hovered button, -1 when none.
 static int menu_hit(const MenuLayout* m, float cx, float cy)
 {
 	for (int i = 0; i < 3; i++)
@@ -321,8 +322,9 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	return ano_render_ui_set(bridge, HUD_UI_MENU, 128, &b, glyphs, gcount);
 }
 
-// The persistent status bar, bottom-left. Submitted once when the viewport is known.
-static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, uint32_t vpH)
+// The persistent status bar, bottom-left. Resubmitted whenever the logical viewport
+// changes (resize, DPI change) — layout is pure over the snapshot's logical extent.
+static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float vpH)
 {
 	AnoUiPrim prims[8];
 	AnoGlyphInstance glyphs[HUD_UI_GCAP];
@@ -334,7 +336,7 @@ static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, uint32_
 	ano_ui_color_srgb((float[4]){ 0.10f, 0.11f, 0.13f, 0.92f }, plate);
 	ano_ui_color_srgb((float[4]){ 0.50f, 0.54f, 0.60f, 1.0f }, rim);
 	ano_ui_color_srgb((float[4]){ 0.88f, 0.90f, 0.94f, 1.0f }, label);
-	float rect[4] = { 24.0f, (float)vpH - 68.0f, 24.0f + 420.0f, (float)vpH - 24.0f };
+	float rect[4] = { 24.0f, vpH - 68.0f, 24.0f + 420.0f, vpH - 24.0f };
 	float r10[4] = { 10, 10, 10, 10 };
 	ano_ui_shadow(&b, (float[2]){ rect[0] + 4, rect[1] + 6 }, (float[2]){ rect[2] + 4, rect[3] + 6 },
 	              10.0f, 6.0f, shadow, ANO_UI_REF_NONE, 0);
@@ -414,7 +416,8 @@ void* anoLogicThreadMain(void* arg)
 	bool     menuVisible = false, menuDirty = false, barSubmitted = false;
 	int      menuHovered = -1;
 	uint32_t optionsCount = 0;
-	uint32_t vpW = 0, vpH = 0; // last-known framebuffer size (RenderSnapshot)
+	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
+	float    barVpH = 0.0f;          // logical height the bar was last laid out for
 
 	while (!atomic_load(&g_logicShouldStop))
 	{
@@ -449,7 +452,7 @@ void* anoLogicThreadMain(void* arg)
 						looking = (ie->u.button.action == GLFW_PRESS);
 					else if (ie->u.button.button == GLFW_MOUSE_BUTTON_LEFT
 					         && ie->u.button.action == GLFW_PRESS
-					         && menuVisible && vpW != 0) {
+					         && menuVisible && vpW > 0.0f) {
 						// Click resolves against the same layout the block rendered.
 						MenuLayout ml;
 						menu_layout(vpW, vpH, &ml);
@@ -520,7 +523,7 @@ void* anoLogicThreadMain(void* arg)
 
 		// Menu hover tracks the cursor; any state change resubmits the block (full
 		// replace). A full ring keeps it dirty for the next tick.
-		if (menuVisible && vpW != 0) {
+		if (menuVisible && vpW > 0.0f) {
 			MenuLayout ml;
 			menu_layout(vpW, vpH, &ml);
 			int h = menu_hit(&ml, prevCx, prevCy);
@@ -529,7 +532,7 @@ void* anoLogicThreadMain(void* arg)
 				menuDirty = true;
 			}
 		}
-		if (menuDirty && vpW != 0) {
+		if (menuDirty && vpW > 0.0f) {
 			MenuLayout ml;
 			menu_layout(vpW, vpH, &ml);
 			if (submit_menu(bridge, bake, &ml, menuVisible, menuHovered, optionsCount))
@@ -543,12 +546,19 @@ void* anoLogicThreadMain(void* arg)
 			if (noticeDeadline == 0 && ano_render_acquire_snapshot(bridge, &snap))
 				noticeDeadline = now + 15000000ull; // first published frame: arm the notice
 			if (ano_render_acquire_snapshot(bridge, &snap)) {
-				vpW = snap.vpWidth;
-				vpH = snap.vpHeight;
+				// A menu laid out for the old viewport re-centers on the new one.
+				if (menuVisible && (vpW != snap.uiWidth || vpH != snap.uiHeight))
+					menuDirty = true;
+				vpW = snap.uiWidth;
+				vpH = snap.uiHeight;
 			}
-			// UI status bar: once the viewport is known (backpressure-retried per tick).
-			if (!barSubmitted && vpH != 0)
+			// UI status bar: (re)submitted whenever the logical viewport height moves
+			// (backpressure-retried per tick).
+			if ((!barSubmitted || barVpH != vpH) && vpH > 0.0f) {
 				barSubmitted = submit_bar(bridge, bake, vpH);
+				if (barSubmitted)
+					barVpH = vpH;
+			}
 			if (ano_render_acquire_snapshot(bridge, &snap) && now - lastSnapLog > 1000000) {
 				ano_debug_log(ANO_INFO, "Snapshot: frameId %llu, viewport %ux%u",
 				       (unsigned long long)snap.frameId, snap.vpWidth, snap.vpHeight);

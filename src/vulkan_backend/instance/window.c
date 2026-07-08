@@ -20,6 +20,7 @@
 #include "instanceInit.h"
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/text_raster.h"
+#include "vulkan_backend/ui_raster.h"
 
 void enumerateMonitors(Monitors* monitors) // Instance creation helper
 {
@@ -61,13 +62,56 @@ static void forward_input(const AnoInputEvent* ie)
 	(void)ano_render_emit_event(&rendererState.bridge, &ev); // room checked above
 }
 
+// Maps a cursor sample from GLFW window coordinates into framebuffer pixels, in place.
+// The framebuffer/window ratio is the exact map on every backend: the backing scale on
+// macOS Retina, the output scale on Wayland (fractional included), and precisely 1 on
+// Win32 and X11 where the two sizes coincide by definition. Queried per sample so a
+// window migrating between differently-scaled monitors stays correct. Degenerate (zero)
+// window size leaves the sample untouched.
+static void cursorToFramebuffer(GLFWwindow* window, double* x, double* y)
+{
+	int winW = 0, winH = 0, fbW = 0, fbH = 0;
+	glfwGetWindowSize(window, &winW, &winH);
+	glfwGetFramebufferSize(window, &fbW, &fbH);
+	if (winW <= 0 || winH <= 0)
+		return;
+	*x *= (double)fbW / (double)winW;
+	*y *= (double)fbH / (double)winH;
+}
+
+// Overlay surface scale from the platform content scale. The mapping is isotropic by
+// contract (radii, sigma, border widths are scalars); a divergent y scale is taken as
+// x and warned once. Recomposes the retained UI/text blocks so a monitor migration or
+// DPI change re-folds the same logical content — logic never resubmits for scale.
+static void applyContentScale(float xs, float ys)
+{
+	static bool warned = false;
+	if (!warned && fabsf(xs - ys) > 0.01f) {
+		ano_log(ANO_WARN, "Content scale is anisotropic (%.2f x %.2f); using x.", (double)xs, (double)ys);
+		warned = true;
+	}
+	if (xs <= 0.0f || xs == rendererState.uiScale)
+		return;
+	rendererState.uiScale = xs;
+	ano_vk_ui_rescale(&rendererState);
+	ano_vk_text_rescale(&rendererState);
+}
+static void contentScaleCallback(GLFWwindow* window, float xs, float ys)
+{
+	(void)window;
+	applyContentScale(xs, ys);
+}
+
 // GLFW input callbacks: build one AnoInputEvent and forward it.
 static void cursorPosCallback(GLFWwindow* window, double x, double y)
 {
-	(void)window;
-	rendererState.cursorX = (float)x;
+	cursorToFramebuffer(window, &x, &y);
+	rendererState.cursorX = (float)x; // picking samples the id image in framebuffer px
 	rendererState.cursorY = (float)y;
-	AnoInputEvent ie = { .kind = ANO_INPUT_CURSOR_POS, .u.cursor = { (float)x, (float)y } };
+	// Logic hit-tests in overlay logical units: framebuffer px / content scale.
+	float s = rendererState.uiScale > 0.0f ? rendererState.uiScale : 1.0f;
+	AnoInputEvent ie = { .kind = ANO_INPUT_CURSOR_POS,
+	                     .u.cursor = { (float)x / s, (float)y / s } };
 	forward_input(&ie);
 }
 static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
@@ -170,6 +214,13 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	
 	glfwSetWindowUserPointer(window, &rendererState);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+	// Overlay surface scale: seed from the live value, track monitor/DPI changes.
+	{
+		float xs = 1.0f, ys = 1.0f;
+		glfwGetWindowContentScale(window, &xs, &ys);
+		applyContentScale(xs, ys);
+	}
+	glfwSetWindowContentScaleCallback(window, contentScaleCallback);
 	// All input flows to logic via the events ring.
 	glfwSetKeyCallback(window, keyCallback);            // also tunes render-side debug state (L/H/[]/;')
 	glfwSetMouseButtonCallback(window, mouseButtonCallback);

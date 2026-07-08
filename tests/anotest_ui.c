@@ -19,7 +19,10 @@
  *     cases; erf approx + 4-sample quadrature + 3-sigma truncation all land inside
  *     the pinned envelope;
  *   - blend semantics: painter's order (later on top), ADD accumulates rgb without
- *     occluding, PATH/GLYPHS kinds contribute zero in this lane, evaluation purity.
+ *     occluding, PATH/GLYPHS kinds contribute zero in this lane, evaluation purity;
+ *   - surface fold: per-kind field goldens for ano_ui_*_scale, gradient t invariance
+ *     at the scaled pixel, a folded path stream re-evaluated end to end, sentinel
+ *     and s = 1 bit-stability of the curve-word fold.
  * Oracles are all in double; the evaluator mirrors future GLSL in float.
  * Deterministic (fixed seed); argv[1] scales the jittered-probe soak. Exit 0 = pass. */
 
@@ -390,6 +393,113 @@ static void grad2_truth(const float c0[4], const float c1[4], double t, float ou
     double u = t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t; // CSS pad
     for (int k = 0; k < 4; k++)
         out[k] = (float)(c0[k] + (c1[k] - c0[k]) * u);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Surface fold (ano_ui_*_scale): the logical->device mapping the renderer applies once
+// at compose (ui-render.md §3.11). Field goldens per kind, a scaled paint reading the
+// authored t at the scaled pixel, and a folded path re-evaluated end to end.
+
+static void test_scale(void)
+{
+    const float s = 2.5f;
+    AnoUiPrim prims[4];
+    AnoUiClip clips[2];
+    AnoUiPaint paints[1];
+    AnoUiStop stops[2], in[2];
+    AnoUiBuilder b;
+    ano_ui_builder_init(&b, prims, 4, clips, 2, paints, 1, stops, 2);
+    float white[4] = { 1, 1, 1, 1 };
+    float r4[4] = { 4, 4, 4, 4 };
+
+    // RRECT: geometry and border width are lengths.
+    uint32_t pi = ano_ui_rrect(&b, (float[2]){ 10, 20 }, (float[2]){ 50, 40 }, r4, white,
+                               3.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+    AnoUiPrim p = prims[pi];
+    ano_ui_prim_scale(&p, s);
+    CHECK(p.origin[0] == 30.0f * s && p.origin[1] == 30.0f * s, "prim fold: origin");
+    CHECK(p.half[0] == 20.0f * s && p.half[1] == 10.0f * s, "prim fold: half");
+    CHECK(p.radii[0] == 4.0f * s && p.radii[3] == 4.0f * s, "prim fold: radii");
+    CHECK(p.param[0] == 3.0f * s, "prim fold: border width");
+
+    // SHADOW: sigma is a length. IMAGE: lod shifts by -log2(s), clamped at 0.
+    uint32_t sh = ano_ui_shadow(&b, (float[2]){ 0, 0 }, (float[2]){ 20, 20 }, 5.0f, 6.0f,
+                                white, ANO_UI_REF_NONE, 0);
+    p = prims[sh];
+    ano_ui_prim_scale(&p, s);
+    CHECK(p.param[0] == 6.0f * s, "prim fold: sigma");
+    uint32_t im = ano_ui_image(&b, (float[2]){ 0, 0 }, (float[2]){ 20, 20 }, r4, 0, 2.0f,
+                               white, ANO_UI_REF_NONE, 0);
+    p = prims[im];
+    ano_ui_prim_scale(&p, 2.0f);
+    CHECK(p.param[0] == 1.0f, "prim fold: image lod shifts by -log2(s)");
+    ano_ui_prim_scale(&p, 4.0f);
+    CHECK(p.param[0] == 0.0f, "prim fold: image lod clamps at 0");
+
+    // Clip: rect and rounded term scale; the rect-only sentinel stays negative.
+    uint32_t cr = ano_ui_clip(&b, (float[2]){ 8, 8 }, (float[2]){ 40, 24 },
+                              (float[2]){ 8, 8 }, (float[2]){ 40, 24 }, r4);
+    AnoUiClip c = clips[cr];
+    ano_ui_clip_scale(&c, s);
+    CHECK(c.rect[0] == 8.0f * s && c.rect[3] == 24.0f * s, "clip fold: rect");
+    CHECK(c.rrCenter[0] == 24.0f * s && c.rrHalf[1] == 8.0f * s && c.rrRadii[2] == 4.0f * s,
+          "clip fold: rounded term");
+    uint32_t co = ano_ui_clip(&b, (float[2]){ 0, 0 }, (float[2]){ 10, 10 }, NULL, NULL, NULL);
+    c = clips[co];
+    ano_ui_clip_scale(&c, s);
+    CHECK(c.rrHalf[0] < 0.0f, "clip fold: rect-only sentinel survives");
+
+    // Paint: after the fold the gradient reads the authored t at the scaled pixel.
+    for (int k = 0; k < 4; k++) { in[0].color[k] = 0.0f; in[1].color[k] = 1.0f; }
+    in[0].color[3] = 1.0f; in[1].color[3] = 1.0f;
+    in[0].t = 0.0f; in[1].t = 1.0f;
+    uint32_t pr = ano_ui_paint_linear(&b, (float[2]){ 10, 10 }, (float[2]){ 30, 10 }, in, 2);
+    AnoUiScene sc = ano_ui_scene(&b);
+    float atL[4], atD[4];
+    ano_ui_ref_paint(&sc, pr, 15.0f, 10.0f, white, atL); // authored space, t = 0.25
+    ano_ui_paint_scale(&paints[pr], s);
+    ano_ui_ref_paint(&sc, pr, 15.0f * s, 10.0f * s, white, atD);
+    for (int k = 0; k < 4; k++)
+        CHECK(fabsf(atL[k] - atD[k]) < 1e-6f, "paint fold: t invariant at the scaled pixel");
+
+    // PATH: bake at logical coords, fold prim + stream, evaluate at device pixels.
+    // Integer coords and s = 2 keep binary16 exact, so straight edges stay exact.
+    {
+        AnoUiPrim pp[1];
+        uint32_t words[128], scaled[128], same[128];
+        AnoUiBuilder pb;
+        ano_ui_builder_init(&pb, pp, 1, NULL, 0, NULL, 0, NULL, 0);
+        ano_ui_builder_curves(&pb, words, 128);
+        AnoUiPathSeg rect[] = {
+            { ANO_UI_SEG_MOVE, { 20, 20, 0, 0 } },
+            { ANO_UI_SEG_LINE, { 60, 20, 0, 0 } },
+            { ANO_UI_SEG_LINE, { 60, 40, 0, 0 } },
+            { ANO_UI_SEG_LINE, { 20, 40, 0, 0 } },
+        };
+        CHECK(ano_ui_path_fill(&pb, rect, 4, white, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0) == 0u,
+              "scale: path prim emitted");
+        ano_ui_curves_scale(words, same, pb.curveCount, 1.0f);
+        CHECK(memcmp(same, words, (size_t)pb.curveCount * 4u) == 0,
+              "curve fold: s = 1 is bit-identical");
+        ano_ui_prim_scale(&pp[0], 2.0f);
+        ano_ui_curves_scale(words, scaled, pb.curveCount, 2.0f);
+        AnoUiScene ps = { pp, 1, NULL, 0, NULL, 0, NULL, 0, scaled, pb.curveCount };
+        float out[4];
+        ano_ui_ref_eval(&ps, 80.0f, 60.0f, out); // device center of the 2x rect (40..120, 40..80)
+        CHECK(fabsf(out[3] - 1.0f) < 1e-6f, "path fold: interior stays covered");
+        ano_ui_ref_eval(&ps, 20.0f, 60.0f, out); // the logical-space point is vacated
+        CHECK(out[3] == 0.0f, "path fold: device space, logical point vacated");
+        float e0[4], e1[4];
+        ano_ui_ref_eval(&ps, 39.0f, 60.0f, e0);
+        ano_ui_ref_eval(&ps, 40.0f, 60.0f, e1);
+        CHECK(e0[3] == 0.0f && fabsf(e1[3] - 1.0f) < 1e-6f,
+              "path fold: straight edges land exactly on device px");
+    }
+
+    // The contour sentinel survives any scale (+inf halves scale to +inf).
+    uint32_t sw = 0x7C007C00u, swOut = 0;
+    ano_ui_curves_scale(&sw, &swOut, 1, s);
+    CHECK(swOut == 0x7C007C00u, "curve fold: contour sentinel survives");
 }
 
 static void test_gradient(void)
@@ -976,6 +1086,7 @@ int main(int argc, char **argv)
     test_clip();
     test_gradient();
     test_path();
+    test_scale();
     test_tiles(soak);
     test_shadow();
     test_blend();

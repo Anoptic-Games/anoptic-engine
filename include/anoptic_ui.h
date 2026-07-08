@@ -10,8 +10,19 @@
 // in caller code (the logic thread); this header only packs primitives.
 //
 // Threading: every function is pure over caller memory — any thread, no
-// allocation, no module state. Coordinates are overlay pixels, y-down, origin
-// top-left (the text-lane convention). Colors are premultiplied linear RGBA.
+// allocation, no module state. Colors are premultiplied linear RGBA.
+//
+// Coordinate contract: builder coordinates are LOGICAL UNITS of the block's
+// surface, y-down, origin top-left. A surface owns the mapping from logical units
+// to device pixels; the renderer folds that mapping into the tables exactly once,
+// at compose, through the ano_ui_*_scale verbs below. v0 has one surface — the
+// screen overlay, whose scale is the platform content scale and whose logical
+// extent the RenderSnapshot publishes (anoptic_render.h). Future surfaces
+// (offscreen texture panels, world-placed 3D panels) each define their own
+// mapping; block content and every verb in this header stay unchanged. Layout and
+// hit-testing therefore never see a pixel. All pixel-domain machinery below (AA
+// ramps, tile grids, the reference evaluator) runs AFTER the fold, in device
+// pixels; on a 1:1 display the two spaces coincide.
 
 #ifndef ANOPTICENGINE_ANOPTIC_UI_H
 #define ANOPTICENGINE_ANOPTIC_UI_H
@@ -46,7 +57,8 @@ typedef enum AnoUiPrimKind {
 // 48/64/80/84/88/92, stride 96, GLSL twin in resources/shaders/uicoverage.glsl).
 //   inv    : 2x2 pixel->prim inverse as rows, applied to (pixel - origin). Builders
 //            emit identity; rotation folds here later without an ABI change.
-//   origin : prim center, overlay pixels, y-down.
+//   origin : prim center, y-down — the block's logical units at build time, device
+//            pixels after the renderer's compose fold (the GPU always sees pixels).
 //   half   : half extents in prim space. SHADOW prims cull with a +3*sigma pad.
 //   param  : kind-specific ([0]: border width | sigma | lod).
 //   radii  : per-corner radii (tl, tr, br, bl), pre-clamped by the builder so
@@ -236,6 +248,31 @@ uint32_t ano_ui_paint_conic(AnoUiBuilder *b, const float center[2], float startA
 // clips. The render-side demo compose and the offline screenshot compare both build
 // exactly this; keep it bitwise-stable.
 void ano_ui_demo_scene(AnoUiBuilder *b, float originX, float originY);
+
+// ---------------------------------------------------------------------------------------------
+// Surface fold: multiplies an isotropic logical->device scale into table entries, in
+// place. The renderer applies these once at compose; everything downstream (tiles,
+// evaluators, GPU) is device pixels. Pure like every verb here. s > 0; anisotropic
+// surface scales are out of contract (radii, sigma, and border widths are scalars).
+
+// Prim: origin/half/radii scale; param[0] scales for RRECT (border width) and SHADOW
+// (sigma); IMAGE lod shifts by -log2(s) (a 2x surface halves the texels per device
+// pixel). PATH curve words and GLYPHS instances live outside the prim and fold
+// separately (ano_ui_curves_scale; glyph instances scale origin by s, inv by 1/s).
+void ano_ui_prim_scale(AnoUiPrim *p, float s);
+
+// Clip: rect and rounded term scale; the rrHalf[0] < 0 "no rounded term" sentinel
+// stays negative under any s > 0.
+void ano_ui_clip_scale(AnoUiClip *c, float s);
+
+// Paint: the 2x3 reads device pixels after the fold, so the linear columns divide by
+// s; the translation column is already gradient-space.
+void ano_ui_paint_scale(AnoUiPaint *p, float s);
+
+// Curve stream: copies count words from in to out (in == out is legal), scaling each
+// packed binary16 point pair. The contour sentinel's +inf halves scale to +inf, so
+// separators survive untouched.
+void ano_ui_curves_scale(const uint32_t *in, uint32_t *out, uint32_t count, float s);
 
 // ---------------------------------------------------------------------------------------------
 // Reference evaluator (validation): scalar mirror of the GPU prim math, exported so
