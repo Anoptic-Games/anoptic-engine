@@ -185,10 +185,13 @@ if(Vulkan_FOUND)
     set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
 
     # Shader compiler by build type: Debug embeds SPIR-V debug info, Release strips it.
+    # -gV over -gVS: glslang's embedded source mis-attributes DebugTypeMember line info
+    # across #include boundaries and spirv-val rejects the module (seen on textworld.vert);
+    # -gV keeps the NonSemantic debug info and tools read source from the paths on disk.
     if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
         set(SHADER_COMPILER ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
-        set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gVS)
-        set(SHADER_COMPILE_TAG "glslangValidator -gVS")
+        set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gV)
+        set(SHADER_COMPILE_TAG "glslangValidator -gV")
     elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLC_EXECUTABLE)
         set(SHADER_COMPILER ${Vulkan_GLSLC_EXECUTABLE})
         set(SHADER_COMPILE_ARGS --target-env=vulkan1.2 -g)
