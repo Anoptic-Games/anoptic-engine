@@ -613,6 +613,7 @@ typedef struct RendererState
     struct { uint32_t id; const RenderUiBlock* blk; } uiBlocks[ANO_UI_MAX_BLOCKS];
     uint32_t                uiBlockCount;
     bool                    uiPinned;            // ANO_UI_DEMO/_OPAQUE: registry adopts, compose suppressed
+    bool                    uiComposeDirty;      // block set/clear/rescale mark; frame refresh flushes once
     AnoUiPrim*              uiPendingPrims;
     AnoUiClip*              uiPendingClips;
     AnoUiPaint*             uiPendingPaints;
@@ -620,6 +621,8 @@ typedef struct RendererState
     uint32_t*               uiPendingCurves;
     AnoGlyphInstance*       uiPendingGlyphs;
     uint32_t*               uiTileCursor;        // per-tile fill cursor scratch (tile build)
+    uint32_t*               uiTileScratch;       // heap-side tile build target (offsets then
+                                                 // entries), memcpy'd to the slot's mapped regions
     bool                    uiTilesEnabled;      // !ANO_FORCE_NO_UI_TILES, resolved at init
     uint32_t                uiPendingPrimCount;
     uint32_t                uiPendingClipCount;

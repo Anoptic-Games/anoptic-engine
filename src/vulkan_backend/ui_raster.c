@@ -232,10 +232,12 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
         state->uiPendingGlyphs = mi_heap_malloc(state->textHeap,
                                                 ANO_UI_MAX_GLYPHS * sizeof(AnoGlyphInstance));
         state->uiTileCursor = mi_heap_malloc(state->textHeap, ANO_UI_TILE_OFFSET_WORDS * 4u);
+        state->uiTileScratch = mi_heap_malloc(state->textHeap,
+                                              ANO_UI_TILEOFF_BYTES + ANO_UI_TILEENT_BYTES);
         state->uiTilesEnabled = getenv("ANO_FORCE_NO_UI_TILES") == NULL;
         if (!state->uiPendingPrims || !state->uiPendingClips || !state->uiPendingPaints
             || !state->uiPendingStops || !state->uiPendingCurves || !state->uiPendingGlyphs
-            || !state->uiTileCursor)
+            || !state->uiTileCursor || !state->uiTileScratch)
         {
             ano_log(ANO_WARN, "UI overlay disabled: pending table allocation failed.");
             state->uiPendingPrims = NULL;
@@ -273,7 +275,7 @@ void ano_vk_ui_block_set(RendererState* state, uint32_t ui_id, const RenderUiBlo
         {
             mi_free((void*)state->uiBlocks[i].blk);
             state->uiBlocks[i].blk = blk;
-            ui_compose(state);
+            state->uiComposeDirty = true;
             return;
         }
     }
@@ -287,7 +289,7 @@ void ano_vk_ui_block_set(RendererState* state, uint32_t ui_id, const RenderUiBlo
     state->uiBlocks[state->uiBlockCount].id = ui_id;
     state->uiBlocks[state->uiBlockCount].blk = blk;
     state->uiBlockCount++;
-    ui_compose(state);
+    state->uiComposeDirty = true;
 }
 
 // Overlay surface scale changed (monitor migration, DPI change): re-fold the retained
@@ -296,7 +298,7 @@ void ano_vk_ui_block_set(RendererState* state, uint32_t ui_id, const RenderUiBlo
 void ano_vk_ui_rescale(RendererState* state)
 {
     if (state->uiOverlay && state->uiPendingPrims != NULL)
-        ui_compose(state);
+        state->uiComposeDirty = true;
 }
 
 // Removes a block (RCMD_UI_CLEAR), idempotent. Order-preserving compaction.
@@ -311,20 +313,26 @@ void ano_vk_ui_block_clear(RendererState* state, uint32_t ui_id)
             state->uiBlocks[j - 1] = state->uiBlocks[j];
         state->uiBlockCount--;
         if (state->uiOverlay && state->uiPendingPrims != NULL)
-            ui_compose(state);
+            state->uiComposeDirty = true;
         return;
     }
 }
 
-// Copies pending tables into this slot's mapped buffers when stale and publishes the
-// slot-current counts/bounds the record path pushes. Glyph labels land in the text
-// frame buffer's UI region [ANO_UI_GLYPH_FIRST, +ANO_UI_MAX_GLYPHS) — above the
-// pending and world regions, so neither the plain glyph loop nor the world draw
-// touches them.
+// Flushes a deferred compose (block set/clear/rescale only mark dirty, so a burst of
+// bridge commands recomposes once), then copies pending tables into this slot's mapped
+// buffers when stale and publishes the slot-current counts/bounds the record path
+// pushes. Glyph labels land in the text frame buffer's UI region [ANO_UI_GLYPH_FIRST,
+// +ANO_UI_MAX_GLYPHS) — above the pending and world regions, so neither the plain
+// glyph loop nor the world draw touches them.
 void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
 {
     if (!state->uiOverlay || state->uiPendingPrims == NULL)
         return;
+    if (state->uiComposeDirty)
+    {
+        ui_compose(state);
+        state->uiComposeDirty = false;
+    }
     PerFrameResources* fr = &state->frames[frameIndex];
     if (fr->uiSlotVersion != state->uiVersion && fr->uiFrameMapped != NULL)
     {
@@ -352,16 +360,35 @@ void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
         state->uiBounds[k] = state->uiPendingBounds[k];
 }
 
-// Builds this slot's per-tile prim lists for the dispatch grid, scattering the pending
-// prims (the pure ano_ui_tile_build) straight into the slot's mapped tile regions. The
-// entry indices reference the same prims the slot's binding-4 region holds. Cached on
-// (version, grid) so an idle UI rebuilds nothing. See ui_raster.h.
-bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex,
-                           int32_t ox, int32_t oy, uint32_t gx, uint32_t gy)
+// Builds this slot's per-tile prim lists into the heap scratch (the pure
+// ano_ui_tile_build reads back and increments what it wrote; the mapped regions may
+// be write-combined, where CPU reads stall), then memcpys the finished offsets/entries
+// into the slot's mapped tile regions. The grid derives from the UI bounds alone —
+// origin snapped to tiles, clamped to the canvas — so it is a pure function of
+// uiVersion and the canvas: text-bound motion reshaping the dispatch never invalidates
+// it. The entry indices reference the same prims the slot's binding-4 region holds.
+// Cached on (version, grid); the built grid lands in fr->uiTile* for the push block.
+bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex)
 {
     if (!state->uiTilesEnabled || !state->uiOverlay || state->uiPendingPrims == NULL
-        || state->uiTileCursor == NULL)
+        || state->uiTileCursor == NULL || state->uiTileScratch == NULL)
         return false;
+    const float* b = state->uiPendingBounds;
+    if (state->uiPendingPrimCount == 0 || !(b[2] > b[0] && b[3] > b[1]))
+        return false;
+    int32_t x0 = (int32_t)floorf(b[0]);
+    int32_t y0 = (int32_t)floorf(b[1]);
+    int32_t x1 = (int32_t)ceilf(b[2]);
+    int32_t y1 = (int32_t)ceilf(b[3]);
+    x0 = x0 < 0 ? 0 : (x0 & ~7);
+    y0 = y0 < 0 ? 0 : (y0 & ~7);
+    if (x1 > (int32_t)state->imageExtent.width)  x1 = (int32_t)state->imageExtent.width;
+    if (y1 > (int32_t)state->imageExtent.height) y1 = (int32_t)state->imageExtent.height;
+    if (x1 <= x0 || y1 <= y0)
+        return false; // fully off-canvas
+    int32_t ox = x0, oy = y0;
+    uint32_t gx = ((uint32_t)(x1 - x0) + 7u) / 8u;
+    uint32_t gy = ((uint32_t)(y1 - y0) + 7u) / 8u;
     if ((uint64_t)gx * (uint64_t)gy + 1u > ANO_UI_TILE_OFFSET_WORDS)
         return false; // grid too large for the offset region -> brute
     PerFrameResources* fr = &state->frames[frameIndex];
@@ -373,8 +400,8 @@ bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex,
 
     AnoUiScene s = { state->uiPendingPrims, state->uiPendingPrimCount,
                      NULL, 0, NULL, 0, NULL, 0, NULL, 0 };
-    uint32_t* offsets = (uint32_t*)((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEOFF_OFF);
-    uint32_t* entries = (uint32_t*)((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEENT_OFF);
+    uint32_t* offsets = state->uiTileScratch;
+    uint32_t* entries = state->uiTileScratch + ANO_UI_TILE_OFFSET_WORDS;
     bool ok = false;
     uint32_t total = ano_ui_tile_build(&s, ox, oy, gx, gy, offsets, ANO_UI_TILE_OFFSET_WORDS,
                                        entries, ANO_UI_MAX_TILE_ENTRIES, state->uiTileCursor, &ok);
@@ -383,10 +410,13 @@ bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex,
         fr->uiTileVersion = 0; // entry overflow: rebuild next time, brute this frame
         return false;
     }
+    memcpy((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEOFF_OFF, offsets,
+           ((size_t)gx * gy + 1u) * 4u);
+    memcpy((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEENT_OFF, entries, (size_t)total * 4u);
     fr->uiTileVersion = state->uiVersion;
     fr->uiTileOx = ox; fr->uiTileOy = oy; fr->uiTileGx = gx; fr->uiTileGy = gy;
-    ano_log(ANO_INFO, "UI tiles: %ux%u grid, %u prims -> %u entries (slot %u)",
-            gx, gy, state->uiPendingPrimCount, total, frameIndex);
+    ano_debug_log(ANO_INFO, "UI tiles: %ux%u grid, %u prims -> %u entries (slot %u)",
+                  gx, gy, state->uiPendingPrimCount, total, frameIndex);
     return true;
 }
 

@@ -17,10 +17,6 @@
 //  - sparse dispatch: emit only non-empty tiles + a compact active-tile list so the GPU
 //    skips empty tiles instead of the dense grid (helps big-bounds/mostly-empty UIs).
 //  - GPU binning: move this scatter to a compute pass for dense dynamic vector content.
-//  - grid stability: the per-slot rebuild key includes the dispatch grid origin/extent,
-//    and that grid is the text+UI union — a moving text bound reshapes it and forces a
-//    full rebuild of otherwise-static UI tiles every frame. Snap the grid origin to
-//    tile multiples or key the UI grid on UI bounds alone so static UIs reuse tiles.
 
 #include "anoptic_ui.h"
 
