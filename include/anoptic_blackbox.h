@@ -3,10 +3,12 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#ifndef ANOPTIC_CRASH_H
-#define ANOPTIC_CRASH_H
+#ifndef ANOPTIC_BLACKBOX_H
+#define ANOPTIC_BLACKBOX_H
 
-// Debug Trace Functionality
+// !! COMMENTS IN THIS FILE STAY! You may add new ones
+
+// Crash Trace Functionality
 
 // Scenario: Oh no! The engine writes out of a legal buffer, seizes up, and crashes! The logger is stuck in a spinlock and the queue never get's drain()'d, so no last message can be sent to tell the world what happened... unless?
 
@@ -28,5 +30,12 @@
 /// TODO: Ask user if they want to send telemetry (future implement)
 // First boot post-crash, investigate what happened, append it to logs in further details if necessary/possible/desireable.
 
+
+/* Lifecycle Functions */
+
+// Arm the blackbox: run the Stage 4 check for a previous run's CRASH.log, then install the Stage 1 hooks.
+// Call once from main, right after ano_log_init. The hooks live for the whole process, no cleanup.
+// Output: 0 on success, -1 if a hook failed to install (the engine flies on, crash-naked).
+int ano_blackbox_init(void);
 
 #endif
