@@ -39,7 +39,7 @@ nix build
 
 Done — a runnable headless engine lands in `./result/bin/anopticengine`, on any Linux or macOS host with Nix, no GPU or display required. The other flake targets:
 
-- `nix build .#renderer` — the full Vulkan renderer package (Linux host with a real GPU driver).
+- `nix build .#renderer` — the full Vulkan renderer package. It builds on any Linux host with Nix; a real GPU driver is only needed to *run* the result, not to build it. WSL has no Linux Vulkan driver, so do not use this to get a runnable renderer there — cross-compile the Windows exe instead (see [Building under WSL](#building-under-wsl)).
 - `nix develop --command ./build.sh 6` — the Linux dev shell: headless build plus the non-GPU test suite (`5`/`4` for the TSan/ASan runs). This shell deliberately carries no Vulkan or windowing libraries — the Linux renderer is `nix build .#renderer` above.
 - `nix develop --command ./build.sh 1` — on an Apple Silicon Mac this is the full renderer build; the macOS shell ships clang, glslc, and MoltenVK.
 - `nix develop .#windows` — MinGW-w64 cross shell: build a Windows renderer `.exe` from Linux/WSL (see [Building under WSL](#building-under-wsl)).

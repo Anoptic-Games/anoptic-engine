@@ -193,6 +193,7 @@
             wayland-scanner
           ];
           # glfw's X11 + Wayland backends need these, libGL for glfw3.h's <GL/gl.h>.
+          # libffi: wayland-client.pc Requires it, so glfw's pkg_check_modules(Wayland REQUIRED) fails without it on every Linux host.
           extraBuild = with pkgs; [
             vulkan-headers
             vulkan-loader
@@ -203,6 +204,7 @@
             libxcursor
             libxi
             wayland
+            libffi
             libxkbcommon
           ];
           extraUnpack = injectSubmodule "glfw" glfw-src + injectSubmodule "cgltf" cgltf-src;
