@@ -25,13 +25,6 @@
  * 5 s watchdog window, so the whole suite runs ~10 s).
  * Exit 0 == pass; failures print scenario, expectation, and what was seen. */
 
-// Reopen the full OS namespace the engine-wide _POSIX_C_SOURCE strictness closes: the deadman and
-// segv_exec scenarios need mmap/munmap's MAP_ANONYMOUS on both glibc and Darwin.
-#if !defined(_WIN32)
-#define _DEFAULT_SOURCE
-#define _DARWIN_C_SOURCE
-#endif
-
 #include <anoptic_blackbox.h>
 #include <anoptic_logging.h>
 #include <anoptic_filesystem.h>
