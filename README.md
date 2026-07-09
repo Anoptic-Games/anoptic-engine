@@ -2,15 +2,6 @@
 
 The Anoptic Game Engine is designed to create games that can handle large numbers of events and entities occurring simultaneously. It is tailored for 4X, RTS, or any other kind of complex simulation.
 
-### Getting this Repo
-
-Make sure to use `--recursive` to fetch all submodules!
-
-```bash
-git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
-```
-
-Keep the submodules in sync when pulling: run `git submodule update --init --recursive` after every pull, or set it once with `git config submodule.recurse true`. The pinned revisions are mirrored in `flake.nix`, and the Nix dev shells warn on entry when the repo's recorded pointers disagree with the flake pins. Never let a bulk `git add -A` / `git commit -a` sweep a stale submodule pointer into an unrelated commit — that silently downgrades dependencies for everyone; stage `external/*` paths deliberately or not at all.
 
 ### Runtime Features
 
@@ -21,6 +12,22 @@ Keep the submodules in sync when pulling: run `git submodule update --init --rec
 - **Custom Allocators**: Uses mimalloc for a fast global allocator implementation, as well as several special-purpose local allocators.
 - **Platform Compatibility**: Built and tested for full feature parity on Linux, macOS, and Windows.
 - **Networking**: Built-in networking support for p2p or authoritative server.
+
+
+### Getting this Repo
+
+Make sure to use `--recursive` to fetch all submodules!
+
+```bash
+git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
+```
+
+Set `git config submodule.recurse true`
+or
+Run `git submodule update --init --recursive` after every pull to keep dependencies in sync.
+
+The pinned revisions are mirrored in `flake.nix`, and the Nix dev shells warn on entry when the repo's recorded pointers disagree with the flake pins.
+
 
 ### Installation
 
@@ -36,6 +43,9 @@ Then run:
 ```bash
 nix build
 ```
+
+#### <WRONG>!!!! EVERYTHING IN HERE IS WRONG !!!
+<AGENT>
 
 Done — a runnable headless engine lands in `./result/bin/anopticengine`, on any Linux or macOS host with Nix, no GPU or display required. The other flake targets:
 
@@ -55,6 +65,10 @@ The engine is C23. Clang/LLVM (linking through `lld`) is the default toolchain o
 For editor integration the engine uses `clangd` (shipped with the LLVM toolchain above).
 See [Editor Setup](#editor-setup).
 
+#### <WRONG/>
+
+
+
 ### Building
 
 Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat` (Windows). Run it with no arguments and it prints the available build profiles. The rundown:
@@ -64,30 +78,24 @@ Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat`
 - **Tests** — Debug build + the full CTest suite.
 - **Sanitizer tests** — the same suite under AddressSanitizer/UBSan or ThreadSanitizer.
 - **Headless** — core + tests with the renderer disabled entirely.
-- **Release tests** — the CTest suite at `-O3`; the one to use for benchmarks.
-
-Anoptic never builds incrementally: the scripts run the `ano_scrub` target before every build, deleting every object file so all C recompiles from scratch each time.
-The build system is tuned for that whole-build path instead: Ninja, a modern linker in every config (lld with clang, mold with gcc on ELF), ThinLTO in Release, and static linking. Shaders and staged assets are the one exception and keep
-their normal fresh/stale tracking. The scripts and the Nix targets are the supported
-entry points; there is no supported incremental flow.
-
-Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the
-binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
-`assets/` is gitignored. The demo scene and the Vulkan tests load `viking_room.gltf` (the vulkan-tutorial viking room) and `GlassHurricaneCandleHolder.gltf` (Khronos [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)) plus their textures from it — populate it before running the engine or the full test suite. The demo scene also loads Sponza as its environment if present at `assets/sponza/2.0/Sponza/glTF/Sponza.gltf` (Khronos [glTF-Sample-Models](https://github.com/KhronosGroup/glTF-Sample-Models)); it is optional — the engine logs a warning and continues without it (the viking room + candles still spawn as props) if it's missing.
+- **Release tests** — the CTest suite at `-O3` for benchmarks.
 
 These map to the following CMake options, which can also be passed directly:
-`-DANOPTIC_TESTS=ON` (build the test suite), `-DANOPTIC_HEADLESS=ON` (omit the renderer,
-skips the Vulkan probe — useful for CI without a GPU), and
+`-DANOPTIC_TESTS=ON` (build the test suite), 
+`-DANOPTIC_HEADLESS=ON` (omit the renderer, skips the Vulkan probe
 `-DANOPTIC_SANITIZE=asan|tsan` (instrument test builds).
 
-**Shaders** are compiled to SPIR-V automatically at build time via `glslc` (the
-`anoptic_shaders` target) into `build/<label>/resources/shaders/` — next to the binary,
-where the engine resolves them relative to its own executable. If `glslc` is not found,
-the committed `resources/shaders/*.spv` are staged there as-is (and may be stale).
+Anoptic never builds incrementally: the scripts run the `ano_scrub` target before every build, deleting every object file so all C recompiles from scratch each time.
+
+Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
+
+`assets/` is gitignored.
+
+**Shaders** are compiled to SPIR-V automatically at build time via `glslc` (the `anoptic_shaders` target) into `build/<label>/resources/shaders/`.
 `resources/shaders/compile.sh` regenerates those committed fallbacks by hand.
 
-`cmake --install` produces a self-contained tree: `bin/anopticengine` plus
-`bin/resources/shaders/`. The engine runs from any working directory.
+`cmake --install` produces a self-contained tree: `bin/anopticengine` and `bin/resources/shaders/`.
+
 
 #### Building on Windows
 
@@ -106,7 +114,7 @@ Additional guidance:
 
 Once Mingw-w64 is installed with `clang` working on your system, run `build.bat` from the repository root; its usage mirrors `build.sh`.
 
-#### Building under WSL
+#### Building for Windows with WSL
 
 WSL has no Linux Vulkan driver, so the renderer runs there only as a **Windows** exe.
 WSL's in-guest Vulkan devices (Mesa `dozen` and `llvmpipe`) are not supported render
@@ -137,6 +145,13 @@ Two ways to build a Windows renderer exe from WSL:
 
    Windows binaries link `-static`, so the exe is self-contained — no toolchain
    runtime DLLs to stage or put on `PATH` (only `vulkan-1.dll`, which the driver/SDK owns).
+
+#### Building on Linux (!!!! WHERE DID THIS GO!? !!!!)
+<AGENT>
+
+#### Building on MacOS (!!!! WHERE DID THIS GO!? !!!!)
+<AGENT>
+
 
 ### Editor / LSP Setup
 
