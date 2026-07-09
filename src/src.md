@@ -30,6 +30,7 @@ src/
 ├── time/           # High-resolution monotonic timing and OS-scheduled sleeps
 ├── strings/        # Owned string type experiments and scoped-heap tests
 ├── logging/        # Async queue-based logger
+├── blackbox/       # Crash handler: fatal-signal/SEH hooks, CRASH.log record, hail-mary log flush
 └── filesystem/     # Path and file I/O abstraction (per-platform)
 ```
 
@@ -76,6 +77,11 @@ src/
 
 - `logging/` (`anoptic_logging.h`): Asynchronous, queue-based logger (hot-path enqueue,
   cold-path flush).
+
+- `blackbox/` (`anoptic_blackbox.h`): The crash blackbox. Hooks fatal signals (POSIX) and
+  unhandled SEH exceptions + SIGABRT (Windows), writes an async-signal-safe record (signal,
+  fault address, backtrace) to CRASH.log, then gives the logger one last flush before
+  re-raising. A deadman guarantees the process exits instead of hanging.
 
 - `filesystem/` (`anoptic_filesystem.h`): Path handling and file I/O, per platform.
 

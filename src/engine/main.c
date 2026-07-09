@@ -15,6 +15,7 @@
 #include "anoptic_threads.h"
 #include "anoptic_filesystem.h"
 #include "anoptic_logging.h"
+#include "anoptic_blackbox.h"
 
 #ifndef HEADLESS_BUILD
 // Renderer contract + GLFW, graphical engine only.
@@ -612,6 +613,10 @@ int main()
         ano_log(ANO_FATAL, "Logger initialization failed; something is very wrong.");
         return EXIT_FAILURE;
     }
+
+    // Blackbox armed right after the logger: a fatal signal writes CRASH.log, then hail-mary flushes.
+    if (ano_blackbox_init() != 0)
+        ano_log(ANO_WARN, "Blackbox failed to arm; a crash will leave no CRASH.log.");
 
 #ifndef HEADLESS_BUILD
     // GLFW pins window + event handling to the main thread (mandatory on macOS).
