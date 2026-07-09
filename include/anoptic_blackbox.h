@@ -1,0 +1,32 @@
+/* SPDX-FileCopyrightText: 2026 Anoptic Game Engine Authors
+ *
+ * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
+
+#ifndef ANOPTIC_CRASH_H
+#define ANOPTIC_CRASH_H
+
+// Debug Trace Functionality
+
+// Scenario: Oh no! The engine writes out of a legal buffer, seizes up, and crashes! The logger is stuck in a spinlock and the queue never get's drain()'d, so no last message can be sent to tell the world what happened... unless?
+
+// Enter: anoptic_blackbox.h
+
+
+// Stage 1: Initializing the blackbox.
+// Captures the SIGSEGV, SIGABRT, SIGFPE, etc.
+// Loads up the blackbox infrastructure.
+
+
+// Stage 2: Hopefully never, but...
+// A crash occurs. Immediately write trace to CRASH.log
+
+
+// Stage 3: Immediately following stage 2, a hail mary ano_log_drain() to hopefully recover anything that might've survived in the log buffers, *after* we have already written the CRASH.log.
+
+// Stage 4: Final, the anocraft accident investigation.
+/// TODO: Ask user if they want to send telemetry (future implement)
+// First boot post-crash, investigate what happened, append it to logs in further details if necessary/possible/desireable.
+
+
+#endif
