@@ -1,0 +1,680 @@
+/* SPDX-FileCopyrightText: 2026 Anoptic Game Engine Authors
+ *
+ * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
+
+/* Coverage for anoptic_blackbox.h -- the crash blackbox, end to end, on real crashes:
+ *   - the bb_fmt_dec/bb_fmt_hex handler formatters against the printf oracle;
+ *   - ano_blackbox_init: returns 0, resolves CRASH.log next to the executable, creates nothing;
+ *   - one child process per scenario dies its scripted death (AV read/write/execute, abort,
+ *     illegal instruction, integer divide by zero, CRT/user raise(SIGSEGV/SIGILL/SIGFPE), a crash
+ *     on a non-main thread, a crash inside ano_log_write itself, a crash under a 6-producer storm,
+ *     a crash with the ring pinned full, a stack overflow on main AND on a spawned thread -- the
+ *     latter proving ano_thread_create's per-thread crash-stack arming -- and two simultaneous
+ *     crashers (win64));
+ *   - the logger mesh: buffered records committed before the crash survive into anoptic.log through
+ *     the Stage 3 hail mary (the hailmary/empty_ring/now_path/midwrite sentinels);
+ *   - the deadman: a poisoned deferred format crashes the DRAINER holding the drain mutex, the hail
+ *     mary self-deadlocks, and the watchdog must kill the process at ~5 s instead of hanging;
+ *   - Stage 4: a leftover CRASH.log is announced on the next boot and left in place; records append
+ *     across crashes, never overwrite.
+ * Oracles: exact death (exit code on win64, termination signal on POSIX), exactly ONE complete
+ * record per crash (begin/end markers + backtrace), required/forbidden record substrings, and exact
+ * sentinel counts in the scratch anoptic.log. Parent mode (no args) runs everything; argv[1] is a
+ * scenario name and turns the process into that crash child (the deadman scenario waits through the
+ * 5 s watchdog window, so the whole suite runs ~10 s).
+ * Exit 0 == pass; failures print scenario, expectation, and what was seen. */
+
+// Reopen the full OS namespace the engine-wide _POSIX_C_SOURCE strictness closes: the deadman and
+// segv_exec scenarios need mmap/munmap's MAP_ANONYMOUS on both glibc and Darwin.
+#if !defined(_WIN32)
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
+#endif
+
+#include <anoptic_blackbox.h>
+#include <anoptic_logging.h>
+#include <anoptic_filesystem.h>
+#include <anoptic_threads.h>
+#include <anoptic_time.h>
+
+#include "blackbox/blackbox_internal.h"
+#include "templates/scratch.h"
+
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+#define LOG_DIR   "anotest_blackbox_scratch"
+#define LOG_FILE  LOG_DIR "/anoptic.log"
+#define CRASH_LOG "CRASH.log"
+#define REC_BEGIN "==== ANOPTIC BLACKBOX: we are going down ===="
+#define REC_END   "==== end of record ===="
+
+// One death per platform pair: win64 judges the exact exit code, POSIX the termination signal
+// (0 = must exit(0), -1 = any fatal signal -- Darwin reports some faults as SIGBUS, not SIGSEGV).
+#if defined(_WIN32)
+typedef unsigned long death_t;
+#define DIE(win, posix) ((death_t)(win))
+#define SUB(win, posix) (win)
+#else
+typedef int death_t;
+#define DIE(win, posix) ((death_t)(posix))
+#define SUB(win, posix) (posix)
+#if defined(__APPLE__)
+#define SIG_SEGVISH (-1)
+#else
+#define SIG_SEGVISH SIGSEGV
+#endif
+#endif
+
+static int failures = 0;
+#define CHECK(cond, ...) do { \
+    if (!(cond)) { printf("FAIL (%d): ", __LINE__); printf(__VA_ARGS__); printf("\n"); failures++; } \
+} while (0)
+
+
+/* ---------------- child scenarios: one scripted death each ---------------- */
+
+static void sc_segv_write(void) { *(volatile int *)0 = 42; }
+static void sc_segv_read(void)  { volatile int x = *(volatile int *)8; (void)x; }
+
+// DEP/NX: jump into a readable-writable, never-executable page.
+static void sc_segv_exec(void)
+{
+#if defined(_WIN32)
+    void *page = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (page == NULL) exit(41);
+#else
+    void *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED) exit(41);
+#endif
+    memset(page, 0xC3, 16);
+    ((void (*)(void))page)();
+}
+
+static void sc_abort(void) { abort(); }
+
+static void sc_illegal(void)
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    __asm__ volatile ("ud2");
+#elif defined(__aarch64__)
+    __asm__ volatile (".inst 0x00000000");  // udf #0
+#else
+    __builtin_trap();
+#endif
+}
+
+#if defined(__x86_64__) || defined(_M_X64)
+// Hardware integer divide fault. x86-only: aarch64 division by zero returns 0, no trap.
+static void sc_intdiv(void)
+{
+    volatile int z = 0;
+    volatile int r = 1 / z;
+    (void)r;
+}
+#endif
+
+static void sc_raise_segv(void) { raise(SIGSEGV); }
+static void sc_raise_ill(void)  { raise(SIGILL); }
+static void sc_raise_fpe(void)  { raise(SIGFPE); }
+
+// Crash off the main thread: the hooks are process-wide, the record must not care who faulted.
+static void *segv_thread(void *arg) { (void)arg; *(volatile int *)0 = 1; return NULL; }
+static void sc_thread_segv(void)
+{
+    anothread_t t;
+    if (ano_thread_create(&t, NULL, segv_thread, NULL) != 0) exit(41);
+    ano_thread_join(t, NULL);   // never returns: the process dies under the join
+}
+
+// 32 buffered lines then an immediate crash: most are still undrained. Every one must survive.
+static void sc_hailmary(void)
+{
+    for (int i = 0; i < 32; i++)
+        ano_log(ANO_INFO, "hailmary-sentinel-%d", i);
+    *(volatile int *)0 = 1;
+}
+
+static void sc_empty_ring(void)
+{
+    ano_log(ANO_INFO, "empty-ring-sentinel");
+    ano_log_flush();                    // ring drained: the handler's flush must no-op cleanly
+    *(volatile int *)0 = 1;
+}
+
+static void sc_now_path(void)
+{
+    ano_rlog(ANO_FATAL, ANO_FILE | ANO_NOW, "fatal-now-sentinel");  // synchronous write + fsync
+    *(volatile int *)0 = 1;
+}
+
+// Crash INSIDE ano_log_write: capture's strlen on a wild %s pointer. No logger lock held there,
+// so the committed sentinel before it must still ride the hail mary out.
+static void sc_midwrite(void)
+{
+    ano_log(ANO_INFO, "midwrite-sentinel-before");
+    ano_log(ANO_INFO, "%s", (const char *)16);
+}
+
+// Producer storm shared by contention/ring_full. Never stops; the process death stops it.
+static atomic_bool g_spamHuge;
+static void *spammer(void *arg)
+{
+    uint32_t s = 0x1234u + (uint32_t)(uintptr_t)arg * 2654435761u;
+    bool huge = atomic_load(&g_spamHuge);
+    static char big[8][4001];
+    char *bigbuf = big[(uintptr_t)arg & 7];
+    if (huge) { memset(bigbuf, 'A' + ((int)(uintptr_t)arg & 7), 4000); bigbuf[4000] = 0; }
+    char buf[128];
+    uint32_t it = 0;
+    for (;;) {
+        s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+        if (huge) {
+            ano_log_write(ANO_INFO, 0, NULL, 0, "%s", bigbuf);  // 4000 B entries: the ring pins full
+        } else {
+            int n = (int)(s % 100u) + 8;
+            for (int i = 0; i < n; i++) buf[i] = (char)('!' + (int)((s + (uint32_t)i) % 90u));
+            buf[n] = 0;
+            ano_log_write(ANO_INFO, 0, "anotest", 1, "%s", buf);
+            ano_log_write(ANO_WARN, 0, NULL, 0, "mix=%d/%x/%s", (int)s, s, "alpha");
+            if ((++it & 63u) == 0)
+                ano_log_write(ANO_ERROR, ANO_NOW | ANO_FILE, NULL, 0, "now-%u", it);  // NOW under storm
+        }
+    }
+    return NULL;
+}
+static void storm_then_crash(bool huge)
+{
+    atomic_store(&g_spamHuge, huge);
+    anothread_t t[6];
+    for (intptr_t i = 0; i < 6; i++)
+        if (ano_thread_create(&t[i], NULL, spammer, (void *)i) != 0) exit(41);
+    ano_sleep(100000);      // 100 ms of storm, ring under heavy contention (or pinned full)
+    *(volatile int *)0 = 1;
+}
+static void sc_contention(void) { storm_then_crash(false); }
+static void sc_ring_full(void)  { storm_then_crash(true); }
+
+// Poison a deferred capture: the fmt POINTER is stored at enqueue and dereferenced at drain.
+// Freeing the page between the two crashes the DRAINER inside drain_and_emit -- while it holds
+// the drain mutex. The handler's hail mary then self-deadlocks and the deadman must fire.
+static void sc_deadman(void)
+{
+#if defined(_WIN32)
+    char *page = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (page == NULL) exit(41);
+#else
+    char *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page == MAP_FAILED) exit(41);
+#endif
+    memcpy(page, "poison %d", 10);
+    ano_sleep(5000);        // 5 ms idle: the drainer parks, maximizing our lead over its wake
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    ano_log_write(ANO_INFO, 0, NULL, 0, (const char *)page, 7);
+#pragma GCC diagnostic pop
+#if defined(_WIN32)
+    VirtualFree(page, 0, MEM_RELEASE);  // sub-us later; the drainer is still waking
+#else
+    munmap(page, 4096);
+#endif
+    ano_sleep(7u * 1000u * 1000u);      // the deadman (5 s) collects us long before this returns
+    exit(42);               // race lost: the drainer rendered before the free. Parent retries.
+}
+
+// Main-thread stack overflow: the record must come out of the sigaltstack (POSIX) or the
+// SetThreadStackGuarantee reservation (win64) that bb_install arms for the installing thread.
+static uint64_t overflow_rec(uint64_t d)
+{
+    volatile char pad[4096];
+    pad[0] = (char)d;
+    if (d == UINT64_MAX) return 0;      // never true: silences -Winfinite-recursion
+    return overflow_rec(d + 1) + (uint64_t)pad[0];
+}
+static void sc_stack_overflow(void) { (void)overflow_rec(1); }
+
+// The same overflow on a spawned thread: proves ano_thread_create's spawn shim armed the thread's
+// crash stack (per-thread sigaltstack / stack guarantee). Unarmed, this dies without a record.
+static void *overflow_thread(void *arg) { (void)arg; (void)overflow_rec(1); return NULL; }
+static void sc_thread_overflow(void)
+{
+    anothread_t t;
+    if (ano_thread_create(&t, NULL, overflow_thread, NULL) != 0) exit(41);
+    ano_thread_join(t, NULL);   // never returns: the process dies under the join
+}
+
+#if defined(_WIN32)
+// Two threads crash in the same instant: one owns the record, the other parks. win64-only in the
+// suite -- on POSIX the winner's disarm hands the loser SIG_DFL and the race truncates the record.
+static atomic_int g_crashGate;
+static void *race_thread(void *arg)
+{
+    (void)arg;
+    atomic_fetch_add(&g_crashGate, 1);
+    while (atomic_load(&g_crashGate) < 2) { }   // spin-align both threads
+    *(volatile int *)0 = 1;
+    return NULL;
+}
+static void sc_double(void)
+{
+    anothread_t a, b;
+    if (ano_thread_create(&a, NULL, race_thread, NULL) != 0) exit(41);
+    if (ano_thread_create(&b, NULL, race_thread, NULL) != 0) exit(41);
+    ano_thread_join(a, NULL);
+    ano_thread_join(b, NULL);
+}
+#endif
+
+static void sc_clean(void)
+{
+    ano_log(ANO_INFO, "clean-run-sentinel");
+    ano_log_flush();
+    ano_log_cleanup();
+}
+
+typedef struct { const char *name; void (*fn)(void); } child_t;
+static const child_t CHILDREN[] = {
+    { "clean",          sc_clean },
+    { "segv_write",     sc_segv_write },
+    { "segv_read",      sc_segv_read },
+    { "segv_exec",      sc_segv_exec },
+    { "abort",          sc_abort },
+    { "illegal",        sc_illegal },
+#if defined(__x86_64__) || defined(_M_X64)
+    { "intdiv",         sc_intdiv },
+#endif
+    { "raise_segv",     sc_raise_segv },
+    { "raise_ill",      sc_raise_ill },
+    { "raise_fpe",      sc_raise_fpe },
+    { "thread_segv",    sc_thread_segv },
+    { "hailmary",       sc_hailmary },
+    { "empty_ring",     sc_empty_ring },
+    { "now_path",       sc_now_path },
+    { "midwrite",       sc_midwrite },
+    { "contention",     sc_contention },
+    { "ring_full",      sc_ring_full },
+    { "deadman",        sc_deadman },
+    { "stack_overflow", sc_stack_overflow },
+    { "thread_overflow", sc_thread_overflow },
+#if defined(_WIN32)
+    { "double",         sc_double },
+#endif
+};
+#define NCHILDREN (sizeof CHILDREN / sizeof CHILDREN[0])
+
+// Child entry: arm logger (into the scratch dir) + blackbox, then die the named death.
+// "nolog" is special: blackbox alone, no logger -- CRASH.log must not depend on ano_log_init.
+static int child_main(const char *name)
+{
+    if (strcmp(name, "nolog") == 0) {
+        if (ano_blackbox_init() != 0) return 41;
+        *(volatile int *)0 = 1;
+        return 0;
+    }
+    if (ano_log_init() != 0) return 40;
+    scratch_make_dir(LOG_DIR);
+    if (ano_log_output_dir(LOG_DIR) != 0) return 43;
+    if (ano_blackbox_init() != 0) return 41;
+    for (size_t i = 0; i < NCHILDREN; i++) {
+        if (strcmp(CHILDREN[i].name, name) == 0) {
+            CHILDREN[i].fn();
+            return 0;       // only 'clean' (and a lost deadman race via exit) comes back
+        }
+    }
+    fprintf(stderr, "unknown scenario: %s\n", name);
+    return 44;
+}
+
+
+/* ---------------- parent: spawn, judge, report ---------------- */
+
+typedef struct {
+    const char *name;
+    death_t die;            // DIE(win64 exit code, POSIX signal); POSIX 0 = exit(0), -1 = any signal
+    int  want_record;       // 1 = exactly one complete record, 0 = CRASH.log must not exist
+    const char *rec_sub;    // required substring in CRASH.log (NULL: none)
+    const char *rec_absent; // forbidden substring in CRASH.log (NULL: none)
+    const char *log_sub;    // required substring in the scratch anoptic.log (NULL: none)
+    int  log_n;             // exact occurrence count of log_sub, -1 = presence is enough
+    bool no_logfile;        // the scratch anoptic.log must not exist at all
+    unsigned min_ms, max_ms;// wall bounds on the child, 0 = unchecked (only the deadman needs them)
+    int  retries;           // extra attempts when the child exits race_exit
+    int  race_exit;
+} scen_t;
+
+static const scen_t SCENARIOS[] = {
+    { "clean",       DIE(0, 0),                    0, NULL, NULL, "clean-run-sentinel", 1, false, 0, 0, 0, 0 },
+    { "segv_write",  DIE(0xC0000005, SIG_SEGVISH), 1, SUB("access: write",   "fault address:"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "segv_read",   DIE(0xC0000005, SIG_SEGVISH), 1, SUB("access: read",    "fault address:"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "segv_exec",   DIE(0xC0000005, -1),          1, SUB("access: execute", "fault address:"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "abort",       DIE(3, SIGABRT),              1, "SIGABRT", NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "illegal",     DIE(0xC000001D, SIGILL),      1, SUB("EXCEPTION_ILLEGAL_INSTRUCTION", "SIGILL"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+#if defined(__x86_64__) || defined(_M_X64)
+    { "intdiv",      DIE(0xC0000094, SIGFPE),      1, SUB("EXCEPTION_INT_DIVIDE_BY_ZERO",  "SIGFPE"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+#endif
+    // User raise: the CRT hooks must catch what SEH never sees; POSIX si_code <= 0 forbids si_addr.
+    { "raise_segv",  DIE(3, SIGSEGV),              1, SUB("SIGSEGV (CRT raise)", "SIGSEGV"), SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
+    { "raise_ill",   DIE(3, SIGILL),               1, SUB("SIGILL (CRT raise)",  "SIGILL"),  SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
+    { "raise_fpe",   DIE(3, SIGFPE),               1, SUB("SIGFPE (CRT raise)",  "SIGFPE"),  SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
+    { "thread_segv", DIE(0xC0000005, SIG_SEGVISH), 1, SUB("EXCEPTION_ACCESS_VIOLATION", "fault address:"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "hailmary",    DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, "hailmary-sentinel-",       32, false, 0, 0, 0, 0 },
+    { "empty_ring",  DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, "empty-ring-sentinel",       1, false, 0, 0, 0, 0 },
+    { "now_path",    DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, "fatal-now-sentinel",        1, false, 0, 0, 0, 0 },
+    { "midwrite",    DIE(0xC0000005, SIG_SEGVISH), 1, SUB("access: read", "fault address:"), NULL, "midwrite-sentinel-before", 1, false, 0, 0, 0, 0 },
+    { "contention",  DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "ring_full",   DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "nolog",       DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, NULL, -1, true,  0, 0, 0, 0 },
+    { "deadman",     DIE(3, SIGALRM),              1, SUB("EXCEPTION_ACCESS_VIOLATION", "SIGSEGV"), NULL, NULL, -1, false, 4200, 25000, 3, 42 },
+    { "stack_overflow",  DIE(0xC00000FD, SIG_SEGVISH), 1, SUB("EXCEPTION_STACK_OVERFLOW", "fault address:"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+    { "thread_overflow", DIE(0xC00000FD, SIG_SEGVISH), 1, SUB("EXCEPTION_STACK_OVERFLOW", "fault address:"), NULL, NULL, -1, false, 0, 0, 0, 0 },
+#if defined(_WIN32)
+    { "double",      DIE(0xC0000005, 0),           1, "EXCEPTION_ACCESS_VIOLATION", NULL, NULL, -1, false, 0, 0, 0, 0 },
+#endif
+};
+#define NSCEN (sizeof SCENARIOS / sizeof SCENARIOS[0])
+
+static char g_exe[MAXPATH + 32];    // absolute path to this binary, for self-spawning
+
+static char *read_all(const char *path, size_t *out_len)
+{
+    *out_len = 0;
+    FILE *f = fopen(path, "rb");
+    if (f == NULL)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0) { fclose(f); return NULL; }
+    char *buf = malloc((size_t)sz + 1);
+    if (buf == NULL) { fclose(f); return NULL; }
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[rd] = 0;
+    *out_len = rd;
+    return buf;
+}
+
+static int count_sub(const char *buf, size_t len, const char *needle)
+{
+    size_t nl = strlen(needle);
+    if (buf == NULL || nl == 0 || len < nl) return 0;
+    int n = 0;
+    for (size_t i = 0; i + nl <= len; i++)
+        if (buf[i] == needle[0] && memcmp(buf + i, needle, nl) == 0) { n++; i += nl - 1; }
+    return n;
+}
+
+static bool file_exists(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) return false;
+    fclose(f);
+    return true;
+}
+
+#if defined(_WIN32)
+
+// Spawn this exe with `scenario`, wait (30 s cap), return the raw exit code. 0xDEAD = harness cap
+// hit: the blackbox failed to bound the hang, which no scenario expects.
+static unsigned long spawn_child(const char *scenario, unsigned *ms)
+{
+    char cmd[MAXPATH + 96];
+    snprintf(cmd, sizeof cmd, "\"%s\" %s", g_exe, scenario);
+    STARTUPINFOA si = { .cb = sizeof si };
+    PROCESS_INFORMATION pi;
+    uint64_t t0 = ano_timestamp_us();
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        *ms = 0;
+        return 0xFFFFFFFEul;
+    }
+    unsigned long code = 0xFFFFFFFDul;
+    if (WaitForSingleObject(pi.hProcess, 30000) == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 0xDEADu);
+        WaitForSingleObject(pi.hProcess, 5000);
+        code = 0xDEADul;
+    } else {
+        GetExitCodeProcess(pi.hProcess, &code);
+    }
+    *ms = (unsigned)((ano_timestamp_us() - t0) / 1000u);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return code;
+}
+typedef unsigned long child_status_t;
+static bool death_matches(death_t want, child_status_t code) { return code == want; }
+static bool death_is_race(child_status_t code, int race_exit)
+{ return race_exit != 0 && code == (child_status_t)race_exit; }
+static void death_print(child_status_t code, char *out, size_t cap)
+{ snprintf(out, cap, "exit 0x%08lX", code); }
+
+#else
+
+// Spawn this exe with `scenario`, return the raw waitpid status (-1 on spawn failure). A hung child
+// is left to the CTest timeout: the deadman owns the in-process bound.
+static int spawn_child(const char *scenario, unsigned *ms)
+{
+    uint64_t t0 = ano_timestamp_us();
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl(g_exe, g_exe, scenario, (char *)NULL);
+        _exit(39);
+    }
+    if (pid < 0) { *ms = 0; return -1; }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    *ms = (unsigned)((ano_timestamp_us() - t0) / 1000u);
+    return status;
+}
+typedef int child_status_t;
+static bool death_matches(death_t want, child_status_t status)
+{
+    if (status == -1) return false;
+    if (want == 0)  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (want == -1) return WIFSIGNALED(status);
+    return WIFSIGNALED(status) && WTERMSIG(status) == (int)want;
+}
+static bool death_is_race(child_status_t status, int race_exit)
+{ return race_exit != 0 && WIFEXITED(status) && WEXITSTATUS(status) == race_exit; }
+static void death_print(child_status_t status, char *out, size_t cap)
+{
+    if (WIFSIGNALED(status))    snprintf(out, cap, "signal %d", WTERMSIG(status));
+    else if (WIFEXITED(status)) snprintf(out, cap, "exit %d", WEXITSTATUS(status));
+    else                        snprintf(out, cap, "status 0x%08X", (unsigned)status);
+}
+
+#endif
+
+// One scenario: fresh CRASH.log + scratch log, spawn, judge death + record + sentinels.
+static void run_scenario(const scen_t *sc)
+{
+    child_status_t st = 0;
+    unsigned ms = 0;
+    for (int a = 0; a <= sc->retries; a++) {
+        remove(CRASH_LOG);
+        remove(LOG_FILE);
+        st = spawn_child(sc->name, &ms);
+        if (!death_is_race(st, sc->race_exit))
+            break;
+        printf("%s: race lost, retrying...\n", sc->name);
+    }
+
+    char seen[48];
+    death_print(st, seen, sizeof seen);
+    CHECK(death_matches(sc->die, st), "%s: wrong death: %s", sc->name, seen);
+
+    size_t recLen = 0, logLen = 0;
+    char *rec = read_all(CRASH_LOG, &recLen);
+    char *log = read_all(LOG_FILE, &logLen);
+
+    if (sc->want_record == 1) {
+        CHECK(rec != NULL, "%s: no CRASH.log", sc->name);
+        if (rec != NULL) {
+            // Exactly one complete record: begin + end markers paired, backtrace present.
+            CHECK(count_sub(rec, recLen, REC_BEGIN) == 1, "%s: want exactly 1 record, have %d",
+                  sc->name, count_sub(rec, recLen, REC_BEGIN));
+            CHECK(count_sub(rec, recLen, REC_END) == 1, "%s: record not terminated", sc->name);
+            CHECK(count_sub(rec, recLen, "backtrace:") == 1, "%s: record has no backtrace", sc->name);
+        }
+    } else if (sc->want_record == 0) {
+        CHECK(rec == NULL, "%s: unexpected CRASH.log", sc->name);
+    }
+    if (sc->rec_sub != NULL)
+        CHECK(count_sub(rec, recLen, sc->rec_sub) > 0, "%s: CRASH.log missing \"%s\"",
+              sc->name, sc->rec_sub);
+    if (sc->rec_absent != NULL)
+        CHECK(count_sub(rec, recLen, sc->rec_absent) == 0, "%s: CRASH.log must not contain \"%s\"",
+              sc->name, sc->rec_absent);
+    if (sc->log_sub != NULL) {
+        int n = count_sub(log, logLen, sc->log_sub);
+        if (sc->log_n >= 0)
+            CHECK(n == sc->log_n, "%s: anoptic.log has %d x \"%s\", want %d",
+                  sc->name, n, sc->log_sub, sc->log_n);
+        else
+            CHECK(n > 0, "%s: anoptic.log missing \"%s\"", sc->name, sc->log_sub);
+    }
+    if (sc->no_logfile)
+        CHECK(log == NULL, "%s: anoptic.log written without a logger", sc->name);
+    if (sc->max_ms > 0)
+        CHECK(ms >= sc->min_ms && ms <= sc->max_ms,
+              "%s: duration %u ms outside [%u, %u]", sc->name, ms, sc->min_ms, sc->max_ms);
+
+    free(rec);
+    free(log);
+}
+
+// The handler formatters against the printf oracle. bb_fmt_hex is fixed-width by contract.
+static void test_fmt_helpers(void)
+{
+    static const unsigned long long V[] = {
+        0, 1, 7, 9, 10, 11, 99, 100, 101, 4096, 65535,
+        4294967295ull, 4294967296ull, 999999999999999999ull,
+        0xdeadbeefull, 0x8000000000000000ull, 18446744073709551615ull,
+    };
+    for (size_t i = 0; i < sizeof V / sizeof V[0]; i++) {
+        char got[24], want[24];
+        size_t n = bb_fmt_dec(got, V[i]);
+        got[n] = 0;
+        snprintf(want, sizeof want, "%llu", V[i]);
+        CHECK(strcmp(got, want) == 0, "bb_fmt_dec(%llu) = \"%s\", want \"%s\"", V[i], got, want);
+
+        char gotx[24], wantx[24];
+        size_t nx = bb_fmt_hex(gotx, V[i]);
+        gotx[nx] = 0;
+        snprintf(wantx, sizeof wantx, "0x%016llx", V[i]);
+        CHECK(nx == 18, "bb_fmt_hex(%llu) length %zu, want 18", V[i], nx);
+        CHECK(strcmp(gotx, wantx) == 0, "bb_fmt_hex(%llu) = \"%s\", want \"%s\"", V[i], gotx, wantx);
+    }
+}
+
+// Init in THIS process: returns 0, resolves <gamepath>/CRASH.log, creates no file on a clean boot.
+static void test_init_shape(void)
+{
+    remove(CRASH_LOG);
+    CHECK(ano_blackbox_init() == 0, "ano_blackbox_init failed");
+    CHECK(!file_exists(CRASH_LOG), "init created a CRASH.log on a clean boot");
+    size_t n = strlen(bb_crashPath);
+    CHECK(n >= 9 && strcmp(bb_crashPath + n - 9, "CRASH.log") == 0,
+          "bb_crashPath \"%s\" does not end in CRASH.log", bb_crashPath);
+    ano_fspath gp = ano_fs_gamepath();
+    if (gp.length > 0)
+        CHECK(strncmp(bb_crashPath, gp.str, gp.length) == 0,
+              "bb_crashPath \"%s\" not rooted in the exe dir \"%s\"", bb_crashPath, gp.str);
+}
+
+// Records append across crashes -- a second crash must never destroy the first record.
+static void test_append(void)
+{
+    remove(CRASH_LOG);
+    remove(LOG_FILE);
+    unsigned ms;
+    child_status_t s1 = spawn_child("segv_write", &ms);
+    child_status_t s2 = spawn_child("segv_write", &ms);
+    CHECK(death_matches(DIE(0xC0000005, SIG_SEGVISH), s1), "append: first crash died wrong");
+    CHECK(death_matches(DIE(0xC0000005, SIG_SEGVISH), s2), "append: second crash died wrong");
+    size_t len = 0;
+    char *rec = read_all(CRASH_LOG, &len);
+    CHECK(count_sub(rec, len, REC_BEGIN) == 2 && count_sub(rec, len, REC_END) == 2,
+          "append: want 2 complete records, have %d/%d begin/end",
+          count_sub(rec, len, REC_BEGIN), count_sub(rec, len, REC_END));
+    free(rec);
+}
+
+// Stage 4: no CRASH.log -> silence; a crashed flight -> the next boot announces it and leaves it.
+static void test_stage4(void)
+{
+    unsigned ms;
+
+    remove(CRASH_LOG);
+    remove(LOG_FILE);
+    child_status_t c = spawn_child("clean", &ms);
+    CHECK(death_matches(DIE(0, 0), c), "stage4: control clean run died");
+    size_t len = 0;
+    char *log = read_all(LOG_FILE, &len);
+    CHECK(count_sub(log, len, "previous crash") == 0, "stage4: announcement without a CRASH.log");
+    free(log);
+
+    child_status_t s = spawn_child("segv_write", &ms);
+    CHECK(death_matches(DIE(0xC0000005, SIG_SEGVISH), s), "stage4: crash child died wrong");
+    CHECK(file_exists(CRASH_LOG), "stage4: crash left no CRASH.log");
+
+    remove(LOG_FILE);
+    c = spawn_child("clean", &ms);
+    CHECK(death_matches(DIE(0, 0), c), "stage4: post-crash clean run died");
+    log = read_all(LOG_FILE, &len);
+    CHECK(count_sub(log, len, "previous crash") > 0, "stage4: previous crash not announced");
+    free(log);
+    CHECK(file_exists(CRASH_LOG), "stage4: CRASH.log not preserved for the investigation");
+}
+
+int main(int argc, char **argv)
+{
+    if (!scratch_anchor_to_exe()) {
+        printf("FAIL: cannot anchor to the exe directory\n");
+        return 1;
+    }
+    if (argc > 1)
+        return child_main(argv[1]);
+
+    test_fmt_helpers();
+    test_init_shape();
+
+    ano_fspath gp = ano_fs_gamepath();
+    if (gp.length == 0) {
+        printf("FAIL: cannot resolve the exe path for self-spawning\n");
+        return 1;
+    }
+#if defined(_WIN32)
+    snprintf(g_exe, sizeof g_exe, "%s\\anotest_blackbox.exe", gp.str);
+#else
+    snprintf(g_exe, sizeof g_exe, "%s/anotest_blackbox", gp.str);
+#endif
+
+    scratch_make_dir(LOG_DIR);
+    for (size_t i = 0; i < NSCEN; i++)
+        run_scenario(&SCENARIOS[i]);
+    test_append();
+    test_stage4();
+
+    remove(CRASH_LOG);
+    remove(LOG_FILE);
+    scratch_remove_dir(LOG_DIR);
+
+    if (failures == 0) { printf("anotest_blackbox: all checks passed\n"); return 0; }
+    printf("anotest_blackbox: %d check(s) failed\n", failures);
+    return 1;
+}

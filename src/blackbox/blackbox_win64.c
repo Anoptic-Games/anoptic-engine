@@ -29,6 +29,11 @@
 // hail-mary flush becomes an exit, never a hang.
 #define BB_DEADMAN_MS 5000u
 
+// Stack the kernel guarantees an EXCEPTION_STACK_OVERFLOW filter on an armed thread: enough for
+// the record write (file open, 64 frames, module names) and the hail mary's locks. Without it the
+// filter runs on whatever sliver survived the guard page -- a record by luck, not by contract.
+#define BB_STACK_GUARANTEE (64u * 1024u)
+
 static atomic_int bb_entered;
 static HANDLE     bb_deadmanEvent;
 
@@ -214,10 +219,23 @@ int bb_install(void)
     if (wd == NULL)
         return -1;
     CloseHandle(wd);
+    (void)bb_thread_arm();  // main's stack-overflow guarantee; refusal is not worth failing install
     SetUnhandledExceptionFilter(bb_filter);
     int rc = 0;
     for (size_t i = 0; i < BB_NCRT; i++)
         if (signal(bb_crtHooked[i].sig, bb_on_signal) == SIG_ERR)
             rc = -1;
     return rc;
+}
+
+// The guarantee is per-thread kernel state: set at spawn (ano_thread_create routes here), nothing
+// to release -- it dies with the thread. Idempotent: re-arming asks for the same reservation.
+int bb_thread_arm(void)
+{
+    ULONG g = BB_STACK_GUARANTEE;
+    return SetThreadStackGuarantee(&g) ? 0 : -1;
+}
+
+void bb_thread_disarm(void)
+{
 }

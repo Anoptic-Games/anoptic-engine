@@ -38,4 +38,16 @@
 // Output: 0 on success, -1 if a hook failed to install (the engine flies on, crash-naked).
 int ano_blackbox_init(void);
 
+// Arm the CALLING thread's crash stack: an alternate signal stack (POSIX) or a guaranteed
+// stack-overflow handler reservation (win64), so a blown stack on this thread still yields a record.
+// ano_thread_create arms every engine thread automatically; only threads created behind the engine's
+// back (external libraries, OS callbacks) need to call this themselves. The hooks are process-wide
+// and order-independent: arming works before or after ano_blackbox_init. Idempotent per thread.
+// Never call on a thread armed by someone else (main is armed by ano_blackbox_init itself).
+// Output: 0 on success, -1 if the OS refused (the thread reports crash-naked, the engine flies on).
+int ano_blackbox_thread_arm(void);
+
+// Release what ano_blackbox_thread_arm reserved, just before the thread exits. Safe to call unarmed.
+void ano_blackbox_thread_disarm(void);
+
 #endif

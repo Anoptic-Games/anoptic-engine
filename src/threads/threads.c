@@ -4,14 +4,49 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include <anoptic_threads.h>
+#include <anoptic_blackbox.h>
+#include <anoptic_memory.h>
 #include <pthread.h>
 
 
 /* Thread Management */
 
+// Spawn shim: every engine thread gets its crash stack armed (per-thread alternate signal stack on
+// POSIX, stack-overflow guarantee on win64) before user code runs, and released however the thread
+// exits -- the cleanup handler covers both a plain return and pthread_exit/ano_thread_exit.
+typedef struct {
+    void *(*func)(void *);
+    void   *arg;
+} thread_tramp_t;
+
+static void tramp_disarm(void *unused)
+{
+    (void)unused;
+    ano_blackbox_thread_disarm();
+}
+
+static void *thread_trampoline(void *p)
+{
+    thread_tramp_t t = *(thread_tramp_t *)p;
+    mi_free(p);
+    (void)ano_blackbox_thread_arm();    // best effort: an unarmed thread still runs, reports crash-naked
+    void *ret;
+    pthread_cleanup_push(tramp_disarm, NULL);
+    ret = t.func(t.arg);
+    pthread_cleanup_pop(1);
+    return ret;
+}
+
 int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(* func)(void *), void *arg) {
 
-    return pthread_create(thread, attr, func, arg);
+    thread_tramp_t *t = mi_malloc(sizeof *t);
+    if (t == NULL)
+        return pthread_create(thread, attr, func, arg);    // no shim beats no thread
+    *t = (thread_tramp_t){ .func = func, .arg = arg };
+    int rc = pthread_create(thread, attr, thread_trampoline, t);
+    if (rc != 0)
+        mi_free(t);
+    return rc;
 }
 
 int ano_thread_join(anothread_t thread, void **res) {

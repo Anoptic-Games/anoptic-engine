@@ -68,7 +68,8 @@ src/
   integration that backs the engine's arenas and thread-local heaps.
 
 - `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition
-  variables, spinlocks, barriers, and TLS over pthreads / Win32.
+  variables, spinlocks, barriers, and TLS over pthreads / Win32. The spawn shim arms
+  each new thread's crash stack via `ano_blackbox_thread_arm` (see `blackbox/`).
 
 - `time/` (`anoptic_time.h`): Emulator-grade monotonic timestamps and precise
   sleep/busy-wait.
@@ -81,7 +82,9 @@ src/
 - `blackbox/` (`anoptic_blackbox.h`): The crash blackbox. Hooks fatal signals (POSIX) and
   unhandled SEH exceptions + SIGABRT (Windows), writes an async-signal-safe record (signal,
   fault address, backtrace) to CRASH.log, then gives the logger one last flush before
-  re-raising. A deadman guarantees the process exits instead of hanging.
+  re-raising. A deadman guarantees the process exits instead of hanging. Per-thread crash
+  stacks (sigaltstack / SetThreadStackGuarantee) arm via `ano_blackbox_thread_arm`, called
+  automatically by `ano_thread_create`, so a blown stack reports on any engine thread.
 
 - `filesystem/` (`anoptic_filesystem.h`): Path handling and file I/O, per platform.
 
