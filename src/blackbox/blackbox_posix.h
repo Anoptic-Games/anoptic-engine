@@ -11,6 +11,7 @@
 #define BLACKBOX_POSIX_H
 
 #include <anoptic_logging.h>
+#include <anoptic_memory.h>
 #include "blackbox/blackbox_internal.h"
 
 #include <execinfo.h>
@@ -39,8 +40,11 @@ static const struct { int sig; const char *name; } bb_hooked[] = {
 // the process out from under them).
 static atomic_int bb_entered;
 
+// One crash stack's worth: room for the handler, backtrace_symbols_fd, and the hail mary's locks.
+#define BB_ALTSTACK_SZ (64u * 1024u)
+
 // The handler runs here so a blown stack can still be reported. Static: nothing allocates at crash time.
-static char bb_altStack[64 * 1024];
+static char bb_altStack[BB_ALTSTACK_SZ];
 
 // write() until done or dead. Async-signal-safe, ignores failure -- there is no one left to tell.
 static void bb_write_all(int fd, const char *buf, size_t len)
@@ -126,6 +130,11 @@ static void bb_handler(int sig, siginfo_t *info, void *uctx)
 // Inputs: none. Output: 0 when every hook installed, -1 if any refused (the rest stay armed).
 int bb_install(void)
 {
+    // Warm up the unwinder: glibc's FIRST backtrace() dlopens libgcc_s (malloc + loader lock).
+    // Take that hit here, once, so the handler's backtrace never allocates on a possibly-corrupt heap.
+    void *warm[1];
+    (void)backtrace(warm, 1);
+
     stack_t ss = { .ss_sp = bb_altStack, .ss_size = sizeof bb_altStack };
     if (sigaltstack(&ss, NULL) != 0)
         return -1;
@@ -136,6 +145,37 @@ int bb_install(void)
         if (sigaction(bb_hooked[i].sig, &sa, NULL) != 0)
             rc = -1;
     return rc;
+}
+
+// sigaltstack state is thread-local: bb_install only covered the installing (main) thread, with a
+// static stack immune to heap state. Every other thread arms here at spawn -- calm time, so a heap
+// stack is fine -- and releases at exit. Idempotent: a second arm on the same thread is a no-op.
+static _Thread_local char *bb_threadAltStack;
+
+int bb_thread_arm(void)
+{
+    if (bb_threadAltStack != NULL)
+        return 0;
+    char *mem = ano_aligned_malloc(BB_ALTSTACK_SZ, 16);
+    if (mem == NULL)
+        return -1;
+    stack_t ss = { .ss_sp = mem, .ss_size = BB_ALTSTACK_SZ };
+    if (sigaltstack(&ss, NULL) != 0) {
+        ano_aligned_free(mem);
+        return -1;
+    }
+    bb_threadAltStack = mem;
+    return 0;
+}
+
+void bb_thread_disarm(void)
+{
+    if (bb_threadAltStack == NULL)
+        return;
+    stack_t off = { .ss_flags = SS_DISABLE };
+    sigaltstack(&off, NULL);    // handlers fall back to the thread stack for the exit window
+    ano_aligned_free(bb_threadAltStack);
+    bb_threadAltStack = NULL;
 }
 
 #endif // BLACKBOX_POSIX_H

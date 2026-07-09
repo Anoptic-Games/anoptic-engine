@@ -47,3 +47,14 @@ int ano_blackbox_init(void)
 
     return bb_install();
 }
+
+// Thin routing to the per-platform arm/release; the contract lives in the public header.
+int ano_blackbox_thread_arm(void)
+{
+    return bb_thread_arm();
+}
+
+void ano_blackbox_thread_disarm(void)
+{
+    bb_thread_disarm();
+}

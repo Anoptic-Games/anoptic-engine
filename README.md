@@ -164,7 +164,7 @@ On VSCode, install the [clangd extension](https://marketplace.visualstudio.com/i
 
 ### Tests
 
-The Tests profile of the build script builds and runs the full suite via CTest. The suite covers the platform layer (`anoptic_time`, `anoptic_logging`, `anoptic_memory`, plus the `anotest_logfuzz` logger fuzzer), the mesh pipeline (`anoptic_meshoptimizer`), the logic/render transport (`anoptic_render_bridge`, `anoptic_render_slots`), and the Vulkan backend (`anotest_vk_lifecycle`, `anotest_vk_components`, `anotest_vk_compliance_layers`, `anotest_vk_memory`, `anotest_vk_sync`). The Vulkan tests create a real device, so they need a Vulkan-capable driver (a software rasterizer such as lavapipe is sufficient). To run a subset directly:
+The Tests profile of the build script builds and runs the full suite via CTest. The suite covers the platform layer (`anoptic_time`, `anoptic_logging`, `anoptic_memory`, the `anotest_logfuzz` logger fuzzer, plus the `anoptic_blackbox` crash-handler suite, which re-execs itself and dies once per scenario), the mesh pipeline (`anoptic_meshoptimizer`), the logic/render transport (`anoptic_render_bridge`, `anoptic_render_slots`), and the Vulkan backend (`anotest_vk_lifecycle`, `anotest_vk_components`, `anotest_vk_compliance_layers`, `anotest_vk_memory`, `anotest_vk_sync`). The Vulkan tests create a real device, so they need a Vulkan-capable driver (a software rasterizer such as lavapipe is sufficient). To run a subset directly:
 
 ```bash
 ctest --test-dir build/Tests --output-on-failure -R anotest_vk

@@ -19,6 +19,11 @@ extern char bb_crashPath[];
 // Stage 1, per-platform: install the fatal hooks. Output: 0 on success, -1 if any failed.
 int bb_install(void);
 
+// Per-thread Stage 1, per-platform: arm/release the calling thread's crash stack (see the public
+// ano_blackbox_thread_arm). Output: 0 on success, -1 if the OS refused.
+int  bb_thread_arm(void);
+void bb_thread_disarm(void);
+
 // Decimal of v into out, returns length. No printf machinery: a handler may not malloc or lock.
 static inline size_t bb_fmt_dec(char *out, unsigned long long v)
 {
