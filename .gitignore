@@ -63,10 +63,11 @@ Pipfile
 Pipfile.lock
 poetry.lock
 
-# Doc-generated pdfs
+# Docs and doc artifacts
 docs/*.pdf
 docs/references/*.pdf
 docs/artifacts/*
+docs/study/
 
 # IDE-specific directories
 .vscode/
@@ -122,7 +123,7 @@ result-*
 CMakeFiles
 CMakeFiles/
 CMakeCache.txt
-
+xs
 # Test assets
 assets/*
 
@@ -141,4 +142,3 @@ tools/ucd/
 !.claude/hooks/**
 !.claude/tools/
 !.claude/tools/**
-docs/study/

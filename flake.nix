@@ -1,12 +1,28 @@
 {
-  # Targets:
-  #   nix build                  headless engine -> ./result/bin
-  #   nix build .#renderer       Vulkan renderer + shaders (Linux GPU host)
-  #   nix develop                dev shell (Linux clang, macOS toolchain on a Mac)
-  #   nix develop .#windows      MinGW-w64 cross shell -> Windows .exe from WSL/Linux
+  # Pure side — artifacts in ./result, every dep pinned, working-tree state irrelevant:
+  #   nix build                            renderer, Release+ThinLTO, this platform
+  #   nix build .#debug                    renderer, Debug, validation layers wired in
+  #   nix build .#release-headless         no-renderer engine (alias: .#headless)
+  #   nix build .#<type>[-headless]-<platform>-<arch>[-<backend>]   any permutation:
+  #     release-linux-x64[-wayland|-x11]   debug-linux-x64[-wayland|-x11]
+  #     release-headless-linux-x64         debug-headless-linux-x64
+  #     (same set with -aarch64 on ARM Linux; -macos-aarch64 on Apple Silicon)
+  #     release-windows-x64 (alias: release-wsl)  debug-windows-x64  *-headless-windows-x64
+  #   nix build .#tests-headless           run a CTest suite in the sandbox (fails = red)
+  #   nix build .#tests-asan|tests-tsan    sanitized non-GPU suite        (Linux)
+  #   nix build .#tests-full               full suite incl. Vulkan on lavapipe (Linux, experimental)
+  #   nix flake check                      all of the host's suites at once
   #
-  # Flakes need `experimental-features = nix-command flakes` in nix.conf.
-  description = "Anoptic Engine — C23 game engine (Linux native + Windows MinGW-w64 cross + macOS Apple Silicon)";
+  # Impure side — your working tree, output in ./build/<label>/ like build.sh:
+  #   nix run [-- N]                       dev-env wrapper around ./build.sh N (default 1):
+  #                                        halts if submodule gitlinks disagree with the pins,
+  #                                        auto-inits absent submodules, stages assets/ best-effort
+  #   nix develop [.#windows]              the same env, you drive
+  #
+  # git flakes see tracked files only: `git add` new files or nix will not.
+  # Flake inputs cannot be optional: an unfetchable input kills evaluation, so the
+  # assets input defaults to the public pack; the private one is an override away.
+  description = "Anoptic Engine — C23 game engine (Linux, macOS, Windows via MinGW cross)";
 
   inputs = {
     # Same rev as the pylon system flake.
@@ -29,53 +45,66 @@
       url = "github:jkuhlmann/cgltf/85cd62382dfea638278962690cf515023f33ed00";
       flake = false;
     };
+
+    # Public asset pack. Private full pack:
+    #   nix build --override-input anoptic-assets git+ssh://git@github.com/Anoptic-Games/assets
+    anoptic-assets = {
+      url = "github:Anoptic-Games/assets-free";
+      flake = false;
+    };
   };
 
   outputs =
-    { self, nixpkgs, mimalloc-src, freetype-src, glfw-src, cgltf-src }:
+    {
+      self,
+      nixpkgs,
+      mimalloc-src,
+      freetype-src,
+      glfw-src,
+      cgltf-src,
+      anoptic-assets,
+    }:
     let
-      system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
-
-      # Windows cross package set (ucrt64 for C11 timespec_get).
-      crossPkgs = pkgs.pkgsCross.ucrt64;
-
-      # macOS Apple Silicon package set.
-      darwinSystem = "aarch64-darwin";
-      darwinPkgs = nixpkgs.legacyPackages.${darwinSystem};
-
-      # clang stdenv with LLVM bintools for wrapped lld.
-      clangLldStdenv = pkgs.overrideCC pkgs.clangStdenv (
-        pkgs.llvmPackages.clang.override { bintools = pkgs.llvmPackages.bintools; }
-      );
-
-      # Build-machine tools shared by both targets.
-      commonNativeTools = with pkgs; [
-        cmake
-        ninja
-        pkg-config
-        shaderc # glslc
-        git
+      lib = nixpkgs.lib;
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
       ];
+      forAllSystems = f: lib.genAttrs systems f;
 
-      # Fortify errors under -O0, disabled in dev shells.
+      # Feed each attr its own name as the variant, so names are written once.
+      mkVariants = builder: lib.mapAttrs (variant: args: builder (args // { inherit variant; }));
+
+      # vulkan-validation-layers where the platform actually has them.
+      vvlFor =
+        pkgs: host:
+        if pkgs ? vulkan-validation-layers && lib.meta.availableOn host pkgs.vulkan-validation-layers then
+          pkgs.vulkan-validation-layers
+        else
+          null;
+
+      # Fortify needs -O; Debug is -O0 and sanitizers dislike it too.
       fortifyOff = [
         "fortify"
         "fortify3"
       ];
 
-      # Copy a pinned submodule source into the unpacked tree.
+      # Copy a pinned submodule source into the unpacked tree (self excludes submodule content).
       injectSubmodule = name: src: ''
         rm -rf "$sourceRoot/external/${name}"
         cp -r ${src} "$sourceRoot/external/${name}"
         chmod -R u+w "$sourceRoot/external/${name}"
       '';
 
-      # Warns on shell entry when the repo's recorded submodule gitlinks disagree with the
-      # flake pins (a stale-submodule `git add -A` regressed the 2026-06-24 dep bump twice).
-      submodulePinCheck = ''
+      # path=rev pairs shared by the shell warning and the nix-run fatal gate.
+      pinList = "external/glfw=${glfw-src.rev} external/mimalloc=${mimalloc-src.rev} external/freetype=${freetype-src.rev} external/cgltf=${cgltf-src.rev}";
+
+      # Shell-entry warning when recorded gitlinks disagree with the flake pins
+      # (a stale-submodule `git add -A` regressed the 2026-06-24 dep bump twice).
+      submodulePinWarn = ''
         if git rev-parse --git-dir >/dev/null 2>&1; then
-          for pair in external/glfw=${glfw-src.rev} external/mimalloc=${mimalloc-src.rev} external/freetype=${freetype-src.rev} external/cgltf=${cgltf-src.rev}; do
+          for pair in ${pinList}; do
             p="''${pair%%=*}" want="''${pair#*=}"
             rec="$(git ls-tree HEAD "$p" 2>/dev/null | awk '{ print $3 }')"
             if [ -n "$rec" ] && [ "$rec" != "$want" ]; then
@@ -85,142 +114,479 @@
         fi
       '';
 
-      # Shared derivation shape for the engine packages.
+      # One engine derivation for every permutation.
+      # pkgs/stdenv: host package set + compiler (native clang+lld, or MinGW cross).
+      # variant: qualified attr name, becomes the pname suffix.
+      # buildType: Release | Debug. headless: no renderer, no GLFW/Vulkan.
+      # wayland/x11: Linux renderer backends (both on = runtime-selected, the Steam shape).
+      # tests: ANOPTIC_TESTS + ctest in checkPhase. sanitize: asan | tsan | "".
+      # softwareVulkan: point the loader at mesa's lavapipe ICD (sandboxed GPU tests).
+      # Invariant: install ships bin/anopticengine + bin/resources/shaders; fonts and
+      # assets are staged in postInstall because cmake only stages them in build trees.
       mkEngine =
         {
-          pname,
-          description,
-          headless,
-          buildPkgs ? pkgs,
-          stdenv ? clangLldStdenv,
-          extraNative ? [ ],
-          extraBuild ? [ ],
-          extraUnpack ? "",
+          pkgs,
+          stdenv,
+          variant,
+          buildType,
+          headless ? false,
+          wayland ? true,
+          x11 ? true,
+          tests ? false,
+          sanitize ? "",
+          softwareVulkan ? false,
         }:
+        let
+          renderer = !headless;
+          isDebug = buildType == "Debug";
+          host = stdenv.hostPlatform;
+          onOff = b: if b then "ON" else "OFF";
+          vvl = vvlFor pkgs host;
+          # Wrap so the store binary is runnable as-is: MoltenVK ICD on macOS,
+          # validation layers discoverable for Debug renderers.
+          wrapArgs =
+            lib.optionals (renderer && host.isDarwin) [
+              "--set-default"
+              "VK_ICD_FILENAMES"
+              "${pkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json"
+            ]
+            ++ lib.optionals (renderer && isDebug && vvl != null && !host.isWindows) [
+              "--prefix"
+              "VK_LAYER_PATH"
+              ":"
+              "${vvl}/share/vulkan/explicit_layer.d"
+            ];
+        in
         stdenv.mkDerivation {
-          inherit pname;
+          pname = "anopticengine-${variant}";
           version = "0.0.1";
           src = self;
 
-          nativeBuildInputs = (with buildPkgs; [ cmake ninja pkg-config ]) ++ extraNative;
-          buildInputs = extraBuild;
+          nativeBuildInputs =
+            (with pkgs.buildPackages; [
+              cmake
+              ninja
+              pkg-config
+            ])
+            # llvm-ar/llvm-ranlib: the clang wrapper ships neither and the
+            # CheckIPOSupported probe fails without them — Release silently loses ThinLTO.
+            ++ lib.optionals (!host.isWindows) [ pkgs.buildPackages.llvmPackages_latest.llvm ]
+            ++ lib.optionals renderer [ pkgs.buildPackages.shaderc ] # glslc
+            # glslangValidator -gV: the Debug shader path with correct cross-#include debug info.
+            ++ lib.optionals (renderer && isDebug) [ pkgs.buildPackages.glslang ]
+            ++ lib.optionals (renderer && host.isLinux && wayland) [ pkgs.buildPackages.wayland-scanner ]
+            ++ lib.optionals (wrapArgs != [ ]) [ pkgs.buildPackages.makeWrapper ];
+
+          buildInputs =
+            lib.optionals host.isWindows [ pkgs.windows.pthreads ] # <pthread.h>
+            ++ lib.optionals renderer (
+              [
+                pkgs.vulkan-headers
+                pkgs.vulkan-loader
+              ]
+              ++ lib.optionals host.isLinux (
+                [ pkgs.libGL ] # glfw3.h's <GL/gl.h>
+                ++ lib.optionals x11 (
+                  with pkgs;
+                  [
+                    libx11
+                    libxrandr
+                    libxinerama
+                    libxcursor
+                    libxi
+                  ]
+                )
+                # No `with pkgs` here: the wayland *parameter* lexically shadows pkgs.wayland.
+                ++ lib.optionals wayland [
+                  pkgs.wayland
+                  pkgs.libxkbcommon
+                ]
+              )
+              ++ lib.optionals host.isDarwin [ pkgs.moltenvk ]
+            );
 
           postUnpack =
             injectSubmodule "mimalloc" mimalloc-src
             + injectSubmodule "freetype" freetype-src
-            + extraUnpack;
+            + lib.optionalString renderer (injectSubmodule "glfw" glfw-src + injectSubmodule "cgltf" cgltf-src);
 
           cmakeFlags = [
-            "-DCMAKE_BUILD_TYPE=Release"
-          ] ++ buildPkgs.lib.optional headless "-DANOPTIC_HEADLESS=ON";
+            "-DCMAKE_BUILD_TYPE=${buildType}"
+          ]
+          ++ lib.optional headless "-DANOPTIC_HEADLESS=ON"
+          ++ lib.optional tests "-DANOPTIC_TESTS=ON"
+          ++ lib.optional (sanitize != "") "-DANOPTIC_SANITIZE=${sanitize}"
+          ++ lib.optionals (renderer && host.isLinux) [
+            "-DGLFW_BUILD_WAYLAND=${onOff wayland}"
+            "-DGLFW_BUILD_X11=${onOff x11}"
+          ];
+
+          hardeningDisable = lib.optionals isDebug fortifyOff;
+
+          doCheck = tests;
+          # The sandbox has no usable HOME and ano_fs_userpath() needs one (plus the
+          # macOS Application Support parents). until-pass:2 absorbs sleep-precision
+          # flakes when the builder is loaded; genuine failures fail both runs.
+          # Darwin builders run at background QoS on efficiency cores, where the
+          # anoptic_time sleep-resolution asserts are meaningless — excluded there;
+          # `nix run -- 3|6` still covers them at user QoS.
+          checkPhase = ''
+            runHook preCheck
+            export HOME="$TMPDIR/anoptic-home"
+            mkdir -p "$HOME/Library/Application Support"
+            ctest --output-on-failure --repeat until-pass:2 ${lib.optionalString host.isDarwin "-E anoptic_time"}
+            runHook postCheck
+          '';
+
+          env = lib.optionalAttrs softwareVulkan {
+            VK_ICD_FILENAMES = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
+          };
+
+          # Fonts always; assets best-effort — an empty input warns, never fails.
+          postInstall = lib.optionalString renderer (
+            ''
+              mkdir -p "$out/bin/resources"
+              cp -r "$src/resources/fonts" "$out/bin/resources/fonts"
+            ''
+            + lib.optionalString (!tests) ''
+              shopt -s nullglob
+              staged=0
+              for entry in ${anoptic-assets}/*; do
+                case "$(basename "$entry")" in README*|LICENSE*|COPYING*) continue ;; esac
+                cp -r "$entry" "$out/bin/"
+                staged=1
+              done
+              if [ "$staged" -eq 0 ]; then
+                echo "[anoptic] WARNING: assets input has no content — engine runs without demo assets." >&2
+              fi
+            ''
+          );
+
+          postFixup = lib.optionalString (wrapArgs != [ ]) ''
+            wrapProgram "$out/bin/anopticengine" ${lib.escapeShellArgs wrapArgs}
+          '';
 
           meta = {
-            inherit description;
+            description = "Anoptic Engine — ${variant}";
             mainProgram = "anopticengine";
           };
         };
+
+      perSystem =
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          host = pkgs.stdenv.hostPlatform;
+          isLinux = host.isLinux;
+          archTag = if host.isx86_64 then "x64" else "aarch64";
+          hostTag = (if isLinux then "linux" else "macos") + "-" + archTag;
+
+          # Latest clang in the pin (full C23): lld on Linux, ld64 via the darwin llvm stdenv.
+          llvmLatest = pkgs.llvmPackages_latest;
+          engineStdenv =
+            if isLinux then
+              pkgs.overrideCC pkgs.clangStdenv (llvmLatest.clang.override { bintools = llvmLatest.bintools; })
+            else
+              llvmLatest.stdenv;
+
+          mkHost =
+            args:
+            mkEngine (
+              {
+                inherit pkgs;
+                stdenv = engineStdenv;
+              }
+              // args
+            );
+
+          # Windows cross: MinGW-w64 ucrt64 (C11 timespec_get needs ucrt). x86_64-linux
+          # build hosts only — WSL is x86_64-linux, and its renderer artifact is this exe.
+          crossPkgs = pkgs.pkgsCross.ucrt64;
+          mkWin =
+            args:
+            mkEngine (
+              {
+                pkgs = crossPkgs;
+                stdenv = crossPkgs.stdenv;
+              }
+              // args
+            );
+
+          native = mkVariants mkHost (
+            {
+              "release-${hostTag}" = {
+                buildType = "Release";
+              };
+              "debug-${hostTag}" = {
+                buildType = "Debug";
+              };
+              "release-headless-${hostTag}" = {
+                buildType = "Release";
+                headless = true;
+              };
+              "debug-headless-${hostTag}" = {
+                buildType = "Debug";
+                headless = true;
+              };
+            }
+            # Diet backends; the unsuffixed build carries both, selected at runtime.
+            // lib.optionalAttrs isLinux {
+              "release-${hostTag}-wayland" = {
+                buildType = "Release";
+                x11 = false;
+              };
+              "release-${hostTag}-x11" = {
+                buildType = "Release";
+                wayland = false;
+              };
+              "debug-${hostTag}-wayland" = {
+                buildType = "Debug";
+                x11 = false;
+              };
+              "debug-${hostTag}-x11" = {
+                buildType = "Debug";
+                wayland = false;
+              };
+            }
+          );
+
+          windows = lib.optionalAttrs (system == "x86_64-linux") (
+            let
+              w = mkVariants mkWin {
+                release-windows-x64 = {
+                  buildType = "Release";
+                };
+                debug-windows-x64 = {
+                  buildType = "Debug";
+                };
+                release-headless-windows-x64 = {
+                  buildType = "Release";
+                  headless = true;
+                };
+                debug-headless-windows-x64 = {
+                  buildType = "Debug";
+                  headless = true;
+                };
+              };
+            in
+            w // { release-wsl = w.release-windows-x64; }
+          );
+
+          # Host-resolved short names: the automatic platform resolution.
+          aliases = {
+            default = native."release-${hostTag}";
+            release = native."release-${hostTag}";
+            debug = native."debug-${hostTag}";
+            release-headless = native."release-headless-${hostTag}";
+            debug-headless = native."debug-headless-${hostTag}";
+            headless = native."release-headless-${hostTag}";
+          };
+
+          # Sandbox test suites. Building one runs it. Sanitized suites run headless:
+          # sanitizer value is the lock-free core; GPU-real sanitizer runs are `nix run -- 4|5`.
+          # tests-full is experimental: full suite incl. Vulkan device tests on lavapipe —
+          # if surface tests turn out to need a display server, expect red there.
+          checks = mkVariants mkHost (
+            {
+              tests-headless = {
+                buildType = "Debug";
+                headless = true;
+                tests = true;
+              };
+            }
+            // lib.optionalAttrs isLinux {
+              tests-asan = {
+                buildType = "Debug";
+                headless = true;
+                tests = true;
+                sanitize = "asan";
+              };
+              tests-tsan = {
+                buildType = "Debug";
+                headless = true;
+                tests = true;
+                sanitize = "tsan";
+              };
+              tests-full = {
+                buildType = "Debug";
+                tests = true;
+                softwareVulkan = true;
+              };
+            }
+          );
+
+          # nix run [-- N]: the impure entry. Verifies pins fatally (a pure build cannot
+          # go stale, an in-tree build can), supplies missing submodules and assets,
+          # then delegates to the dev shell so the env is defined exactly once.
+          runWrapper = pkgs.writeShellApplication {
+            name = "anoptic-build";
+            runtimeInputs = [
+              pkgs.git
+              pkgs.coreutils
+            ];
+            text = ''
+              root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+              if [ -z "$root" ] || [ ! -f "$root/build.sh" ]; then
+                echo "[anoptic] not inside the anoptic-engine work tree." >&2
+                exit 1
+              fi
+              cd "$root" || exit 1
+              mode="''${1:-1}"
+
+              fail=0
+              for pair in ${pinList}; do
+                p="''${pair%%=*}" want="''${pair#*=}"
+                rec="$(git ls-tree HEAD "$p" 2>/dev/null | awk '{ print $3 }')"
+                if [ -n "$rec" ] && [ "$rec" != "$want" ]; then
+                  echo "[anoptic] FATAL: $p is at $rec but flake.nix pins $want." >&2
+                  fail=1
+                fi
+              done
+              if [ "$fail" -ne 0 ]; then
+                echo "[anoptic] run 'git submodule update --init --recursive' and commit the corrected pointer, or update the flake pin if the bump is intentional." >&2
+                exit 1
+              fi
+
+              for pair in ${pinList}; do
+                p="''${pair%%=*}"
+                if [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
+                  echo "[anoptic] fetching submodules..."
+                  git submodule update --init --recursive
+                  break
+                fi
+              done
+
+              if [ ! -d assets ]; then
+                if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+                    git clone --depth 1 git@github.com:Anoptic-Games/assets.git assets >/dev/null 2>&1; then
+                  echo "[anoptic] assets: private repo."
+                else
+                  echo "[anoptic] WARNING: private assets unreachable — staging public assets-free." >&2
+                  cp -r ${anoptic-assets}/. assets
+                  chmod -R u+w assets
+                fi
+              fi
+
+              # WSL is x86_64-linux to nix and has no in-guest render target; say what
+              # this build is for instead of guessing. Explicit path: nix build .#release-wsl
+              if [ -r /proc/version ] && grep -qi microsoft /proc/version; then
+                echo "[anoptic] WSL detected — in-tree Linux builds cover headless and tests; the WSL renderer artifact is 'nix build .#release-wsl' (Windows exe)."
+              fi
+
+              exec nix develop "$root" --command ./build.sh "$mode"
+            '';
+          };
+
+          # llvm: llvm-ar/-ranlib so in-shell Release builds keep ThinLTO (see mkEngine);
+          # lldb version-matched to the compiler.
+          shellTools =
+            (with pkgs; [
+              cmake
+              ninja
+              pkg-config
+              shaderc
+              glslang
+              git
+            ])
+            ++ [
+              llvmLatest.llvm
+              llvmLatest.lldb
+            ];
+          vvlShell = vvlFor pkgs host;
+
+          devShells = {
+            default =
+              if isLinux then
+                (pkgs.mkShell.override { stdenv = engineStdenv; }) (
+                  {
+                    name = "anoptic-linux";
+                    hardeningDisable = fortifyOff;
+                    nativeBuildInputs = shellTools ++ [ pkgs.wayland-scanner ];
+                    buildInputs =
+                      (with pkgs; [
+                        vulkan-headers
+                        vulkan-loader
+                        libGL
+                        libx11
+                        libxrandr
+                        libxinerama
+                        libxcursor
+                        libxi
+                        wayland
+                        libxkbcommon
+                      ])
+                      ++ lib.optional (vvlShell != null) vvlShell;
+                    # GPU-less full-suite runs: VK_ICD_FILENAMES=$ANO_LAVAPIPE_ICD ctest ...
+                    ANO_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
+                    shellHook = ''
+                      echo "[anoptic] Linux target — $(clang --version | head -1)"
+                    ''
+                    + submodulePinWarn;
+                  }
+                  // lib.optionalAttrs (vvlShell != null) {
+                    VK_LAYER_PATH = "${vvlShell}/share/vulkan/explicit_layer.d";
+                  }
+                )
+              else
+                (pkgs.mkShell.override { stdenv = engineStdenv; }) (
+                  {
+                    name = "anoptic-macos";
+                    hardeningDisable = fortifyOff;
+                    nativeBuildInputs = shellTools;
+                    buildInputs =
+                      (with pkgs; [
+                        vulkan-headers
+                        vulkan-loader
+                        moltenvk
+                      ])
+                      ++ lib.optional (vvlShell != null) vvlShell;
+                    VK_ICD_FILENAMES = "${pkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json";
+                    shellHook = ''
+                      echo "[anoptic] macOS target — $(clang --version | head -1)"
+                    ''
+                    + submodulePinWarn;
+                  }
+                  // lib.optionalAttrs (vvlShell != null) {
+                    VK_LAYER_PATH = "${vvlShell}/share/vulkan/explicit_layer.d";
+                  }
+                );
+          }
+          // lib.optionalAttrs (system == "x86_64-linux") {
+            # Interactive cross env; the artifact path is `nix build .#release-wsl`.
+            windows = crossPkgs.mkShell {
+              name = "anoptic-windows";
+              hardeningDisable = fortifyOff;
+              nativeBuildInputs = shellTools;
+              buildInputs = [
+                crossPkgs.vulkan-headers
+                crossPkgs.vulkan-loader
+                crossPkgs.windows.pthreads
+              ];
+              shellHook = ''
+                echo "[anoptic] Windows target — $($CC --version | head -1)"
+                echo "[anoptic] configure with: cmake \$cmakeFlags -G Ninja -S . -B build/Windows"
+              ''
+              + submodulePinWarn;
+            };
+          };
+        in
+        {
+          packages = native // windows // aliases // checks;
+          inherit checks devShells;
+          apps.default = {
+            type = "app";
+            program = lib.getExe runWrapper;
+          };
+        };
+      # Evaluate each system once, then project the output types out of it.
+      perSys = forAllSystems perSystem;
     in
     {
-      devShells.${system} = {
-        # Linux shell: headless build, non-GPU tests, ASan/TSan (build.sh 6/4/5).
-        default = (pkgs.mkShell.override { stdenv = clangLldStdenv; }) {
-          name = "anoptic-linux";
-          hardeningDisable = fortifyOff;
-          nativeBuildInputs = commonNativeTools;
-          shellHook = ''
-            echo "[anoptic] Linux target — $(clang --version | head -1)"
-          '' + submodulePinCheck;
-        };
-
-        # Windows cross shell, configure with: cmake $cmakeFlags -G Ninja -S . -B build/Windows
-        windows = crossPkgs.mkShell {
-          name = "anoptic-windows";
-          hardeningDisable = fortifyOff;
-          nativeBuildInputs = commonNativeTools;
-          # Windows-target link dependencies.
-          buildInputs = [
-            crossPkgs.vulkan-headers
-            crossPkgs.vulkan-loader
-            crossPkgs.windows.pthreads # <pthread.h>
-          ];
-          shellHook = ''
-            echo "[anoptic] Windows target — $($CC --version | head -1)"
-            echo "[anoptic] configure with: cmake \$cmakeFlags -G Ninja -S . -B build/Windows"
-          '' + submodulePinCheck;
-        };
-      };
-
-      # macOS shell: clang, cmake, ninja, glslc, MoltenVK.
-      devShells.${darwinSystem} = {
-        default = darwinPkgs.mkShell {
-          name = "anoptic-macos";
-          hardeningDisable = fortifyOff;
-          nativeBuildInputs = with darwinPkgs; [
-            cmake
-            ninja
-            pkg-config
-            shaderc # glslc
-            git
-          ];
-          buildInputs = with darwinPkgs; [
-            vulkan-headers
-            vulkan-loader
-            moltenvk
-          ];
-          VK_ICD_FILENAMES = "${darwinPkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json";
-          shellHook = ''
-            echo "[anoptic] macOS target — $(clang --version | head -1)"
-          '' + submodulePinCheck;
-        };
-      };
-
-      # Buildable packages: `nix build` -> runnable engine in ./result/bin.
-      # The renderer package ships no assets (gitignored), stage them beside the exe.
-      packages.${system} = {
-        default = mkEngine {
-          pname = "anopticengine-headless";
-          description = "Anoptic Engine — headless console build";
-          headless = true;
-        };
-
-        renderer = mkEngine {
-          pname = "anopticengine";
-          description = "Anoptic Engine — Vulkan renderer build";
-          headless = false;
-          # glslc for shaders, wayland-scanner for vendored glfw.
-          extraNative = with pkgs; [
-            shaderc
-            wayland-scanner
-          ];
-          # glfw's X11 + Wayland backends need these, libGL for glfw3.h's <GL/gl.h>.
-          extraBuild = with pkgs; [
-            vulkan-headers
-            vulkan-loader
-            libGL
-            libx11
-            libxrandr
-            libxinerama
-            libxcursor
-            libxi
-            wayland
-            libxkbcommon
-          ];
-          extraUnpack = injectSubmodule "glfw" glfw-src + injectSubmodule "cgltf" cgltf-src;
-        };
-      };
-
-      # macOS headless package. For the renderer use the dev shell + build.sh 1.
-      packages.${darwinSystem} = {
-        default = mkEngine {
-          pname = "anopticengine-headless";
-          description = "Anoptic Engine — headless console build";
-          headless = true;
-          buildPkgs = darwinPkgs;
-          stdenv = darwinPkgs.stdenv;
-        };
-      };
-
-      formatter.${system} = pkgs.nixfmt;
-      formatter.${darwinSystem} = darwinPkgs.nixfmt;
+      packages = lib.mapAttrs (_: s: s.packages) perSys;
+      checks = lib.mapAttrs (_: s: s.checks) perSys;
+      devShells = lib.mapAttrs (_: s: s.devShells) perSys;
+      apps = lib.mapAttrs (_: s: s.apps) perSys;
+      # nixfmt-tree: bare `nix fmt` needs a tree-mode formatter (classic nixfmt reads stdin).
+      formatter = forAllSystems (s: nixpkgs.legacyPackages.${s}.nixfmt-tree);
     };
 }

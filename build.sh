@@ -130,8 +130,8 @@ if [ ${run_tests} -eq 0 ] && [ ! -e "./build/${build_dir}/anopticengine" ]; then
     echo "CMake found no Vulkan SDK, so the renderer (and the engine target) was skipped" >&2
     echo "-- see the CMake warning above. Options:" >&2
     echo "  ./build.sh 6              headless engine + non-GPU tests (no Vulkan needed)" >&2
-    echo "  nix build .#renderer      full renderer package (Linux + GPU driver)" >&2
-    echo "  nix develop .#windows     Debug/Release Windows renderer from WSL/Linux" >&2
+    echo "  nix build                 full renderer package (any supported host)" >&2
+    echo "  nix build .#release-wsl   Windows renderer exe from WSL/Linux" >&2
     exit 1
 fi
 

@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "anoptic-assets": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1783622638,
+        "narHash": "sha256-vesz1jJtU69KmYLok6F2glf2gkyQJzp9RAfsA6/1u7E=",
+        "owner": "Anoptic-Games",
+        "repo": "assets-free",
+        "rev": "87100fa6e01d0cea9a6b364d38e11510728cc3ef",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Anoptic-Games",
+        "repo": "assets-free",
+        "type": "github"
+      }
+    },
     "cgltf-src": {
       "flake": false,
       "locked": {
@@ -86,6 +102,7 @@
     },
     "root": {
       "inputs": {
+        "anoptic-assets": "anoptic-assets",
         "cgltf-src": "cgltf-src",
         "freetype-src": "freetype-src",
         "glfw-src": "glfw-src",
