@@ -44,29 +44,29 @@ Then run:
 nix build
 ```
 
-Done — the full Vulkan renderer, Release + ThinLTO, for your platform, in `./result/bin/anopticengine`. Nix fetches everything itself: toolchain, pinned submodule sources, shader compiler, and the public asset pack. Every other target follows the same grammar, build type first:
+This produces the full Vulkan renderer (Release + ThinLTO) at `./result/bin/anopticengine`. Nix fetches the toolchain, pinned submodules, shader compiler, and public asset pack. Targets are named build type first:
 
-- `nix build .#debug` — Debug renderer, validation layers wired in.
-- `nix build .#release-headless` (alias `.#headless`) — no renderer, no GPU or display needed. The server build.
-- `nix build .#release-wsl` — Windows renderer `.exe`, cross-built from Linux or WSL (see [Building for Windows with WSL](#building-for-windows-with-wsl)).
-- `nix build .#<type>[-headless]-<platform>-<arch>[-wayland|-x11]` — any explicit permutation, e.g. `.#release-linux-x64-x11` or `.#debug-macos-aarch64`.
-- `nix build .#tests-headless` — run a CTest suite in the sandbox (`.#tests-asan`, `.#tests-tsan`, `.#tests-full` on Linux); `nix flake check` runs all of the host's suites at once.
+- `nix build .#debug` — Debug renderer, validation layers on.
+- `nix build .#release-headless` (alias `.#headless`) — the server build: no renderer, GPU, or display.
+- `nix build .#release-wsl` — cross-built Windows renderer `.exe` (see [Building for Windows with WSL](#building-for-windows-with-wsl)).
+- `nix build .#<type>[-headless]-<platform>-<arch>[-wayland|-x11]` — any permutation, e.g. `.#release-linux-x64-x11`.
+- `nix build .#tests-headless` — CTest suite in the sandbox (`.#tests-asan`, `.#tests-tsan`, `.#tests-full` on Linux). `nix flake check` runs all host suites.
 
-`nix run [-- N]` is the impure twin: it checks the repo's recorded submodule pointers against the flake pins (halts on drift), fetches anything missing, stages assets, then runs `./build.sh N` in the dev shell. Bare `nix run` is Release into `build/Release/` — the same artifact `build.sh 1` makes.
+`nix run [-- N]` builds in-tree: it checks submodule pointers against the flake pins (halts on drift), fetches anything missing, stages assets, and runs `./build.sh N` in the dev shell. Bare `nix run` is `build.sh 1` — Release into `build/Release/`.
 
-`nix develop` opens that shell to drive builds yourself; `nix develop .#windows` is the MinGW-w64 cross shell.
+`nix develop` opens the dev shell; `nix develop .#windows` is the MinGW-w64 cross shell.
 
 Private assets instead of the public pack:
 ```bash
 nix build --override-input anoptic-assets git+ssh://git@github.com/Anoptic-Games/assets
 ```
-`nix run` tries the private repo automatically and falls back to the public one.
+`nix run` tries the private repo and falls back to the public pack.
 
 Native Windows has no Nix; that is the `build.bat` path below.
 
 **Without Nix** (native Windows is this path — see [Building on Windows](#building-on-windows)): `clang 17+`, `CMake 3.29+`, `Ninja`, `glslc`, and the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/)(1.3.2+). Headless builds (`-DANOPTIC_HEADLESS=ON`) need only clang + CMake + Ninja.
 
-The engine is C23. Clang/LLVM (linking through `lld`) is the default toolchain on every OS — the Nix environments pin the latest release (currently 22) — and GCC is the supported fallback (MinGW gcc in the Nix cross build, and the `gcc-*` platform files, which link through `mold` where available).
+The engine is C23. Clang/LLVM (linking through `lld`) is the default toolchain on every OS; the Nix environments pin the latest release (currently 22). GCC is the supported fallback (MinGW gcc in the Nix cross build, and the `gcc-*` platform files, which link through `mold` where available).
 
 > macOS without Nix: `build.sh` uses Homebrew LLVM (`brew install llvm`) — Apple Clang rejects C23.
 
@@ -130,12 +130,7 @@ intended "server build" for hosting.
 
 Two ways to build a Windows renderer exe from WSL:
 
-1. **Nix** (`nix build .#release-wsl`) — the whole MinGW-w64 (gcc, ucrt64)
-   toolchain, Vulkan import lib, and glslc come from Nix; no MSYS2 or Windows Vulkan SDK
-   needed. The static exe and its shaders land in `./result/bin/`. For working on it
-   interactively, `nix develop .#windows` opens the cross shell instead. Do **not** pass
-   the `cmake/platforms/*-mingw.cmake` toolchain files there (they are for the MSYS2
-   path); the shell exports the cross setup as `$cmakeFlags`:
+1. **Nix** (`nix build .#release-wsl`) — the MinGW-w64 (gcc, ucrt64) toolchain, Vulkan import lib, and glslc come from Nix; no MSYS2 or Windows Vulkan SDK. The static exe and shaders land in `./result/bin/`. `nix develop .#windows` opens the cross shell for interactive builds; it exports the cross setup as `$cmakeFlags`, so do **not** pass the `cmake/platforms/*-mingw.cmake` toolchain files (those are the MSYS2 path):
 
    ```bash
    nix develop .#windows
@@ -157,23 +152,23 @@ Two ways to build a Windows renderer exe from WSL:
 #### Building on Linux
 
 ```bash
-nix develop --command ./build.sh 1     # or, equivalently: nix run
+nix develop --command ./build.sh 1     # or: nix run
 ```
 
-The default shell carries the whole kit: clang/lld (latest, currently 22), cmake, ninja, glslc + glslangValidator, lldb, llvm-ar, Vulkan headers and loader, validation layers, and the X11 + Wayland client libraries. Renderer builds compile both window backends in and select at runtime; the `-wayland`/`-x11` diet packages exist as explicit targets. For GPU-less test runs the shell exports `$ANO_LAVAPIPE_ICD` — point `VK_ICD_FILENAMES` at it.
+The default shell provides clang/lld (currently 22), cmake, ninja, glslc + glslangValidator, lldb, llvm-ar, Vulkan headers, loader, and validation layers, and the X11 + Wayland client libraries. Renderer builds compile both window backends and select at runtime; the single-backend `-wayland`/`-x11` packages are explicit targets. For GPU-less test runs, point `VK_ICD_FILENAMES` at `$ANO_LAVAPIPE_ICD` (exported by the shell).
 
-Without Nix: install `clang 17+`, `CMake`, `Ninja`, `glslc`, and the Vulkan SDK from your distro, then run `./build.sh` directly.
+Without Nix: install `clang 17+`, `CMake`, `Ninja`, `glslc`, and the distro's Vulkan SDK, then run `./build.sh` directly.
 
-#### Building on MacOS
+#### Building on macOS
 
-Apple Silicon. Vulkan runs through MoltenVK — the Nix packages bake the ICD path into the binary, and the dev shell exports `VK_ICD_FILENAMES`, so both just run:
+Apple Silicon. Vulkan runs through MoltenVK; the Nix packages bake in the ICD path, and the dev shell exports `VK_ICD_FILENAMES`.
 
 ```bash
 nix build                              # store artifact -> ./result/bin/anopticengine
 nix develop --command ./build.sh 1     # in-tree -> build/Release/   (or: nix run)
 ```
 
-Without Nix: Homebrew LLVM (see the note above) plus the Vulkan SDK; `build.sh` finds `brew --prefix llvm` on its own.
+Without Nix: Homebrew LLVM (see the note above) and the Vulkan SDK. `build.sh` finds `brew --prefix llvm` automatically.
 
 
 ### Editor / LSP Setup
