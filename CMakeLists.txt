@@ -71,6 +71,12 @@ if(WIN32 AND NOT MSVC)
     add_link_options(-static)
 endif()
 
+# Frame pointers stay, every UNIX build: the blackbox walks the fp chain at crash time (a backtrace
+# with no unwinder and no dlopen), and every profiler wants them anyway.
+if(UNIX)
+    add_compile_options(-fno-omit-frame-pointer)
+endif()
+
 # ano_scrub: delete every object file.
 add_custom_target(ano_scrub
     COMMAND ${CMAKE_COMMAND} -DANO_SCRUB_DIR=${CMAKE_BINARY_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/scrub_objects.cmake
@@ -138,9 +144,11 @@ target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
 # PRIVATE: FreeType types stay out of public headers.
 target_link_libraries(anoptic_core PRIVATE freetype)
 
-# Explicit POSIX feature-test macro for clock_gettime etc.
+# Explicit POSIX feature-test macro for clock_gettime etc., plus the misc/XSI reopeners (glibc:
+# _DEFAULT_SOURCE, Darwin: _DARWIN_C_SOURCE; each is inert on the other) -- set once, globally, so
+# no TU ever plays the per-file macro game again.
 if(UNIX)
-    target_compile_definitions(anoptic_core PUBLIC _POSIX_C_SOURCE=200809L)
+    target_compile_definitions(anoptic_core PUBLIC _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE _DARWIN_C_SOURCE)
 endif()
 
 target_compile_definitions(anoptic_core PUBLIC
