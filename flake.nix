@@ -580,6 +580,7 @@
           apps.default = {
             type = "app";
             program = lib.getExe runWrapper;
+            meta.description = "Anoptic Engine — C23 game engine for million-entity simulation";
           };
         };
       # Evaluate each system once, then project the output types out of it.
