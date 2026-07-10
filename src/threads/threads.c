@@ -19,9 +19,8 @@
 
 /* Thread Management */
 
-// Spawn shim: every engine thread gets its crash stack armed (per-thread alternate signal stack on
-// POSIX, stack-overflow guarantee on win64) before user code runs, and released however the thread
-// exits -- the cleanup handler covers both a plain return and pthread_exit/ano_thread_exit.
+// Spawn shim: arms each thread's crash stack before user code runs.
+// The cleanup handler disarms on any exit path (return, pthread_exit, ano_thread_exit).
 typedef struct {
     void *(*func)(void *);
     void   *arg;
@@ -37,7 +36,7 @@ static void *thread_trampoline(void *p)
 {
     thread_tramp_t t = *(thread_tramp_t *)p;
     mi_free(p);
-    (void)ano_blackbox_thread_arm();    // best effort: an unarmed thread still runs, reports crash-naked
+    (void)ano_blackbox_thread_arm();    // best effort: an unarmed thread still runs
     void *ret;
     pthread_cleanup_push(tramp_disarm, NULL);
     ret = t.func(t.arg);
@@ -47,10 +46,8 @@ static void *thread_trampoline(void *p)
 
 int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(* func)(void *), void *arg) {
 
-    // NULL attr gets ANO_THREAD_STACK_SIZE, lazily committed; an explicit attr is the caller's
-    // contract, untouched. Not on win64: winpthreads hands an attr stack to _beginthreadex as an
-    // up-front COMMIT (all 8 MiB charged per thread, measured) -- there the PE header reserve
-    // (--stack, root CMakeLists) already sizes every NULL-attr thread, lazily.
+    // NULL attr gets ANO_THREAD_STACK_SIZE, lazily committed. Explicit attrs pass through untouched.
+    // Skipped on win64: the PE header reserve (--stack, root CMakeLists) sizes NULL-attr threads.
 #if !defined(_WIN32)
     pthread_attr_t engineAttr;
     bool engineOwned = attr == NULL && pthread_attr_init(&engineAttr) == 0;
@@ -102,9 +99,9 @@ anothread_t ano_thread_self(void) {
     return pthread_self();
 }
 
-// Inputs: none. Output: the initial thread's stack budget in bytes -- RLIMIT_STACK soft on POSIX
-// (SIZE_MAX when unlimited), the PE-header reserve on win64 -- or 0 when the query fails.
-// The one stack the spawn shim cannot size; boot checks it against ANO_THREAD_STACK_SIZE.
+// Inputs: none.
+// Output: the initial thread's stack budget in bytes, 0 when the query fails.
+// POSIX: RLIMIT_STACK soft (SIZE_MAX when unlimited). Win64: the PE-header reserve.
 size_t ano_thread_main_stack(void) {
 
 #if defined(_WIN32)

@@ -328,7 +328,9 @@ int main(void)
     printf(" always \"ring better\". Numbers vary run to run; take the trend, not the digits.)\n");
 
     // Tidy the throwaway files and directory.
-    remove(BENCH_DIR "/anoptic.log");
+    char ringLog[96];
+    snprintf(ringLog, sizeof ringLog, "%s/%s_ano.log", BENCH_DIR, ano_fs_session_stamp());
+    remove(ringLog);
     remove(BENCH_DIR "/anoptic_mtx.log");
     scratch_remove_dir(BENCH_DIR);
     return 0;

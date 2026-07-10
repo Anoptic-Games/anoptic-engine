@@ -4,7 +4,7 @@ How we measure anopticengine frame throughput reproducibly. The engine-side inst
 
 ## Engine-side contract (shared across all targets)
 
-The engine emits two lines to `anoptic.log` (written next to the executable), both release-visible, defined in `src/vulkan_backend/frame/profiling.c`:
+The engine emits two lines to the session log (`logs/<stamp>_ano.log` next to the executable; drivers clear the dir before launch and glob for the one file that appears), both release-visible, defined in `src/vulkan_backend/frame/profiling.c`:
 
 - `[frame] <fps> fps <ms> ms wall` — **wall-clock throughput**, logged once per real second by `ano_frame_mark()`, called on the presented-frame path in `drawFrame`. Timestamp-independent: it keeps reporting even when constant swapchain recreation starves the GPU-timestamp reads. This is the number that reflects the whole pipeline (CPU record + submit + present + GPU).
 - `[profile mode=<mode>] ... total=<ms> ... (frusta N/42) ... | VRAM MiB: ... swap=<MiB> ...` — **GPU pass time**, the sum of per-pass GPU timestamps (upload+compute+shadow+lighting+composite), printed every `ANO_PROFILE_PRINT_INTERVAL` (120) rendered frames. GPU-timestamp-gated, so it goes silent under a resize storm. `frusta` is shadow-frustum renders/frame; `swap` is swapchain-allocator resident VRAM.
@@ -25,7 +25,7 @@ These are the non-negotiables; every platform driver re-implements them with its
 - **Physical-pixel sizing.** Be DPI-aware (Windows: per-monitor-v2; the compositor equivalents elsewhere) or monitor rects come back in logical/scaled units and you mislabel resolution.
 - **Force AND verify foreground.** A background or occluded window mismeasures the GPU passes (the lighting pass alone inflated ~5× in one comparison). Bring the window to the true foreground and confirm it (Windows: `GetForegroundWindow() == hwnd`); flag/skip any data point that isn't front. This is the single biggest correctness trap.
 - **Fresh process per data point.** Relaunch for each resolution/config; don't resize-and-reuse (carries swapchain/cache state).
-- **Release the log handle.** After killing the engine, retry-wait before deleting `anoptic.log` for the next run — the exiting process still holds it briefly.
+- **Release the log handle.** After killing the engine, retry-wait before clearing `logs/*_ano.log` for the next run — the exiting process still holds its file briefly.
 - **Drop warmup.** Discard the first couple `[frame]` seconds and the first several profile lines before taking medians.
 
 ## Runtime knobs (engine `getenv`)
@@ -41,7 +41,7 @@ Pass via the child process environment. Perf-relevant:
 ## Drivers
 
 - **Windows:** `tools/perf/bench_fps_win64.py` (win32 + pywin32). Modes: default resolution sweep, `--res WxH`, `--no-menu` (static HUD), `--churn` (resize storm), `--env KEY=VAL`. Prints a table with a `front` column — treat any `BG!!` row as invalid.
-- **Linux:** `tools/perf/bench_fps_linux.py` (X11/Xwayland). Same modes/flags as the Windows driver. Window discovery by PID (`xdotool search --pid`, `_NET_WM_PID`; 'Vulkan'-title fallback); forced+verified foreground via `xdotool windowactivate --sync` confirmed against `getactivewindow`; borderless render surface via `_MOTIF_WM_HINTS` strip + `windowsize --sync`; menu key via XTEST (`xdotool key m`). X11 hands out physical pixels and the driver commands exact pixel sizes, so there's no DPI mislabel to defeat — `swap=` stays the resolution authority. Tools come from Nix, never apt: `nix shell nixpkgs#xdotool nixpkgs#wmctrl nixpkgs#xorg.xprop`. Drives X11/Xwayland clients only (not native-Wayland GLFW windows). Its `parse_stream()` also replays a captured `anoptic.log` offline for parser checks with no X server.
+- **Linux:** `tools/perf/bench_fps_linux.py` (X11/Xwayland). Same modes/flags as the Windows driver. Window discovery by PID (`xdotool search --pid`, `_NET_WM_PID`; 'Vulkan'-title fallback); forced+verified foreground via `xdotool windowactivate --sync` confirmed against `getactivewindow`; borderless render surface via `_MOTIF_WM_HINTS` strip + `windowsize --sync`; menu key via XTEST (`xdotool key m`). X11 hands out physical pixels and the driver commands exact pixel sizes, so there's no DPI mislabel to defeat — `swap=` stays the resolution authority. Tools come from Nix, never apt: `nix shell nixpkgs#xdotool nixpkgs#wmctrl nixpkgs#xorg.xprop`. Drives X11/Xwayland clients only (not native-Wayland GLFW windows). Its `parse_stream()` also replays a captured session log offline for parser checks with no X server.
 - **macOS (TODO `bench_fps_macos.py`):** Cocoa. Front via `NSRunningApplication.activate` / `osascript`; window geometry via CGWindowList (see the `screenshot-macos` skill for the CGWindow precedent); key via CGEvent.
 
 ## Reproducing a benchmark on a second machine

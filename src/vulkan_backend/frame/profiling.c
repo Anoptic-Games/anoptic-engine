@@ -22,7 +22,7 @@ static uint32_t g_tsFrames = 0;             // frames since last print
 uint64_t g_shadowRenderAccum = 0;
 uint32_t g_shadowRenderFrames = 0;
 
-// Wall-clock throughput window: presented frames since the last [frame] line, and its start stamp.
+// Wall-clock throughput window: frames since the last [frame] line + start stamp.
 static uint64_t g_wallLastUs = 0;
 static uint32_t g_wallFrames = 0;
 
@@ -63,7 +63,7 @@ static void ano_print_profiling(void) {
                             + (VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u) / MiB;
 
     double frusta = g_shadowRenderFrames ? (double)g_shadowRenderAccum / (double)g_shadowRenderFrames : 0.0;
-    // TODO: gate on a dedicated profiling build tag; ano_log keeps this periodic frame-time line in release for now.
+    // TODO: gate on a profiling build tag (release-visible via ano_log for now).
     ano_log(ANO_INFO, "[profile mode=%s] GPU ms: upload=%.3f compute=%.3f shadow=%.3f (frusta %.1f/%u) lighting=%.3f composite=%.3f total=%.3f"
            " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f",
            mn, up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co, total, gpu, tex, swap, stg, atlas);
@@ -126,10 +126,8 @@ void ano_profile_reset_window(void) {
     g_tsFrames = 0;
 }
 
-// Wall-clock frame throughput. Called once per presented frame from drawFrame. Independent of
-// GPU timestamp support: the profile line above stops printing when constant swapchain recreation
-// starves the timestamp reads, but this keeps measuring. Logs achieved fps + mean wall frametime
-// once per real second via ano_log (release-visible, same policy as the profile line).
+// Wall-clock frame throughput, independent of GPU timestamp support. Called once per
+// presented frame from drawFrame. Logs fps + mean wall frametime once per second.
 void ano_frame_mark(void) {
     uint64_t now = ano_timestamp_us();
     if (g_wallLastUs == 0) { g_wallLastUs = now; return; } // seed, uncounted

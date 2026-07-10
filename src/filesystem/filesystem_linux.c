@@ -6,6 +6,7 @@
 #if defined(__linux__)
 
 #include "anoptic_filesystem.h"
+#include "filesystem/filesystem_internal.h"
 
 #include <unistd.h>     // readlink, chdir, write, fsync, close
 #include <stdio.h>      // snprintf
@@ -71,6 +72,12 @@ bool ano_fs_chdir_gamepath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
     return dir.length > 0 && chdir(dir.str) == 0;
+}
+
+// Output: 0 when `path` exists as a directory afterward, -1 on failure.
+int fs_mkdir(const char *path)
+{
+    return (mkdir(path, 0755) == 0 || errno == EEXIST) ? 0 : -1;
 }
 
 

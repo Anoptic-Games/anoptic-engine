@@ -3,11 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Linux: the shared POSIX handler plus the two native pieces it needs. The module map comes from
-// dl_iterate_phdr at init -- glibc AND musl ship it, unlike <execinfo.h>, and nothing here ever
-// dlopens libgcc_s or takes a loader lock at crash time. _GNU_SOURCE (a superset of the
-// _DEFAULT_SOURCE the root build sets) is for REG_RIP/REG_RBP and dl_iterate_phdr, spelled
-// identically by both libcs.
+// Linux: the shared POSIX handler plus the two native pieces it needs. Module map from dl_iterate_phdr at init. _GNU_SOURCE is for REG_RIP/REG_RBP and dl_iterate_phdr.
 
 #define _GNU_SOURCE
 #include "blackbox/blackbox_posix.h"
@@ -15,8 +11,7 @@
 #include <link.h>
 #include <ucontext.h>
 
-// One [lo, hi) entry per executable PT_LOAD (in practice: one per module); dlpi_addr is the load
-// bias. The main executable reports its name as "": /proc/self/exe rides in through data.
+// One [lo, hi) entry per executable PT_LOAD. dlpi_addr is the load bias. The main executable's name is "": data carries /proc/self/exe.
 static int bb_phdr_cb(struct dl_phdr_info *info, size_t size, void *data)
 {
     (void)size;
@@ -41,8 +36,7 @@ static void bb_modmap_build(void)
     dl_iterate_phdr(bb_phdr_cb, exe);
 }
 
-// Inputs: the handler's ucontext. Outputs: the interrupted thread's pc and frame pointer, plus lr
-// on aarch64 (0 where the architecture keeps return addresses on the stack alone).
+// Inputs: the handler's ucontext. Outputs: the interrupted thread's pc and fp, plus lr on aarch64 (0 elsewhere).
 static void bb_crash_regs(void *uctx, uintptr_t *pc, uintptr_t *fp, uintptr_t *lr)
 {
     const ucontext_t *uc = uctx;

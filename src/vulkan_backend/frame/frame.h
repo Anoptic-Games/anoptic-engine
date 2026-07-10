@@ -55,7 +55,7 @@ void ano_collect_frame_stats(uint32_t frameIndex);
 void ano_collect_pick(uint32_t frameIndex);
 // Discard the in-progress timing window (lighting-mode change).
 void ano_profile_reset_window(void);
-// Mark one presented frame; logs achieved wall-clock fps + frametime once per second.
+// Mark one presented frame. Logs wall-clock fps + frametime once per second.
 void ano_frame_mark(void);
 // Shadow-frustum renders per frame. Defined in profiling.c.
 extern uint64_t g_shadowRenderAccum;

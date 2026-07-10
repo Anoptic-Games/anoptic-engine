@@ -4,27 +4,22 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // UI per-tile prim lists: the CPU-coarse stage of the scaling ladder (ui-render.md
-// §3.7). A dense tilesX*tilesY grid of 8px tiles; each prim scatters into the tiles its
-// padded influence box overlaps (a counting sort), so the GPU walks only a tile's prims
-// instead of every prim. Runs at compose cadence (zero cost when the UI is idle). An
-// entry whose prim provably fully covers its tile carries a "solid" bit — the GPU then
-// skips the SDF and takes the flat fill (interior classification). Pure, any thread.
+// §3.7). A dense tilesX*tilesY grid of 8px tiles. Each prim scatters into the tiles
+// its padded influence box overlaps (a counting sort). Runs at compose cadence. An
+// entry whose prim provably fully covers its tile carries a "solid" bit: the GPU
+// skips the SDF and takes the flat fill. Pure, any thread.
 //
 // PERF TODO (ui-render.md §3.7.3-4, deferred, measurement-gated):
-//  - opaque-truncation: when scattering, if an OVER-blend prim is opaque AND solid over a
-//    tile, reset that tile's list to it (everything beneath is occluded) — bounds list
-//    depth, the bigger layered-UI win than the solid bit alone.
-//  - sparse dispatch: emit only non-empty tiles + a compact active-tile list so the GPU
-//    skips empty tiles instead of the dense grid (helps big-bounds/mostly-empty UIs).
-//  - GPU binning: move this scatter to a compute pass for dense dynamic vector content.
+//  - opaque-truncation: an opaque solid OVER prim resets its tile's list to just it.
+//  - sparse dispatch: emit only non-empty tiles + a compact active-tile list.
+//  - GPU binning: move this scatter to a compute pass.
 
 #include "anoptic_ui.h"
 
 #include <math.h>
 
-// In: prim (identity inv, v0). Out: its padded pixel AABB — half extent plus the 1px AA
-// ramp, or 3*sigma for a shadow. Matches ui_box_hits / ui_pending_bounds so the tiles
-// cover exactly what the brute cull would have accepted.
+// In: prim (identity inv, v0). Out: its padded pixel AABB (half extent + the 1px AA
+// ramp, or 3*sigma for a shadow). Matches ui_box_hits / ui_pending_bounds.
 void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2])
 {
     float pad = p->kind == ANO_UI_SHADOW ? 3.0f * p->param[0] + 1.0f : 1.0f;
@@ -36,8 +31,7 @@ void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2])
 
 // Is prim p an opaque-shaped RRECT fill that fully covers tile [tx0,ty0]-(tx1,ty1)?
 // True only when the tile sits inside the rrect's coverage-1 core (inset by the largest
-// corner radius plus the 0.5px AA half-window), so the reported coverage there is exactly
-// 1 — the classification is exact, never an approximation.
+// corner radius plus the 0.5px AA half-window). Exact, never an approximation.
 static bool prim_solid_over(const AnoUiPrim *p, float tx0, float ty0, float tx1, float ty1)
 {
     if (p->kind != ANO_UI_RRECT || p->param[0] != 0.0f)
@@ -55,9 +49,9 @@ static bool prim_solid_over(const AnoUiPrim *p, float tx0, float ty0, float tx1,
 }
 
 // In: scene, grid origin (overlay px) + tile counts, caller buffers. Out: offsets
-// (tilesX*tilesY+1, prefix-summed so tile t owns entries [offsets[t],offsets[t+1])) and
+// (tilesX*tilesY+1, prefix-summed, tile t owns entries [offsets[t],offsets[t+1])) and
 // the prim-index entry stream (ascending index = painter order, solid bit set per tile).
-// cursor is tilesX*tilesY scratch. Returns entry count; *ok false if a cap is too small.
+// cursor is tilesX*tilesY scratch. Returns entry count. *ok false if a cap is too small.
 uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY,
                            uint32_t *offsets, uint32_t offsetsCap,

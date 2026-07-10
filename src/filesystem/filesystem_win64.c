@@ -6,6 +6,7 @@
 #if defined(_WIN32)
 
 #include "anoptic_filesystem.h"
+#include "filesystem/filesystem_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>       // getenv
@@ -67,6 +68,12 @@ bool ano_fs_chdir_gamepath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
     return dir.length > 0 && _chdir(dir.str) == 0;
+}
+
+// Output: 0 when `path` exists as a directory afterward, -1 on failure.
+int fs_mkdir(const char *path)
+{
+    return (_mkdir(path) == 0 || errno == EEXIST) ? 0 : -1;
 }
 
 

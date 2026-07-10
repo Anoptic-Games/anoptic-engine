@@ -51,14 +51,14 @@ int ano_log_init(void);     // build up; 0 on success
 int ano_log_cleanup(void);  // tear down; 0 on success
 ```
 
-Call `ano_log_init()` once at startup. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/anoptic.log`), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work, writing to `stderr`.
+Call `ano_log_init()` once at startup. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/logs/<session-stamp>_ano.log` -- one file per session, the stamp from `ano_fs_session_stamp()`), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work, writing to `stderr`.
 
 Call `ano_log_cleanup()` once at shutdown. It stops and joins the drain thread, runs one final drain so nothing buffered is lost, then syncs and closes the file.
 
 ### Control
 
 ```c
-int  ano_log_output_dir(const char *dir);                        // open dir/anoptic.log; 0 ok, -1 rejected
+int  ano_log_output_dir(const char *dir);                        // open dir/<stamp>_ano.log; 0 ok, -1 rejected
 void ano_log_set_level(ano_loglevel_t min);                      // admit only buffered records >= min
 void ano_log_set_route(ano_loglevel_t lvl, ano_logroute_t rt);   // rebind a level's default route
 void ano_log_flush(void);                                        // drain synchronously, right now
@@ -92,7 +92,7 @@ A complete, minimal program shape:
 
 int main(void) {
     ano_log_init();                                 // once, before any logging
-    ano_log_output_dir("logs");                     // optional: logs/anoptic.log
+    ano_log_output_dir("mylogs");                   // optional: mylogs/<stamp>_ano.log
     ano_log_set_route(ANO_WARN, ANO_BOTH);          // optional: warnings on the terminal too
 
     ano_log(ANO_INFO, "engine up, build %s", VERSION);

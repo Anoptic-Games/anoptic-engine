@@ -35,6 +35,8 @@
 
 // Arm the blackbox: run the Stage 4 check for a previous run's CRASH.log, then install the Stage 1 hooks.
 // Call once from main, right after ano_log_init. The hooks live for the whole process, no cleanup.
+// The record file is per-session -- <gamedir>/logs/<session-stamp>_CRASH.log, the stamp shared with
+// the logger's own file (ano_fs_session_stamp) -- resolved once here, never inside a handler.
 // Output: 0 on success, -1 if a hook failed to install (the engine flies on, crash-naked).
 int ano_blackbox_init(void);
 

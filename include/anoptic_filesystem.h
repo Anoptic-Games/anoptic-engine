@@ -44,6 +44,20 @@ ano_fspath ano_fs_gamepath(void);
 // length == 0 if the user-data root could not be resolved or the directory could not be created.
 ano_fspath ano_fs_userpath(void);
 
+// Log Directory Path
+// - "<gamepath>/logs", home of the session log files (<stamp>_ano.log, <stamp>_CRASH.log).
+// Creates the directory if absent.
+// Thread-safe.
+// Output: the path by value. length == 0 if it could not be resolved or created.
+ano_fspath ano_fs_logpath(void);
+
+// Session Stamp
+// - "YYYY-MM-DD_XXXXXX": local date + low six digits of the raw tick counter, latched at first call.
+// - Names this session's files.
+// Thread-safe.
+// Output: the stamp, NUL-terminated, static storage.
+const char *ano_fs_session_stamp(void);
+
 // Change Working Directory to Game Executable
 // Input: none.
 // Output: true on success, false if path or chdir could not be resolved.

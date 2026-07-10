@@ -3,28 +3,25 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_ui.h -- the UI prim ABI, builder, and reference evaluator
+/* Coverage for anoptic_ui.h: the UI prim ABI, builder, and reference evaluator
  * (docs/ui/ui-render.md §7 step 2, the pre-GPU validation gate):
- *   - ABI: runtime echo of the static_assert'd std430 layout (96/48/48/32 B);
- *   - builder: field packing goldens, radii clamp (negative, over-cap), sigma floor,
- *     full-array refusal (ANO_UI_REF_NONE, no mutation), clip rect/rounded sentinel;
- *   - rrect SDF: Euclidean exactness on edge/corner rays (d == t), sign agreement
- *     with a double-precision geometric inside predicate over a jittered grid;
+ *   - ABI: runtime echo of the static_assert'd std430 layout (96/48/48/32 B)
+ *   - builder: field packing goldens, radii clamp, sigma floor, full-array refusal
+ *     (ANO_UI_REF_NONE, no mutation), clip rect/rounded sentinel
+ *   - rrect SDF: d == t on edge/corner rays, sign agreement with a double-precision
+ *     inside predicate over a jittered grid
  *   - rrect/border/clip coverage vs a 64x64-supersampled double oracle per pixel
- *     window: straight-edge windows are exact (the ramp IS the half-plane box
- *     filter); corner-zone windows carry the documented approximation, bounds
- *     pinned from the first measured run and asserted since;
- *   - shadow: Wallace closed form vs ground truth = 4x-supersampled rrect mask
- *     convolved with a separable discrete Gaussian (double), rect and rounded
- *     cases; erf approx + 4-sample quadrature + 3-sigma truncation all land inside
- *     the pinned envelope;
- *   - blend semantics: painter's order (later on top), ADD accumulates rgb without
- *     occluding, PATH/GLYPHS kinds contribute zero in this lane, evaluation purity;
+ *     window: straight-edge windows exact, corner-zone windows inside bounds pinned
+ *     from the first measured run
+ *   - shadow: Wallace closed form vs a 4x-supersampled rrect mask convolved with a
+ *     separable discrete Gaussian (double), rect and rounded, inside the pinned envelope
+ *   - blend semantics: painter's order, ADD accumulates rgb without occluding,
+ *     PATH/GLYPHS kinds contribute zero in this lane, evaluation purity
  *   - surface fold: per-kind field goldens for ano_ui_*_scale, gradient t invariance
  *     at the scaled pixel, a folded path stream re-evaluated end to end, sentinel
- *     and s = 1 bit-stability of the curve-word fold.
- * Oracles are all in double; the evaluator mirrors future GLSL in float.
- * Deterministic (fixed seed); argv[1] scales the jittered-probe soak. Exit 0 = pass. */
+ *     and s = 1 bit-stability of the curve-word fold
+ * Oracles in double, the evaluator mirrors future GLSL in float.
+ * Deterministic (fixed seed), argv[1] scales the jittered-probe soak. Exit 0 = pass. */
 
 #include <math.h>
 #include <stdio.h>
@@ -58,8 +55,7 @@ static bool inside_rrect(double x, double y, double hx, double hy, const double 
     return dx * dx + dy * dy <= rr * rr;
 }
 
-// Ring predicate: inside the rrect but not inside its w-erosion (erosion of an exact
-// rounded box = rounded box with half-w extents and max(r-w, 0) radii).
+// Ring predicate: inside the rrect but not its w-erosion (half-w extents, max(r-w, 0) radii).
 static bool inside_ring(double x, double y, double hx, double hy, const double r[4], double w)
 {
     if (!inside_rrect(x, y, hx, hy, r))
@@ -190,7 +186,7 @@ static void test_sdf(uint32_t soak)
     const float radii[4] = { 0.0f, 5.0f, 12.0f, 20.0f };
     const double dradii[4] = { 0.0, 5.0, 12.0, 20.0 };
 
-    // Straight-edge rays (points chosen on the edges' straight spans).
+    // Straight-edge rays.
     for (int k = 0; k < 4; k++) {
         float t = (float[]){ -5.0f, 0.0f, 3.0f, 17.0f }[k];
         float d = ano_ui_ref_sd_rrect((float[2]){ 30.0f + t, 0.0f }, half, radii);
@@ -239,16 +235,15 @@ static void test_sdf(uint32_t soak)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Coverage vs supersampled oracle. Windows classify as corner-zone (center within
-// r + 2.5 px of a box corner point) or edge-class; edge-class must be exact.
+// Coverage vs supersampled oracle. Windows classify as corner-zone or edge-class.
+// Edge-class must be exact.
 
 typedef struct {
     double edgeMax, cornerMax, rms;
     uint64_t n;
 } CovStats;
 
-// Truth source per window: supersampled predicate, or a closed form where one exists
-// (the 64x64 oracle has a 1/64 quantum, so arbitrary-fraction edges need the exact form).
+// Truth source per window: supersampled predicate, or a closed form where one exists.
 typedef double (*truth_fn)(void *u, int px, int py);
 
 typedef struct { inside_fn f; void *u; double cx, cy; } SsTruth;
@@ -267,8 +262,7 @@ static double truth_rect(void *u, int px, int py)
     return ox * oy;
 }
 
-// Corner zone: window center within (corner radius + border + 3.5) px of a box corner
-// point — the border term folds the eroded shape's inner corners into the zone.
+// Corner zone: window center within (corner radius + border + 3.5) px of a box corner point.
 static void cov_canvas(const AnoUiScene *s, truth_fn truth, void *u, double cx, double cy,
                        const double half[2], const double radii[4], double border,
                        int x0, int y0, int x1, int y1, CovStats *st)
@@ -313,12 +307,10 @@ static void test_coverage(void)
         float min[2], max[2];
         float radii[4];
         float border;
-        bool analytic; // exact rect truth (arbitrary fractions); else 1/64-aligned SS truth
+        bool analytic; // exact rect truth, else 1/64-aligned SS truth
         double edgeGate, cornerGate;
     } cases[] = {
-        // Gates pinned from the measured run of 2026-07-07 (printed below each time):
-        // rect analytic edge ~1e-7; r=8 corner 0.0375; mixed corner 0.1250 (its r=0 tip);
-        // ring corner 0.1250 (inner sharp corners of the erosion).
+        // Gates pinned from the measured run of 2026-07-07 (printed below each time).
         { "rect r=0 frac", { 10.3f, 10.7f }, { 50.6f, 40.2f }, { 0, 0, 0, 0 }, 0.0f, true,
           2e-3, 0.15 },
         { "rrect r=8", { 10.0f, 10.0f }, { 70.0f, 50.0f }, { 8, 8, 8, 8 }, 0.0f, false,
@@ -353,8 +345,7 @@ static void test_coverage(void)
     }
 }
 
-// Clip: rect clip cutting through a fill's interior stays exact away from the clip's
-// own corners; a rounded clip term multiplies in with the same corner caveat.
+// Clip: a rect clip through a fill's interior stays exact away from the clip's own corners.
 static void test_clip(void)
 {
     AnoUiPrim prims[1];
@@ -367,9 +358,7 @@ static void test_clip(void)
     ano_ui_rrect(&b, (float[2]){ 10, 10 }, (float[2]){ 70, 50 }, NULL, white, 0.0f,
                  ANO_UI_REF_NONE, clip, 0);
     AnoUiScene s = ano_ui_scene(&b);
-    // Sample rows crossing the clip edges but away from clip corners; the prim fully
-    // covers these windows, so truth = the exact window/clip-rect overlap (closed form —
-    // the SS oracle's 1/64 quantum would mask exactness at these fractions).
+    // Rows crossing the clip edges away from clip corners: truth = exact window/clip overlap.
     RectTruth rt = { 20.4, 15.6, 60.7, 45.3 };
     double worst = 0.0;
     for (int py = 25; py < 35; py++)
@@ -383,10 +372,8 @@ static void test_clip(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Gradient paints: a solid rrect filled by each gradient kind; deep-interior windows
-// have coverage 1, so the evaluator's output there IS the resolved fill. Truth is an
-// independent analytic t plus a two-stop clamp-and-lerp, so the check exercises the
-// builder's xform setup, the parameter map, and the stop interpolation end to end.
+// Gradient paints: a solid rrect filled by each gradient kind, checked deep-interior
+// (coverage 1) against an independent analytic t plus a two-stop clamp-and-lerp.
 
 static void grad2_truth(const float c0[4], const float c1[4], double t, float out[4])
 {
@@ -436,7 +423,7 @@ static void test_scale(void)
     ano_ui_prim_scale(&p, 4.0f);
     CHECK(p.param[0] == 0.0f, "prim fold: image lod clamps at 0");
 
-    // Clip: rect and rounded term scale; the rect-only sentinel stays negative.
+    // Clip: rect and rounded term scale, the rect-only sentinel stays negative.
     uint32_t cr = ano_ui_clip(&b, (float[2]){ 8, 8 }, (float[2]){ 40, 24 },
                               (float[2]){ 8, 8 }, (float[2]){ 40, 24 }, r4);
     AnoUiClip c = clips[cr];
@@ -463,7 +450,7 @@ static void test_scale(void)
         CHECK(fabsf(atL[k] - atD[k]) < 1e-6f, "paint fold: t invariant at the scaled pixel");
 
     // PATH: bake at logical coords, fold prim + stream, evaluate at device pixels.
-    // Integer coords and s = 2 keep binary16 exact, so straight edges stay exact.
+    // Integer coords and s = 2 keep binary16 exact.
     {
         AnoUiPrim pp[1];
         uint32_t words[128], scaled[128], same[128];
@@ -496,7 +483,7 @@ static void test_scale(void)
               "path fold: straight edges land exactly on device px");
     }
 
-    // The contour sentinel survives any scale (+inf halves scale to +inf).
+    // The contour sentinel survives any scale.
     uint32_t sw = 0x7C007C00u, swOut = 0;
     ano_ui_curves_scale(&sw, &swOut, 1, s);
     CHECK(swOut == 0x7C007C00u, "curve fold: contour sentinel survives");
@@ -509,7 +496,7 @@ static void test_gradient(void)
     AnoUiStop stops[2], in[2];
     AnoUiBuilder b;
     float white[4] = { 1, 1, 1, 1 };
-    // Alpha-1 stops so premultiplied == straight and the lerp oracle stays simple.
+    // Alpha-1 stops: premultiplied == straight.
     float c0[4] = { 0.05f, 0.10f, 0.20f, 1.0f };
     float c1[4] = { 0.80f, 0.60f, 0.30f, 1.0f };
     for (int k = 0; k < 4; k++) { in[0].color[k] = c0[k]; in[1].color[k] = c1[k]; }
@@ -517,7 +504,7 @@ static void test_gradient(void)
     float mn[2] = { 20, 20 }, mx[2] = { 120, 100 };
     float r10[4] = { 10, 10, 10, 10 };
 
-    // Deep interior of the box (windows fully inside, coverage exactly 1).
+    // Deep interior of the box (coverage exactly 1).
     const int ix0 = 45, iy0 = 45, ix1 = 95, iy1 = 75;
 
     struct { const char *name; int kind; float a[2], b2, ang; } cases[] = {
@@ -577,8 +564,8 @@ static void test_gradient(void)
     printf("  gradient modulate  worst %.7f\n", mworst);
     CHECK(mworst <= 1e-5, "base tint modulates the gradient fill");
 
-    // Fail-closed: a paintRef past the table is transparent (a truncated table must not
-    // leak). The builder never emits this; force it to mirror the shader's bound check.
+    // Fail-closed: a paintRef past the table reads transparent. The builder never emits
+    // this, forced by hand to mirror the shader's bound check.
     prims[0].paintRef = 7u; // paintCount is 1
     float out[4];
     ano_ui_ref_eval(&s, 70.0f, 60.0f, out);
@@ -587,9 +574,8 @@ static void test_gradient(void)
 
 // ---------------------------------------------------------------------------------------------
 // Path fill: an axis-aligned rectangle baked as a 4-line path must reproduce the exact
-// box coverage (curve_area is exact on straight edges), which validates the baker, the
-// monotone sweep, the binary16 pack round-trip, and the winding auto-orientation. A
-// reversed winding must still fill; an oppositely wound inner contour must punch a hole.
+// box coverage. A reversed winding must still fill. An oppositely wound inner contour
+// must punch a hole.
 
 static void test_path(void)
 {
@@ -597,7 +583,7 @@ static void test_path(void)
     uint32_t curves[512];
     AnoUiBuilder b;
     float white[4] = { 1, 1, 1, 1 };
-    // Integer, small-half-extent coords so binary16 is effectively exact.
+    // Integer, small coords keep binary16 effectively exact.
     RectTruth rt = { 20, 20, 100, 80 };
 
     // Clockwise-on-screen rectangle (4 lines, auto-closed).
@@ -672,7 +658,7 @@ static void test_path(void)
 
 // ---------------------------------------------------------------------------------------------
 // Shadow vs blurred-mask ground truth: 4x supersampled rrect mask, separable discrete
-// Gaussian (radius 4 sigma, double), box-downsampled; evaluator sampled at pixel centers.
+// Gaussian (radius 4 sigma, double), box-downsampled. Evaluator sampled at pixel centers.
 
 static void shadow_case(const char *name, double hw, double hh, double corner, double sigma,
                         double maxGate, double rmsGate)
@@ -748,9 +734,7 @@ static void shadow_case(const char *name, double hw, double hh, double corner, d
 
 static void test_shadow(void)
 {
-    // Gates pinned from the measured run of 2026-07-07: max 0.0133 / 0.0105 / 0.0183
-    // (3.4, 2.7, 4.7 per 255), rms 0.0035 / 0.0031 / 0.0039 — erf approx + 4-sample
-    // quadrature + 3-sigma truncation, all inside a ~5/255 envelope.
+    // Gates pinned from the measured run of 2026-07-07 (printed below each time).
     shadow_case("rect s=2", 30.0, 20.0, 0.0, 2.0, 0.020, 0.005);
     shadow_case("rect s=8", 30.0, 20.0, 0.0, 8.0, 0.020, 0.005);
     shadow_case("rrect r=8 s=4", 30.0, 20.0, 8.0, 4.0, 0.025, 0.005);
@@ -792,7 +776,7 @@ static void test_blend(void)
     ano_ui_ref_eval(&s, 10.0f, 10.0f, out); // only the first
     CHECK(out[0] == 1.0f && out[1] == 0.0f, "painter's order: base visible outside overlap");
 
-    // ADD lights rgb without occluding; PATH/GLYPHS contribute zero in this lane.
+    // ADD lights rgb without occluding. PATH/GLYPHS contribute zero in this lane.
     ano_ui_shadow(&b, (float[2]){ 10, 10 }, (float[2]){ 50, 50 }, 4.0f, 3.0f, glow,
                   ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
     ano_ui_glyphs(&b, (float[2]){ 0, 0 }, (float[2]){ 60, 60 }, 0, 8, red, ANO_UI_REF_NONE, 0);
@@ -810,8 +794,7 @@ static void test_blend(void)
 
 // ---------------------------------------------------------------------------------------------
 // Per-tile lists: the tiled walk must be BIT-IDENTICAL to the brute painter's-order
-// evaluation. Prims outside a pixel's tile contribute coverage 0 (they are outside their
-// influence box), and a solid entry's forced coverage 1 is exact, so equality is exact.
+// evaluation.
 
 static void demo_build(AnoUiPrim *prims, AnoUiClip *clips, AnoUiPaint *paints,
                        AnoUiStop *stops, uint32_t *curves, AnoUiBuilder *b);
@@ -868,14 +851,12 @@ static void test_tiles(uint32_t soak)
     AnoUiBuilder b;
     demo_build(prims, clips, paints, stops, curves, &b);
     AnoUiScene s = ano_ui_scene(&b);
-    // The demo has shadows; the tiled path clips a shadow at its 3-sigma AABB exactly as
-    // the GPU brute cull (ui_box_hits) does, while the uncalled reference keeps the whole
-    // Gaussian tail — so the only difference is that sub-1/255 tail, not an assignment bug.
+    // The tiled path clips shadows at their 3-sigma AABB, the brute reference keeps the
+    // whole Gaussian tail.
     CHECK(tiles_check(&s, "demo") <= 2e-3, "demo tiled matches brute within the shadow-cull tail");
 
     // Shadow-free random rrects (fills, rings, blends) on fractional tile-straddling
-    // positions must be EXACTLY equal: outside its AABB an rrect contributes coverage 0,
-    // and a solid entry's forced coverage 1 is exact.
+    // positions must be EXACTLY equal.
     test_rng rng = rng_make(0x7113ED00u);
     for (uint32_t it = 0; it < 1u + soak; it++) {
         AnoUiPrim rp[24];
@@ -901,10 +882,9 @@ static void test_tiles(uint32_t soak)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Standing demo scene: determinism golden + the GPU screenshot harness. The GPU path
-// (ANO_UI_OPAQUE) renders the same scene over an opaque black backdrop straight into
-// the sRGB swapchain; the reference mimics both quantizers (UNORM8 linear overlay,
-// then the sRGB encode) so the compare envelope is the text lane's.
+// Standing demo scene: determinism golden + the GPU screenshot harness. The reference
+// mimics the GPU path's (ANO_UI_OPAQUE) quantizers over opaque black: UNORM8 linear
+// overlay, then the sRGB encode.
 
 #define DEMO_ORIGIN_X 48.0f
 #define DEMO_ORIGIN_Y 120.0f

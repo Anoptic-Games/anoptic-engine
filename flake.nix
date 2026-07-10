@@ -72,8 +72,7 @@
         chmod -R u+w "$sourceRoot/external/${name}"
       '';
 
-      # Warns on shell entry when the repo's recorded submodule gitlinks disagree with the
-      # flake pins (a stale-submodule `git add -A` regressed the 2026-06-24 dep bump twice).
+      # Warn on shell entry when submodule gitlinks disagree with the flake pins.
       submodulePinCheck = ''
         if git rev-parse --git-dir >/dev/null 2>&1; then
           for pair in external/glfw=${glfw-src.rev} external/mimalloc=${mimalloc-src.rev} external/freetype=${freetype-src.rev} external/cgltf=${cgltf-src.rev}; do
@@ -184,8 +183,7 @@
           headless = true;
         };
 
-        # Fully static against musl: the blackbox needs no execinfo and mimalloc replaced the
-        # allocator, so nothing here misses glibc. Renderer stays glibc: the GPU ICDs are.
+        # Fully static musl build. Renderer stays glibc.
         headless-musl = mkEngine {
           pname = "anopticengine-headless-musl";
           description = "Anoptic Engine — headless static musl build";
@@ -204,7 +202,6 @@
             wayland-scanner
           ];
           # glfw's X11 + Wayland backends need these, libGL for glfw3.h's <GL/gl.h>.
-          # libffi: wayland-client.pc Requires it, so glfw's pkg_check_modules(Wayland REQUIRED) fails without it on every Linux host.
           extraBuild = with pkgs; [
             vulkan-headers
             vulkan-loader
@@ -215,7 +212,7 @@
             libxcursor
             libxi
             wayland
-            libffi
+            libffi # wayland-client.pc
             libxkbcommon
           ];
           extraUnpack = injectSubmodule "glfw" glfw-src + injectSubmodule "cgltf" cgltf-src;

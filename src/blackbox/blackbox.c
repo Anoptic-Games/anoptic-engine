@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The blackbox's job, in full:
-//   1. Be the thing that can't die when everything else does.
-//   2. Write a tiny, reliable "we are going down" record.
-//   3. Give the logger one last chance to speak.
-// This TU is the calm half: resolve the CRASH.log path once, run the Stage 4 look-back, hand off to
-// the per-platform Stage 1 hooks. The turbulent half (the handlers) lives in the platform TUs.
+// Calm half of the blackbox: resolve the CRASH.log path once, run the Stage 4 look-back, hand off to the per-platform Stage 1 hooks. The handlers live in the platform TUs.
 
 #include <anoptic_blackbox.h>
 #include <anoptic_logging.h>
@@ -20,35 +15,39 @@
 
 char bb_crashPath[MAXPATH];
 
-// Stage 4, minimal cut: a leftover CRASH.log IS the crash marker -- the record appends, so it survives
-// until someone reads it. Announce it on both sinks and leave it in place for the investigation.
-static void investigate_previous_flight(void)
+// Stage 4: a leftover *_CRASH.log marks a crash. Announce on both sinks, leave everything in place.
+static void investigate_previous_flight(const char *dir)
 {
-    FILE *f = fopen(bb_crashPath, "rb");
-    if (f == NULL)
+    char newest[MAXPATH];
+    int n = bb_scan_suffix(dir, "_CRASH.log", newest);
+    if (n == 0)
         return;     // clean previous flight
-    fclose(f);
-    ano_rlog(ANO_WARN, ANO_BOTH, "blackbox: %s holds records from a previous crash.", bb_crashPath);
+    if (n == 1)
+        ano_rlog(ANO_WARN, ANO_BOTH, "blackbox: %s/%s holds records from a previous crash.", dir, newest);
+    else
+        ano_rlog(ANO_WARN, ANO_BOTH, "blackbox: %s holds %d records from previous crashes, last %s.", dir, n, newest);
 }
 
 int ano_blackbox_init(void)
 {
-    // Same directory the logger writes anoptic.log into. On resolution failure fall back to the CWD,
-    // which main() already pointed at the executable.
-    ano_fspath dir = ano_fs_gamepath();
+    // Resolve <logs>/<stamp>_CRASH.log once at init, handlers only open() it. Fallbacks: <gamedir>, then CWD.
+    ano_fspath dir = ano_fs_logpath();
+    if (dir.length == 0)
+        dir = ano_fs_gamepath();
+    const char *stamp = ano_fs_session_stamp();
     int n = dir.length > 0
-        ? snprintf(bb_crashPath, sizeof bb_crashPath, "%s/CRASH.log", dir.str)
-        : snprintf(bb_crashPath, sizeof bb_crashPath, "CRASH.log");
+        ? snprintf(bb_crashPath, sizeof bb_crashPath, "%s/%s_CRASH.log", dir.str, stamp)
+        : snprintf(bb_crashPath, sizeof bb_crashPath, "%s_CRASH.log", stamp);
     if (n <= 0 || n >= (int)sizeof bb_crashPath)
         n = snprintf(bb_crashPath, sizeof bb_crashPath, "CRASH.log");
     (void)n;
 
-    investigate_previous_flight();
+    investigate_previous_flight(dir.length > 0 ? dir.str : ".");
 
     return bb_install();
 }
 
-// Thin routing to the per-platform arm/release; the contract lives in the public header.
+// Thin routing to the per-platform arm/release. Contract in the public header.
 int ano_blackbox_thread_arm(void)
 {
     return bb_thread_arm();
