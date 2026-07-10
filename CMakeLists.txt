@@ -69,6 +69,9 @@ endif()
 # Static linking on MinGW, only vulkan-1.dll stays dynamic.
 if(WIN32 AND NOT MSVC)
     add_link_options(-static)
+    # ANO_THREAD_STACK_SIZE as the PE stack reserve (lld defaults to 1 MiB): sizes the main thread
+    # AND every NULL-attr winpthread, lazily -- an attr-sized stack would be committed up front.
+    add_link_options(-Wl,--stack,8388608)
 endif()
 
 # Frame pointers stay, every UNIX build: the blackbox walks the fp chain at crash time (a backtrace

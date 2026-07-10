@@ -7,6 +7,14 @@
 #include <anoptic_blackbox.h>
 #include <anoptic_memory.h>
 #include <pthread.h>
+#include <stdint.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>    // PE header walk for ano_thread_main_stack
+#else
+#include <sys/resource.h>
+#endif
 
 
 /* Thread Management */
@@ -39,13 +47,38 @@ static void *thread_trampoline(void *p)
 
 int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(* func)(void *), void *arg) {
 
+    // NULL attr gets ANO_THREAD_STACK_SIZE, lazily committed; an explicit attr is the caller's
+    // contract, untouched. Not on win64: winpthreads hands an attr stack to _beginthreadex as an
+    // up-front COMMIT (all 8 MiB charged per thread, measured) -- there the PE header reserve
+    // (--stack, root CMakeLists) already sizes every NULL-attr thread, lazily.
+#if !defined(_WIN32)
+    pthread_attr_t engineAttr;
+    bool engineOwned = attr == NULL && pthread_attr_init(&engineAttr) == 0;
+    if (engineOwned) {
+        if (pthread_attr_setstacksize(&engineAttr, ANO_THREAD_STACK_SIZE) == 0) {
+            attr = &engineAttr;
+        } else {
+            pthread_attr_destroy(&engineAttr);    // libc default beats no thread
+            engineOwned = false;
+        }
+    }
+#endif
+
+    int rc;
     thread_tramp_t *t = mi_malloc(sizeof *t);
-    if (t == NULL)
-        return pthread_create(thread, attr, func, arg);    // no shim beats no thread
-    *t = (thread_tramp_t){ .func = func, .arg = arg };
-    int rc = pthread_create(thread, attr, thread_trampoline, t);
-    if (rc != 0)
-        mi_free(t);
+    if (t == NULL) {
+        rc = pthread_create(thread, attr, func, arg);    // no shim beats no thread
+    } else {
+        *t = (thread_tramp_t){ .func = func, .arg = arg };
+        rc = pthread_create(thread, attr, thread_trampoline, t);
+        if (rc != 0)
+            mi_free(t);
+    }
+
+#if !defined(_WIN32)
+    if (engineOwned)
+        pthread_attr_destroy(&engineAttr);
+#endif
     return rc;
 }
 
@@ -67,6 +100,23 @@ int ano_thread_detach(anothread_t thread) {
 anothread_t ano_thread_self(void) {
 
     return pthread_self();
+}
+
+// Inputs: none. Output: the initial thread's stack budget in bytes -- RLIMIT_STACK soft on POSIX
+// (SIZE_MAX when unlimited), the PE-header reserve on win64 -- or 0 when the query fails.
+// The one stack the spawn shim cannot size; boot checks it against ANO_THREAD_STACK_SIZE.
+size_t ano_thread_main_stack(void) {
+
+#if defined(_WIN32)
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)GetModuleHandleW(NULL);
+    const IMAGE_NT_HEADERS *nt  = (const IMAGE_NT_HEADERS *)((const char *)dos + dos->e_lfanew);
+    return (size_t)nt->OptionalHeader.SizeOfStackReserve;
+#else
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) != 0)
+        return 0;
+    return rl.rlim_cur == RLIM_INFINITY ? SIZE_MAX : (size_t)rl.rlim_cur;
+#endif
 }
 
 

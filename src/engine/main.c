@@ -618,6 +618,15 @@ int main()
     if (ano_blackbox_init() != 0)
         ano_log(ANO_WARN, "Blackbox failed to arm; a crash will leave no CRASH.log.");
 
+    // Every spawned thread's stack is the engine's decision (ANO_THREAD_STACK_SIZE); the initial
+    // thread's is the environment's. Call out a shrunken budget -- a container's `ulimit -s` --
+    // here, rather than overflow mysteriously later.
+    size_t mainStack = ano_thread_main_stack();
+    if (mainStack != 0 && mainStack < ANO_THREAD_STACK_SIZE)
+        ano_log(ANO_WARN, "Main-thread stack budget is %zu KiB, under the engine's %zu KiB: "
+                "deep main-thread call chains may overflow (raise `ulimit -s`).",
+                mainStack >> 10, (size_t)ANO_THREAD_STACK_SIZE >> 10);
+
 #ifndef HEADLESS_BUILD
     // GLFW pins window + event handling to the main thread (mandatory on macOS).
     // The render world (all Vulkan + GLFW) runs HERE on the main thread.
