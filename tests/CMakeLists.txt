@@ -163,6 +163,12 @@ target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
 add_test(NAME anoptic_render_bridge COMMAND anotest_render_bridge)
 set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
 
+# Testing for the audio stack Phase 0 (churned-heap offline determinism; WAV; live null-backend round-trip)
+add_executable(anotest_audio anotest_audio.c)
+target_link_libraries(anotest_audio PRIVATE anoptic_core)
+add_test(NAME anoptic_audio COMMAND anotest_audio)
+set_tests_properties(anoptic_audio PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
