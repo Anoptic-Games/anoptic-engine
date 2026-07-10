@@ -46,7 +46,7 @@
 *.pdb
 *.save
 *.py
-# ...except the checked-in perf harness drivers (see tools/perf/README.md).
+# ...except the checked-in perf harness drivers (see tools/perf/bench_fps.md).
 !tools/perf/bench_fps_*.py
 
 # macOS metadata
@@ -123,7 +123,7 @@ result-*
 CMakeFiles
 CMakeFiles/
 CMakeCache.txt
-xs
+
 # Test assets
 assets/*
 

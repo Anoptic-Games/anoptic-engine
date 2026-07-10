@@ -87,8 +87,8 @@ Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat`
 - **Release tests** — the CTest suite at `-O3` for benchmarks.
 
 These map to the following CMake options, which can also be passed directly:
-`-DANOPTIC_TESTS=ON` (build the test suite), 
-`-DANOPTIC_HEADLESS=ON` (omit the renderer, skips the Vulkan probe
+`-DANOPTIC_TESTS=ON` (build the test suite),
+`-DANOPTIC_HEADLESS=ON` (omit the renderer, skips the Vulkan probe),
 `-DANOPTIC_SANITIZE=asan|tsan` (instrument test builds).
 
 Anoptic never builds incrementally: the scripts run the `ano_scrub` target before every build, deleting every object file so all C recompiles from scratch each time.

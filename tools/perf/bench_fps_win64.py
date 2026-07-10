@@ -3,7 +3,7 @@
 
 This is the Windows-specific driver only. The measurement METHODOLOGY -- the engine
 log contract it parses, the foreground/DPI/warmup rules, and how to read the numbers --
-is platform-agnostic and lives in tools/perf/README.md. Ports to the other targets belong
+is platform-agnostic and lives in tools/perf/bench_fps.md. Ports to the other targets belong
 beside this file as bench_fps_linux.py (X11/Wayland) and bench_fps_macos.py (Cocoa),
 implementing the SAME contract with each platform's own window/DPI/foreground primitives.
 
