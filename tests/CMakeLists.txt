@@ -190,6 +190,27 @@ target_link_libraries(anotest_audiodsp PRIVATE anoptic_core)
 add_test(NAME anoptic_audiodsp COMMAND anotest_audiodsp)
 set_tests_properties(anoptic_audiodsp PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
+# Phase 4 synth offline gate: BeatClock oracle, tie chains render as single
+# voices (bit-compare vs the merged note), patch showcase, and the journey
+# fixture — churned-heap byte-identity plus the full listenable WAV artifact.
+add_executable(anotest_synth anotest_synth.c)
+target_link_libraries(anotest_synth PRIVATE anoptic_core)
+target_compile_definitions(anotest_synth PRIVATE
+        ANO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+        ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME anoptic_synth COMMAND anotest_synth)
+set_tests_properties(anoptic_synth PROPERTIES TIMEOUT 300 LABELS "unit;mem")
+
+# Live Phase 4 scene: the journey demo in realtime through synth generator +
+# music console + device backend, automation paced from the logic thread.
+# CI-safe on null (8 s); by hand it is the audible three-minute piece.
+add_executable(anotest_synthscene anotest_synthscene.c)
+target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
+target_compile_definitions(anotest_synthscene PRIVATE
+        ANO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+add_test(NAME anoptic_synthscene COMMAND anotest_synthscene 8)
+set_tests_properties(anoptic_synthscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their

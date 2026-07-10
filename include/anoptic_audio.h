@@ -44,7 +44,7 @@
 
 // Compile-time pool ceilings. Pools are preallocated at init ("allocate" at
 // runtime is a state flip, never a heap call on the mixer thread).
-#define ANO_AUDIO_MAX_BUSES   8
+#define ANO_AUDIO_MAX_BUSES   16
 #define ANO_AUDIO_MAX_SOURCES 64
 #define ANO_AUDIO_MAX_BUFFERS 256
 #define ANO_AUDIO_MAX_FX      4 // insert-chain slots per bus
@@ -148,6 +148,16 @@ typedef struct AnoAudioBusDesc
     float    sendLevel[ANO_AUDIO_MAX_SENDS];     // initial linear send level
 } AnoAudioBusDesc;
 
+// A block generator attached to the mix graph (the synth module's seam). The
+// mixer calls it once per block, on the mixer thread, right after the bus mix
+// buffers are zeroed and before the fold — anything it adds into busMix[b]
+// (interleaved stereo, `frames` frames) rides that bus's insert chain, fader,
+// and sends like any voice. startFrame is the absolute frame of the block's
+// first sample. The generator must not allocate, lock, or touch the bridge;
+// it renders. Attach before init; the pointer is immutable while the world runs.
+typedef void (*AnoAudioGenerator)(void *user, float *const *busMix, uint32_t busCount,
+                                  uint32_t frames, uint64_t startFrame);
+
 // Init-time configuration. Zero any field for its default.
 typedef struct AnoAudioConfig
 {
@@ -159,6 +169,8 @@ typedef struct AnoAudioConfig
     uint32_t busCount;     // buses including master (bus 0); default 2, max ANO_AUDIO_MAX_BUSES
     uint32_t backend;      // AnoAudioBackend; default AUTO
     const AnoAudioBusDesc *busLayout; // optional busCount entries; NULL = every aux sums into master
+    AnoAudioGenerator generator;      // optional block generator (see above)
+    void             *generatorUser;
 } AnoAudioConfig;
 
 // Bring up the audio world: allocates every pool from a dedicated heap, opens
@@ -423,6 +435,8 @@ typedef struct AnoAudioOfflineDesc
     uint32_t bufferCount;
     const AnoAudioOfflineListener *listeners; // sorted by frame
     uint32_t listenerCount;
+    AnoAudioGenerator generator; // optional block generator, same contract as realtime
+    void             *generatorUser;
 } AnoAudioOfflineDesc;
 
 // Render `frames` frames into out[frames * ANO_AUDIO_CHANNELS] (interleaved
