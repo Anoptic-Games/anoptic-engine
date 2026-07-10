@@ -176,6 +176,13 @@ target_link_libraries(anotest_audiotone PRIVATE anoptic_core)
 add_test(NAME anoptic_audiotone COMMAND anotest_audiotone)
 set_tests_properties(anoptic_audiotone PROPERTIES TIMEOUT 30 LABELS "unit;optional")
 
+# Live Phase 2 scene: positioned one-shots + looping ambient bed + orbiting
+# listener + swept bus filter. CI-safe on null; audible by hand (2s in ctest).
+add_executable(anotest_audioscene anotest_audioscene.c)
+target_link_libraries(anotest_audioscene PRIVATE anoptic_core)
+add_test(NAME anoptic_audioscene COMMAND anotest_audioscene 2)
+set_tests_properties(anoptic_audioscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
