@@ -1,34 +1,27 @@
 #!/usr/bin/env python3
 """anopticengine FPS / GPU-pass benchmark harness -- LINUX (X11/Xwayland) DRIVER.
 
-Sibling of tools/perf/bench_fps_win64.py. The measurement METHODOLOGY -- the engine
-log contract it parses, the foreground/DPI/warmup rules, and how to read the numbers --
-is platform-agnostic and lives in tools/perf/README.md. This file re-implements that SAME
-contract with Linux window primitives; the Windows and macOS drivers do the same.
+Sibling of bench_fps_win64.py. Methodology and the engine log contract live in
+tools/perf/bench_fps.md. This file implements that contract with Linux window primitives.
 
-What is Linux-specific here (and differs from the Win64 driver):
-  - window discovery by PID via xdotool search --pid (GLFW sets _NET_WM_PID), name fallback
-  - forced + VERIFIED foreground via xdotool windowactivate --sync, confirmed against
-    xdotool getactivewindow (a background/occluded window mismeasures the GPU passes)
+Linux-specific:
+  - window discovery by PID via xdotool search --pid (_NET_WM_PID), name fallback
+  - forced + verified foreground via xdotool windowactivate --sync vs getactivewindow
   - borderless exact-size render surface via _MOTIF_WM_HINTS strip + xdotool windowsize --sync
-  - 'M' menu toggle synthesized with XTEST (xdotool key) to the focused window
+  - 'M' menu toggle via XTEST (xdotool key) to the focused window
 
-What is shared (engine side, same on every target) -- lines in anoptic.log:
+Parsed engine log lines (anoptic.log, same on every target):
   [frame] <fps> fps <ms> ms wall            -- wall-clock throughput (profiling.c: ano_frame_mark)
   [profile mode=...] total=<ms> (frusta N/42) ... swap=<MiB>   -- GPU-pass profile + VRAM
 
-Note on physical pixels: unlike Windows (logical/scaled desktop coords), X11 hands out device
-pixels, and this driver commands exact pixel window sizes -- so there is no DPI mislabel to
-defeat. The swap= VRAM sanity check in tools/perf/README.md remains the authority for "what
-resolution did I actually render", especially when comparing two machines.
+X11 hands out device pixels and the driver commands exact pixel window sizes. swap= in
+tools/perf/bench_fps.md stays the resolution authority when comparing machines.
 
-Tools required (bring them in with NIX, never apt): xdotool (required), wmctrl + xprop
-(optional, improve activation/borderless). e.g.:
+Tools via NIX, never apt: xdotool (required), wmctrl + xprop (optional). e.g.:
   nix shell nixpkgs#xdotool nixpkgs#wmctrl nixpkgs#xorg.xprop nixpkgs#xorg.xrandr
-Wayland: this drives X11/Xwayland clients. A GLFW window on the native Wayland backend is
-not controllable here -- run it as an X11/Xwayland client (both DISPLAY and an X server present).
+Drives X11/Xwayland clients only, never native-Wayland GLFW windows.
 
-Requires: Linux, Python 3, an X server (Xorg or Xwayland). Dev-only tool; not built or shipped.
+Requires: Linux, Python 3, an X server. Dev-only tool, not built or shipped.
 
 Examples:
   python3 tools/perf/bench_fps_linux.py                          # resolution sweep, menu open
@@ -42,10 +35,10 @@ import argparse, os, re, shutil, subprocess, sys, time
 SWEEP_DEFAULT = [(640, 360), (960, 540), (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)]
 CHURN_SIZES   = [(640, 480), (1920, 1080), (900, 1500), (2560, 1440), (480, 900),
                  (1600, 900), (1280, 720), (2200, 1300), (720, 1280), (1100, 1900)]
-CHURN_MS = 33.0  # target floor; xdotool spawn overhead makes the real cadence a little slower
-PRINT_INTERVAL = 120  # engine ANO_PROFILE_PRINT_INTERVAL; 120 rendered frames per profile line
+CHURN_MS = 33.0  # target floor, real cadence a little slower
+PRINT_INTERVAL = 120  # engine ANO_PROFILE_PRINT_INTERVAL, frames per profile line
 
-# Engine log contract -- identical regexes to the Win64 driver (parse the same two lines).
+# Engine log contract, same regexes as the Win64 driver.
 PF = re.compile(r"\[frame\] ([0-9.]+) fps")
 PG = re.compile(r"total=([0-9.]+)")
 PS = re.compile(r"swap=([0-9.]+)")
@@ -65,8 +58,8 @@ def _active_window():
 
 
 def _find_window(pid):
-    """Window id for pid: prefer _NET_WM_PID (xdotool --pid), fall back to the GLFW title 'Vulkan'
-    cross-checked against the child pid. Decimal ids throughout (same space as getactivewindow)."""
+    """Window id for pid: _NET_WM_PID (xdotool --pid), pid-checked 'Vulkan'-title fallback.
+    Decimal ids throughout (same space as getactivewindow)."""
     ids = [w for w in _run(["xdotool", "search", "--onlyvisible", "--pid", str(pid)]).split() if w]
     if not ids:
         for w in _run(["xdotool", "search", "--name", "Vulkan"]).split():
@@ -77,7 +70,7 @@ def _find_window(pid):
 
 
 def _strip_decorations(wid):
-    # Motif hint: flags=MWM_HINTS_DECORATIONS(2), decorations=0 -> borderless, so windowsize is the render size.
+    # Motif hint: decorations=0 -> borderless, windowsize == render size.
     if shutil.which("xprop"):
         _run(["xprop", "-id", wid, "-f", "_MOTIF_WM_HINTS", "32c",
               "-set", "_MOTIF_WM_HINTS", "2, 0, 0, 0, 0"])
@@ -90,8 +83,7 @@ def _resize(wid, w, h, sync):
 
 
 def _bring_to_front(wid):
-    """Force the window to the true foreground and CONFIRM it. A background/occluded window
-    mismeasures the GPU passes -- never trust a row that isn't front."""
+    """Force the window to the foreground and confirm it."""
     have_wmctrl = shutil.which("wmctrl") is not None
     for _ in range(5):
         _run(["xdotool", "windowactivate", "--sync", wid])
@@ -105,10 +97,10 @@ def _bring_to_front(wid):
 
 
 def _toggle_menu(wid):
-    # Focus, then XTEST 'm' to the focused window (real event; GLFW ignores XSendEvent synthetics).
+    # Focus, then XTEST 'm' (GLFW ignores XSendEvent synthetics).
     _run(["xdotool", "windowfocus", "--sync", wid])
     if _run(["xdotool", "getwindowfocus"]) != wid:
-        return  # focus refused: skip rather than type 'm' into whatever IS focused
+        return  # focus refused: skip
     _run(["xdotool", "key", "--clearmodifiers", "m"])
 
 
@@ -118,8 +110,8 @@ def _median(a):
 
 
 def parse_stream(lines):
-    """Fold engine log lines into (fps, total_ms, swap_MiB, frusta) sample lists. Shared by the
-    live tail below and by offline replay of a captured anoptic.log."""
+    """Fold engine log lines into (fps, total_ms, swap_MiB, frusta) sample lists.
+    Shared by the live tail and offline replay of a captured anoptic.log."""
     fps, tot, sw, fru = [], [], [], []
     for line in lines:
         m = PF.search(line);  m and fps.append(float(m.group(1)))
@@ -131,7 +123,7 @@ def parse_stream(lines):
 
 
 def summarize(fps, tot, sw, fru, front=True):
-    """Drop warmup, take medians, derive GPUcap and the wall/cap bound indicator (tools/perf/README.md)."""
+    """Drop warmup, take medians, derive GPUcap and the wall/cap bound indicator (tools/perf/bench_fps.md)."""
     fps, tot, fru = fps[2:], tot[4:], fru[4:]
     wf, gt = _median(fps), _median(tot)
     cap = 1000.0 / gt if gt else 0.0
@@ -143,7 +135,7 @@ def summarize(fps, tot, sw, fru, front=True):
 
 def run_once(exe, w, h, dur, menu, churn, env):
     log = os.path.join(os.path.dirname(exe), "anoptic.log")
-    try: os.remove(log)                          # no file lock on Linux; a plain unlink suffices
+    try: os.remove(log)                          # no file lock on Linux
     except FileNotFoundError: pass
 
     p = subprocess.Popen([exe], env=env)
@@ -204,15 +196,14 @@ def main():
     if not os.path.exists(exe):
         sys.exit(f"exe not found: {exe} (build it, e.g. the Release preset)")
     env = dict(os.environ)
-    # GLFW 3.4 prefers native Wayland when WAYLAND_DISPLAY is set; hide it from the child so the
-    # engine comes up as an Xwayland client xdotool can drive (a --env override can restore it).
+    # Hide WAYLAND_DISPLAY: the engine comes up as an Xwayland client (--env can restore it).
     env.pop("WAYLAND_DISPLAY", None)
     for kv in args.env:
         k, _, v = kv.partition("="); env[k] = v
     if args.env: print("engine env: " + "  ".join(args.env))
 
     if args.churn:
-        sizes = [(3840, 2160)]  # base res; the run cycles CHURN_SIZES internally
+        sizes = [(3840, 2160)]  # base res, the run cycles CHURN_SIZES
     elif args.res:
         w, h = (int(x) for x in args.res.lower().split("x")); sizes = [(w, h)]
     else:

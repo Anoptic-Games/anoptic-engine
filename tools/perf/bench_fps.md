@@ -41,18 +41,18 @@ Pass via the child process environment. Perf-relevant:
 ## Drivers
 
 - **Windows:** `tools/perf/bench_fps_win64.py` (win32 + pywin32). Modes: default resolution sweep, `--res WxH`, `--no-menu` (static HUD), `--churn` (resize storm), `--env KEY=VAL`. Prints a table with a `front` column — treat any `BG!!` row as invalid.
-- **Linux:** `tools/perf/bench_fps_linux.py` (X11/Xwayland). Same modes/flags as the Windows driver. Window discovery by PID (`xdotool search --pid`, `_NET_WM_PID`; 'Vulkan'-title fallback); forced+verified foreground via `xdotool windowactivate --sync` confirmed against `getactivewindow`; borderless render surface via `_MOTIF_WM_HINTS` strip + `windowsize --sync`; menu key via XTEST (`xdotool key m`). X11 hands out physical pixels and the driver commands exact pixel sizes, so there's no DPI mislabel to defeat — `swap=` stays the resolution authority. Tools come from Nix, never apt: `nix shell nixpkgs#xdotool nixpkgs#wmctrl nixpkgs#xorg.xprop`. Drives X11/Xwayland clients only (not native-Wayland GLFW windows). Its `parse_stream()` also replays a captured `anoptic.log` offline for parser checks with no X server.
+- **Linux:** `tools/perf/bench_fps_linux.py` (X11/Xwayland). Same modes/flags as the Windows driver. Window discovery by PID (`xdotool search --pid`, `_NET_WM_PID`, 'Vulkan'-title fallback). Forced and verified foreground via `xdotool windowactivate --sync` confirmed against `getactivewindow`. Borderless render surface via `_MOTIF_WM_HINTS` strip + `windowsize --sync`. Menu key via XTEST (`xdotool key m`). X11 hands out physical pixels and the driver commands exact pixel sizes. `swap=` stays the resolution authority. Tools come from Nix, never apt: `nix shell nixpkgs#xdotool nixpkgs#wmctrl nixpkgs#xorg.xprop`. Drives X11/Xwayland clients only, never native-Wayland GLFW windows. Its `parse_stream()` also replays a captured `anoptic.log` offline with no X server.
 - **macOS (TODO `bench_fps_macos.py`):** Cocoa. Front via `NSRunningApplication.activate` / `osascript`; window geometry via CGWindowList (see the `screenshot-macos` skill for the CGWindow precedent); key via CGEvent.
 
 ## Reproducing a benchmark on a second machine
 
-Most "our numbers don't match" reports are an environment mismatch, not a real perf delta. Before comparing two boxes, confirm in order:
+Most "our numbers don't match" reports are an environment mismatch. Before comparing two boxes, confirm in order:
 
-- **Same code.** Both on the same branch/commit (`git rev-parse HEAD` must match). The release-visible `[frame]` line and the release `[profile]` line only exist past the commit that added them — on an older tree `[frame]` is absent entirely and `[profile]` is `ano_debug_log` (debug builds only). A silent release log almost always means wrong branch.
-- **Clean checkout.** `git pull --recurse-submodules`; submodules initialised (`git submodule update --init --recursive`). A phantom or unfetched submodule is a local-clone problem, never a shared-config one — `.git/config` is per-clone and git never transmits it.
-- **Same build.** Same toolchain via the flake. A non-nix build is not the reference build and will diverge.
+- **Same code.** Both on the same branch/commit (`git rev-parse HEAD` must match). The release-visible `[frame]` and `[profile]` lines only exist past the commit that added them. A silent release log almost always means wrong branch.
+- **Clean checkout.** `git pull --recurse-submodules` and `git submodule update --init --recursive`. A phantom or unfetched submodule is a local-clone problem. `.git/config` is per-clone and git never transmits it.
+- **Same build.** Same toolchain via the flake. A non-nix build diverges from the reference.
 - **Same measurement.** Same driver, same `--res`, foreground-verified (`FRONT`, never `BG!!`), warmup dropped.
-- **Compare `swap=` before `total=`.** If swap VRAM differs, the render resolutions differ and nothing downstream is comparable — fix that first. Across different GPUs, expect `total=` to scale with pixel count (lighting, composite) while the fixed-atlas shadow pass stays roughly constant; that internal consistency is the signature of an honest measurement.
+- **Compare `swap=` before `total=`.** Differing swap VRAM means differing render resolutions and nothing downstream is comparable. Across GPUs expect `total=` to scale with pixel count while the fixed-atlas shadow pass stays roughly constant.
 
 ## Reference baseline
 

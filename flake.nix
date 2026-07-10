@@ -20,8 +20,6 @@
   #   nix develop [.#windows]              the same env, you drive
   #
   # git flakes see tracked files only: `git add` new files or nix will not.
-  # Flake inputs cannot be optional: an unfetchable input kills evaluation, so the
-  # assets input defaults to the public pack; the private one is an override away.
   description = "Anoptic Engine — C23 game engine (Linux, macOS, Windows via MinGW cross)";
 
   inputs = {
@@ -73,10 +71,10 @@
       ];
       forAllSystems = f: lib.genAttrs systems f;
 
-      # Feed each attr its own name as the variant, so names are written once.
+      # Feed each attr its own name in as the variant.
       mkVariants = builder: lib.mapAttrs (variant: args: builder (args // { inherit variant; }));
 
-      # vulkan-validation-layers where the platform actually has them.
+      # vulkan-validation-layers where the platform has them.
       vvlFor =
         pkgs: host:
         if pkgs ? vulkan-validation-layers && lib.meta.availableOn host pkgs.vulkan-validation-layers then
@@ -84,13 +82,13 @@
         else
           null;
 
-      # Fortify needs -O; Debug is -O0 and sanitizers dislike it too.
+      # Fortify off for Debug and sanitizer builds (needs -O).
       fortifyOff = [
         "fortify"
         "fortify3"
       ];
 
-      # Copy a pinned submodule source into the unpacked tree (self excludes submodule content).
+      # Copy a pinned submodule source into the unpacked tree.
       injectSubmodule = name: src: ''
         rm -rf "$sourceRoot/external/${name}"
         cp -r ${src} "$sourceRoot/external/${name}"
@@ -100,8 +98,7 @@
       # path=rev pairs shared by the shell warning and the nix-run fatal gate.
       pinList = "external/glfw=${glfw-src.rev} external/mimalloc=${mimalloc-src.rev} external/freetype=${freetype-src.rev} external/cgltf=${cgltf-src.rev}";
 
-      # Shell-entry warning when recorded gitlinks disagree with the flake pins
-      # (a stale-submodule `git add -A` regressed the 2026-06-24 dep bump twice).
+      # Shell-entry warning when recorded gitlinks disagree with the flake pins.
       submodulePinWarn = ''
         if git rev-parse --git-dir >/dev/null 2>&1; then
           for pair in ${pinList}; do
@@ -118,11 +115,10 @@
       # pkgs/stdenv: host package set + compiler (native clang+lld, or MinGW cross).
       # variant: qualified attr name, becomes the pname suffix.
       # buildType: Release | Debug. headless: no renderer, no GLFW/Vulkan.
-      # wayland/x11: Linux renderer backends (both on = runtime-selected, the Steam shape).
+      # wayland/x11: Linux renderer backends (both on = runtime-selected).
       # tests: ANOPTIC_TESTS + ctest in checkPhase. sanitize: asan | tsan | "".
       # softwareVulkan: point the loader at mesa's lavapipe ICD (sandboxed GPU tests).
-      # Invariant: install ships bin/anopticengine + bin/resources/shaders; fonts and
-      # assets are staged in postInstall because cmake only stages them in build trees.
+      # Invariant: install ships bin/anopticengine + bin/resources/shaders.
       mkEngine =
         {
           pkgs,
@@ -142,8 +138,7 @@
           host = stdenv.hostPlatform;
           onOff = b: if b then "ON" else "OFF";
           vvl = vvlFor pkgs host;
-          # Wrap so the store binary is runnable as-is: MoltenVK ICD on macOS,
-          # validation layers discoverable for Debug renderers.
+          # Wrapper env: MoltenVK ICD on macOS, VK_LAYER_PATH for Debug renderers.
           wrapArgs =
             lib.optionals (renderer && host.isDarwin) [
               "--set-default"
@@ -168,11 +163,10 @@
               ninja
               pkg-config
             ])
-            # llvm-ar/llvm-ranlib: the clang wrapper ships neither and the
-            # CheckIPOSupported probe fails without them — Release silently loses ThinLTO.
+            # llvm-ar/llvm-ranlib for the CheckIPOSupported probe (keeps ThinLTO).
             ++ lib.optionals (!host.isWindows) [ pkgs.buildPackages.llvmPackages_latest.llvm ]
             ++ lib.optionals renderer [ pkgs.buildPackages.shaderc ] # glslc
-            # glslangValidator -gV: the Debug shader path with correct cross-#include debug info.
+            # glslangValidator -gV: Debug shader debug info.
             ++ lib.optionals (renderer && isDebug) [ pkgs.buildPackages.glslang ]
             ++ lib.optionals (renderer && host.isLinux && wayland) [ pkgs.buildPackages.wayland-scanner ]
             ++ lib.optionals (wrapArgs != [ ]) [ pkgs.buildPackages.makeWrapper ];
@@ -196,7 +190,7 @@
                     libxi
                   ]
                 )
-                # No `with pkgs` here: the wayland *parameter* lexically shadows pkgs.wayland.
+                # No `with pkgs`: the wayland parameter shadows pkgs.wayland.
                 ++ lib.optionals wayland [
                   pkgs.wayland
                   pkgs.libxkbcommon
@@ -224,12 +218,9 @@
           hardeningDisable = lib.optionals isDebug fortifyOff;
 
           doCheck = tests;
-          # The sandbox has no usable HOME and ano_fs_userpath() needs one (plus the
-          # macOS Application Support parents). until-pass:2 absorbs sleep-precision
-          # flakes when the builder is loaded; genuine failures fail both runs.
-          # Darwin builders run at background QoS on efficiency cores, where the
-          # anoptic_time sleep-resolution asserts are meaningless — excluded there;
-          # `nix run -- 3|6` still covers them at user QoS.
+          # ano_fs_userpath() needs a HOME (plus the macOS Application Support parents).
+          # until-pass:2 absorbs sleep-precision flakes. anoptic_time excluded on Darwin
+          # builders (background QoS). `nix run -- 3|6` still covers it at user QoS.
           checkPhase = ''
             runHook preCheck
             export HOME="$TMPDIR/anoptic-home"
@@ -242,7 +233,7 @@
             VK_ICD_FILENAMES = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
           };
 
-          # Fonts always; assets best-effort — an empty input warns, never fails.
+          # Fonts always, assets best-effort (an empty input warns).
           postInstall = lib.optionalString renderer (
             ''
               mkdir -p "$out/bin/resources"
@@ -299,8 +290,7 @@
               // args
             );
 
-          # Windows cross: MinGW-w64 ucrt64 (C11 timespec_get needs ucrt). x86_64-linux
-          # build hosts only — WSL is x86_64-linux, and its renderer artifact is this exe.
+          # Windows cross: MinGW-w64 ucrt64 (C11 timespec_get). x86_64-linux hosts only.
           crossPkgs = pkgs.pkgsCross.ucrt64;
           mkWin =
             args:
@@ -329,7 +319,7 @@
                 headless = true;
               };
             }
-            # Diet backends; the unsuffixed build carries both, selected at runtime.
+            # Single-backend diets. The unsuffixed build carries both, selected at runtime.
             // lib.optionalAttrs isLinux {
               "release-${hostTag}-wayland" = {
                 buildType = "Release";
@@ -372,7 +362,7 @@
             w // { release-wsl = w.release-windows-x64; }
           );
 
-          # Host-resolved short names: the automatic platform resolution.
+          # Host-resolved short names.
           aliases = {
             default = native."release-${hostTag}";
             release = native."release-${hostTag}";
@@ -382,10 +372,9 @@
             headless = native."release-headless-${hostTag}";
           };
 
-          # Sandbox test suites. Building one runs it. Sanitized suites run headless:
-          # sanitizer value is the lock-free core; GPU-real sanitizer runs are `nix run -- 4|5`.
-          # tests-full is experimental: full suite incl. Vulkan device tests on lavapipe —
-          # if surface tests turn out to need a display server, expect red there.
+          # Sandbox test suites. Building one runs it. Sanitized suites run headless.
+          # GPU-real sanitizer runs are `nix run -- 4|5`.
+          # tests-full (experimental): full suite incl. Vulkan device tests on lavapipe.
           checks = mkVariants mkHost (
             {
               tests-headless = {
@@ -415,9 +404,8 @@
             }
           );
 
-          # nix run [-- N]: the impure entry. Verifies pins fatally (a pure build cannot
-          # go stale, an in-tree build can), supplies missing submodules and assets,
-          # then delegates to the dev shell so the env is defined exactly once.
+          # nix run [-- N]: the impure entry. Fatal pin check, submodule/asset supply,
+          # then ./build.sh N in the dev shell.
           runWrapper = pkgs.writeShellApplication {
             name = "anoptic-build";
             runtimeInputs = [
@@ -456,10 +444,7 @@
                 fi
               done
 
-              # Provision only into nothing: absent, or present and empty. That is exactly the
-              # destination set `git clone` accepts, so the guard and the clone agree. An empty
-              # assets/ left by a tool, or a stale checkout, still gets populated; anything the
-              # user put there is left alone.
+              # Provision assets/ only when absent or empty. User content is left alone.
               if [ -z "$(ls -A assets 2>/dev/null)" ]; then
                 if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
                     git clone --depth 1 git@github.com:Anoptic-Games/assets.git assets >/dev/null 2>&1; then
@@ -471,8 +456,7 @@
                 fi
               fi
 
-              # WSL is x86_64-linux to nix and has no in-guest render target; say what
-              # this build is for instead of guessing. Explicit path: nix build .#release-wsl
+              # WSL has no in-guest render target. Point at .#release-wsl for the renderer.
               if [ -r /proc/version ] && grep -qi microsoft /proc/version; then
                 echo "[anoptic] WSL detected — in-tree Linux builds cover headless and tests; the WSL renderer artifact is 'nix build .#release-wsl' (Windows exe)."
               fi
@@ -481,8 +465,7 @@
             '';
           };
 
-          # llvm: llvm-ar/-ranlib so in-shell Release builds keep ThinLTO (see mkEngine);
-          # lldb version-matched to the compiler.
+          # llvm: llvm-ar/-ranlib keep ThinLTO in-shell. lldb version-matched to clang.
           shellTools =
             (with pkgs; [
               cmake
@@ -556,7 +539,7 @@
                 );
           }
           // lib.optionalAttrs (system == "x86_64-linux") {
-            # Interactive cross env; the artifact path is `nix build .#release-wsl`.
+            # Interactive cross env. Artifact path: nix build .#release-wsl
             windows = crossPkgs.mkShell {
               name = "anoptic-windows";
               hardeningDisable = fortifyOff;
@@ -583,7 +566,7 @@
             meta.description = "Anoptic Engine — C23 game engine for million-entity simulation";
           };
         };
-      # Evaluate each system once, then project the output types out of it.
+      # Evaluate each system once, then project the output types.
       perSys = forAllSystems perSystem;
     in
     {
@@ -591,7 +574,7 @@
       checks = lib.mapAttrs (_: s: s.checks) perSys;
       devShells = lib.mapAttrs (_: s: s.devShells) perSys;
       apps = lib.mapAttrs (_: s: s.apps) perSys;
-      # nixfmt-tree: bare `nix fmt` needs a tree-mode formatter (classic nixfmt reads stdin).
+      # nixfmt-tree: tree-mode `nix fmt`.
       formatter = forAllSystems (s: nixpkgs.legacyPackages.${s}.nixfmt-tree);
     };
 }
