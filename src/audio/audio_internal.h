@@ -166,6 +166,10 @@ struct AnoAudioMixer
     float              masterPeak;     // |peak| of the latest block, pre clip guard
     uint32_t           clippedSamples; // clip-guard hits since init
 
+    // Attached block generator (the synth seam); immutable while running.
+    AnoAudioGenerator generator;
+    void             *generatorUser;
+
     // Listener (latest applied; realtime: acquired from the seqlock per block).
     AnoAudioListener listener;
     bool             listenerValid;

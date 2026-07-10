@@ -161,6 +161,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/ui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/audio)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/synth)
 
 # Renderer (default on).
 if(NOT ANOPTIC_HEADLESS)
