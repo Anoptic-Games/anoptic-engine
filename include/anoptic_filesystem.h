@@ -73,6 +73,11 @@ typedef struct ano_file ano_file;
 // Input: NUL-terminated path. Output: handle, or NULL on failure.
 ano_file *ano_fs_open_append(const char *path);
 
+// Open `path` for appending after truncating it to zero length, creating if absent.
+// For a file this session owns from its first byte (the logger's init open).
+// Input: NUL-terminated path. Output: handle, or NULL on failure.
+ano_file *ano_fs_open_trunc(const char *path);
+
 // Write all `length` bytes, looping past short writes.
 // Input: open handle, buffer, byte count. Output: 0 on success, -1 on error.
 int ano_fs_write(ano_file *file, const void *data, size_t length);

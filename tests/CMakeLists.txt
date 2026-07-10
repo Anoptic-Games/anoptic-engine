@@ -164,7 +164,7 @@ set_tests_properties(anoptic_logfuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;concurr
 add_executable(anotest_blackbox anotest_blackbox.c)
 target_link_libraries(anotest_blackbox PRIVATE anoptic_core)
 add_test(NAME anoptic_blackbox COMMAND anotest_blackbox)
-set_tests_properties(anoptic_blackbox PROPERTIES TIMEOUT 180 LABELS "unit;concurrency")
+set_tests_properties(anoptic_blackbox PROPERTIES TIMEOUT 240 LABELS "unit;concurrency")
 # Skipped under ASan/TSan: sanitizers install their own fatal-signal handlers.
 if(NOT ANOPTIC_SANITIZE STREQUAL "")
     set_tests_properties(anoptic_blackbox PROPERTIES DISABLED TRUE)

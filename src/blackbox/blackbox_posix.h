@@ -17,6 +17,8 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -248,6 +250,53 @@ int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
     }
     closedir(d);
     return count;
+}
+
+// Contract in blackbox_internal.h. Pass 1 collects the top-keep newest by mtime, pass 2 removes the rest.
+int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *skip)
+{
+    if (keep > 8) keep = 8;
+    bb_prune_t top[8];
+    int  nTop = 0;
+    size_t sl = strlen(suffix), kl = skip != NULL ? strlen(skip) : 0;
+
+    DIR *d = opendir(dir);
+    if (d == NULL)
+        return 0;
+    for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+        size_t nl = strlen(e->d_name);
+        if (nl < sl || nl >= MAXPATH || strcmp(e->d_name + nl - sl, suffix) != 0)
+            continue;
+        char path[MAXPATH * 2 + 8];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat st;
+        unsigned long long t = stat(path, &st) == 0 ? (unsigned long long)st.st_mtime : 0;
+        bb_top_insert(top, keep, &nTop, t, e->d_name);
+    }
+    closedir(d);
+
+    d = opendir(dir);
+    if (d == NULL)
+        return 0;
+    int removed = 0;
+    for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+        size_t nl = strlen(e->d_name);
+        if (nl < sl || nl >= MAXPATH || strcmp(e->d_name + nl - sl, suffix) != 0)
+            continue;
+        if (kl > 0 && strncmp(e->d_name, skip, kl) == 0)
+            continue;   // never touch the live session's files
+        bool kept = false;
+        for (int i = 0; i < nTop && !kept; i++)
+            kept = strcmp(e->d_name, top[i].name) == 0;
+        if (kept)
+            continue;
+        char path[MAXPATH * 2 + 8];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        if (remove(path) == 0)
+            removed++;
+    }
+    closedir(d);
+    return removed;
 }
 
 // Inputs: none. Output: 0 when every hook installed, -1 if any refused (the rest stay armed).

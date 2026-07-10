@@ -426,12 +426,15 @@ static int render_walltime(char *out, uint64_t ticks)
 
 /* Output file (under g_outFileMtx) */
 
-// Open <dir>/<session-stamp>_ano.log for append, NULL on failure. The stamp is process-wide.
-static ano_file *open_log(const char *dir)
+// Open <dir>/<session-stamp>_ano.log, NULL on failure. The stamp is process-wide.
+// fresh truncates (the init open owns the file from byte zero), otherwise appends (redirects).
+static ano_file *open_log(const char *dir, bool fresh)
 {
     char path[MAXPATH];
     int n = snprintf(path, sizeof path, "%s/%s" ANO_LOG_FILESUFFIX, dir, ano_fs_session_stamp());
-    return (n > 0 && n < (int)sizeof path) ? ano_fs_open_append(path) : NULL;
+    if (n <= 0 || n >= (int)sizeof path)
+        return NULL;
+    return fresh ? ano_fs_open_trunc(path) : ano_fs_open_append(path);
 }
 
 // The two persist targets, bound by select_output() when the file opens or closes.
@@ -793,7 +796,7 @@ int ano_log_output_dir(const char *directoryPath)
         || !atomic_load_explicit(&g_initialized, memory_order_relaxed))
         return -1;
 
-    ano_file *newOut = open_log(directoryPath);
+    ano_file *newOut = open_log(directoryPath, false);
     if (newOut == NULL)
         return -1;  // open failed, keep current output file
 
@@ -870,7 +873,7 @@ int ano_log_init(void)
     // Default output file: one per session, in the game directory's logs/. Opening latches the session stamp.
     ano_fspath dir = ano_fs_logpath();
     if (dir.length > 0)
-        g_outFile = open_log(dir.str);
+        g_outFile = open_log(dir.str, true);
     select_output();    // bind g_persist/g_syncOut/g_haveFile to the chosen output
 
     atomic_store_explicit(&g_initialized, true, memory_order_release);

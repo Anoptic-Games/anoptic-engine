@@ -222,6 +222,58 @@ int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
     return count;
 }
 
+// Contract in blackbox_internal.h. Pass 1 collects the top-keep newest by mtime, pass 2 removes the rest.
+int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *skip)
+{
+    if (keep > 8) keep = 8;
+    bb_prune_t top[8];
+    int  nTop = 0;
+    size_t sl = strlen(suffix), kl = skip != NULL ? strlen(skip) : 0;
+
+    char pat[MAXPATH + 8];
+    int n = snprintf(pat, sizeof pat, "%s\\*%s", dir, suffix);
+    if (n <= 0 || n >= (int)sizeof pat)
+        return 0;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        size_t nl = strlen(fd.cFileName);
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            || nl < sl || nl >= MAXPATH || strcmp(fd.cFileName + nl - sl, suffix) != 0)
+            continue;
+        unsigned long long t = ((unsigned long long)fd.ftLastWriteTime.dwHighDateTime << 32)
+                             | fd.ftLastWriteTime.dwLowDateTime;
+        bb_top_insert(top, keep, &nTop, t, fd.cFileName);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+
+    h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return 0;
+    int removed = 0;
+    do {
+        size_t nl = strlen(fd.cFileName);
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            || nl < sl || nl >= MAXPATH || strcmp(fd.cFileName + nl - sl, suffix) != 0)
+            continue;
+        if (kl > 0 && strncmp(fd.cFileName, skip, kl) == 0)
+            continue;   // never touch the live session's files
+        bool kept = false;
+        for (int i = 0; i < nTop && !kept; i++)
+            kept = strcmp(fd.cFileName, top[i].name) == 0;
+        if (kept)
+            continue;
+        char path[MAXPATH * 2 + 8];
+        snprintf(path, sizeof path, "%s\\%s", dir, fd.cFileName);
+        if (remove(path) == 0)
+            removed++;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return removed;
+}
+
 // Inputs: none. Output: 0 when the deadman and every hook armed, -1 otherwise.
 int bb_install(void)
 {

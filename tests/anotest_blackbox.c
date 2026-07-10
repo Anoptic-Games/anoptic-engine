@@ -14,8 +14,9 @@
  *     through the Stage 3 hail mary
  *   - the deadman: a poisoned deferred format crashes the drainer under the drain mutex, the hail
  *     mary self-deadlocks, and the watchdog must kill the process at ~5 s
- *   - Stage 4: a leftover *_CRASH.log is announced on the next boot and left in place, each crash
- *     session gets its own record file, and a stamp collision appends
+ *   - Stage 4: a leftover *_CRASH.log is announced on the next boot ("n crash logs detected"),
+ *     each crash session gets its own record file, a stamp collision appends, and boot prunes
+ *     both log types to the newest 4 (the live session excepted)
  * The parent discovers each child's stamped files by suffix scan (bb_scan_suffix).
  * Oracles: exact death (exit code on win64, termination signal on POSIX), exactly ONE complete
  * record per crash (begin/end markers + backtrace), required/forbidden record substrings, and
@@ -38,14 +39,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <sys/utime.h>
+#define set_mtime(p, t) do { struct _utimbuf ub_ = { .actime = (t), .modtime = (t) }; _utime((p), &ub_); } while (0)
 #else
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <utime.h>
+#define set_mtime(p, t) do { struct utimbuf ub_ = { .actime = (t), .modtime = (t) }; utime((p), &ub_); } while (0)
 #endif
 
 #define LOG_DIR      "anotest_blackbox_scratch"
@@ -643,7 +649,7 @@ static void test_stage4(void)
     CHECK(death_matches(DIE(0, 0), c), "stage4: control clean run died");
     char *log = find_suffix(LOG_DIR, LOG_SUFFIX, logPath, sizeof logPath)
               ? read_all(logPath, &len) : NULL;
-    CHECK(count_sub(log, len, "previous crash") == 0, "stage4: announcement without a crash record");
+    CHECK(count_sub(log, len, "crash log") == 0, "stage4: announcement without a crash record");
     free(log);
 
     child_status_t s = spawn_child("segv_write", &ms);
@@ -655,10 +661,71 @@ static void test_stage4(void)
     CHECK(death_matches(DIE(0, 0), c), "stage4: post-crash clean run died");
     log = find_suffix(LOG_DIR, LOG_SUFFIX, logPath, sizeof logPath)
         ? read_all(logPath, &len) : NULL;
-    CHECK(count_sub(log, len, "previous crash") > 0, "stage4: previous crash not announced");
+    CHECK(count_sub(log, len, "crash log detected") > 0, "stage4: previous crash not announced");
     free(log);
     CHECK(bb_scan_suffix(CRASH_DIR, CRASH_SUFFIX, name) == 1,
           "stage4: record not preserved for the investigation");
+}
+
+// Retention: boot prunes each log type to the newest 4, the live session's files excepted.
+// Six crashes leave 5 records on disk (each boot prunes to 4 before its own crash adds one);
+// the closing clean boot prunes back down to exactly 4.
+static void test_retention(void)
+{
+    remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
+    remove_all_suffix(CRASH_DIR, LOG_SUFFIX);
+    remove_all_suffix(LOG_DIR, LOG_SUFFIX);
+    unsigned ms;
+    for (int i = 0; i < 6; i++) {
+        child_status_t s = spawn_child("segv_write", &ms);
+        CHECK(death_matches(DIE(0xC0000005, SIG_SEGVISH), s), "retention: crash child %d died wrong", i);
+    }
+    child_status_t c = spawn_child("clean", &ms);
+    CHECK(death_matches(DIE(0, 0), c), "retention: clean run died");
+    char name[MAXPATH];
+    CHECK(bb_scan_suffix(CRASH_DIR, CRASH_SUFFIX, name) == 4,
+          "retention: want 4 crash records after pruning, have %d",
+          bb_scan_suffix(CRASH_DIR, CRASH_SUFFIX, name));
+    CHECK(bb_scan_suffix(CRASH_DIR, LOG_SUFFIX, name) <= 5,
+          "retention: session logs not pruned, have %d",
+          bb_scan_suffix(CRASH_DIR, LOG_SUFFIX, name));
+}
+
+// Prune order: the OLDEST records by last-write time die first, never the newest. Six fabricated
+// records get mtimes in REVERSE name order, so a name-ordered prune would keep the wrong four.
+static void test_prune_order(void)
+{
+    static const char *names[] = {
+        "2001-01-01_000001_CRASH.log", "2002-01-01_000001_CRASH.log",
+        "2003-01-01_000001_CRASH.log", "2004-01-01_000001_CRASH.log",
+        "2005-01-01_000001_CRASH.log", "2006-01-01_000001_CRASH.log",
+    };
+    remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
+    time_t base = time(NULL) - 7200;
+    char path[MAXPATH + 40];
+    for (int i = 0; i < 6; i++) {
+        snprintf(path, sizeof path, "%s/%s", CRASH_DIR, names[i]);
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "prune_order: cannot fabricate %s", names[i]);
+        if (f != NULL) { fputs("fabricated record\n", f); fclose(f); }
+        set_mtime(path, base + (time_t)(5 - i) * 600);  // names[0] newest ... names[5] oldest
+    }
+
+    unsigned ms;
+    child_status_t c = spawn_child("clean", &ms);
+    CHECK(death_matches(DIE(0, 0), c), "prune_order: clean run died");
+
+    // The four newest by mtime survive (names[0..3]), the two oldest are gone (names[4..5]).
+    for (int i = 0; i < 6; i++) {
+        snprintf(path, sizeof path, "%s/%s", CRASH_DIR, names[i]);
+        FILE *f = fopen(path, "rb");
+        if (i < 4)
+            CHECK(f != NULL, "prune_order: newest-by-mtime %s was deleted", names[i]);
+        else
+            CHECK(f == NULL, "prune_order: oldest-by-mtime %s survived", names[i]);
+        if (f != NULL) fclose(f);
+    }
+    remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
 }
 
 int main(int argc, char **argv)
@@ -689,6 +756,8 @@ int main(int argc, char **argv)
         run_scenario(&SCENARIOS[i]);
     test_append();
     test_stage4();
+    test_retention();
+    test_prune_order();
 
     // Full sweep: crash records, scratch session logs, and the children's default-init session
     // logs under logs/.

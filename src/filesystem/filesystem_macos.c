@@ -111,6 +111,25 @@ ano_file *ano_fs_open_append(const char *path)
     return file;
 }
 
+// Output: handle opened O_APPEND after an O_TRUNC, or NULL on failure.
+ano_file *ano_fs_open_trunc(const char *path)
+{
+    if (path == NULL)
+        return NULL;
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+    if (fd < 0)
+        return NULL;
+
+    ano_file *file = mi_malloc(sizeof *file);
+    if (file == NULL) {
+        close(fd);
+        return NULL;
+    }
+    file->fd = fd;
+    return file;
+}
+
 // Output: 0 once all bytes are written, -1 on error. Loops past partial writes and EINTR.
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
