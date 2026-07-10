@@ -94,6 +94,13 @@ typedef struct AnoAudioDeviceApi
 // samples. Headless runs, CI, tests.
 const AnoAudioDeviceApi *ano_audio_device_null(void);
 
+#if defined(__linux__)
+// audio_linux.c — both dlopen their library at start() and fail cleanly
+// (returning false) when it is absent, so AUTO can cascade.
+const AnoAudioDeviceApi *ano_audio_device_pipewire(void);
+const AnoAudioDeviceApi *ano_audio_device_alsa(void);
+#endif
+
 // The mixer world. One instance behind ano_audio_init (realtime) and one
 // short-lived local instance per ano_audio_render_offline call.
 struct AnoAudioMixer
@@ -122,6 +129,7 @@ struct AnoAudioMixer
 
     // Threads + backend (realtime only).
     const AnoAudioDeviceApi *device;
+    void       *deviceState; // backend-private state (allocated in start, freed in stop)
     atomic_bool mixerRun;
     atomic_bool deviceRun;
     anothread_t mixerThread;

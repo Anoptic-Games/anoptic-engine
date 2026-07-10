@@ -49,13 +49,18 @@
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-// Device backend selection. AUTO picks the best backend the build and machine
-// support (Phase 0: the null backend). NULL_DEV consumes cooked blocks at the
-// nominal block cadence without a device — headless runs, CI, tests.
+// Device backend selection. AUTO tries the platform's backends best-first
+// (Linux: pipewire -> alsa -> null) and settles on the first that opens; a
+// specific value demands exactly that backend and init fails if it cannot
+// open. NULL_DEV consumes cooked blocks at the nominal block cadence without
+// a device — headless runs, CI, tests. The environment variable
+// ANO_AUDIO_BACKEND (pipewire | alsa | null) overrides the config for testing.
 typedef enum AnoAudioBackend
 {
     ANO_AUDIO_BACKEND_AUTO = 0,
     ANO_AUDIO_BACKEND_NULL_DEV,
+    ANO_AUDIO_BACKEND_PIPEWIRE, // Linux
+    ANO_AUDIO_BACKEND_ALSA,     // Linux fallback
 } AnoAudioBackend;
 
 // Init-time configuration. Zero any field for its default.

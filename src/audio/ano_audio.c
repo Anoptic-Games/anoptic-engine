@@ -13,6 +13,7 @@
 #include "audio_internal.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <anoptic_logging.h>
@@ -24,6 +25,31 @@ _Static_assert(sizeof(AnoAudioCommand) <= 64u, "AnoAudioCommand grew past 64 byt
 // The audio world singleton. One per program, owned by the engine entry point.
 static AnoAudioMixer *g_mixer;
 static mi_heap_t     *g_heap;
+
+static const AnoAudioDeviceApi *backend_api(AnoAudioBackend which)
+{
+    switch (which) {
+    case ANO_AUDIO_BACKEND_NULL_DEV: return ano_audio_device_null();
+#if defined(__linux__)
+    case ANO_AUDIO_BACKEND_PIPEWIRE: return ano_audio_device_pipewire();
+    case ANO_AUDIO_BACKEND_ALSA:     return ano_audio_device_alsa();
+#endif
+    default: return NULL; // not built on this platform
+    }
+}
+
+// ANO_AUDIO_BACKEND (pipewire | alsa | null) overrides the config for testing.
+static AnoAudioBackend backend_env_override(AnoAudioBackend want)
+{
+    const char *env = getenv("ANO_AUDIO_BACKEND");
+    if (!env || !env[0])
+        return want;
+    if (strcmp(env, "null") == 0)     return ANO_AUDIO_BACKEND_NULL_DEV;
+    if (strcmp(env, "pipewire") == 0) return ANO_AUDIO_BACKEND_PIPEWIRE;
+    if (strcmp(env, "alsa") == 0)     return ANO_AUDIO_BACKEND_ALSA;
+    ano_log(ANO_WARN, "audio: unknown ANO_AUDIO_BACKEND '%s'; ignored.", env);
+    return want;
+}
 
 bool ano_audio_bridge_init(AnoAudioBridge *bridge, mi_heap_t *heap,
                            uint32_t cmd_capacity_pow2, uint32_t evt_capacity_pow2)
@@ -113,19 +139,35 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     if (!ano_audio_graph_init(mx))
         goto fail_heap;
 
-    // backend selection: Phase 0 resolves AUTO to the null backend
-    switch ((AnoAudioBackend)c.backend) {
-    case ANO_AUDIO_BACKEND_AUTO:
-    case ANO_AUDIO_BACKEND_NULL_DEV:
-        mx->device = ano_audio_device_null();
-        break;
-    default:
-        ano_log(ANO_WARN, "audio: unknown backend %u; using null.", c.backend);
-        mx->device = ano_audio_device_null();
-        break;
+    // backend selection: explicit config (or env override) demands one backend;
+    // AUTO cascades platform-best-first and cannot fail (null always opens)
+    AnoAudioBackend want = backend_env_override((AnoAudioBackend)c.backend);
+    if (want == ANO_AUDIO_BACKEND_AUTO) {
+        static const AnoAudioBackend cascade[] = {
+#if defined(__linux__)
+            ANO_AUDIO_BACKEND_PIPEWIRE,
+            ANO_AUDIO_BACKEND_ALSA,
+#endif
+            ANO_AUDIO_BACKEND_NULL_DEV,
+        };
+        for (size_t i = 0; i < sizeof cascade / sizeof cascade[0] && !mx->device; ++i) {
+            const AnoAudioDeviceApi *api = backend_api(cascade[i]);
+            if (api && api->start(mx))
+                mx->device = api;
+        }
+    } else {
+        const AnoAudioDeviceApi *api = backend_api(want);
+        if (!api) {
+            ano_log(ANO_ERROR, "audio: backend %u is not available on this platform.", want);
+            goto fail_heap;
+        }
+        if (api->start(mx))
+            mx->device = api;
     }
-    if (!mx->device->start(mx))
+    if (!mx->device) {
+        ano_log(ANO_ERROR, "audio: no device backend could start.");
         goto fail_heap;
+    }
 
     atomic_store_explicit(&mx->mixerRun, true, memory_order_release);
     if (ano_thread_create(&mx->mixerThread, NULL, ano_audio_mixer_main, mx) != 0) {
