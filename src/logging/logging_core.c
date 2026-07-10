@@ -7,6 +7,7 @@
 // copies the text, and publishes with one release store of `tag`. One owned consumer thread drains the
 // ring continuously. ano_log_flush drains inline for callers needing records on disk now. NOW records
 // (FATAL by default) write straight through. Sink bits ride each record's tag for per-record routing.
+// Console output flushes at the end of every drain pass and immediate write.
 // A full ring makes the producer wait for room, never dropping. Stop all producers before ano_log_cleanup.
 
 #include "logging/logging_ring.h"
@@ -425,11 +426,11 @@ static int render_walltime(char *out, uint64_t ticks)
 
 /* Output file (under g_outFileMtx) */
 
-// Open <dir>/anoptic.log for append, NULL on failure.
+// Open <dir>/<session-stamp>_ano.log for append, NULL on failure. The stamp is process-wide.
 static ano_file *open_log(const char *dir)
 {
     char path[MAXPATH];
-    int n = snprintf(path, sizeof path, "%s/%s", dir, ANO_LOG_FILENAME);
+    int n = snprintf(path, sizeof path, "%s/%s" ANO_LOG_FILESUFFIX, dir, ano_fs_session_stamp());
     return (n > 0 && n < (int)sizeof path) ? ano_fs_open_append(path) : NULL;
 }
 
@@ -506,11 +507,13 @@ static void write_batch(const char *data, size_t len)
         return;
     ano_mutex_lock(&g_outFileMtx);
     g_persist(data, len);
+    if (!g_haveFile)
+        fflush(stdout);     // console fallback
     ano_mutex_unlock(&g_outFileMtx);
 }
 
 // Write one record straight through on the calling thread (NOW path, full-ring wedge fallback).
-// With no file open the echo is skipped. `sync` fsyncs the file, or flushes a terminal-only stream.
+// With no file open the echo is skipped. Console output flushes before return. `sync` fsyncs the file.
 static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, uint16_t len,
                      bool toFile, bool toCon, bool sync)
 {
@@ -521,14 +524,16 @@ static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, ui
     out[p++] = '\n';
 
     ano_mutex_lock(&g_outFileMtx);
-    if (toCon && (g_haveFile || !toFile))   // no file: persist already hits the console
+    bool echoed = toCon && (g_haveFile || !toFile);     // no file: persist already hits the console
+    if (echoed)
         echo_console(level, out, text, len);
     if (toFile) {
         g_persist(out, (size_t)p);
         if (sync) g_syncOut();
-    } else if (sync && toCon) {
-        fflush(level >= ANO_ERROR ? stderr : stdout);
+        if (!g_haveFile) fflush(stdout);    // persist fell back to the console
     }
+    if (echoed)
+        fflush(level >= ANO_ERROR ? stderr : stdout);
     ano_mutex_unlock(&g_outFileMtx);
 }
 
@@ -544,6 +549,7 @@ static uint64_t drain_and_emit(void)
     uint64_t h   = h0;
     uint64_t cap = atomic_load_explicit(&g_ring.tail, memory_order_relaxed); // reserved frontier, a count bound
     size_t   blen = 0;
+    bool     conOut = false, conErr = false;    // console streams echoed to, flushed once at pass end
 
     for (;;) {  // bounded walk: stops at the tail bound or the first uncommitted gap
         if (h == cap)
@@ -577,6 +583,7 @@ static uint64_t drain_and_emit(void)
             ano_mutex_lock(&g_outFileMtx);
             echo_console((ano_loglevel_t)v.level, g_drainHMS, g_batch + bodyStart, blen - bodyStart);
             ano_mutex_unlock(&g_outFileMtx);
+            if ((ano_loglevel_t)v.level >= ANO_ERROR) conErr = true; else conOut = true;
         }
         if (v.flags & ANO_LOG_TOFILE)
             g_batch[blen++] = '\n';
@@ -590,6 +597,8 @@ static uint64_t drain_and_emit(void)
     atomic_store_explicit(&g_ring.head, h, memory_order_release);   // frees [h0,h) for reuse
 
     write_batch(g_batch, blen); // one syscall for the whole pass
+    if (conOut) fflush(stdout); // flush echoes at pass end
+    if (conErr) fflush(stderr);
     return h - h0;
 }
 
@@ -858,8 +867,8 @@ int ano_log_init(void)
     g_anchorTicks  = ano_timestamp_ticks();
     g_anchorUnixNs = (uint64_t)ano_timestamp_unix() * 1000000000ull;
 
-    // Default output file is in the game directory.
-    ano_fspath dir = ano_fs_gamepath();
+    // Default output file: one per session, in the game directory's logs/. Opening latches the session stamp.
+    ano_fspath dir = ano_fs_logpath();
     if (dir.length > 0)
         g_outFile = open_log(dir.str);
     select_output();    // bind g_persist/g_syncOut/g_haveFile to the chosen output

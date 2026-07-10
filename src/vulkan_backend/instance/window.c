@@ -63,11 +63,8 @@ static void forward_input(const AnoInputEvent* ie)
 }
 
 // Maps a cursor sample from GLFW window coordinates into framebuffer pixels, in place.
-// The framebuffer/window ratio is the exact map on every backend: the backing scale on
-// macOS Retina, the output scale on Wayland (fractional included), and precisely 1 on
-// Win32 and X11 where the two sizes coincide by definition. Queried per sample so a
-// window migrating between differently-scaled monitors stays correct. Degenerate (zero)
-// window size leaves the sample untouched.
+// Sizes queried per sample (tracks monitor migration). Zero window size leaves the
+// sample untouched.
 static void cursorToFramebuffer(GLFWwindow* window, double* x, double* y)
 {
 	int winW = 0, winH = 0, fbW = 0, fbH = 0;
@@ -79,10 +76,8 @@ static void cursorToFramebuffer(GLFWwindow* window, double* x, double* y)
 	*y *= (double)fbH / (double)winH;
 }
 
-// Overlay surface scale from the platform content scale. The mapping is isotropic by
-// contract (radii, sigma, border widths are scalars); a divergent y scale is taken as
-// x and warned once. Recomposes the retained UI/text blocks so a monitor migration or
-// DPI change re-folds the same logical content — logic never resubmits for scale.
+// Overlay surface scale from the platform content scale, isotropic by contract (a
+// divergent y scale is taken as x, warned once). Recomposes the retained UI/text blocks.
 static void applyContentScale(float xs, float ys)
 {
 	static bool warned = false;

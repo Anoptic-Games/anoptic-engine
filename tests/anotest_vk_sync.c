@@ -112,7 +112,7 @@ int main() {
 
     VkFence badFence = VK_NULL_HANDLE;
     vkCreateFence(ctx->device, &badFenceInfo, NULL, &badFence);
-    // Some drivers create the object anyway; destroy it or vkDestroyDevice reports a leak.
+    // Some drivers create the object anyway.
     if (badFence != VK_NULL_HANDLE)
         vkDestroyFence(ctx->device, badFence, NULL);
 

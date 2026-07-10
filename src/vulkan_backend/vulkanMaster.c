@@ -285,7 +285,7 @@ void drawFrame()
 	}
 	rendererState.globalFrame += 1; // Gates slot-quarantine retirement
 
-	ano_frame_mark(); // Wall-clock fps/frametime, counted only on the presented-frame path.
+	ano_frame_mark(); // Wall-clock fps/frametime, presented frames only.
 }
 
 
@@ -385,8 +385,8 @@ bool initVulkan() // Initializes Vulkan
 	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
 	ano_log(ANO_INFO, "Async text raster: %s", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
 
-	// UI overlay lane gate rides the text lane (shared overlay image + raster dispatch).
-	// ANO_FORCE_NO_UI pins compose off; the table buffers stay resident under textOverlay.
+	// UI overlay gate rides the text lane. ANO_FORCE_NO_UI pins compose off, the table
+	// buffers stay resident under textOverlay.
 	rendererState.uiOverlay = rendererState.textOverlay && !getenv("ANO_FORCE_NO_UI");
 	ano_log(ANO_INFO, "UI overlay: %s", rendererState.uiOverlay ? "enabled" : "off");
 

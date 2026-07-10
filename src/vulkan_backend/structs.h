@@ -57,8 +57,8 @@
 // grid (2560x1368 = 54720 tiles) + slack + the trailing total, 256-word aligned.
 #define ANO_UI_TILE_OFFSET_WORDS 65792u
 #define ANO_UI_MAX_TILE_ENTRIES  262144u
-// UI glyph labels live in their own region of the text frame buffer, above the world
-// panel, so the plain glyph loop never draws them (UI_GLYPHS prims do, z-interleaved).
+// UI glyph label region of the text frame buffer, above the world panel. Drawn only by
+// UI_GLYPHS prims, z-interleaved.
 #define ANO_UI_GLYPH_FIRST       16384u
 #define ANO_UI_MAX_GLYPHS        5120u
 // Max live logic-submitted UI blocks; excess dropped.
@@ -491,15 +491,14 @@ typedef struct PerFrameResources
     VkBuffer            textFrameBuffer;
     GpuAllocation       textFrameAlloc;
     void*               textFrameMapped;
-    // UI overlay lane frame data: one host-visible buffer holding the prim/clip/paint/stop
-    // regions (raster-set bindings 4-7). Created whenever textOverlay is up so the shared
-    // set's bindings stay valid even with the UI gate off.
+    // UI overlay lane frame data: one host-visible buffer holding the table regions
+    // (raster-set bindings 4-10). Created whenever textOverlay is up.
     VkBuffer            uiFrameBuffer;
     GpuAllocation       uiFrameAlloc;
     void*               uiFrameMapped;
     uint32_t            uiSlotVersion;   // uiVersion this slot's tables last copied
-    // Per-tile prim lists (§3.7): built into this slot's tile regions in the record path;
-    // the key skips the rebuild unless the version OR dispatch grid changed.
+    // Per-tile prim lists (§3.7): built into this slot's tile regions in the record path,
+    // keyed on (version, grid).
     uint32_t            uiTileVersion;   // 0 = never built / invalid
     int32_t             uiTileOx, uiTileOy;
     uint32_t            uiTileGx, uiTileGy;
@@ -521,9 +520,9 @@ typedef struct RendererState
     // Latest cursor position in framebuffer pixels (origin top-left). Render thread only.
     float                   cursorX, cursorY;
 
-    // Overlay surface scale: logical units -> framebuffer pixels (the platform content
-    // scale; 0 until the window exists, treated as 1). Written by window.c on the main
-    // thread, read by the compose fold and the snapshot publish. Render thread only.
+    // Overlay surface scale: logical units -> framebuffer px (0 until the window exists,
+    // treated as 1). Written by window.c on the main thread, read by the compose fold
+    // and the snapshot publish.
     float                   uiScale;
 
     // GPU id-buffer picking: per-view MSAA R32_UINT id attachment, resolved for view 0.
@@ -600,9 +599,9 @@ typedef struct RendererState
     uint32_t                textBlockCount;
     uint32_t                textOsdCount;      // instances the render-internal OSD text occupies
 
-    // UI overlay lane (docs/ui/ui-render.md): prims raster into the shared text/UI overlay
-    // via the text raster dispatch. Gate uiOverlay: rides textOverlay, off on ANO_FORCE_NO_UI
-    // or init failure (tables still resident + bound so the shader's bindings stay valid).
+    // UI overlay lane (docs/ui/ui-render.md): prims raster via the text raster dispatch.
+    // Gate uiOverlay rides textOverlay, off on ANO_FORCE_NO_UI or init failure (tables
+    // stay resident + bound).
     bool                    uiOverlay;
     uint32_t                uiPrimCount; // prim count in the CURRENT slot's tables (push block)
     uint32_t                uiClipCount; // clip count, ditto (shader bound-check, fail closed)
@@ -613,7 +612,7 @@ typedef struct RendererState
     struct { uint32_t id; const RenderUiBlock* blk; } uiBlocks[ANO_UI_MAX_BLOCKS];
     uint32_t                uiBlockCount;
     bool                    uiPinned;            // ANO_UI_DEMO/_OPAQUE: registry adopts, compose suppressed
-    bool                    uiComposeDirty;      // block set/clear/rescale mark; frame refresh flushes once
+    bool                    uiComposeDirty;      // block set/clear/rescale marks, frame refresh flushes once
     AnoUiPrim*              uiPendingPrims;
     AnoUiClip*              uiPendingClips;
     AnoUiPaint*             uiPendingPaints;
@@ -621,8 +620,7 @@ typedef struct RendererState
     uint32_t*               uiPendingCurves;
     AnoGlyphInstance*       uiPendingGlyphs;
     uint32_t*               uiTileCursor;        // per-tile fill cursor scratch (tile build)
-    uint32_t*               uiTileScratch;       // heap-side tile build target (offsets then
-                                                 // entries), memcpy'd to the slot's mapped regions
+    uint32_t*               uiTileScratch;       // heap-side tile build target, memcpy'd to the slot's mapped regions
     bool                    uiTilesEnabled;      // !ANO_FORCE_NO_UI_TILES, resolved at init
     uint32_t                uiPendingPrimCount;
     uint32_t                uiPendingClipCount;

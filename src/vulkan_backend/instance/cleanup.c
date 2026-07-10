@@ -109,7 +109,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
 	}
 	// Text overlay: frame-data, glyph buffers, bake heap, FreeType backend
 	ano_vk_text_destroy(ctx, &rendererState);
-	// UI overlay lane (groundwork stub: handle-guarded no-op)
+	// UI overlay lane: adopted blocks + table buffers, handle-guarded
 	ano_vk_ui_destroy(ctx, &rendererState);
 
 	// Shared shadow images: atlas, blur temp, transient caster depth

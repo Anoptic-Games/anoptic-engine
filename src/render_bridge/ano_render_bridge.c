@@ -164,8 +164,7 @@ bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
 // Replays the evaluators' curve-stream walk for one PATH prim (aux0 = first word,
 // aux1 = monotone-quad count): a start word, then per quad an optional
 // SENTINEL + restart word ahead of the control + end words. Bounds every read the
-// walk will make, so a hand-built block can never run the GPU or ref walker past
-// the stream. The builder's own bakes always pass.
+// walk will make. The builder's own bakes always pass.
 static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
                                uint32_t off, uint32_t quads)
 {
@@ -189,7 +188,7 @@ static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
 }
 
 // Block-local reference validation for one UI prim. Invalid blocks drop producer-side
-// (returning true) so backpressure retry loops never spin on bad input.
+// (returning true).
 static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, uint32_t glyphs,
                           const uint32_t *curves, uint32_t curveCount)
 {

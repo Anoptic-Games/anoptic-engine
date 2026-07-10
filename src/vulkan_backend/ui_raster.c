@@ -4,9 +4,9 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // UI overlay lane (docs/ui/ui-render.md): per-frame table buffers on raster-set
-// bindings 4-7, the logic-block registry with its compose (layer-sorted, block-local
-// refs rebased), and the per-slot refresh. The prim math lives in src/ui and its GLSL
-// twin in uicoverage.glsl; the dispatch itself is the text raster's.
+// bindings 4-10, the logic-block registry with its compose (layer-sorted, block-local
+// refs rebased), and the per-slot refresh. The prim math lives in src/ui, its GLSL
+// twin in uicoverage.glsl, the dispatch is the text raster's.
 
 #include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
@@ -20,9 +20,8 @@
 #include <anoptic_memory.h>
 #include <anoptic_ui.h>
 
-// Region layout inside one uiFrameBuffer, in binding order 4-7. Offsets must satisfy
-// minStorageBufferOffsetAlignment; the spec caps that limit at 256, which every
-// region size below is a multiple of.
+// Region layout inside one uiFrameBuffer, in binding order. Offsets 256-aligned
+// (worst-case minStorageBufferOffsetAlignment).
 #define ANO_UI_PRIM_BYTES  (ANO_UI_MAX_PRIMS * (uint32_t)sizeof(AnoUiPrim))
 #define ANO_UI_CLIP_OFF    ANO_UI_PRIM_BYTES
 #define ANO_UI_CLIP_BYTES  (ANO_UI_MAX_CLIPS * (uint32_t)sizeof(AnoUiClip))
@@ -43,8 +42,8 @@ static_assert((ANO_UI_CLIP_OFF % 256u) == 0 && (ANO_UI_PAINT_OFF % 256u) == 0
                   && (ANO_UI_TILEOFF_OFF % 256u) == 0 && (ANO_UI_TILEENT_OFF % 256u) == 0,
               "region offsets must satisfy the worst-case storage-buffer alignment");
 
-// Conservative pixel AABB of the pending prims (shadow prims reach 3 sigma; identity
-// inv assumption of v0). Inverted bounds when nothing is composed.
+// Conservative pixel AABB of the pending prims (shadow reach 3 sigma, identity inv
+// in v0). Inverted bounds when nothing is composed.
 static void ui_pending_bounds(RendererState* state)
 {
     float b0 = 3.0e38f, b1 = 3.0e38f, b2 = -3.0e38f, b3 = -3.0e38f;
@@ -61,13 +60,10 @@ static void ui_pending_bounds(RendererState* state)
     state->uiPendingBounds[2] = b2; state->uiPendingBounds[3] = b3;
 }
 
-// Recomposes the pending tables from the live blocks: ascending layer (registry
-// creation order breaks ties), block-local clip/paint/stop/glyph references rebased,
-// scroll folded into every position (logical units), then the overlay's surface fold
-// (logical -> device px, docs/ui/ui-render.md §3.11) — the single point the scale is
-// ever applied; everything downstream is device pixels. A block that would overflow
-// a table budget is skipped WHOLE — truncation would corrupt references. Bumps
-// uiVersion.
+// Recomposes the pending tables from the live blocks: ascending layer (creation
+// order breaks ties), block-local refs rebased, scroll folded in, then the surface
+// fold (logical -> device px, ui-render.md §3.11). A block that would overflow a
+// table budget is skipped WHOLE. Bumps uiVersion.
 static void ui_compose(RendererState* state)
 {
     if (state->uiPendingPrims == NULL || state->uiPinned)
@@ -131,9 +127,8 @@ static void ui_compose(RendererState* state)
         {
             AnoUiPaint pa = blk->paints[i];
             pa.stopFirst += ns;
-            // Scroll translates the gradient with content: shift the xform origin so a
-            // point at overlay (x+sx) reads the pre-scroll value at x. Logical-space
-            // shift with the authored columns, then the surface fold.
+            // Scroll translates the gradient with content: shift the xform origin in
+            // logical space with the authored columns, then the surface fold.
             pa.xform[2] -= pa.xform[0] * sx + pa.xform[1] * sy;
             pa.xform[5] -= pa.xform[3] * sx + pa.xform[4] * sy;
             ano_ui_paint_scale(&pa, s);
@@ -163,10 +158,9 @@ static void ui_compose(RendererState* state)
     state->uiVersion++;
 }
 
-// Composes the standing demo scene into the pending tables and PINS composition, so
-// the self-test canvas stays exactly this regardless of bridge traffic. The live
-// variant adds one IMAGE prim (bindless index 0); the self-test stays inside the
-// reference evaluator's reach.
+// Composes the standing demo scene into the pending tables and PINS composition.
+// The live variant adds one IMAGE prim (bindless index 0), the self-test stays
+// inside the reference evaluator's reach.
 static void ui_compose_demo(RendererState* state, bool selftest)
 {
     AnoUiBuilder b;
@@ -195,14 +189,13 @@ static void ui_compose_demo(RendererState* state, bool selftest)
             b.primCount, b.clipCount, selftest ? ", self-test" : "");
 }
 
-// In: ctx/state after ano_vk_text_init (the shared raster set is created later, in
-// ano_vk_text_create_sets; only the buffers must exist by then). Out: true always;
-// failure clears uiOverlay and leaves the fallback binding path to ui_write_sets.
+// In: ctx/state after ano_vk_text_init. Out: true always. Failure clears uiOverlay
+// and leaves the fallback binding path to ui_write_sets.
 bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)
     {
-        // No shared dispatch to ride; the gate log already said why.
+        // No shared dispatch to ride.
         state->uiOverlay = false;
         return true;
     }
@@ -248,8 +241,8 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
             ANO_UI_FRAME_BYTES / 1024u, (unsigned)MAX_FRAMES_IN_FLIGHT,
             state->uiOverlay ? "" : ", compose pinned off");
 
-    // Standing demo (ANO_UI_DEMO); ANO_UI_OPAQUE additionally pins the screenshot
-    // self-test: opaque backdrop, full-canvas dispatch, glyph loop skipped.
+    // Standing demo (ANO_UI_DEMO). ANO_UI_OPAQUE also pins the screenshot self-test:
+    // opaque backdrop, full-canvas dispatch, glyph loop skipped.
     bool selftest = getenv("ANO_UI_OPAQUE") != NULL;
     if (selftest)
         state->textFlags |= ANO_TEXT_RASTER_OPAQUE | ANO_TEXT_RASTER_UIONLY | ANO_TEXT_RASTER_NODITHER;
@@ -292,9 +285,8 @@ void ano_vk_ui_block_set(RendererState* state, uint32_t ui_id, const RenderUiBlo
     state->uiComposeDirty = true;
 }
 
-// Overlay surface scale changed (monitor migration, DPI change): re-fold the retained
-// logical blocks at the new scale. The registry is the source of truth, so no logic
-// resubmission is needed; a pinned self-test canvas stays pinned.
+// Overlay surface scale changed: re-fold the retained logical blocks at the new
+// scale. A pinned self-test canvas stays pinned.
 void ano_vk_ui_rescale(RendererState* state)
 {
     if (state->uiOverlay && state->uiPendingPrims != NULL)
@@ -318,12 +310,10 @@ void ano_vk_ui_block_clear(RendererState* state, uint32_t ui_id)
     }
 }
 
-// Flushes a deferred compose (block set/clear/rescale only mark dirty, so a burst of
-// bridge commands recomposes once), then copies pending tables into this slot's mapped
-// buffers when stale and publishes the slot-current counts/bounds the record path
-// pushes. Glyph labels land in the text frame buffer's UI region [ANO_UI_GLYPH_FIRST,
-// +ANO_UI_MAX_GLYPHS) — above the pending and world regions, so neither the plain
-// glyph loop nor the world draw touches them.
+// Flushes a deferred compose (a burst of bridge commands recomposes once), copies
+// pending tables into this slot's mapped buffers when stale, and publishes the
+// slot-current counts/bounds. Glyph labels land in the text frame buffer's UI region
+// [ANO_UI_GLYPH_FIRST, +ANO_UI_MAX_GLYPHS).
 void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
 {
     if (!state->uiOverlay || state->uiPendingPrims == NULL)
@@ -360,14 +350,11 @@ void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
         state->uiBounds[k] = state->uiPendingBounds[k];
 }
 
-// Builds this slot's per-tile prim lists into the heap scratch (the pure
-// ano_ui_tile_build reads back and increments what it wrote; the mapped regions may
-// be write-combined, where CPU reads stall), then memcpys the finished offsets/entries
-// into the slot's mapped tile regions. The grid derives from the UI bounds alone —
-// origin snapped to tiles, clamped to the canvas — so it is a pure function of
-// uiVersion and the canvas: text-bound motion reshaping the dispatch never invalidates
-// it. The entry indices reference the same prims the slot's binding-4 region holds.
-// Cached on (version, grid); the built grid lands in fr->uiTile* for the push block.
+// Builds this slot's per-tile prim lists into heap scratch (the mapped regions may
+// be write-combined), then memcpys the finished offsets/entries into the slot's
+// mapped tile regions. The grid derives from the UI bounds alone, origin snapped to
+// tiles, clamped to the canvas. Cached on (version, grid). The built grid lands in
+// fr->uiTile* for the push block.
 bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex)
 {
     if (!state->uiTilesEnabled || !state->uiOverlay || state->uiPendingPrims == NULL
@@ -420,9 +407,9 @@ bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex)
     return true;
 }
 
-// Writes bindings 4-7 of every slot's shared raster set. When a slot's table buffer
-// is absent (creation failure), the bindings point at the slot's text frame buffer:
-// any valid SSBO keeps the set legal, and pinned-zero counts mean it is never read.
+// Writes bindings 4-10 of every slot's shared raster set. When a slot's table buffer
+// is absent, the bindings fall back to the slot's text frame buffer (kept legal,
+// never read under pinned-zero counts).
 void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)
@@ -457,7 +444,7 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
             writes[w].pBufferInfo = &infos[w];
         }
         vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
-        fr->uiTileVersion = 0; // a (re)bound slot buffer holds no tiles yet — force a rebuild
+        fr->uiTileVersion = 0; // a (re)bound slot buffer holds no tiles yet, force a rebuild
     }
 }
 

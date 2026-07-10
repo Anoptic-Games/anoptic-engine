@@ -147,7 +147,9 @@ int main(int argc, char **argv)
 
     ano_log_cleanup();
     free(buf);
-    remove(TAIL_DIR "/anoptic.log");
+    char tailLog[96];
+    snprintf(tailLog, sizeof tailLog, "%s/%s_ano.log", TAIL_DIR, ano_fs_session_stamp());
+    remove(tailLog);
     scratch_remove_dir(TAIL_DIR);
 
     printf("\n(Full-ring waits are part of the tail by design: the producer self-throttles to the\n"

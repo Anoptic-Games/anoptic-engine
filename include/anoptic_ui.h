@@ -6,23 +6,20 @@
 // Anoptic UI API
 //
 // Primitive ABI and pure builder verbs for the GPU UI overlay lane. Design of
-// record: docs/ui/ui-render.md. Layout, styling decisions, and hit-testing live
-// in caller code (the logic thread); this header only packs primitives.
+// record: docs/ui/ui-render.md. Layout, styling, and hit-testing live in caller
+// code (the logic thread). This header only packs primitives.
 //
-// Threading: every function is pure over caller memory — any thread, no
+// Threading: every function is pure over caller memory. Any thread, no
 // allocation, no module state. Colors are premultiplied linear RGBA.
 //
 // Coordinate contract: builder coordinates are LOGICAL UNITS of the block's
-// surface, y-down, origin top-left. A surface owns the mapping from logical units
-// to device pixels; the renderer folds that mapping into the tables exactly once,
-// at compose, through the ano_ui_*_scale verbs below. v0 has one surface — the
-// screen overlay, whose scale is the platform content scale and whose logical
-// extent the RenderSnapshot publishes (anoptic_render.h). Future surfaces
-// (offscreen texture panels, world-placed 3D panels) each define their own
-// mapping; block content and every verb in this header stay unchanged. Layout and
-// hit-testing therefore never see a pixel. All pixel-domain machinery below (AA
-// ramps, tile grids, the reference evaluator) runs AFTER the fold, in device
-// pixels; on a 1:1 display the two spaces coincide.
+// surface, y-down, origin top-left. A surface owns the logical->device mapping.
+// The renderer folds that mapping into the tables exactly once, at compose,
+// through the ano_ui_*_scale verbs below. v0 has one surface: the screen
+// overlay, scale = the platform content scale, logical extent published by
+// RenderSnapshot (anoptic_render.h). Layout and hit-testing never see a pixel.
+// All pixel-domain machinery below (AA ramps, tile grids, the reference
+// evaluator) runs AFTER the fold, in device pixels.
 
 #ifndef ANOPTICENGINE_ANOPTIC_UI_H
 #define ANOPTICENGINE_ANOPTIC_UI_H
@@ -43,7 +40,7 @@ typedef enum AnoUiPrimKind {
 
 // flags bits [0:1]: register blend mode applied in painter's order.
 #define ANO_UI_BLEND_OVER 0x0u // premultiplied src-over
-#define ANO_UI_BLEND_ADD  0x1u // rgb-additive (glow); coverage does not occlude
+#define ANO_UI_BLEND_ADD  0x1u // rgb-additive glow, coverage does not occlude
 #define ANO_UI_BLEND_MASK 0x3u
 // flag bits [2+].
 #define ANO_UI_FLAG_INNER 0x4u // SHADOW: inner shadow (blur of the complement, masked inside)
@@ -55,16 +52,16 @@ typedef enum AnoUiPrimKind {
 // ---------------------------------------------------------------------------------------------
 // The primitive GPU ABI, one std430 SSBO element per prim (offsets 0/16/24/28/32/40/
 // 48/64/80/84/88/92, stride 96, GLSL twin in resources/shaders/uicoverage.glsl).
-//   inv    : 2x2 pixel->prim inverse as rows, applied to (pixel - origin). Builders
-//            emit identity; rotation folds here later without an ABI change.
-//   origin : prim center, y-down — the block's logical units at build time, device
-//            pixels after the renderer's compose fold (the GPU always sees pixels).
+//   inv    : 2x2 pixel->prim inverse as rows, applied to (pixel - origin).
+//            Builders emit identity.
+//   origin : prim center, y-down. Logical units at build time, device pixels
+//            after the compose fold.
 //   half   : half extents in prim space. SHADOW prims cull with a +3*sigma pad.
 //   param  : kind-specific ([0]: border width | sigma | lod).
-//   radii  : per-corner radii (tl, tr, br, bl), pre-clamped by the builder so
-//            adjacent corners never overlap (the CSS rule).
-//   color  : premultiplied linear RGBA; tint multiplier for IMAGE/GLYPHS; the fill
-//            when paintRef == ANO_UI_REF_NONE.
+//   radii  : per-corner radii (tl, tr, br, bl), pre-clamped by the builder
+//            (the CSS adjacent-corner rule).
+//   color  : premultiplied linear RGBA. Tint multiplier for IMAGE/GLYPHS, the
+//            fill when paintRef == ANO_UI_REF_NONE.
 
 typedef struct AnoUiPrim {
     float    inv[4];
@@ -102,7 +99,7 @@ static_assert(sizeof(AnoUiClip) == 48 && offsetof(AnoUiClip, rrCenter) == 16
               "GPU ABI: 48-byte clip entry");
 
 // Paint kinds for AnoUiPaint.kind. A prim's paintRef selects one (RRECT and PATH
-// fills); ANO_UI_REF_NONE leaves the prim's own color as the flat fill. The gradient
+// fills). ANO_UI_REF_NONE leaves the prim's own color as the flat fill. The gradient
 // parameter t comes from the pixel through xform (g = xform * [px,py,1]): linear
 // t = g.x, radial t = |g|, conic t = atan2(g.y,g.x)/2pi + 0.5.
 #define ANO_UI_GRAD_LINEAR 0u
@@ -110,7 +107,7 @@ static_assert(sizeof(AnoUiClip) == 48 && offsetof(AnoUiClip, rrCenter) == 16
 #define ANO_UI_GRAD_CONIC  2u
 
 // Gradient paint ABI. Stops live in the block's stop array [stopFirst, +stopCount),
-// sorted ascending by t, interpolated in premultiplied linear; t clamps to the end
+// sorted ascending by t, interpolated in premultiplied linear. t clamps to the end
 // stops (CSS pad). Referenced by AnoUiPrim.paintRef.
 typedef struct AnoUiPaint {
     uint32_t kind;      // ANO_UI_GRAD_*
@@ -130,7 +127,7 @@ typedef struct AnoUiStop {
 static_assert(sizeof(AnoUiPaint) == 48 && sizeof(AnoUiStop) == 32, "GPU ABI: paint tables");
 
 // ---------------------------------------------------------------------------------------------
-// Builder: packs prims and side tables into caller arrays. Never allocates; a full
+// Builder: packs prims and side tables into caller arrays. Never allocates. A full
 // array makes the verb return ANO_UI_REF_NONE and change nothing. Emission order IS
 // paint order (later prims render on top).
 
@@ -154,8 +151,7 @@ void ano_ui_builder_init(AnoUiBuilder *b,
 // binary16 point words, the text sweeper's grammar). Detach with NULL/cap 0.
 void ano_ui_builder_curves(AnoUiBuilder *b, uint32_t *curves, uint32_t curveCap);
 
-// Premultiplied linear from sRGB-authored straight rgba — the ABI is linear, and
-// linear values read brighter than their sRGB-intuited numbers suggest.
+// Premultiplied linear from sRGB-authored straight rgba.
 void ano_ui_color_srgb(const float srgba[4], float out[4]);
 
 // Rounded rect from a min/max box. radii = per-corner (tl, tr, br, bl), clamped to
@@ -166,16 +162,15 @@ uint32_t ano_ui_rrect(AnoUiBuilder *b, const float rectMin[2], const float rectM
                       const float radii[4], const float color[4], float borderWidth,
                       uint32_t paintRef, uint32_t clipRef, uint32_t flags);
 
-// Gaussian shadow of the rrect (uniform cornerRadius). sigma is clamped to >= 1e-3;
-// below ~0.5 px it reads as a hard edge. ANO_UI_FLAG_INNER selects an inner shadow;
-// ANO_UI_BLEND_ADD turns the same math into a glow.
+// Gaussian shadow of the rrect (uniform cornerRadius). sigma clamps to >= 1e-3.
+// ANO_UI_FLAG_INNER selects an inner shadow. ANO_UI_BLEND_ADD turns the same
+// math into a glow.
 uint32_t ano_ui_shadow(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                        float cornerRadius, float sigma, const float color[4],
                        uint32_t clipRef, uint32_t flags);
 
-// Textured quad masked by the rrect. The full texture maps to the box (uv 0..1);
-// tint multiplies premultiplied components. lod is the explicit mip (compute lane
-// has no implicit derivatives).
+// Textured quad masked by the rrect. The full texture maps to the box (uv 0..1).
+// tint multiplies premultiplied components. lod is the explicit mip.
 uint32_t ano_ui_image(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                       const float radii[4], uint32_t texIndex, float lod,
                       const float tint[4], uint32_t clipRef, uint32_t flags);
@@ -204,7 +199,7 @@ typedef struct AnoUiPathSeg {
 
 // Fills a path (contours of lines/quads, auto-closed) with color/paint, baking it into
 // the builder's attached curve buffer as monotone quads. Fill is nonzero-winding and
-// caller-winding-independent; holes come from oppositely wound inner contours. The
+// caller-winding-independent. Holes come from oppositely wound inner contours. The
 // prim's bbox and prim-local frame are derived from the points. Returns the prim index,
 // or ANO_UI_REF_NONE when a table or the curve buffer is full or the path is empty.
 uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t segCount,
@@ -217,17 +212,17 @@ uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bbox
                        uint32_t first, uint32_t count, const float tint[4],
                        uint32_t clipRef, uint32_t flags);
 
-// Clip entry: rect always; pass rrMin == NULL for a rect-only clip, else the rounded
+// Clip entry: rect always. Pass rrMin == NULL for a rect-only clip, else the rounded
 // term's box + per-corner radii (same clamp rule as ano_ui_rrect). Returns the clip
 // index for AnoUiPrim.clipRef, ANO_UI_REF_NONE when full. Nested clips are resolved
-// by the CALLER (intersect rects; innermost rounded term wins) — one entry per prim.
+// by the CALLER (intersect rects, innermost rounded term wins). One entry per prim.
 uint32_t ano_ui_clip(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                      const float rrMin[2], const float rrMax[2], const float rrRadii[4]);
 
 // ---------------------------------------------------------------------------------------------
 // Paints: push a gradient's stops + descriptor into the builder's paint/stop tables and
 // return the paintRef for a fill prim (RRECT / PATH). stops are copied and sorted
-// ascending by t here; each color is premultiplied linear (use ano_ui_color_srgb).
+// ascending by t here. Each color is premultiplied linear (use ano_ui_color_srgb).
 // Return ANO_UI_REF_NONE when a table is full or stopCount is 0.
 
 // Linear gradient: t runs 0 at p0 to 1 at p1 along the p0->p1 axis, constant across it.
@@ -246,27 +241,26 @@ uint32_t ano_ui_paint_conic(AnoUiBuilder *b, const float center[2], float startA
 // Standing demo scene, the GPU self-test target (ui-render.md §7 step 4): deterministic,
 // reference-evaluable prims only (no IMAGE/PATH/GLYPHS). Needs caps >= 16 prims / 4
 // clips. The render-side demo compose and the offline screenshot compare both build
-// exactly this; keep it bitwise-stable.
+// exactly this. Keep it bitwise-stable.
 void ano_ui_demo_scene(AnoUiBuilder *b, float originX, float originY);
 
 // ---------------------------------------------------------------------------------------------
 // Surface fold: multiplies an isotropic logical->device scale into table entries, in
-// place. The renderer applies these once at compose; everything downstream (tiles,
-// evaluators, GPU) is device pixels. Pure like every verb here. s > 0; anisotropic
-// surface scales are out of contract (radii, sigma, and border widths are scalars).
+// place. The renderer applies these once at compose. Everything downstream (tiles,
+// evaluators, GPU) is device pixels. Pure like every verb here. s > 0. Anisotropic
+// surface scales are out of contract.
 
-// Prim: origin/half/radii scale; param[0] scales for RRECT (border width) and SHADOW
-// (sigma); IMAGE lod shifts by -log2(s) (a 2x surface halves the texels per device
-// pixel). PATH curve words and GLYPHS instances live outside the prim and fold
-// separately (ano_ui_curves_scale; glyph instances scale origin by s, inv by 1/s).
+// Prim: origin/half/radii scale. param[0] scales for RRECT (border width) and SHADOW
+// (sigma). IMAGE lod shifts by -log2(s). PATH curve words and GLYPHS instances live
+// outside the prim and fold separately (ano_ui_curves_scale; glyph instances scale
+// origin by s, inv by 1/s).
 void ano_ui_prim_scale(AnoUiPrim *p, float s);
 
-// Clip: rect and rounded term scale; the rrHalf[0] < 0 "no rounded term" sentinel
+// Clip: rect and rounded term scale. The rrHalf[0] < 0 "no rounded term" sentinel
 // stays negative under any s > 0.
 void ano_ui_clip_scale(AnoUiClip *c, float s);
 
-// Paint: the 2x3 reads device pixels after the fold, so the linear columns divide by
-// s; the translation column is already gradient-space.
+// Paint: linear columns divide by s. The translation column is already gradient-space.
 void ano_ui_paint_scale(AnoUiPaint *p, float s);
 
 // Curve stream: copies count words from in to out (in == out is legal), scaling each
@@ -275,9 +269,9 @@ void ano_ui_paint_scale(AnoUiPaint *p, float s);
 void ano_ui_curves_scale(const uint32_t *in, uint32_t *out, uint32_t count, float s);
 
 // ---------------------------------------------------------------------------------------------
-// Reference evaluator (validation): scalar mirror of the GPU prim math, exported so
-// tests and the GPU self-test harness drive one implementation (the
-// text_raster_ref.c discipline). Implementation: src/ui/ui_raster_ref.c.
+// Reference evaluator (validation): scalar mirror of the GPU prim math, one
+// implementation for tests and the GPU self-test harness (the text_raster_ref.c
+// discipline). Implementation: src/ui/ui_raster_ref.c.
 
 typedef struct AnoUiScene {
     const AnoUiPrim  *prims;  uint32_t primCount;
@@ -304,13 +298,13 @@ float ano_ui_ref_sd_rrect(const float p[2], const float half[2], const float rad
 float ano_ui_ref_shadow(const float p[2], const float half[2], float corner, float sigma);
 
 // Resolved paint color at pixel (px,py) modulated by base, premultiplied linear.
-// paintRef == ANO_UI_REF_NONE returns base unchanged; an out-of-range ref fails CLOSED
+// paintRef == ANO_UI_REF_NONE returns base unchanged. An out-of-range ref fails CLOSED
 // (transparent), the clip-table policy. The GPU twin is ui_paint_eval.
 void ano_ui_ref_paint(const AnoUiScene *s, uint32_t paintRef, float px, float py,
                       const float base[4], float out[4]);
 
 // Premultiplied contribution of one prim over the unit pixel window [px,px+1)x[py,py+1),
-// clip and paint applied. PATH/GLYPHS evaluate to zero here (they validate in their own lanes).
+// clip and paint applied. PATH/GLYPHS evaluate to zero here.
 void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, float out[4]);
 
 // Painter's-order evaluation of the whole scene at one pixel (premultiplied linear,
@@ -319,10 +313,10 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4]);
 
 // ---------------------------------------------------------------------------------------------
 // Per-tile prim lists (ui-render.md §3.7 step 2-3): the CPU-coarse stage of the scaling
-// ladder, built at compose cadence so the GPU walks only the prims that touch each 8x8
-// tile instead of scanning them all. A tile entry is a prim index with a "solid" high
-// bit — set when the prim fully covers the tile (coverage provably 1), so the GPU skips
-// the SDF and takes the flat fill (interior classification). Glyphs are NOT tiled here.
+// ladder, built at compose cadence. The GPU walks only the prims touching each 8x8 tile.
+// A tile entry is a prim index with a "solid" high bit: the prim fully covers the tile
+// (coverage provably 1), letting the GPU skip the SDF and take the flat fill. Glyphs
+// are NOT tiled here.
 
 #define ANO_UI_TILE_PX          8u          // tile edge, matches the 8x8 compute workgroup
 #define ANO_UI_ENTRY_SOLID      0x80000000u // tile entry: prim fully covers the tile
@@ -334,9 +328,9 @@ void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2]);
 
 // Builds a dense tile grid (tilesX*tilesY tiles of 8px, top-left at ox,oy in overlay px)
 // from the scene's prims. Writes offsets[0..tilesX*tilesY] (tile t owns entries
-// [offsets[t], offsets[t+1])) and the prim-index entry stream; cursor is tilesX*tilesY
-// scratch. Returns the entry count. Sets *ok false (and bails) if offsetsCap (needs
-// tilesX*tilesY+1) or entryCap is too small — the caller then falls back to the brute scan.
+// [offsets[t], offsets[t+1])) and the prim-index entry stream. cursor is tilesX*tilesY
+// scratch. Returns the entry count. Sets *ok false and bails if offsetsCap (needs
+// tilesX*tilesY+1) or entryCap is too small.
 uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY,
                            uint32_t *offsets, uint32_t offsetsCap,
@@ -345,7 +339,7 @@ uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
 
 // Painter's-order evaluation at one pixel through the tile grid: mirrors ano_ui_ref_eval
 // but walks only pixel (px,py)'s tile list. Bit-identical to ano_ui_ref_eval when the
-// grid covers the pixel; the GPU tiled path mirrors THIS. Glyphs are not included.
+// grid covers the pixel. The GPU tiled path mirrors THIS. Glyphs are not included.
 void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
                            const uint32_t *entries, int32_t px, int32_t py, float out[4]);

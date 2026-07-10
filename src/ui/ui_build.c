@@ -36,10 +36,9 @@ void ano_ui_builder_init(AnoUiBuilder *b,
     b->curves = NULL;   b->curveCap = 0;        b->curveCount = 0;
 }
 
-// In: prim, isotropic logical->device surface scale s > 0. Folds the scale in place:
-// geometry scales; RRECT border and SHADOW sigma are lengths and scale with it; IMAGE
-// lod shifts by -log2(s). Identity inv stays identity (prim space IS device pixels
-// after the fold). PATH/GLYPHS payloads fold separately.
+// In: prim, isotropic logical->device surface scale s > 0. Folds the scale in place.
+// Geometry, RRECT border, and SHADOW sigma scale. IMAGE lod shifts by -log2(s).
+// Identity inv stays identity. PATH/GLYPHS payloads fold separately.
 void ano_ui_prim_scale(AnoUiPrim *p, float s)
 {
     p->origin[0] *= s; p->origin[1] *= s;
@@ -52,7 +51,7 @@ void ano_ui_prim_scale(AnoUiPrim *p, float s)
         p->param[0] = fmaxf(0.0f, p->param[0] - log2f(s));
 }
 
-// In: clip, surface scale s > 0. rect and rounded term scale; the rrHalf[0] < 0
+// In: clip, surface scale s > 0. rect and rounded term scale. The rrHalf[0] < 0
 // sentinel stays negative.
 void ano_ui_clip_scale(AnoUiClip *c, float s)
 {
@@ -80,10 +79,9 @@ void ano_ui_builder_curves(AnoUiBuilder *b, uint32_t *curves, uint32_t curveCap)
     b->curveCount = 0;
 }
 
-// In: radii[4] (tl,tr,br,bl) any sign, half[2] > 0. Out: radii clamped so the exact
-// rounded-box SDF stays valid: each radius <= min(half) (tighter than CSS, which
-// allows full-side radii our uniform formula cannot represent), then adjacent pairs
-// scaled together so they never overlap a side (the CSS rule).
+// In: radii[4] (tl,tr,br,bl) any sign, half[2] > 0. Out: radii clamped: each radius
+// <= min(half), then adjacent pairs scaled together so they never overlap a side
+// (the CSS rule).
 static void radii_clamp(float radii[4], const float half[2])
 {
     float cap = fminf(half[0], half[1]);
@@ -192,7 +190,7 @@ uint32_t ano_ui_image(AnoUiBuilder *b, const float rectMin[2], const float rectM
 }
 
 // In: conservative pixel bbox, curve stream range, premultiplied color. The curve
-// data itself ships in the block's curve blob (build step 6 machinery).
+// data itself ships in the block's curve blob.
 uint32_t ano_ui_path(AnoUiBuilder *b, const float bboxMin[2], const float bboxMax[2],
                      uint32_t curveOffset, uint32_t curveCount, const float color[4],
                      uint32_t paintRef, uint32_t clipRef, uint32_t flags)
@@ -225,30 +223,30 @@ uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bbox
 }
 
 // Shared paint tail: copies stopCount stops into the stop table sorted ascending by t
-// (insertion sort, stop counts are tiny), then writes the paint header. Returns the
-// paintRef, ANO_UI_REF_NONE when either table is full or stopCount is 0.
+// (insertion sort), then writes the paint header. Returns the paintRef,
+// ANO_UI_REF_NONE when either table is full or stopCount is 0.
 static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
                            const AnoUiStop *stops, uint32_t stopCount)
 {
     if (stopCount == 0 || b->paintCount >= b->paintCap || b->stopCount + stopCount > b->stopCap)
         return ANO_UI_REF_NONE;
-    uint32_t sf = b->stopCount;
+    uint32_t stopFirst = b->stopCount;
     for (uint32_t i = 0; i < stopCount; i++)
-        b->stops[sf + i] = stops[i];
+        b->stops[stopFirst + i] = stops[i];
     for (uint32_t i = 1; i < stopCount; i++) {
-        AnoUiStop key = b->stops[sf + i];
+        AnoUiStop key = b->stops[stopFirst + i];
         int32_t j = (int32_t)i - 1;
-        while (j >= 0 && b->stops[sf + j].t > key.t) {
-            b->stops[sf + j + 1] = b->stops[sf + j];
+        while (j >= 0 && b->stops[stopFirst + j].t > key.t) {
+            b->stops[stopFirst + j + 1] = b->stops[stopFirst + j];
             j--;
         }
-        b->stops[sf + j + 1] = key;
+        b->stops[stopFirst + j + 1] = key;
     }
     b->stopCount += stopCount;
     uint32_t idx = b->paintCount++;
     AnoUiPaint *pa = &b->paints[idx];
     pa->kind = kind;
-    pa->stopFirst = sf;
+    pa->stopFirst = stopFirst;
     pa->stopCount = stopCount;
     pa->flags = 0;
     for (int i = 0; i < 6; i++)
@@ -257,8 +255,8 @@ static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
     return idx;
 }
 
-// In: gradient axis endpoints, stops. Out: paintRef. t = dot(p - p0, d)/|d|^2, so the
-// xform's first row projects onto the axis; a zero-length axis collapses to t = 0.
+// In: gradient axis endpoints, stops. Out: paintRef. t = dot(p - p0, d)/|d|^2 via the
+// xform's first row. A zero-length axis collapses to t = 0.
 uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[2],
                              const AnoUiStop *stops, uint32_t stopCount)
 {
@@ -269,8 +267,8 @@ uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[
     return paint_push(b, ANO_UI_GRAD_LINEAR, xform, stops, stopCount);
 }
 
-// In: circle center + radius, stops. Out: paintRef. g = (p - center)/radius, t = |g|;
-// a non-positive radius collapses to t = 0 at the center.
+// In: circle center + radius, stops. Out: paintRef. g = (p - center)/radius, t = |g|.
+// A non-positive radius collapses to t = 0 at the center.
 uint32_t ano_ui_paint_radial(AnoUiBuilder *b, const float center[2], float radius,
                              const AnoUiStop *stops, uint32_t stopCount)
 {
@@ -279,8 +277,8 @@ uint32_t ano_ui_paint_radial(AnoUiBuilder *b, const float center[2], float radiu
     return paint_push(b, ANO_UI_GRAD_RADIAL, xform, stops, stopCount);
 }
 
-// In: center, start angle (radians), stops. Out: paintRef. xform rotates pixel space so
-// startAngle maps to g.x axis; the evaluator takes atan2(g.y,g.x)/2pi + 0.5.
+// In: center, start angle (radians), stops. Out: paintRef. xform rotates startAngle
+// onto the g.x axis. The evaluator takes atan2(g.y,g.x)/2pi + 0.5.
 uint32_t ano_ui_paint_conic(AnoUiBuilder *b, const float center[2], float startAngle,
                             const AnoUiStop *stops, uint32_t stopCount)
 {

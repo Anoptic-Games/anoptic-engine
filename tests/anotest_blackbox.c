@@ -3,27 +3,24 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_blackbox.h -- the crash blackbox, end to end, on real crashes:
- *   - the bb_fmt_dec/bb_fmt_hex handler formatters against the printf oracle;
- *   - ano_blackbox_init: returns 0, resolves CRASH.log next to the executable, creates nothing;
+/* Coverage for anoptic_blackbox.h, end to end, on real crashes:
+ *   - the bb_fmt_dec/bb_fmt_hex handler formatters against the printf oracle
+ *   - ano_blackbox_init: returns 0, resolves <exe>/logs/<session-stamp>_CRASH.log, creates nothing
  *   - one child process per scenario dies its scripted death (AV read/write/execute, abort,
- *     illegal instruction, integer divide by zero, CRT/user raise(SIGSEGV/SIGILL/SIGFPE), a crash
- *     on a non-main thread, a crash inside ano_log_write itself, a crash under a 6-producer storm,
- *     a crash with the ring pinned full, a stack overflow on main AND on a spawned thread -- the
- *     latter proving ano_thread_create's per-thread crash-stack arming -- and two simultaneous
- *     crashers (win64));
- *   - the logger mesh: buffered records committed before the crash survive into anoptic.log through
- *     the Stage 3 hail mary (the hailmary/empty_ring/now_path/midwrite sentinels);
- *   - the deadman: a poisoned deferred format crashes the DRAINER holding the drain mutex, the hail
- *     mary self-deadlocks, and the watchdog must kill the process at ~5 s instead of hanging;
- *   - Stage 4: a leftover CRASH.log is announced on the next boot and left in place; records append
- *     across crashes, never overwrite.
+ *     illegal instruction, integer divide by zero, CRT raise, a crash on a non-main thread, a
+ *     crash inside ano_log_write, a crash under a 6-producer storm, a crash with the ring pinned
+ *     full, a stack overflow on main and on a spawned thread, two simultaneous crashers on win64)
+ *   - the logger mesh: records committed before the crash survive into the scratch session log
+ *     through the Stage 3 hail mary
+ *   - the deadman: a poisoned deferred format crashes the drainer under the drain mutex, the hail
+ *     mary self-deadlocks, and the watchdog must kill the process at ~5 s
+ *   - Stage 4: a leftover *_CRASH.log is announced on the next boot and left in place, each crash
+ *     session gets its own record file, and a stamp collision appends
+ * The parent discovers each child's stamped files by suffix scan (bb_scan_suffix).
  * Oracles: exact death (exit code on win64, termination signal on POSIX), exactly ONE complete
- * record per crash (begin/end markers + backtrace), required/forbidden record substrings, and exact
- * sentinel counts in the scratch anoptic.log. Parent mode (no args) runs everything; argv[1] is a
- * scenario name and turns the process into that crash child (the deadman scenario waits through the
- * 5 s watchdog window, so the whole suite runs ~10 s).
- * Exit 0 == pass; failures print scenario, expectation, and what was seen. */
+ * record per crash (begin/end markers + backtrace), required/forbidden record substrings, and
+ * exact sentinel counts in the scratch session log.
+ * No args = parent mode, argv[1] = crash-child scenario. Exit 0 == pass. */
 
 #include <anoptic_blackbox.h>
 #include <anoptic_logging.h>
@@ -51,14 +48,15 @@
 #include <unistd.h>
 #endif
 
-#define LOG_DIR   "anotest_blackbox_scratch"
-#define LOG_FILE  LOG_DIR "/anoptic.log"
-#define CRASH_LOG "CRASH.log"
+#define LOG_DIR      "anotest_blackbox_scratch"
+#define CRASH_DIR    "logs"                 // ano_fs_logpath under the exe-anchored CWD
+#define LOG_SUFFIX   "_ano.log"             // session log files: <stamp>_ano.log
+#define CRASH_SUFFIX "_CRASH.log"           // session crash records: <stamp>_CRASH.log
 #define REC_BEGIN "==== ANOPTIC BLACKBOX: we are going down ===="
 #define REC_END   "==== end of record ===="
 
-// One death per platform pair: win64 judges the exact exit code, POSIX the termination signal
-// (0 = must exit(0), -1 = any fatal signal -- Darwin reports some faults as SIGBUS, not SIGSEGV).
+// One death per platform pair: win64 judges the exact exit code, POSIX the termination signal.
+// 0 = must exit(0), -1 = any fatal signal (Darwin reports some faults as SIGBUS).
 #if defined(_WIN32)
 typedef unsigned long death_t;
 #define DIE(win, posix) ((death_t)(win))
@@ -113,7 +111,7 @@ static void sc_illegal(void)
 }
 
 #if defined(__x86_64__) || defined(_M_X64)
-// Hardware integer divide fault. x86-only: aarch64 division by zero returns 0, no trap.
+// Hardware integer divide fault (x86-only, aarch64 does not trap).
 static void sc_intdiv(void)
 {
     volatile int z = 0;
@@ -126,7 +124,7 @@ static void sc_raise_segv(void) { raise(SIGSEGV); }
 static void sc_raise_ill(void)  { raise(SIGILL); }
 static void sc_raise_fpe(void)  { raise(SIGFPE); }
 
-// Crash off the main thread: the hooks are process-wide, the record must not care who faulted.
+// Crash off the main thread.
 static void *segv_thread(void *arg) { (void)arg; *(volatile int *)0 = 1; return NULL; }
 static void sc_thread_segv(void)
 {
@@ -135,7 +133,7 @@ static void sc_thread_segv(void)
     ano_thread_join(t, NULL);   // never returns: the process dies under the join
 }
 
-// 32 buffered lines then an immediate crash: most are still undrained. Every one must survive.
+// 32 buffered lines then an immediate crash: every one must survive the hail mary.
 static void sc_hailmary(void)
 {
     for (int i = 0; i < 32; i++)
@@ -146,7 +144,7 @@ static void sc_hailmary(void)
 static void sc_empty_ring(void)
 {
     ano_log(ANO_INFO, "empty-ring-sentinel");
-    ano_log_flush();                    // ring drained: the handler's flush must no-op cleanly
+    ano_log_flush();                    // ring drained before the crash
     *(volatile int *)0 = 1;
 }
 
@@ -156,15 +154,14 @@ static void sc_now_path(void)
     *(volatile int *)0 = 1;
 }
 
-// Crash INSIDE ano_log_write: capture's strlen on a wild %s pointer. No logger lock held there,
-// so the committed sentinel before it must still ride the hail mary out.
+// Crash inside ano_log_write: capture's strlen on a wild %s pointer.
 static void sc_midwrite(void)
 {
     ano_log(ANO_INFO, "midwrite-sentinel-before");
     ano_log(ANO_INFO, "%s", (const char *)16);
 }
 
-// Producer storm shared by contention/ring_full. Never stops; the process death stops it.
+// Producer storm shared by contention/ring_full. Runs until the process dies.
 static atomic_bool g_spamHuge;
 static void *spammer(void *arg)
 {
@@ -197,15 +194,14 @@ static void storm_then_crash(bool huge)
     anothread_t t[6];
     for (intptr_t i = 0; i < 6; i++)
         if (ano_thread_create(&t[i], NULL, spammer, (void *)i) != 0) exit(41);
-    ano_sleep(100000);      // 100 ms of storm, ring under heavy contention (or pinned full)
+    ano_sleep(100000);      // 100 ms of storm
     *(volatile int *)0 = 1;
 }
 static void sc_contention(void) { storm_then_crash(false); }
 static void sc_ring_full(void)  { storm_then_crash(true); }
 
-// Poison a deferred capture: the fmt POINTER is stored at enqueue and dereferenced at drain.
-// Freeing the page between the two crashes the DRAINER inside drain_and_emit -- while it holds
-// the drain mutex. The handler's hail mary then self-deadlocks and the deadman must fire.
+// Poison a deferred capture: the fmt pointer, freed between enqueue and drain, crashes the
+// drainer under the drain mutex. The hail mary self-deadlocks and the deadman must fire.
 static void sc_deadman(void)
 {
 #if defined(_WIN32)
@@ -216,22 +212,22 @@ static void sc_deadman(void)
     if (page == MAP_FAILED) exit(41);
 #endif
     memcpy(page, "poison %d", 10);
-    ano_sleep(5000);        // 5 ms idle: the drainer parks, maximizing our lead over its wake
+    ano_sleep(5000);        // 5 ms idle: let the drainer park
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-nonliteral"
     ano_log_write(ANO_INFO, 0, NULL, 0, (const char *)page, 7);
 #pragma GCC diagnostic pop
 #if defined(_WIN32)
-    VirtualFree(page, 0, MEM_RELEASE);  // sub-us later; the drainer is still waking
+    VirtualFree(page, 0, MEM_RELEASE);  // freed while the drainer is still waking
 #else
     munmap(page, 4096);
 #endif
-    ano_sleep(7u * 1000u * 1000u);      // the deadman (5 s) collects us long before this returns
+    ano_sleep(7u * 1000u * 1000u);      // the deadman (5 s) fires first
     exit(42);               // race lost: the drainer rendered before the free. Parent retries.
 }
 
-// Main-thread stack overflow: the record must come out of the sigaltstack (POSIX) or the
-// SetThreadStackGuarantee reservation (win64) that bb_install arms for the installing thread.
+// Main-thread stack overflow: the record comes off the crash stack bb_install armed
+// (sigaltstack / SetThreadStackGuarantee).
 static uint64_t overflow_rec(uint64_t d)
 {
     volatile char pad[4096];
@@ -241,8 +237,7 @@ static uint64_t overflow_rec(uint64_t d)
 }
 static void sc_stack_overflow(void) { (void)overflow_rec(1); }
 
-// The same overflow on a spawned thread: proves ano_thread_create's spawn shim armed the thread's
-// crash stack (per-thread sigaltstack / stack guarantee). Unarmed, this dies without a record.
+// The same overflow on a spawned thread: ano_thread_create's spawn shim arms its crash stack.
 static void *overflow_thread(void *arg) { (void)arg; (void)overflow_rec(1); return NULL; }
 static void sc_thread_overflow(void)
 {
@@ -252,8 +247,8 @@ static void sc_thread_overflow(void)
 }
 
 #if defined(_WIN32)
-// Two threads crash in the same instant: one owns the record, the other parks. win64-only in the
-// suite -- on POSIX the winner's disarm hands the loser SIG_DFL and the race truncates the record.
+// Two threads crash in the same instant: one owns the record, the other parks.
+// win64-only (on POSIX the winner's disarm hands the loser SIG_DFL and truncates the record).
 static atomic_int g_crashGate;
 static void *race_thread(void *arg)
 {
@@ -311,7 +306,7 @@ static const child_t CHILDREN[] = {
 #define NCHILDREN (sizeof CHILDREN / sizeof CHILDREN[0])
 
 // Child entry: arm logger (into the scratch dir) + blackbox, then die the named death.
-// "nolog" is special: blackbox alone, no logger -- CRASH.log must not depend on ano_log_init.
+// "nolog": blackbox alone, no logger.
 static int child_main(const char *name)
 {
     if (strcmp(name, "nolog") == 0) {
@@ -339,13 +334,13 @@ static int child_main(const char *name)
 typedef struct {
     const char *name;
     death_t die;            // DIE(win64 exit code, POSIX signal); POSIX 0 = exit(0), -1 = any signal
-    int  want_record;       // 1 = exactly one complete record, 0 = CRASH.log must not exist
-    const char *rec_sub;    // required substring in CRASH.log (NULL: none)
-    const char *rec_absent; // forbidden substring in CRASH.log (NULL: none)
-    const char *log_sub;    // required substring in the scratch anoptic.log (NULL: none)
+    int  want_record;       // 1 = exactly one complete record, 0 = no crash record may exist
+    const char *rec_sub;    // required substring in the crash record (NULL: none)
+    const char *rec_absent; // forbidden substring in the crash record (NULL: none)
+    const char *log_sub;    // required substring in the scratch session log (NULL: none)
     int  log_n;             // exact occurrence count of log_sub, -1 = presence is enough
-    bool no_logfile;        // the scratch anoptic.log must not exist at all
-    unsigned min_ms, max_ms;// wall bounds on the child, 0 = unchecked (only the deadman needs them)
+    bool no_logfile;        // the scratch session log must not exist at all
+    unsigned min_ms, max_ms;// wall bounds on the child, 0 = unchecked
     int  retries;           // extra attempts when the child exits race_exit
     int  race_exit;
 } scen_t;
@@ -360,7 +355,7 @@ static const scen_t SCENARIOS[] = {
 #if defined(__x86_64__) || defined(_M_X64)
     { "intdiv",      DIE(0xC0000094, SIGFPE),      1, SUB("EXCEPTION_INT_DIVIDE_BY_ZERO",  "SIGFPE"), NULL, NULL, -1, false, 0, 0, 0, 0 },
 #endif
-    // User raise: the CRT hooks must catch what SEH never sees; POSIX si_code <= 0 forbids si_addr.
+    // User raise: the CRT hooks catch what SEH never sees. POSIX si_code <= 0 forbids si_addr.
     { "raise_segv",  DIE(3, SIGSEGV),              1, SUB("SIGSEGV (CRT raise)", "SIGSEGV"), SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
     { "raise_ill",   DIE(3, SIGILL),               1, SUB("SIGILL (CRT raise)",  "SIGILL"),  SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
     { "raise_fpe",   DIE(3, SIGFPE),               1, SUB("SIGFPE (CRT raise)",  "SIGFPE"),  SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
@@ -381,7 +376,7 @@ static const scen_t SCENARIOS[] = {
 };
 #define NSCEN (sizeof SCENARIOS / sizeof SCENARIOS[0])
 
-static char g_exe[MAXPATH + 32];    // absolute path to this binary, for self-spawning
+static char g_exe[MAXPATH + 32];    // absolute path to this binary
 
 static char *read_all(const char *path, size_t *out_len)
 {
@@ -412,18 +407,28 @@ static int count_sub(const char *buf, size_t len, const char *needle)
     return n;
 }
 
-static bool file_exists(const char *path)
+// Newest `suffix` file in `dir` composed into out, false when none.
+static bool find_suffix(const char *dir, const char *suffix, char *out, size_t cap)
 {
-    FILE *f = fopen(path, "rb");
-    if (f == NULL) return false;
-    fclose(f);
+    char name[MAXPATH];
+    if (bb_scan_suffix(dir, suffix, name) == 0)
+        return false;
+    snprintf(out, cap, "%s/%s", dir, name);
     return true;
+}
+
+// Remove every `suffix` file in `dir`, one scan per pass.
+static void remove_all_suffix(const char *dir, const char *suffix)
+{
+    char path[MAXPATH + 40];
+    while (find_suffix(dir, suffix, path, sizeof path))
+        if (remove(path) != 0)
+            break;  // undeletable: bail rather than spin
 }
 
 #if defined(_WIN32)
 
-// Spawn this exe with `scenario`, wait (30 s cap), return the raw exit code. 0xDEAD = harness cap
-// hit: the blackbox failed to bound the hang, which no scenario expects.
+// Spawn this exe with `scenario`, wait (30 s cap), return the raw exit code. 0xDEAD = cap hit.
 static unsigned long spawn_child(const char *scenario, unsigned *ms)
 {
     char cmd[MAXPATH + 96];
@@ -457,8 +462,8 @@ static void death_print(child_status_t code, char *out, size_t cap)
 
 #else
 
-// Spawn this exe with `scenario`, return the raw waitpid status (-1 on spawn failure). A hung child
-// is left to the CTest timeout: the deadman owns the in-process bound.
+// Spawn this exe with `scenario`, return the raw waitpid status (-1 on spawn failure).
+// A hung child is left to the CTest timeout.
 static int spawn_child(const char *scenario, unsigned *ms)
 {
     uint64_t t0 = ano_timestamp_us();
@@ -492,14 +497,14 @@ static void death_print(child_status_t status, char *out, size_t cap)
 
 #endif
 
-// One scenario: fresh CRASH.log + scratch log, spawn, judge death + record + sentinels.
+// One scenario: fresh crash-record + scratch-log slate, spawn, judge death + record + sentinels.
 static void run_scenario(const scen_t *sc)
 {
     child_status_t st = 0;
     unsigned ms = 0;
     for (int a = 0; a <= sc->retries; a++) {
-        remove(CRASH_LOG);
-        remove(LOG_FILE);
+        remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
+        remove_all_suffix(LOG_DIR, LOG_SUFFIX);
         st = spawn_child(sc->name, &ms);
         if (!death_is_race(st, sc->race_exit))
             break;
@@ -510,12 +515,16 @@ static void run_scenario(const scen_t *sc)
     death_print(st, seen, sizeof seen);
     CHECK(death_matches(sc->die, st), "%s: wrong death: %s", sc->name, seen);
 
+    // Discover the child's stamped files by suffix.
+    char recPath[MAXPATH + 40], logPath[MAXPATH + 40];
     size_t recLen = 0, logLen = 0;
-    char *rec = read_all(CRASH_LOG, &recLen);
-    char *log = read_all(LOG_FILE, &logLen);
+    char *rec = find_suffix(CRASH_DIR, CRASH_SUFFIX, recPath, sizeof recPath)
+              ? read_all(recPath, &recLen) : NULL;
+    char *log = find_suffix(LOG_DIR, LOG_SUFFIX, logPath, sizeof logPath)
+              ? read_all(logPath, &logLen) : NULL;
 
     if (sc->want_record == 1) {
-        CHECK(rec != NULL, "%s: no CRASH.log", sc->name);
+        CHECK(rec != NULL, "%s: no crash record", sc->name);
         if (rec != NULL) {
             // Exactly one complete record: begin + end markers paired, backtrace present.
             CHECK(count_sub(rec, recLen, REC_BEGIN) == 1, "%s: want exactly 1 record, have %d",
@@ -524,24 +533,24 @@ static void run_scenario(const scen_t *sc)
             CHECK(count_sub(rec, recLen, "backtrace:") == 1, "%s: record has no backtrace", sc->name);
         }
     } else if (sc->want_record == 0) {
-        CHECK(rec == NULL, "%s: unexpected CRASH.log", sc->name);
+        CHECK(rec == NULL, "%s: unexpected crash record", sc->name);
     }
     if (sc->rec_sub != NULL)
-        CHECK(count_sub(rec, recLen, sc->rec_sub) > 0, "%s: CRASH.log missing \"%s\"",
+        CHECK(count_sub(rec, recLen, sc->rec_sub) > 0, "%s: crash record missing \"%s\"",
               sc->name, sc->rec_sub);
     if (sc->rec_absent != NULL)
-        CHECK(count_sub(rec, recLen, sc->rec_absent) == 0, "%s: CRASH.log must not contain \"%s\"",
+        CHECK(count_sub(rec, recLen, sc->rec_absent) == 0, "%s: crash record must not contain \"%s\"",
               sc->name, sc->rec_absent);
     if (sc->log_sub != NULL) {
         int n = count_sub(log, logLen, sc->log_sub);
         if (sc->log_n >= 0)
-            CHECK(n == sc->log_n, "%s: anoptic.log has %d x \"%s\", want %d",
+            CHECK(n == sc->log_n, "%s: session log has %d x \"%s\", want %d",
                   sc->name, n, sc->log_sub, sc->log_n);
         else
-            CHECK(n > 0, "%s: anoptic.log missing \"%s\"", sc->name, sc->log_sub);
+            CHECK(n > 0, "%s: session log missing \"%s\"", sc->name, sc->log_sub);
     }
     if (sc->no_logfile)
-        CHECK(log == NULL, "%s: anoptic.log written without a logger", sc->name);
+        CHECK(log == NULL, "%s: session log written without a logger", sc->name);
     if (sc->max_ms > 0)
         CHECK(ms >= sc->min_ms && ms <= sc->max_ms,
               "%s: duration %u ms outside [%u, %u]", sc->name, ms, sc->min_ms, sc->max_ms);
@@ -574,64 +583,82 @@ static void test_fmt_helpers(void)
     }
 }
 
-// Init in THIS process: returns 0, resolves <gamepath>/CRASH.log, creates no file on a clean boot.
+// Init in THIS process: returns 0, resolves <gamepath>/logs/<stamp>_CRASH.log, creates no file
+// on a clean boot.
 static void test_init_shape(void)
 {
-    remove(CRASH_LOG);
+    remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
     CHECK(ano_blackbox_init() == 0, "ano_blackbox_init failed");
-    CHECK(!file_exists(CRASH_LOG), "init created a CRASH.log on a clean boot");
-    size_t n = strlen(bb_crashPath);
-    CHECK(n >= 9 && strcmp(bb_crashPath + n - 9, "CRASH.log") == 0,
-          "bb_crashPath \"%s\" does not end in CRASH.log", bb_crashPath);
+    char name[MAXPATH];
+    CHECK(bb_scan_suffix(CRASH_DIR, CRASH_SUFFIX, name) == 0,
+          "init created a crash record on a clean boot");
+    size_t n = strlen(bb_crashPath), sl = strlen(CRASH_SUFFIX);
+    CHECK(n >= sl && strcmp(bb_crashPath + n - sl, CRASH_SUFFIX) == 0,
+          "bb_crashPath \"%s\" does not end in " CRASH_SUFFIX, bb_crashPath);
+    CHECK(strstr(bb_crashPath, ano_fs_session_stamp()) != NULL,
+          "bb_crashPath \"%s\" does not carry the session stamp %s",
+          bb_crashPath, ano_fs_session_stamp());
     ano_fspath gp = ano_fs_gamepath();
     if (gp.length > 0)
         CHECK(strncmp(bb_crashPath, gp.str, gp.length) == 0,
               "bb_crashPath \"%s\" not rooted in the exe dir \"%s\"", bb_crashPath, gp.str);
 }
 
-// Records append across crashes -- a second crash must never destroy the first record.
+// A second crash must never destroy the first record: per-session stamped files, collisions
+// append. The total across files is the oracle.
 static void test_append(void)
 {
-    remove(CRASH_LOG);
-    remove(LOG_FILE);
+    remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
+    remove_all_suffix(LOG_DIR, LOG_SUFFIX);
     unsigned ms;
     child_status_t s1 = spawn_child("segv_write", &ms);
     child_status_t s2 = spawn_child("segv_write", &ms);
     CHECK(death_matches(DIE(0xC0000005, SIG_SEGVISH), s1), "append: first crash died wrong");
     CHECK(death_matches(DIE(0xC0000005, SIG_SEGVISH), s2), "append: second crash died wrong");
-    size_t len = 0;
-    char *rec = read_all(CRASH_LOG, &len);
-    CHECK(count_sub(rec, len, REC_BEGIN) == 2 && count_sub(rec, len, REC_END) == 2,
-          "append: want 2 complete records, have %d/%d begin/end",
-          count_sub(rec, len, REC_BEGIN), count_sub(rec, len, REC_END));
-    free(rec);
+    int begins = 0, ends = 0;
+    char path[MAXPATH + 40];
+    while (find_suffix(CRASH_DIR, CRASH_SUFFIX, path, sizeof path)) {   // destructive sum, cleans as it goes
+        size_t len = 0;
+        char *rec = read_all(path, &len);
+        begins += count_sub(rec, len, REC_BEGIN);
+        ends   += count_sub(rec, len, REC_END);
+        free(rec);
+        if (remove(path) != 0)
+            break;
+    }
+    CHECK(begins == 2 && ends == 2,
+          "append: want 2 complete records across sessions, have %d/%d begin/end", begins, ends);
 }
 
-// Stage 4: no CRASH.log -> silence; a crashed flight -> the next boot announces it and leaves it.
+// Stage 4: no crash record -> silence, a crashed flight -> the next boot announces and leaves it.
 static void test_stage4(void)
 {
     unsigned ms;
+    char name[MAXPATH], logPath[MAXPATH + 40];
+    size_t len = 0;
 
-    remove(CRASH_LOG);
-    remove(LOG_FILE);
+    remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
+    remove_all_suffix(LOG_DIR, LOG_SUFFIX);
     child_status_t c = spawn_child("clean", &ms);
     CHECK(death_matches(DIE(0, 0), c), "stage4: control clean run died");
-    size_t len = 0;
-    char *log = read_all(LOG_FILE, &len);
-    CHECK(count_sub(log, len, "previous crash") == 0, "stage4: announcement without a CRASH.log");
+    char *log = find_suffix(LOG_DIR, LOG_SUFFIX, logPath, sizeof logPath)
+              ? read_all(logPath, &len) : NULL;
+    CHECK(count_sub(log, len, "previous crash") == 0, "stage4: announcement without a crash record");
     free(log);
 
     child_status_t s = spawn_child("segv_write", &ms);
     CHECK(death_matches(DIE(0xC0000005, SIG_SEGVISH), s), "stage4: crash child died wrong");
-    CHECK(file_exists(CRASH_LOG), "stage4: crash left no CRASH.log");
+    CHECK(bb_scan_suffix(CRASH_DIR, CRASH_SUFFIX, name) == 1, "stage4: crash left no record");
 
-    remove(LOG_FILE);
+    remove_all_suffix(LOG_DIR, LOG_SUFFIX);
     c = spawn_child("clean", &ms);
     CHECK(death_matches(DIE(0, 0), c), "stage4: post-crash clean run died");
-    log = read_all(LOG_FILE, &len);
+    log = find_suffix(LOG_DIR, LOG_SUFFIX, logPath, sizeof logPath)
+        ? read_all(logPath, &len) : NULL;
     CHECK(count_sub(log, len, "previous crash") > 0, "stage4: previous crash not announced");
     free(log);
-    CHECK(file_exists(CRASH_LOG), "stage4: CRASH.log not preserved for the investigation");
+    CHECK(bb_scan_suffix(CRASH_DIR, CRASH_SUFFIX, name) == 1,
+          "stage4: record not preserved for the investigation");
 }
 
 int main(int argc, char **argv)
@@ -663,8 +690,11 @@ int main(int argc, char **argv)
     test_append();
     test_stage4();
 
-    remove(CRASH_LOG);
-    remove(LOG_FILE);
+    // Full sweep: crash records, scratch session logs, and the children's default-init session
+    // logs under logs/.
+    remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
+    remove_all_suffix(CRASH_DIR, LOG_SUFFIX);
+    remove_all_suffix(LOG_DIR, LOG_SUFFIX);
     scratch_remove_dir(LOG_DIR);
 
     if (failures == 0) { printf("anotest_blackbox: all checks passed\n"); return 0; }

@@ -31,6 +31,7 @@
 _Static_assert((ANO_LOG_RING_BYTES & (ANO_LOG_RING_BYTES - 1)) == 0, "ring bytes must be a power of two");
 _Static_assert(ANO_LOG_RING_LINES >= 64, "ring must hold at least one max-size entry (64 lines)");
 
-#define ANO_LOG_FILENAME "anoptic.log"
+// One log file per session: "<stamp>" ANO_LOG_FILESUFFIX, the stamp from ano_fs_session_stamp().
+#define ANO_LOG_FILESUFFIX "_ano.log"
 
 #endif //ANOPTICENGINE_LOGGING_CORE_H

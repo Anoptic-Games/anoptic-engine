@@ -31,7 +31,7 @@ int main() {
     badInfo.usage = 0; // Invalid usage
     VkBuffer badBuffer = VK_NULL_HANDLE;
     vkCreateBuffer(ctx->device, &badInfo, NULL, &badBuffer);
-    // Some drivers create the object anyway; destroy it or vkDestroyDevice reports a leak.
+    // Some drivers create the object anyway.
     if (badBuffer != VK_NULL_HANDLE)
         vkDestroyBuffer(ctx->device, badBuffer, NULL);
 

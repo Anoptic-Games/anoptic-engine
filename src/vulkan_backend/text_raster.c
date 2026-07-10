@@ -30,8 +30,8 @@
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
-// Push-constant block shared with textraster.comp (68 B; the shader may declare a
-// prefix of it). uiPrimCount/uiClipCount/uiPaintCount stay 0 with no UI compose.
+// Push-constant block shared with textraster.comp (68 B, the shader may declare a
+// prefix). The ui counts stay 0 with no UI compose.
 typedef struct TextRasterPush {
     uint32_t instanceCount;
     uint32_t flags;
@@ -42,15 +42,15 @@ typedef struct TextRasterPush {
     uint32_t uiPrimCount;
     uint32_t uiClipCount;
     uint32_t uiPaintCount;
-    int32_t  uiTileOx; // UI tile grid (TILED only), origin/extent in TILES; keyed on
-    int32_t  uiTileOy; // UI bounds alone so text motion never reshapes it
+    int32_t  uiTileOx; // UI tile grid (TILED only), origin/extent in TILES
+    int32_t  uiTileOy; // keyed on the UI bounds alone
     uint32_t uiTileGx;
     uint32_t uiTileGy;
     float    textB[4]; // pending text px AABB: tiles outside skip the glyph walk
 } TextRasterPush;
 
-// Region split: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST), world panel next, UI
-// glyph labels from ANO_UI_GLYPH_FIRST — all inside one frame buffer.
+// Region split of one frame buffer: OSD/pending owns [0, ANO_TEXT_WORLD_FIRST),
+// world panel next, UI glyph labels from ANO_UI_GLYPH_FIRST.
 #define ANO_TEXT_WORLD_FIRST 8192u
 static_assert(ANO_TEXT_WORLD_FIRST == ANO_RENDER_TEXT_MAX,
               "the public screen-text capacity is the pending region size");
@@ -134,10 +134,9 @@ static void text_pending_bounds(RendererState* state)
 }
 
 // Recomposes the pending canonical after any source changed. OSD region
-// [0, textOsdCount) stays (render-internal, shaped in device px), logic blocks append
-// in registry order with the overlay's logical->px surface fold (origin scales, the
-// px->em inv divides — the glyph curves rasterize at full device resolution), capped.
-// Demo pin keeps the canvas OSD-only.
+// [0, textOsdCount) stays device-px, logic blocks append in registry order with the
+// logical->px surface fold (origin scales, inv divides), capped. Demo pin keeps the
+// canvas OSD-only.
 static void text_blocks_append(RendererState* state)
 {
     uint32_t cap = ANO_TEXT_WORLD_FIRST;
@@ -167,7 +166,7 @@ static void text_blocks_append(RendererState* state)
 }
 
 // Overlay surface scale changed: re-fold the retained logic blocks at the new scale.
-// The OSD reshapes itself on its own cadence and stays device-px.
+// The OSD stays device-px.
 void ano_vk_text_rescale(RendererState* state)
 {
     if (state->textOverlay && state->textPending != NULL)
@@ -294,8 +293,7 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
 }
 
 // Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 7 UI-table
-// SSBOs (bindings 4-10: prim/clip/paint/stop/curve regions + per-tile offsets/entries of
-// uiFrameBuffer), 36 B push.
+// SSBOs (bindings 4-10 of uiFrameBuffer).
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkDescriptorSetLayoutBinding bindings[11] = {};
@@ -305,8 +303,7 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
-        // World lane reads the three glyph buffers through the same set; the overlay
-        // image and the UI tables are compute-only.
+        // World lane reads the three glyph buffers, overlay image + UI tables compute-only.
         bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
                                | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT : 0u);
     }
@@ -646,8 +643,7 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
                    &state->textGlyphBuffer, &state->textGlyphAlloc)
             && stagingTransfer(ctx, state->textBake.glyphs, state->textGlyphBuffer, glyphBytes);
 
-    // Per-frame frame data: host-visible, persistently mapped. CONCURRENT when async
-    // splits its readers across families (world draw on graphics, raster on compute).
+    // Per-frame frame data: host-visible, persistently mapped, CONCURRENT when async.
     for (uint32_t i = 0; ok && i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         ok = ano_vk_text_create_buffer(ctx, ANO_TEXT_FRAME_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -917,7 +913,7 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
         writes[4].pImageInfo = &sampleInfo;
         vkUpdateDescriptorSets(ctx->device, 5, writes, 0, NULL);
     }
-    // UI table bindings 4-7 ride the same sets; ui_raster.c owns their writes.
+    // UI table bindings ride the same sets, written by ui_raster.c.
     ano_vk_ui_write_sets(ctx, state);
 }
 
@@ -970,7 +966,7 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
     else if ((state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0])
              || (state->uiPrimCount > 0 && state->uiBounds[2] > state->uiBounds[0]))
     {
-        // Union of the pending text and UI bounds (either may be absent; blank = inverted).
+        // Union of the pending text and UI bounds (blank = inverted).
         float u0 = 3.0e38f, v0 = 3.0e38f, u1 = -3.0e38f, v1 = -3.0e38f;
         if (state->textInstanceCount > 0 && state->textBounds[2] > state->textBounds[0]
             && (state->textFlags & ANO_TEXT_RASTER_UIONLY) == 0u)
@@ -1000,10 +996,8 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
             gy = ((uint32_t)(y1 - y0) + 7u) / 8u;
         }
     }
-    // Per-tile prim lists over the UI bounds alone (§3.7) — the shader maps dispatch
-    // tiles into the grid, so a moving text bound never invalidates it. On success the
-    // shader reads its tile's prims instead of the brute chunk scan; any failure
-    // (disabled, grid/entry overflow) leaves the flag clear and falls back.
+    // Per-tile prim lists over the UI bounds alone (§3.7). On success the shader reads
+    // its tile's prims, on failure the flag stays clear and the brute scan runs.
     if (gx != 0 && gy != 0 && state->uiPrimCount > 0
         && ano_vk_ui_build_tiles(state, frameIndex))
     {

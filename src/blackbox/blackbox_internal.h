@@ -3,28 +3,30 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private module header: state shared between the common TU and the per-platform hooks, plus the
-// async-signal-safe formatters. Everything a crashing thread touches lives here or in its platform TU.
+// Private module header: state shared between the common TU and the per-platform hooks, plus the async-signal-safe formatters.
 
 #ifndef BLACKBOX_INTERNAL_H
 #define BLACKBOX_INTERNAL_H
 
+#include <anoptic_filesystem.h>   // MAXPATH
+
 #include <stddef.h>
 #include <string.h>
 
-// "<gamedir>/CRASH.log", NUL-terminated. Resolved once by ano_blackbox_init, never inside a handler
-// (path resolution allocates and formats). Falls back to a CWD-relative "CRASH.log".
+// "<gamedir>/logs/<session-stamp>_CRASH.log", NUL-terminated. Resolved once by ano_blackbox_init, never inside a handler. Fallbacks: <gamedir>, then a CWD-relative name.
 extern char bb_crashPath[];
 
 // Stage 1, per-platform: install the fatal hooks. Output: 0 on success, -1 if any failed.
 int bb_install(void);
 
-// Per-thread Stage 1, per-platform: arm/release the calling thread's crash stack (see the public
-// ano_blackbox_thread_arm). Output: 0 on success, -1 if the OS refused.
+// Stage 4 helper, per-platform: count `dir` entries ending in `suffix`, copying the lexicographically last into newest[MAXPATH]. Calm time only (init, tests). Output: the count, 0 when none or no dir.
+int bb_scan_suffix(const char *dir, const char *suffix, char *newest);
+
+// Per-thread Stage 1, per-platform: arm/release the calling thread's crash stack (see ano_blackbox_thread_arm). Output: 0 on success, -1 if the OS refused.
 int  bb_thread_arm(void);
 void bb_thread_disarm(void);
 
-// Decimal of v into out, returns length. No printf machinery: a handler may not malloc or lock.
+// Decimal of v into out, returns length. Async-signal-safe, no printf machinery.
 static inline size_t bb_fmt_dec(char *out, unsigned long long v)
 {
     char tmp[20];
@@ -34,7 +36,7 @@ static inline size_t bb_fmt_dec(char *out, unsigned long long v)
     return i;
 }
 
-// "0x" + 16 hex digits of v into out, returns length (18). Fixed width: alignment over brevity.
+// "0x" + 16 hex digits of v into out, returns length (18). Fixed width.
 static inline size_t bb_fmt_hex(char *out, unsigned long long v)
 {
     static const char dig[] = "0123456789abcdef";

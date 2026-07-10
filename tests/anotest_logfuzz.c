@@ -59,9 +59,9 @@ const char *__tsan_default_suppressions(void)
 
 // CMake points ANO_TEST_OUTDIR at this test's build tree (fallback "." in templates/scratch.h).
 #define DIR_A      ANO_TEST_OUTDIR "/anolog_fuzz"
-#define PATH_A     ANO_TEST_OUTDIR "/anolog_fuzz/anoptic.log"
 #define DIR_B      ANO_TEST_OUTDIR "/anolog_fuzz_alt"
-#define PATH_B     ANO_TEST_OUTDIR "/anolog_fuzz_alt/anoptic.log"
+// Session-stamped file paths (<dir>/<stamp>_ano.log), resolved once at the top of main().
+static char PATH_A[96], PATH_B[96];
 
 #define PRODUCERS      6
 #define DEFAULT_ITERS  4000     // per producer, overflows the ring repeatedly
@@ -168,6 +168,8 @@ int main(int argc, char **argv)
     scratch_anchor_to_exe();   // scratch relative to this exe's dir, cross-platform
     scratch_make_dir(DIR_A);
     scratch_make_dir(DIR_B);
+    snprintf(PATH_A, sizeof PATH_A, "%s/%s_ano.log", DIR_A, ano_fs_session_stamp());
+    snprintf(PATH_B, sizeof PATH_B, "%s/%s_ano.log", DIR_B, ano_fs_session_stamp());
     remove(PATH_A);
     remove(PATH_B);
 

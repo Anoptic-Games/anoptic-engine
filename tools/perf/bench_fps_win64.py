@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """anopticengine FPS / GPU-pass benchmark harness -- WINDOWS (win64) DRIVER.
 
-This is the Windows-specific driver only. The measurement METHODOLOGY -- the engine
-log contract it parses, the foreground/DPI/warmup rules, and how to read the numbers --
-is platform-agnostic and lives in tools/perf/README.md. Ports to the other targets belong
-beside this file as bench_fps_linux.py (X11/Wayland) and bench_fps_macos.py (Cocoa),
-implementing the SAME contract with each platform's own window/DPI/foreground primitives.
+Sibling of tools/perf/bench_fps_linux.py. The platform-agnostic methodology (engine log contract, foreground/DPI/warmup rules, reading the numbers) lives in tools/perf/README.md.
 
-What is Windows-specific here (and must be re-implemented per platform):
+Windows-specific:
   - win32 window discovery by PID, borderless resize, MoveWindow
-  - forced + VERIFIED foreground via the SetForegroundWindow focus-steal-lock workaround
-  - per-monitor-DPI-aware-v2 so monitor rects/sizes are PHYSICAL pixels
+  - forced + verified foreground via the SetForegroundWindow focus-steal-lock workaround
+  - per-monitor-DPI-aware-v2 (monitor rects/sizes in physical pixels)
   - 'M' menu toggle synthesized as a Win32 key message with a real scancode
 
-What is shared (engine side, same on every target) -- lines in anoptic.log:
+Parsed session-log lines (logs/<stamp>_ano.log next to the executable, dir cleared per run):
   [frame] <fps> fps <ms> ms wall            -- wall-clock throughput (profiling.c: ano_frame_mark)
   [profile mode=...] total=<ms> (frusta N/42) ... swap=<MiB>   -- GPU-pass profile + VRAM
 
-Requires: Windows, pywin32. Dev-only tool; not built or shipped.
+Requires: Windows, pywin32. Dev-only tool, not built or shipped.
 
 Examples:
   python tools/perf/bench_fps_win64.py                          # resolution sweep, menu open
@@ -26,10 +22,9 @@ Examples:
   python tools/perf/bench_fps_win64.py --churn                  # resize-storm stress (one row)
   python tools/perf/bench_fps_win64.py --env ANO_SHADOW_BUDGET=2
 """
-import argparse, ctypes, os, re, subprocess, sys, time
+import argparse, ctypes, glob, os, re, subprocess, sys, time
 
-# Per-monitor-DPI-aware v2 (-4) BEFORE using win32, so monitor rects are PHYSICAL px
-# (otherwise a scaled desktop reports logical sizes and you mislabel the render resolution).
+# Per-monitor-DPI-aware v2 (-4) before any win32 use: monitor rects in physical px.
 try: ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 except Exception:
     try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -40,7 +35,7 @@ SWEEP_DEFAULT = [(640, 360), (960, 540), (1280, 720), (1920, 1080), (2560, 1440)
 CHURN_SIZES   = [(640, 480), (1920, 1080), (900, 1500), (2560, 1440), (480, 900),
                  (1600, 900), (1280, 720), (2200, 1300), (720, 1280), (1100, 1900)]
 CHURN_MS = 33.0
-PRINT_INTERVAL = 120  # engine ANO_PROFILE_PRINT_INTERVAL; 120 rendered frames per profile line
+PRINT_INTERVAL = 120  # engine ANO_PROFILE_PRINT_INTERVAL (rendered frames per profile line)
 
 
 def _find_window(pid):
@@ -53,8 +48,7 @@ def _find_window(pid):
 
 
 def _bring_to_front(hwnd):
-    """Defeat the SetForegroundWindow focus-steal lock (synthetic ALT tap), then CONFIRM front.
-    A background/occluded window mismeasures the GPU passes -- never trust a row that isn't front."""
+    """Defeat the SetForegroundWindow focus-steal lock (synthetic ALT tap), then confirm front."""
     for _ in range(5):
         win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
         win32api.keybd_event(0x12, 0, 0, 0)                            # ALT down
@@ -77,7 +71,7 @@ def _borderless(hwnd, x, y, w, h):
 
 
 def _toggle_menu(hwnd):
-    sc = 0x32  # scancode 'M'; GLFW maps by scancode, so lParam must carry it
+    sc = 0x32  # scancode 'M' in lParam (GLFW maps by scancode)
     win32api.PostMessage(hwnd, win32con.WM_KEYDOWN, 0x4D, (sc << 16) | 1)
     time.sleep(0.03)
     win32api.PostMessage(hwnd, win32con.WM_KEYUP, 0x4D, (0xC0 << 24) | (sc << 16) | 1)
@@ -89,11 +83,12 @@ def _median(a):
 
 
 def run_once(exe, w, h, dur, menu, churn, env):
-    log = os.path.join(os.path.dirname(exe), "anoptic.log")
-    for _ in range(50):                          # prior process may still hold the handle
-        try: os.remove(log); break
-        except FileNotFoundError: break
-        except PermissionError: time.sleep(0.1)
+    logpat = os.path.join(os.path.dirname(exe), "logs", "*_ano.log")
+    for old in glob.glob(logpat):                # clear the log dir
+        for _ in range(50):                      # retry while a prior handle lingers
+            try: os.remove(old); break
+            except FileNotFoundError: break
+            except PermissionError: time.sleep(0.1)
 
     p = subprocess.Popen([exe], env=env)
     t0 = time.perf_counter()
@@ -119,7 +114,8 @@ def run_once(exe, w, h, dur, menu, churn, env):
             except Exception: pass
             resizes += 1; nxt = resizes * (CHURN_MS / 1000.0)
         if f is None:
-            if os.path.exists(log): f = open(log, encoding="utf-8", errors="replace")
+            found = glob.glob(logpat)            # session-stamped name: discover, don't predict
+            if found: f = open(found[0], encoding="utf-8", errors="replace")
             else: time.sleep(0.01); continue
         chunk = f.readline()
         if not chunk: time.sleep(0.003); continue
@@ -165,7 +161,7 @@ def main():
     if args.env: print("engine env: " + "  ".join(args.env))
 
     if args.churn:
-        sizes = [(3840, 2160)]  # base res; the run cycles CHURN_SIZES internally
+        sizes = [(3840, 2160)]  # base res (the run cycles CHURN_SIZES)
     elif args.res:
         w, h = (int(x) for x in args.res.lower().split("x")); sizes = [(w, h)]
     else:

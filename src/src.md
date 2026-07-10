@@ -30,7 +30,7 @@ src/
 ├── time/           # High-resolution monotonic timing and OS-scheduled sleeps
 ├── strings/        # Owned string type experiments and scoped-heap tests
 ├── logging/        # Async queue-based logger
-├── blackbox/       # Crash handler: fatal-signal/SEH hooks, CRASH.log record, hail-mary log flush
+├── blackbox/       # Crash handler: fatal-signal/SEH hooks, session CRASH-log record, hail-mary log flush
 └── filesystem/     # Path and file I/O abstraction (per-platform)
 ```
 
@@ -81,7 +81,8 @@ src/
 
 - `blackbox/` (`anoptic_blackbox.h`): The crash blackbox. Hooks fatal signals (POSIX) and
   unhandled SEH exceptions + SIGABRT (Windows), writes an async-signal-safe record (signal,
-  fault address, backtrace) to CRASH.log, then gives the logger one last flush before
+  fault address, backtrace) to the session's `logs/<stamp>_CRASH.log` (path pre-resolved at
+  init, stamp shared with the logger), then gives the logger one last flush before
   re-raising. A deadman guarantees the process exits instead of hanging. Per-thread crash
   stacks (sigaltstack / SetThreadStackGuarantee) arm via `ano_blackbox_thread_arm`, called
   automatically by `ano_thread_create`, so a blown stack reports on any engine thread.

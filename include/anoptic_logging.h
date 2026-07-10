@@ -63,7 +63,8 @@ int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
 
 /* Configuration Functions */
 
-// Open dir/anoptic.log as the output file. Returns 0 on success, -1 keeps the previous file.
+// Open dir/<session-stamp>_ano.log as the output file (the stamp: ano_fs_session_stamp).
+// Returns 0 on success, -1 keeps the previous file.
 int ano_log_output_dir(const char* directoryPath);
 
 // Runtime severity gate.

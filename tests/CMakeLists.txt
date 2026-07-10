@@ -157,17 +157,15 @@ target_link_libraries(anotest_logfuzz PRIVATE anoptic_core)
 add_test(NAME anoptic_logfuzz COMMAND anotest_logfuzz)
 set_tests_properties(anoptic_logfuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;concurrency")
 
-# Testing for ``anoptic_blackbox.h`` (crash hooks, CRASH.log records, the logger hail mary, deadman).
-# Parent/child: the binary re-execs itself once per scenario and judges the child's death (exit code /
-# termination signal), exactly one complete record in CRASH.log, and sentinel survival in a scratch
-# anoptic.log. The deadman scenario waits through the 5 s watchdog window (with retries for its
-# enqueue/free race), so the budget is generous. Crash children write CRASH.log next to the binary.
+# Testing for ``anoptic_blackbox.h`` (crash hooks, crash records, the logger hail mary, deadman).
+# The binary re-execs itself once per scenario and judges the child's death, its <stamp>_CRASH.log
+# record, and sentinel survival in a scratch session log. The deadman scenario waits through the
+# 5 s watchdog window.
 add_executable(anotest_blackbox anotest_blackbox.c)
 target_link_libraries(anotest_blackbox PRIVATE anoptic_core)
 add_test(NAME anoptic_blackbox COMMAND anotest_blackbox)
 set_tests_properties(anoptic_blackbox PROPERTIES TIMEOUT 180 LABELS "unit;concurrency")
-# ASan/TSan install their own fatal-signal handlers: the deaths (and exit codes) become the
-# sanitizer's, not the blackbox's. Skip there; the trampoline still runs under every other test.
+# Skipped under ASan/TSan: sanitizers install their own fatal-signal handlers.
 if(NOT ANOPTIC_SANITIZE STREQUAL "")
     set_tests_properties(anoptic_blackbox PROPERTIES DISABLED TRUE)
 endif()

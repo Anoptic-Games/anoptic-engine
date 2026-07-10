@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The shared POSIX implementation, included by exactly one TU per platform (blackbox_linux.c /
-// blackbox_macos.c). sigaction + sigaltstack + the frame-pointer walk are identical on both; the
-// including TU supplies the two genuinely native pieces, forward-declared below: bb_modmap_build
-// (snapshot the loaded modules, calm time only) and bb_crash_regs (dig pc/fp/lr out of the
-// interrupted mcontext). No <execinfo.h>: glibc's backtrace() lazily dlopens libgcc_s and resolves
-// exported symbols only, musl doesn't ship it at all. We walk the fp chain ourselves.
+// The shared POSIX implementation, included by exactly one TU per platform (blackbox_linux.c / blackbox_macos.c). The including TU supplies the two native pieces, forward-declared below: bb_modmap_build (snapshot the loaded modules, calm time only) and bb_crash_regs (pc/fp/lr out of the interrupted mcontext). No <execinfo.h>: the fp chain is walked by hand.
 
 #ifndef BLACKBOX_POSIX_H
 #define BLACKBOX_POSIX_H
@@ -17,6 +12,7 @@
 #include <anoptic_memory.h>
 #include "blackbox/blackbox_internal.h"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -24,11 +20,10 @@
 #include <time.h>
 #include <unistd.h>
 
-// From handler entry the process has BB_DEADMAN_S seconds to finish dying: SIGALRM keeps its default
-// disposition (terminate), so a wedged record write or hail-mary flush becomes an exit, never a hang.
+// From handler entry the process has BB_DEADMAN_S seconds to finish dying: SIGALRM keeps its default disposition (terminate).
 #define BB_DEADMAN_S 5u
 
-// The hooked set. "SIGSEGV, SIGABRT, SIGFPE, etc." -- etc. being SIGILL and SIGBUS.
+// The hooked signal set.
 static const struct { int sig; const char *name; } bb_hooked[] = {
     { SIGSEGV, "SIGSEGV" },
     { SIGABRT, "SIGABRT" },
@@ -38,27 +33,22 @@ static const struct { int sig; const char *name; } bb_hooked[] = {
 };
 #define BB_NHOOKED (sizeof bb_hooked / sizeof bb_hooked[0])
 
-// One crashing thread owns the record; latecomers park forever (the deadman or the re-raise kills
-// the process out from under them).
+// One crashing thread owns the record. Latecomers park until the deadman or the re-raise kills the process.
 static atomic_int bb_entered;
 
 // One crash stack's worth: room for the handler, the frame walk, and the hail mary's locks.
 #define BB_ALTSTACK_SZ (64u * 1024u)
 
-// The handler runs here so a blown stack can still be reported. Static: nothing allocates at crash time.
+// Alternate handler stack, static: nothing allocates at crash time and a blown stack still reports.
 static char bb_altStack[BB_ALTSTACK_SZ];
 
 /* ---- the module map: name every pc without touching a loader at crash time ---- */
 
-// One executable range of one loaded module (pcs land nowhere else). base is the load bias, so
-// pc - base is the link-time address addr2line -e / atos -o consume directly. Filled once by the
-// platform's bb_modmap_build at init and only binary-searched in the handler: both native loaders
-// (dl_iterate_phdr, dyld) lock, so the map is NEVER rebuilt at crash time. Modules dlopen'd after
-// init (GPU driver ICDs) print as "?".
+// One executable range of one loaded module. base is the load bias: pc - base feeds addr2line -e / atos -o directly. Filled once by bb_modmap_build at init, only binary-searched in the handler, never rebuilt at crash time. Modules dlopen'd after init print as "?".
 typedef struct {
     uintptr_t lo, hi;       // [lo, hi) of the mapped executable segment
     uintptr_t base;         // load bias of the owning module
-    char      name[40];     // basename, truncated: the directory noise helps no one
+    char      name[40];     // basename, truncated
 } bb_mod_t;
 
 #define BB_MAXMODS 256
@@ -69,8 +59,7 @@ static int      bb_nmods;
 static void bb_modmap_build(void);
 static void bb_crash_regs(void *uctx, uintptr_t *pc, uintptr_t *fp, uintptr_t *lr);
 
-// Insert one executable range, kept sorted by lo. Calm time only. A full table drops the rest:
-// "?" in a record is honest, a table resize at crash time is not.
+// Insert one executable range, kept sorted by lo. Calm time only. A full table drops the rest.
 static void bb_mod_add(uintptr_t lo, uintptr_t hi, uintptr_t base, const char *name)
 {
     if (bb_nmods >= BB_MAXMODS || hi <= lo)
@@ -105,16 +94,14 @@ static const bb_mod_t *bb_mod_find(uintptr_t pc)
 
 /* ---- the walker: a backtrace with nothing under it but write(2) ---- */
 
-// aarch64 PAC (arm64e system dylibs, -mbranch-protection distros) signs return addresses in the
-// high bits; strip to the 47-bit user VA before resolving. x86_64 passes through untouched.
+// aarch64 PAC signs return addresses in the high bits: strip to the 47-bit user VA before resolving. x86_64 passes through.
 #if defined(__aarch64__) || defined(__arm64__)
 #define BB_PC_STRIP(a) ((a) & (((uintptr_t)1 << 47) - 1))
 #else
 #define BB_PC_STRIP(a) (a)
 #endif
 
-// write() to /dev/null as the memory probe: EFAULT on a wild frame pointer instead of a second
-// fault inside the handler. Opened at init; if it never opened, the walk stops at the pc.
+// Memory probe: write() to /dev/null, EFAULT on a wild frame pointer. Opened at init. Unopened, the walk stops at the pc.
 static int bb_probeFd = -1;
 
 static bool bb_readable(uintptr_t addr, size_t len)
@@ -122,7 +109,7 @@ static bool bb_readable(uintptr_t addr, size_t len)
     return bb_probeFd >= 0 && write(bb_probeFd, (const void *)addr, len) == (ssize_t)len;
 }
 
-// write() until done or dead. Async-signal-safe, ignores failure -- there is no one left to tell.
+// write() until done or dead. Async-signal-safe, ignores failure.
 static void bb_write_all(int fd, const char *buf, size_t len)
 {
     while (len > 0) {
@@ -138,8 +125,7 @@ static void bb_puts(int fd, const char *s) { bb_write_all(fd, s, strlen(s)); }
 static void bb_dec(int fd, unsigned long long v) { char b[20]; bb_write_all(fd, b, bb_fmt_dec(b, v)); }
 static void bb_hex(int fd, unsigned long long v) { char b[18]; bb_write_all(fd, b, bb_fmt_hex(b, v)); }
 
-// One frame as "module+0xoffset [0xaddress]", matching the win64 record: ASLR makes bare addresses
-// useless, and the offset is link-time relative -- addr2line -e (Linux) / atos -o (macOS) eat it raw.
+// One frame as "module+0xoffset [0xaddress]", matching the win64 record. The offset feeds addr2line -e / atos -o raw.
 static void bb_frame(int fd, uintptr_t pc)
 {
     bb_puts(fd, "  ");
@@ -156,12 +142,7 @@ static void bb_frame(int fd, uintptr_t pc)
     bb_puts(fd, "]\n");
 }
 
-// The crash backtrace, innermost first: the interrupted pc (the fault site itself), lr where the
-// architecture keeps it in a register (an unspilled leaf's caller exists ONLY there; occasionally a
-// duplicate frame, never a lie), then the fp chain -- fp[0] the caller's fp, fp[1] its return
-// address, identical on x86_64 and aarch64. Every dereference is probed and every step must
-// strictly ascend: a corrupt chain ends the walk, never the handler. Needs frame pointers, which
-// the root CMakeLists pins on every UNIX build.
+// The crash backtrace, innermost first: the interrupted pc, lr where the architecture keeps it in a register, then the fp chain (fp[0] the caller's fp, fp[1] its return address). Every dereference is probed and every step must strictly ascend: a corrupt chain ends the walk, never the handler. Needs frame pointers, pinned by the root CMakeLists on every UNIX build.
 #define BB_MAXFRAMES 64
 static void bb_backtrace(int fd, void *uctx)
 {
@@ -187,9 +168,7 @@ static void bb_backtrace(int fd, void *uctx)
     }
 }
 
-// Stage 2 then Stage 3. Async-signal-safe calls only, up until the hail mary -- which is why the
-// hail mary goes last: by then the record is already on disk and a deadlock costs nothing the
-// deadman can't collect.
+// Stage 2 then Stage 3. Async-signal-safe calls only, up until the hail mary.
 static void bb_handler(int sig, siginfo_t *info, void *uctx)
 {
     if (atomic_exchange(&bb_entered, 1) != 0)
@@ -218,13 +197,13 @@ static void bb_handler(int sig, siginfo_t *info, void *uctx)
     bb_puts(fd, " (");
     bb_puts(fd, name);
     bb_puts(fd, ")\n");
-    // si_code <= 0 is user-generated (raise/kill): si_addr holds garbage there, not a fault address.
+    // si_code <= 0 is user-generated (raise/kill): si_addr is garbage there.
     if (info->si_code > 0 && (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGFPE)) {
         bb_puts(fd, "fault address: ");
         bb_hex(fd, (uintptr_t)info->si_addr);
         bb_puts(fd, "\n");
     }
-    // Straight from the interrupted context: frame zero IS the crash site, no handler noise above it.
+    // From the interrupted context: frame zero is the crash site, no handler noise above it.
     bb_puts(fd, "backtrace:\n");
     bb_backtrace(fd, uctx);
     bb_puts(fd, "==== end of record ====\n");
@@ -233,26 +212,48 @@ static void bb_handler(int sig, siginfo_t *info, void *uctx)
         close(fd);
         bb_puts(STDERR_FILENO, "anoptic: fatal ");
         bb_puts(STDERR_FILENO, name);
-        bb_puts(STDERR_FILENO, ", blackbox record written to CRASH.log\n");
+        bb_puts(STDERR_FILENO, ", blackbox record written to ");
+        bb_puts(STDERR_FILENO, bb_crashPath);
+        bb_puts(STDERR_FILENO, "\n");
     }
 
     // Stage 3: the hail mary.
     ano_log_flush();
 
-    // Re-raise with default disposition: the true exit status, the core dump, the works.
+    // Re-raise with default disposition: true exit status and core dump.
     sigset_t un;
     sigemptyset(&un);
     sigaddset(&un, sig);
     pthread_sigmask(SIG_UNBLOCK, &un, NULL);
     raise(sig);
-    _exit(128 + sig);   // unreachable unless the default action was somehow suppressed
+    _exit(128 + sig);   // unreachable unless the default action was suppressed
+}
+
+// Stage 4 scan, calm time only. Contract in blackbox_internal.h.
+int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL)
+        return 0;
+    size_t sl = strlen(suffix);
+    int count = 0;
+    newest[0] = '\0';
+    for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+        size_t nl = strlen(e->d_name);
+        if (nl < sl || nl >= MAXPATH || strcmp(e->d_name + nl - sl, suffix) != 0)
+            continue;
+        count++;
+        if (strcmp(e->d_name, newest) > 0)
+            strcpy(newest, e->d_name);
+    }
+    closedir(d);
+    return count;
 }
 
 // Inputs: none. Output: 0 when every hook installed, -1 if any refused (the rest stay armed).
 int bb_install(void)
 {
-    // Calm-time prep the handler must never do itself: snapshot the loaded modules (the native
-    // loaders lock) and open the probe fd (the walker's license to dereference).
+    // Calm-time prep: snapshot the loaded modules and open the probe fd.
     bb_modmap_build();
     bb_probeFd = open("/dev/null", O_WRONLY | O_CLOEXEC);
 
@@ -268,9 +269,7 @@ int bb_install(void)
     return rc;
 }
 
-// sigaltstack state is thread-local: bb_install only covered the installing (main) thread, with a
-// static stack immune to heap state. Every other thread arms here at spawn -- calm time, so a heap
-// stack is fine -- and releases at exit. Idempotent: a second arm on the same thread is a no-op.
+// sigaltstack state is thread-local: bb_install covers only the installing (main) thread. Every other thread arms here at spawn and releases at exit. Idempotent per thread.
 static _Thread_local char *bb_threadAltStack;
 
 int bb_thread_arm(void)
