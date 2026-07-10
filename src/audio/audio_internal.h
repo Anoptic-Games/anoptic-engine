@@ -5,12 +5,16 @@
 
 /*
  * audio_internal.h (private to src/audio/)
- * The mixer world: source and bus pools, the block-loop state, and the device
- * backend interface. Owned exclusively by the mixer thread after init; the
- * device thread touches only the cooked-block ring and the underrun counter.
+ * The mixer world: source, bus, and buffer pools, the block-loop state, and
+ * the device backend interface. Owned exclusively by the mixer thread after
+ * init; the device thread touches only the cooked-block ring and the underrun
+ * counter.
  *
  * Allocation rule: every pool here is carved from the module heap at init.
  * The block loop's steady state performs zero allocation and takes zero locks.
+ * Sample-block memory adopted from the logic thread is returned there for
+ * freeing via AEVT_BUFFER_RETIRED — the one deliberate exception is freeing a
+ * REJECTED registration block at a block boundary when the events ring is full.
  */
 
 #ifndef ANO_AUDIO_INTERNAL_H
@@ -19,20 +23,27 @@
 #include <stdatomic.h>
 #include <anoptic_threads.h>
 #include "audio_bridge.h"
+#include "dsp/svf.h"
 
 // Release ramps retire a voice once its smoothed gain falls below this (-80 dBFS).
 #define ANO_AUDIO_RETIRE_EPS 1.0e-4f
 
+// Master clip guard ceiling (the musical lookahead limiter is Phase 3's).
+#define ANO_AUDIO_CLIP_CEIL 0.98f
+
 // One-pole parameter smoother: every audible parameter glides through one of
 // these (~30 ms), so retargets never zipper. Snap-on-converge kills denormals.
+// Two step cadences exist: per-sample (voice/bus gains, pan, freq, rate) and
+// per-block (filter cutoff/Q, air-absorption cutoff — anything that feeds a
+// per-block coefficient recompute).
 typedef struct AnoAudioSmooth
 {
     float y;      // current value
     float target; // retarget destination
-    float coef;   // per-sample pole, expf(-1 / (tau * rate))
+    float coef;   // pole for the caller's step cadence
 } AnoAudioSmooth;
 
-// Advance one frame and return the smoothed value.
+// Advance one step (sample or block, per the coef baked in) and return the value.
 static inline float ano_audio_smooth_step(AnoAudioSmooth *s)
 {
     float d = s->y - s->target;
@@ -54,7 +65,7 @@ typedef enum AnoAudioSourceState
 {
     ANO_AUDIO_SRC_FREE = 0,
     ANO_AUDIO_SRC_PLAYING,
-    ANO_AUDIO_SRC_STOPPING, // release ramp running (STOP command or duration expiry)
+    ANO_AUDIO_SRC_STOPPING, // release ramp running (STOP command, duration or data expiry)
     ANO_AUDIO_SRC_RETIRING, // silent; retirement event not yet delivered
 } AnoAudioSourceState;
 
@@ -64,25 +75,84 @@ typedef struct AnoAudioSource
     uint32_t source_id; // producer-owned logical handle
     uint32_t bus;       // target bus index
     uint32_t kind;      // AnoAudioSourceKind
-    double   phase;     // TONE: oscillator phase in cycles [0, 1)
+    uint32_t flags;     // AnoAudioSourceFlags
+
+    // TONE
+    double phase; // oscillator phase in cycles [0, 1)
+
+    // BUFFER: data snapshot from the registry slot (the block outlives every
+    // voice on it — retirement waits for silence) plus the read cursor.
+    uint32_t     bufSlot;
+    uint32_t     bufChannels;
+    uint64_t     bufFrames;
+    const float *bufData;
+    double       cursor; // fractional frame
+
     uint64_t remaining; // frames until release starts; UINT64_MAX = until STOP
+
+    // per-sample smoothers
     AnoAudioSmooth gain;
-    AnoAudioSmooth pan;  // -1 .. +1
-    AnoAudioSmooth freq; // Hz
+    AnoAudioSmooth pan;      // -1 .. +1 (positional: driven by spatialization)
+    AnoAudioSmooth freq;     // TONE Hz
+    AnoAudioSmooth rate;     // BUFFER playback-rate multiplier
+    AnoAudioSmooth spatGain; // distance attenuation (1 when non-positional)
+
+    // spatialization inputs + air-absorption filter
+    float position[3];
+    float minDist, maxDist, rolloff;
+    AnoAudioSmooth airCutoff; // per-BLOCK smoother feeding the one-pole coef
+    float airCoef;            // per-block one-pole coefficient
+    float airLp;              // filter state (mono, pre-pan)
 } AnoAudioSource;
 
 typedef struct AnoAudioBus
 {
+    uint32_t parent; // fold target; bus 0 ignores it
     AnoAudioSmooth gain;
     float *mix; // blockFrames * ANO_AUDIO_CHANNELS accumulation scratch (module heap)
+
+    // insert filter (per-block smoothed cutoff/Q; mode switches instantly)
+    uint32_t       filterMode; // AnoAudioFilterMode
+    AnoAudioSmooth cutoff;     // per-BLOCK smoother, Hz
+    AnoAudioSmooth q;          // per-BLOCK smoother
+    AnoDspSvfCoef  fcoef;
+    AnoDspSvfState fstate[ANO_AUDIO_CHANNELS];
 } AnoAudioBus;
+
+// Registered sample buffers. Adopted blocks (realtime path) ride home for
+// freeing via AEVT_BUFFER_RETIRED once released AND no voice references the
+// slot; borrowed buffers (offline desc) are never freed here.
+typedef enum AnoAudioBufferState
+{
+    ANO_AUDIO_BUF_FREE = 0,
+    ANO_AUDIO_BUF_LIVE,
+    ANO_AUDIO_BUF_RETIRING,
+} AnoAudioBufferState;
+
+typedef struct AnoAudioBufferSlot
+{
+    uint32_t     state;     // AnoAudioBufferState
+    uint32_t     buffer_id;
+    uint32_t     channels;  // 1 or 2
+    bool         owned;     // true = adopted block, retire it home
+    uint64_t     frames;
+    const float *data;      // interleaved f32
+    void        *block;     // the adopted allocation (header + data); NULL when borrowed
+} AnoAudioBufferSlot;
+
+// Adopted-block layout: this header, then frames*channels interleaved floats.
+typedef struct AnoAudioBlockHeader
+{
+    uint64_t frames;
+    uint32_t channels;
+    uint32_t pad;
+} AnoAudioBlockHeader;
 
 typedef struct AnoAudioMixer AnoAudioMixer;
 
 // A device backend consumes cooked blocks from mx->blockRing on its own thread
 // (or the OS's callback thread). start spawns/wires the consumer; stop joins
-// it. Backends never touch the graph. Phase 0 ships null only; PipeWire/ALSA,
-// WASAPI/DirectSound, and CoreAudio join per-platform in later phases.
+// it. Backends never touch the graph.
 typedef struct AnoAudioDeviceApi
 {
     const char *name;
@@ -109,14 +179,21 @@ struct AnoAudioMixer
     uint32_t sampleRate;
     uint32_t blockFrames;
     uint32_t busCount;
-    float    smoothCoef; // shared per-sample pole for the default ~30 ms window
+    float    smoothCoef;      // per-sample pole for the ~30 ms window
+    float    smoothCoefBlock; // per-block pole for the same window
 
     // Graph pools (mixer-thread-owned).
-    AnoAudioBus    buses[ANO_AUDIO_MAX_BUSES];
-    AnoAudioSource sources[ANO_AUDIO_MAX_SOURCES];
-    uint64_t       blockIndex;
-    uint32_t       sourcesActive; // sounding voices in the latest block
-    float          masterPeak;    // |peak| of the latest block, post master gain
+    AnoAudioBus        buses[ANO_AUDIO_MAX_BUSES];
+    AnoAudioSource     sources[ANO_AUDIO_MAX_SOURCES];
+    AnoAudioBufferSlot buffers[ANO_AUDIO_MAX_BUFFERS];
+    uint64_t           blockIndex;
+    uint32_t           sourcesActive;  // sounding voices in the latest block
+    float              masterPeak;     // |peak| of the latest block, pre clip guard
+    uint32_t           clippedSamples; // clip-guard hits since init
+
+    // Listener (latest applied; realtime: acquired from the seqlock per block).
+    AnoAudioListener listener;
+    bool             listenerValid;
 
     // Transport. NULL bridge == offline drive (no events, no telemetry).
     AnoAudioBridge *bridge;
@@ -140,15 +217,16 @@ struct AnoAudioMixer
 
 // --- audio_mixer.c ---
 
-// Carve the bus mix scratch from mx->heap using the granted config already
-// written into mx, and snap every bus gain to unity. false on allocation failure.
-bool ano_audio_graph_init(AnoAudioMixer *mx);
+// Carve the bus mix scratch from mx->heap and seed bus parents/gains from
+// `layout` (NULL = flat: every aux folds into master, gain 1). Requires
+// layout parents < their index. false on bad layout or allocation failure.
+bool ano_audio_graph_init(AnoAudioMixer *mx, const AnoAudioBusDesc *layout);
 
 // Apply one command at a block boundary (mixer thread / offline driver only).
 void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd);
 
 // Render one block into out[blockFrames * ANO_AUDIO_CHANNELS] and run the
-// retirement pass. Pure of transport except event emission via mx->bridge
+// retirement passes. Pure of transport except event emission via mx->bridge
 // (skipped when NULL).
 void ano_audio_render_block(AnoAudioMixer *mx, float *out);
 

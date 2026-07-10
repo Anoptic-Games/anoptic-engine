@@ -20,7 +20,7 @@
 
 // Guard the ring element sizes (copied per push/pop, sized capacity * these).
 _Static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
-_Static_assert(sizeof(AnoAudioCommand) <= 64u, "AnoAudioCommand grew past 64 bytes; revisit the command ring");
+_Static_assert(sizeof(AnoAudioCommand) <= 128u, "AnoAudioCommand grew past 128 bytes; revisit the command ring");
 
 // The audio world singleton. One per program, owned by the engine entry point.
 static AnoAudioMixer *g_mixer;
@@ -111,11 +111,12 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     if (!mx)
         goto fail_heap;
     memset(mx, 0, sizeof *mx);
-    mx->heap        = heap;
-    mx->sampleRate  = rate;
-    mx->blockFrames = bf;
-    mx->busCount    = buses;
-    mx->smoothCoef  = expf(-1.0f / (0.030f * (float)rate));
+    mx->heap            = heap;
+    mx->sampleRate      = rate;
+    mx->blockFrames     = bf;
+    mx->busCount        = buses;
+    mx->smoothCoef      = expf(-1.0f / (0.030f * (float)rate));
+    mx->smoothCoefBlock = expf(-(float)bf / (0.030f * (float)rate));
     atomic_init(&mx->underruns, 0u);
     atomic_init(&mx->mixerRun, false);
     atomic_init(&mx->deviceRun, false);
@@ -136,8 +137,10 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     mx->deviceScratch = mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float));
     if (!mx->blockScratch || !mx->deviceScratch)
         goto fail_heap;
-    if (!ano_audio_graph_init(mx))
+    if (!ano_audio_graph_init(mx, c.busLayout)) {
+        ano_log(ANO_ERROR, "audio: bad bus layout (a parent must precede its children).");
         goto fail_heap;
+    }
 
     // backend selection: explicit config (or env override) demands one backend;
     // AUTO cascades platform-best-first and cannot fail (null always opens)
@@ -230,4 +233,42 @@ void ano_audio_publish_listener(AnoAudioBridge *bridge, const AnoAudioListener *
 bool ano_audio_acquire_telemetry(AnoAudioBridge *bridge, AnoAudioTelemetry *out)
 {
     return ano_audio_seq_load(&bridge->telemetry, &bridge->telemetryVersion, out, sizeof *out);
+}
+
+// Buffer producer endpoints. Registration packs the samples behind a block
+// header into one owned allocation the mixer adopts; the caller's array need
+// only live until the call returns. The block rides home for freeing in
+// AEVT_BUFFER_RETIRED after release. Same backpressure contract as submit.
+bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
+                               const float *interleaved, uint64_t frames, uint32_t channels)
+{
+    if (!bridge || !interleaved || frames == 0u || channels < 1u || channels > 2u)
+        return false;
+    uint64_t bytes64 = frames * channels * sizeof(float);
+    if (bytes64 > SIZE_MAX - sizeof(AnoAudioBlockHeader))
+        return false;
+    AnoAudioBlockHeader *h = mi_malloc(sizeof *h + (size_t)bytes64);
+    if (!h)
+        return false;
+    h->frames   = frames;
+    h->channels = channels;
+    h->pad      = 0u;
+    memcpy(h + 1, interleaved, (size_t)bytes64);
+    AnoAudioCommand c = { .kind = ACMD_BUFFER_REGISTER, .source_id = buffer_id, .block = h };
+    if (!ano_audio_ring_push(&bridge->commands, &c)) {
+        mi_free(h);
+        return false; // backpressure: caller retries
+    }
+    return true;
+}
+
+bool ano_audio_buffer_release(AnoAudioBridge *bridge, uint32_t buffer_id)
+{
+    AnoAudioCommand c = { .kind = ACMD_BUFFER_RELEASE, .source_id = buffer_id };
+    return ano_audio_ring_push(&bridge->commands, &c);
+}
+
+void ano_audio_block_free(void *block)
+{
+    mi_free(block);
 }
