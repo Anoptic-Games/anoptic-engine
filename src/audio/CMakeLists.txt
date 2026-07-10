@@ -10,6 +10,17 @@ target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/audio_wav.c
 )
 
+# Per-platform device backends (APPLE before UNIX: both are true on macOS).
+if (WIN32)
+    # audio_win64.c (WASAPI + DirectSound) — Phase 5
+elseif (APPLE)
+    # audio_macos.c (CoreAudio) — Phase 5
+elseif (UNIX)
+    target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_linux.c)
+    # backends are dlopen'd — no link dep on pipewire/asound, just the loader
+    target_link_libraries(anoptic_core PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
 # sinf/cosf/expf live in a separate libm on Linux; MinGW and macOS fold it into libc.
 if(UNIX AND NOT APPLE)
     target_link_libraries(anoptic_core PUBLIC m)

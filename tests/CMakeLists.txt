@@ -169,6 +169,13 @@ target_link_libraries(anotest_audio PRIVATE anoptic_core)
 add_test(NAME anoptic_audio COMMAND anotest_audio)
 set_tests_properties(anoptic_audio PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
+# Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
+# cascades to null); by hand on a desktop it is the audible Phase 1 check.
+add_executable(anotest_audiotone anotest_audiotone.c)
+target_link_libraries(anotest_audiotone PRIVATE anoptic_core)
+add_test(NAME anoptic_audiotone COMMAND anotest_audiotone)
+set_tests_properties(anoptic_audiotone PROPERTIES TIMEOUT 30 LABELS "unit;optional")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
