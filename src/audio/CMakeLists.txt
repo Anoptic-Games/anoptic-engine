@@ -6,6 +6,7 @@
 target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/ano_audio.c
         ${CMAKE_CURRENT_SOURCE_DIR}/audio_mixer.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/audio_fx.c
         ${CMAKE_CURRENT_SOURCE_DIR}/audio_device_null.c
         ${CMAKE_CURRENT_SOURCE_DIR}/audio_wav.c
 )

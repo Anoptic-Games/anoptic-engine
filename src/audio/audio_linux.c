@@ -15,6 +15,7 @@
  * platform-file exception, same class as the Vulkan backend. */
 
 #include "audio_internal.h"
+#include "dsp/noise.h" // TPDF dither at the final 16-bit quantization (ALSA s16 path)
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -99,8 +100,9 @@ typedef struct AnoAlsaState
 
     ano_snd_pcm *pcm;
     AnoLinuxPull pull;
-    float       *fbuf; // one mixer block of f32 pulled from the ring
-    int16_t     *sbuf; // s16 staging when the device refuses float; NULL when float granted
+    AnoDspRng    dither; // seeded TPDF for the s16 path (finding 8: no global entropy)
+    float       *fbuf;   // one mixer block of f32 pulled from the ring
+    int16_t     *sbuf;   // s16 staging when the device refuses float; NULL when float granted
 } AnoAlsaState;
 
 static void *alsa_main(void *arg)
@@ -114,10 +116,14 @@ static void *alsa_main(void *arg)
         pull_frames(mx, &st->pull, st->fbuf, frames);
         const void *src = st->fbuf;
         if (st->sbuf) {
+            // final 16-bit quantization: the one place TPDF dither applies
             for (uint32_t i = 0; i < frames * ANO_AUDIO_CHANNELS; ++i) {
                 float v = st->fbuf[i];
                 v = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
-                st->sbuf[i] = (int16_t)(v * 32767.0f);
+                float y = v * 32767.0f + ano_dsp_tpdf(&st->dither);
+                if (y > 32767.0f) y = 32767.0f;
+                if (y < -32768.0f) y = -32768.0f;
+                st->sbuf[i] = (int16_t)(y >= 0.0f ? y + 0.5f : y - 0.5f);
             }
             src = st->sbuf;
         }
@@ -188,6 +194,7 @@ static bool alsa_start(AnoAudioMixer *mx)
                                   sizeof(int16_t));
         if (!st->sbuf)
             goto fail_pcm;
+        ano_dsp_rng_seed(&st->dither, 0xD17E4u);
     }
     st->fbuf = mi_heap_calloc(mx->heap, (size_t)mx->blockFrames * ANO_AUDIO_CHANNELS, sizeof(float));
     if (!st->fbuf)

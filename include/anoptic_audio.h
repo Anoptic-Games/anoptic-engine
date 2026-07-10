@@ -47,6 +47,8 @@
 #define ANO_AUDIO_MAX_BUSES   8
 #define ANO_AUDIO_MAX_SOURCES 64
 #define ANO_AUDIO_MAX_BUFFERS 256
+#define ANO_AUDIO_MAX_FX      4 // insert-chain slots per bus
+#define ANO_AUDIO_MAX_SENDS   2 // post-fader sends per bus
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -66,13 +68,84 @@ typedef enum AnoAudioBackend
     ANO_AUDIO_BACKEND_ALSA,     // Linux fallback
 } AnoAudioBackend;
 
+// Insert-effect kinds a bus chain slot can hold. The chain is fixed at init
+// (structural, per the live-vs-rebuild split); parameters retarget live via
+// ACMD_FX_SET. Delay memory is preallocated at init from the module heap.
+typedef enum AnoAudioEffectKind
+{
+    ANO_AUDIO_FX_NONE = 0,
+    ANO_AUDIO_FX_FILTER,     // TPT SVF (LP/HP/BP + resonance)
+    ANO_AUDIO_FX_EQ3,        // low shelf + peak + high shelf
+    ANO_AUDIO_FX_DCBLOCK,    // one-pole DC blocker
+    ANO_AUDIO_FX_DRIVE,      // tanh saturator, pre-gain + output trim
+    ANO_AUDIO_FX_COMPRESSOR, // feedback compressor, specified bounded makeup
+    ANO_AUDIO_FX_LIMITER,    // lookahead limiter (window-max detector, one-pole release)
+    ANO_AUDIO_FX_CHORUS,     // dual-rate modulated taps
+    ANO_AUDIO_FX_REVERB,     // predelay -> diffusers -> Householder 4-line FDN -> shelf
+    ANO_AUDIO_FX_PINGPONG,   // cross-feedback stereo delay
+    ANO_AUDIO_FX_WIDTH,      // mid/side width (0 = mono sum)
+} AnoAudioEffectKind;
+
+// Flat parameter namespace for ACMD_FX_SET. Each effect answers the ids it
+// knows and warns (debug builds) on the rest. Continuous parameters glide
+// through per-block smoothers; modes and bypass switch instantly.
+typedef enum AnoAudioFxParam
+{
+    ANO_AUDIO_P_BYPASS = 0,        // any effect: nonzero = bypass
+
+    ANO_AUDIO_P_FILTER_MODE = 16,  // AnoAudioFilterMode
+    ANO_AUDIO_P_FILTER_CUTOFF,     // Hz
+    ANO_AUDIO_P_FILTER_Q,
+
+    ANO_AUDIO_P_EQ_LOW_GAIN_DB = 32,
+    ANO_AUDIO_P_EQ_LOW_FREQ,
+    ANO_AUDIO_P_EQ_MID_GAIN_DB,
+    ANO_AUDIO_P_EQ_MID_FREQ,
+    ANO_AUDIO_P_EQ_MID_Q,
+    ANO_AUDIO_P_EQ_HIGH_GAIN_DB,
+    ANO_AUDIO_P_EQ_HIGH_FREQ,
+
+    ANO_AUDIO_P_DRIVE_AMOUNT = 48, // pre-gain into tanh, 0.1 .. 16
+    ANO_AUDIO_P_DRIVE_TRIM,        // post trim, linear
+
+    ANO_AUDIO_P_COMP_THRESHOLD = 64, // linear amplitude
+    ANO_AUDIO_P_COMP_RATIO,
+    ANO_AUDIO_P_COMP_ATTACK_MS,
+    ANO_AUDIO_P_COMP_RELEASE_MS,
+    ANO_AUDIO_P_COMP_MAKEUP,       // linear, clamped [0.25, 4] — never implicit
+
+    ANO_AUDIO_P_LIM_CEILING = 80,
+    ANO_AUDIO_P_LIM_RELEASE_MS,
+
+    ANO_AUDIO_P_CHORUS_RATE_HZ = 96,
+    ANO_AUDIO_P_CHORUS_DEPTH_MS,
+    ANO_AUDIO_P_CHORUS_MIX,
+
+    ANO_AUDIO_P_REV_PREDELAY_MS = 112,
+    ANO_AUDIO_P_REV_T60_S,
+    ANO_AUDIO_P_REV_DAMP_HZ,
+    ANO_AUDIO_P_REV_MIX,
+
+    ANO_AUDIO_P_PP_TIME_MS = 128,
+    ANO_AUDIO_P_PP_FEEDBACK,
+    ANO_AUDIO_P_PP_MIX,
+
+    ANO_AUDIO_P_WIDTH_AMOUNT = 144, // 0 mono .. 1 unity .. 2 wide
+} AnoAudioFxParam;
+
 // One bus in the mix tree. Bus 0 is the master (its parent is ignored); every
 // other bus folds into its parent, which must have a LOWER index — parents
-// before children, so the tree is acyclic by construction.
+// before children, so the tree is acyclic by construction. Post-fader sends
+// route the same faded signal into an earlier bus (the return); a send target
+// of 0 means unused (the master cannot be a send target), and a valid target
+// must precede the sender, which is what keeps send routing acyclic too.
 typedef struct AnoAudioBusDesc
 {
-    uint32_t parent; // index of the bus this one sums into
-    float    gain;   // initial linear gain; 0 means 1.0
+    uint32_t parent;                             // index of the bus this one sums into
+    float    gain;                               // initial linear gain; 0 means 1.0
+    uint32_t fx[ANO_AUDIO_MAX_FX];               // AnoAudioEffectKind per chain slot
+    uint32_t sendTarget[ANO_AUDIO_MAX_SENDS];    // return-bus index; 0 = unused
+    float    sendLevel[ANO_AUDIO_MAX_SENDS];     // initial linear send level
 } AnoAudioBusDesc;
 
 // Init-time configuration. Zero any field for its default.
@@ -145,14 +218,13 @@ typedef enum AnoAudioFilterMode
 // commands never zipper.
 typedef enum AnoAudioFieldBits
 {
-    ANO_AUDIO_FIELD_GAIN        = 1 << 0, // source or bus
-    ANO_AUDIO_FIELD_PAN         = 1 << 1, // source (non-positional)
-    ANO_AUDIO_FIELD_FREQ        = 1 << 2, // TONE source
-    ANO_AUDIO_FIELD_POSITION    = 1 << 3, // positional source world position
-    ANO_AUDIO_FIELD_RATE        = 1 << 4, // BUFFER source playback rate (pitch glide)
-    ANO_AUDIO_FIELD_CUTOFF      = 1 << 5, // bus filter cutoff Hz
-    ANO_AUDIO_FIELD_Q           = 1 << 6, // bus filter resonance
-    ANO_AUDIO_FIELD_FILTER_MODE = 1 << 7, // bus filter mode (instant, not slewed)
+    ANO_AUDIO_FIELD_GAIN     = 1 << 0, // source or bus
+    ANO_AUDIO_FIELD_PAN      = 1 << 1, // source (non-positional)
+    ANO_AUDIO_FIELD_FREQ     = 1 << 2, // TONE source
+    ANO_AUDIO_FIELD_POSITION = 1 << 3, // positional source world position
+    ANO_AUDIO_FIELD_RATE     = 1 << 4, // BUFFER source playback rate (pitch glide)
+    ANO_AUDIO_FIELD_SEND0    = 1 << 5, // bus send level, slot 0
+    ANO_AUDIO_FIELD_SEND1    = 1 << 6, // bus send level, slot 1
 } AnoAudioFieldBits;
 
 typedef enum AnoAudioCommandKind
@@ -160,7 +232,8 @@ typedef enum AnoAudioCommandKind
     ACMD_SOURCE_PLAY,     // start (or restart) the source named by source_id from desc
     ACMD_SOURCE_UPDATE,   // retarget the fields masked in `fields`
     ACMD_SOURCE_STOP,     // begin the release ramp; retires when inaudible
-    ACMD_BUS_SET,         // retarget bus parameters (fields: GAIN/CUTOFF/Q/FILTER_MODE)
+    ACMD_BUS_SET,         // retarget bus parameters (fields: GAIN/SEND0/SEND1)
+    ACMD_FX_SET,          // retarget one insert-effect parameter (bus, fxSlot, paramId, value)
     ACMD_BUFFER_REGISTER, // adopt an owned sample block under source_id-as-buffer-id
     ACMD_BUFFER_RELEASE,  // retire a buffer; the block comes home via AEVT_BUFFER_RETIRED
 } AnoAudioCommandKind;
@@ -191,15 +264,16 @@ typedef struct AnoAudioCommand
     uint32_t kind;        // AnoAudioCommandKind
     uint32_t source_id;   // producer-owned logical handle; the buffer id for ACMD_BUFFER_*
     uint32_t fields;      // AnoAudioFieldBits (UPDATE / BUS_SET)
-    uint32_t bus;         // ACMD_BUS_SET target bus index
+    uint32_t bus;         // ACMD_BUS_SET / ACMD_FX_SET target bus index
     float    gain;        // UPDATE|GAIN retarget, or BUS_SET|GAIN retarget
     float    pan;         // UPDATE|PAN retarget
     float    freqHz;      // UPDATE|FREQ retarget
     float    rate;        // UPDATE|RATE retarget
     float    position[3]; // UPDATE|POSITION retarget
-    float    cutoffHz;    // BUS_SET|CUTOFF retarget
-    float    q;           // BUS_SET|Q retarget
-    uint32_t filterMode;  // BUS_SET|FILTER_MODE (AnoAudioFilterMode)
+    float    send[2];     // BUS_SET|SEND0/SEND1 retargets
+    uint32_t fxSlot;      // ACMD_FX_SET chain slot [0, ANO_AUDIO_MAX_FX)
+    uint32_t paramId;     // ACMD_FX_SET AnoAudioFxParam
+    float    value;       // ACMD_FX_SET value
     const void *block;    // ACMD_BUFFER_REGISTER: the adopted block
     AnoAudioSourceDesc desc; // ACMD_SOURCE_PLAY only
 } AnoAudioCommand;
