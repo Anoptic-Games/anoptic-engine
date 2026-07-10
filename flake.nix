@@ -2,6 +2,7 @@
   # Targets:
   #   nix build                  headless engine -> ./result/bin
   #   nix build .#renderer       Vulkan renderer + shaders (Linux GPU host)
+  #   nix build .#headless-musl  static musl headless engine (one server binary, no glibc floor)
   #   nix develop                dev shell (Linux clang, macOS toolchain on a Mac)
   #   nix develop .#windows      MinGW-w64 cross shell -> Windows .exe from WSL/Linux
   #
@@ -181,6 +182,16 @@
           pname = "anopticengine-headless";
           description = "Anoptic Engine — headless console build";
           headless = true;
+        };
+
+        # Fully static against musl: the blackbox needs no execinfo and mimalloc replaced the
+        # allocator, so nothing here misses glibc. Renderer stays glibc: the GPU ICDs are.
+        headless-musl = mkEngine {
+          pname = "anopticengine-headless-musl";
+          description = "Anoptic Engine — headless static musl build";
+          headless = true;
+          buildPkgs = pkgs.pkgsStatic;
+          stdenv = pkgs.pkgsStatic.stdenv;
         };
 
         renderer = mkEngine {
