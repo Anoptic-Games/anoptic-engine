@@ -37,6 +37,8 @@
 // Call once from main, right after ano_log_init. The hooks live for the whole process, no cleanup.
 // The record file is per-session -- <gamedir>/logs/<session-stamp>_CRASH.log, the stamp shared with
 // the logger's own file (ano_fs_session_stamp) -- resolved once here, never inside a handler.
+// Stage 4 announces how many *_CRASH.log files are left over ("n crash logs detected"), then prunes
+// both *_CRASH.log and *_ano.log to the newest 4 each, never touching the live session's files.
 // Output: 0 on success, -1 if a hook failed to install (the engine flies on, crash-naked).
 int ano_blackbox_init(void);
 

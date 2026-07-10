@@ -15,17 +15,18 @@
 
 char bb_crashPath[MAXPATH];
 
-// Stage 4: a leftover *_CRASH.log marks a crash. Announce on both sinks, leave everything in place.
+// Stage 4: leftover *_CRASH.log files mark previous crashes. Announce the count on both sinks, then prune each log type to the newest BB_KEEP_LOGS, the live session's files excepted.
 static void investigate_previous_flight(const char *dir)
 {
     char newest[MAXPATH];
     int n = bb_scan_suffix(dir, "_CRASH.log", newest);
-    if (n == 0)
-        return;     // clean previous flight
     if (n == 1)
-        ano_rlog(ANO_WARN, ANO_BOTH, "blackbox: %s/%s holds records from a previous crash.", dir, newest);
-    else
-        ano_rlog(ANO_WARN, ANO_BOTH, "blackbox: %s holds %d records from previous crashes, last %s.", dir, n, newest);
+        ano_rlog(ANO_WARN, ANO_BOTH, "blackbox: 1 crash log detected, %s/%s.", dir, newest);
+    else if (n > 1)
+        ano_rlog(ANO_WARN, ANO_BOTH, "blackbox: %d crash logs detected, newest %s/%s.", n, dir, newest);
+    const char *stamp = ano_fs_session_stamp();
+    bb_prune_suffix(dir, "_CRASH.log", BB_KEEP_LOGS, stamp);
+    bb_prune_suffix(dir, "_ano.log",   BB_KEEP_LOGS, stamp);
 }
 
 int ano_blackbox_init(void)

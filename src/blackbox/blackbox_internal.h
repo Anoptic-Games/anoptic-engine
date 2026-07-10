@@ -22,6 +22,29 @@ int bb_install(void);
 // Stage 4 helper, per-platform: count `dir` entries ending in `suffix`, copying the lexicographically last into newest[MAXPATH]. Calm time only (init, tests). Output: the count, 0 when none or no dir.
 int bb_scan_suffix(const char *dir, const char *suffix, char *newest);
 
+// Retention cap applied at boot: newest BB_KEEP_LOGS files of each log type survive.
+#define BB_KEEP_LOGS 4
+
+// Boot housekeeping, per-platform: delete `dir` entries ending in `suffix`, keeping the `keep` newest (capped at 8) by last-write time, name as tiebreaker, plus any name starting with `skip` (the live session stamp, NULL to skip none). Oldest die first. Calm time only. Output: files removed.
+int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *skip);
+
+// One prune candidate: last-write time (platform units, bigger = newer) + name.
+typedef struct { unsigned long long mtime; char name[MAXPATH]; } bb_prune_t;
+
+// Insert a candidate into the descending top-`cap` array for bb_prune_suffix. *n is the live count.
+static inline void bb_top_insert(bb_prune_t top[], int cap, int *n, unsigned long long mtime, const char *name)
+{
+    int i = *n;
+    while (i > 0 && (mtime > top[i - 1].mtime
+                     || (mtime == top[i - 1].mtime && strcmp(name, top[i - 1].name) > 0))) i--;
+    if (i >= cap) return;
+    int last = (*n < cap) ? *n : cap - 1;
+    for (int k = last; k > i; k--) top[k] = top[k - 1];
+    top[i].mtime = mtime;
+    strcpy(top[i].name, name);
+    if (*n < cap) (*n)++;
+}
+
 // Per-thread Stage 1, per-platform: arm/release the calling thread's crash stack (see ano_blackbox_thread_arm). Output: 0 on success, -1 if the OS refused.
 int  bb_thread_arm(void);
 void bb_thread_disarm(void);
