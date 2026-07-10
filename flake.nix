@@ -456,7 +456,11 @@
                 fi
               done
 
-              if [ ! -d assets ]; then
+              # Provision only into nothing: absent, or present and empty. That is exactly the
+              # destination set `git clone` accepts, so the guard and the clone agree. An empty
+              # assets/ left by a tool, or a stale checkout, still gets populated; anything the
+              # user put there is left alone.
+              if [ -z "$(ls -A assets 2>/dev/null)" ]; then
                 if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
                     git clone --depth 1 git@github.com:Anoptic-Games/assets.git assets >/dev/null 2>&1; then
                   echo "[anoptic] assets: private repo."
