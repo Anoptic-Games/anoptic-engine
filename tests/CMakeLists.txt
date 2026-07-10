@@ -183,6 +183,13 @@ target_link_libraries(anotest_audioscene PRIVATE anoptic_core)
 add_test(NAME anoptic_audioscene COMMAND anotest_audioscene 2)
 set_tests_properties(anoptic_audioscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
 
+# Phase 3 DSP library + console: primitive unit oracles, effect property
+# tests, and the churned-heap console golden. All offline, CI-safe.
+add_executable(anotest_audiodsp anotest_audiodsp.c)
+target_link_libraries(anotest_audiodsp PRIVATE anoptic_core)
+add_test(NAME anoptic_audiodsp COMMAND anotest_audiodsp)
+set_tests_properties(anoptic_audiodsp PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their

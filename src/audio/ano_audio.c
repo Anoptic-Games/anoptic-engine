@@ -20,7 +20,7 @@
 
 // Guard the ring element sizes (copied per push/pop, sized capacity * these).
 _Static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
-_Static_assert(sizeof(AnoAudioCommand) <= 128u, "AnoAudioCommand grew past 128 bytes; revisit the command ring");
+_Static_assert(sizeof(AnoAudioCommand) <= 160u, "AnoAudioCommand grew past 160 bytes; revisit the command ring");
 
 // The audio world singleton. One per program, owned by the engine entry point.
 static AnoAudioMixer *g_mixer;

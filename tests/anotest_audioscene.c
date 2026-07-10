@@ -82,7 +82,15 @@ int main(int argc, char **argv)
     }
     make_material();
 
-    CHECK(ano_audio_init(NULL), "audio world up");
+    // console: master <- reverb return (1) <- sfx strip (2, filter + send to the return)
+    AnoAudioBusDesc layout[3] = {
+        [0] = { 0 },
+        [1] = { .parent = 0, .gain = 0.8f, .fx = { ANO_AUDIO_FX_REVERB } },
+        [2] = { .parent = 0, .fx = { ANO_AUDIO_FX_FILTER },
+                .sendTarget = { 1 }, .sendLevel = { 0.35f } },
+    };
+    AnoAudioConfig cfg = { .busCount = 3, .busLayout = layout };
+    CHECK(ano_audio_init(&cfg), "audio world up (console layout)");
     AnoAudioBridge *b = anoAudioBridge();
     CHECK(b != NULL, "bridge valid");
     if (!b) return 1;
@@ -91,15 +99,20 @@ int main(int argc, char **argv)
     while (!ano_audio_buffer_register(b, 1, g_bed, BED_FRAMES, 1)) ano_sleep(1000);
     while (!ano_audio_buffer_register(b, 2, g_click, CLICK_FRAMES, 1)) ano_sleep(1000);
 
-    // SFX bus: lowpass insert, swept during the scene
-    AnoAudioCommand busSet = { .kind = ACMD_BUS_SET, .bus = 1,
-        .fields = ANO_AUDIO_FIELD_CUTOFF | ANO_AUDIO_FIELD_Q | ANO_AUDIO_FIELD_FILTER_MODE,
-        .cutoffHz = 8000.0f, .q = 0.8f, .filterMode = ANO_AUDIO_FILTER_LOWPASS };
-    must_submit(b, &busSet);
+    // SFX strip: lowpass insert, swept during the scene
+    AnoAudioCommand fxSet = { .kind = ACMD_FX_SET, .bus = 2, .fxSlot = 0,
+        .paramId = ANO_AUDIO_P_FILTER_CUTOFF, .value = 8000.0f };
+    must_submit(b, &fxSet);
+    fxSet.paramId = ANO_AUDIO_P_FILTER_Q;
+    fxSet.value = 0.8f;
+    must_submit(b, &fxSet);
+    fxSet.paramId = ANO_AUDIO_P_FILTER_MODE;
+    fxSet.value = (float)ANO_AUDIO_FILTER_LOWPASS;
+    must_submit(b, &fxSet);
 
     // the bed: looping, positional, fixed ahead of the origin
     AnoAudioCommand bed = { .kind = ACMD_SOURCE_PLAY, .source_id = 100,
-        .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 1, .gain = 0.5f,
+        .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 2, .gain = 0.5f,
                   .flags = ANO_AUDIO_SOURCE_LOOP | ANO_AUDIO_SOURCE_POSITIONAL,
                   .position = { 0.0f, 0.0f, -3.0f }, .minDist = 1.5f } };
     must_submit(b, &bed);
@@ -123,7 +136,7 @@ int main(int argc, char **argv)
         if (i % (400u / stepMs) == 0u) { // a click every 400 ms
             float a = (float)rng_below(&rng, 6283u) / 1000.0f;
             AnoAudioCommand click = { .kind = ACMD_SOURCE_PLAY, .source_id = nextClickId++,
-                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 2, .bus = 1, .gain = 0.7f,
+                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 2, .bus = 2, .gain = 0.7f,
                           .flags = ANO_AUDIO_SOURCE_POSITIONAL,
                           .position = { 5.0f * sinf(a), 0.0f, 5.0f * cosf(a) },
                           .rate = 0.8f + 0.05f * (float)rng_below(&rng, 9u) } };
@@ -132,9 +145,9 @@ int main(int argc, char **argv)
         }
         if (i % (500u / stepMs) == 0u) { // sweep the lowpass, glide between retargets
             float ph = 6.2831853f * (float)i / (float)steps;
-            AnoAudioCommand sweep = { .kind = ACMD_BUS_SET, .bus = 1,
-                .fields = ANO_AUDIO_FIELD_CUTOFF,
-                .cutoffHz = 800.0f + 7200.0f * (0.5f + 0.5f * sinf(3.0f * ph)) };
+            AnoAudioCommand sweep = { .kind = ACMD_FX_SET, .bus = 2, .fxSlot = 0,
+                .paramId = ANO_AUDIO_P_FILTER_CUTOFF,
+                .value = 800.0f + 7200.0f * (0.5f + 0.5f * sinf(3.0f * ph)) };
             must_submit(b, &sweep);
         }
         AnoAudioEvent e;

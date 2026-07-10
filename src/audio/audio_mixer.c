@@ -19,13 +19,6 @@
 #define ANO_AUDIO_TAU_F  6.28318530717958647692f // 2*pi
 #define ANO_AUDIO_PI4_F  0.78539816339744830962f // pi/4
 
-// The public filter modes map straight onto the SVF's.
-_Static_assert(ANO_AUDIO_FILTER_OFF == ANO_DSP_SVF_BYPASS
-                   && ANO_AUDIO_FILTER_LOWPASS == ANO_DSP_SVF_LOWPASS
-                   && ANO_AUDIO_FILTER_HIGHPASS == ANO_DSP_SVF_HIGHPASS
-                   && ANO_AUDIO_FILTER_BANDPASS == ANO_DSP_SVF_BANDPASS,
-               "AnoAudioFilterMode must mirror ANO_DSP_SVF_*");
-
 static inline float clampf(float v, float lo, float hi)
 {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -51,11 +44,28 @@ bool ano_audio_graph_init(AnoAudioMixer *mx, const AnoAudioBusDesc *layout)
             return false;
         ano_audio_smooth_snap(&bus->gain, gain);
         bus->gain.coef = mx->smoothCoef;
-        bus->filterMode = ANO_AUDIO_FILTER_OFF;
-        ano_audio_smooth_snap(&bus->cutoff, 1000.0f);
-        bus->cutoff.coef = mx->smoothCoefBlock;
-        ano_audio_smooth_snap(&bus->q, 0.70710678f);
-        bus->q.coef = mx->smoothCoefBlock;
+
+        // insert chain: from the layout, or the default lone FILTER on aux buses
+        for (uint32_t s = 0; s < ANO_AUDIO_MAX_FX; ++s) {
+            uint32_t kind = ANO_AUDIO_FX_NONE;
+            if (layout)
+                kind = layout[b].fx[s];
+            else if (b > 0u && s == 0u)
+                kind = ANO_AUDIO_FX_FILTER;
+            if (!ano_audio_fx_init(&bus->fx[s], kind, mx->heap, mx->sampleRate, mx->smoothCoefBlock))
+                return false;
+        }
+
+        // post-fader sends: targets must precede the sender; 0 = unused
+        for (uint32_t s = 0; s < ANO_AUDIO_MAX_SENDS; ++s) {
+            uint32_t target = layout ? layout[b].sendTarget[s] : 0u;
+            float    level  = layout ? layout[b].sendLevel[s] : 0.0f;
+            if (target != 0u && (b == 0u || target >= b || target >= mx->busCount))
+                return false; // master cannot send; sends must point at earlier buses
+            bus->sends[s].target = target;
+            ano_audio_smooth_snap(&bus->sends[s].level, clampf(level, 0.0f, 4.0f));
+            bus->sends[s].level.coef = mx->smoothCoef;
+        }
     }
     // Source and buffer pools start all-FREE (the mixer struct is zeroed at birth).
     return true;
@@ -363,22 +373,25 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
         AnoAudioBus *bus = &mx->buses[cmd->bus];
         if (cmd->fields & ANO_AUDIO_FIELD_GAIN)
             bus->gain.target = clampf(cmd->gain, 0.0f, 4.0f);
-        if (cmd->fields & ANO_AUDIO_FIELD_CUTOFF)
-            bus->cutoff.target = clampf(cmd->cutoffHz, 20.0f, 20000.0f);
-        if (cmd->fields & ANO_AUDIO_FIELD_Q)
-            bus->q.target = clampf(cmd->q, 0.1f, 12.0f);
-        if (cmd->fields & ANO_AUDIO_FIELD_FILTER_MODE) {
-            uint32_t mode = cmd->filterMode;
-            if (mode > ANO_AUDIO_FILTER_BANDPASS)
-                mode = ANO_AUDIO_FILTER_OFF;
-            if (bus->filterMode == ANO_AUDIO_FILTER_OFF && mode != ANO_AUDIO_FILTER_OFF) {
-                // entering: start at the target, from rest — no sweep from stale state
-                ano_audio_smooth_snap(&bus->cutoff, bus->cutoff.target);
-                ano_audio_smooth_snap(&bus->q, bus->q.target);
-                memset(bus->fstate, 0, sizeof bus->fstate);
-            }
-            bus->filterMode = mode;
+        if ((cmd->fields & ANO_AUDIO_FIELD_SEND0) && bus->sends[0].target != 0u)
+            bus->sends[0].level.target = clampf(cmd->send[0], 0.0f, 4.0f);
+        if ((cmd->fields & ANO_AUDIO_FIELD_SEND1) && bus->sends[1].target != 0u)
+            bus->sends[1].level.target = clampf(cmd->send[1], 0.0f, 4.0f);
+        return;
+    }
+
+    case ACMD_FX_SET: {
+        if (cmd->bus >= mx->busCount || cmd->fxSlot >= ANO_AUDIO_MAX_FX) {
+            ano_debug_log(ANO_WARN, "audio: FX_SET names bus %u slot %u; dropped.", cmd->bus, cmd->fxSlot);
+            return;
         }
+        AnoAudioFx *fx = &mx->buses[cmd->bus].fx[cmd->fxSlot];
+        if (fx->kind == ANO_AUDIO_FX_NONE) {
+            ano_debug_log(ANO_WARN, "audio: FX_SET on empty slot %u of bus %u; dropped.",
+                          cmd->fxSlot, cmd->bus);
+            return;
+        }
+        ano_audio_fx_set(fx, cmd->paramId, cmd->value);
         return;
     }
 
@@ -452,22 +465,12 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
 // Block rendering
 // ---------------------------------------------------------------------------
 
-// Insert filter over a bus's accumulated block, in place. Cutoff/Q glide at
-// block cadence (~86 steps/s through the 30 ms pole — sweeps, no zipper).
-static void bus_filter_block(AnoAudioMixer *mx, AnoAudioBus *bus, uint32_t frames)
+// The bus's insert chain over its accumulated block, in place. Parameters
+// glide at block cadence (~86 steps/s through the 30 ms pole — no zipper).
+static void bus_chain_block(AnoAudioMixer *mx, AnoAudioBus *bus, uint32_t frames)
 {
-    if (bus->filterMode == ANO_AUDIO_FILTER_OFF)
-        return;
-    float fc = ano_audio_smooth_step(&bus->cutoff);
-    float q  = ano_audio_smooth_step(&bus->q);
-    ano_dsp_svf_coef(&bus->fcoef, fc, q, (float)mx->sampleRate);
-    ano_dsp_svf_flush(&bus->fstate[0]);
-    ano_dsp_svf_flush(&bus->fstate[1]);
-    float *m = bus->mix;
-    for (uint32_t i = 0; i < frames; ++i) {
-        m[2u * i]      = ano_dsp_svf_step(&bus->fcoef, &bus->fstate[0], m[2u * i], bus->filterMode);
-        m[2u * i + 1u] = ano_dsp_svf_step(&bus->fcoef, &bus->fstate[1], m[2u * i + 1u], bus->filterMode);
-    }
+    for (uint32_t s = 0; s < ANO_AUDIO_MAX_FX; ++s)
+        ano_audio_fx_process(&bus->fx[s], bus->mix, frames, mx->sampleRate);
 }
 
 void ano_audio_render_block(AnoAudioMixer *mx, float *out)
@@ -491,21 +494,37 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
     }
     mx->sourcesActive = active;
 
-    // bus tree fold: children (higher index) filter + gain into their parent
+    // bus tree fold: children (higher index) run their chain, then the faded
+    // signal feeds the parent and any post-fader sends (targets precede the
+    // sender, so a send lands in a bus not yet processed this block)
     for (uint32_t b = mx->busCount; b-- > 1u;) {
         AnoAudioBus *bus = &mx->buses[b];
-        bus_filter_block(mx, bus, frames);
+        bus_chain_block(mx, bus, frames);
         float *parent = mx->buses[bus->parent].mix;
+        float *sm0 = bus->sends[0].target ? mx->buses[bus->sends[0].target].mix : NULL;
+        float *sm1 = bus->sends[1].target ? mx->buses[bus->sends[1].target].mix : NULL;
         for (uint32_t i = 0; i < frames; ++i) {
             float g = ano_audio_smooth_step(&bus->gain);
-            parent[2u * i]      += bus->mix[2u * i] * g;
-            parent[2u * i + 1u] += bus->mix[2u * i + 1u] * g;
+            float l = bus->mix[2u * i] * g;
+            float r = bus->mix[2u * i + 1u] * g;
+            parent[2u * i]      += l;
+            parent[2u * i + 1u] += r;
+            if (sm0) {
+                float s0 = ano_audio_smooth_step(&bus->sends[0].level);
+                sm0[2u * i]      += l * s0;
+                sm0[2u * i + 1u] += r * s0;
+            }
+            if (sm1) {
+                float s1 = ano_audio_smooth_step(&bus->sends[1].level);
+                sm1[2u * i]      += l * s1;
+                sm1[2u * i + 1u] += r * s1;
+            }
         }
     }
 
-    // master: filter, gain, peak meter, clip guard, output write
+    // master: chain, gain, peak meter, clip guard, output write
     AnoAudioBus *master = &mx->buses[0];
-    bus_filter_block(mx, master, frames);
+    bus_chain_block(mx, master, frames);
     float peak = 0.0f;
     uint32_t clipped = 0;
     for (uint32_t i = 0; i < frames; ++i) {

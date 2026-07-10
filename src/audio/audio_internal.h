@@ -23,40 +23,13 @@
 #include <stdatomic.h>
 #include <anoptic_threads.h>
 #include "audio_bridge.h"
-#include "dsp/svf.h"
+#include "audio_fx.h" // effect chains + dsp/smooth.h (AnoAudioSmooth)
 
 // Release ramps retire a voice once its smoothed gain falls below this (-80 dBFS).
 #define ANO_AUDIO_RETIRE_EPS 1.0e-4f
 
-// Master clip guard ceiling (the musical lookahead limiter is Phase 3's).
+// Master clip guard ceiling (the last line behind the limiter).
 #define ANO_AUDIO_CLIP_CEIL 0.98f
-
-// One-pole parameter smoother: every audible parameter glides through one of
-// these (~30 ms), so retargets never zipper. Snap-on-converge kills denormals.
-// Two step cadences exist: per-sample (voice/bus gains, pan, freq, rate) and
-// per-block (filter cutoff/Q, air-absorption cutoff — anything that feeds a
-// per-block coefficient recompute).
-typedef struct AnoAudioSmooth
-{
-    float y;      // current value
-    float target; // retarget destination
-    float coef;   // pole for the caller's step cadence
-} AnoAudioSmooth;
-
-// Advance one step (sample or block, per the coef baked in) and return the value.
-static inline float ano_audio_smooth_step(AnoAudioSmooth *s)
-{
-    float d = s->y - s->target;
-    if (d < 1.0e-7f && d > -1.0e-7f) { s->y = s->target; return s->y; }
-    s->y = s->target + d * s->coef;
-    return s->y;
-}
-
-static inline void ano_audio_smooth_snap(AnoAudioSmooth *s, float v)
-{
-    s->y = v;
-    s->target = v;
-}
 
 // Voice lifecycle. "Allocate" is FREE -> PLAYING, a state flip in the
 // preallocated pool. RETIRING holds the slot until its retirement event lands
@@ -111,12 +84,14 @@ typedef struct AnoAudioBus
     AnoAudioSmooth gain;
     float *mix; // blockFrames * ANO_AUDIO_CHANNELS accumulation scratch (module heap)
 
-    // insert filter (per-block smoothed cutoff/Q; mode switches instantly)
-    uint32_t       filterMode; // AnoAudioFilterMode
-    AnoAudioSmooth cutoff;     // per-BLOCK smoother, Hz
-    AnoAudioSmooth q;          // per-BLOCK smoother
-    AnoDspSvfCoef  fcoef;
-    AnoDspSvfState fstate[ANO_AUDIO_CHANNELS];
+    // insert chain, fixed at init; parameters retarget via ACMD_FX_SET
+    AnoAudioFx fx[ANO_AUDIO_MAX_FX];
+
+    // post-fader sends into earlier buses (returns); target 0 = unused
+    struct {
+        uint32_t       target;
+        AnoAudioSmooth level; // per-sample smoother
+    } sends[ANO_AUDIO_MAX_SENDS];
 } AnoAudioBus;
 
 // Registered sample buffers. Adopted blocks (realtime path) ride home for
