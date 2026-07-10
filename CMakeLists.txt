@@ -176,6 +176,17 @@ if(Vulkan_FOUND)
     add_library(anoptic_render STATIC "")
     target_link_libraries(anoptic_render PUBLIC anoptic_core glfw Vulkan::Vulkan)
 
+    # Nix's clang wrapper injects vulkan-headers through NIX_CFLAGS_COMPILE, so CMake sees
+    # Vulkan_INCLUDE_DIR as a path the compiler already searches and filters it out of the -I
+    # flags it writes. The build compiles; compile_commands.json loses the path, and clangd
+    # parses flags instead of running the driver, so it reports <vulkan/vulkan.h> not found.
+    # Compile options bypass the implicit-directory filter. Inert wherever the path is explicit.
+    foreach(vk_dir IN LISTS Vulkan_INCLUDE_DIRS)
+        if(vk_dir IN_LIST CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
+            target_compile_options(anoptic_render PUBLIC "-isystem${vk_dir}")
+        endif()
+    endforeach()
+
     # Renderer module subdirectories
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
