@@ -116,6 +116,46 @@ void ano_music_blake2b8(const void *msg, size_t len, uint8_t out[8])
         out[i] = (uint8_t)(h[0] >> (8 * i)); // little-endian first state word
 }
 
+// Streaming form of the same hash, for messages too large to stage in one
+// buffer. Invariant: a buffered block is compressed only once a further byte
+// is known to follow, because BLAKE2b's last block carries the final flag.
+void ano_blake2b8_init(AnoBlake2b8 *s)
+{
+    memcpy(s->h, B2B_IV, sizeof s->h);
+    s->h[0] ^= 0x01010000ull ^ 8ull;
+    s->len = 0;
+    s->t = 0;
+}
+
+void ano_blake2b8_update(AnoBlake2b8 *s, const void *msg, size_t len)
+{
+    const uint8_t *p = msg;
+    while (len > 0) {
+        if (s->len == 128) {
+            s->t += 128;
+            b2b_compress(s->h, s->buf, s->t, false);
+            s->len = 0;
+        }
+        size_t take = 128 - s->len;
+        if (take > len)
+            take = len;
+        memcpy(s->buf + s->len, p, take);
+        s->len += take;
+        p += take;
+        len -= take;
+    }
+}
+
+void ano_blake2b8_final(AnoBlake2b8 *s, uint8_t out[8])
+{
+    uint8_t block[128] = { 0 };
+    memcpy(block, s->buf, s->len);
+    s->t += s->len;
+    b2b_compress(s->h, block, s->t, true);
+    for (int i = 0; i < 8; ++i)
+        out[i] = (uint8_t)(s->h[0] >> (8 * i));
+}
+
 // ---------------------------------------------------------------------------
 // MT19937, CPython seeding and draws
 // ---------------------------------------------------------------------------

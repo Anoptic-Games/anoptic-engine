@@ -161,6 +161,14 @@ static void pad_note(AnoMusicEvent *e, const AnoHarmonicContext *ctx,
     strncpy(e->role, role, sizeof e->role - 1);
 }
 
+// pcs: root-first, mutated in place. cfg: voice count clamped to 2.
+uint32_t ano_thin_voicing(uint8_t *pcs, uint32_t pcCount, AnoVoicingConfig *cfg)
+{
+    pcs[1] = pcCount > 2 ? pcs[2] : pcs[0];
+    cfg->voices = 2;
+    return 2;
+}
+
 void ano_generate_pad(const AnoHarmonicContext *ctx, AnoMeter meter,
                       const AnoGenParams *params,
                       const int *prevVoicing, uint32_t prevCount,
@@ -182,11 +190,8 @@ void ano_generate_pad(const AnoHarmonicContext *ctx, AnoMeter meter,
         memcpy(pcs, ctx->chordPcs, sizeof pcs);
     }
     AnoVoicingConfig vc = *cfg;
-    if (thin) { // bare root+fifth dyad, free of thirds
-        pcs[1] = pcCount > 2 ? pcs[2] : pcs[0];
-        pcCount = 2;
-        vc.voices = 2;
-    }
+    if (thin)
+        pcCount = ano_thin_voicing(pcs, pcCount, &vc);
     int voicing[6];
     uint32_t vn = ano_voice_chord(pcs, pcCount, prevVoicing, prevCount, &vc,
                                   voicing, NULL);

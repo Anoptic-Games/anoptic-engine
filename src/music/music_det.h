@@ -27,6 +27,21 @@
 // in: message bytes; out: exactly 8 digest bytes.
 void ano_music_blake2b8(const void *msg, size_t len, uint8_t out[8]);
 
+// The same hash, fed incrementally: for streams with no bounded staging buffer
+// (a whole piece's event digest). init -> update* -> final yields exactly what
+// ano_music_blake2b8 yields over the concatenated updates.
+typedef struct AnoBlake2b8
+{
+    uint64_t h[8];
+    uint8_t  buf[128];
+    size_t   len; // bytes buffered
+    uint64_t t;   // bytes already compressed
+} AnoBlake2b8;
+
+void ano_blake2b8_init(AnoBlake2b8 *s);
+void ano_blake2b8_update(AnoBlake2b8 *s, const void *msg, size_t len);
+void ano_blake2b8_final(AnoBlake2b8 *s, uint8_t out[8]);
+
 // CPython random.Random: MT19937 + a one-slot gauss cache.
 typedef struct AnoMusicRng
 {
