@@ -2,15 +2,6 @@
 
 The Anoptic Game Engine is designed to create games that can handle large numbers of events and entities occurring simultaneously. It is tailored for 4X, RTS, or any other kind of complex simulation.
 
-### Getting this Repo
-
-Make sure to use `--recursive` to fetch all submodules!
-
-```bash
-git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
-```
-
-Keep the submodules in sync when pulling: run `git submodule update --init --recursive` after every pull, or set it once with `git config submodule.recurse true`. The pinned revisions are mirrored in `flake.nix`, and the Nix dev shells warn on entry when the repo's recorded pointers disagree with the flake pins. Never let a bulk `git add -A` / `git commit -a` sweep a stale submodule pointer into an unrelated commit — that silently downgrades dependencies for everyone; stage `external/*` paths deliberately or not at all.
 
 ### Runtime Features
 
@@ -21,6 +12,22 @@ Keep the submodules in sync when pulling: run `git submodule update --init --rec
 - **Custom Allocators**: Uses mimalloc for a fast global allocator implementation, as well as several special-purpose local allocators.
 - **Platform Compatibility**: Built and tested for full feature parity on Linux, macOS, and Windows.
 - **Networking**: Built-in networking support for p2p or authoritative server.
+
+
+### Getting this Repo
+
+Make sure to use `--recursive` to fetch all submodules!
+
+```bash
+git clone --recursive https://github.com/Anoptic-Games/anoptic-engine.git
+```
+
+Set `git config submodule.recurse true`
+or
+Run `git submodule update --init --recursive` after every pull to keep dependencies in sync.
+
+The pinned revisions are mirrored in `flake.nix`, and the Nix dev shells warn on entry when the repo's recorded pointers disagree with the flake pins.
+
 
 ### Installation
 
@@ -37,23 +44,36 @@ Then run:
 nix build
 ```
 
-Done — a runnable headless engine lands in `./result/bin/anopticengine`, on any Linux or macOS host with Nix, no GPU or display required. The other flake targets:
+This produces the full Vulkan renderer (Release + ThinLTO) at `./result/bin/anopticengine`. Nix fetches the toolchain, pinned submodules, shader compiler, and public asset pack. Targets are named build type first:
 
-- `nix build .#renderer` — the full Vulkan renderer package. It builds on any Linux host with Nix; a real GPU driver is only needed to *run* the result, not to build it. WSL has no Linux Vulkan driver, so do not use this to get a runnable renderer there — cross-compile the Windows exe instead (see [Building under WSL](#building-under-wsl)).
-- `nix develop --command ./build.sh 6` — the Linux dev shell: headless build plus the non-GPU test suite (`5`/`4` for the TSan/ASan runs). This shell deliberately carries no Vulkan or windowing libraries — the Linux renderer is `nix build .#renderer` above.
-- `nix develop --command ./build.sh 1` — on an Apple Silicon Mac this is the full renderer build; the macOS shell ships clang, glslc, and MoltenVK.
-- `nix develop .#windows` — MinGW-w64 cross shell: build a Windows renderer `.exe` from Linux/WSL (see [Building under WSL](#building-under-wsl)).
+- `nix build .#debug` — Debug renderer, validation layers on.
+- `nix build .#release-headless` (alias `.#headless`) — the server build: no renderer, GPU, or display.
+- `nix build .#release-wsl` — cross-built Windows renderer `.exe` (see [Building for Windows with WSL](#building-for-windows-with-wsl)).
+- `nix build .#<type>[-headless]-<platform>-<arch>[-wayland|-x11]` — any permutation, e.g. `.#release-linux-x64-x11`.
+- `nix build .#tests-headless` — CTest suite in the sandbox (`.#tests-asan`, `.#tests-tsan`, `.#tests-full` on Linux). `nix flake check` runs all host suites.
+
+`nix run [-- N]` builds in-tree and runs the result: it checks submodule pointers against the flake pins (halts on drift), fetches anything missing, stages assets, and runs `./build.sh N` in the dev shell. Profiles `1|2` then launch the renderer, `3` launches the headless console engine (WSL included); test profiles run their CTest suite instead. Bare `nix run` is `build.sh 1` — Release into `build/Release/`, then the window.
+
+`nix develop` opens the dev shell; `nix develop .#windows` is the MinGW-w64 cross shell.
+
+Private assets instead of the public pack:
+```bash
+nix build --override-input anoptic-assets git+ssh://git@github.com/Anoptic-Games/assets
+```
+`nix run` tries the private repo and falls back to the public pack.
 
 Native Windows has no Nix; that is the `build.bat` path below.
 
 **Without Nix** (native Windows is this path — see [Building on Windows](#building-on-windows)): `clang 17+`, `CMake 3.29+`, `Ninja`, `glslc`, and the [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/)(1.3.2+). Headless builds (`-DANOPTIC_HEADLESS=ON`) need only clang + CMake + Ninja.
 
-The engine is C23. Clang/LLVM (linking through `lld`) is the default toolchain on every OS; GCC is the supported fallback (MinGW gcc in the Nix cross shell, and the `gcc-*` platform files, which link through `mold` where available).
+The engine is C23. Clang/LLVM (linking through `lld`) is the default toolchain on every OS; the Nix environments pin the latest release (currently 22). GCC is the supported fallback (MinGW gcc in the Nix cross build, and the `gcc-*` platform files, which link through `mold` where available).
 
 > macOS without Nix: `build.sh` uses Homebrew LLVM (`brew install llvm`) — Apple Clang rejects C23.
 
 For editor integration the engine uses `clangd` (shipped with the LLVM toolchain above).
 See [Editor Setup](#editor-setup).
+
+
 
 ### Building
 
@@ -62,32 +82,27 @@ Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat`
 - **Release** — the optimized (`-O3` + ThinLTO) engine build.
 - **Debug** — debug build, Vulkan validation layers on.
 - **Tests** — Debug build + the full CTest suite.
+- **Headless** — Release engine without the renderer; the console/server entry point (profile 3).
 - **Sanitizer tests** — the same suite under AddressSanitizer/UBSan or ThreadSanitizer.
 - **Headless** — core + tests with the renderer disabled entirely.
-- **Release tests** — the CTest suite at `-O3`; the one to use for benchmarks.
-
-Anoptic never builds incrementally: the scripts run the `ano_scrub` target before every build, deleting every object file so all C recompiles from scratch each time.
-The build system is tuned for that whole-build path instead: Ninja, a modern linker in every config (lld with clang, mold with gcc on ELF), ThinLTO in Release, and static linking. Shaders and staged assets are the one exception and keep
-their normal fresh/stale tracking. The scripts and the Nix targets are the supported
-entry points; there is no supported incremental flow.
-
-Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the
-binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
-`assets/` is gitignored. The demo scene and the Vulkan tests load `viking_room.gltf` (the vulkan-tutorial viking room) and `GlassHurricaneCandleHolder.gltf` (Khronos [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets)) plus their textures from it — populate it before running the engine or the full test suite. The demo scene also loads Sponza as its environment if present at `assets/sponza/2.0/Sponza/glTF/Sponza.gltf` (Khronos [glTF-Sample-Models](https://github.com/KhronosGroup/glTF-Sample-Models)); it is optional — the engine logs a warning and continues without it (the viking room + candles still spawn as props) if it's missing.
+- **Release tests** — the CTest suite at `-O3` for benchmarks.
 
 These map to the following CMake options, which can also be passed directly:
-`-DANOPTIC_TESTS=ON` (build the test suite), `-DANOPTIC_HEADLESS=ON` (omit the renderer,
-skips the Vulkan probe — useful for CI without a GPU), and
+`-DANOPTIC_TESTS=ON` (build the test suite),
+`-DANOPTIC_HEADLESS=ON` (omit the renderer, skips the Vulkan probe),
 `-DANOPTIC_SANITIZE=asan|tsan` (instrument test builds).
 
-**Shaders** are compiled to SPIR-V automatically at build time via `glslc` (the
-`anoptic_shaders` target) into `build/<label>/resources/shaders/` — next to the binary,
-where the engine resolves them relative to its own executable. If `glslc` is not found,
-the committed `resources/shaders/*.spv` are staged there as-is (and may be stale).
+Anoptic never builds incrementally: the scripts run the `ano_scrub` target before every build, deleting every object file so all C recompiles from scratch each time.
+
+Output goes to `build/<label>/`; shaders and assets from `assets/` are staged next to the binaries by CMake itself (so direct `cmake` invocations get them too, not just the scripts).
+
+`assets/` is gitignored.
+
+**Shaders** are compiled to SPIR-V automatically at build time via `glslc` (the `anoptic_shaders` target) into `build/<label>/resources/shaders/`.
 `resources/shaders/compile.sh` regenerates those committed fallbacks by hand.
 
-`cmake --install` produces a self-contained tree: `bin/anopticengine` plus
-`bin/resources/shaders/`. The engine runs from any working directory.
+`cmake --install` produces a self-contained tree: `bin/anopticengine` and `bin/resources/shaders/`.
+
 
 #### Building on Windows
 
@@ -106,20 +121,18 @@ Additional guidance:
 
 Once Mingw-w64 is installed with `clang` working on your system, run `build.bat` from the repository root; its usage mirrors `build.sh`.
 
-#### Building under WSL
+#### Building for Windows with WSL
 
 WSL has no Linux Vulkan driver, so the renderer runs there only as a **Windows** exe.
 WSL's in-guest Vulkan devices (Mesa `dozen` and `llvmpipe`) are not supported render
-targets. The **headless** build needs no GPU or display at all: `nix build` /
-`build.sh 6` artifacts run fine in WSL, containers, and GPU-less servers. That is the
-intended "server build" for hosting.
+targets. The **headless** build needs no GPU or display at all: `nix build .#headless` /
+`build.sh 3` artifacts run fine in WSL, containers, and GPU-less servers, and
+`nix run -- 3` builds and launches it in-guest (`build.sh 4` is the same core, Debug, plus
+its test suite). That is the intended "server build" for hosting.
 
 Two ways to build a Windows renderer exe from WSL:
 
-1. **Nix cross shell** (`nix develop .#windows`) — the whole MinGW-w64 (gcc, ucrt64)
-   toolchain, Vulkan import lib, and glslc come from Nix; no MSYS2 or Windows Vulkan SDK
-   needed. Do **not** pass the `cmake/platforms/*-mingw.cmake` toolchain files here (they
-   are for the MSYS2 path); the shell exports the cross setup as `$cmakeFlags`:
+1. **Nix** (`nix build .#release-wsl`) — the MinGW-w64 (gcc, ucrt64) toolchain, Vulkan import lib, and glslc come from Nix; no MSYS2 or Windows Vulkan SDK. The static exe and shaders land in `./result/bin/`. `nix develop .#windows` opens the cross shell for interactive builds; it exports the cross setup as `$cmakeFlags`, so do **not** pass the `cmake/platforms/*-mingw.cmake` toolchain files (those are the MSYS2 path):
 
    ```bash
    nix develop .#windows
@@ -137,6 +150,28 @@ Two ways to build a Windows renderer exe from WSL:
 
    Windows binaries link `-static`, so the exe is self-contained — no toolchain
    runtime DLLs to stage or put on `PATH` (only `vulkan-1.dll`, which the driver/SDK owns).
+
+#### Building on Linux
+
+```bash
+nix develop --command ./build.sh 1     # or: nix run
+```
+
+The default shell provides clang/lld (currently 22), cmake, ninja, glslc + glslangValidator, lldb, llvm-ar, Vulkan headers, loader, and validation layers, and the X11 + Wayland client libraries. Renderer builds compile both window backends and select at runtime; the single-backend `-wayland`/`-x11` packages are explicit targets. For GPU-less test runs, point `VK_ICD_FILENAMES` at `$ANO_LAVAPIPE_ICD` (exported by the shell).
+
+Without Nix: install `clang 17+`, `CMake`, `Ninja`, `glslc`, and the distro's Vulkan SDK, then run `./build.sh` directly.
+
+#### Building on macOS
+
+Apple Silicon. Vulkan runs through MoltenVK; the Nix packages bake in the ICD path, and the dev shell exports `VK_ICD_FILENAMES`.
+
+```bash
+nix build                              # store artifact -> ./result/bin/anopticengine
+nix develop --command ./build.sh 1     # in-tree -> build/Release/   (or: nix run)
+```
+
+Without Nix: Homebrew LLVM (see the note above) and the Vulkan SDK. `build.sh` finds `brew --prefix llvm` automatically.
+
 
 ### Editor / LSP Setup
 

@@ -12,6 +12,8 @@
 #include <stdbool.h>
 #include <vulkan/vulkan.h>
 
+#include <anoptic_time.h>
+
 #include "vulkan_backend/structs.h"
 
 // --- frame/passes.c ----------------------------------------------------------
@@ -55,8 +57,37 @@ void ano_collect_frame_stats(uint32_t frameIndex);
 void ano_collect_pick(uint32_t frameIndex);
 // Discard the in-progress timing window (lighting-mode change).
 void ano_profile_reset_window(void);
-// Mark one presented frame. Logs wall-clock fps + frametime once per second.
-void ano_frame_mark(void);
+
+// Frames per profiling flush window, shared by the [frame]/[frametime] pair and the [profile] line.
+// 2^7: exactly 1 s of frames at 128 fps, ~2 s at a 60 fps target, ~1 s at 120.
+#define ANO_PERF_WINDOW_FRAMES 128u
+
+// Wall-clock frame-timing tally for one flush window. Zero-init = unseeded (prevUs == 0).
+// Invariants: count < ANO_PERF_WINDOW_FRAMES between marks; prevUs - startUs == sum of dtUs.
+typedef struct {
+    uint64_t prevUs;                        // stamp of the last marked frame (dt base)
+    uint64_t startUs;                       // stamp the current window opened at
+    uint32_t count;                         // dts tallied this window
+    uint32_t dtUs[ANO_PERF_WINDOW_FRAMES];  // per-frame wall dt (us), unordered until flush
+} anoperf_accumulator_t;
+
+extern anoperf_accumulator_t g_perfAcc;
+
+// Drain one full window: sort, log the [frame] + [frametime] pair, reset. Cold, defined in profiling.c.
+void anoperf_flush(anoperf_accumulator_t* acc);
+
+// Mark one presented frame (drawFrame, presented path only). Hot path: one clock read, one dt
+// store, one flush per ANO_PERF_WINDOW_FRAMES frames. First call seeds the stamps, uncounted.
+static inline void ano_frame_mark(void) {
+    anoperf_accumulator_t* acc = &g_perfAcc;
+    uint64_t now = ano_timestamp_us();
+    if (acc->prevUs == 0) { acc->prevUs = acc->startUs = now; return; }
+    uint64_t dt = now - acc->prevUs;
+    acc->prevUs = now;
+    acc->dtUs[acc->count++] = (dt > UINT32_MAX) ? UINT32_MAX : (uint32_t)dt;
+    if (acc->count == ANO_PERF_WINDOW_FRAMES) anoperf_flush(acc);
+}
+
 // Shadow-frustum renders per frame. Defined in profiling.c.
 extern uint64_t g_shadowRenderAccum;
 extern uint32_t g_shadowRenderFrames;

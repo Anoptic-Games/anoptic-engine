@@ -311,8 +311,8 @@ full-viewport UI at the paper's cost class without ever touching the graphics cr
 ## 7. Demo target: profile lines on-screen
 
 Source data: `ano_print_profiling` (`vulkanMaster.c:3231`) already averages GPU region times
-and VRAM per allocator, printing every `ANO_PROFILE_PRINT_INTERVAL` = 120 frames
-(`vulkanMaster.c:57`):
+and VRAM per allocator, printing every `ANO_PERF_WINDOW_FRAMES` = 128 frames
+(now in `src/vulkan_backend/frame/profiling.c`):
 
     [profile mode=%s] GPU ms: upload=... compute=... shadow=... (frusta %.1f/%u)
     lighting=... composite=... total=... | VRAM MiB: gpu=... tex=... swap=... staging=... | ...

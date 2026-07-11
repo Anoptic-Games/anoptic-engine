@@ -7,20 +7,25 @@
 
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/backend.h"
+#include "vulkan_backend/components.h"
 #include "vulkan_backend/frame/frame.h"
 #include "vulkan_backend/render_api.h"
 
-// Loaded-asset registry (anoptic_render.h), recorded in load order.
-// g_defaultMaterial is the first asset's first material.
+// Loaded-asset registry (anoptic_render.h). asset_id is a fixed slot: a failed parse
+// leaves it NULL and the scene composes without it.
+// g_defaultMaterial: the first asset's first material, or the built-in row.
 #define ANO_MAX_LOADED_ASSETS 16u
 static ModelAsset* g_assets[ANO_MAX_LOADED_ASSETS];
 static uint32_t    g_assetCount;
 static uint32_t    g_defaultMaterial;
 
+// Material SSBO row 0, claimed before any glTF parse.
+#define ANO_DEFAULT_MATERIAL_INDEX 0u
+
 uint32_t anoRenderAssetCount(void) { return g_assetCount; }
 
 uint32_t anoRenderAssetPrimitives(uint32_t asset_id, const mat4 root, AnoRenderableDesc* out, uint32_t cap) {
-    if (asset_id >= g_assetCount) return 0u;
+    if (asset_id >= g_assetCount || g_assets[asset_id] == NULL) return 0u;
     return model_flatten(g_assets[asset_id], root, out, cap);
 }
 
@@ -108,41 +113,54 @@ bool ano_render_get_view_hiz_enable(uint32_t view) {
     return rendererState.hizEnable[view] != 0u;
 }
 
+// Claim material SSBO row 0 with the stock white PBR row in every frame-in-flight copy.
+// No-op if the buffer is absent or row 0 is already taken.
+// Invariant: runs before the first parseGltf, which allocates rows from count upward.
+//
+/// TODO: this is fucked up. Hand-writing a material row into a mapped SSBO from the
+/// asset-load path, with positional asset slots, is a shim. Redo with the asset manager.
+static void register_default_material(void)
+{
+	if (rendererState.materialBuffer.capacity == 0u || rendererState.materialBuffer.count != 0u)
+		return;
+
+	MaterialData mat;
+	ano_vk_init_default_material_data(&mat);
+	for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame)
+		rendererState.materialBuffer.mapped[frame][ANO_DEFAULT_MATERIAL_INDEX] = mat;
+	rendererState.materialBuffer.count = 1u;
+}
+
 // Parse the scene's glTF assets into the loaded-asset registry.
-// On a fatal parse failure runs unInitVulkan and returns false.
+// An unparsable asset leaves its slot NULL. Always returns true.
 bool ano_render_load_scene_assets(void)
 {
-	// Load the scene's glTF assets into GPU memory. Load order is the asset_id namespace.
-	ModelAsset* vikingRoomAsset = parseGltf(&ctx, "viking_room.gltf");
-	if (!vikingRoomAsset)
-	{
-		ano_log(ANO_FATAL, "Failed to parse glTF file!");
-		unInitVulkan();
-		return false;
-	}
-	ModelAsset* candleHolderAsset = parseGltf(&ctx, "GlassHurricaneCandleHolder.gltf");
-	if (!candleHolderAsset)
-	{
-		ano_log(ANO_FATAL, "Failed to parse GlassHurricaneCandleHolder glTF file!");
-		unInitVulkan();
-		return false;
-	}
-	g_assets[g_assetCount++] = vikingRoomAsset;   // asset_id 0
-	g_assets[g_assetCount++] = candleHolderAsset; // asset_id 1
+	// Row 0 before any parse. glTF materials allocate from row 1 up.
+	register_default_material();
+	g_defaultMaterial = ANO_DEFAULT_MATERIAL_INDEX;
 
-	// Sponza: a large multi-material interior parsed under one node as the scene environment.
-	// Non-fatal: a missing/failed Sponza leaves asset_id 2 unregistered.
-	ModelAsset* sponzaAsset = parseGltf(&ctx, "sponza/2.0/Sponza/glTF/Sponza.gltf");
-	if (sponzaAsset)
-		g_assets[g_assetCount++] = sponzaAsset;   // asset_id 2
-	else
+	// Load the scene's glTF assets into GPU memory. Load order is the asset_id namespace.
+	g_assets[0] = parseGltf(&ctx, "viking_room.gltf");
+	if (!g_assets[0])
+		ano_log(ANO_ERROR, "viking_room unavailable; continuing without it.");
+
+	g_assets[1] = parseGltf(&ctx, "GlassHurricaneCandleHolder.gltf");
+	if (!g_assets[1])
+		ano_log(ANO_ERROR, "GlassHurricaneCandleHolder unavailable; continuing without it.");
+
+	// Sponza: the scene environment, parsed under one node.
+	g_assets[2] = parseGltf(&ctx, "sponza/2.0/Sponza/glTF/Sponza.gltf");
+	if (!g_assets[2])
 		ano_log(ANO_WARN, "Warning: failed to parse Sponza glTF; continuing without it.");
 
+	g_assetCount = 3u;
+
 	// Default material for procedural renderables: the first asset's first primitive material.
+	if (g_assets[0])
 	{
 		mat4 ident = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
 		AnoRenderableDesc d0;
-		if (model_flatten(vikingRoomAsset, ident, &d0, 1u) > 0u) g_defaultMaterial = d0.material_index;
+		if (model_flatten(g_assets[0], ident, &d0, 1u) > 0u) g_defaultMaterial = d0.material_index;
 	}
 
 	return true;
