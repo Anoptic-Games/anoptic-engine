@@ -478,36 +478,49 @@ void ano_music_clear_override(AnoMusicEngine *e, const char *param);
 // Generation and reconstruction
 // ---------------------------------------------------------------------------
 
-// One bar's worth of the piece, in the shapes the synth consumes.
 #define ANO_MUSIC_MAX_BAR_EVENTS 256
 #define ANO_MUSIC_MAX_TEMPO      8
 
+// What a bar MEANS, for gameplay that reacts to the music: the sounding key and
+// chord, and whether this bar is a cadence, a key arrival, or a motif landing.
+// It is a type of its own because it travels on its own — the synth generates
+// bars ahead of the playhead, so the meaning is held back and delivered when the
+// bar SOUNDS (AEVT_MUSIC_BAR), not when it was composed.
+typedef struct AnoMusicMeaning
+{
+    int    bar;
+    int    keyTonic;
+    int    mode;           // AnoMode
+    int    chordDegree;    // 1..7
+    int    chordInversion;
+    int8_t cadencePolicy;  // AnoCadencePolicy; NONE = not a cadence bar
+    bool   isCadence;
+    bool   keyArrived;
+    bool   motifStated;
+} AnoMusicMeaning;
+
+// One bar's worth of the piece, in the shapes the synth consumes.
 typedef struct AnoMusicBar
 {
-    int              bar;
     AnoNoteEvent     events[ANO_MUSIC_MAX_BAR_EVENTS];
     uint32_t         eventCount;
     AnoMusicalParams params;
     AnoMusicAffect   affect;
     AnoTempoPoint    tempo[ANO_MUSIC_MAX_TEMPO];
     uint32_t         tempoCount;
-
-    // What the bar means, for gameplay that reacts to the music (the payload of
-    // AEVT_MUSIC_BAR): the sounding key and chord, and whether this bar is a
-    // cadence, a key arrival, or a motif landing.
-    int     keyTonic;
-    int     mode;          // AnoMode
-    int     chordDegree;   // 1..7
-    int     chordInversion;
-    int8_t  cadencePolicy; // AnoCadencePolicy; NONE = not a cadence bar
-    bool    isCadence;
-    bool    keyArrived;
-    bool    motifStated;
+    AnoMusicMeaning  meaning;
 } AnoMusicBar;
 
 // Generate the next bar. Microseconds; safe to call from the audio thread at a
 // bar edge (the measured worst case is a small fraction of one block period).
 void ano_music_advance_bar(AnoMusicEngine *e, AnoMusicBar *out);
+
+// Bar length in quarter-note beats (the meter's: 4/4 -> 4.0, 6/8 -> 3.0). The
+// synth's live schedule needs it before the first bar has been generated.
+double ano_music_bar_quarters(const AnoMusicEngine *e);
+
+// The bar ano_music_advance_bar will produce next (0 on a fresh engine).
+int ano_music_next_bar(const AnoMusicEngine *e);
 
 // Save/restore. The engine is pointer-free and its padding is deterministic, so
 // a snapshot IS its bytes — two engines built from the same config and seed and

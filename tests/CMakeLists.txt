@@ -214,6 +214,16 @@ target_link_libraries(anotest_synthlive PRIVATE anoptic_core)
 target_include_directories(anotest_synthlive PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME anoptic_synthlive COMMAND anotest_synthlive)
 
+# Phase 7: the composer hosted in the audio callback (ano_synth_attach_music).
+# The gate is that it changes nothing -- sample-identical to the batch path over
+# the bars they share -- plus the two properties only the live path has: the
+# piece never ends, and a bar's meaning surfaces on its own downbeat.
+add_executable(anotest_musicdrive anotest_musicdrive.c)
+target_link_libraries(anotest_musicdrive PRIVATE anoptic_core)
+target_include_directories(anotest_musicdrive PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME anoptic_musicdrive COMMAND anotest_musicdrive)
+set_tests_properties(anoptic_musicdrive PROPERTIES TIMEOUT 120 LABELS "unit")
+
 add_executable(anotest_synthscene anotest_synthscene.c)
 target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
 target_compile_definitions(anotest_synthscene PRIVATE

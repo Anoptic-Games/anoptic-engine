@@ -152,6 +152,8 @@ typedef struct AnoSynthBar
     float    barSeconds;
     AnoMusicalParams params;
     AnoMusicAffect   affect;
+    AnoMusicMeaning  meaning; // music-driven only; rides to the bar's downbeat
+    bool             hasMeaning;
 } AnoSynthBar;
 
 typedef struct AnoSynthAnchor
@@ -159,8 +161,14 @@ typedef struct AnoSynthAnchor
     double beat, time, bpm; // piecewise-constant from beat until the next anchor
 } AnoSynthAnchor;
 
+// The generator hooks take a void* the caller supplies (anoptic_audio.h), so the
+// compiler cannot check what arrives. This can: a wrong pointer is otherwise a
+// silent no-op — the worst kind of bug, because the audio keeps playing.
+#define ANO_SYNTH_MAGIC 0x53594E54u // 'SYNT'
+
 struct AnoSynth
 {
+    uint32_t magic;
     uint32_t sampleRate;
     uint32_t maxVoices;
     float    smoothCoef; // per-sample one-pole for the ~30 ms window
@@ -195,6 +203,15 @@ struct AnoSynth
     uint32_t liveNextBar; // the bar index live_bar expects next
     int32_t  openChain[ANO_MUSIC_LAYER_COUNT][128];
     uint32_t liveLate, liveOverflow;
+
+    // The attached composer (borrowed). musicBar is the pump's landing pad —
+    // 7 KB, too fat for the audio stack. The meaning queue holds each bar's
+    // annotation from the moment it is composed to the moment it sounds.
+    AnoMusicEngine *music;
+    AnoMusicBar     musicBar;
+    uint32_t        musicBarUs, musicBarUsMax;
+    AnoMusicMeaning meaningQueue[ANO_SYNTH_MEANING_QUEUE];
+    uint32_t        meaningHead, meaningTail; // absolute; head - tail = depth
 
     // Transport. IDLE = generator renders nothing and touches nothing.
     _Atomic uint64_t startFrame;

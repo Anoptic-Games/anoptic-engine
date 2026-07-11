@@ -163,6 +163,23 @@ typedef struct AnoAudioBusDesc
 typedef void (*AnoAudioGenerator)(void *user, float *const *busMix, uint32_t busCount,
                                   uint32_t frames, uint64_t startFrame);
 
+// The generator's back-channel. A generator that only renders needs none of
+// these; one that COMPOSES needs all three, because it owns state the producer
+// wants to steer, to hear about, and to meter — and that state lives on the
+// mixer thread, where the producer may not reach.
+//
+// The mixer never looks inside any of them. It forwards the ACMD_MUSIC_*
+// commands it cannot interpret, publishes whatever events come back, and copies
+// the counters into its telemetry frame. All three are called on the mixer
+// thread at the block boundary, and all three are optional.
+struct AnoAudioCommand;
+struct AnoAudioEvent;
+struct AnoAudioTelemetry;
+typedef void (*AnoAudioGeneratorControl)(void *user, const struct AnoAudioCommand *cmd);
+typedef uint32_t (*AnoAudioGeneratorPoll)(void *user, struct AnoAudioEvent *out,
+                                          uint32_t cap);
+typedef void (*AnoAudioGeneratorStats)(void *user, struct AnoAudioTelemetry *t);
+
 // Init-time configuration. Zero any field for its default.
 typedef struct AnoAudioConfig
 {
@@ -175,7 +192,10 @@ typedef struct AnoAudioConfig
     uint32_t backend;      // AnoAudioBackend; default AUTO
     const AnoAudioBusDesc *busLayout; // optional busCount entries; NULL = every aux sums into master
     AnoAudioGenerator generator;      // optional block generator (see above)
-    void             *generatorUser;
+    void             *generatorUser;  // shared by all four generator hooks
+    AnoAudioGeneratorControl generatorControl; // optional back-channel (see above)
+    AnoAudioGeneratorPoll    generatorPoll;
+    AnoAudioGeneratorStats   generatorStats;
 } AnoAudioConfig;
 
 // Bring up the audio world: allocates every pool from a dedicated heap, opens
@@ -253,7 +273,21 @@ typedef enum AnoAudioCommandKind
     ACMD_FX_SET,          // retarget one insert-effect parameter (bus, fxSlot, paramId, value)
     ACMD_BUFFER_REGISTER, // adopt an owned sample block under source_id-as-buffer-id
     ACMD_BUFFER_RELEASE,  // retire a buffer; the block comes home via AEVT_BUFFER_RETIRED
+
+    // Steering for an attached generator that composes (the synth hosting a
+    // music engine). The mixer does not interpret these — it owns no music and
+    // has no music types; it hands them to `generatorControl` verbatim, at the
+    // block boundary, so they land on the thread that owns the composer. With no
+    // generator attached they are no-ops.
+    ACMD_MUSIC_AFFECT,   // merge the affect axes (`affect`, NAN = leave); `urgent`
+    ACMD_MUSIC_KEY,      // modulate to tonic pitch class `paramId`; `urgent`
+    ACMD_MUSIC_MOTIF,    // state the motif named by `tag` at the next phrase boundary
+    ACMD_MUSIC_OVERRIDE, // pin the parameter named by `tag` to `value`
+    ACMD_MUSIC_RELEASE,  // release `tag` back to the mapper
 } AnoAudioCommandKind;
+
+// Longest ACMD_MUSIC_* name (a motif tag, a parameter name), NUL included.
+#define ANO_AUDIO_TAG_MAX 24
 
 // One playable source description (ACMD_SOURCE_PLAY payload).
 typedef struct AnoAudioSourceDesc
@@ -289,8 +323,11 @@ typedef struct AnoAudioCommand
     float    position[3]; // UPDATE|POSITION retarget
     float    send[2];     // BUS_SET|SEND0/SEND1 retargets
     uint32_t fxSlot;      // ACMD_FX_SET chain slot [0, ANO_AUDIO_MAX_FX)
-    uint32_t paramId;     // ACMD_FX_SET AnoAudioFxParam
-    float    value;       // ACMD_FX_SET value
+    uint32_t paramId;     // ACMD_FX_SET AnoAudioFxParam; ACMD_MUSIC_KEY tonic pitch class
+    float    value;       // ACMD_FX_SET value; ACMD_MUSIC_OVERRIDE value
+    float    affect[3];   // ACMD_MUSIC_AFFECT: valence, energy, tension (NAN = leave)
+    bool     urgent;      // ACMD_MUSIC_AFFECT / _KEY: at the next barline, not the next phrase
+    char     tag[ANO_AUDIO_TAG_MAX]; // ACMD_MUSIC_MOTIF / _OVERRIDE / _RELEASE: the name
     const void *block;    // ACMD_BUFFER_REGISTER: the adopted block
     AnoAudioSourceDesc desc; // ACMD_SOURCE_PLAY only
 } AnoAudioCommand;
@@ -313,6 +350,7 @@ typedef enum AnoAudioEventKind
     AEVT_SOURCE_RETIRED, // a source finished (natural end or STOP ramp); source_id may be recycled
     AEVT_BUFFER_RETIRED, // a released buffer's block, home for freeing (ano_audio_block_free)
     AEVT_CAPACITY,       // mixer-side capacity advisory (voice pool full: a PLAY was dropped)
+    AEVT_MUSIC_BAR,      // a composed bar just STARTED SOUNDING: what it means
 } AnoAudioEventKind;
 
 // Fixed-size POD, sub-tagged on `kind`; rides the events ring.
@@ -327,6 +365,20 @@ typedef struct AnoAudioEvent
             uint32_t buffer_id;
             void    *block;  // free with ano_audio_block_free once received
         } buffer;           // AEVT_BUFFER_RETIRED
+
+        // AEVT_MUSIC_BAR. Scalars, not a music type — the audio module owns no
+        // music. It is a published projection of AnoMusicMeaning (anoptic_music.h),
+        // which is where the fields are documented; the generator fills it.
+        //
+        // It arrives when the bar SOUNDS. The composer runs bars ahead of the
+        // playhead, so a game that reacts to a cadence would otherwise react
+        // early; the meaning is held to its own downbeat, and it is lossless —
+        // what the ring will not take waits for the next block.
+        struct {
+            int32_t bar, keyTonic, mode, chordDegree, chordInversion;
+            int8_t  cadencePolicy;
+            bool    isCadence, keyArrived, motifStated;
+        } music;
     } u;
 } AnoAudioEvent;
 
@@ -383,6 +435,15 @@ typedef struct AnoAudioTelemetry
     uint32_t sampleRate;     // granted engine rate
     uint32_t blockFrames;    // granted block size
     uint32_t clippedSamples; // samples caught by the master clip guard since init
+
+    // The attached generator's own counters, filled by generatorStats (0 with
+    // none attached). The synth reports what hosting a composer in the callback
+    // costs: genUs against blockFrames/sampleRate is the whole of that risk, and
+    // genLate/genDropped are non-zero only once it has been lost.
+    uint32_t genUs;      // the generator's work in the latest block (microseconds)
+    uint32_t genUsMax;   // its worst since the transport started
+    uint32_t genLate;    // work that arrived after the playhead needed it
+    uint32_t genDropped; // notes the schedule could not hold, plus voices the pool could not sound
 } AnoAudioTelemetry;
 
 // Publish the listener pose. Latest-wins; call at most once per logic tick.
@@ -442,6 +503,10 @@ typedef struct AnoAudioOfflineDesc
     uint32_t listenerCount;
     AnoAudioGenerator generator; // optional block generator, same contract as realtime
     void             *generatorUser;
+    // ACMD_MUSIC_* in the event list reach the generator through this, so an
+    // offline render can steer a composer and the steering is reproducible.
+    // There is no poll/stats hook: offline publishes no events and no telemetry.
+    AnoAudioGeneratorControl generatorControl;
 } AnoAudioOfflineDesc;
 
 // Render `frames` frames into out[frames * ANO_AUDIO_CHANNELS] (interleaved

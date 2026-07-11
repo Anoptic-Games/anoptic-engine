@@ -25,6 +25,7 @@
 #include <string.h>
 
 #include <anoptic_logging.h>
+#include <anoptic_time.h>
 
 // ---------------------------------------------------------------------------
 // Patch registry
@@ -68,6 +69,7 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
         mi_heap_destroy(heap);
         return NULL;
     }
+    s->magic      = ANO_SYNTH_MAGIC;
     s->heap       = heap;
     s->sampleRate = rate;
     s->maxVoices  = voices;
@@ -489,6 +491,185 @@ uint32_t ano_synth_live_overflow(const AnoSynth *s)
 }
 
 // ---------------------------------------------------------------------------
+// The attached composer
+// ---------------------------------------------------------------------------
+
+// Compose one bar and schedule it. Times the composition — this is the audio
+// thread's exposure to the music engine and the only reason hosting it here is
+// a decision rather than an assumption. false = the bar could not be scheduled
+// (the ring is full): the bar is composed and LOST, so callers stop pumping.
+static bool music_pump(AnoSynth *s)
+{
+    uint64_t t0 = ano_timestamp_us();
+    ano_music_advance_bar(s->music, &s->musicBar);
+    uint32_t us = (uint32_t)(ano_timestamp_us() - t0);
+    s->musicBarUs = us;
+    if (us > s->musicBarUsMax)
+        s->musicBarUsMax = us;
+
+    const AnoMusicBar *mb = &s->musicBar;
+    uint32_t bar = s->liveNextBar;
+    if (!ano_synth_live_bar(s, bar, mb->tempo, mb->tempoCount, &mb->params, &mb->affect,
+                            mb->events, mb->eventCount))
+        return false;
+
+    AnoSynthBar *b = bar_at(s, bar);
+    b->meaning    = mb->meaning;
+    b->hasMeaning = true;
+    return true;
+}
+
+// Keep LOOKAHEAD bars standing between the playhead and the end of the score.
+static void music_topup(AnoSynth *s, uint64_t worldFrame)
+{
+    while (ano_synth_live_pending(s, worldFrame) < ANO_SYNTH_LIVE_LOOKAHEAD)
+        if (!music_pump(s))
+            break;
+}
+
+bool ano_synth_attach_music(AnoSynth *s, AnoMusicEngine *music)
+{
+    if (!music || ano_music_next_bar(music) != 0)
+        return false; // the schedule starts at bar 0; a seek rebases, it does not attach
+    if (!ano_synth_live_begin(s, ano_music_bar_quarters(music)))
+        return false; // not idle, or a degenerate meter
+
+    s->music       = music;
+    s->musicBarUs  = s->musicBarUsMax = 0;
+    s->meaningHead = s->meaningTail = 0;
+    while (s->barCount < ANO_SYNTH_LIVE_LOOKAHEAD)
+        if (!music_pump(s)) {
+            s->music = NULL;
+            return false;
+        }
+    return true;
+}
+
+void ano_synth_detach_music(AnoSynth *s)
+{
+    if (atomic_load_explicit(&s->startFrame, memory_order_acquire) == ANO_SYNTH_IDLE)
+        s->music = NULL;
+}
+
+uint32_t ano_synth_music_drain(AnoSynth *s, AnoMusicMeaning *out, uint32_t cap)
+{
+    uint32_t n = 0;
+    while (s->meaningTail < s->meaningHead && n < cap)
+        out[n++] = s->meaningQueue[s->meaningTail++ % ANO_SYNTH_MEANING_QUEUE];
+    return n;
+}
+
+uint32_t ano_synth_music_bar_us(const AnoSynth *s)
+{
+    return s->musicBarUs;
+}
+
+uint32_t ano_synth_music_bar_us_max(const AnoSynth *s)
+{
+    return s->musicBarUsMax;
+}
+
+// ---------------------------------------------------------------------------
+// The generator back-channel (the mixer's hooks; all on the mixer thread)
+// ---------------------------------------------------------------------------
+
+// Every hook below, and the generator itself, is reached through a void* the
+// caller wired into AnoAudioConfig. All four take the SAME one — the synth — and
+// handing one of them anything else is otherwise silent: the audio plays on and
+// the steering simply never arrives. Say so, once, and do nothing.
+static AnoSynth *synth_of(void *user, const char *hook)
+{
+    AnoSynth *s = user;
+    if (s && s->magic == ANO_SYNTH_MAGIC)
+        return s;
+    static bool told;
+    if (!told) {
+        told = true;
+        ano_debug_log(ANO_ERROR,
+                      "synth: %s was given a user pointer that is not an AnoSynth. "
+                      "generatorUser is shared by all four generator hooks; wrap all "
+                      "of them or none.",
+                      hook);
+    }
+    return NULL;
+}
+
+// The bridge's ACMD_MUSIC_*, applied to the attached engine. This is the only
+// path by which the logic thread reaches the composer, and it lands here, on the
+// thread that owns it. A tag arrives as a fixed field, so it is terminated here
+// rather than trusted.
+void ano_synth_control(void *user, const AnoAudioCommand *cmd)
+{
+    AnoSynth *s = synth_of(user, "ano_synth_control");
+    if (!s || !s->music)
+        return;
+
+    char tag[ANO_AUDIO_TAG_MAX];
+    memcpy(tag, cmd->tag, sizeof tag);
+    tag[sizeof tag - 1] = '\0';
+
+    switch ((AnoAudioCommandKind)cmd->kind) {
+    case ACMD_MUSIC_AFFECT:
+        ano_music_set_affect(s->music, cmd->affect[0], cmd->affect[1], cmd->affect[2],
+                             cmd->urgent);
+        break;
+    case ACMD_MUSIC_KEY:
+        ano_music_request_key(s->music, (int)cmd->paramId, cmd->urgent);
+        break;
+    case ACMD_MUSIC_MOTIF:
+        ano_music_request_motif(s->music, tag);
+        break;
+    case ACMD_MUSIC_OVERRIDE:
+        if (!ano_music_set_override(s->music, tag, (double)cmd->value))
+            ano_debug_log(ANO_WARN, "synth: no music parameter named '%s'.", tag);
+        break;
+    case ACMD_MUSIC_RELEASE:
+        ano_music_clear_override(s->music, tag);
+        break;
+    default:
+        break;
+    }
+}
+
+// The bars that started sounding in the block just rendered, as audio events.
+uint32_t ano_synth_poll(void *user, AnoAudioEvent *out, uint32_t cap)
+{
+    AnoSynth *s = synth_of(user, "ano_synth_poll");
+    if (!s)
+        return 0;
+    AnoMusicMeaning m[ANO_SYNTH_MEANING_QUEUE];
+    uint32_t n = ano_synth_music_drain(s, m, cap < ANO_SYNTH_MEANING_QUEUE
+                                                 ? cap
+                                                 : ANO_SYNTH_MEANING_QUEUE);
+    for (uint32_t i = 0; i < n; ++i) {
+        out[i].kind = AEVT_MUSIC_BAR;
+        out[i].u.music = (typeof(out[i].u.music)){
+            .bar            = m[i].bar,
+            .keyTonic       = m[i].keyTonic,
+            .mode           = m[i].mode,
+            .chordDegree    = m[i].chordDegree,
+            .chordInversion = m[i].chordInversion,
+            .cadencePolicy  = m[i].cadencePolicy,
+            .isCadence      = m[i].isCadence,
+            .keyArrived     = m[i].keyArrived,
+            .motifStated    = m[i].motifStated,
+        };
+    }
+    return n;
+}
+
+void ano_synth_stats(void *user, AnoAudioTelemetry *t)
+{
+    AnoSynth *s = synth_of(user, "ano_synth_stats");
+    if (!s)
+        return;
+    t->genUs      = s->musicBarUs;
+    t->genUsMax   = s->musicBarUsMax;
+    t->genLate    = s->liveLate;
+    t->genDropped = s->liveOverflow + s->dropped;
+}
+
+// ---------------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------------
 
@@ -498,6 +679,8 @@ void ano_synth_transport_start(AnoSynth *s, uint64_t worldFrame)
     memset(s->voices, 0, (size_t)s->maxVoices * sizeof *s->voices);
     s->noteCursor = s->barCursor = 0;
     s->dropped    = 0;
+    s->musicBarUsMax = 0;
+    s->meaningHead = s->meaningTail = 0;
     ano_audio_smooth_snap(&s->cutoff, 2500.0f);
     ano_audio_smooth_snap(&s->duckDepth, 0.0f);
     ano_audio_smooth_snap(&s->shimGain, 0.0f);
@@ -526,6 +709,15 @@ void ano_synth_transport_stop(AnoSynth *s)
 
 static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
 {
+    // the bar sounds NOW: release its meaning (composed LOOKAHEAD bars ago).
+    // A full queue means nobody is draining; the oldest goes, not the newest —
+    // a stale cadence is worth less than the current one.
+    if (bar->hasMeaning) {
+        s->meaningQueue[s->meaningHead++ % ANO_SYNTH_MEANING_QUEUE] = bar->meaning;
+        if (s->meaningHead - s->meaningTail > ANO_SYNTH_MEANING_QUEUE)
+            s->meaningTail = s->meaningHead - ANO_SYNTH_MEANING_QUEUE;
+    }
+
     const AnoMusicalParams *p = &bar->params;
     float cutoff = fmaxf(120.0f, p->filterCutoff);
 
@@ -674,10 +866,14 @@ static void synth_render_span(AnoSynth *s, float *const *busMix, uint32_t pos, u
 void ano_synth_generator(void *user, float *const *busMix, uint32_t busCount,
                          uint32_t frames, uint64_t startFrame)
 {
-    AnoSynth *s = user;
+    AnoSynth *s = synth_of(user, "ano_synth_generator");
+    if (!s)
+        return;
     uint64_t t0 = atomic_load_explicit(&s->startFrame, memory_order_acquire);
     if (t0 == ANO_SYNTH_IDLE || !s->scoreReady || busCount < ANO_SYNTH_CONSOLE_BUSES)
         return;
+    if (s->music)
+        music_topup(s, startFrame); // compose ahead of the playhead, then render
     if (startFrame + frames <= t0)
         return;
     uint32_t pos = t0 > startFrame ? (uint32_t)(t0 - startFrame) : 0u;
