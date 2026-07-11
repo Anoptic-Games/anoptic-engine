@@ -32,6 +32,7 @@
 #include "music/music_perc.h"
 #include "music/music_pad.h"
 #include "music/music_counter.h"
+#include "music/music_modifiers.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -2136,6 +2137,354 @@ int main(void)
             }
         }
 #undef GEV_OK
+    }
+
+    // --- modifiers vs musicgen/modifiers/__init__.py ---
+    // Unit cases per modifier on crafted bars covering every tie exemption
+    // (no jitter on ties, no gate on out/both, no strum stagger or echo on
+    // continuations), the echo span mask, the luftpause/pickup interaction,
+    // agogic on the phrase-open downbeat, and compound-meter swing standing
+    // down; then the default chains (plain and perform) end to end on the
+    // per-(layer, bar) streams.
+    {
+#define MOD_OK(ev, X) \
+    (feq((ev).core.start, strtod((X).s, NULL)) && feq((ev).core.dur, strtod((X).d, NULL)) \
+     && (ev).core.pitch == (uint8_t)(X).p && (ev).core.velocity == (uint8_t)(X).v \
+     && strcmp((ev).role, (X).role) == 0 && (ev).core.tie == (uint8_t)(X).tie \
+     && (ev).degree == (uint8_t)(X).deg)
+#define MOD_BUILD(dst, src, layerv) do { \
+        for (size_t b = 0; b < sizeof(src) / sizeof(src)[0]; ++b) { \
+            (dst)[b] = (AnoMusicEvent){ 0 }; \
+            (dst)[b].core = (AnoNoteEvent){ strtod((src)[b].s, NULL), \
+                                            strtod((src)[b].d, NULL), \
+                                            (uint8_t)(src)[b].p, (uint8_t)(src)[b].v, \
+                                            (layerv), (uint8_t)(src)[b].tie }; \
+            (dst)[b].degree = (uint8_t)(src)[b].deg; \
+            strncpy((dst)[b].role, (src)[b].role, sizeof (dst)[b].role - 1); \
+        } \
+    } while (0)
+#define MOD_EXPECT(evs, cnt, exp, msg) do { \
+        CHECK((cnt) == sizeof(exp) / sizeof(exp)[0], msg " count"); \
+        bool okx = (cnt) == sizeof(exp) / sizeof(exp)[0]; \
+        for (uint32_t x = 0; okx && x < (cnt); ++x) \
+            if (!MOD_OK((evs)[x], (exp)[x])) \
+                okx = false; \
+        CHECK(okx, msg " events"); \
+    } while (0)
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } MOD_MEL[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-1", 74, 80, "passing", 0, 2 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p+0", 76, 80, "chord-tone", 0, 3 },
+            { "0x1.9c00000000000p+4", "0x1.0000000000000p-2", 77, 80, "passing", 0, 4 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 79, 80, "chord-tone", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p-1", 76, 76, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 72, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } MOD_PAD[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 60, 74, "chord-tone", 0, 1 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 67, 74, "chord-tone", 0, 5 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 55, 74, "chord-tone", 0, 5 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 64, 74, "chord-tone", 1, 3 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+1", 65, 74, "suspension", 2, 4 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } MOD_ARP[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 84, 64, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-1", 88, 64, "chord-tone", 0, 3 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p-1", 84, 64, "chord-tone", 0, 1 },
+            { "0x1.9800000000000p+4", "0x1.0000000000000p-1", 91, 68, "chord-tone", 0, 5 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 88, 64, "chord-tone", 0, 3 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p+0", 91, 64, "chord-tone", 0, 5 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } MOD_PERC[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-2", 36, 100, "drum:kick", 0, 0 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-2", 42, 64, "drum:chat", 0, 0 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p-2", 38, 96, "drum:snare", 0, 0 },
+            { "0x1.bc00000000000p+4", "0x1.0000000000000p-2", 50, 84, "drum:htom", 0, 0 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } MOD_AG[] = {
+            { "0x0.0p+0", "0x1.0000000000000p+1", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.0000000000000p+1", "0x1.0000000000000p+0", 74, 80, "passing", 0, 2 },
+            { "0x1.8000000000000p+1", "0x1.0000000000000p+0", 76, 80, "chord-tone", 1, 3 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } MOD_MEL7[] = {
+            { "0x1.c000000000000p+4", "0x1.0000000000000p-1", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.c800000000000p+4", "0x1.0000000000000p-1", 74, 80, "passing", 0, 2 },
+            { "0x1.d000000000000p+4", "0x1.0000000000000p+0", 76, 80, "chord-tone", 0, 3 },
+            { "0x1.dc00000000000p+4", "0x1.0000000000000p-2", 77, 80, "passing", 0, 4 },
+            { "0x1.e000000000000p+4", "0x1.0000000000000p+0", 79, 80, "chord-tone", 0, 5 },
+            { "0x1.f000000000000p+4", "0x1.0000000000000p-1", 76, 76, "pickup", 0, 3 },
+            { "0x1.f800000000000p+4", "0x1.0000000000000p-1", 74, 72, "pickup", 1, 2 },
+        };
+
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_SWING[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.8955555555555p+4", "0x1.aaaaaaaaaaaabp-2", 74, 80, "passing", 0, 2 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p+0", 76, 80, "chord-tone", 0, 3 },
+            { "0x1.9caaaaaaaaaabp+4", "0x1.aaaaaaaaaaaabp-3", 77, 80, "passing", 0, 4 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 79, 80, "chord-tone", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p-1", 76, 76, "pickup", 0, 3 },
+            { "0x1.b955555555555p+4", "0x1.aaaaaaaaaaaabp-2", 74, 72, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_SWING68[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-1", 74, 80, "passing", 0, 2 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p+0", 76, 80, "chord-tone", 0, 3 },
+            { "0x1.9c00000000000p+4", "0x1.0000000000000p-2", 77, 80, "passing", 0, 4 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 79, 80, "chord-tone", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p-1", 76, 76, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 72, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_ART[] = {
+            { "0x1.8000000000000p+4", "0x1.ccccccccccccdp-2", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.ccccccccccccdp-2", 74, 80, "passing", 0, 2 },
+            { "0x1.9000000000000p+4", "0x1.ccccccccccccdp-1", 76, 80, "chord-tone", 0, 3 },
+            { "0x1.9c00000000000p+4", "0x1.ccccccccccccdp-3", 77, 80, "passing", 0, 4 },
+            { "0x1.a000000000000p+4", "0x1.ccccccccccccdp-1", 79, 80, "chord-tone", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.ccccccccccccdp-2", 76, 76, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 72, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_ART5[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-2", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-2", 74, 80, "passing", 0, 2 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p-1", 76, 80, "chord-tone", 0, 3 },
+            { "0x1.9c00000000000p+4", "0x1.0000000000000p-3", 77, 80, "passing", 0, 4 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p-1", 79, 80, "chord-tone", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p-2", 76, 76, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 72, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_ACC[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 72, 86, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-1", 74, 78, "passing", 0, 2 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p+0", 76, 82, "chord-tone", 0, 3 },
+            { "0x1.9c00000000000p+4", "0x1.0000000000000p-2", 77, 74, "passing", 0, 4 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 79, 84, "chord-tone", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p-1", 76, 78, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 70, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_PERF_A[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 72, 83, "chord-tone", 0, 1 },
+            { "0x1.87f7ced916873p+4", "0x1.0000000000000p-1", 74, 84, "passing", 0, 2 },
+            { "0x1.8ff7ced916873p+4", "0x1.0000000000000p+0", 76, 84, "chord-tone", 0, 3 },
+            { "0x1.9bf7ced916873p+4", "0x1.0000000000000p-2", 77, 83, "passing", 0, 4 },
+            { "0x1.9ff7ced916873p+4", "0x1.0000000000000p+0", 79, 84, "chord-tone", 0, 5 },
+            { "0x1.aff7ced916873p+4", "0x1.0000000000000p-1", 76, 78, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 72, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_PERF_L[] = {
+            { "0x1.c000000000000p+4", "0x1.0000000000000p-1", 72, 82, "chord-tone", 0, 1 },
+            { "0x1.c7f7ced916873p+4", "0x1.0000000000000p-1", 74, 82, "passing", 0, 2 },
+            { "0x1.cff7ced916873p+4", "0x1.0000000000000p+0", 76, 82, "chord-tone", 0, 3 },
+            { "0x1.dbf7ced916873p+4", "0x1.0000000000000p-2", 77, 81, "passing", 0, 4 },
+            { "0x1.dff7ced916873p+4", "0x1.0000000000000p+0", 79, 81, "chord-tone", 0, 5 },
+            { "0x1.eff7ced916873p+4", "0x1.0000000000000p-1", 76, 74, "pickup", 0, 3 },
+            { "0x1.f800000000000p+4", "0x1.0000000000000p-1", 74, 69, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_PERF_G[] = {
+            { "0x0.0p+0", "0x1.199999999999ap+1", 72, 74, "chord-tone", 0, 1 },
+            { "0x1.ff7ced916872bp+0", "0x1.0000000000000p+0", 74, 76, "passing", 0, 2 },
+            { "0x1.8000000000000p+1", "0x1.0000000000000p+0", 76, 77, "chord-tone", 1, 3 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_ECHO[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 84, 64, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-1", 88, 64, "chord-tone", 0, 3 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p-1", 84, 64, "chord-tone", 0, 1 },
+            { "0x1.9400000000000p+4", "0x1.0000000000000p-1", 88, 35, "echo", 0, 3 },
+            { "0x1.9800000000000p+4", "0x1.0000000000000p-1", 91, 68, "chord-tone", 0, 5 },
+            { "0x1.9c00000000000p+4", "0x1.0000000000000p-1", 84, 35, "echo", 0, 1 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 88, 64, "chord-tone", 0, 3 },
+            { "0x1.a400000000000p+4", "0x1.0000000000000p-1", 91, 37, "echo", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p+0", 91, 64, "chord-tone", 0, 5 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_STRUM[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 55, 74, "chord-tone", 0, 5 },
+            { "0x1.8033333333333p+4", "0x1.fe66666666666p+1", 60, 74, "chord-tone", 0, 1 },
+            { "0x1.8066666666666p+4", "0x1.fccccccccccd0p+1", 64, 74, "chord-tone", 1, 3 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+1", 65, 74, "suspension", 2, 4 },
+            { "0x1.80ccccccccccdp+4", "0x1.f99999999999ap+1", 67, 74, "chord-tone", 0, 5 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_TRANS[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 88, 80, "chord-tone", 0, 3 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-1", 89, 80, "passing", 0, 4 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p+0", 91, 80, "chord-tone", 0, 5 },
+            { "0x1.9c00000000000p+4", "0x1.0000000000000p-2", 93, 80, "passing", 0, 6 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 95, 80, "chord-tone", 0, 7 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p-1", 91, 76, "pickup", 0, 5 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 89, 72, "pickup", 1, 4 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_HUM_M[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 72, 70, "chord-tone", 0, 1 },
+            { "0x1.87e1ee675147fp+4", "0x1.0000000000000p-1", 74, 81, "passing", 0, 2 },
+            { "0x1.9019dfdac68a9p+4", "0x1.0000000000000p+0", 76, 77, "chord-tone", 0, 3 },
+            { "0x1.9be60c38f3669p+4", "0x1.0000000000000p-2", 77, 82, "passing", 0, 4 },
+            { "0x1.9f8f00ef1348bp+4", "0x1.0000000000000p+0", 79, 80, "chord-tone", 0, 5 },
+            { "0x1.b00725c3dee78p+4", "0x1.0000000000000p-1", 76, 83, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 76, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } U_HUM_P[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 60, 80, "chord-tone", 0, 1 },
+            { "0x1.802ece13f4a99p+4", "0x1.0000000000000p+2", 67, 70, "chord-tone", 0, 5 },
+            { "0x1.8024d1a650614p+4", "0x1.0000000000000p+2", 55, 71, "chord-tone", 0, 5 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 64, 69, "chord-tone", 1, 3 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+1", 65, 74, "suspension", 2, 4 },
+        };
+
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } C_MEL0[] = {
+            { "0x1.802679463cfb3p+4", "0x1.ccccccccccccdp-2", 72, 80, "chord-tone", 0, 1 },
+            { "0x1.87aeae9ee45c3p+4", "0x1.ccccccccccccdp-2", 74, 83, "passing", 0, 2 },
+            { "0x1.905fe542e557ep+4", "0x1.ccccccccccccdp-1", 76, 87, "chord-tone", 0, 3 },
+            { "0x1.9b9f559b3d07dp+4", "0x1.ccccccccccccdp-3", 77, 65, "passing", 0, 4 },
+            { "0x1.a01b3d07c84b6p+4", "0x1.ccccccccccccdp-1", 79, 86, "chord-tone", 0, 5 },
+            { "0x1.b01b63d3e4ef0p+4", "0x1.ccccccccccccdp-2", 76, 83, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 62, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } C_MEL1[] = {
+            { "0x1.803687b139c95p+4", "0x1.ccccccccccccdp-2", 72, 89, "chord-tone", 0, 1 },
+            { "0x1.879ef73c0c1fdp+4", "0x1.ccccccccccccdp-2", 74, 79, "passing", 0, 2 },
+            { "0x1.8ffc3d68405b4p+4", "0x1.ccccccccccccdp-1", 76, 86, "chord-tone", 0, 3 },
+            { "0x1.9bc303c07ee0bp+4", "0x1.ccccccccccccdp-3", 77, 77, "passing", 0, 4 },
+            { "0x1.a0569c23b7953p+4", "0x1.ccccccccccccdp-1", 79, 88, "chord-tone", 0, 5 },
+            { "0x1.aff76b3bb83cfp+4", "0x1.ccccccccccccdp-2", 76, 80, "pickup", 0, 3 },
+            { "0x1.b800000000000p+4", "0x1.0000000000000p-1", 74, 59, "pickup", 1, 2 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } C_PAD0[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+2", 55, 73, "chord-tone", 0, 5 },
+            { "0x1.804d1e96c3fc4p+4", "0x1.fe66666666666p+1", 60, 80, "chord-tone", 0, 1 },
+            { "0x1.8066666666666p+4", "0x1.fccccccccccd0p+1", 64, 72, "chord-tone", 1, 3 },
+            { "0x1.8000000000000p+4", "0x1.0000000000000p+1", 65, 74, "suspension", 2, 4 },
+            { "0x1.80e512a94ff00p+4", "0x1.f99999999999ap+1", 67, 77, "chord-tone", 0, 5 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } C_ARP1[] = {
+            { "0x1.8000000000000p+4", "0x1.0000000000000p-1", 84, 66, "chord-tone", 0, 1 },
+            { "0x1.8800000000000p+4", "0x1.0000000000000p-1", 88, 66, "chord-tone", 0, 3 },
+            { "0x1.9000000000000p+4", "0x1.0000000000000p-1", 84, 65, "chord-tone", 0, 1 },
+            { "0x1.9400000000000p+4", "0x1.0000000000000p-1", 88, 36, "echo", 0, 3 },
+            { "0x1.9800000000000p+4", "0x1.0000000000000p-1", 91, 69, "chord-tone", 0, 5 },
+            { "0x1.9c00000000000p+4", "0x1.0000000000000p-1", 84, 36, "echo", 0, 1 },
+            { "0x1.a000000000000p+4", "0x1.0000000000000p+0", 88, 65, "chord-tone", 0, 3 },
+            { "0x1.a400000000000p+4", "0x1.0000000000000p-1", 91, 38, "echo", 0, 5 },
+            { "0x1.b000000000000p+4", "0x1.0000000000000p+0", 91, 64, "chord-tone", 0, 5 },
+        };
+        static const struct { const char *s, *d; int p, v; const char *role; int tie, deg; } C_PERC0[] = {
+            { "0x1.80160fa15db34p+4", "0x1.0000000000000p-2", 36, 99, "drum:kick", 0, 0 },
+            { "0x1.87df5ad96a6a0p+4", "0x1.0000000000000p-2", 42, 70, "drum:chat", 0, 0 },
+            { "0x1.8fdc970f7b9e0p+4", "0x1.0000000000000p-2", 38, 98, "drum:snare", 0, 0 },
+            { "0x1.bc018a43bb40bp+4", "0x1.0000000000000p-2", 50, 87, "drum:htom", 0, 0 },
+        };
+        AnoScale cs = { 0, ANO_MODE_IONIAN };
+        AnoMeter m44 = ano_meter_default();
+        AnoMeter m68 = { 6, 8 };
+        AnoGenParams gp = ano_gen_params_default();
+        gp.noteDensity = 0.55;
+        AnoHarmonicContext ctx6 = { .bar = 6, .scale = cs, .phrasePos = 6,
+                                    .phraseBars = 8, .phraseApex = 5 };
+        AnoHarmonicContext ctx7 = { .bar = 7, .scale = cs, .phrasePos = 7,
+                                    .phraseBars = 8, .phraseApex = -1 };
+        AnoHarmonicContext ctx0 = { .bar = 0, .scale = cs, .phrasePos = 0,
+                                    .phraseBars = 8, .phraseApex = -1 };
+        AnoMusicEvent work[48];
+        uint32_t n;
+        AnoModifier mod;
+
+        mod = ano_mod_swing(0.5);
+        MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_SWING, "swing 4/4");
+        MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m68, &gp, NULL);
+        MOD_EXPECT(work, n, U_SWING68, "swing compound");
+
+        mod = ano_mod_articulate();
+        MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_ART, "articulate lever");
+        mod = ano_mod_articulate_gate(0.5);
+        MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_ART5, "articulate explicit");
+
+        mod = ano_mod_accent();
+        MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_ACC, "accent");
+
+        mod = ano_mod_perform(0.14, 0.4, 0.10, 0.02);
+        MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_PERF_A, "perform apex crest");
+        MOD_BUILD(work, MOD_MEL7, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx7, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_PERF_L, "perform luftpause");
+        MOD_BUILD(work, MOD_AG, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 3, 48, &ctx0, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_PERF_G, "perform agogic");
+
+        mod = ano_mod_echo();
+        MOD_BUILD(work, MOD_ARP, ANO_MUSIC_ARP);
+        n = ano_mod_apply(&mod, work, 6, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_ECHO, "echo mask");
+
+        mod = ano_mod_strum(0.05);
+        MOD_BUILD(work, MOD_PAD, ANO_MUSIC_PAD);
+        n = ano_mod_apply(&mod, work, 5, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_STRUM, "strum ties");
+
+        mod = ano_mod_transpose(1, 2);
+        MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+        n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m44, &gp, NULL);
+        MOD_EXPECT(work, n, U_TRANS, "transpose");
+
+        {
+            AnoMusicRng rr;
+            mod = ano_mod_humanize(0.015, 5.0);
+            ano_music_stream(&rr, "42:modh:0");
+            MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+            n = ano_mod_apply(&mod, work, 7, 48, &ctx6, m44, &gp, &rr);
+            MOD_EXPECT(work, n, U_HUM_M, "humanize melody");
+            mod = ano_mod_humanize(0.010, 3.0);
+            ano_music_stream(&rr, "42:modh:1");
+            MOD_BUILD(work, MOD_PAD, ANO_MUSIC_PAD);
+            n = ano_mod_apply(&mod, work, 5, 48, &ctx6, m44, &gp, &rr);
+            MOD_EXPECT(work, n, U_HUM_P, "humanize pad ties");
+        }
+
+        {
+            AnoModifier chain[4];
+            uint32_t cl;
+            AnoMusicRng rr;
+
+            cl = ano_default_chain(ANO_MUSIC_MELODY, false, chain);
+            ano_music_stream(&rr, "42:mod:melody:6");
+            MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+            n = ano_apply_chain(chain, cl, work, 7, 48, &ctx6, m44, &gp, &rr);
+            MOD_EXPECT(work, n, C_MEL0, "melody default chain");
+
+            cl = ano_default_chain(ANO_MUSIC_MELODY, true, chain);
+            ano_music_stream(&rr, "42:mod:melody:7");
+            MOD_BUILD(work, MOD_MEL, ANO_MUSIC_MELODY);
+            n = ano_apply_chain(chain, cl, work, 7, 48, &ctx6, m44, &gp, &rr);
+            MOD_EXPECT(work, n, C_MEL1, "melody perform chain");
+
+            cl = ano_default_chain(ANO_MUSIC_PAD, false, chain);
+            ano_music_stream(&rr, "42:mod:pad:6");
+            MOD_BUILD(work, MOD_PAD, ANO_MUSIC_PAD);
+            n = ano_apply_chain(chain, cl, work, 5, 48, &ctx6, m44, &gp, &rr);
+            MOD_EXPECT(work, n, C_PAD0, "pad default chain");
+
+            cl = ano_default_chain(ANO_MUSIC_ARP, true, chain);
+            ano_music_stream(&rr, "42:mod:arp:6");
+            MOD_BUILD(work, MOD_ARP, ANO_MUSIC_ARP);
+            n = ano_apply_chain(chain, cl, work, 6, 48, &ctx6, m44, &gp, &rr);
+            MOD_EXPECT(work, n, C_ARP1, "arp perform chain");
+
+            cl = ano_default_chain(ANO_MUSIC_PERC, false, chain);
+            ano_music_stream(&rr, "42:mod:perc:6");
+            MOD_BUILD(work, MOD_PERC, ANO_MUSIC_PERC);
+            n = ano_apply_chain(chain, cl, work, 4, 48, &ctx6, m44, &gp, &rr);
+            MOD_EXPECT(work, n, C_PERC0, "perc default chain");
+        }
+#undef MOD_EXPECT
+#undef MOD_BUILD
+#undef MOD_OK
     }
 
     if (failures) {
