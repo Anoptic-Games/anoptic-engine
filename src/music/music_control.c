@@ -14,6 +14,8 @@
 
 #include <math.h>
 
+#include <string.h>
+
 #include "music_control.h"
 #include "music_ir.h" // AnoPatchName: the value domain of instrument arrays
 
@@ -35,6 +37,8 @@ AnoAffect ano_affect_clamped(AnoAffect a)
 
 AnoMappingTable ano_mapping_table_default(void)
 {
+    AnoMappingTable z;
+    memset(&z, 0, sizeof z); // padding is part of the engine's snapshot
     AnoMappingTable t = {
         .tempoBase = 70.0, .tempoEnergy = 80.0, .tempoValence = 8.0,
         .tempoRange = { 60.0, 160.0 }, .tempoSlewPerBeat = 2.0,
@@ -72,7 +76,8 @@ AnoMappingTable ano_mapping_table_default(void)
         .driveBase = 0.05, .driveEnergy = 0.45,
         .widthBase = 0.55, .widthValence = 0.25,
     };
-    return t;
+    memcpy(&z, &t, sizeof t);
+    return z;
 }
 
 double ano_map_tempo(AnoAffect a, const AnoMappingTable *t)

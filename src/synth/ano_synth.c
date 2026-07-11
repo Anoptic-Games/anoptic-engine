@@ -112,33 +112,60 @@ uint32_t ano_synth_dropped(const AnoSynth *s)
 // BeatClock (TECH_SPEC §11.1, ported verbatim)
 // ---------------------------------------------------------------------------
 
+// Ring accessors. Batch masks are UINT32_MAX, so these are plain indexing.
+static AnoSynthAnchor *anchor_at(const AnoSynth *s, uint32_t i)
+{
+    return &s->anchors[i & s->anchorMask];
+}
+static AnoSynthBar *bar_at(const AnoSynth *s, uint32_t i)
+{
+    return &s->bars[i & s->barMask];
+}
+static AnoSynthNote *note_at(const AnoSynth *s, uint32_t i)
+{
+    return &s->notes[i & s->noteMask];
+}
+
+// The oldest anchor still addressable. Live drops anchors off the back of the
+// ring; every anchor carries its own ABSOLUTE time, so the truncated clock is
+// still exact for any beat at or after the oldest retained one — and the only
+// beats ever queried are at the playhead or ahead of it.
+static uint32_t anchor_floor(const AnoSynth *s)
+{
+    return s->live && s->anchorCount > s->anchorCap ? s->anchorCount - s->anchorCap
+                                                    : 0u;
+}
+
 // A point at the last anchor's beat replaces its bpm; a point before it is an
 // error; otherwise the new anchor's time extends at the PREVIOUS anchor's bpm.
 static bool clock_add(AnoSynth *s, double beat, double bpm)
 {
-    AnoSynthAnchor *last = &s->anchors[s->anchorCount - 1u];
+    AnoSynthAnchor *last = anchor_at(s, s->anchorCount - 1u);
     if (beat < last->beat - 1e-9)
         return false;
     if (fabs(beat - last->beat) < 1e-9) {
         last->bpm = bpm;
         return true;
     }
-    if (s->anchorCount >= s->anchorCap)
+    if (!s->live && s->anchorCount >= s->anchorCap)
         return false;
-    s->anchors[s->anchorCount++] = (AnoSynthAnchor){
-        beat, last->time + (beat - last->beat) * 60.0 / last->bpm, bpm };
+    AnoSynthAnchor add = { beat, last->time + (beat - last->beat) * 60.0 / last->bpm,
+                           bpm };
+    *anchor_at(s, s->anchorCount) = add; // live: retires the oldest
+    s->anchorCount++;
     return true;
 }
 
 // Last anchor at-or-before `beat`, extrapolated at that anchor's bpm.
 static double clock_time_at(const AnoSynth *s, double beat)
 {
-    for (uint32_t i = s->anchorCount; i-- > 0u;) {
-        const AnoSynthAnchor *a = &s->anchors[i];
+    uint32_t floor_ = anchor_floor(s);
+    for (uint32_t i = s->anchorCount; i-- > floor_;) {
+        const AnoSynthAnchor *a = anchor_at(s, i);
         if (beat >= a->beat - 1e-9)
             return a->time + (beat - a->beat) * 60.0 / a->bpm;
     }
-    const AnoSynthAnchor *a = &s->anchors[0];
+    const AnoSynthAnchor *a = anchor_at(s, floor_);
     return a->time + (beat - a->beat) * 60.0 / a->bpm;
 }
 
@@ -157,10 +184,13 @@ bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
     mi_free(s->bars);
     mi_free(s->raw);
     mi_free(s->notes);
+    s->live        = false;
     s->barQuarters = barQuarters;
     s->anchorCap   = tempoCount + 1u;
     s->barCap      = barCount;
     s->rawCap      = eventCount;
+    s->noteCap     = eventCount;
+    s->anchorMask = s->barMask = s->noteMask = UINT32_MAX; // batch: plain arrays
     s->anchors = mi_heap_calloc(s->heap, s->anchorCap, sizeof *s->anchors);
     s->bars    = mi_heap_calloc(s->heap, s->barCap, sizeof *s->bars);
     s->raw     = eventCount ? mi_heap_calloc(s->heap, s->rawCap, sizeof *s->raw) : NULL;
@@ -283,14 +313,179 @@ bool ano_synth_score_end(AnoSynth *s)
 
 uint64_t ano_synth_score_frames(const AnoSynth *s, float tailSeconds)
 {
-    if (!s->scoreReady)
-        return 0;
+    if (!s->scoreReady || s->live)
+        return 0; // a live score has no end
     return s->lastNoteEnd + (uint64_t)(tailSeconds * (float)s->sampleRate);
 }
 
 double ano_synth_time_at(const AnoSynth *s, double beat)
 {
     return s->scoreReady ? clock_time_at(s, beat) : 0.0;
+}
+
+// ---------------------------------------------------------------------------
+// Live scoring: the same schedule, built one bar at a time
+// ---------------------------------------------------------------------------
+
+#define LIVE_NOTES   1024u // ring capacities (powers of two)
+#define LIVE_BARS      16u
+#define LIVE_ANCHORS  256u
+
+bool ano_synth_live_begin(AnoSynth *s, double barQuarters)
+{
+    if (barQuarters <= 0.0)
+        return false;
+    if (atomic_load_explicit(&s->startFrame, memory_order_acquire) != ANO_SYNTH_IDLE)
+        return false; // same contract as score_begin
+    mi_free(s->anchors);
+    mi_free(s->bars);
+    mi_free(s->raw);
+    mi_free(s->notes);
+    s->raw = NULL;
+    s->rawCount = s->rawCap = 0;
+
+    s->live        = true;
+    s->barQuarters = barQuarters;
+    s->anchorCap   = LIVE_ANCHORS;
+    s->barCap      = LIVE_BARS;
+    s->noteCap     = LIVE_NOTES;
+    s->anchorMask  = LIVE_ANCHORS - 1u;
+    s->barMask     = LIVE_BARS - 1u;
+    s->noteMask    = LIVE_NOTES - 1u;
+    s->anchors = mi_heap_calloc(s->heap, s->anchorCap, sizeof *s->anchors);
+    s->bars    = mi_heap_calloc(s->heap, s->barCap, sizeof *s->bars);
+    s->notes   = mi_heap_calloc(s->heap, s->noteCap, sizeof *s->notes);
+    if (!s->anchors || !s->bars || !s->notes)
+        return false;
+
+    s->anchors[0]  = (AnoSynthAnchor){ 0.0, 0.0, 100.0 };
+    s->anchorCount = 1;
+    s->barCount    = 0;
+    s->noteCount   = 0;
+    s->lastNoteEnd = 0;
+    s->liveNextBar = 0;
+    s->liveLate = s->liveOverflow = 0;
+    memset(s->openChain, 0xFF, sizeof s->openChain); // all -1
+    s->scoreReady = true; // live has no separate "end"
+    return true;
+}
+
+// The onset frame, from the clock in force. The bar's tempo points are added
+// before its events, so the ONSET is always knowable here. The sounding
+// DURATION is not — the note's end may reach into a bar that has not arrived —
+// so it is finalized at spawn (synth_spawn_note).
+static void live_stamp(AnoSynth *s, AnoSynthNote *n)
+{
+    n->frame = (uint64_t)(clock_time_at(s, n->ev.start) * (double)s->sampleRate);
+    n->durS  = 0.0f;
+}
+
+// The appended run [from, noteCount) is sorted within itself (the generator
+// emits by (start, pitch)), but an echo can spill past the next bar's downbeat,
+// so the run may overlap the tail already queued. Insertion-sort it back into
+// place — stable, and never behind the cursor (a note there has already sounded).
+// Equal frames keep append order, which IS the batch path's `seq` order.
+static void live_order(AnoSynth *s, uint32_t from)
+{
+    for (uint32_t i = from; i < s->noteCount; ++i) {
+        uint32_t j = i;
+        while (j > s->noteCursor && note_at(s, j - 1u)->frame > note_at(s, j)->frame) {
+            AnoSynthNote t = *note_at(s, j - 1u);
+            *note_at(s, j - 1u) = *note_at(s, j);
+            *note_at(s, j) = t;
+            --j;
+        }
+    }
+}
+
+bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
+                        const AnoTempoPoint *tempo, uint32_t tempoCount,
+                        const AnoMusicalParams *p, const AnoMusicAffect *a,
+                        const AnoNoteEvent *events, uint32_t eventCount)
+{
+    if (!s->live || !p || !a || bar != s->liveNextBar)
+        return false;
+    if (s->barCount - s->barCursor >= s->barCap)
+        return false; // the bar ring is full: the driver ran too far ahead
+
+    // tempo first: every frame stamp below reads the clock
+    for (uint32_t i = 0; i < tempoCount; ++i)
+        if (!clock_add(s, tempo[i].beat, tempo[i].bpm))
+            return false;
+
+    AnoSynthBar *b = bar_at(s, s->barCount);
+    b->params     = *p;
+    b->affect     = *a;
+    b->frame      = (uint64_t)(clock_time_at(s, (double)bar * s->barQuarters)
+                          * (double)s->sampleRate);
+    b->barSeconds = (float)(s->barQuarters * 60.0 / p->tempoBpm);
+    s->barCount++;
+
+    // merge_ties, incrementally: the open chains persist across the barline
+    uint32_t from = s->noteCount;
+    for (uint32_t i = 0; i < eventCount; ++i) {
+        const AnoNoteEvent *ev = &events[i];
+        if (ev->dur <= 0.0 || ev->layer >= ANO_MUSIC_LAYER_COUNT || ev->velocity == 0u)
+            continue;
+        int32_t *slot = &s->openChain[ev->layer][ev->pitch & 0x7F];
+        if (ev->tie == ANO_MUSIC_TIE_IN || ev->tie == ANO_MUSIC_TIE_BOTH) {
+            if (*slot >= 0 && (uint32_t)*slot >= s->noteCursor) {
+                AnoSynthNote *head = note_at(s, (uint32_t)*slot);
+                if (fabs(head->ev.start + head->ev.dur - ev->start) < 1e-9) {
+                    head->ev.dur = round10(head->ev.dur + ev->dur);
+                    if (ev->tie == ANO_MUSIC_TIE_IN)
+                        *slot = -1; // the chain closed
+                    continue;
+                }
+            } else if (*slot >= 0) {
+                // the head already sounded — it cannot grow now, so the
+                // continuation stands alone (the orphan the linter licenses)
+                s->liveLate++;
+                *slot = -1;
+            }
+        }
+        if (s->noteCount - s->noteCursor >= s->noteCap) {
+            s->liveOverflow++;
+            continue;
+        }
+        AnoSynthNote *n = note_at(s, s->noteCount);
+        n->ev  = *ev;
+        n->seq = s->noteCount;
+        if (ev->tie == ANO_MUSIC_TIE_OUT || ev->tie == ANO_MUSIC_TIE_BOTH) {
+            n->ev.tie = ANO_MUSIC_TIE_NONE;
+            *slot = (int32_t)s->noteCount;
+        }
+        live_stamp(s, n);
+        s->noteCount++;
+    }
+    live_order(s, from);
+    s->liveNextBar = bar + 1u;
+    return true;
+}
+
+uint32_t ano_synth_live_pending(const AnoSynth *s, uint64_t worldFrame)
+{
+    if (!s->live)
+        return 0;
+    uint64_t t0 = atomic_load_explicit(&s->startFrame, memory_order_acquire);
+    if (t0 == ANO_SYNTH_IDLE)
+        return s->barCount - s->barCursor; // nothing has sounded yet
+    uint64_t scoreF = worldFrame > t0 ? worldFrame - t0 : 0u;
+    uint32_t n = 0;
+    for (uint32_t i = s->barCursor; i < s->barCount; ++i)
+        if (bar_at(s, i)->frame > scoreF)
+            n++;
+    return n;
+}
+
+uint32_t ano_synth_live_late(const AnoSynth *s)
+{
+    return s->liveLate;
+}
+
+uint32_t ano_synth_live_overflow(const AnoSynth *s)
+{
+    return s->liveOverflow;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,8 +553,18 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
     memcpy(s->instruments, p->instruments, sizeof s->instruments);
 }
 
-static void synth_spawn_note(AnoSynth *s, const AnoSynthNote *n)
+static void synth_spawn_note(AnoSynth *s, AnoSynthNote *n)
 {
+    if (s->live) {
+        // A note's END may lie in a bar whose tempo points had not arrived when
+        // the note was appended — a long pad note, or a tie. The lookahead means
+        // the clock covers it BY NOW, so this is the first moment the sounding
+        // duration is knowable, and it is the value the batch path computes with
+        // its complete map.
+        double on  = clock_time_at(s, n->ev.start);
+        double off = clock_time_at(s, n->ev.start + n->ev.dur);
+        n->durS = (float)(off - on);
+    }
     AnoSynthVoice *v = NULL;
     for (uint32_t i = 0; i < s->maxVoices; ++i) {
         if (!s->voices[i].active) {
@@ -480,16 +685,17 @@ void ano_synth_generator(void *user, float *const *busMix, uint32_t busCount,
 
     while (pos < frames) {
         // schedule priority at equal frames: params, then notes (kind order)
-        while (s->barCursor < s->barCount && s->bars[s->barCursor].frame <= scoreF)
-            synth_apply_bar(s, &s->bars[s->barCursor++]);
-        while (s->noteCursor < s->noteCount && s->notes[s->noteCursor].frame <= scoreF)
-            synth_spawn_note(s, &s->notes[s->noteCursor++]);
+        while (s->barCursor < s->barCount && bar_at(s, s->barCursor)->frame <= scoreF)
+            synth_apply_bar(s, bar_at(s, s->barCursor++));
+        while (s->noteCursor < s->noteCount
+               && note_at(s, s->noteCursor)->frame <= scoreF)
+            synth_spawn_note(s, note_at(s, s->noteCursor++));
 
         uint64_t next = UINT64_MAX;
         if (s->barCursor < s->barCount)
-            next = s->bars[s->barCursor].frame;
-        if (s->noteCursor < s->noteCount && s->notes[s->noteCursor].frame < next)
-            next = s->notes[s->noteCursor].frame;
+            next = bar_at(s, s->barCursor)->frame;
+        if (s->noteCursor < s->noteCount && note_at(s, s->noteCursor)->frame < next)
+            next = note_at(s, s->noteCursor)->frame;
 
         uint32_t span = frames - pos;
         if (next != UINT64_MAX && next - scoreF < (uint64_t)span)
@@ -602,7 +808,7 @@ uint32_t ano_synth_console_setup(AnoAudioOfflineEvent *out, uint32_t cap)
 uint32_t ano_synth_console_automation(const AnoSynth *s, AnoAudioOfflineEvent *out,
                                       uint32_t cap)
 {
-    if (!s->scoreReady || !out || cap < s->barCount * 9u)
+    if (!s->scoreReady || s->live || !out || cap < s->barCount * 9u)
         return 0;
     uint32_t n = 0;
     for (uint32_t b = 0; b < s->barCount; ++b) {

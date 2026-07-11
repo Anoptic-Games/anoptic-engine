@@ -19,25 +19,6 @@
 
 #include "music_form.h"
 
-typedef struct AnoDramaturgConfig
-{
-    bool    enabled;          // true; false => inert
-    double  leniency;         // 0.5: 0 strict .. 1 lenient
-    double  accrueAbove;      // 0.55
-    double  debtGain;         // 0.12
-    int     escalatePhrases;  // 2
-    uint8_t holdTier;         // ANO_MUSIC_ARP
-    int     registerCapMax;   // 6
-    int     escalationCap;    // 4
-    double  bigSpend;         // 0.7
-    int     maxDebt;          // 96
-    bool    earnedDissonance; // true (M14)
-    bool    motifLifecycle;   // true (M15)
-    bool    lamentBass;       // true (B4)
-} AnoDramaturgConfig;
-
-AnoDramaturgConfig ano_dramaturg_config_default(void);
-
 typedef struct AnoLedger
 {
     int    barsSinceAuthentic;

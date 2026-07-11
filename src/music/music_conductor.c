@@ -44,7 +44,10 @@ static const AnoTexture TEXTURES[5] = {
 
 AnoEngineConfig ano_engine_config_default(void)
 {
-    AnoEngineConfig c = { 0 };
+    // memset, not `= {0}`: C leaves PADDING unspecified under an initializer, and
+    // this struct is copied into the engine, whose bytes are its snapshot.
+    AnoEngineConfig c;
+    memset(&c, 0, sizeof c);
     c.meter = ano_meter_default();
     c.params = ano_gen_params_default();
     c.mode = ANO_MODE_NONE;

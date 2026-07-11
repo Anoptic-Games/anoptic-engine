@@ -18,10 +18,13 @@
 
 AnoVoicingConfig ano_voicing_config_default(void)
 {
-    return (AnoVoicingConfig){
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoVoicingConfig k = {
         .voices = 4, .lo = 52, .hi = 79,
         .maxAdjacentGap = 12, .center = 64.0, .maxVoiceMove = 7,
     };
+    return k;
 }
 
 #define MAX_VOICES 6

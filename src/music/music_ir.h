@@ -28,12 +28,6 @@
 
 #define ANO_METER_MAX_SLOTS 32 // 12/8 needs 24; headroom beyond any real meter
 
-typedef struct AnoMeter
-{
-    int numerator;
-    int denominator;
-} AnoMeter;
-
 static inline AnoMeter ano_meter_default(void) { return (AnoMeter){ 4, 4 }; }
 
 // Bar length in quarter-note beats (4/4 -> 4.0, 6/8 -> 3.0).
@@ -175,33 +169,6 @@ AnoChord ano_ctx_chord_at(const AnoHarmonicContext *ctx, double beatOffset);
 // anoptic_music.h is the bridge shape this reduces to at the synth boundary)
 // ---------------------------------------------------------------------------
 
-// Tier-2 texture state, phrase-quantized by the conductor's rotation.
-typedef enum AnoTexture
-{
-    ANO_TEX_NONE = 0, // "" — pre-texture-system behavior
-    ANO_TEX_MONOPHONIC,
-    ANO_TEX_HOMOPHONIC,
-    ANO_TEX_DOUBLED,
-    ANO_TEX_IMITATIVE,
-    ANO_TEX_COUNTER,
-} AnoTexture;
-
-// Semantic patch names (the mapper's energy tiers pick among these; the synth
-// registry maps them to voice variants at the bridge).
-typedef enum AnoPatchName
-{
-    ANO_PATCH_NONE = 0,
-    ANO_PATCH_WARM,
-    ANO_PATCH_BRIGHT,
-    ANO_PATCH_ROUND,
-    ANO_PATCH_DRIVEN,
-    ANO_PATCH_SOFT,
-    ANO_PATCH_HARD,
-    ANO_PATCH_PLUCK,
-    ANO_PATCH_GLASS,
-    ANO_PATCH_COUNT,
-} AnoPatchName;
-
 extern const char *const ANO_PATCH_NAMES[ANO_PATCH_COUNT]; // "" first
 
 // All knobs that multiply into draws or costs are double (never float: the
@@ -234,5 +201,18 @@ typedef struct AnoGenParams
 } AnoGenParams;
 
 AnoGenParams ano_gen_params_default(void);
+
+// The generation-side params reduced to the public bridge shape the synth
+// consumes (anoptic_music.h). The ordered layers list collapses to a bitmask —
+// the synth only ever asks whether a layer is sounding, never in what order the
+// generators ran — and the doubles narrow to the float the synth's smoothers
+// hold. This is the whole of the music->synth parameter boundary.
+AnoMusicalParams ano_gen_params_bridge(const AnoGenParams *p);
+
+// The affect triple as the synth's console consumes it.
+static inline AnoMusicAffect ano_affect_bridge(const double a[3])
+{
+    return (AnoMusicAffect){ (float)a[0], (float)a[1], (float)a[2] };
+}
 
 #endif // ANO_MUSIC_IR_H

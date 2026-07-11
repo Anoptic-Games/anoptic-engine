@@ -170,18 +170,31 @@ struct AnoSynth
     float   *bell;       // bellFrames mono at sampleRate
     uint64_t bellFrames;
 
-    // Score (score_begin/end lifetime; exact-count allocations).
+    // Score (score_begin/end or live_begin lifetime; exact-count allocations).
+    //
+    // anchors/bars/notes are RINGS in live mode and plain arrays in batch. The
+    // counts and cursors are ABSOLUTE in both, and the mask is what differs:
+    // (cap - 1) live, UINT32_MAX batch — so `x[i & mask]` is `x[i]` in batch and
+    // the same cursors, the same deadline loop and the same generator serve both.
     double         barQuarters;
     AnoSynthAnchor *anchors;
-    uint32_t       anchorCount, anchorCap;
+    uint32_t       anchorCount, anchorCap, anchorMask;
     AnoSynthBar    *bars;
-    uint32_t       barCount, barCap;
-    AnoNoteEvent   *raw;      // load staging (unmerged)
+    uint32_t       barCount, barCap, barMask;
+    AnoNoteEvent   *raw;      // batch load staging (unmerged)
     uint32_t       rawCount, rawCap;
-    AnoSynthNote   *notes;    // merged + frame-stamped + sorted
-    uint32_t       noteCount;
-    uint64_t       lastNoteEnd; // score frames
+    AnoSynthNote   *notes;    // merged + frame-stamped + deadline-ordered
+    uint32_t       noteCount, noteCap, noteMask;
+    uint64_t       lastNoteEnd; // score frames (batch)
     bool           scoreReady;
+
+    // Live mode: the tie chains still open across the barline, keyed as in
+    // merge_ties but holding the ABSOLUTE note index of the chain's head so a
+    // continuation arriving with the next bar can still extend it.
+    bool     live;
+    uint32_t liveNextBar; // the bar index live_bar expects next
+    int32_t  openChain[ANO_MUSIC_LAYER_COUNT][128];
+    uint32_t liveLate, liveOverflow;
 
     // Transport. IDLE = generator renders nothing and touches nothing.
     _Atomic uint64_t startFrame;

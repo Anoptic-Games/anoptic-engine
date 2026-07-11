@@ -35,10 +35,13 @@ static const AnoDrum FILL_VOICES[4] = {
 
 AnoPercConfig ano_perc_config_default(void)
 {
-    return (AnoPercConfig){
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoPercConfig k = {
         .fillBaseProb = 0.25, .fillTensionWeight = 0.55, .ghostVelocity = 52,
         .kickVel = 100, .snareVel = 96, .chatVel = 64, .ohatVel = 70, .crashVel = 106,
     };
+    return k;
 }
 
 // Ghost-candidate slots, in the prototype's tuple order.

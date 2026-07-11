@@ -27,43 +27,6 @@
 
 #define ANO_BAR_MAX_EVENTS 256
 
-typedef struct AnoFormConfig
-{
-    bool   cadential64;    // B1
-    bool   periods;        // B2
-    double periodProb;     // 0.65
-    bool   hypermeter;     // B3
-    bool   bassInversions; // B4
-    bool   split64;        // D3 (needs cadential64)
-} AnoFormConfig;
-
-typedef struct AnoTextureConfig
-{
-    bool doubling;  // C1
-    bool animate;   // C2
-    bool imitation; // C3
-    bool rotate;    // C4
-    bool counter;   // C5
-} AnoTextureConfig;
-
-typedef struct AnoClockConfig
-{
-    bool   codetta;          // D2
-    bool   extension;
-    bool   elision;
-    double codettaPayoff;    // 0.45
-    int    codettaBars;      // 2
-    double extensionTension; // 0.7
-    double elisionEnergy;    // 0.75
-} AnoClockConfig;
-
-typedef struct AnoTieConfig
-{
-    bool anacrusis;   // D1
-    bool suspension;
-    bool syncopation;
-} AnoTieConfig;
-
 typedef struct AnoEngineConfig
 {
     AnoMeter     meter;

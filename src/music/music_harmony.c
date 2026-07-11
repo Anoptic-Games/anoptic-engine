@@ -18,7 +18,9 @@
 
 AnoHarmonyConfig ano_harmony_config_default(void)
 {
-    return (AnoHarmonyConfig){
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoHarmonyConfig k = {
         .dominantTensionBias  = 1.6,
         .tonicCalmBias        = 1.2,
         .repeatPenalty        = 0.25,
@@ -26,6 +28,7 @@ AnoHarmonyConfig ano_harmony_config_default(void)
         .phraseOpenTonicBoost = 1.6,
         .tonicSuppress        = 0.05,
     };
+    return k;
 }
 
 // FUNCTION_TRANSITIONS rows in the prototype's dict insertion order — the
