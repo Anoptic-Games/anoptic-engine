@@ -111,7 +111,7 @@ int main(void)
         for (uint32_t b = 0; b < BARS && same; ++b) {
             ano_music_advance_bar(pub, &pb);
             ano_engine_advance_bar(&priv, &pr);
-            same = pb.bar == pr.bar && pb.eventCount == pr.eventCount
+            same = pb.meaning.bar == pr.bar && pb.eventCount == pr.eventCount
                    && pb.tempoCount == pr.tempoPointCount
                    && pb.params.tempoBpm == pr.params.tempoBpm
                    && pb.params.layersActive != 0u;
@@ -136,11 +136,11 @@ int main(void)
         int chordsSeen = 0;
         for (uint32_t b = 0; b < 64u; ++b) {
             ano_music_advance_bar(e, &pb);
-            cadences += pb.isCadence;
-            keyArrivals += pb.keyArrived;
-            if (pb.chordDegree >= 1 && pb.chordDegree <= 7)
+            cadences += pb.meaning.isCadence;
+            keyArrivals += pb.meaning.keyArrived;
+            if (pb.meaning.chordDegree >= 1 && pb.meaning.chordDegree <= 7)
                 chordsSeen++;
-            CHECK(pb.keyTonic >= 0 && pb.keyTonic < 12, "key is a pitch class");
+            CHECK(pb.meaning.keyTonic >= 0 && pb.meaning.keyTonic < 12, "key is a pitch class");
         }
         CHECK(cadences > 4u, "cadences are reported");
         CHECK(keyArrivals > 0u, "the wander's key arrivals are reported");
@@ -187,7 +187,7 @@ int main(void)
         bool same = true;
         for (uint32_t b = 0; b < 12u && same; ++b) {
             ano_music_advance_bar(e, &pb);
-            same = pb.bar == future[b].bar && pb.eventCount == future[b].eventCount;
+            same = pb.meaning.bar == future[b].meaning.bar && pb.eventCount == future[b].eventCount;
             for (uint32_t i = 0; i < pb.eventCount && same; ++i)
                 same = ev_eq(&pb.events[i], &future[b].events[i]);
         }

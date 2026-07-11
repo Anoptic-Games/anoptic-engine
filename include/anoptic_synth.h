@@ -188,6 +188,51 @@ uint32_t ano_synth_live_late(const AnoSynth *s);
 uint32_t ano_synth_live_overflow(const AnoSynth *s);
 
 // ---------------------------------------------------------------------------
+// The music engine as the driver: `audio <- synth <- music`
+// ---------------------------------------------------------------------------
+// Attach a music engine and the generator feeds itself: at every block it tops
+// the schedule up to ANO_SYNTH_LIVE_LOOKAHEAD bars, composing in-thread. The
+// caller starts the transport and the piece plays for as long as it is asked
+// to — no score, no ahead-of-time generation, no bound on its length.
+//
+// Attach performs the live_begin (the meter comes from the engine) and primes
+// the lookahead, so a hand-rolled live_bar driver is only for a caller feeding
+// bars from somewhere other than a music engine. Idle only. The engine must be
+// at bar 0 and must outlive the attachment; the synth does not own it, and once
+// attached only the audio thread may touch it.
+bool ano_synth_attach_music(AnoSynth *s, AnoMusicEngine *music);
+
+// Idle only. Bars already scheduled still play; the schedule simply stops
+// growing, and the engine is the caller's again.
+void ano_synth_detach_music(AnoSynth *s);
+
+// Bars that have STARTED SOUNDING since the last drain, oldest first. The
+// meaning is held back from generation (LOOKAHEAD bars early) to the barline it
+// belongs to, so a game reacting to a cadence reacts when the cadence is
+// audible. Drained by the mixer each block into AEVT_MUSIC_BAR; a caller that
+// leaves them un-drained for ANO_SYNTH_MEANING_QUEUE bars loses the oldest.
+// Audio-thread side: call it from the same context that calls the generator.
+#define ANO_SYNTH_MEANING_QUEUE 16u
+uint32_t ano_synth_music_drain(AnoSynth *s, AnoMusicMeaning *out, uint32_t cap);
+
+// What composing a bar on the audio thread actually costs: the last bar, and
+// the worst since transport_start, in microseconds. The number that matters is
+// this against the block period — it is the whole risk of hosting the composer
+// in the callback, and it is what the telemetry ships.
+uint32_t ano_synth_music_bar_us(const AnoSynth *s);
+uint32_t ano_synth_music_bar_us_max(const AnoSynth *s);
+
+// The generator back-channel, implemented (anoptic_audio.h). Pass these as
+// .generatorControl / .generatorPoll / .generatorStats with the synth as
+// .generatorUser, and the attached music engine becomes steerable from the
+// logic thread — ACMD_MUSIC_* down through the bridge, AEVT_MUSIC_BAR back up,
+// the composer's cost in the telemetry frame. The engine itself is never
+// touched off the audio thread. Offline takes .generatorControl only.
+void     ano_synth_control(void *user, const AnoAudioCommand *cmd);
+uint32_t ano_synth_poll(void *user, AnoAudioEvent *out, uint32_t cap);
+void     ano_synth_stats(void *user, AnoAudioTelemetry *t);
+
+// ---------------------------------------------------------------------------
 // Console helpers
 // ---------------------------------------------------------------------------
 

@@ -177,8 +177,17 @@ struct AnoAudioMixer
     uint32_t           clippedSamples; // clip-guard hits since init
 
     // Attached block generator (the synth seam); immutable while running.
-    AnoAudioGenerator generator;
-    void             *generatorUser;
+    AnoAudioGenerator        generator;
+    void                    *generatorUser;
+    AnoAudioGeneratorControl generatorControl;
+    AnoAudioGeneratorPoll    generatorPoll;
+    AnoAudioGeneratorStats   generatorStats;
+
+    // Generator events, staged. Lossless like the retirement passes: what the
+    // events ring will not take this block stays here and is offered again.
+#define ANO_AUDIO_GEN_EVENTS 16u
+    AnoAudioEvent genPending[ANO_AUDIO_GEN_EVENTS];
+    uint32_t      genPendingCount;
 
     // Listener (latest applied; realtime: acquired from the seqlock per block).
     AnoAudioListener listener;

@@ -19,8 +19,12 @@
 #include <anoptic_logging.h>
 
 // Guard the ring element sizes (copied per push/pop, sized capacity * these).
+// The command budget went 160 -> 192 for the ACMD_MUSIC_* name field: a motif
+// tag and a parameter name are strings, and a fixed field is the only way to
+// carry one through a POD ring that copies by value. At the default capacity
+// that is 16 KiB more for the whole ring.
 _Static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
-_Static_assert(sizeof(AnoAudioCommand) <= 160u, "AnoAudioCommand grew past 160 bytes; revisit the command ring");
+_Static_assert(sizeof(AnoAudioCommand) <= 192u, "AnoAudioCommand grew past 192 bytes; revisit the command ring");
 
 // The audio world singleton. One per program, owned by the engine entry point.
 static AnoAudioMixer *g_mixer;
@@ -126,8 +130,11 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     mx->busCount        = buses;
     mx->smoothCoef      = expf(-1.0f / (0.030f * (float)rate));
     mx->smoothCoefBlock = expf(-(float)bf / (0.030f * (float)rate));
-    mx->generator       = c.generator;
-    mx->generatorUser   = c.generatorUser;
+    mx->generator        = c.generator;
+    mx->generatorUser    = c.generatorUser;
+    mx->generatorControl = c.generatorControl;
+    mx->generatorPoll    = c.generatorPoll;
+    mx->generatorStats   = c.generatorStats;
     atomic_init(&mx->underruns, 0u);
     atomic_init(&mx->mixerRun, false);
     atomic_init(&mx->deviceRun, false);

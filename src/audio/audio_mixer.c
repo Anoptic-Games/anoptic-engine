@@ -455,6 +455,16 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
         return;
     }
 
+    case ACMD_MUSIC_AFFECT:
+    case ACMD_MUSIC_KEY:
+    case ACMD_MUSIC_MOTIF:
+    case ACMD_MUSIC_OVERRIDE:
+    case ACMD_MUSIC_RELEASE:
+        // the mixer owns no music: it forwards these, it does not read them
+        if (mx->generatorControl)
+            mx->generatorControl(mx->generatorUser, cmd);
+        return;
+
     default:
         ano_debug_log(ANO_WARN, "audio: unknown command kind %u; dropped.", cmd->kind);
         return;
@@ -585,6 +595,24 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
         memset(slot, 0, sizeof *slot); // FREE
     }
 
+    // generator events (a composing generator's facts about the block that just
+    // sounded), lossless on the same terms: staged here, offered until taken.
+    if (mx->generatorPoll && mx->bridge) {
+        if (mx->genPendingCount < ANO_AUDIO_GEN_EVENTS)
+            mx->genPendingCount += mx->generatorPoll(
+                mx->generatorUser, mx->genPending + mx->genPendingCount,
+                ANO_AUDIO_GEN_EVENTS - mx->genPendingCount);
+        uint32_t sent = 0;
+        while (sent < mx->genPendingCount
+               && ano_audio_emit_event(mx->bridge, &mx->genPending[sent]))
+            sent++;
+        if (sent) {
+            mx->genPendingCount -= sent;
+            memmove(mx->genPending, mx->genPending + sent,
+                    (size_t)mx->genPendingCount * sizeof *mx->genPending);
+        }
+    }
+
     mx->blockIndex++;
 }
 
@@ -623,6 +651,8 @@ void *ano_audio_mixer_main(void *arg)
             .blockFrames    = mx->blockFrames,
             .clippedSamples = mx->clippedSamples,
         };
+        if (mx->generatorStats)
+            mx->generatorStats(mx->generatorUser, &t); // the generator meters itself
         ano_audio_publish_telemetry(mx->bridge, &t);
     }
     return NULL;
@@ -664,8 +694,9 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
     mx->smoothCoef      = expf(-1.0f / (0.030f * (float)rate));
     mx->smoothCoefBlock = expf(-(float)bf / (0.030f * (float)rate));
     mx->bridge          = NULL;
-    mx->generator       = d.generator;
-    mx->generatorUser   = d.generatorUser;
+    mx->generator        = d.generator;
+    mx->generatorUser    = d.generatorUser;
+    mx->generatorControl = d.generatorControl;
     if (!ano_audio_graph_init(mx, d.busLayout))
         return false;
     float *scratch = mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float));

@@ -245,7 +245,6 @@ void ano_music_advance_bar(AnoMusicEngine *e, AnoMusicBar *out)
     int keyBefore = e->scale.tonic;
     ano_engine_advance_bar(e, &r);
 
-    out->bar = r.bar;
     out->eventCount = r.eventCount < ANO_MUSIC_MAX_BAR_EVENTS
                           ? r.eventCount
                           : ANO_MUSIC_MAX_BAR_EVENTS;
@@ -259,18 +258,30 @@ void ano_music_advance_bar(AnoMusicEngine *e, AnoMusicBar *out)
         out->tempo[i] = (AnoTempoPoint){ r.tempoPoints[i].beat, r.tempoPoints[i].bpm };
 
     // what the bar MEANS: the payload gameplay reacts to
-    out->keyTonic = e->scale.tonic;
-    out->mode = e->scale.mode;
-    out->chordDegree = r.context.chord.valid ? r.context.chord.degree : 0;
-    out->chordInversion = r.context.chord.inversion;
-    out->cadencePolicy = r.context.cadenceSlot == ANO_CTX_SLOT_NONE
-                             ? ANO_CADENCE_NONE
-                             : r.context.cadencePolicy;
-    out->isCadence = r.context.cadenceSlot == ANO_CTX_SLOT_CADENCE;
-    out->keyArrived = e->scale.tonic != keyBefore; // the modulation landed here
-    out->motifStated = false;
-    for (uint32_t i = 0; i < r.eventCount && !out->motifStated; ++i)
-        out->motifStated = strcmp(r.events[i].role, "motif") == 0;
+    AnoMusicMeaning *m = &out->meaning;
+    m->bar = r.bar;
+    m->keyTonic = e->scale.tonic;
+    m->mode = e->scale.mode;
+    m->chordDegree = r.context.chord.valid ? r.context.chord.degree : 0;
+    m->chordInversion = r.context.chord.inversion;
+    m->cadencePolicy = r.context.cadenceSlot == ANO_CTX_SLOT_NONE
+                           ? ANO_CADENCE_NONE
+                           : r.context.cadencePolicy;
+    m->isCadence = r.context.cadenceSlot == ANO_CTX_SLOT_CADENCE;
+    m->keyArrived = e->scale.tonic != keyBefore; // the modulation landed here
+    m->motifStated = false;
+    for (uint32_t i = 0; i < r.eventCount && !m->motifStated; ++i)
+        m->motifStated = strcmp(r.events[i].role, "motif") == 0;
+}
+
+double ano_music_bar_quarters(const AnoMusicEngine *e)
+{
+    return ano_meter_bar_quarters(e->config.meter);
+}
+
+int ano_music_next_bar(const AnoMusicEngine *e)
+{
+    return e->st.bar;
 }
 
 // ---------------------------------------------------------------------------
