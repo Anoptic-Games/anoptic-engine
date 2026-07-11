@@ -13,7 +13,7 @@ What is Windows-specific here (and must be re-implemented per platform):
   - per-monitor-DPI-aware-v2 so monitor rects/sizes are PHYSICAL pixels
   - 'M' menu toggle synthesized as a Win32 key message with a real scancode
 
-What is shared (engine side, same on every target) -- lines in anoptic.log, each flushed
+What is shared (engine side, same on every target) -- lines in logs/<stamp>_ano.log, each flushed
 every ANO_PERF_WINDOW_FRAMES (128) frames, so line cadence scales with fps:
   [frame] <fps> fps <ms> ms wall            -- wall-clock throughput (profiling.c: anoperf_flush)
   [frametime] n=128 min= p50= p90= p99= p999= max= ms  -- per-frame dt percentiles, same window
@@ -131,7 +131,7 @@ def _warmup_cut(fps, seconds=WARMUP_S):
 
 def parse_stream(lines):
     """Fold engine log lines into (fps, total_ms, swap_MiB, frusta, frametime) sample lists.
-    Shared by the live tail and offline replay of a captured anoptic.log."""
+    Shared by the live tail and offline replay of a captured _ano.log."""
     fps, tot, sw, fru = [], [], [], []
     ft = {"p50": [], "p90": [], "p99": [], "p999": [], "max": []}
     for line in lines:
@@ -169,14 +169,17 @@ def summarize(fps, tot, sw, fru, ft, front=True):
 
 
 def run_once(exe, w, h, dur, menu, churn, env):
-    log = os.path.join(os.path.dirname(exe), "anoptic.log")
-    for _ in range(50):                          # prior process may still hold the handle
-        try: os.remove(log); break
-        except FileNotFoundError: break
-        except PermissionError: time.sleep(0.1)
+    # Logging refactor (b85e213): each run writes logs/<session-stamp>_ano.log, no fixed anoptic.log.
+    # Snapshot preexisting logs, then pick up whichever new file this process opens.
+    logdir = os.path.join(os.path.dirname(exe), "logs")
+    def _logfiles():
+        try: return {os.path.join(logdir, n) for n in os.listdir(logdir) if n.endswith("_ano.log")}
+        except FileNotFoundError: return set()
+    pre = _logfiles()
 
     p = subprocess.Popen([exe], env=env)
     t0 = time.perf_counter()
+    log = None
     hwnd = None
     while time.perf_counter() - t0 < 15 and not hwnd:
         hwnd = _find_window(p.pid); time.sleep(0.1)
@@ -197,6 +200,10 @@ def run_once(exe, w, h, dur, menu, churn, env):
             except Exception: pass
             resizes += 1; nxt = resizes * (CHURN_MS / 1000.0)
         if f is None:
+            if log is None:                      # newest log file this process created
+                fresh = _logfiles() - pre
+                if fresh: log = max(fresh, key=os.path.getmtime)
+                else: time.sleep(0.01); continue
             if os.path.exists(log): f = open(log, encoding="utf-8", errors="replace")
             else: time.sleep(0.01); continue
         chunk = f.readline()
