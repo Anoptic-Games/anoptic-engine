@@ -13,6 +13,8 @@ set(ANO_MUSIC_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/music_dramaturg.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_signatures.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_imitation.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_bass.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_melody.c
 )
 target_sources(anoptic_core PRIVATE ${ANO_MUSIC_SOURCES})
 set_source_files_properties(${ANO_MUSIC_SOURCES} PROPERTIES
