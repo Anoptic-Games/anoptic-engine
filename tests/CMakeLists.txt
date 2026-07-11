@@ -211,6 +211,13 @@ target_compile_definitions(anotest_synthscene PRIVATE
 add_test(NAME anoptic_synthscene COMMAND anotest_synthscene 8)
 set_tests_properties(anoptic_synthscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
 
+# Phase 6 step-1 gate: determinism kernel bit-compatibility with CPython 3.12
+# (BLAKE2b-8 tags, MT19937 seeding + draw semantics, banker's rounding).
+add_executable(anotest_music anotest_music.c)
+target_link_libraries(anotest_music PRIVATE anoptic_core)
+add_test(NAME anoptic_music COMMAND anotest_music)
+set_tests_properties(anoptic_music PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
