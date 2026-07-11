@@ -79,7 +79,7 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
 - **Deletes:** `loadFile`, `openEngineFile`, `struct Buffer`, and with them the
   `fseek`/`ftell` size-then-read antipattern and the `free()`-vs-`ano_aligned_free`
   inconsistency.
-- **Tests:** the existing suite is the harness — `build.bat 3` and `7` green, the vk
+- **Tests:** the existing suite is the harness — `build.bat 5` and `8` green, the vk
   tests exercising every migrated pipeline; one manual engine run launched from a
   foreign CWD.
 - **Bar:** zero shader-path strings outside `ano_res_load` calls; suite green.
@@ -150,7 +150,7 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
   scheduling and byte-budget metering stay rejected until a starvation bench exists.
   Missing file completes FAILED through the ticket, identical to sync.
 - **Deletes:** nothing — sync `ano_res_load` remains the primitive the IO thread calls.
-- **Tests:** **TSan is mandatory** (`build.sh 5` under WSL — concurrent code touched);
+- **Tests:** **TSan is mandatory** (`build.sh 7` under WSL — concurrent code touched);
   `anotest_res_async` fuzz with the logfuzz oracle style: N producer threads submit
   randomized loads under full-ring pressure, every ticket completes exactly once, async
   bytes byte-identical to a sync load of the same name, FAILED count == missing-file

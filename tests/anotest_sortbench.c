@@ -19,7 +19,7 @@
  *
  * Deterministic (fixed seeds). argv[1] overrides the item count (default 6000).
  * Built always so it cannot rot; DISABLED in ctest -- run by hand from a -O3 build
- * (build.bat 7 / build.sh 7). Prints a table, exits 0 (1 only if results are WRONG:
+ * (build.bat 8 / build.sh 8). Prints a table, exits 0 (1 only if results are WRONG:
  * every timed sort is verified against the streaming comparator's order once). */
 
 #include <stdio.h>
