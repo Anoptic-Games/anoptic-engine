@@ -13,6 +13,7 @@
  * Exit 0 == pass. */
 
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -33,6 +34,7 @@
 #include "music/music_pad.h"
 #include "music/music_counter.h"
 #include "music/music_modifiers.h"
+#include "music/music_conductor.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -2485,6 +2487,222 @@ int main(void)
 #undef MOD_EXPECT
 #undef MOD_BUILD
 #undef MOD_OK
+    }
+
+    // --- MusicEngine end-to-end vs gen/conductor.py ---
+    // Two walks compared per bar via the section-8.4 BLAKE2b-8 event digests
+    // (raw pre-modifier IR and the post-chain surface), plus counts, tempo
+    // points, and the sounding chord. W1 is the prototype's default config
+    // (static path, pad+bass) — the raw_events core case. W2 turns on the
+    // mapper, dramaturg, authored signatures, cadence rit, phrase grooves,
+    // wander, all form/texture/tie/clock waves, apex and counterpoint, and
+    // drives a scripted affect trajectory with an override, a key request,
+    // and a motif request.
+    {
+        static const struct { int bar, rawc, finc, tpc, vc, deg, inv, applied;
+                               unsigned long long rawd, find; } W1[] = {
+            { 0, 6, 6, 1, 80, 1, 0, 0, 2274547683904801102ull, 5834486187027493778ull },
+            { 1, 6, 6, 0, 80, 6, 0, 0, 15995577983108369078ull, 6636003920386235724ull },
+            { 2, 6, 6, 0, 80, 4, 0, 0, 1594091945434367172ull, 1337259656681027440ull },
+            { 3, 6, 6, 0, 80, 5, 0, 0, 3333166267219445611ull, 12020337102912724770ull },
+            { 4, 6, 6, 0, 80, 3, 0, 0, 378456582491459162ull, 2616478879556612973ull },
+            { 5, 5, 5, 0, 80, 5, 0, 0, 12654964253649263885ull, 5566767418170871562ull },
+            { 6, 6, 6, 0, 80, 5, 0, 0, 7797809039338272240ull, 14585574099027630095ull },
+            { 7, 6, 6, 0, 80, 1, 0, 0, 4649306396407470405ull, 14085667028528810168ull },
+            { 8, 6, 6, 0, 80, 2, 0, 0, 2053811924522810495ull, 10038080773962004830ull },
+            { 9, 6, 6, 0, 80, 5, 0, 0, 9090604647225174858ull, 14742192901393918848ull },
+            { 10, 6, 6, 0, 80, 6, 0, 0, 4017152857878216361ull, 6075211000547973670ull },
+            { 11, 6, 6, 0, 80, 5, 0, 0, 2950342001773957280ull, 4820828819313001304ull },
+            { 12, 6, 6, 0, 80, 6, 0, 0, 7594955616173022961ull, 16063251473053793442ull },
+            { 13, 6, 6, 0, 80, 5, 0, 0, 5765931381492245158ull, 18369528363420905100ull },
+            { 14, 6, 6, 0, 80, 4, 0, 0, 5694630730721514097ull, 13559402937007763599ull },
+            { 15, 6, 6, 0, 80, 5, 0, 0, 14587355338561423673ull, 9660710633133856025ull },
+            { 16, 6, 6, 0, 80, 1, 0, 0, 1042167349571720078ull, 4657757561111268993ull },
+            { 17, 6, 6, 0, 80, 4, 0, 0, 4641348603024374313ull, 15744652924264697807ull },
+            { 18, 6, 6, 0, 80, 5, 0, 0, 10660377909458733372ull, 11344239854300212190ull },
+            { 19, 6, 6, 0, 80, 6, 0, 0, 17685832791063942305ull, 14659910908750561285ull },
+            { 20, 6, 6, 0, 80, 1, 0, 0, 4877895854841805777ull, 18197085121028448710ull },
+            { 21, 6, 6, 0, 80, 2, 0, 0, 10212916225940139254ull, 4350438258066514575ull },
+            { 22, 6, 6, 0, 80, 5, 0, 0, 13297687939540639215ull, 7273936802628215029ull },
+            { 23, 6, 6, 0, 80, 6, 0, 0, 8720622918034695388ull, 53565453475569392ull },
+        };
+
+        static const struct { int bar, rawc, finc, tpc, vc, deg, inv, applied;
+                               unsigned long long rawd, find; } W2[] = {
+            { 0, 24, 24, 1, 80, 1, 0, 0, 3674985047242920540ull, 6743359745003718761ull },
+            { 1, 25, 25, 0, 76, 6, 0, 0, 13222898443600202040ull, 7569857146335159240ull },
+            { 2, 23, 23, 0, 78, 4, 0, 0, 18219254587901111493ull, 11563794669810032870ull },
+            { 3, 24, 24, 0, 76, 5, 0, 0, 8620377346454357909ull, 4304930913445251775ull },
+            { 4, 24, 24, 0, 79, 3, 0, 0, 7268489480898124288ull, 12868497155352698783ull },
+            { 5, 23, 23, 0, 76, 1, 2, 0, 16212473386924246564ull, 10009909513399475436ull },
+            { 6, 29, 29, 0, 78, 5, 0, 0, 8152223926241523818ull, 6343589232018003062ull },
+            { 7, 26, 26, 3, 76, 1, 0, 0, 2932777775633672032ull, 12405921867450924357ull },
+            { 8, 31, 37, 4, 87, 1, 0, 0, 7046407082370958320ull, 368471589912875981ull },
+            { 9, 31, 37, 2, 83, 5, 1, 0, 9537443991409637972ull, 9086294427405239110ull },
+            { 10, 30, 35, 0, 85, 3, 0, 0, 11128092267644643916ull, 3352491943800103890ull },
+            { 11, 31, 37, 0, 83, 5, 0, 0, 15909406073927589150ull, 1854256390498082443ull },
+            { 12, 29, 34, 0, 86, 3, 0, 0, 5197809930855327005ull, 15889320873504964860ull },
+            { 13, 30, 36, 0, 83, 5, 0, 0, 2114418684156028180ull, 9606253362165436775ull },
+            { 14, 32, 38, 0, 85, 5, 0, 0, 14649076682276368902ull, 2295734419052059875ull },
+            { 15, 26, 32, 0, 83, 6, 0, 0, 5928333318404458516ull, 5779145348792562206ull },
+            { 16, 26, 26, 2, 91, 5, 0, 0, 2490711015040061174ull, 4480560279704951409ull },
+            { 17, 25, 25, 0, 87, 6, 0, 0, 5272957849158038118ull, 13121925545507154415ull },
+            { 18, 24, 24, 0, 89, 5, 0, 0, 18219873007893432413ull, 15921755477631414938ull },
+            { 19, 25, 25, 0, 87, 7, 0, 0, 3145652701380121356ull, 6997925578543798530ull },
+            { 20, 25, 25, 0, 91, 6, 0, 0, 7133131259825842966ull, 904492983231679985ull },
+            { 21, 25, 25, 0, 90, 2, 0, 0, 5267595772122757974ull, 2378656761888904013ull },
+            { 22, 26, 26, 0, 89, 5, 0, 0, 7088662196257589112ull, 11777672286682143498ull },
+            { 23, 24, 24, 0, 87, 6, 0, 0, 15730271251225770119ull, 108935573583082377ull },
+            { 24, 28, 28, 4, 81, 1, 2, 0, 9363726692494174497ull, 599557486987899664ull },
+            { 25, 22, 22, 4, 71, 1, 0, 0, 14465043310661872513ull, 1583514163176078423ull },
+            { 26, 21, 21, 4, 71, 2, 0, 0, 5883825690057325683ull, 7751585764067632219ull },
+            { 27, 20, 20, 2, 67, 5, 0, 0, 9692491869594230106ull, 8012912637175997238ull },
+            { 28, 19, 19, 0, 69, 7, 0, 0, 6052968016125069227ull, 3815013276041719342ull },
+            { 29, 20, 20, 0, 67, 1, 0, 0, 3738094328613346906ull, 13069294063258840004ull },
+            { 30, 20, 20, 0, 70, 7, 0, 0, 8763410921827413100ull, 4285378595085334390ull },
+            { 31, 20, 20, 0, 67, 6, 0, 0, 9215503321870215103ull, 9455268147136622604ull },
+            { 32, 21, 21, 0, 69, 5, 0, 0, 1679238570943200024ull, 1668232365910267074ull },
+            { 33, 18, 18, 3, 67, 1, 0, 0, 14379057068792021565ull, 7347552862751095457ull },
+            { 34, 22, 22, 1, 71, 6, 0, 0, 1578817848531728145ull, 13326010072364137955ull },
+            { 35, 16, 16, 0, 67, 5, 0, 0, 3251236231525365104ull, 10108246156129002256ull },
+            { 36, 43, 56, 4, 79, 1, 0, 0, 9523493003507872703ull, 10159514010117895053ull },
+            { 37, 44, 57, 4, 87, 2, 0, 0, 1728011134687319725ull, 4806807447265536352ull },
+            { 38, 42, 62, 4, 97, 7, 0, 0, 4124917205251112211ull, 13805181991293359722ull },
+            { 39, 44, 57, 4, 94, 1, 0, 0, 17058352790184645658ull, 12446725231328731643ull },
+            { 40, 45, 65, 4, 96, 2, 0, 0, 13120677702936749248ull, 6296757165892485151ull },
+            { 41, 37, 50, 4, 94, 5, 0, 0, 2321823340627124924ull, 4928068671154056715ull },
+            { 42, 48, 70, 1, 98, 6, 0, 0, 689990588262263770ull, 12360472764938475197ull },
+            { 43, 47, 63, 0, 94, 4, 0, 0, 11729331940780542506ull, 4658250248448425633ull },
+            { 44, 8, 8, 4, 86, 5, 0, 0, 1457909859881453395ull, 12248063253045648952ull },
+            { 45, 9, 9, 4, 74, 5, 0, 0, 601315557021382394ull, 16537664570972849389ull },
+            { 46, 9, 9, 4, 67, 1, 0, 0, 4758376417294473337ull, 7893150905550689731ull },
+            { 47, 9, 9, 4, 63, 1, 2, 0, 5679271565438731681ull, 9252659425023969564ull },
+        };
+        static AnoMusicEngine eng; // large caches; static, single-threaded
+        static AnoBarResult res;
+
+        {
+            AnoEngineConfig cfg = ano_engine_config_default();
+            ano_engine_init(&eng, 42, &cfg);
+            for (size_t i = 0; i < sizeof W1 / sizeof W1[0]; ++i) {
+                ano_engine_advance_bar(&eng, &res);
+                CHECK(res.bar == W1[i].bar && (int)res.rawEventCount == W1[i].rawc
+                      && (int)res.eventCount == W1[i].finc
+                      && (int)res.tempoPointCount == W1[i].tpc,
+                      "W1 counts");
+                CHECK(res.params.velocityCenter == W1[i].vc, "W1 velocity");
+                CHECK(res.context.chord.degree == W1[i].deg
+                      && res.context.chord.inversion == W1[i].inv
+                      && res.context.chord.applied == W1[i].applied,
+                      "W1 chord");
+                uint64_t rawd = ano_events_digest(res.rawEvents, res.rawEventCount);
+                uint64_t find = ano_events_digest(res.events, res.eventCount);
+                if (rawd != W1[i].rawd || find != W1[i].find)
+                    printf("  W1 bar %d digest mismatch (raw %llu vs %llu)\n",
+                           W1[i].bar, (unsigned long long)rawd,
+                           (unsigned long long)W1[i].rawd);
+                CHECK(rawd == W1[i].rawd, "W1 raw digest");
+                CHECK(find == W1[i].find, "W1 final digest");
+            }
+        }
+
+        {
+            AnoEngineConfig cfg = ano_engine_config_default();
+            cfg.hasMapper = true;
+            cfg.mapper = ano_mapping_table_default();
+            cfg.hasDramaturg = true;
+            cfg.dramaturg = ano_dramaturg_config_default();
+            AnoMotif hero = { 0 }, threat = { 0 };
+            hero.n = 4; hero.shape = ANO_SHAPE_ARCH;
+            {
+                static const int RC[8] = { 0, 4, 4, 2, 6, 2, 8, 4 };
+                static const int CT[4] = { 0, 2, 1, 0 };
+                for (int j = 0; j < 4; ++j) {
+                    hero.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                    hero.contour[j] = CT[j];
+                }
+            }
+            threat.n = 3; threat.shape = ANO_SHAPE_DESCENT;
+            {
+                static const int RC[6] = { 0, 2, 2, 2, 4, 4 };
+                static const int CT[3] = { 0, -1, -2 };
+                for (int j = 0; j < 3; ++j) {
+                    threat.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                    threat.contour[j] = CT[j];
+                }
+            }
+            cfg.motifLibrary[0] = (AnoSignatureMotif){ "hero", hero, 0.9 };
+            cfg.motifLibrary[1] = (AnoSignatureMotif){ "threat", threat, 0.5 };
+            cfg.motifLibraryCount = 2;
+            cfg.cadenceRit = 0.12;
+            cfg.phraseGroove = true;
+            cfg.wanderPhrases = 4;
+            cfg.form.cadential64 = true;
+            cfg.form.periods = true;
+            cfg.form.hypermeter = true;
+            cfg.form.bassInversions = true;
+            cfg.form.split64 = true;
+            cfg.texture.doubling = true;
+            cfg.texture.animate = true;
+            cfg.texture.imitation = true;
+            cfg.texture.rotate = true;
+            cfg.texture.counter = true;
+            cfg.ties.anacrusis = true;
+            cfg.ties.suspension = true;
+            cfg.ties.syncopation = true;
+            cfg.clock.codetta = true;
+            cfg.clock.extension = true;
+            cfg.clock.elision = true;
+            cfg.melody.planApex = true;
+            cfg.melody.counterpoint = true;
+            ano_engine_init(&eng, 42, &cfg);
+            for (size_t i = 0; i < sizeof W2 / sizeof W2[0]; ++i) {
+                switch (W2[i].bar) {
+                case 8:
+                    ano_engine_set_affect(&eng, NAN, 0.65, 0.8, false);
+                    break;
+                case 16:
+                    ano_engine_set_affect(&eng, 0.6, NAN, NAN, true);
+                    break;
+                case 24:
+                    ano_engine_set_affect(&eng, NAN, 0.3, 0.08, false);
+                    break;
+                case 28:
+                    eng.overrides.hasReverbSend = true;
+                    eng.overrides.reverbSend = 0.5;
+                    ano_engine_request_key(&eng, 7, false);
+                    break;
+                case 36:
+                    ano_engine_set_affect(&eng, NAN, 0.9, 0.3, false);
+                    ano_engine_request_motif(&eng, "hero");
+                    break;
+                case 44:
+                    eng.overrides.hasReverbSend = false;
+                    ano_engine_set_affect(&eng, -0.5, 0.2, NAN, false);
+                    break;
+                default:
+                    break;
+                }
+                ano_engine_advance_bar(&eng, &res);
+                CHECK(res.bar == W2[i].bar && (int)res.rawEventCount == W2[i].rawc
+                      && (int)res.eventCount == W2[i].finc
+                      && (int)res.tempoPointCount == W2[i].tpc,
+                      "W2 counts");
+                CHECK(res.params.velocityCenter == W2[i].vc, "W2 velocity");
+                CHECK(res.context.chord.degree == W2[i].deg
+                      && res.context.chord.inversion == W2[i].inv
+                      && res.context.chord.applied == W2[i].applied,
+                      "W2 chord");
+                uint64_t rawd = ano_events_digest(res.rawEvents, res.rawEventCount);
+                uint64_t find = ano_events_digest(res.events, res.eventCount);
+                if (rawd != W2[i].rawd || find != W2[i].find)
+                    printf("  W2 bar %d digest mismatch (raw ok=%d, counts %u/%u)\n",
+                           W2[i].bar, rawd == W2[i].rawd, res.rawEventCount,
+                           res.eventCount);
+                CHECK(rawd == W2[i].rawd, "W2 raw digest");
+                CHECK(find == W2[i].find, "W2 final digest");
+            }
+        }
     }
 
     if (failures) {
