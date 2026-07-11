@@ -26,9 +26,6 @@
 #include "music_modifiers.h"
 #include "music_pad.h"
 
-static const char *const LAYER_TAGS[ANO_MUSIC_LAYER_COUNT] = {
-    "pad", "bass", "melody", "counter", "arp", "perc",
-};
 static const int8_t DEFAULT_CADENCE_CYCLE[4] = {
     ANO_CADENCE_AUTHENTIC, ANO_CADENCE_HALF, ANO_CADENCE_DECEPTIVE, ANO_CADENCE_AUTHENTIC,
 };
@@ -1462,7 +1459,7 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
             uint32_t cl = ano_default_chain(layer, cfg->performChains, chain);
             if (cl) {
                 AnoMusicRng r;
-                eng_stream3(e, &r, "mod", LAYER_TAGS[layer], bar);
+                eng_stream3(e, &r, "mod", ANO_LAYER_NAMES[layer], bar);
                 n = ano_apply_chain(chain, cl, buf, n, ANO_BAR_MAX_EVENTS, &ctx,
                                     cfg->meter, &params, &r);
             }
