@@ -20,6 +20,7 @@ set(ANO_MUSIC_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/music_pad.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_counter.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_modifiers.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_conductor.c
 )
 target_sources(anoptic_core PRIVATE ${ANO_MUSIC_SOURCES})
 set_source_files_properties(${ANO_MUSIC_SOURCES} PROPERTIES
