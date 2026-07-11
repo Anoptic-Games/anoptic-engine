@@ -5,6 +5,14 @@ set(ANO_MUSIC_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/music_theory.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_harmony.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_voicing.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_ir.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_control.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_gen.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_motif.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_form.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_dramaturg.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_signatures.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_imitation.c
 )
 target_sources(anoptic_core PRIVATE ${ANO_MUSIC_SOURCES})
 set_source_files_properties(${ANO_MUSIC_SOURCES} PROPERTIES

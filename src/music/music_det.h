@@ -77,4 +77,10 @@ double ano_music_round(double x, int ndigits);
 // Python 3 round(x) -> int: half-to-even to an integer.
 int64_t ano_music_round_int(double x);
 
+// Python float floor division (a // b): CPython's float_divmod quotient with
+// its snap-to-integral correction — NOT plain floor(a/b), which can differ
+// by 1 when fp division and the exact quotient fall on opposite sides of an
+// integer. wx != 0.
+double ano_music_floordiv(double vx, double wx);
+
 #endif // ANO_MUSIC_DET_H

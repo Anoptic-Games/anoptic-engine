@@ -17,6 +17,14 @@
 
 #include "music/music_det.h"
 #include "music/music_theory.h"
+#include "music/music_ir.h"
+#include "music/music_control.h"
+#include "music/music_gen.h"
+#include "music/music_motif.h"
+#include "music/music_form.h"
+#include "music/music_dramaturg.h"
+#include "music/music_signatures.h"
+#include "music/music_imitation.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -318,6 +326,1139 @@ int main(void)
         CHECK(ano_snap_to_scale(C, 61) == 62 && ano_snap_to_scale(C, 63) == 64, "snap");
         CHECK(ano_diatonic_shift(C, 60, 3) == 65 && ano_diatonic_shift(C, 61, -2) == 59,
               "diatonic shift");
+    }
+
+    // --- IR tier: Meter derivations vs musicgen/ir.py (CPython 3.12.6) ---
+    // bar_of exercises ano_music_floordiv (Python float //), and every round
+    // is banker's; starts include off-grid and 1-ULP-adjacent positions.
+    {
+        static const struct { int num, den; double barQ; int slots, compound, pulses, pulseSlots; double pulseQ; } M[] = {
+            { 4, 4, 0x1.0000000000000p+2, 16, 0, 4, 4, 0x1.0000000000000p+0 },
+            { 3, 4, 0x1.8000000000000p+1, 12, 0, 3, 4, 0x1.0000000000000p+0 },
+            { 6, 8, 0x1.8000000000000p+1, 12, 1, 2, 6, 0x1.8000000000000p+0 },
+            { 2, 4, 0x1.0000000000000p+1, 8, 0, 2, 4, 0x1.0000000000000p+0 },
+            { 12, 8, 0x1.8000000000000p+2, 24, 1, 4, 6, 0x1.8000000000000p+0 },
+            { 9, 8, 0x1.2000000000000p+2, 18, 1, 3, 6, 0x1.8000000000000p+0 },
+            { 5, 4, 0x1.4000000000000p+2, 20, 0, 5, 4, 0x1.0000000000000p+0 },
+            { 7, 8, 0x1.c000000000000p+1, 14, 0, 7, 2, 0x1.0000000000000p-1 },
+        };
+        static const double W[][24] = {
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.c000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0 },
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0 },
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.c000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0 },
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.c000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0 },
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.c000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0 },
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0 },
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0 },
+            { 0x1.0000000000000p+2, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 0x1.0000000000000p+0 },
+        };
+        static const int SS[][7] = {
+            { 0, 4, 8, 12 }, // count 4
+            { 0, 4, 8 }, // count 3
+            { 0, 6 }, // count 2
+            { 0, 4 }, // count 2
+            { 0, 6, 12, 18 }, // count 4
+            { 0, 6, 12 }, // count 3
+            { 0, 4, 8, 12, 16 }, // count 5
+            { 0, 2, 4, 6, 8, 10, 12 }, // count 7
+        };
+        static const int SSN[] = { 4, 3, 2, 2, 4, 3, 5, 7 };
+
+    // --- bar_of / beat_in_bar / slot_of vectors ---
+        static const struct { int num, den; double start; int bar; double beat; int slot; } P[] = {
+            { 4, 4, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 4, 4, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 4, 4, 0x1.e000000000000p+1, 0, 0x1.3000000000000p+2, 15 },
+            { 4, 4, 0x1.0000000000000p+2, 1, 0x1.0000000000000p+0, 0 },
+            { 4, 4, 0x1.1000000000000p+2, 1, 0x1.4000000000000p+0, 1 },
+            { 4, 4, 0x1.fffffffffff8fp+2, 1, 0x1.3ffffffffff8fp+2, 16 },
+            { 4, 4, 0x1.8000000000000p+3, 3, 0x1.0000000000000p+0, 0 },
+            { 4, 4, 0x1.9100000000000p+6, 25, 0x1.4000000000000p+0, 1 },
+            { 4, 4, 0x1.0c00000000000p+5, 8, 0x1.4000000000000p+1, 6 },
+            { 4, 4, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 4, 4, 0x1.8333333333333p+2, 1, 0x1.8666666666666p+1, 8 },
+            { 4, 4, 0x1.7ffffffffffffp+1, 0, 0x1.fffffffffffffp+1, 12 },
+            { 4, 4, 0x1.8000000000001p+1, 0, 0x1.0000000000000p+2, 12 },
+            { 4, 4, 0x1.7e00000000000p+5, 11, 0x1.3000000000000p+2, 15 },
+            { 3, 4, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 3, 4, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 3, 4, 0x1.e000000000000p+1, 1, 0x1.c000000000000p+0, 3 },
+            { 3, 4, 0x1.0000000000000p+2, 1, 0x1.0000000000000p+1, 4 },
+            { 3, 4, 0x1.1000000000000p+2, 1, 0x1.2000000000000p+1, 5 },
+            { 3, 4, 0x1.fffffffffff8fp+2, 2, 0x1.7ffffffffff1ep+1, 8 },
+            { 3, 4, 0x1.8000000000000p+3, 4, 0x1.0000000000000p+0, 0 },
+            { 3, 4, 0x1.9100000000000p+6, 33, 0x1.2000000000000p+1, 5 },
+            { 3, 4, 0x1.0c00000000000p+5, 11, 0x1.8000000000000p+0, 2 },
+            { 3, 4, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 3, 4, 0x1.8333333333333p+2, 2, 0x1.0ccccccccccccp+0, 0 },
+            { 3, 4, 0x1.7ffffffffffffp+1, 0, 0x1.fffffffffffffp+1, 12 },
+            { 3, 4, 0x1.8000000000001p+1, 1, 0x1.0000000000002p+0, 0 },
+            { 3, 4, 0x1.7e00000000000p+5, 15, 0x1.e000000000000p+1, 11 },
+            { 6, 8, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 6, 8, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 6, 8, 0x1.e000000000000p+1, 1, 0x1.c000000000000p+0, 3 },
+            { 6, 8, 0x1.0000000000000p+2, 1, 0x1.0000000000000p+1, 4 },
+            { 6, 8, 0x1.1000000000000p+2, 1, 0x1.2000000000000p+1, 5 },
+            { 6, 8, 0x1.fffffffffff8fp+2, 2, 0x1.7ffffffffff1ep+1, 8 },
+            { 6, 8, 0x1.8000000000000p+3, 4, 0x1.0000000000000p+0, 0 },
+            { 6, 8, 0x1.9100000000000p+6, 33, 0x1.2000000000000p+1, 5 },
+            { 6, 8, 0x1.0c00000000000p+5, 11, 0x1.8000000000000p+0, 2 },
+            { 6, 8, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 6, 8, 0x1.8333333333333p+2, 2, 0x1.0ccccccccccccp+0, 0 },
+            { 6, 8, 0x1.7ffffffffffffp+1, 0, 0x1.fffffffffffffp+1, 12 },
+            { 6, 8, 0x1.8000000000001p+1, 1, 0x1.0000000000002p+0, 0 },
+            { 6, 8, 0x1.7e00000000000p+5, 15, 0x1.e000000000000p+1, 11 },
+            { 2, 4, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 2, 4, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 2, 4, 0x1.e000000000000p+1, 1, 0x1.6000000000000p+1, 7 },
+            { 2, 4, 0x1.0000000000000p+2, 2, 0x1.0000000000000p+0, 0 },
+            { 2, 4, 0x1.1000000000000p+2, 2, 0x1.4000000000000p+0, 1 },
+            { 2, 4, 0x1.fffffffffff8fp+2, 3, 0x1.7ffffffffff1ep+1, 8 },
+            { 2, 4, 0x1.8000000000000p+3, 6, 0x1.0000000000000p+0, 0 },
+            { 2, 4, 0x1.9100000000000p+6, 50, 0x1.4000000000000p+0, 1 },
+            { 2, 4, 0x1.0c00000000000p+5, 16, 0x1.4000000000000p+1, 6 },
+            { 2, 4, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 2, 4, 0x1.8333333333333p+2, 3, 0x1.0ccccccccccccp+0, 0 },
+            { 2, 4, 0x1.7ffffffffffffp+1, 1, 0x1.ffffffffffffep+0, 4 },
+            { 2, 4, 0x1.8000000000001p+1, 1, 0x1.0000000000001p+1, 4 },
+            { 2, 4, 0x1.7e00000000000p+5, 23, 0x1.6000000000000p+1, 7 },
+            { 12, 8, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 12, 8, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 12, 8, 0x1.e000000000000p+1, 0, 0x1.3000000000000p+2, 15 },
+            { 12, 8, 0x1.0000000000000p+2, 0, 0x1.4000000000000p+2, 16 },
+            { 12, 8, 0x1.1000000000000p+2, 0, 0x1.5000000000000p+2, 17 },
+            { 12, 8, 0x1.fffffffffff8fp+2, 1, 0x1.7ffffffffff1ep+1, 8 },
+            { 12, 8, 0x1.8000000000000p+3, 2, 0x1.0000000000000p+0, 0 },
+            { 12, 8, 0x1.9100000000000p+6, 16, 0x1.5000000000000p+2, 17 },
+            { 12, 8, 0x1.0c00000000000p+5, 5, 0x1.2000000000000p+2, 14 },
+            { 12, 8, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 12, 8, 0x1.8333333333333p+2, 1, 0x1.0ccccccccccccp+0, 0 },
+            { 12, 8, 0x1.7ffffffffffffp+1, 0, 0x1.fffffffffffffp+1, 12 },
+            { 12, 8, 0x1.8000000000001p+1, 0, 0x1.0000000000000p+2, 12 },
+            { 12, 8, 0x1.7e00000000000p+5, 7, 0x1.b000000000000p+2, 23 },
+            { 9, 8, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 9, 8, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 9, 8, 0x1.e000000000000p+1, 0, 0x1.3000000000000p+2, 15 },
+            { 9, 8, 0x1.0000000000000p+2, 0, 0x1.4000000000000p+2, 16 },
+            { 9, 8, 0x1.1000000000000p+2, 0, 0x1.5000000000000p+2, 17 },
+            { 9, 8, 0x1.fffffffffff8fp+2, 1, 0x1.1ffffffffff8fp+2, 14 },
+            { 9, 8, 0x1.8000000000000p+3, 2, 0x1.0000000000000p+2, 12 },
+            { 9, 8, 0x1.9100000000000p+6, 22, 0x1.2000000000000p+1, 5 },
+            { 9, 8, 0x1.0c00000000000p+5, 7, 0x1.8000000000000p+1, 8 },
+            { 9, 8, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 9, 8, 0x1.8333333333333p+2, 1, 0x1.4666666666666p+1, 6 },
+            { 9, 8, 0x1.7ffffffffffffp+1, 0, 0x1.fffffffffffffp+1, 12 },
+            { 9, 8, 0x1.8000000000001p+1, 0, 0x1.0000000000000p+2, 12 },
+            { 9, 8, 0x1.7e00000000000p+5, 10, 0x1.e000000000000p+1, 11 },
+            { 5, 4, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 5, 4, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 5, 4, 0x1.e000000000000p+1, 0, 0x1.3000000000000p+2, 15 },
+            { 5, 4, 0x1.0000000000000p+2, 0, 0x1.4000000000000p+2, 16 },
+            { 5, 4, 0x1.1000000000000p+2, 0, 0x1.5000000000000p+2, 17 },
+            { 5, 4, 0x1.fffffffffff8fp+2, 1, 0x1.fffffffffff1ep+1, 12 },
+            { 5, 4, 0x1.8000000000000p+3, 2, 0x1.8000000000000p+1, 8 },
+            { 5, 4, 0x1.9100000000000p+6, 20, 0x1.4000000000000p+0, 1 },
+            { 5, 4, 0x1.0c00000000000p+5, 6, 0x1.2000000000000p+2, 14 },
+            { 5, 4, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 5, 4, 0x1.8333333333333p+2, 1, 0x1.0666666666666p+1, 4 },
+            { 5, 4, 0x1.7ffffffffffffp+1, 0, 0x1.fffffffffffffp+1, 12 },
+            { 5, 4, 0x1.8000000000001p+1, 0, 0x1.0000000000000p+2, 12 },
+            { 5, 4, 0x1.7e00000000000p+5, 9, 0x1.e000000000000p+1, 11 },
+            { 7, 8, 0x0.0p+0, 0, 0x1.0000000000000p+0, 0 },
+            { 7, 8, 0x1.0000000000000p-2, 0, 0x1.4000000000000p+0, 1 },
+            { 7, 8, 0x1.e000000000000p+1, 1, 0x1.4000000000000p+0, 1 },
+            { 7, 8, 0x1.0000000000000p+2, 1, 0x1.8000000000000p+0, 2 },
+            { 7, 8, 0x1.1000000000000p+2, 1, 0x1.c000000000000p+0, 3 },
+            { 7, 8, 0x1.fffffffffff8fp+2, 2, 0x1.ffffffffffe3cp+0, 4 },
+            { 7, 8, 0x1.8000000000000p+3, 3, 0x1.4000000000000p+1, 6 },
+            { 7, 8, 0x1.9100000000000p+6, 28, 0x1.a000000000000p+1, 9 },
+            { 7, 8, 0x1.0c00000000000p+5, 9, 0x1.8000000000000p+1, 8 },
+            { 7, 8, 0x1.0000000000000p-3, 0, 0x1.2000000000000p+0, 0 },
+            { 7, 8, 0x1.8333333333333p+2, 1, 0x1.c666666666666p+1, 10 },
+            { 7, 8, 0x1.7ffffffffffffp+1, 0, 0x1.fffffffffffffp+1, 12 },
+            { 7, 8, 0x1.8000000000001p+1, 0, 0x1.0000000000000p+2, 12 },
+            { 7, 8, 0x1.7e00000000000p+5, 13, 0x1.a000000000000p+1, 9 },
+        };
+        for (size_t i = 0; i < sizeof M / sizeof M[0]; ++i) {
+            AnoMeter m = { M[i].num, M[i].den };
+            CHECK(feq(ano_meter_bar_quarters(m), M[i].barQ), "meter bar_quarters");
+            CHECK(ano_meter_slots(m) == M[i].slots, "meter slots");
+            CHECK(ano_meter_is_compound(m) == (M[i].compound != 0), "meter is_compound");
+            CHECK(ano_meter_pulses(m) == M[i].pulses, "meter pulses");
+            CHECK(ano_meter_pulse_slots(m) == M[i].pulseSlots, "meter pulse_slots");
+            CHECK(feq(ano_meter_pulse_quarters(m), M[i].pulseQ), "meter pulse_quarters");
+            double w[ANO_METER_MAX_SLOTS];
+            uint32_t n = ano_meter_metric_weights(m, w);
+            CHECK(n == (uint32_t)M[i].slots, "metric_weights count");
+            bool ok = true;
+            for (uint32_t s = 0; s < n; ++s)
+                if (!feq(w[s], W[i][s]))
+                    ok = false;
+            CHECK(ok, "metric_weights values");
+            int ss[ANO_METER_MAX_SLOTS];
+            uint32_t sn = ano_meter_strong_slots(m, ss);
+            CHECK(sn == (uint32_t)SSN[i], "strong_slots count");
+            ok = true;
+            for (uint32_t s = 0; s < sn && s < 7u; ++s)
+                if (ss[s] != SS[i][s])
+                    ok = false;
+            CHECK(ok, "strong_slots values");
+        }
+        for (size_t i = 0; i < sizeof P / sizeof P[0]; ++i) {
+            AnoMeter m = { P[i].num, P[i].den };
+            CHECK(ano_meter_bar_of(m, P[i].start) == P[i].bar, "meter bar_of");
+            CHECK(feq(ano_meter_beat_in_bar(m, P[i].start), P[i].beat), "meter beat_in_bar");
+            CHECK(ano_meter_slot_of(m, P[i].start) == P[i].slot, "meter slot_of");
+        }
+    }
+
+    // --- HarmonicContext.chord_at + NoteEvent validation (C-side semantics) ---
+    {
+        AnoHarmonicContext ctx = { .chord = ano_chord(1, 0) };
+        ctx.chords[0] = (AnoChordSpan){ 0.0, ano_chord(1, 0) };
+        ctx.chords[1] = (AnoChordSpan){ 2.0, ano_chord(5, ANO_EXT_7) };
+        ctx.chordSpanCount = 2;
+        CHECK(ano_ctx_chord_at(&ctx, 0.0).degree == 1, "chord_at downbeat");
+        CHECK(ano_ctx_chord_at(&ctx, 1.99).degree == 1, "chord_at before split");
+        CHECK(ano_ctx_chord_at(&ctx, 2.0).degree == 5, "chord_at at split");
+        CHECK(ano_ctx_chord_at(&ctx, 2.0 - 1e-10).degree == 5, "chord_at slack");
+        CHECK(ano_ctx_chord_at(&ctx, 3.9).degree == 5, "chord_at after split");
+        ctx.chordSpanCount = 0;
+        CHECK(ano_ctx_chord_at(&ctx, 3.0).degree == 1, "chord_at empty timeline");
+
+        AnoNoteEvent ev = { 0.0, 1.0, 60, 80, ANO_MUSIC_PAD, ANO_MUSIC_TIE_NONE };
+        CHECK(ano_note_event_valid(&ev), "note valid");
+        ev.velocity = 0;
+        CHECK(!ano_note_event_valid(&ev), "note velocity 0 invalid");
+        ev.velocity = 80; ev.dur = 0.0;
+        CHECK(!ano_note_event_valid(&ev), "note zero dur invalid");
+        ev.dur = 1.0; ev.layer = ANO_MUSIC_LAYER_COUNT;
+        CHECK(!ano_note_event_valid(&ev), "note bad layer invalid");
+
+        AnoGenParams gp = ano_gen_params_default();
+        CHECK(gp.layerCount == 2u && gp.layers[0] == ANO_MUSIC_PAD
+              && gp.layers[1] == ANO_MUSIC_BASS, "gen params default layers");
+        CHECK(gp.instruments[ANO_MUSIC_MELODY] == ANO_PATCH_SOFT
+              && gp.instruments[ANO_MUSIC_PERC] == ANO_PATCH_NONE,
+              "gen params default instruments");
+    }
+
+    // --- control tier: mappers vs musicgen/control/mapping.py ---
+    // Every mapper over an affect sweep (exact doubles), then the stateful
+    // deadbands: pick_mode, gate_layers (strict >), pick_instruments (>=).
+    {
+        static const struct {
+            double v, e, ten;
+            double tempo; int reg; double dens, rough, art, vel; int accent;
+            double cutoff, rev, dly, drv, width, harm, bright;
+            int mode, policy;
+        } A[] = {
+            { -0x1.0000000000000p+0, 0x0.0p+0, 0x0.0p+0, 0x1.f000000000000p+5, 68, 0x1.3333333333333p-3, 0x1.999999999999ap-4, 0x1.0cccccccccccdp+0, 0x1.c000000000000p+5, 4, 0x1.5e00000000000p+8, 0x1.1eb851eb851ecp-2, 0x1.47ae147ae147bp-5, 0x1.999999999999ap-5, 0x1.199999999999ap-1, 0x1.0000000000000p-1, -0x1.0000000000000p+1, 2, 0 },
+            { 0x1.0000000000000p+0, 0x1.0000000000000p+0, 0x1.0000000000000p+0, 0x1.3c00000000000p+7, 78, 0x1.ccccccccccccdp-1, 0x1.3333333333333p-1, 0x1.ccccccccccccep-2, 0x1.9000000000000p+6, 18, 0x1.1c49d09110ae7p+13, 0x1.999999999999ap-2, 0x1.1eb851eb851ebp-2, 0x1.0000000000000p-1, 0x1.999999999999ap-1, 0x1.0000000000000p+0, 0x1.8000000000000p+1, 3, 2 },
+            { 0x0.0p+0, 0x1.0000000000000p-1, 0x1.3333333333333p-2, 0x1.b800000000000p+6, 73, 0x1.0cccccccccccdp-1, 0x1.3d70a3d70a3d7p-2, 0x1.8000000000000p-1, 0x1.3800000000000p+6, 11, 0x1.771ee6f969ebdp+10, 0x1.1eb851eb851ecp-2, 0x1.374bc6a7ef9dbp-4, 0x1.4cccccccccccdp-3, 0x1.599999999999ap-1, 0x1.0000000000000p+0, 0x1.0000000000000p-1, 4, 0 },
+            { 0x1.3333333333333p-2, 0x1.6666666666666p-1, 0x1.999999999999ap-3, 0x1.00ccccccccccdp+7, 74, 0x1.5999999999999p-1, 0x1.6666666666666p-2, 0x1.428f5c28f5c2ap-1, 0x1.5b33333333333p+6, 14, 0x1.7487917f3e282p+11, 0x1.b645a1cac0832p-3, 0x1.2d77318fc5048p-4, 0x1.14fdf3b645a1cp-2, 0x1.6cccccccccccdp-1, 0x1.0000000000000p+0, 0x1.4000000000000p+0, 4, 0 },
+            { -0x1.0000000000000p-1, 0x1.0000000000000p-2, 0x1.ccccccccccccdp-1, 0x1.5800000000000p+6, 72, 0x1.599999999999ap-2, 0x1.6b851eb851eb8p-2, 0x1.ccccccccccccdp-1, 0x1.0c00000000000p+6, 8, 0x1.6a57bcb794207p+9, 0x1.028f5c28f5c29p-1, 0x1.810624dd2f1aap-4, 0x1.4000000000000p-4, 0x1.399999999999ap-1, 0x1.0000000000000p+0, -0x1.8000000000000p-1, 5, 2 },
+            { 0x1.999999999999ap-1, 0x1.ccccccccccccdp-1, 0x1.0000000000000p-1, 0x1.28ccccccccccdp+7, 76, 0x1.a666666666667p-1, 0x1.e147ae147ae14p-2, 0x1.051eb851eb852p-1, 0x1.7e66666666666p+6, 17, 0x1.8c82656848ce3p+12, 0x1.126e978d4fdf4p-2, 0x1.2f1a9fbe76c8bp-3, 0x1.a872b020c49bbp-2, 0x1.8cccccccccccdp-1, 0x1.0000000000000p+0, 0x1.4000000000000p+1, 3, 1 },
+            { 0x0.0p+0, 0x0.0p+0, 0x1.0000000000000p+0, 0x1.1800000000000p+6, 74, 0x1.3333333333333p-3, 0x1.3333333333334p-2, 0x1.0cccccccccccdp+0, 0x1.c000000000000p+5, 4, 0x1.5e00000000000p+8, 0x1.28f5c28f5c290p-1, 0x1.47ae147ae147bp-5, 0x1.999999999999ap-5, 0x1.599999999999ap-1, 0x1.0000000000000p+0, 0x1.0000000000000p-1, 4, 2 },
+            { 0x1.0000000000000p+0, 0x0.0p+0, 0x0.0p+0, 0x1.3800000000000p+6, 76, 0x1.3333333333333p-3, 0x1.999999999999ap-4, 0x1.0cccccccccccdp+0, 0x1.c000000000000p+5, 4, 0x1.eef989021f3c2p+8, 0x1.1eb851eb851ecp-2, 0x1.47ae147ae147bp-5, 0x1.999999999999ap-5, 0x1.999999999999ap-1, 0x1.0000000000000p-1, 0x1.8000000000000p+1, 3, 0 },
+            { -0x1.0000000000000p+0, 0x1.0000000000000p+0, 0x1.6666666666666p-2, 0x1.1c00000000000p+7, 69, 0x1.ccccccccccccdp-1, 0x1.e147ae147ae15p-2, 0x1.ccccccccccccep-2, 0x1.9000000000000p+6, 18, 0x1.920b5f6338714p+12, 0x1.a3d70a3d70a3ep-3, 0x1.fbe76c8b43958p-4, 0x1.0000000000000p-1, 0x1.199999999999ap-1, 0x1.0000000000000p+0, -0x1.0000000000000p+1, 2, 1 },
+            { 0x1.f7ced916872b0p-4, 0x1.d2f1a9fbe76c9p-2, 0x1.93f7ced916873p-1, 0x1.addb22d0e5604p+6, 74, 0x1.f7ced916872b0p-2, 0x1.941205bc01a38p-2, 0x1.8d844d013a92ap-1, 0x1.304189374bc6ap+6, 10, 0x1.58648d9c3074fp+10, 0x1.bd0d0678c0054p-2, 0x1.02c2d2f8e0d1fp-3, 0x1.2608a8452e078p-3, 0x1.6178d4fdf3b65p-1, 0x1.0000000000000p+0, 0x1.9d70a3d70a3d8p-1, 4, 2 },
+            { -0x1.3333333333333p-2, 0x1.3d70a3d70a3d7p-1, 0x1.4cccccccccccdp-1, 0x1.d4cccccccccccp+6, 72, 0x1.3ae147ae147aep-1, 0x1.a9fbe76c8b43ap-2, 0x1.5b22d0e560419p-1, 0x1.4d1eb851eb852p+6, 13, 0x1.09fca2316ed9ep+11, 0x1.741f212d7731ap-2, 0x1.1800a7c5ac472p-3, 0x1.c8a9bcfd4bf0ap-3, 0x1.4666666666667p-1, 0x1.0000000000000p+0, -0x1.0000000000000p-2, 1, 2 },
+            { 0x1.0000000000000p-1, 0x1.5c28f5c28f5c3p-2, 0x1.6666666666666p-2, 0x1.94ccccccccccdp+6, 75, 0x1.9eb851eb851ecp-2, 0x1.16872b020c49cp-2, 0x1.b126e978d4fe0p-1, 0x1.1bd70a3d70a3ep+6, 9, 0x1.17fc6d708c98fp+10, 0x1.4b923a29c779ap-2, 0x1.18d25edd05293p-4, 0x1.a1dfb9389b521p-4, 0x1.799999999999ap-1, 0x1.0000000000000p+0, 0x1.c000000000000p+0, 0, 1 },
+            { 0x1.999999999999ap-3, 0x1.28f5c28f5c28fp-2, 0x1.199999999999ap-1, 0x1.7b33333333333p+6, 74, 0x1.7851eb851eb84p-2, 0x1.3020c49ba5e36p-2, 0x1.c083126e978d6p-1, 0x1.130a3d70a3d71p+6, 8, 0x1.b44f778dc6215p+9, 0x1.923a29c779a6cp-2, 0x1.40a2877ee4e27p-4, 0x1.67d028a1dfb94p-4, 0x1.6666666666667p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0, 4, 1 },
+            { -0x1.b333333333333p-1, 0x1.0a3d70a3d70a4p-3, 0x1.ae147ae147ae1p-2, 0x1.2666666666667p+6, 69, 0x1.fae147ae147aep-3, 0x1.c8b4395810626p-3, 0x1.f1a9fbe76c8b5p-1, 0x1.edc28f5c28f5cp+5, 6, 0x1.ff02de3f6200cp+8, 0x1.87c84b5dcc63fp-2, 0x1.b30728e92d55ap-5, 0x1.d7e670e2c12aep-5, 0x1.2333333333334p-1, 0x1.0000000000000p-1, -0x1.a000000000000p+0, 2, 1 },
+            { 0x1.3851eb851eb85p-1, 0x1.0000000000000p+0, 0x1.47ae147ae147bp-7, 0x1.35c28f5c28f5cp+7, 74, 0x1.ccccccccccccdp-1, 0x1.9ba5e353f7ceep-2, 0x1.ccccccccccccep-2, 0x1.9000000000000p+6, 18, 0x1.f0b173e52aa3fp+12, 0x1.a5e353f7ced92p-4, 0x1.5b573eab367a1p-5, 0x1.0000000000000p-1, 0x1.80a3d70a3d70ap-1, 0x1.0000000000000p+0, 0x1.0333333333332p+1, 0, 0 },
+        };
+
+        static const double MW[] = { -0x1.0000000000000p+0, -0x1.ccccccccccccdp-1, -0x1.199999999999ap-1, -0x1.999999999999ap-3, 0x1.999999999999ap-5, 0x1.999999999999ap-3, 0x1.ccccccccccccdp-2, 0x1.0000000000000p-1, 0x1.ccccccccccccdp-1, 0x1.0000000000000p+0, 0x1.3333333333333p-2, -0x1.999999999999ap-2, -0x1.8000000000000p-1 };
+        static const int MP[] = { 2, 2, 5, 1, 4, 4, 0, 0, 3, 3, 4, 1, 5 };
+
+        static const int BM[6][4] = {  // [mode-by-brightness-order][steps 0..3]
+            { 2, 5, 1, 4 }, // phrygian
+            { 5, 1, 4, 0 }, // aeolian
+            { 1, 4, 0, 3 }, // dorian
+            { 4, 0, 3, 3 }, // mixolydian
+            { 0, 3, 3, 3 }, // ionian
+            { 3, 3, 3, 3 }, // lydian
+        };
+
+        static const double GE[] = { 0x0.0p+0, 0x1.0a3d70a3d70a4p-3, 0x1.999999999999ap-3, 0x1.3333333333333p-2, 0x1.6666666666666p-2, 0x1.0000000000000p-1, 0x1.428f5c28f5c29p-1, 0x1.6666666666666p-1, 0x1.199999999999ap-1, 0x1.3333333333333p-2, 0x1.0000000000000p-2, 0x1.eb851eb851eb8p-4, 0x1.999999999999ap-5, 0x0.0p+0 };
+        static const struct { int n; int layers[6]; } GL[] = {
+            { 1, { 0 } },
+            { 2, { 0, 1 } },
+            { 2, { 0, 1 } },
+            { 3, { 0, 1, 2 } },
+            { 4, { 0, 1, 2, 5 } },
+            { 4, { 0, 1, 2, 5 } },
+            { 5, { 0, 1, 2, 5, 4 } },
+            { 5, { 0, 1, 2, 5, 4 } },
+            { 5, { 0, 1, 2, 5, 4 } },
+            { 4, { 0, 1, 2, 5 } },
+            { 4, { 0, 1, 2, 5 } },
+            { 2, { 0, 1 } },
+            { 2, { 0, 1 } },
+            { 1, { 0 } },
+        };
+
+        static const double IE[] = { 0x0.0p+0, 0x1.0000000000000p-1, 0x1.1eb851eb851ecp-1, 0x1.3851eb851eb85p-1, 0x1.428f5c28f5c29p-1, 0x1.6666666666666p-1, 0x1.75c28f5c28f5cp-1, 0x1.51eb851eb851fp-1, 0x1.28f5c28f5c28fp-1, 0x1.147ae147ae148p-1, 0x1.0000000000000p-1, 0x1.999999999999ap-2 };
+        static const struct { int pad, bass, melody, arp; } IP[] = {
+            { 1, 3, 5, 7 },
+            { 1, 3, 5, 7 },
+            { 1, 3, 6, 7 },
+            { 2, 3, 6, 7 },
+            { 2, 4, 6, 7 },
+            { 2, 4, 6, 7 },
+            { 2, 4, 6, 8 },
+            { 2, 4, 6, 8 },
+            { 2, 4, 6, 7 },
+            { 2, 4, 6, 7 },
+            { 1, 3, 6, 7 },
+            { 1, 3, 5, 7 },
+        };
+
+        static const struct { double c, tg, m, out; } SL[] = {
+            { 0x1.9000000000000p+6, 0x1.0400000000000p+7, 0x1.0000000000000p+1, 0x1.9800000000000p+6 },
+            { 0x1.9000000000000p+6, 0x1.8e00000000000p+6, 0x1.0000000000000p+1, 0x1.8e00000000000p+6 },
+            { 0x1.ccccccccccccdp-1, 0x1.ccccccccccccdp-2, 0x1.3333333333333p-3, 0x1.8000000000000p-1 },
+            { 0x1.c000000000000p+5, 0x1.9000000000000p+6, 0x1.4000000000000p+3, 0x1.0800000000000p+6 },
+            { 0x1.0cccccccccccdp+0, 0x1.0cccccccccccdp+0, 0x1.3333333333333p-3, 0x1.0cccccccccccdp+0 },
+        };
+
+        static const struct { double v,e,t, cv,ce,ct; } AC[] = {
+            { -0x1.0000000000000p+1, 0x1.8000000000000p+0, -0x1.3333333333333p-2, -0x1.0000000000000p+0, 0x1.0000000000000p+0, 0x0.0p+0 },
+            { 0x1.0000000000000p-1, 0x1.0000000000000p-1, 0x1.0000000000000p-1, 0x1.0000000000000p-1, 0x1.0000000000000p-1, 0x1.0000000000000p-1 },
+            { 0x1.8000000000000p+0, -0x1.0000000000000p+0, 0x1.0000000000000p+1, 0x1.0000000000000p+0, 0x0.0p+0, 0x1.0000000000000p+0 },
+        };
+        AnoMappingTable t = ano_mapping_table_default();
+        for (size_t i = 0; i < sizeof A / sizeof A[0]; ++i) {
+            AnoAffect a = { A[i].v, A[i].e, A[i].ten };
+            CHECK(feq(ano_map_tempo(a, &t), A[i].tempo), "map tempo");
+            CHECK(ano_map_register(a, &t) == A[i].reg, "map register");
+            CHECK(feq(ano_map_density(a, &t), A[i].dens), "map density");
+            CHECK(feq(ano_map_roughness(a, &t), A[i].rough), "map roughness");
+            CHECK(feq(ano_map_articulation(a, &t), A[i].art), "map articulation");
+            CHECK(feq(ano_map_velocity(a, &t), A[i].vel), "map velocity");
+            CHECK(ano_map_accent(a, &t) == A[i].accent, "map accent");
+            CHECK(feq(ano_map_filter_cutoff(a, &t), A[i].cutoff), "map cutoff");
+            CHECK(feq(ano_map_reverb_send(a, &t), A[i].rev), "map reverb send");
+            CHECK(feq(ano_map_delay_send(a, &t), A[i].dly), "map delay send");
+            CHECK(feq(ano_map_drive(a, &t), A[i].drv), "map drive");
+            CHECK(feq(ano_map_stereo_width(a, &t), A[i].width), "map width");
+            CHECK(feq(ano_map_harmonic_rhythm(a, &t), A[i].harm), "map harmonic rhythm");
+            CHECK(feq(ano_map_brightness_target(A[i].v), A[i].bright), "brightness target");
+            CHECK((int)ano_nearest_mode(A[i].v) == A[i].mode, "nearest mode");
+            CHECK((int)ano_pick_cadence_policy(A[i].ten, &t) == A[i].policy, "cadence policy");
+        }
+
+        AnoMode cur = ANO_MODE_NONE;
+        for (size_t i = 0; i < sizeof MW / sizeof MW[0]; ++i) {
+            cur = ano_pick_mode(cur, MW[i], &t);
+            CHECK((int)cur == MP[i], "pick_mode hysteresis walk");
+        }
+
+        static const AnoMode ORD[6] = {
+            ANO_MODE_PHRYGIAN, ANO_MODE_AEOLIAN, ANO_MODE_DORIAN,
+            ANO_MODE_MIXOLYDIAN, ANO_MODE_IONIAN, ANO_MODE_LYDIAN,
+        };
+        for (int r = 0; r < 6; ++r)
+            for (int s = 0; s < 4; ++s)
+                CHECK((int)ano_brighter_mode(ORD[r], s) == BM[r][s], "brighter_mode");
+
+        uint8_t curL[ANO_MUSIC_LAYER_COUNT];
+        uint32_t curN = 0;
+        for (size_t i = 0; i < sizeof GE / sizeof GE[0]; ++i) {
+            uint8_t outL[ANO_MUSIC_LAYER_COUNT];
+            uint32_t n = ano_gate_layers(curL, curN, GE[i], &t, outL);
+            CHECK(n == (uint32_t)GL[i].n, "gate_layers count");
+            bool ok = true;
+            for (uint32_t j = 0; j < n; ++j)
+                if (outL[j] != (uint8_t)GL[i].layers[j])
+                    ok = false;
+            CHECK(ok, "gate_layers order");
+            memcpy(curL, outL, n);
+            curN = n;
+        }
+
+        uint8_t inst[ANO_MUSIC_LAYER_COUNT] = { 0 };
+        inst[ANO_MUSIC_PAD] = ANO_PATCH_WARM;
+        inst[ANO_MUSIC_BASS] = ANO_PATCH_ROUND;
+        inst[ANO_MUSIC_MELODY] = ANO_PATCH_SOFT;
+        inst[ANO_MUSIC_ARP] = ANO_PATCH_PLUCK;
+        for (size_t i = 0; i < sizeof IE / sizeof IE[0]; ++i) {
+            uint8_t o[ANO_MUSIC_LAYER_COUNT];
+            ano_pick_instruments(inst, IE[i], &t, o);
+            CHECK(o[ANO_MUSIC_PAD] == IP[i].pad && o[ANO_MUSIC_BASS] == IP[i].bass
+                  && o[ANO_MUSIC_MELODY] == IP[i].melody && o[ANO_MUSIC_ARP] == IP[i].arp,
+                  "pick_instruments hysteresis walk");
+            memcpy(inst, o, ANO_MUSIC_LAYER_COUNT);
+        }
+
+        for (size_t i = 0; i < sizeof SL / sizeof SL[0]; ++i)
+            CHECK(feq(ano_music_slew(SL[i].c, SL[i].tg, SL[i].m), SL[i].out), "slew");
+
+        for (size_t i = 0; i < sizeof AC / sizeof AC[0]; ++i) {
+            AnoAffect c = ano_affect_clamped((AnoAffect){ AC[i].v, AC[i].e, AC[i].t });
+            CHECK(feq(c.valence, AC[i].cv) && feq(c.energy, AC[i].ce)
+                  && feq(c.tension, AC[i].ct), "affect clamped");
+        }
+    }
+
+    // --- gen leaves: rhythm + structure vs musicgen/gen/{rhythm,structure}.py ---
+    // rough_cell replays tagged streams; its short-circuit draw gates (merge
+    // needs a successor, split needs dur >= 2, the first note never draws a
+    // drop) are what these vectors prove.
+    {
+        static const struct { int k, n, rot, cnt; int hits[16]; } EU[] = {
+            { 3, 8, 0, 3, { 0, 3, 6 } },
+            { 4, 16, 0, 4, { 0, 4, 8, 12 } },
+            { 5, 16, 3, 5, { 0, 3, 7, 10, 13 } },
+            { 7, 12, 5, 7, { 0, 2, 4, 5, 7, 9, 11 } },
+            { 0, 8, 0, 0, { 0 } },
+            { 9, 8, 0, 8, { 0, 1, 2, 3, 4, 5, 6, 7 } },
+            { 5, 13, -2, 5, { 1, 4, 6, 9, 11 } },
+            { 1, 12, 11, 1, { 11 } },
+            { 16, 16, 4, 16, { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+        };
+
+        static const struct { const char *tag; double dens, rough; int slots, step, cnt; int sd[32]; } RC[] = {
+            { "42:rough:0", 0x1.0000000000000p-1, 0x0.0p+0, 16, 2, 4, { 0, 2, 10, 2, 12, 2, 14, 2 } },
+            { "42:rough:1", 0x1.ccccccccccccdp-1, 0x1.3333333333333p-1, 16, 2, 9, { 0, 2, 2, 1, 3, 1, 4, 2, 6, 2, 8, 4, 12, 1, 13, 1, 14, 2 } },
+            { "42:rough:2", 0x1.3333333333333p-3, 0x1.3333333333333p-2, 16, 2, 4, { 0, 2, 2, 2, 6, 2, 10, 2 } },
+            { "42:rough:3", 0x1.6666666666666p-1, 0x1.199999999999ap-1, 16, 2, 4, { 0, 2, 2, 4, 6, 2, 14, 2 } },
+            { "42:rough:4", 0x1.0000000000000p+0, 0x1.0000000000000p+0, 16, 2, 6, { 0, 4, 4, 2, 6, 2, 8, 4, 12, 2, 14, 2 } },
+            { "42:rough:5", 0x0.0p+0, 0x0.0p+0, 16, 2, 4, { 0, 2, 4, 2, 6, 2, 12, 2 } },
+            { "42:rough:6", 0x1.4cccccccccccdp-1, 0x1.999999999999ap-3, 12, 2, 3, { 0, 2, 6, 2, 8, 2 } },
+            { "42:rough:7", 0x1.ccccccccccccdp-2, 0x1.999999999999ap-1, 24, 3, 7, { 0, 3, 3, 3, 6, 3, 9, 3, 12, 3, 15, 3, 18, 6 } },
+            { "42:rough:8", 0x1.3d70a3d70a3d7p-1, 0x1.6666666666666p-2, 16, 4, 4, { 0, 8, 8, 4, 12, 2, 14, 2 } },
+        };
+
+        static const double ETB[] = { 0x0.0p+0, 0x1.3333333333333p-2, 0x1.199999999999ap-1, 0x1.999999999999ap-1, 0x1.0000000000000p+0 };
+        static const struct { int bars, pos; double out[5]; } ET[] = {
+            { 1, 0, { 0x0.0p+0, 0x1.3333333333333p-2, 0x1.199999999999ap-1, 0x1.999999999999ap-1, 0x1.0000000000000p+0 } },
+            { 2, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 2, 1, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 3, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 3, 1, { 0x0.0p+0, 0x1.8f5c28f5c28f6p-2, 0x1.6e147ae147ae2p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 3, 2, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 4, 0, { 0x0.0p+0, 0x1.147ae147ae148p-2, 0x1.fae147ae147afp-2, 0x1.70a3d70a3d70bp-1, 0x1.ccccccccccccdp-1 } },
+            { 4, 1, { 0x0.0p+0, 0x1.3333333333333p-2, 0x1.199999999999ap-1, 0x1.999999999999ap-1, 0x1.0000000000000p+0 } },
+            { 4, 2, { 0x0.0p+0, 0x1.70a3d70a3d70ap-2, 0x1.51eb851eb851fp-1, 0x1.eb851eb851eb8p-1, 0x1.0000000000000p+0 } },
+            { 4, 3, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 5, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 5, 1, { 0x0.0p+0, 0x1.3333333333333p-2, 0x1.199999999999ap-1, 0x1.999999999999ap-1, 0x1.0000000000000p+0 } },
+            { 5, 2, { 0x0.0p+0, 0x1.6147ae147ae14p-2, 0x1.43d70a3d70a3dp-1, 0x1.d70a3d70a3d70p-1, 0x1.0000000000000p+0 } },
+            { 5, 3, { 0x0.0p+0, 0x1.8f5c28f5c28f6p-2, 0x1.6e147ae147ae2p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 5, 4, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 6, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 6, 1, { 0x0.0p+0, 0x1.27ae147ae147bp-2, 0x1.0f0a3d70a3d71p-1, 0x1.8a3d70a3d70a4p-1, 0x1.ecccccccccccdp-1 } },
+            { 6, 2, { 0x0.0p+0, 0x1.4a3d70a3d70a3p-2, 0x1.2eb851eb851ecp-1, 0x1.b851eb851eb85p-1, 0x1.0000000000000p+0 } },
+            { 6, 3, { 0x0.0p+0, 0x1.6cccccccccccdp-2, 0x1.4e66666666667p-1, 0x1.e666666666667p-1, 0x1.0000000000000p+0 } },
+            { 6, 4, { 0x0.0p+0, 0x1.8f5c28f5c28f6p-2, 0x1.6e147ae147ae2p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 6, 5, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 7, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 7, 1, { 0x0.0p+0, 0x1.20c49ba5e353fp-2, 0x1.08b4395810625p-1, 0x1.810624dd2f1aap-1, 0x1.e147ae147ae14p-1 } },
+            { 7, 2, { 0x0.0p+0, 0x1.3c6a7ef9db22dp-2, 0x1.220c49ba5e355p-1, 0x1.a5e353f7ced92p-1, 0x1.0000000000000p+0 } },
+            { 7, 3, { 0x0.0p+0, 0x1.5810624dd2f1bp-2, 0x1.3b645a1cac084p-1, 0x1.cac083126e97ap-1, 0x1.0000000000000p+0 } },
+            { 7, 4, { 0x0.0p+0, 0x1.73b645a1cac08p-2, 0x1.54bc6a7ef9db2p-1, 0x1.ef9db22d0e560p-1, 0x1.0000000000000p+0 } },
+            { 7, 5, { 0x0.0p+0, 0x1.8f5c28f5c28f6p-2, 0x1.6e147ae147ae2p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 7, 6, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 8, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 8, 1, { 0x0.0p+0, 0x1.147ae147ae148p-2, 0x1.fae147ae147afp-2, 0x1.70a3d70a3d70bp-1, 0x1.ccccccccccccdp-1 } },
+            { 8, 2, { 0x0.0p+0, 0x1.3333333333333p-2, 0x1.199999999999ap-1, 0x1.999999999999ap-1, 0x1.0000000000000p+0 } },
+            { 8, 3, { 0x0.0p+0, 0x1.428f5c28f5c29p-2, 0x1.27ae147ae147cp-1, 0x1.ae147ae147ae2p-1, 0x1.0000000000000p+0 } },
+            { 8, 4, { 0x0.0p+0, 0x1.51eb851eb851fp-2, 0x1.35c28f5c28f5dp-1, 0x1.c28f5c28f5c2ap-1, 0x1.0000000000000p+0 } },
+            { 8, 5, { 0x0.0p+0, 0x1.70a3d70a3d70ap-2, 0x1.51eb851eb851fp-1, 0x1.eb851eb851eb8p-1, 0x1.0000000000000p+0 } },
+            { 8, 6, { 0x0.0p+0, 0x1.8f5c28f5c28f6p-2, 0x1.6e147ae147ae2p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 8, 7, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 10, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 10, 1, { 0x0.0p+0, 0x1.1666666666666p-2, 0x1.fe66666666667p-2, 0x1.7333333333334p-1, 0x1.d000000000000p-1 } },
+            { 10, 2, { 0x0.0p+0, 0x1.27ae147ae147bp-2, 0x1.0f0a3d70a3d71p-1, 0x1.8a3d70a3d70a4p-1, 0x1.ecccccccccccdp-1 } },
+            { 10, 3, { 0x0.0p+0, 0x1.38f5c28f5c28fp-2, 0x1.1ee147ae147afp-1, 0x1.a147ae147ae15p-1, 0x1.0000000000000p+0 } },
+            { 10, 4, { 0x0.0p+0, 0x1.4a3d70a3d70a3p-2, 0x1.2eb851eb851ecp-1, 0x1.b851eb851eb85p-1, 0x1.0000000000000p+0 } },
+            { 10, 5, { 0x0.0p+0, 0x1.5b851eb851eb9p-2, 0x1.3e8f5c28f5c2ap-1, 0x1.cf5c28f5c28f7p-1, 0x1.0000000000000p+0 } },
+            { 10, 6, { 0x0.0p+0, 0x1.6cccccccccccdp-2, 0x1.4e66666666667p-1, 0x1.e666666666667p-1, 0x1.0000000000000p+0 } },
+            { 10, 7, { 0x0.0p+0, 0x1.7e147ae147ae1p-2, 0x1.5e3d70a3d70a4p-1, 0x1.fd70a3d70a3d7p-1, 0x1.0000000000000p+0 } },
+            { 10, 8, { 0x0.0p+0, 0x1.8f5c28f5c28f6p-2, 0x1.6e147ae147ae2p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 10, 9, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+            { 12, 0, { 0x0.0p+0, 0x1.051eb851eb852p-2, 0x1.deb851eb851ecp-2, 0x1.5c28f5c28f5c3p-1, 0x1.b333333333333p-1 } },
+            { 12, 1, { 0x0.0p+0, 0x1.12f1a9fbe76c9p-2, 0x1.f810624dd2f1cp-2, 0x1.6e978d4fdf3b7p-1, 0x1.ca3d70a3d70a4p-1 } },
+            { 12, 2, { 0x0.0p+0, 0x1.20c49ba5e353fp-2, 0x1.08b4395810625p-1, 0x1.810624dd2f1aap-1, 0x1.e147ae147ae14p-1 } },
+            { 12, 3, { 0x0.0p+0, 0x1.2e978d4fdf3b6p-2, 0x1.15604189374bdp-1, 0x1.9374bc6a7ef9ep-1, 0x1.f851eb851eb85p-1 } },
+            { 12, 4, { 0x0.0p+0, 0x1.3c6a7ef9db22dp-2, 0x1.220c49ba5e355p-1, 0x1.a5e353f7ced92p-1, 0x1.0000000000000p+0 } },
+            { 12, 5, { 0x0.0p+0, 0x1.4a3d70a3d70a3p-2, 0x1.2eb851eb851ecp-1, 0x1.b851eb851eb85p-1, 0x1.0000000000000p+0 } },
+            { 12, 6, { 0x0.0p+0, 0x1.5810624dd2f1bp-2, 0x1.3b645a1cac084p-1, 0x1.cac083126e97ap-1, 0x1.0000000000000p+0 } },
+            { 12, 7, { 0x0.0p+0, 0x1.65e353f7ced91p-2, 0x1.4810624dd2f1bp-1, 0x1.dd2f1a9fbe76dp-1, 0x1.0000000000000p+0 } },
+            { 12, 8, { 0x0.0p+0, 0x1.73b645a1cac08p-2, 0x1.54bc6a7ef9db2p-1, 0x1.ef9db22d0e560p-1, 0x1.0000000000000p+0 } },
+            { 12, 9, { 0x0.0p+0, 0x1.8189374bc6a7fp-2, 0x1.616872b020c4bp-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 12, 10, { 0x0.0p+0, 0x1.8f5c28f5c28f6p-2, 0x1.6e147ae147ae2p-1, 0x1.0000000000000p+0, 0x1.0000000000000p+0 } },
+            { 12, 11, { 0x0.0p+0, 0x1.cccccccccccccp-3, 0x1.a666666666667p-2, 0x1.3333333333334p-1, 0x1.8000000000000p-1 } },
+        };
+
+        static const struct { int bars, pos; double out[5]; } ETC[] = {
+            { 4, 0, { 0x0.0p+0, 0x1.ae147ae147ae1p-3, 0x1.8a3d70a3d70a4p-2, 0x1.1eb851eb851ebp-1, 0x1.6666666666666p-1 } },
+            { 4, 3, { 0x0.0p+0, 0x1.ae147ae147ae1p-3, 0x1.8a3d70a3d70a4p-2, 0x1.1eb851eb851ebp-1, 0x1.6666666666666p-1 } },
+            { 8, 5, { 0x0.0p+0, 0x1.ae147ae147ae1p-3, 0x1.8a3d70a3d70a4p-2, 0x1.1eb851eb851ebp-1, 0x1.6666666666666p-1 } },
+        };
+
+        static const struct { int bar, pb, phrase, pos, slot; } PP[] = {
+            { 0, 8, 0, 0, 0 },
+            { 5, 8, 0, 5, 1 },
+            { 6, 8, 0, 6, 2 },
+            { 7, 8, 0, 7, 3 },
+            { 8, 8, 1, 0, 0 },
+            { 23, 8, 2, 7, 3 },
+            { 0, 4, 0, 0, 0 },
+            { 2, 4, 0, 2, 2 },
+            { 3, 4, 0, 3, 3 },
+            { 0, 2, 0, 0, 2 },
+            { 1, 2, 0, 1, 3 },
+            { 0, 1, 0, 0, 3 },
+            { 9, 3, 3, 0, 0 },
+        };
+
+        static const struct { int bars; double w[16]; } HW[] = {
+            { 4, { 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2 } },
+            { 8, { 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2, 0x1.b333333333333p-1, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2 } },
+            { 12, { 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2, 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.b333333333333p-1, 0x1.999999999999ap-2, 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2 } },
+            { 16, { 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2, 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2, 0x1.b333333333333p-1, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2, 0x1.0000000000000p+0, 0x1.999999999999ap-2, 0x1.6666666666666p-1, 0x1.999999999999ap-2 } },
+        };
+        for (size_t i = 0; i < sizeof EU / sizeof EU[0]; ++i) {
+            uint8_t h[ANO_RHYTHM_MAX];
+            uint32_t n = ano_euclid(EU[i].k, EU[i].n, EU[i].rot, h);
+            CHECK(n == (uint32_t)EU[i].cnt, "euclid count");
+            bool ok = true;
+            for (uint32_t j = 0; j < n && j < 16u; ++j)
+                if (h[j] != (uint8_t)EU[i].hits[j])
+                    ok = false;
+            CHECK(ok, "euclid hits");
+        }
+
+        for (size_t i = 0; i < sizeof RC / sizeof RC[0]; ++i) {
+            AnoMusicRng rr;
+            ano_music_stream(&rr, RC[i].tag);
+            AnoRhythmNote cell[ANO_RHYTHM_MAX];
+            uint32_t n = ano_rough_cell(&rr, RC[i].dens, RC[i].rough,
+                                        RC[i].slots, RC[i].step, cell);
+            CHECK(n == (uint32_t)RC[i].cnt, "rough_cell count");
+            bool ok = true;
+            for (uint32_t j = 0; j < n; ++j)
+                if (cell[j].slot != RC[i].sd[2 * j] || cell[j].durSlots != RC[i].sd[2 * j + 1])
+                    ok = false;
+            CHECK(ok, "rough_cell notes");
+        }
+
+        for (size_t i = 0; i < sizeof ET / sizeof ET[0]; ++i) {
+            AnoPhrasePos p = { 0, ET[i].pos, ET[i].bars, ANO_SEG_REGULAR };
+            for (int b = 0; b < 5; ++b)
+                CHECK(feq(ano_effective_tension(ETB[b], p), ET[i].out[b]),
+                      "effective_tension arc");
+        }
+        for (size_t i = 0; i < sizeof ETC / sizeof ETC[0]; ++i) {
+            AnoPhrasePos p = { 0, ETC[i].pos, ETC[i].bars, ANO_SEG_CODETTA };
+            for (int b = 0; b < 5; ++b)
+                CHECK(feq(ano_effective_tension(ETB[b], p), ETC[i].out[b]),
+                      "effective_tension codetta");
+        }
+
+        for (size_t i = 0; i < sizeof PP / sizeof PP[0]; ++i) {
+            AnoPhrasePos p = ano_phrase_position(PP[i].bar, PP[i].pb);
+            CHECK(p.phrase == PP[i].phrase && p.pos == PP[i].pos, "phrase_position");
+            CHECK((int)ano_phrase_slot(p) == PP[i].slot, "phrase slot");
+        }
+
+        for (size_t i = 0; i < sizeof HW / sizeof HW[0]; ++i)
+            for (int pos = 0; pos < HW[i].bars; ++pos)
+                CHECK(feq(ano_hyper_weight(pos, HW[i].bars), HW[i].w[pos]), "hyper_weight");
+    }
+
+    // --- motif tier vs gen/melody.py (leaf half) + gen/motif.py ---
+    // Factories replay tagged streams (rough_cell -> choice -> randint order);
+    // realizers are draw-free but their max()-by-tuple selections must keep
+    // the first maximal transposition.
+    {
+        static const struct { int shape, n, span; int off[12]; } CO[] = {
+            { 0, 1, 3, { 0 } },
+            { 0, 2, 2, { 0, 0 } },
+            { 0, 4, 3, { 0, 2, 2, 0 } },
+            { 0, 5, 4, { 0, 2, 4, 2, 0 } },
+            { 0, 7, 2, { 0, 1, 1, 2, 1, 1, 0 } },
+            { 0, 8, 4, { 0, 1, 2, 3, 3, 2, 1, 0 } },
+            { 1, 1, 3, { 0 } },
+            { 1, 2, 2, { 2, 0 } },
+            { 1, 4, 3, { 3, 2, 1, 0 } },
+            { 1, 5, 4, { 4, 3, 2, 1, 0 } },
+            { 1, 7, 2, { 2, 2, 1, 1, 1, 0, 0 } },
+            { 1, 8, 4, { 4, 3, 3, 2, 2, 1, 1, 0 } },
+            { 2, 1, 3, { 0 } },
+            { 2, 2, 2, { 0, 2 } },
+            { 2, 4, 3, { 0, 1, 2, 3 } },
+            { 2, 5, 4, { 0, 1, 2, 3, 4 } },
+            { 2, 7, 2, { 0, 0, 1, 1, 1, 2, 2 } },
+            { 2, 8, 4, { 0, 1, 1, 2, 2, 3, 3, 4 } },
+            { 3, 1, 3, { 0 } },
+            { 3, 2, 2, { 0, 2 } },
+            { 3, 4, 3, { 0, 2, 1, 3 } },
+            { 3, 5, 4, { 0, 2, 1, 3, 2 } },
+            { 3, 7, 2, { 0, 2, 1, 3, 2, 4, 3 } },
+            { 3, 8, 4, { 0, 2, 1, 3, 2, 4, 3, 5 } },
+        };
+
+        static const struct { const char *tag; double dens, rough; int slots, n, shape; int rc[24]; int ct[12]; } MM[] = {
+            { "42:motif:0", 0x1.0000000000000p-1, 0x1.999999999999ap-3, 16, 5, 2, { 0, 2, 2, 4, 6, 2, 8, 4, 12, 2 }, { 0, 0, 1, 2, 2 } },
+            { "42:motif:1", 0x1.b333333333333p-1, 0x1.199999999999ap-1, 16, 7, 0, { 0, 2, 2, 1, 3, 1, 4, 2, 8, 2, 10, 4, 14, 2 }, { 0, 1, 3, 4, 3, 1, 0 } },
+            { "42:motif:2", 0x1.3333333333333p-2, 0x1.6666666666666p-1, 16, 4, 0, { 0, 2, 4, 4, 8, 2, 12, 2 }, { 0, 1, 1, 0 } },
+            { "42:motif:3", 0x1.3333333333333p-1, 0x1.999999999999ap-2, 12, 3, 3, { 0, 2, 6, 4, 10, 2 }, { 0, 2, 1 } },
+            { "42:motif:4", 0x1.8000000000000p-1, 0x1.3333333333333p-2, 24, 10, 2, { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 2, 14, 2, 16, 2, 18, 2, 20, 4 }, { 0, 0, 0, 1, 1, 1, 1, 2, 2, 2 } },
+        };
+
+        static const struct { int n, shape; int rc[10]; int ct[5]; int score; } MK[] = {
+            { 4, 2, { 0, 2, 2, 2, 4, 2, 6, 2 }, { 0, 1, 2, 3 }, 2 },
+            { 5, 0, { 0, 4, 4, 2, 6, 2, 8, 4, 12, 4 }, { 0, 2, 1, 3, 0 }, 5 },
+            { 2, 0, { 0, 8, 8, 8 }, { 0, 0 }, 1 },
+        };
+
+        static const struct { const char *tag; double dens, rough; int n, shape; int rc[16]; int ct[8]; } MS[] = {
+            { "42:signature:0", 0x1.0000000000000p-1, 0x1.999999999999ap-3, 6, 3, { 0, 2, 2, 2, 6, 4, 10, 2, 12, 2, 14, 2 }, { 0, 2, 1, 3, 2, 4 } },
+            { "42:signature:1", 0x1.ccccccccccccdp-1, 0x1.3333333333333p-1, 6, 0, { 0, 4, 4, 2, 6, 2, 8, 2, 10, 4, 14, 2 }, { 0, 2, 3, 3, 2, 0 } },
+            { "42:signature:2", 0x1.999999999999ap-3, 0x1.999999999999ap-4, 4, 3, { 0, 4, 6, 2, 8, 2, 14, 2 }, { 0, 2, 1, 3 } },
+            { "42:signature:3", 0x1.6666666666666p-1, 0x1.ccccccccccccdp-2, 6, 3, { 0, 4, 4, 2, 6, 2, 8, 2, 10, 2, 12, 4 }, { 0, 2, 1, 3, 2, 4 } },
+        };
+
+        static const struct { const char *tag; int bars, center, rng_st, pos, pitch; } AP[] = {
+            { "42:apex:0", 8, 72, 12, 6, 79 },
+            { "42:apex:1", 4, 72, 12, 2, 80 },
+            { "42:apex:2", 8, 76, 7, 5, 79 },
+            { "42:apex:3", 2, 60, 24, 1, 79 },
+            { "42:apex:4", 8, 72, 4, 5, 76 },
+        };
+
+        static const struct { const char *tag; int pos, n, shape; int rc[16]; int ct[8]; int op, step; } PV[] = {
+            { "42:variant:0", 0, 6, 0, { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 4 }, { 0, 1, 2, 4, 2, 1 }, 0, 0 },
+            { "42:variant:1", 1, 6, 0, { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 4 }, { 2, 3, 4, 6, 4, 3 }, 1, 2 },
+            { "42:variant:2", 2, 6, 0, { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 4 }, { 0, -1, -2, -4, -2, -1 }, 4, 0 },
+            { "42:variant:3", 3, 6, 0, { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 4 }, { 0, 1, 2, 4, 2, 1 }, 2, 0 },
+            { "42:variant:4", 4, 6, 0, { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 4 }, { 1, 2, 3, 5, 3, 2 }, 1, 1 },
+            { "42:variant:5", 5, 5, 0, { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2 }, { 0, 1, 2, 4, 2 }, 6, 0 },
+            { "42:variant:6", 6, 7, 0, { 0, 2, 2, 2, 4, 2, 6, 2, 8, 2, 10, 2, 12, 4 }, { 0, 1, 2, 3, 4, 2, 1 }, 3, 0 },
+            { "42:variant:7", 7, 5, 0, { 2, 2, 4, 2, 6, 4, 10, 2, 12, 2 }, { 0, 1, 2, 4, 2 }, 5, 0 },
+        };
+
+        static const struct { int spend, phrase, state, statements, completed; } LC[] = {
+            { 0, 0, 0, 1, -1 },
+            { 0, 1, 0, 2, -1 },
+            { 1, 2, 2, 2, 2 },
+            { 0, 3, 1, 3, 2 },
+            { 1, 4, 2, 3, 4 },
+            { 0, 5, 1, 4, 4 },
+            { 0, 6, 1, 5, 4 },
+            { 1, 7, 2, 5, 7 },
+            { 1, 8, 2, 5, 8 },
+        };
+
+        static const struct { int tonic, mode, a, b, out; } DI[] = {
+            { 0, 0, 60, 64, 2 },
+            { 0, 0, 64, 60, -2 },
+            { 0, 0, 60, 60, 0 },
+            { 0, 0, 61, 66, 3 },
+            { 0, 0, 59, 72, 8 },
+            { 0, 0, 65, 53, -7 },
+            { 2, 1, 62, 69, 4 },
+            { 2, 1, 69, 62, -4 },
+            { 2, 1, 60, 63, 2 },
+        };
+
+        static const struct { int mi, tonic, mode, pcn; int pcs[4]; int lo, hi, near;
+                               int pitches[8]; int cadn; int cad[24]; double fit, recog; } RZ[] = {
+            { 0, 0, 0, 3, { 0, 4, 7 }, 60, 84, -99999, { 72, 76, 74, 72 }, 4, { 0, 4, 72, 4, 2, 76, 6, 2, 74, 8, 8, 72 }, 0x1.0000000000000p+0, 0x1.0000000000000p+0 },
+            { 0, 0, 0, 4, { 7, 11, 2, 5 }, 60, 84, 71, { 71, 74, 72, 71 }, 4, { 0, 4, 71, 4, 2, 74, 6, 2, 72, 8, 8, 71 }, 0x1.0000000000000p+0, 0x1.0000000000000p+0 },
+            { 1, 0, 0, 3, { 9, 0, 4 }, 55, 79, 66, { 64, 62, 60, 59, 57 }, 5, { 0, 2, 67, 2, 2, 65, 4, 4, 64, 8, 4, 62, 12, 4, 60 }, 0x1.0000000000000p-1, 0x1.0000000000000p+0 },
+            { 0, 2, 1, 3, { 2, 5, 9 }, 62, 86, -99999, { 74, 77, 76, 74 }, 4, { 0, 4, 74, 4, 2, 77, 6, 2, 76, 8, 8, 74 }, 0x1.0000000000000p+0, 0x1.0000000000000p+0 },
+            { 1, 2, 1, 4, { 7, 9, 0, 2 }, 50, 74, 50, { 60, 59, 57, 55, 53 }, 5, { 0, 2, 57, 2, 2, 55, 4, 4, 53, 8, 4, 52, 12, 4, 50 }, 0x1.0000000000000p-1, 0x1.0000000000000p+0 },
+        };
+        for (size_t i = 0; i < sizeof CO / sizeof CO[0]; ++i) {
+            int off[ANO_MOTIF_MAX];
+            ano_contour_offsets((AnoContourShape)CO[i].shape, (uint32_t)CO[i].n,
+                                CO[i].span, off);
+            bool ok = true;
+            for (int j = 0; j < CO[i].n; ++j)
+                if (off[j] != CO[i].off[j])
+                    ok = false;
+            CHECK(ok, "contour offsets");
+        }
+
+        AnoMelodyConfig mc = ano_melody_config_default();
+        for (size_t i = 0; i < sizeof MM / sizeof MM[0]; ++i) {
+            AnoMusicRng rr;
+            ano_music_stream(&rr, MM[i].tag);
+            AnoMotif m = ano_make_motif(&rr, MM[i].dens, MM[i].rough, &mc, MM[i].slots);
+            CHECK((int)m.n == MM[i].n && m.shape == (uint8_t)MM[i].shape, "make_motif shape");
+            bool ok = true;
+            for (uint32_t j = 0; j < m.n; ++j)
+                if (m.rhythm[j].slot != MM[i].rc[2 * j] || m.rhythm[j].durSlots != MM[i].rc[2 * j + 1]
+                    || m.contour[j] != MM[i].ct[j])
+                    ok = false;
+            CHECK(ok, "make_motif cell");
+        }
+
+        for (size_t i = 0; i < sizeof MK / sizeof MK[0]; ++i) {
+            AnoMotif m = { 0 };
+            m.n = (uint32_t)MK[i].n;
+            m.shape = (uint8_t)MK[i].shape;
+            for (int j = 0; j < MK[i].n; ++j) {
+                m.rhythm[j] = (AnoRhythmNote){ MK[i].rc[2 * j], MK[i].rc[2 * j + 1] };
+                m.contour[j] = MK[i].ct[j];
+            }
+            CHECK(ano_motif_markedness(&m) == MK[i].score, "markedness");
+        }
+
+        for (size_t i = 0; i < sizeof MS / sizeof MS[0]; ++i) {
+            AnoMusicRng rr;
+            ano_music_stream(&rr, MS[i].tag);
+            AnoMotif m = ano_make_signature(&rr, MS[i].dens, MS[i].rough, &mc, 16, 8);
+            CHECK((int)m.n == MS[i].n && m.shape == (uint8_t)MS[i].shape, "make_signature shape");
+            bool ok = true;
+            for (uint32_t j = 0; j < m.n; ++j)
+                if (m.rhythm[j].slot != MS[i].rc[2 * j] || m.rhythm[j].durSlots != MS[i].rc[2 * j + 1]
+                    || m.contour[j] != MS[i].ct[j])
+                    ok = false;
+            CHECK(ok, "make_signature cell");
+        }
+
+        for (size_t i = 0; i < sizeof AP / sizeof AP[0]; ++i) {
+            AnoMusicRng rr;
+            ano_music_stream(&rr, AP[i].tag);
+            AnoApexPlan a = ano_make_apex(&rr, AP[i].bars, AP[i].center, AP[i].rng_st);
+            CHECK(a.pos == AP[i].pos && a.pitch == AP[i].pitch, "make_apex");
+        }
+
+        AnoMotif base = { 0 };
+        base.n = 6;
+        base.shape = ANO_SHAPE_ARCH;
+        {
+            static const int RC[12] = { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 4 };
+            static const int CT[6] = { 0, 1, 2, 4, 2, 1 };
+            for (int j = 0; j < 6; ++j) {
+                base.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                base.contour[j] = CT[j];
+            }
+        }
+        for (size_t i = 0; i < sizeof PV / sizeof PV[0]; ++i) {
+            AnoMusicRng rr;
+            ano_music_stream(&rr, PV[i].tag);
+            AnoVariantOp op;
+            int step;
+            AnoMotif v = ano_phrase_variant(&base, PV[i].pos, &rr, 16, &op, &step);
+            CHECK((int)op == PV[i].op && step == PV[i].step, "phrase_variant op");
+            CHECK((int)v.n == PV[i].n && v.shape == (uint8_t)PV[i].shape, "phrase_variant shape");
+            bool ok = true;
+            for (uint32_t j = 0; j < v.n; ++j)
+                if (v.rhythm[j].slot != PV[i].rc[2 * j] || v.rhythm[j].durSlots != PV[i].rc[2 * j + 1]
+                    || v.contour[j] != PV[i].ct[j])
+                    ok = false;
+            CHECK(ok, "phrase_variant cell");
+        }
+
+        AnoMotifLifecycle lc = { .motif = base, .developAfter = 2, .completedPhrase = -1 };
+        for (size_t i = 0; i < sizeof LC / sizeof LC[0]; ++i) {
+            uint8_t st = ano_lifecycle_advance(&lc, LC[i].spend != 0, LC[i].phrase);
+            CHECK((int)st == LC[i].state && lc.statements == LC[i].statements
+                  && lc.completedPhrase == LC[i].completed, "lifecycle advance");
+        }
+
+        for (size_t i = 0; i < sizeof DI / sizeof DI[0]; ++i) {
+            AnoScale s = { (uint8_t)DI[i].tonic, (uint8_t)DI[i].mode };
+            CHECK(ano_diatonic_interval(s, DI[i].a, DI[i].b) == DI[i].out,
+                  "diatonic_interval");
+        }
+
+        AnoMotif m1 = { 0 }, m2 = { 0 };
+        m1.n = 4; m1.shape = ANO_SHAPE_ARCH;
+        {
+            static const int RC[8] = { 0, 4, 4, 2, 6, 2, 8, 4 };
+            static const int CT[4] = { 0, 2, 1, 0 };
+            for (int j = 0; j < 4; ++j) {
+                m1.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                m1.contour[j] = CT[j];
+            }
+        }
+        m2.n = 5; m2.shape = ANO_SHAPE_DESCENT;
+        {
+            static const int RC[10] = { 0, 2, 2, 2, 4, 4, 8, 4, 12, 4 };
+            static const int CT[5] = { 0, -1, -2, -3, -4 };
+            for (int j = 0; j < 5; ++j) {
+                m2.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                m2.contour[j] = CT[j];
+            }
+        }
+        uint32_t strong44 = 0;
+        {
+            int ss[ANO_METER_MAX_SLOTS];
+            uint32_t sn = ano_meter_strong_slots(ano_meter_default(), ss);
+            for (uint32_t j = 0; j < sn; ++j)
+                strong44 |= 1u << ss[j];
+        }
+        for (size_t i = 0; i < sizeof RZ / sizeof RZ[0]; ++i) {
+            const AnoMotif *m = RZ[i].mi == 0 ? &m1 : &m2;
+            AnoScale s = { (uint8_t)RZ[i].tonic, (uint8_t)(RZ[i].mode == 0 ? ANO_MODE_IONIAN : ANO_MODE_DORIAN) };
+            uint8_t pcs[4];
+            for (int j = 0; j < RZ[i].pcn; ++j)
+                pcs[j] = (uint8_t)RZ[i].pcs[j];
+            int near = RZ[i].near == -99999 ? ANO_NEAR_NONE : RZ[i].near;
+            AnoPlacedNote placed[ANO_MOTIF_MAX];
+            uint32_t n = ano_realize_faithful(m, s, pcs, (uint32_t)RZ[i].pcn,
+                                              RZ[i].lo, RZ[i].hi, strong44, near, placed);
+            CHECK(n == m->n, "realize_faithful count");
+            bool ok = true;
+            int pitches[ANO_MOTIF_MAX];
+            for (uint32_t j = 0; j < n; ++j) {
+                pitches[j] = placed[j].pitch;
+                if (placed[j].pitch != RZ[i].pitches[j])
+                    ok = false;
+            }
+            CHECK(ok, "realize_faithful pitches");
+            AnoPlacedNote cad[ANO_MOTIF_MAX];
+            uint32_t cn = ano_realize_cadential(m, s, pcs, (uint32_t)RZ[i].pcn,
+                                                RZ[i].lo, RZ[i].hi, near, 16, cad);
+            CHECK(cn == (uint32_t)RZ[i].cadn, "realize_cadential count");
+            ok = true;
+            for (uint32_t j = 0; j < cn; ++j)
+                if (cad[j].slot != RZ[i].cad[3 * j] || cad[j].durSlots != RZ[i].cad[3 * j + 1]
+                    || cad[j].pitch != RZ[i].cad[3 * j + 2])
+                    ok = false;
+            CHECK(ok, "realize_cadential placement");
+            CHECK(feq(ano_motif_fit(m, s, pcs, (uint32_t)RZ[i].pcn, RZ[i].lo, RZ[i].hi,
+                                    strong44, near), RZ[i].fit), "motif_fit");
+            CHECK(feq(ano_recognizability(m, pitches, n, s), RZ[i].recog),
+                  "recognizability");
+        }
+    }
+
+    // --- form + dramaturg vs gen/form.py + gen/dramaturg.py ---
+    // The empty clock must reproduce div/mod exactly; the dramaturg walk
+    // scripts idle -> withhold (escalating, dom-pedal) -> spend -> withhold
+    // (lament alternation) -> spend, checking every directive and the ledger.
+    {
+        static const struct { int bar, phrase, pos, bars, kind; } CK0[] = {
+            { 0, 0, 0, 8, 0 },
+            { 3, 0, 3, 8, 0 },
+            { 7, 0, 7, 8, 0 },
+            { 8, 1, 0, 8, 0 },
+            { 15, 1, 7, 8, 0 },
+            { 23, 2, 7, 8, 0 },
+            { 40, 5, 0, 8, 0 },
+        };
+        static const struct { int start, bars, kind; } CKS[] = {
+            { 0, 8, 0 },
+            { 8, 2, 1 },
+            { 9, 8, 3 },
+            { 17, 10, 2 },
+        };
+        static const struct { int bar, phrase, pos, bars, kind; } CK1[] = {
+            { 0, 0, 0, 8, 0 },
+            { 7, 0, 7, 8, 0 },
+            { 8, 1, 0, 2, 1 },
+            { 9, 2, 0, 8, 3 },
+            { 10, 2, 1, 8, 3 },
+            { 12, 2, 3, 8, 3 },
+            { 16, 2, 7, 8, 3 },
+            { 17, 3, 0, 10, 2 },
+            { 18, 3, 1, 10, 2 },
+            { 26, 3, 9, 10, 2 },
+            { 27, 4, 0, 8, 0 },
+            { 28, 4, 1, 8, 0 },
+            { 35, 5, 0, 8, 0 },
+            { 44, 6, 1, 8, 0 },
+        };
+
+        static const double DT[] = { 0x1.999999999999ap-3, 0x1.999999999999ap-3, 0x1.999999999999ap-3, 0x1.999999999999ap-3, 0x1.999999999999ap-3, 0x1.999999999999ap-3, 0x1.999999999999ap-3, 0x1.999999999999ap-3, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.6666666666666p-1, 0x1.999999999999ap-4, 0x1.999999999999ap-4, 0x1.999999999999ap-4, 0x1.999999999999ap-4, 0x1.999999999999ap-4, 0x1.999999999999ap-4, 0x1.999999999999ap-4, 0x1.999999999999ap-4, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.3d70a3d70a3d7p-1, 0x1.999999999999ap-5, 0x1.999999999999ap-5, 0x1.999999999999ap-5, 0x1.999999999999ap-5, 0x1.999999999999ap-5, 0x1.999999999999ap-5, 0x1.999999999999ap-5, 0x1.999999999999ap-5 };
+        static const struct { int cadence, lockn, lock0, cap, brighten; double intensify;
+                               int tonic, esc; double payoff; int susp, appo, pedal, lament;
+                               int bars_since, deceptions, withholding, buildups; } DD[] = {
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            { 2, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 1, 0, 0, 0, 8, 1, 1, 0 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 1, 0, 0, 0, 8, 1, 1, 0 },
+            { 2, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 16, 2, 2, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 16, 2, 2, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 16, 2, 2, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 16, 2, 2, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 16, 2, 2, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 16, 2, 2, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 1, 0, 5, 0, 16, 2, 2, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 1, 0, 5, 0, 16, 2, 2, 0 },
+            { 2, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 24, 3, 3, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 24, 3, 3, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 24, 3, 3, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 24, 3, 3, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 24, 3, 3, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 5, 0, 24, 3, 3, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 1, 0, 5, 0, 24, 3, 3, 0 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 1, 0, 5, 0, 24, 3, 3, 0 },
+            { 0, 0, -1, 0, 2, 0x0.0p+0, 0, 0, 0x1.90b21642c8590p-1, 0, 0, 0, 0, 0, 0, 0, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 1, 0, 0, 0, 0, 0, 0, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 1, 1, 0, 0, 0, 0, 0, 1 },
+            { 2, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 0, 0, 0, 0, 8, 1, 1, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 1, 0, 0, 0, 8, 1, 1, 1 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 1, 0, 0x0.0p+0, 1, 0, 0, 0, 8, 1, 1, 1 },
+            { 2, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 0, 1, 16, 2, 2, 1 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 0, 1, 16, 2, 2, 1 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 0, 1, 16, 2, 2, 1 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 0, 1, 16, 2, 2, 1 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 0, 1, 16, 2, 2, 1 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 0, 0, 0, 1, 16, 2, 2, 1 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 1, 0, 0, 1, 16, 2, 2, 1 },
+            { -1, 1, 4, 2, 0, 0x1.0000000000000p-2, 1, 1, 0x0.0p+0, 1, 0, 0, 1, 16, 2, 2, 1 },
+            { 0, 0, -1, 0, 2, 0x0.0p+0, 0, 0, 0x1.6969696969696p-1, 0, 0, 0, 0, 0, 0, 0, 2 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 2 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 2 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 2 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 2 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 0, 0, 0, 0, 0, 0, 0, 2 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 1, 0, 0, 0, 0, 0, 0, 2 },
+            { -1, 0, -1, 0, 0, 0x0.0p+0, 0, 0, 0x0.0p+0, 1, 1, 0, 0, 0, 0, 0, 2 },
+        };
+
+        static const struct { int bars, dec; double mag; } SM[] = {
+            { 0, 0, 0x0.0p+0 },
+            { 8, 1, 0x1.1745d1745d174p-1 },
+            { 16, 2, 0x1.6969696969696p-1 },
+            { 40, 5, 0x1.b6db6db6db6dcp-1 },
+            { 96, 10, 0x1.d71afd8bdc034p-1 },
+            { 200, 3, 0x1.d71afd8bdc034p-1 },
+        };
+
+        static const int PR[] = { 0, 0, 1, 2, 0, 0, 1, 2, 0 };
+        AnoPhraseClock ck = ano_phrase_clock(8);
+        for (size_t i = 0; i < sizeof CK0 / sizeof CK0[0]; ++i) {
+            AnoPhrasePos p = ano_clock_position(&ck, CK0[i].bar);
+            CHECK(p.phrase == CK0[i].phrase && p.pos == CK0[i].pos
+                  && p.bars == CK0[i].bars && (int)p.kind == CK0[i].kind,
+                  "empty clock == div/mod");
+        }
+        ano_clock_schedule(&ck, 0, 8, ANO_SEG_REGULAR, 0);
+        ano_clock_schedule(&ck, 1, 2, ANO_SEG_CODETTA, 0);
+        ano_clock_schedule(&ck, 2, 8, ANO_SEG_ELISION, 1);
+        ano_clock_schedule(&ck, 3, 10, ANO_SEG_EXTENSION, 0);
+        CHECK(ck.segmentCount == sizeof CKS / sizeof CKS[0], "clock segment count");
+        for (size_t i = 0; i < sizeof CKS / sizeof CKS[0]; ++i)
+            CHECK(ck.segments[i].start == CKS[i].start && ck.segments[i].bars == CKS[i].bars
+                  && ck.segments[i].kind == (uint8_t)CKS[i].kind, "clock segments");
+        for (size_t i = 0; i < sizeof CK1 / sizeof CK1[0]; ++i) {
+            AnoPhrasePos p = ano_clock_position(&ck, CK1[i].bar);
+            CHECK(p.phrase == CK1[i].phrase && p.pos == CK1[i].pos
+                  && p.bars == CK1[i].bars && (int)p.kind == CK1[i].kind,
+                  "scheduled clock positions");
+        }
+
+        AnoDramaturgConfig dc = ano_dramaturg_config_default();
+        AnoLedger led;
+        ano_ledger_init(&led);
+        for (size_t i = 0; i < sizeof DT / sizeof DT[0]; ++i) {
+            AnoPhrasePos pos = ano_phrase_position((int)i, 8);
+            AnoDirective d = ano_dramaturg_on_bar(&dc, &led, DT[i], pos);
+            int lock0 = d.lockLayerCount ? (int)d.lockLayers[0] : -1;
+            CHECK((int)d.cadence == DD[i].cadence, "directive cadence");
+            CHECK((int)d.lockLayerCount == DD[i].lockn && lock0 == DD[i].lock0,
+                  "directive lock layers");
+            CHECK(d.registerCap == DD[i].cap && d.brighten == DD[i].brighten,
+                  "directive cap/brighten");
+            CHECK(feq(d.intensify, DD[i].intensify), "directive intensify");
+            CHECK((int)d.withholdRootTonic == DD[i].tonic && d.escalation == DD[i].esc,
+                  "directive tonic/escalation");
+            CHECK(feq(d.payoff, DD[i].payoff), "directive payoff");
+            CHECK((int)d.suspend == DD[i].susp && (int)d.appoggiatura == DD[i].appo,
+                  "directive M14 flags");
+            CHECK(d.pedal == DD[i].pedal && (int)d.lament == DD[i].lament,
+                  "directive ground");
+            CHECK(led.barsSinceAuthentic == DD[i].bars_since && led.deceptions == DD[i].deceptions
+                  && led.withholdingPhrases == DD[i].withholding && led.buildups == DD[i].buildups,
+                  "ledger state");
+        }
+
+        for (size_t i = 0; i < sizeof SM / sizeof SM[0]; ++i) {
+            AnoLedger l;
+            ano_ledger_init(&l);
+            l.barsSinceAuthentic = SM[i].bars;
+            l.deceptions = SM[i].dec;
+            CHECK(feq(ano_spend_magnitude(&l, &dc), SM[i].mag), "spend magnitude");
+        }
+
+        static AnoPeriodPlanner pl; // zero-init static: ~50 KiB of caches
+        ano_planner_commit(&pl, 2);
+        ano_planner_commit(&pl, 6);
+        for (int p = 0; p < (int)(sizeof PR / sizeof PR[0]); ++p)
+            CHECK((int)ano_planner_role(&pl, p) == PR[p], "planner roles");
+    }
+
+    // --- signatures + imitation vs gen/signatures.py + gen/imitation.py ---
+    // The director walk covers fresh/observed/aged pressure, both leniency
+    // extremes, and a forced request; the imitation cases cover the clean
+    // entry, the +half-bar collision retry, and the doubling exclusion.
+    {
+        // director walk steps: kind 0=select 1=observe(sig idx via bars? no: tag idx) 2=age
+        static const struct { int kind; int pcn; int pcs[4]; double leniency; int near;
+                               const char *req; int bars; int hit, sig, xform; int mn, mshape; int mrc[16]; int mct[8]; } DW[] = {
+            { 0, 3, { 0, 4, 7 }, 0x1.0000000000000p-1, -99999, "", 0, 1, 0, 0, 4, 0, { 0, 4, 4, 2, 6, 2, 8, 4 }, { 0, 2, 1, 0 } },
+            { 1, 0, { 0 }, 0.0, 0, "", 8, 0, 0, 0, 0, 0, { 0 }, { 0 } },
+            { 0, 3, { 0, 4, 7 }, 0x1.0000000000000p-1, -99999, "", 0, 1, 1, 1, 3, 1, { 0, 2, 2, 2, 4, 4 }, { 0, 1, 2 } },
+            { 2, 0, { 0 }, 0.0, 0, "", 8, 0, 0, 0, 0, 0, { 0 }, { 0 } },
+            { 0, 4, { 7, 11, 2, 5 }, 0x1.999999999999ap-3, 74, "", 0, 1, 1, 0, 3, 1, { 0, 2, 2, 2, 4, 4 }, { 0, -1, -2 } },
+            { 0, 4, { 7, 11, 2, 5 }, 0x1.ccccccccccccdp-1, 74, "", 0, 1, 1, 0, 3, 1, { 0, 2, 2, 2, 4, 4 }, { 0, -1, -2 } },
+            { 1, 1, { 0 }, 0.0, 0, "", 8, 0, 0, 0, 0, 0, { 0 }, { 0 } },
+            { 0, 3, { 9, 0, 4 }, 0x1.0000000000000p-1, 60, "hero", 0, 1, 0, 0, 4, 0, { 0, 4, 4, 2, 6, 2, 8, 4 }, { 0, 2, 1, 0 } },
+            { 2, 0, { 0 }, 0.0, 0, "", 16, 0, 0, 0, 0, 0, { 0 }, { 0 } },
+            { 0, 3, { 5, 9, 0 }, 0x0.0p+0, -99999, "", 0, 1, 0, 1, 4, 0, { 0, 4, 4, 2, 6, 2, 8, 4 }, { 0, -2, -1, 0 } },
+        };
+
+        static const struct { int n, shape; int rc[12]; int ct[6]; } IC = { 3, 0, { 0, 2, 2, 2, 4, 4 }, { 0, 1, 2 } };
+
+        static const struct { int melc; double ms[2]; double md[2]; int mp[2]; int mrole[2];
+                               int evc; double es[8]; double ed[8]; int ep[8]; int emn; } IM[] = {
+            { 0, { 0x0.0p+0, 0x0.0p+0 }, { 0x0.0p+0, 0x0.0p+0 }, { 0, 0 }, { 0, 0 }, 3, { 0x1.0000000000000p+4, 0x1.0800000000000p+4, 0x1.1000000000000p+4 }, { 0x1.0000000000000p-1, 0x1.0000000000000p-1, 0x1.0000000000000p+0 }, { 83, 84, 86 }, 3 }, // no melody | imitation: arp entry on the bar n=3
+            { 2, { 0x1.0000000000000p+4, 0x1.2000000000000p+4 }, { 0x1.0000000000000p+1, 0x1.0000000000000p+1 }, { 84, 83 }, { 0, 0 }, 3, { 0x1.2000000000000p+4, 0x1.2800000000000p+4, 0x1.3000000000000p+4 }, { 0x1.0000000000000p-1, 0x1.0000000000000p-1, 0x1.0000000000000p+0 }, { 83, 84, 86 }, 3 }, // clashy | imitation: arp entry +half-bar n=3, 1 clash tolerated
+            { 1, { 0x1.0000000000000p+4, 0x0.0p+0 }, { 0x1.0000000000000p+2, 0x0.0p+0 }, { 84, 0 }, { 1, 0 }, 3, { 0x1.0000000000000p+4, 0x1.0800000000000p+4, 0x1.1000000000000p+4 }, { 0x1.0000000000000p-1, 0x1.0000000000000p-1, 0x1.0000000000000p+0 }, { 83, 84, 86 }, 3 }, // doubling only | imitation: arp entry on the bar n=3
+        };
+        // ctx: bar 4, C ionian, V7, pcs = (7, 11, 2, 5), sym = V7
+        AnoMotif hero = { 0 }, threat = { 0 };
+        hero.n = 4; hero.shape = ANO_SHAPE_ARCH;
+        {
+            static const int RC[8] = { 0, 4, 4, 2, 6, 2, 8, 4 };
+            static const int CT[4] = { 0, 2, 1, 0 };
+            for (int j = 0; j < 4; ++j) {
+                hero.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                hero.contour[j] = CT[j];
+            }
+        }
+        threat.n = 3; threat.shape = ANO_SHAPE_DESCENT;
+        {
+            static const int RC[6] = { 0, 2, 2, 2, 4, 4 };
+            static const int CT[3] = { 0, -1, -2 };
+            for (int j = 0; j < 3; ++j) {
+                threat.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                threat.contour[j] = CT[j];
+            }
+        }
+        AnoSignatureMotif lib[2] = {
+            { "hero", hero, 0.9 },
+            { "threat", threat, 0.5 },
+        };
+        AnoMotifDirector dir;
+        ano_director_init(&dir, lib, 2);
+        AnoScale cIon = { 0, ANO_MODE_IONIAN };
+        uint32_t strong44 = 0;
+        {
+            int ss[ANO_METER_MAX_SLOTS];
+            uint32_t sn = ano_meter_strong_slots(ano_meter_default(), ss);
+            for (uint32_t j = 0; j < sn; ++j)
+                strong44 |= 1u << ss[j];
+        }
+        for (size_t i = 0; i < sizeof DW / sizeof DW[0]; ++i) {
+            if (DW[i].kind == 1) {
+                ano_director_observe(&dir, DW[i].pcn == 0 ? "hero" : "threat", DW[i].bars);
+                continue;
+            }
+            if (DW[i].kind == 2) {
+                ano_director_age(&dir, DW[i].bars);
+                continue;
+            }
+            uint8_t pcs[4];
+            for (int j = 0; j < DW[i].pcn; ++j)
+                pcs[j] = (uint8_t)DW[i].pcs[j];
+            int near = DW[i].near == -99999 ? ANO_NEAR_NONE : DW[i].near;
+            uint32_t sig;
+            AnoTransform xf;
+            AnoMotif m;
+            bool hit = ano_director_select(&dir, cIon, pcs, (uint32_t)DW[i].pcn,
+                                           60, 84, strong44, DW[i].leniency, near,
+                                           DW[i].req, &sig, &xf, &m);
+            CHECK((int)hit == DW[i].hit, "director select hit");
+            if (!hit)
+                continue;
+            CHECK((int)sig == DW[i].sig && (int)xf == DW[i].xform, "director selection");
+            CHECK((int)m.n == DW[i].mn && m.shape == (uint8_t)DW[i].mshape,
+                  "director motif shape");
+            bool ok = true;
+            for (uint32_t j = 0; j < m.n; ++j)
+                if (m.rhythm[j].slot != DW[i].mrc[2 * j] || m.rhythm[j].durSlots != DW[i].mrc[2 * j + 1]
+                    || m.contour[j] != DW[i].mct[j])
+                    ok = false;
+            CHECK(ok, "director motif cell");
+        }
+
+        AnoMotif base = { 0 };
+        base.n = 6; base.shape = ANO_SHAPE_ARCH;
+        {
+            static const int RC[12] = { 0, 2, 2, 2, 4, 4, 8, 2, 10, 2, 12, 4 };
+            static const int CT[6] = { 0, 1, 2, 4, 2, 1 };
+            for (int j = 0; j < 6; ++j) {
+                base.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                base.contour[j] = CT[j];
+            }
+        }
+        AnoMotif cell = ano_imitation_cell(&base);
+        CHECK((int)cell.n == IC.n && cell.shape == (uint8_t)IC.shape, "imitation cell shape");
+        {
+            bool ok = true;
+            for (uint32_t j = 0; j < cell.n; ++j)
+                if (cell.rhythm[j].slot != IC.rc[2 * j] || cell.rhythm[j].durSlots != IC.rc[2 * j + 1]
+                    || cell.contour[j] != IC.ct[j])
+                    ok = false;
+            CHECK(ok, "imitation cell values");
+        }
+
+        AnoHarmonicContext ictx = { 0 };
+        ictx.bar = 4;
+        ictx.scale = cIon;
+        ictx.chord = ano_chord(5, ANO_EXT_7);
+        ictx.chordPcCount = ano_chord_voiced_pcs(ictx.chord, cIon, ictx.chordPcs);
+        ano_chord_symbol(ictx.chord, cIon, ictx.chordSym, sizeof ictx.chordSym);
+        for (size_t i = 0; i < sizeof IM / sizeof IM[0]; ++i) {
+            AnoMusicEvent mel[2] = { 0 };
+            for (int j = 0; j < IM[i].melc; ++j) {
+                mel[j].core = (AnoNoteEvent){ IM[i].ms[j], IM[i].md[j],
+                                              (uint8_t)IM[i].mp[j], 80,
+                                              ANO_MUSIC_MELODY, ANO_MUSIC_TIE_NONE };
+                strncpy(mel[j].role, IM[i].mrole[j] ? "doubling" : "chord-tone",
+                        sizeof mel[j].role - 1);
+            }
+            AnoImitationResult res;
+            ano_generate_imitation(&ictx, ano_meter_default(), &base,
+                                   mel, (uint32_t)IM[i].melc,
+                                   ANO_MUSIC_ARP, 72, 96, 70, &res);
+            CHECK((int)res.eventCount == IM[i].evc, "imitation event count");
+            bool ok = true;
+            for (uint32_t j = 0; j < res.eventCount; ++j)
+                if (!feq(res.events[j].core.start, IM[i].es[j])
+                    || !feq(res.events[j].core.dur, IM[i].ed[j])
+                    || res.events[j].core.pitch != (uint8_t)IM[i].ep[j]
+                    || res.events[j].core.velocity != 70
+                    || strcmp(res.events[j].role, "imitation") != 0)
+                    ok = false;
+            CHECK(ok, "imitation events");
+            CHECK(res.hasEmitted && (int)res.emitted.n == IM[i].emn, "imitation emitted");
+        }
     }
 
     if (failures) {
