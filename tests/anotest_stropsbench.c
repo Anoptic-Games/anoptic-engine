@@ -16,7 +16,7 @@
  * Every timed result is sanity-checked (lengths, spot bytes), so the table cannot
  * quietly benchmark wrong behavior; a broken check exits nonzero.
  * Deterministic (fixed seeds). argv[1] scales reps. Built so it cannot rot, DISABLED
- * in ctest -- run ./anotest_stropsbench by hand from a -O3 build (build.bat 7). */
+ * in ctest -- run ./anotest_stropsbench by hand from a -O3 build (build.bat 8). */
 
 #include <stdio.h>
 #include <stdlib.h>

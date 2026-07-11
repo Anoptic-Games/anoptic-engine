@@ -20,4 +20,4 @@ Templates via `#include "templates/<x>.h"`. Header-only, no CMake changes:
 
 Timed loops stamp raw ticks only. Convert and sort after the loop, in bench_lat_stats.
 
-After: `build.bat 3` (or `./build.sh 3`), run the new binary by hand, show `git diff --stat`.
+After: `build.bat 5` (or `./build.sh 5`), run the new binary by hand, show `git diff --stat`.

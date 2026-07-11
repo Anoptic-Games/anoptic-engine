@@ -17,7 +17,8 @@
   #   nix run [-- N]                       dev-env wrapper around ./build.sh N (default 1):
   #                                        halts if submodule gitlinks disagree with the pins,
   #                                        auto-inits absent submodules, stages assets/ best-effort,
-  #                                        then launches the engine for N=1|2 (test profiles run ctest)
+  #                                        then launches the engine for N=1|2 (renderer) or N=3
+  #                                        (headless console, runs in WSL too); test profiles run ctest
   #   nix develop [.#windows]              the same env, you drive
   #
   # git flakes see tracked files only: `git add` new files or nix will not.
@@ -82,6 +83,14 @@
           pkgs.vulkan-validation-layers
         else
           null;
+
+      # libdecor without its GTK plugin: the cairo plugin draws the decorations and GTK3's
+      # ~290 MiB closure stays out of the engine's runtime.
+      libdecorSlim =
+        pkgs:
+        pkgs.libdecor.overrideAttrs (o: {
+          mesonFlags = o.mesonFlags ++ [ (lib.mesonEnable "gtk" false) ];
+        });
 
       # Fortify off for Debug and sanitizer builds (needs -O).
       fortifyOff = [
@@ -152,7 +161,11 @@
               ":"
               "${vvl}/share/vulkan/explicit_layer.d"
             ];
-          # Libs GLFW 3.4 dlopen()s at runtime (see postFixup). Mirrors the Linux buildInputs.
+          # Render libs on Linux: GLFW 3.4 links none of them — every one is dlopen()ed at
+          # runtime (see postFixup). Doubling as buildInputs supplies headers plus the dev-shell
+          # RUNPATH, and libGL covers glfw3.h's <GL/gl.h>. Xext/Xrender/Xxf86vm and libdecor are
+          # GLFW-optional; absent they cost shaped windows, transparency, gamma, and Wayland
+          # decorations, so ship them.
           # No `with pkgs`: the wayland parameter shadows pkgs.wayland.
           linuxRenderLibs = lib.optionals (renderer && host.isLinux) (
             [ pkgs.libGL ]
@@ -164,11 +177,15 @@
                 libxinerama
                 libxcursor
                 libxi
+                libxext
+                libxrender
+                libxxf86vm
               ]
             )
             ++ lib.optionals wayland [
               pkgs.wayland
               pkgs.libxkbcommon
+              (libdecorSlim pkgs)
             ]
           );
         in
@@ -198,24 +215,7 @@
                 pkgs.vulkan-headers
                 pkgs.vulkan-loader
               ]
-              ++ lib.optionals host.isLinux (
-                [ pkgs.libGL ] # glfw3.h's <GL/gl.h>
-                ++ lib.optionals x11 (
-                  with pkgs;
-                  [
-                    libx11
-                    libxrandr
-                    libxinerama
-                    libxcursor
-                    libxi
-                  ]
-                )
-                # No `with pkgs`: the wayland parameter shadows pkgs.wayland.
-                ++ lib.optionals wayland [
-                  pkgs.wayland
-                  pkgs.libxkbcommon
-                ]
-              )
+              ++ linuxRenderLibs
               ++ lib.optionals host.isDarwin [ pkgs.moltenvk ]
             );
 
@@ -239,13 +239,12 @@
 
           doCheck = tests;
           # ano_fs_userpath() needs a HOME (plus the macOS Application Support parents).
-          # until-pass:2 absorbs sleep-precision flakes. anoptic_time excluded on Darwin
-          # builders (background QoS). `nix run -- 3|6` still covers it at user QoS.
+          # until-pass:2 absorbs sleep-precision flakes.
           checkPhase = ''
             runHook preCheck
             export HOME="$TMPDIR/anoptic-home"
             mkdir -p "$HOME/Library/Application Support"
-            ctest --output-on-failure --repeat until-pass:2 ${lib.optionalString host.isDarwin "-E anoptic_time"}
+            ctest --output-on-failure --repeat until-pass:2
             runHook postCheck
           '';
 
@@ -402,7 +401,7 @@
           };
 
           # Sandbox test suites. Building one runs it. Sanitized suites run headless.
-          # GPU-real sanitizer runs are `nix run -- 4|5`.
+          # GPU-real sanitizer runs are `nix run -- 6|7`.
           # tests-full (experimental): full suite incl. Vulkan device tests on lavapipe.
           checks = mkVariants mkHost (
             {
@@ -489,23 +488,29 @@
               is_wsl=0
               if [ -r /proc/version ] && grep -qi microsoft /proc/version; then
                 is_wsl=1
-                echo "[anoptic] WSL detected — in-tree Linux builds cover headless and tests; the WSL renderer artifact is 'nix build .#release-wsl' (Windows exe)."
+                echo "[anoptic] WSL detected — renderer profiles build but cannot display; 'nix run -- 3' runs the headless engine in-guest, 'nix build .#release-wsl' emits the Windows renderer exe."
               fi
 
               # Build the requested profile in the dev shell.
               nix develop "$root" --command ./build.sh "$mode"
 
-              # Launch the freshly built engine for the two plain build profiles. Test/headless
-              # profiles (3-7) already ran their suite inside build.sh, so there is nothing to
-              # launch. build_dir mirrors build.sh's mode->dir mapping; the binary self-locates
-              # its resources via /proc/self/exe, and the dev shell supplies VK_ICD_FILENAMES
-              # (MoltenVK) and VK_LAYER_PATH (Debug validation). WSL builds but cannot display.
+              # Launch the freshly built engine for the plain build profiles: renderer (1|2) and
+              # headless console (3). Profiles 4-8 already ran their suite inside build.sh, so
+              # there is nothing to launch. build_dir mirrors build.sh's mode->dir mapping; the
+              # binary self-locates its resources via /proc/self/exe, and the dev shell supplies
+              # VK_ICD_FILENAMES (MoltenVK) and VK_LAYER_PATH (Debug validation). Renderer builds
+              # have no display target inside WSL, so 1|2 stop after building there; the headless
+              # engine needs neither display nor GPU and launches anywhere.
               case "$mode" in
                 1) build_dir="Release" ;;
                 2) build_dir="Debug" ;;
+                3) build_dir="Headless" ;;
                 *) build_dir="" ;;
               esac
-              if [ -n "$build_dir" ] && [ "$is_wsl" -eq 0 ]; then
+              if [ "$is_wsl" -eq 1 ] && [ "$mode" != "3" ]; then
+                build_dir=""
+              fi
+              if [ -n "$build_dir" ]; then
                 bin="$root/build/$build_dir/anopticengine"
                 if [ ! -x "$bin" ]; then
                   echo "[anoptic] no runnable engine at $bin — the renderer was skipped (no Vulkan SDK?); see the build log above." >&2
@@ -551,9 +556,13 @@
                         libxinerama
                         libxcursor
                         libxi
+                        libxext
+                        libxrender
+                        libxxf86vm
                         wayland
                         libxkbcommon
                       ])
+                      ++ [ (libdecorSlim pkgs) ]
                       ++ lib.optional (vvlShell != null) vvlShell;
                     # GPU-less full-suite runs: VK_ICD_FILENAMES=$ANO_LAVAPIPE_ICD ctest ...
                     ANO_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
