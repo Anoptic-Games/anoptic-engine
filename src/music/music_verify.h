@@ -28,6 +28,7 @@
 #ifndef ANO_MUSIC_VERIFY_H
 #define ANO_MUSIC_VERIFY_H
 
+#include "music_form.h"
 #include "music_ir.h"
 #include "music_motif.h"
 
@@ -143,12 +144,12 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
                       AnoMeter meter, AnoLintReport *out);
 
 // C3: each phrase's imitation entry must still carry its source cell's
-// contour (recognizability >= threshold, prototype default 0.9). cells is the
-// engine's per-phrase cache (AnoConductorState.imitationSet/imitationCells),
-// indexed by phrase rank.
+// contour (recognizability >= threshold, prototype default 0.9). cellTag/cells
+// are the engine's per-phrase cache (AnoConductorState.imitationTag /
+// imitationCells) — the tagged ring, read by phrase rank.
 void ano_lint_imitation(const AnoMusicEvent *events, uint32_t n,
                         const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
-                        const bool *cellSet, const AnoMotif *cells, uint32_t nCells,
+                        const int *cellTag, const AnoMotif *cells,
                         AnoMeter meter, double threshold, AnoLintReport *out);
 
 #endif // ANO_MUSIC_VERIFY_H
