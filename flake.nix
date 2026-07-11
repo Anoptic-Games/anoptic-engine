@@ -151,6 +151,25 @@
               ":"
               "${vvl}/share/vulkan/explicit_layer.d"
             ];
+          # Libs GLFW 3.4 dlopen()s at runtime (see postFixup). Mirrors the Linux buildInputs.
+          # No `with pkgs`: the wayland parameter shadows pkgs.wayland.
+          linuxRenderLibs = lib.optionals (renderer && host.isLinux) (
+            [ pkgs.libGL ]
+            ++ lib.optionals x11 (
+              with pkgs;
+              [
+                libx11
+                libxrandr
+                libxinerama
+                libxcursor
+                libxi
+              ]
+            )
+            ++ lib.optionals wayland [
+              pkgs.wayland
+              pkgs.libxkbcommon
+            ]
+          );
         in
         stdenv.mkDerivation {
           pname = "anopticengine-${variant}";
@@ -253,9 +272,18 @@
             ''
           );
 
-          postFixup = lib.optionalString (wrapArgs != [ ]) ''
-            wrapProgram "$out/bin/anopticengine" ${lib.escapeShellArgs wrapArgs}
-          '';
+          # GLFW 3.4 dlopen()s libX11/libwayland/libxkbcommon at runtime, so they never enter
+          # DT_NEEDED and fixupPhase's --shrink-rpath prunes their store paths — glfwInit() then
+          # fails on the pure artifact. Re-add them post-shrink: the RUNPATH a dev-shell build.sh
+          # binary keeps unshrunk. patchelf ships in the Linux stdenv; run it before wrapProgram
+          # so the ELF, not its shell wrapper, is patched.
+          postFixup =
+            lib.optionalString (linuxRenderLibs != [ ]) ''
+              patchelf --add-rpath "${lib.makeLibraryPath linuxRenderLibs}" "$out/bin/anopticengine"
+            ''
+            + lib.optionalString (wrapArgs != [ ]) ''
+              wrapProgram "$out/bin/anopticengine" ${lib.escapeShellArgs wrapArgs}
+            '';
 
           meta = {
             description = "Anoptic Engine — ${variant}";
