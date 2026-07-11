@@ -1103,11 +1103,19 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
         vel = vel < 1 ? 1 : vel > 127 ? 127 : vel;
         uint8_t pcs1[5], pcs2[5];
         uint32_t n1 = ano_chord_pitch_classes(chord, e->scale, pcs1);
+        uint32_t n2 = ano_chord_pitch_classes(st->splits[bar], e->scale, pcs2);
+        // C4 "monophonic" thins this bar exactly as it thins an ano_generate_pad
+        // bar — the split path voices its own blocks, so it must apply the dyad
+        // rule itself or the phrase's leanest state grows a 4-note pad.
+        AnoVoicingConfig vcfg = cfg->voicing;
+        if (params.texture == ANO_TEX_MONOPHONIC) {
+            n1 = ano_thin_voicing(pcs1, n1, &vcfg); // voices=2 is idempotent,
+            n2 = ano_thin_voicing(pcs2, n2, &vcfg); // so both blocks share vcfg
+        }
         int v1[6], v2[6];
         uint32_t vn1 = ano_voice_chord(pcs1, n1, st->prevVoicingLen ? st->prevVoicing : NULL,
-                                       st->prevVoicingLen, &cfg->voicing, v1, NULL);
-        uint32_t n2 = ano_chord_pitch_classes(st->splits[bar], e->scale, pcs2);
-        uint32_t vn2 = ano_voice_chord(pcs2, n2, v1, vn1, &cfg->voicing, v2, NULL);
+                                       st->prevVoicingLen, &vcfg, v1, NULL);
+        uint32_t vn2 = ano_voice_chord(pcs2, n2, v1, vn1, &vcfg, v2, NULL);
         for (int seg = 0; seg < 2; ++seg) {
             const int *v = seg ? v2 : v1;
             uint32_t vn = seg ? vn2 : vn1;
@@ -1497,21 +1505,29 @@ static void py_hex(double x, char *buf, size_t cap)
         snprintf(buf, cap, "%.13a", x);
 }
 
+// events/count: any stream — one bar or a whole piece. Streamed into the hash
+// event by event: a staging buffer would silently truncate a long piece, and a
+// truncated digest reads as a matching one.
 uint64_t ano_events_digest(const AnoMusicEvent *events, uint32_t count)
 {
-    static char buf[32768]; // single-threaded conductor context
-    size_t off = 0;
-    for (uint32_t i = 0; i < count && off + 128 < sizeof buf; ++i) {
-        char s[32], d[32];
+    AnoBlake2b8 st;
+    ano_blake2b8_init(&st);
+    for (uint32_t i = 0; i < count; ++i) {
+        char s[32], d[32], rec[160];
         py_hex(events[i].core.start, s, sizeof s);
         py_hex(events[i].core.dur, d, sizeof d);
-        off += (size_t)snprintf(buf + off, sizeof buf - off, "%s,%s,%d,%d,%d,%d,%d,%s;",
-                                s, d, events[i].core.pitch, events[i].core.velocity,
-                                events[i].core.layer, events[i].core.tie,
-                                events[i].degree, events[i].role);
+        int n = snprintf(rec, sizeof rec, "%s,%s,%d,%d,%d,%d,%d,%s;", s, d,
+                         events[i].core.pitch, events[i].core.velocity,
+                         events[i].core.layer, events[i].core.tie, events[i].degree,
+                         events[i].role);
+        if (n < 0)
+            continue;
+        if ((size_t)n >= sizeof rec) // cannot happen: role is 20, hexfloats ~25
+            n = (int)sizeof rec - 1;
+        ano_blake2b8_update(&st, rec, (size_t)n);
     }
     uint8_t digest[8];
-    ano_music_blake2b8(buf, off, digest);
+    ano_blake2b8_final(&st, digest);
     uint64_t v = 0;
     for (int b = 0; b < 8; ++b)
         v = v << 8 | digest[b];

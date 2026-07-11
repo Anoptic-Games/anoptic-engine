@@ -43,6 +43,13 @@ typedef struct AnoPadResult
     uint32_t      voiceCount;
 } AnoPadResult;
 
+// C4 "monophonic": strip root-first pcs (in place) to a bare root+fifth dyad,
+// free of thirds entirely, and hold the voicer to two voices. Returns the new
+// pc count. Shared with the conductor's D3 split-6/4 bar, which voices its two
+// half-bar blocks itself instead of calling ano_generate_pad — it must thin
+// identically or a monophonic phrase grows a four-note pad at its split bar.
+uint32_t ano_thin_voicing(uint8_t *pcs, uint32_t pcCount, AnoVoicingConfig *cfg);
+
 // One bar of sustained chord. prevVoicing NULL/0 = None; nextPcs feeds the
 // connective preview; rng only draws for comping; prevTie = ANO_NEAR_NONE
 // or the pitch the previous bar tied out (closes the D1 loop).
