@@ -17,14 +17,12 @@
 // Per-pass GPU timestamps as fence-posts: region time = consecutive delta * timestampPeriod.
 static double   g_tsAccumMs[ANO_TS_COUNT - 1]; // accumulated per-region ms
 static uint32_t g_tsFrames = 0;             // frames since last print
-#define ANO_PROFILE_PRINT_INTERVAL 120u     // frames per print
 // Shadow-frustum renders per frame, averaged into the profile line.
 uint64_t g_shadowRenderAccum = 0;
 uint32_t g_shadowRenderFrames = 0;
 
-// Wall-clock throughput window: presented frames since the last [frame] line, and its start stamp.
-static uint64_t g_wallLastUs = 0;
-static uint32_t g_wallFrames = 0;
+// Wall-clock frame-timing tally (struct + inlined hot-path mark in frame.h), drained here.
+anoperf_accumulator_t g_perfAcc;
 
 // Live VRAM use of a bump allocator: sum of each block's high-water offset.
 static VkDeviceSize allocator_used_bytes(const GpuAllocator* a) {
@@ -98,7 +96,7 @@ static void ano_print_profiling(void) {
 }
 
 // Fold this frame slot's per-pass timestamp deltas into the running average.
-// Print every ANO_PROFILE_PRINT_INTERVAL frames. No-op when timestamps are unsupported.
+// Print every ANO_PERF_WINDOW_FRAMES frames. No-op when timestamps are unsupported.
 void ano_collect_frame_stats(uint32_t frameIndex) {
     if (!rendererState.timestampValidBits) return;
     VkQueryPool pool = rendererState.frames[frameIndex].timestampPool;
@@ -113,7 +111,7 @@ void ano_collect_frame_stats(uint32_t frameIndex) {
         uint64_t d = (b >= a) ? (b - a) : (mask - a + b + 1u); // wrap-safe
         g_tsAccumMs[r] += (double)d * (double)rendererState.timestampPeriodNs * 1e-6;
     }
-    if (++g_tsFrames >= ANO_PROFILE_PRINT_INTERVAL) {
+    if (++g_tsFrames >= ANO_PERF_WINDOW_FRAMES) {
         ano_print_profiling();
         for (int r = 0; r < ANO_TS_COUNT - 1; r++) g_tsAccumMs[r] = 0.0;
         g_tsFrames = 0;
@@ -126,21 +124,49 @@ void ano_profile_reset_window(void) {
     g_tsFrames = 0;
 }
 
-// Wall-clock frame throughput. Called once per presented frame from drawFrame. Independent of
-// GPU timestamp support: the profile line above stops printing when constant swapchain recreation
-// starves the timestamp reads, but this keeps measuring. Logs achieved fps + mean wall frametime
-// once per real second via ano_log (release-visible, same policy as the profile line).
-void ano_frame_mark(void) {
-    uint64_t now = ano_timestamp_us();
-    if (g_wallLastUs == 0) { g_wallLastUs = now; return; } // seed, uncounted
-    g_wallFrames++;
-    uint64_t dt = now - g_wallLastUs;
-    if (dt >= 1000000ull) {
-        double fps = (double)g_wallFrames * 1e6 / (double)dt;
-        ano_log(ANO_INFO, "[frame] %.1f fps  %.3f ms wall", fps, (double)dt / (double)g_wallFrames / 1000.0);
-        g_wallFrames = 0;
-        g_wallLastUs = now;
+// Ascending insertion sort for one window of dts (us). Cold: once per flush, n <= 128.
+static void dt_sort(uint32_t* a, uint32_t n) {
+    for (uint32_t i = 1; i < n; i++) {
+        uint32_t v = a[i], j = i;
+        for (; j > 0 && a[j - 1] > v; j--) a[j] = a[j - 1];
+        a[j] = v;
     }
+}
+
+// Linear-interpolation percentile over an ascending us array; q in [0,1]. Returns ms.
+static double frametime_pct_ms(const uint32_t* s, uint32_t n, double q) {
+    if (n == 0) return 0.0;
+    if (n == 1) return (double)s[0] / 1000.0;
+    double idx = q * (double)(n - 1);
+    uint32_t lo = (uint32_t)idx;
+    uint32_t hi = (lo + 1u < n) ? lo + 1u : n - 1u;
+    double us = (double)s[lo] + ((double)s[hi] - (double)s[lo]) * (idx - (double)lo);
+    return us / 1000.0;
+}
+
+// Drain one full accumulator window (ano_frame_mark, every ANO_PERF_WINDOW_FRAMES presented
+// frames): [frame] wall fps + mean frametime over the window span, then exact [frametime]
+// percentiles over the window's sorted dts, then reset. Independent of GPU timestamp support:
+// the profile line above goes silent when constant swapchain recreation starves the timestamp
+// reads, but this keeps measuring. Both release-visible, same policy as the profile line;
+// one line pair per window, nothing per-frame is ever logged.
+void anoperf_flush(anoperf_accumulator_t* acc) {
+    uint32_t n = acc->count;
+    uint64_t span = acc->prevUs - acc->startUs;   // == sum of dtUs, telescoped
+    if (n > 0 && span > 0) {
+        double fps = (double)n * 1e6 / (double)span;
+        ano_log(ANO_INFO, "[frame] %.1f fps  %.3f ms wall", fps, (double)span / (double)n / 1000.0);
+        dt_sort(acc->dtUs, n);
+        ano_log(ANO_INFO, "[frametime] n=%u min=%.3f p50=%.3f p90=%.3f p99=%.3f p999=%.3f max=%.3f ms",
+                n, (double)acc->dtUs[0] / 1000.0,
+                frametime_pct_ms(acc->dtUs, n, 0.50),
+                frametime_pct_ms(acc->dtUs, n, 0.90),
+                frametime_pct_ms(acc->dtUs, n, 0.99),
+                frametime_pct_ms(acc->dtUs, n, 0.999),
+                (double)acc->dtUs[n - 1] / 1000.0);
+    }
+    acc->count = 0;
+    acc->startUs = acc->prevUs;
 }
 
 // Map this frame slot's picking readback to a render_id and emit REVENT_PICK_RESULT when the hit changes.

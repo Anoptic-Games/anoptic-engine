@@ -13,9 +13,16 @@ What is Windows-specific here (and must be re-implemented per platform):
   - per-monitor-DPI-aware-v2 so monitor rects/sizes are PHYSICAL pixels
   - 'M' menu toggle synthesized as a Win32 key message with a real scancode
 
-What is shared (engine side, same on every target) -- lines in anoptic.log:
-  [frame] <fps> fps <ms> ms wall            -- wall-clock throughput (profiling.c: ano_frame_mark)
+What is shared (engine side, same on every target) -- lines in anoptic.log, each flushed
+every ANO_PERF_WINDOW_FRAMES (128) frames, so line cadence scales with fps:
+  [frame] <fps> fps <ms> ms wall            -- wall-clock throughput (profiling.c: anoperf_flush)
+  [frametime] n=128 min= p50= p90= p99= p999= max= ms  -- per-frame dt percentiles, same window
   [profile mode=...] total=<ms> (frusta N/42) ... swap=<MiB>   -- GPU-pass profile + VRAM
+
+One table row per data point: avgFPS/p50 over the per-window [frame] samples, the 1%/0.1%
+lows (1000/p99, 1000/p999, each percentile the median across [frametime] windows), the run's
+worst single frame (maxms), then the GPU-pass columns. Rows paste straight into
+docs/benchmarks/template.md.
 
 Requires: Windows, pywin32. Dev-only tool; not built or shipped.
 
@@ -40,7 +47,15 @@ SWEEP_DEFAULT = [(640, 360), (960, 540), (1280, 720), (1920, 1080), (2560, 1440)
 CHURN_SIZES   = [(640, 480), (1920, 1080), (900, 1500), (2560, 1440), (480, 900),
                  (1600, 900), (1280, 720), (2200, 1300), (720, 1280), (1100, 1900)]
 CHURN_MS = 33.0
-PRINT_INTERVAL = 120  # engine ANO_PROFILE_PRINT_INTERVAL; 120 rendered frames per profile line
+WINDOW_FRAMES = 128  # engine ANO_PERF_WINDOW_FRAMES; frames per [frame]/[frametime]/[profile] window
+WARMUP_S = 2.0       # leading seconds of [frame]/[frametime] windows to discard
+
+# Engine log contract, same regexes as the Linux driver.
+PF = re.compile(r"\[frame\] ([0-9.]+) fps")
+PT = re.compile(r"\[frametime\].*?p50=([0-9.]+) p90=([0-9.]+) p99=([0-9.]+) p999=([0-9.]+) max=([0-9.]+)")
+PG = re.compile(r"total=([0-9.]+)")
+PS = re.compile(r"swap=([0-9.]+)")
+PR = re.compile(r"frusta ([0-9.]+)")
 
 
 def _find_window(pid):
@@ -83,9 +98,70 @@ def _toggle_menu(hwnd):
     win32api.PostMessage(hwnd, win32con.WM_KEYUP, 0x4D, (0xC0 << 24) | (sc << 16) | 1)
 
 
-def _median(a):
+def _mean(a):
+    return sum(a) / len(a) if a else 0.0
+
+
+def _pct(a, q):
+    # Linear-interpolation percentile (numpy-default method), q in [0, 100].
+    if not a: return 0.0
     s = sorted(a)
-    return s[len(s) // 2] if s else 0.0
+    if len(s) == 1: return s[0]
+    idx = (q / 100.0) * (len(s) - 1)
+    lo = int(idx); hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (idx - lo)
+
+
+def _median(a):
+    return _pct(a, 50.0)
+
+
+def _warmup_cut(fps, seconds=WARMUP_S):
+    # Windows are WINDOW_FRAMES long, so cadence scales with fps: cut warmup by elapsed time, not line count.
+    t, k = 0.0, 0
+    while k < len(fps) and t < seconds:
+        t += (WINDOW_FRAMES / fps[k]) if fps[k] > 0 else seconds
+        k += 1
+    return k
+
+
+def parse_stream(lines):
+    """Fold engine log lines into (fps, total_ms, swap_MiB, frusta, frametime) sample lists.
+    Shared by the live tail and offline replay of a captured anoptic.log."""
+    fps, tot, sw, fru = [], [], [], []
+    ft = {"p50": [], "p90": [], "p99": [], "p999": [], "max": []}
+    for line in lines:
+        m = PF.search(line);  m and fps.append(float(m.group(1)))
+        mt = PT.search(line)
+        if mt:
+            ft["p50"].append(float(mt.group(1)));  ft["p90"].append(float(mt.group(2)))
+            ft["p99"].append(float(mt.group(3)));  ft["p999"].append(float(mt.group(4)))
+            ft["max"].append(float(mt.group(5)))
+        if "profile mode=" in line:
+            g = PG.search(line); g and tot.append(float(g.group(1)))
+            s = PS.search(line); s and sw.append(float(s.group(1)))
+            r = PR.search(line); r and fru.append(float(r.group(1)))
+    return fps, tot, sw, fru, ft
+
+
+def summarize(fps, tot, sw, fru, ft, front=True):
+    """Drop warmup, take medians, derive GPUcap, the wall/cap bound indicator, and the
+    frametime lows (methodology: tools/perf/bench_fps.md)."""
+    cut = _warmup_cut(fps)                       # drop warmup: [frame]/[frametime] by time, profile by line
+    fps, tot, fru = fps[cut:], tot[4:], fru[4:]
+    ft = {k: v[cut:] for k, v in ft.items()}     # [frametime] pairs 1:1 with [frame]; same cut
+    wf, gt = _median(fps), _median(tot)
+    cap = 1000.0 / gt if gt else 0.0
+    ratio = wf / cap if cap else 0.0
+    # Lows: median across windows of each per-window percentile (never averaged), then 1000/ms.
+    # At n=128 p999 reads as the typical worst-frame-per-window; maxms is the run's worst frame outright.
+    p99, p999 = _median(ft["p99"]), _median(ft["p999"])
+    return {"front": front, "swap": (sw[-1] if sw else 0.0),
+            "avg_fps": _mean(fps), "p50": wf, "n": len(fps), "n_ft": len(ft["p99"]),
+            "low1": (1000.0 / p99 if p99 else 0.0), "low01": (1000.0 / p999 if p999 else 0.0),
+            "ft_max": (max(ft["max"]) if ft["max"] else 0.0),
+            "gpu_ms": gt, "gpu_cap": cap, "ratio": ratio, "frusta": _median(fru),
+            "bound": "GPU" if ratio > 0.9 else "CPU/present"}
 
 
 def run_once(exe, w, h, dur, menu, churn, env):
@@ -108,10 +184,8 @@ def run_once(exe, w, h, dur, menu, churn, env):
         if menu:
             _toggle_menu(hwnd)
 
-    fps, tot, sw, fru = [], [], [], []
-    pf = re.compile(r"\[frame\] ([0-9.]+) fps")
-    pg = re.compile(r"total=([0-9.]+)"); ps = re.compile(r"swap=([0-9.]+)"); pr = re.compile(r"frusta ([0-9.]+)")
-    resizes, nxt, f, part = 0, 0.0, None, ""
+    buf, part = [], ""
+    resizes, nxt, f = 0, 0.0, None
     while (t := time.perf_counter() - t0) < dur:
         if churn and hwnd and t >= nxt:
             cw, ch = CHURN_SIZES[resizes % len(CHURN_SIZES)]
@@ -125,32 +199,21 @@ def run_once(exe, w, h, dur, menu, churn, env):
         if not chunk: time.sleep(0.003); continue
         part += chunk
         if not part.endswith("\n"): continue    # torn mid-append: wait for the rest of the line
-        line, part = part, ""
-        m = pf.search(line);  m and fps.append(float(m.group(1)))
-        if "profile mode=" in line:
-            g = pg.search(line); g and tot.append(float(g.group(1)))
-            s = ps.search(line); s and sw.append(float(s.group(1)))
-            r = pr.search(line); r and fru.append(float(r.group(1)))
+        buf.append(part); part = ""
 
     subprocess.run(["taskkill", "/PID", str(p.pid), "/F"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try: p.wait(timeout=5)
     except Exception: pass
 
-    fps, tot, fru = fps[2:], tot[4:], fru[4:]    # drop warmup
-    wf, gt = _median(fps), _median(tot)
-    cap = 1000.0 / gt if gt else 0.0
-    ratio = wf / cap if cap else 0.0
-    return {"front": front, "swap": (sw[-1] if sw else 0.0), "wall_fps": wf,
-            "gpu_ms": gt, "gpu_cap": cap, "ratio": ratio, "frusta": _median(fru),
-            "bound": "GPU" if ratio > 0.9 else "CPU/present"}
+    return summarize(*parse_stream(buf), front=front)
 
 
 def main():
     ap = argparse.ArgumentParser(description="anopticengine wall-clock FPS / GPU-pass bench -- WINDOWS driver.")
     ap.add_argument("--exe", default=r"build\Release\anopticengine.exe")
     ap.add_argument("--res", help="single WxH, e.g. 1920x1080 (default: resolution sweep)")
-    ap.add_argument("--dur", type=float, default=15.0, help="seconds per data point")
+    ap.add_argument("--dur", type=float, default=45.0, help="seconds per data point")
     ap.add_argument("--no-menu", action="store_true", help="static HUD only (no menu open)")
     ap.add_argument("--churn", action="store_true", help="resize-storm stress; single row")
     ap.add_argument("--env", action="append", default=[], help="KEY=VAL engine env var (repeatable)")
@@ -171,14 +234,15 @@ def main():
     else:
         sizes = SWEEP_DEFAULT
 
-    print(f"{'res':>11} {'front':>5} {'swapMiB':>8} {'wallFPS':>8} {'GPUms':>7} "
-          f"{'GPUcap':>7} {'wall/cap':>8} {'frusta':>7}  bound")
+    print(f"{'res':>11} {'front':>5} {'swapMiB':>8} {'avgFPS':>7} {'p50':>7} {'1%low':>7} "
+          f"{'0.1%low':>7} {'maxms':>7} {'GPUms':>7} {'GPUcap':>7} {'w/cap':>6} {'frusta':>6}  bound")
     for (w, h) in sizes:
         r = run_once(exe, w, h, args.dur, not args.no_menu, args.churn, env)
         label = "churn" if args.churn else f"{w}x{h}"
         print(f"{label:>11} {'FRONT' if r['front'] else 'BG!!':>5} {r['swap']:8.1f} "
-              f"{r['wall_fps']:8.1f} {r['gpu_ms']:7.3f} {r['gpu_cap']:7.0f} "
-              f"{r['ratio']:8.2f} {r['frusta']:7.1f}  {r['bound']}")
+              f"{r['avg_fps']:7.1f} {r['p50']:7.1f} {r['low1']:7.1f} {r['low01']:7.1f} "
+              f"{r['ft_max']:7.3f} {r['gpu_ms']:7.3f} {r['gpu_cap']:7.0f} {r['ratio']:6.2f} "
+              f"{r['frusta']:6.1f}  {r['bound']}")
 
 
 if __name__ == "__main__":
