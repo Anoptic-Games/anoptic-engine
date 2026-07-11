@@ -52,7 +52,7 @@ This produces the full Vulkan renderer (Release + ThinLTO) at `./result/bin/anop
 - `nix build .#<type>[-headless]-<platform>-<arch>[-wayland|-x11]` — any permutation, e.g. `.#release-linux-x64-x11`.
 - `nix build .#tests-headless` — CTest suite in the sandbox (`.#tests-asan`, `.#tests-tsan`, `.#tests-full` on Linux). `nix flake check` runs all host suites.
 
-`nix run [-- N]` builds in-tree: it checks submodule pointers against the flake pins (halts on drift), fetches anything missing, stages assets, and runs `./build.sh N` in the dev shell. Bare `nix run` is `build.sh 1` — Release into `build/Release/`.
+`nix run [-- N]` builds in-tree and runs the result: it checks submodule pointers against the flake pins (halts on drift), fetches anything missing, stages assets, and runs `./build.sh N` in the dev shell. Profiles `1|2` then launch the renderer, `3` launches the headless console engine (WSL included); test profiles run their CTest suite instead. Bare `nix run` is `build.sh 1` — Release into `build/Release/`, then the window.
 
 `nix develop` opens the dev shell; `nix develop .#windows` is the MinGW-w64 cross shell.
 
@@ -82,6 +82,7 @@ Each platform has its own build script: `build.sh` (Linux/macOS) and `build.bat`
 - **Release** — the optimized (`-O3` + ThinLTO) engine build.
 - **Debug** — debug build, Vulkan validation layers on.
 - **Tests** — Debug build + the full CTest suite.
+- **Headless** — Release engine without the renderer; the console/server entry point (profile 3).
 - **Sanitizer tests** — the same suite under AddressSanitizer/UBSan or ThreadSanitizer.
 - **Headless** — core + tests with the renderer disabled entirely.
 - **Release tests** — the CTest suite at `-O3` for benchmarks.
@@ -125,8 +126,9 @@ Once Mingw-w64 is installed with `clang` working on your system, run `build.bat`
 WSL has no Linux Vulkan driver, so the renderer runs there only as a **Windows** exe.
 WSL's in-guest Vulkan devices (Mesa `dozen` and `llvmpipe`) are not supported render
 targets. The **headless** build needs no GPU or display at all: `nix build .#headless` /
-`build.sh 6` artifacts run fine in WSL, containers, and GPU-less servers. That is the
-intended "server build" for hosting.
+`build.sh 3` artifacts run fine in WSL, containers, and GPU-less servers, and
+`nix run -- 3` builds and launches it in-guest (`build.sh 4` is the same core, Debug, plus
+its test suite). That is the intended "server build" for hosting.
 
 Two ways to build a Windows renderer exe from WSL:
 
