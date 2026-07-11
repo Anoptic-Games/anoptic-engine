@@ -460,6 +460,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
     case ACMD_MUSIC_MOTIF:
     case ACMD_MUSIC_OVERRIDE:
     case ACMD_MUSIC_RELEASE:
+    case ACMD_MUSIC_SEEK:
         // the mixer owns no music: it forwards these, it does not read them
         if (mx->generatorControl)
             mx->generatorControl(mx->generatorUser, cmd);

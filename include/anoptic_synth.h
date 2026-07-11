@@ -197,23 +197,30 @@ uint32_t ano_synth_live_overflow(const AnoSynth *s);
 //
 // Attach performs the live_begin (the meter comes from the engine) and primes
 // the lookahead, so a hand-rolled live_bar driver is only for a caller feeding
-// bars from somewhere other than a music engine. Idle only. The engine must be
-// at bar 0 and must outlive the attachment; the synth does not own it, and once
-// attached only the audio thread may touch it.
+// bars from somewhere other than a music engine. Idle only. The engine must
+// outlive the attachment; the synth does not own it, and once attached only the
+// audio thread may touch it.
+//
+// The engine need NOT be at bar 0 — one restored to bar 900 simply starts the
+// schedule from bar 900's music. The schedule is rebased, not renumbered: the
+// engine keeps its own bar numbering (it is what spells its RNG streams, so
+// renumbering would change the music), and the difference between that and the
+// schedule's own count is carried as a constant beat offset. This is the same
+// machinery ACMD_MUSIC_SEEK uses, which is why the two agree exactly.
 bool ano_synth_attach_music(AnoSynth *s, AnoMusicEngine *music);
 
 // Idle only. Bars already scheduled still play; the schedule simply stops
 // growing, and the engine is the caller's again.
 void ano_synth_detach_music(AnoSynth *s);
 
-// Bars that have STARTED SOUNDING since the last drain, oldest first. The
-// meaning is held back from generation (LOOKAHEAD bars early) to the barline it
-// belongs to, so a game reacting to a cadence reacts when the cadence is
-// audible. Drained by the mixer each block into AEVT_MUSIC_BAR; a caller that
-// leaves them un-drained for ANO_SYNTH_MEANING_QUEUE bars loses the oldest.
-// Audio-thread side: call it from the same context that calls the generator.
-#define ANO_SYNTH_MEANING_QUEUE 16u
-uint32_t ano_synth_music_drain(AnoSynth *s, AnoMusicMeaning *out, uint32_t cap);
+// What the composer has to say about the block just rendered, as audio events —
+// AEVT_MUSIC_BAR for each bar that STARTED SOUNDING (the meaning is held back
+// from composition, LOOKAHEAD bars early, to the barline it belongs to, so a
+// game reacting to a cadence reacts when the cadence is audible), and
+// AEVT_MUSIC_SEEKED when a seek snapshot has been consumed. The mixer drains it
+// every block through ano_synth_poll; a caller that leaves it un-drained past
+// ANO_SYNTH_EVENT_QUEUE loses the oldest.
+#define ANO_SYNTH_EVENT_QUEUE 16u
 
 // What composing a bar on the audio thread actually costs: the last bar, and
 // the worst since transport_start, in microseconds. The number that matters is

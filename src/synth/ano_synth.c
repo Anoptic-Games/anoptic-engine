@@ -494,6 +494,16 @@ uint32_t ano_synth_live_overflow(const AnoSynth *s)
 // The attached composer
 // ---------------------------------------------------------------------------
 
+// The composer's outbound queue. A full queue means nobody is draining, and the
+// oldest goes rather than the newest — a stale cadence is worth less than the
+// current one.
+static void synth_emit(AnoSynth *s, const AnoAudioEvent *e)
+{
+    s->evtQueue[s->evtHead++ % ANO_SYNTH_EVENT_QUEUE] = *e;
+    if (s->evtHead - s->evtTail > ANO_SYNTH_EVENT_QUEUE)
+        s->evtTail = s->evtHead - ANO_SYNTH_EVENT_QUEUE;
+}
+
 // Compose one bar and schedule it. Times the composition — this is the audio
 // thread's exposure to the music engine and the only reason hosting it here is
 // a decision rather than an assumption. false = the bar could not be scheduled
@@ -507,16 +517,34 @@ static bool music_pump(AnoSynth *s)
     if (us > s->musicBarUsMax)
         s->musicBarUsMax = us;
 
-    const AnoMusicBar *mb = &s->musicBar;
+    // Rebase: the engine speaks in ITS piece's beats (bar 900 starts at beat
+    // 3600), the schedule in its own. Shifting the beats is what lets a seeked
+    // engine keep its bar numbering — which it must, since that numbering spells
+    // the RNG stream tags, and renumbering it would compose different music.
+    AnoMusicBar *mb = &s->musicBar;
+    if (s->musicBeatOffset != 0.0) {
+        for (uint32_t i = 0; i < mb->tempoCount; ++i)
+            mb->tempo[i].beat += s->musicBeatOffset;
+        for (uint32_t i = 0; i < mb->eventCount; ++i)
+            mb->events[i].start += s->musicBeatOffset;
+    }
+
     uint32_t bar = s->liveNextBar;
     if (!ano_synth_live_bar(s, bar, mb->tempo, mb->tempoCount, &mb->params, &mb->affect,
                             mb->events, mb->eventCount))
         return false;
 
     AnoSynthBar *b = bar_at(s, bar);
-    b->meaning    = mb->meaning;
+    b->meaning    = mb->meaning; // the ENGINE's bar number: what the game means by it
     b->hasMeaning = true;
     return true;
+}
+
+// The offset that lands the engine's next bar on the schedule's next barline.
+static double music_rebase(const AnoSynth *s)
+{
+    return ((double)s->liveNextBar - (double)ano_music_next_bar(s->music))
+           * s->barQuarters;
 }
 
 // Keep LOOKAHEAD bars standing between the playhead and the end of the score.
@@ -529,14 +557,15 @@ static void music_topup(AnoSynth *s, uint64_t worldFrame)
 
 bool ano_synth_attach_music(AnoSynth *s, AnoMusicEngine *music)
 {
-    if (!music || ano_music_next_bar(music) != 0)
-        return false; // the schedule starts at bar 0; a seek rebases, it does not attach
+    if (!music)
+        return false;
     if (!ano_synth_live_begin(s, ano_music_bar_quarters(music)))
         return false; // not idle, or a degenerate meter
 
-    s->music       = music;
-    s->musicBarUs  = s->musicBarUsMax = 0;
-    s->meaningHead = s->meaningTail = 0;
+    s->music      = music;
+    s->musicBarUs = s->musicBarUsMax = 0;
+    s->evtHead    = s->evtTail = 0;
+    s->musicBeatOffset = music_rebase(s); // 0 for a fresh engine; a jump for a restored one
     while (s->barCount < ANO_SYNTH_LIVE_LOOKAHEAD)
         if (!music_pump(s)) {
             s->music = NULL;
@@ -551,12 +580,59 @@ void ano_synth_detach_music(AnoSynth *s)
         s->music = NULL;
 }
 
-uint32_t ano_synth_music_drain(AnoSynth *s, AnoMusicMeaning *out, uint32_t cap)
+// Adopt an engine state at the next barline (ACMD_MUSIC_SEEK). The expensive
+// half of a seek — fast-forwarding a fresh engine to bar N — already happened on
+// the producer's thread; what is left is a copy and a rebase, and both are cheap.
+//
+// What is already sounding plays out: the bar under the playhead finishes, and
+// everything scheduled BEHIND that barline belongs to a piece no longer being
+// played, so it goes. `snapshot` is a borrowed engine image, valid for this call
+// only, and it must be ano_music_snapshot_size() bytes — the command carries no
+// length, so that is a contract rather than a check. false = nothing was adopted
+// (no engine attached, or a different meter — that is a different piece, and it
+// wants a fresh attach rather than the clock bent under it).
+static bool music_seek(AnoSynth *s, const void *snapshot)
 {
-    uint32_t n = 0;
-    while (s->meaningTail < s->meaningHead && n < cap)
-        out[n++] = s->meaningQueue[s->meaningTail++ % ANO_SYNTH_MEANING_QUEUE];
-    return n;
+    if (!s->music || !s->live || !snapshot)
+        return false;
+    // the incoming bytes ARE an engine (pointer-free by construction), so the
+    // meter can be read off them before anything is committed
+    const AnoMusicEngine *incoming = snapshot;
+    if (fabs(ano_music_bar_quarters(incoming) - s->barQuarters) > 1e-9)
+        return false;
+    if (!ano_music_restore(s->music, snapshot, ano_music_snapshot_size()))
+        return false;
+
+    // the barline the new music lands on: the first bar not yet applied
+    uint32_t edgeBar   = s->barCursor;
+    uint64_t edgeFrame = edgeBar < s->barCount ? bar_at(s, edgeBar)->frame : UINT64_MAX;
+    double   edgeBeat  = (double)edgeBar * s->barQuarters;
+
+    // the old piece's future goes: its bars, the notes at or behind the barline
+    // (a suffix — the schedule IS deadline-sorted), and the tempo anchors no
+    // surviving bar needs. A tie reaching into the dropped bars dissolves, which
+    // is the orphan the IR already licenses.
+    s->barCount = edgeBar;
+    while (s->noteCount > s->noteCursor
+           && note_at(s, s->noteCount - 1u)->frame >= edgeFrame)
+        s->noteCount--;
+    while (s->anchorCount > 1u
+           && anchor_at(s, s->anchorCount - 1u)->beat >= edgeBeat - 1e-9)
+        s->anchorCount--;
+    memset(s->openChain, 0xFF, sizeof s->openChain);
+    s->liveNextBar     = edgeBar;
+    s->musicBeatOffset = music_rebase(s);
+
+    int adopted = ano_music_next_bar(s->music);
+    while (s->barCount - s->barCursor < ANO_SYNTH_LIVE_LOOKAHEAD)
+        if (!music_pump(s))
+            break;
+
+    // the handshake: the producer's block is free again. NOT "the new music is
+    // audible" — that is the next AEVT_MUSIC_BAR, a barline later.
+    AnoAudioEvent e = { .kind = AEVT_MUSIC_SEEKED, .u.seekedBar = adopted };
+    synth_emit(s, &e);
+    return true;
 }
 
 uint32_t ano_synth_music_bar_us(const AnoSynth *s)
@@ -626,35 +702,25 @@ void ano_synth_control(void *user, const AnoAudioCommand *cmd)
     case ACMD_MUSIC_RELEASE:
         ano_music_clear_override(s->music, tag);
         break;
+    case ACMD_MUSIC_SEEK:
+        if (!music_seek(s, cmd->block))
+            ano_debug_log(ANO_WARN, "synth: seek snapshot refused (no engine, or a "
+                                    "meter the running schedule cannot carry).");
+        break;
     default:
         break;
     }
 }
 
-// The bars that started sounding in the block just rendered, as audio events.
+// What the composer had to say about the block just rendered.
 uint32_t ano_synth_poll(void *user, AnoAudioEvent *out, uint32_t cap)
 {
     AnoSynth *s = synth_of(user, "ano_synth_poll");
     if (!s)
         return 0;
-    AnoMusicMeaning m[ANO_SYNTH_MEANING_QUEUE];
-    uint32_t n = ano_synth_music_drain(s, m, cap < ANO_SYNTH_MEANING_QUEUE
-                                                 ? cap
-                                                 : ANO_SYNTH_MEANING_QUEUE);
-    for (uint32_t i = 0; i < n; ++i) {
-        out[i].kind = AEVT_MUSIC_BAR;
-        out[i].u.music = (typeof(out[i].u.music)){
-            .bar            = m[i].bar,
-            .keyTonic       = m[i].keyTonic,
-            .mode           = m[i].mode,
-            .chordDegree    = m[i].chordDegree,
-            .chordInversion = m[i].chordInversion,
-            .cadencePolicy  = m[i].cadencePolicy,
-            .isCadence      = m[i].isCadence,
-            .keyArrived     = m[i].keyArrived,
-            .motifStated    = m[i].motifStated,
-        };
-    }
+    uint32_t n = 0;
+    while (s->evtTail < s->evtHead && n < cap)
+        out[n++] = s->evtQueue[s->evtTail++ % ANO_SYNTH_EVENT_QUEUE];
     return n;
 }
 
@@ -680,7 +746,7 @@ void ano_synth_transport_start(AnoSynth *s, uint64_t worldFrame)
     s->noteCursor = s->barCursor = 0;
     s->dropped    = 0;
     s->musicBarUsMax = 0;
-    s->meaningHead = s->meaningTail = 0;
+    s->evtHead = s->evtTail = 0;
     ano_audio_smooth_snap(&s->cutoff, 2500.0f);
     ano_audio_smooth_snap(&s->duckDepth, 0.0f);
     ano_audio_smooth_snap(&s->shimGain, 0.0f);
@@ -709,13 +775,20 @@ void ano_synth_transport_stop(AnoSynth *s)
 
 static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
 {
-    // the bar sounds NOW: release its meaning (composed LOOKAHEAD bars ago).
-    // A full queue means nobody is draining; the oldest goes, not the newest —
-    // a stale cadence is worth less than the current one.
+    // the bar sounds NOW: release the meaning composed LOOKAHEAD bars ago
     if (bar->hasMeaning) {
-        s->meaningQueue[s->meaningHead++ % ANO_SYNTH_MEANING_QUEUE] = bar->meaning;
-        if (s->meaningHead - s->meaningTail > ANO_SYNTH_MEANING_QUEUE)
-            s->meaningTail = s->meaningHead - ANO_SYNTH_MEANING_QUEUE;
+        const AnoMusicMeaning *m = &bar->meaning;
+        AnoAudioEvent e = { .kind = AEVT_MUSIC_BAR };
+        e.u.music.bar            = m->bar;
+        e.u.music.keyTonic       = m->keyTonic;
+        e.u.music.mode           = m->mode;
+        e.u.music.chordDegree    = m->chordDegree;
+        e.u.music.chordInversion = m->chordInversion;
+        e.u.music.cadencePolicy  = m->cadencePolicy;
+        e.u.music.isCadence      = m->isCadence;
+        e.u.music.keyArrived     = m->keyArrived;
+        e.u.music.motifStated    = m->motifStated;
+        synth_emit(s, &e);
     }
 
     const AnoMusicalParams *p = &bar->params;
