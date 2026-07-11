@@ -138,6 +138,23 @@ static bool judged(int bar, int horizon)
     return horizon < 0 || bar < horizon;
 }
 
+// The bar and in-bar offset a note is HARMONICALLY at. A modifier displaces an
+// onset by a fraction of a grid step — a strum's stagger, humanize's jitter,
+// swing — which can carry it backwards across a barline, or across a split
+// bar's mid-bar chord change. The note still belongs to the harmony it was
+// written against, so the harmonic rules resolve its position from the grid
+// slot it was displaced FROM, not from where the jitter left it. Exact as long
+// as no modifier moves a note by half a grid step (0.125 beats), which none
+// does; on pre-modifier IR it is the identity (the "grid" rule enforces that).
+static int grid_pos(double start, AnoMeter meter, double *offset)
+{
+    double slot = nearbyint(start / ANO_MUSIC_GRID) * ANO_MUSIC_GRID;
+    int bar = ano_meter_bar_of(meter, slot);
+    if (offset)
+        *offset = slot - bar * ano_meter_bar_quarters(meter);
+    return bar;
+}
+
 // The prototype's {c.bar: c for c in contexts}: last entry for a bar wins.
 // Always the FULL list — the lookup is what reaches into the lookahead.
 static const AnoHarmonicContext *ctx_of(const AnoHarmonicContext *cx, uint32_t n, int bar)
@@ -187,12 +204,10 @@ static const char *csym(const AnoHarmonicContext *c)
 
 // The chord in force at an event's start: the D3 timeline segment if the bar
 // carries one, else the bar's downbeat chord.
-static uint32_t pcs_at(const AnoHarmonicContext *c, AnoMeter meter, double start,
-                       uint8_t out[5])
+static uint32_t pcs_at(const AnoHarmonicContext *c, double offset, uint8_t out[5])
 {
     if (c->chordSpanCount) {
-        double off = start - ano_meter_bar_of(meter, start) * ano_meter_bar_quarters(meter);
-        AnoChord now = ano_ctx_chord_at(c, off);
+        AnoChord now = ano_ctx_chord_at(c, offset);
         if (now.valid)
             return ano_chord_voiced_pcs(now, c->scale, out);
     }
@@ -280,7 +295,7 @@ static void lint_events(const AnoMusicEvent *ev, uint32_t n,
     char nb[8];
     for (uint32_t i = 0; i < n; ++i) {
         const AnoMusicEvent *e = &ev[i];
-        int bar = ano_meter_bar_of(meter, e->core.start);
+        int bar = grid_pos(e->core.start, meter, NULL);
 
         if (stage == ANO_LINT_PRE) {
             const double vals[2] = { e->core.start, e->core.dur };
@@ -369,7 +384,8 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
                 pitches[cnt++] = grp[j]->core.pitch;
             ++j;
         }
-        int bar = ano_meter_bar_of(meter, start);
+        double offset;
+        int bar = grid_pos(start, meter, &offset);
 
         if (voicing) {
             for (uint32_t k = 1; k < cnt; ++k)
@@ -388,7 +404,7 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
         const AnoHarmonicContext *c = ctx_of(cx, ncx, bar);
         if (c && c->chordPcCount) {
             uint8_t pcs[5];
-            uint32_t npcs = pcs_at(c, meter, start, pcs); // D3: the segment in force
+            uint32_t npcs = pcs_at(c, offset, pcs); // D3: the segment in force
             for (uint32_t k = i; k < j; ++k)
                 if (!pc_in(pcs, npcs, grp[k]->core.pitch)
                     && !is_licensed_nonchord(grp[k]->role))
@@ -421,7 +437,8 @@ static void lint_bass(const AnoMusicEvent *ev, uint32_t n,
         const AnoMusicEvent *e = &ev[i];
         if (e->core.layer != ANO_MUSIC_BASS)
             continue;
-        int bar = ano_meter_bar_of(meter, e->core.start);
+        double offset;
+        int bar = grid_pos(e->core.start, meter, &offset);
         int p = e->core.pitch;
         if (!(L->bassLo <= p && p <= L->bassHi))
             vio(out, "bass-range", bar, "%s outside bass range [%s, %s]",
@@ -430,7 +447,7 @@ static void lint_bass(const AnoMusicEvent *ev, uint32_t n,
         const AnoHarmonicContext *c = ctx_of(cx, ncx, bar);
         if (!c || !c->chordPcCount)
             continue;
-        if (ano_meter_beat_in_bar(meter, e->core.start) == 1.0) {
+        if (offset == 0.0) { // the downbeat, as WRITTEN (a humanized onset still is one)
             // a pedal (held bass under shifting harmony) is a licensed non-root
             // beat-1 bass; it carries a termination obligation instead
             if (p % 12 != c->chordPcs[0] && !is_licensed_nonchord(e->role))
