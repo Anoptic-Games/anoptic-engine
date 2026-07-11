@@ -116,6 +116,15 @@ static inline AnoChord ano_chord_none(void) { return (AnoChord){0}; }
 // V/target: major-minor 7th a fifth above the target (chromatic realization).
 AnoChord ano_chord_applied_dominant(int target, bool seventh);
 
+// The scale a chord is spelled in: the context unless a borrow's sourceMode
+// re-modes it on the same tonic.
+static inline AnoScale ano_chord_scale_for(AnoChord c, AnoScale context)
+{
+    if (c.sourceMode == ANO_MODE_NONE || c.sourceMode == (int8_t)context.mode)
+        return context;
+    return (AnoScale){ context.tonic, (uint8_t)c.sourceMode };
+}
+
 char ano_chord_function(AnoChord c); // 'T', 'P' (pre-dominant), 'D'
 
 // Root-first stacked-third member degrees (3..5 entries); returns the count.
@@ -164,6 +173,7 @@ typedef enum AnoCadencePolicy
     ANO_CADENCE_AUTHENTIC = 0,
     ANO_CADENCE_HALF,
     ANO_CADENCE_DECEPTIVE,
+    ANO_CADENCE_NONE = -1, // the prototype's "" (context outside a cadence)
 } AnoCadencePolicy;
 
 // One step of the functional walk (prototype next_chord, trace elided).

@@ -352,3 +352,23 @@ int64_t ano_music_round_int(double x)
     // binary halves are exact, so native round-to-nearest-even is Python's
     return (int64_t)nearbyint(x);
 }
+
+double ano_music_floordiv(double vx, double wx)
+{
+    // CPython floatobject.c float_divmod, quotient half: fmod-based remainder
+    // sign-matched to the denominator, then the quotient snapped to the
+    // nearest integral value (it is always within 0.5 of one).
+    double mod = fmod(vx, wx);
+    double div = (vx - mod) / wx;
+    if (mod != 0.0) {
+        if ((wx < 0.0) != (mod < 0.0))
+            div -= 1.0;
+    }
+    if (div != 0.0) {
+        double floordiv = floor(div);
+        if (div - floordiv > 0.5)
+            floordiv += 1.0;
+        return floordiv;
+    }
+    return copysign(0.0, vx / wx);
+}
