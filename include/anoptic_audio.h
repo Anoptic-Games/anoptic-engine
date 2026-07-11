@@ -180,6 +180,13 @@ typedef uint32_t (*AnoAudioGeneratorPoll)(void *user, struct AnoAudioEvent *out,
                                           uint32_t cap);
 typedef void (*AnoAudioGeneratorStats)(void *user, struct AnoAudioTelemetry *t);
 
+// And a generator may drive the desk it plays through: commands it emits are
+// applied at the block boundary exactly as a producer's are. A generator that
+// composes knows what the music wants of the mix (sends, drive, delay time) and
+// nothing else does. Drained once per block, before the block is rendered.
+typedef uint32_t (*AnoAudioGeneratorCommands)(void *user, struct AnoAudioCommand *out,
+                                              uint32_t cap);
+
 // Init-time configuration. Zero any field for its default.
 typedef struct AnoAudioConfig
 {
@@ -193,9 +200,10 @@ typedef struct AnoAudioConfig
     const AnoAudioBusDesc *busLayout; // optional busCount entries; NULL = every aux sums into master
     AnoAudioGenerator generator;      // optional block generator (see above)
     void             *generatorUser;  // shared by all four generator hooks
-    AnoAudioGeneratorControl generatorControl; // optional back-channel (see above)
-    AnoAudioGeneratorPoll    generatorPoll;
-    AnoAudioGeneratorStats   generatorStats;
+    AnoAudioGeneratorControl  generatorControl; // optional back-channel (see above)
+    AnoAudioGeneratorPoll     generatorPoll;
+    AnoAudioGeneratorStats    generatorStats;
+    AnoAudioGeneratorCommands generatorCommands;
 } AnoAudioConfig;
 
 // Bring up the audio world: allocates every pool from a dedicated heap, opens
@@ -520,9 +528,11 @@ typedef struct AnoAudioOfflineDesc
     AnoAudioGenerator generator; // optional block generator, same contract as realtime
     void             *generatorUser;
     // ACMD_MUSIC_* in the event list reach the generator through this, so an
-    // offline render can steer a composer and the steering is reproducible.
-    // There is no poll/stats hook: offline publishes no events and no telemetry.
-    AnoAudioGeneratorControl generatorControl;
+    // offline render can steer a composer and the steering is reproducible, and
+    // the generator's own console moves come back through the other. There is no
+    // poll/stats hook: offline publishes no events and no telemetry.
+    AnoAudioGeneratorControl  generatorControl;
+    AnoAudioGeneratorCommands generatorCommands;
 } AnoAudioOfflineDesc;
 
 // Render `frames` frames into out[frames * ANO_AUDIO_CHANNELS] (interleaved

@@ -674,42 +674,56 @@ static AnoSynth *synth_of(void *user, const char *hook)
 // path by which the logic thread reaches the composer, and it lands here, on the
 // thread that owns it. A tag arrives as a fixed field, so it is terminated here
 // rather than trusted.
-void ano_synth_control(void *user, const AnoAudioCommand *cmd)
+bool ano_music_apply_command(AnoMusicEngine *e, const AnoAudioCommand *cmd)
 {
-    AnoSynth *s = synth_of(user, "ano_synth_control");
-    if (!s || !s->music)
-        return;
+    if (!e || !cmd)
+        return false;
 
+    // the tag arrives as a fixed field, so it is terminated here rather than trusted
     char tag[ANO_AUDIO_TAG_MAX];
     memcpy(tag, cmd->tag, sizeof tag);
     tag[sizeof tag - 1] = '\0';
 
     switch ((AnoAudioCommandKind)cmd->kind) {
     case ACMD_MUSIC_AFFECT:
-        ano_music_set_affect(s->music, cmd->affect[0], cmd->affect[1], cmd->affect[2],
+        ano_music_set_affect(e, cmd->affect[0], cmd->affect[1], cmd->affect[2],
                              cmd->urgent);
-        break;
+        return true;
     case ACMD_MUSIC_KEY:
-        ano_music_request_key(s->music, (int)cmd->paramId, cmd->urgent);
-        break;
+        ano_music_request_key(e, (int)cmd->paramId, cmd->urgent);
+        return true;
     case ACMD_MUSIC_MOTIF:
-        ano_music_request_motif(s->music, tag);
-        break;
+        ano_music_request_motif(e, tag);
+        return true;
     case ACMD_MUSIC_OVERRIDE:
-        if (!ano_music_set_override(s->music, tag, (double)cmd->value))
-            ano_debug_log(ANO_WARN, "synth: no music parameter named '%s'.", tag);
-        break;
+        if (ano_music_set_override(e, tag, (double)cmd->value))
+            return true;
+        ano_debug_log(ANO_WARN, "music: no parameter named '%s'.", tag);
+        return false;
     case ACMD_MUSIC_RELEASE:
-        ano_music_clear_override(s->music, tag);
-        break;
-    case ACMD_MUSIC_SEEK:
+        ano_music_clear_override(e, tag);
+        return true;
+    default:
+        return false; // SEEK is not a state change an engine can apply to itself
+    }
+}
+
+void ano_synth_control(void *user, const AnoAudioCommand *cmd)
+{
+    AnoSynth *s = synth_of(user, "ano_synth_control");
+    if (!s || !s->music)
+        return;
+
+    // SEEK is the synth's business (it owns the schedule the new state lands in);
+    // everything else is the engine's, and goes through the one interpretation a
+    // replaying producer also uses.
+    if (cmd->kind == ACMD_MUSIC_SEEK) {
         if (!music_seek(s, cmd->block))
             ano_debug_log(ANO_WARN, "synth: seek snapshot refused (no engine, or a "
                                     "meter the running schedule cannot carry).");
-        break;
-    default:
-        break;
+        return;
     }
+    ano_music_apply_command(s->music, cmd);
 }
 
 // What the composer had to say about the block just rendered.
@@ -747,6 +761,7 @@ void ano_synth_transport_start(AnoSynth *s, uint64_t worldFrame)
     s->dropped    = 0;
     s->musicBarUsMax = 0;
     s->evtHead = s->evtTail = 0;
+    s->cmdHead = s->cmdTail = 0;
     ano_audio_smooth_snap(&s->cutoff, 2500.0f);
     ano_audio_smooth_snap(&s->duckDepth, 0.0f);
     ano_audio_smooth_snap(&s->shimGain, 0.0f);
@@ -773,6 +788,8 @@ void ano_synth_transport_stop(AnoSynth *s)
 // The generator
 // ---------------------------------------------------------------------------
 
+static uint32_t console_bar_cmds(const AnoSynthBar *bar, AnoAudioCommand *out);
+
 static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
 {
     // the bar sounds NOW: release the meaning composed LOOKAHEAD bars ago
@@ -789,6 +806,19 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
         e.u.music.keyArrived     = m->keyArrived;
         e.u.music.motifStated    = m->motifStated;
         synth_emit(s, &e);
+    }
+
+    // the console follows the music: this bar's sends, width, drive and delay
+    // time, queued for the mixer. Live only — the batch path stamps the very same
+    // commands with frames before the transport even starts.
+    if (s->live) {
+        AnoAudioCommand c[ANO_SYNTH_BAR_CMDS];
+        uint32_t m = console_bar_cmds(bar, c);
+        for (uint32_t i = 0; i < m; ++i) {
+            s->cmdQueue[s->cmdHead++ % ANO_SYNTH_CMD_QUEUE] = c[i];
+            if (s->cmdHead - s->cmdTail > ANO_SYNTH_CMD_QUEUE)
+                s->cmdTail = s->cmdHead - ANO_SYNTH_CMD_QUEUE;
+        }
     }
 
     const AnoMusicalParams *p = &bar->params;
@@ -1044,12 +1074,16 @@ uint32_t ano_synth_console_layout(AnoAudioBusDesc *out, uint32_t cap)
     return ANO_SYNTH_CONSOLE_BUSES;
 }
 
+static AnoAudioCommand fx_cmd(uint32_t bus, uint32_t slot, uint32_t param, float value)
+{
+    return (AnoAudioCommand){ .kind = ACMD_FX_SET, .bus = bus, .fxSlot = slot,
+                              .paramId = param, .value = value };
+}
+
 static AnoAudioOfflineEvent fx_evt(uint64_t frame, uint32_t bus, uint32_t slot,
                                    uint32_t param, float value)
 {
-    return (AnoAudioOfflineEvent){ .frame = frame, .cmd = {
-        .kind = ACMD_FX_SET, .bus = bus, .fxSlot = slot,
-        .paramId = param, .value = value } };
+    return (AnoAudioOfflineEvent){ .frame = frame, .cmd = fx_cmd(bus, slot, param, value) };
 }
 
 uint32_t ano_synth_console_setup(AnoAudioOfflineEvent *out, uint32_t cap)
@@ -1074,33 +1108,59 @@ uint32_t ano_synth_console_setup(AnoAudioOfflineEvent *out, uint32_t cap)
     return n;
 }
 
+// One bar's console moves: per-layer sends, pad width, master drive, and the
+// tempo-synced delay time. ANO_SYNTH_BAR_CMDS of them, from the bar's params
+// alone — which is what lets the batch path stamp them with frames and the live
+// path queue them at the barline, from this one piece of arithmetic.
+static uint32_t console_bar_cmds(const AnoSynthBar *bar, AnoAudioCommand *out)
+{
+    const AnoMusicalParams *p = &bar->params;
+    uint32_t n = 0;
+    for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l) {
+        out[n++] = (AnoAudioCommand){
+            .kind = ACMD_BUS_SET, .bus = ANO_SYNTH_BUS_STRIP0 + l,
+            .fields = ANO_AUDIO_FIELD_SEND0 | ANO_AUDIO_FIELD_SEND1,
+            .send = { SEND_REV[l] * p->reverbSend, SEND_DLY[l] * p->delaySend } };
+    }
+    float width = p->stereoWidth;
+    if (width < 0.0f) width = 0.0f;
+    if (width > 1.3f) width = 1.3f;
+    out[n++] = fx_cmd(ANO_SYNTH_BUS_STRIP0 + ANO_MUSIC_PAD, 2,
+                      ANO_AUDIO_P_WIDTH_AMOUNT, width);
+    out[n++] = fx_cmd(ANO_SYNTH_BUS_MASTER, 0,
+                      ANO_AUDIO_P_DRIVE_AMOUNT, 1.0f + p->drive * 4.0f);
+    // tempo-synced dotted 8th, capped at the prototype's half-max-line
+    float dotted = 0.75f * 60.0f / fmaxf((float)p->tempoBpm, 30.0f);
+    out[n++] = fx_cmd(ANO_SYNTH_BUS_DELAY, 0,
+                      ANO_AUDIO_P_PP_TIME_MS, fminf(dotted, 0.7f) * 1000.0f);
+    return n;
+}
+
 uint32_t ano_synth_console_automation(const AnoSynth *s, AnoAudioOfflineEvent *out,
                                       uint32_t cap)
 {
-    if (!s->scoreReady || s->live || !out || cap < s->barCount * 9u)
+    if (!s->scoreReady || s->live || !out || cap < s->barCount * ANO_SYNTH_BAR_CMDS)
         return 0;
     uint32_t n = 0;
     for (uint32_t b = 0; b < s->barCount; ++b) {
-        const AnoSynthBar *bar = &s->bars[b];
-        const AnoMusicalParams *p = &bar->params;
-        uint64_t f = bar->frame;
-        for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l) {
-            out[n++] = (AnoAudioOfflineEvent){ .frame = f, .cmd = {
-                .kind = ACMD_BUS_SET, .bus = ANO_SYNTH_BUS_STRIP0 + l,
-                .fields = ANO_AUDIO_FIELD_SEND0 | ANO_AUDIO_FIELD_SEND1,
-                .send = { SEND_REV[l] * p->reverbSend, SEND_DLY[l] * p->delaySend } } };
-        }
-        float width = p->stereoWidth;
-        if (width < 0.0f) width = 0.0f;
-        if (width > 1.3f) width = 1.3f;
-        out[n++] = fx_evt(f, ANO_SYNTH_BUS_STRIP0 + ANO_MUSIC_PAD, 2,
-                          ANO_AUDIO_P_WIDTH_AMOUNT, width);
-        out[n++] = fx_evt(f, ANO_SYNTH_BUS_MASTER, 0,
-                          ANO_AUDIO_P_DRIVE_AMOUNT, 1.0f + p->drive * 4.0f);
-        // tempo-synced dotted 8th, capped at the prototype's half-max-line
-        float dotted = 0.75f * 60.0f / fmaxf((float)p->tempoBpm, 30.0f);
-        out[n++] = fx_evt(f, ANO_SYNTH_BUS_DELAY, 0,
-                          ANO_AUDIO_P_PP_TIME_MS, fminf(dotted, 0.7f) * 1000.0f);
+        AnoAudioCommand c[ANO_SYNTH_BAR_CMDS];
+        uint32_t m = console_bar_cmds(&s->bars[b], c);
+        for (uint32_t i = 0; i < m; ++i)
+            out[n++] = (AnoAudioOfflineEvent){ .frame = s->bars[b].frame, .cmd = c[i] };
     }
+    return n;
+}
+
+// The live path's console: the bar that just started sounding automates the desk
+// itself. The mixer drains this once per block and applies it like any command —
+// one block of latency on a smoothed send, against a bar of two-odd seconds.
+uint32_t ano_synth_commands(void *user, AnoAudioCommand *out, uint32_t cap)
+{
+    AnoSynth *s = synth_of(user, "ano_synth_commands");
+    if (!s)
+        return 0;
+    uint32_t n = 0;
+    while (s->cmdTail < s->cmdHead && n < cap)
+        out[n++] = s->cmdQueue[s->cmdTail++ % ANO_SYNTH_CMD_QUEUE];
     return n;
 }
