@@ -239,6 +239,21 @@ void     ano_synth_control(void *user, const AnoAudioCommand *cmd);
 uint32_t ano_synth_poll(void *user, AnoAudioEvent *out, uint32_t cap);
 void     ano_synth_stats(void *user, AnoAudioTelemetry *t);
 
+// .generatorCommands: the console the music asks for. The batch path stamps
+// these with frames before the transport starts (ano_synth_console_automation);
+// a live piece has no score to stamp, so the bar that just started sounding
+// queues them here and the mixer applies them at the next block boundary. Wire
+// it and the desk follows the music with no help from the game.
+uint32_t ano_synth_commands(void *user, AnoAudioCommand *out, uint32_t cap);
+
+// Apply one ACMD_MUSIC_* to an engine the CALLER owns — the same interpretation
+// ano_synth_control performs on the audio thread. It exists so a producer
+// REPLAYING a saved control script off-thread reaches exactly the state the audio
+// thread reached, instead of re-deriving the mapping and drifting from it. That
+// replay is what a save file is: a seed, a config, and the cues. ACMD_MUSIC_SEEK
+// is not applicable here (nothing to seek) and is ignored.
+bool ano_music_apply_command(AnoMusicEngine *e, const AnoAudioCommand *cmd);
+
 // ---------------------------------------------------------------------------
 // Console helpers
 // ---------------------------------------------------------------------------
@@ -257,7 +272,9 @@ uint32_t ano_synth_console_setup(AnoAudioOfflineEvent *out, uint32_t cap);
 // static x global param), pad width, master drive, tempo-synced delay time.
 // Frames are score-relative — offline passes them straight; a live driver adds
 // the transport offset and submits ahead of the playhead. Returns the count
-// written, 0 if cap is too small (9 events per bar). Valid after score_end.
+// written, 0 if cap is too small. Valid after score_end. A LIVE piece has no
+// score to walk: it emits the same commands through ano_synth_commands instead.
+#define ANO_SYNTH_BAR_CMDS (ANO_MUSIC_LAYER_COUNT + 3u)
 uint32_t ano_synth_console_automation(const AnoSynth *s, AnoAudioOfflineEvent *out,
                                       uint32_t cap);
 

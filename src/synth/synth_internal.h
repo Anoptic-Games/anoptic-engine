@@ -221,6 +221,13 @@ struct AnoSynth
     AnoAudioEvent evtQueue[ANO_SYNTH_EVENT_QUEUE];
     uint32_t      evtHead, evtTail; // absolute; head - tail = depth
 
+    // Outbound the other way: the console moves the sounding bar asks for. The
+    // batch path stamps these with frames up front (ano_synth_console_automation);
+    // the live path has no score to stamp, so it queues them at the barline.
+#define ANO_SYNTH_CMD_QUEUE 32u
+    AnoAudioCommand cmdQueue[ANO_SYNTH_CMD_QUEUE];
+    uint32_t        cmdHead, cmdTail;
+
     // Transport. IDLE = generator renders nothing and touches nothing.
     _Atomic uint64_t startFrame;
 

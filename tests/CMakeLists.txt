@@ -224,6 +224,15 @@ target_include_directories(anotest_musicdrive PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME anoptic_musicdrive COMMAND anotest_musicdrive)
 set_tests_properties(anoptic_musicdrive PROPERTIES TIMEOUT 120 LABELS "unit")
 
+# Phase 7's exit criterion, audible by hand: an ENDLESS piece composed inside the
+# audio callback, steered live from gameplay, with save/seek by deterministic
+# reconstruction. CI-safe on null (30 s); run ./anotest_musicscene 180 on a real
+# device for the background-listen test.
+add_executable(anotest_musicscene anotest_musicscene.c)
+target_link_libraries(anotest_musicscene PRIVATE anoptic_core)
+add_test(NAME anoptic_musicscene COMMAND anotest_musicscene 30)
+set_tests_properties(anoptic_musicscene PROPERTIES TIMEOUT 120 LABELS "unit;optional")
+
 add_executable(anotest_synthscene anotest_synthscene.c)
 target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
 target_compile_definitions(anotest_synthscene PRIVATE

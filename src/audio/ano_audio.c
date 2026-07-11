@@ -130,11 +130,12 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     mx->busCount        = buses;
     mx->smoothCoef      = expf(-1.0f / (0.030f * (float)rate));
     mx->smoothCoefBlock = expf(-(float)bf / (0.030f * (float)rate));
-    mx->generator        = c.generator;
-    mx->generatorUser    = c.generatorUser;
-    mx->generatorControl = c.generatorControl;
-    mx->generatorPoll    = c.generatorPoll;
-    mx->generatorStats   = c.generatorStats;
+    mx->generator         = c.generator;
+    mx->generatorUser     = c.generatorUser;
+    mx->generatorControl  = c.generatorControl;
+    mx->generatorPoll     = c.generatorPoll;
+    mx->generatorStats    = c.generatorStats;
+    mx->generatorCommands = c.generatorCommands;
     atomic_init(&mx->underruns, 0u);
     atomic_init(&mx->mixerRun, false);
     atomic_init(&mx->deviceRun, false);

@@ -490,6 +490,15 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
     const size_t   bytes  = (size_t)frames * ANO_AUDIO_CHANNELS * sizeof(float);
     const float    fsInv  = 1.0f / (float)mx->sampleRate;
 
+    // the generator's own console moves, applied at the block boundary like any
+    // command (a composing generator automates the desk that plays it)
+    if (mx->generatorCommands) {
+        AnoAudioCommand gc[ANO_AUDIO_GEN_CMDS];
+        uint32_t gn = mx->generatorCommands(mx->generatorUser, gc, ANO_AUDIO_GEN_CMDS);
+        for (uint32_t i = 0; i < gn; ++i)
+            ano_audio_apply(mx, &gc[i]);
+    }
+
     for (uint32_t b = 0; b < mx->busCount; ++b)
         memset(mx->buses[b].mix, 0, bytes);
 
@@ -695,9 +704,10 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
     mx->smoothCoef      = expf(-1.0f / (0.030f * (float)rate));
     mx->smoothCoefBlock = expf(-(float)bf / (0.030f * (float)rate));
     mx->bridge          = NULL;
-    mx->generator        = d.generator;
-    mx->generatorUser    = d.generatorUser;
-    mx->generatorControl = d.generatorControl;
+    mx->generator         = d.generator;
+    mx->generatorUser     = d.generatorUser;
+    mx->generatorControl  = d.generatorControl;
+    mx->generatorCommands = d.generatorCommands;
     if (!ano_audio_graph_init(mx, d.busLayout))
         return false;
     float *scratch = mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float));
