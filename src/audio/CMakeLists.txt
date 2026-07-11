@@ -1,8 +1,5 @@
-# Audio stack: bridge transport, mixer core, null device backend, WAV utility.
-# Platform-agnostic and device-free so far: joins anoptic_core. Real device
-# backends (audio_linux.c pipewire/alsa, audio_win64.c wasapi/dsound,
-# audio_macos.c coreaudio) will join here behind the time.c-style
-# if(WIN32)/elseif(APPLE)/elseif(UNIX) selection in later phases.
+# Audio stack: bridge transport, mixer core, device backends, WAV utility.
+# Joins anoptic_core; per-platform device files are selected below.
 target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/ano_audio.c
         ${CMAKE_CURRENT_SOURCE_DIR}/audio_mixer.c
@@ -13,9 +10,13 @@ target_sources(anoptic_core PRIVATE
 
 # Per-platform device backends (APPLE before UNIX: both are true on macOS).
 if (WIN32)
-    # audio_win64.c (WASAPI + DirectSound) — Phase 5
+    # WASAPI + DirectSound; ole32/avrt/dsound are runtime-loaded (no link deps)
+    target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_win64.c)
 elseif (APPLE)
-    # audio_macos.c (CoreAudio) — Phase 5
+    # CoreAudio default-output AudioUnit
+    target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_macos.c)
+    target_link_libraries(anoptic_core PUBLIC
+            "-framework CoreAudio" "-framework AudioUnit" "-framework AudioToolbox")
 elseif (UNIX)
     target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_linux.c)
     # backends are dlopen'd — no link dep on pipewire/asound, just the loader

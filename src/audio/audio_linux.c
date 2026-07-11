@@ -15,7 +15,8 @@
  * platform-file exception, same class as the Vulkan backend. */
 
 #include "audio_internal.h"
-#include "dsp/noise.h" // TPDF dither at the final 16-bit quantization (ALSA s16 path)
+#include "audio_pull.h" // shared ring consumer with partial-block carry
+#include "dsp/noise.h"  // TPDF dither at the final 16-bit quantization (ALSA s16 path)
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -24,50 +25,6 @@
 
 #include <anoptic_logging.h>
 #include <anoptic_time.h>
-
-// ---------------------------------------------------------------------------
-// Shared ring consumer with partial-block carry
-// ---------------------------------------------------------------------------
-// A device quantum rarely equals the mixer block, so the consumer carries a
-// partially-drained block across calls (in mx->deviceScratch — one backend
-// runs at a time). An empty ring fills silence; underruns count only after
-// the first block has arrived (startup is not an underrun).
-
-typedef struct AnoLinuxPull
-{
-    uint32_t offset;  // frames consumed from the carried block
-    uint32_t frames;  // frames in the carried block; 0 = none carried
-    bool     started; // first block seen
-} AnoLinuxPull;
-
-static void pull_frames(AnoAudioMixer *mx, AnoLinuxPull *p, float *dst, uint32_t frames)
-{
-    uint32_t done = 0;
-    while (done < frames) {
-        if (p->frames == 0u) {
-            if (ano_audio_ring_pop(&mx->blockRing, mx->deviceScratch)) {
-                p->offset  = 0u;
-                p->frames  = mx->blockFrames;
-                p->started = true;
-            } else {
-                if (p->started)
-                    atomic_fetch_add_explicit(&mx->underruns, 1u, memory_order_relaxed);
-                memset(dst + (size_t)done * ANO_AUDIO_CHANNELS, 0,
-                       (size_t)(frames - done) * ANO_AUDIO_CHANNELS * sizeof(float));
-                return;
-            }
-        }
-        uint32_t avail = p->frames - p->offset;
-        uint32_t n     = frames - done < avail ? frames - done : avail;
-        memcpy(dst + (size_t)done * ANO_AUDIO_CHANNELS,
-               mx->deviceScratch + (size_t)p->offset * ANO_AUDIO_CHANNELS,
-               (size_t)n * ANO_AUDIO_CHANNELS * sizeof(float));
-        done      += n;
-        p->offset += n;
-        if (p->offset == p->frames)
-            p->frames = 0u;
-    }
-}
 
 // ---------------------------------------------------------------------------
 // ALSA fallback backend
@@ -99,7 +56,7 @@ typedef struct AnoAlsaState
     const char *(*strerr)(int errnum);
 
     ano_snd_pcm *pcm;
-    AnoLinuxPull pull;
+    AnoAudioPull pull;
     AnoDspRng    dither; // seeded TPDF for the s16 path (finding 8: no global entropy)
     float       *fbuf;   // one mixer block of f32 pulled from the ring
     int16_t     *sbuf;   // s16 staging when the device refuses float; NULL when float granted
@@ -113,7 +70,7 @@ static void *alsa_main(void *arg)
     const size_t   frameBytes = st->sbuf ? ANO_AUDIO_CHANNELS * sizeof(int16_t)
                                          : ANO_AUDIO_CHANNELS * sizeof(float);
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
-        pull_frames(mx, &st->pull, st->fbuf, frames);
+        ano_audio_pull_frames(mx, &st->pull, st->fbuf, frames);
         const void *src = st->fbuf;
         if (st->sbuf) {
             // final 16-bit quantization: the one place TPDF dither applies
@@ -364,7 +321,7 @@ typedef struct AnoPipewireState
     AnoPwApi            api;
     ano_pw_thread_loop *loop;
     ano_pw_stream      *stream;
-    AnoLinuxPull        pull;
+    AnoAudioPull        pull;
     _Atomic int         error; // set by state_changed(ERROR); mixer restart policy later
     AnoAudioMixer      *mx;
 } AnoPipewireState;
@@ -415,7 +372,7 @@ static void pw_on_process(void *data)
     uint32_t frames = d->maxsize / stride;
     if (b->requested != 0u && b->requested < frames)
         frames = (uint32_t)b->requested;
-    pull_frames(st->mx, &st->pull, (float *)d->data, frames);
+    ano_audio_pull_frames(st->mx, &st->pull, (float *)d->data, frames);
     d->chunk->offset = 0u;
     d->chunk->stride = (int32_t)stride;
     d->chunk->size   = frames * stride;

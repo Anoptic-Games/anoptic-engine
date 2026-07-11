@@ -8,7 +8,7 @@
  * Seeded stochastic primitives (TECH_SPEC §12.2, finding 8): every instance
  * takes an explicit seed, no global entropy anywhere. White noise for sources
  * and tests; TPDF dither (±1 LSB triangular) applied ONLY at final 16-bit
- * quantization (the ALSA s16 fallback path).
+ * quantization (the ALSA and DirectSound s16 fallback paths).
  */
 
 #ifndef ANO_DSP_NOISE_H
