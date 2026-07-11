@@ -16,7 +16,8 @@
   # Impure side — your working tree, output in ./build/<label>/ like build.sh:
   #   nix run [-- N]                       dev-env wrapper around ./build.sh N (default 1):
   #                                        halts if submodule gitlinks disagree with the pins,
-  #                                        auto-inits absent submodules, stages assets/ best-effort
+  #                                        auto-inits absent submodules, stages assets/ best-effort,
+  #                                        then launches the engine for N=1|2 (test profiles run ctest)
   #   nix develop [.#windows]              the same env, you drive
   #
   # git flakes see tracked files only: `git add` new files or nix will not.
@@ -485,11 +486,34 @@
               fi
 
               # WSL has no in-guest render target. Point at .#release-wsl for the renderer.
+              is_wsl=0
               if [ -r /proc/version ] && grep -qi microsoft /proc/version; then
+                is_wsl=1
                 echo "[anoptic] WSL detected — in-tree Linux builds cover headless and tests; the WSL renderer artifact is 'nix build .#release-wsl' (Windows exe)."
               fi
 
-              exec nix develop "$root" --command ./build.sh "$mode"
+              # Build the requested profile in the dev shell.
+              nix develop "$root" --command ./build.sh "$mode"
+
+              # Launch the freshly built engine for the two plain build profiles. Test/headless
+              # profiles (3-7) already ran their suite inside build.sh, so there is nothing to
+              # launch. build_dir mirrors build.sh's mode->dir mapping; the binary self-locates
+              # its resources via /proc/self/exe, and the dev shell supplies VK_ICD_FILENAMES
+              # (MoltenVK) and VK_LAYER_PATH (Debug validation). WSL builds but cannot display.
+              case "$mode" in
+                1) build_dir="Release" ;;
+                2) build_dir="Debug" ;;
+                *) build_dir="" ;;
+              esac
+              if [ -n "$build_dir" ] && [ "$is_wsl" -eq 0 ]; then
+                bin="$root/build/$build_dir/anopticengine"
+                if [ ! -x "$bin" ]; then
+                  echo "[anoptic] no runnable engine at $bin — the renderer was skipped (no Vulkan SDK?); see the build log above." >&2
+                  exit 1
+                fi
+                echo "[anoptic] launching $bin"
+                exec nix develop "$root" --command "$bin"
+              fi
             '';
           };
 
