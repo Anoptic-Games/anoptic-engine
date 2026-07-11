@@ -30,7 +30,12 @@ static const AnoAudioDeviceApi *backend_api(AnoAudioBackend which)
 {
     switch (which) {
     case ANO_AUDIO_BACKEND_NULL_DEV: return ano_audio_device_null();
-#if defined(__linux__)
+#if defined(_WIN32)
+    case ANO_AUDIO_BACKEND_WASAPI: return ano_audio_device_wasapi();
+    case ANO_AUDIO_BACKEND_DSOUND: return ano_audio_device_dsound();
+#elif defined(__APPLE__)
+    case ANO_AUDIO_BACKEND_COREAUDIO: return ano_audio_device_coreaudio();
+#elif defined(__linux__)
     case ANO_AUDIO_BACKEND_PIPEWIRE: return ano_audio_device_pipewire();
     case ANO_AUDIO_BACKEND_ALSA:     return ano_audio_device_alsa();
 #endif
@@ -38,15 +43,19 @@ static const AnoAudioDeviceApi *backend_api(AnoAudioBackend which)
     }
 }
 
-// ANO_AUDIO_BACKEND (pipewire | alsa | null) overrides the config for testing.
+// ANO_AUDIO_BACKEND overrides the config for testing (names in the public
+// header comment). Naming a backend another platform owns just fails init.
 static AnoAudioBackend backend_env_override(AnoAudioBackend want)
 {
     const char *env = getenv("ANO_AUDIO_BACKEND");
     if (!env || !env[0])
         return want;
-    if (strcmp(env, "null") == 0)     return ANO_AUDIO_BACKEND_NULL_DEV;
-    if (strcmp(env, "pipewire") == 0) return ANO_AUDIO_BACKEND_PIPEWIRE;
-    if (strcmp(env, "alsa") == 0)     return ANO_AUDIO_BACKEND_ALSA;
+    if (strcmp(env, "null") == 0)      return ANO_AUDIO_BACKEND_NULL_DEV;
+    if (strcmp(env, "pipewire") == 0)  return ANO_AUDIO_BACKEND_PIPEWIRE;
+    if (strcmp(env, "alsa") == 0)      return ANO_AUDIO_BACKEND_ALSA;
+    if (strcmp(env, "wasapi") == 0)    return ANO_AUDIO_BACKEND_WASAPI;
+    if (strcmp(env, "dsound") == 0)    return ANO_AUDIO_BACKEND_DSOUND;
+    if (strcmp(env, "coreaudio") == 0) return ANO_AUDIO_BACKEND_COREAUDIO;
     ano_log(ANO_WARN, "audio: unknown ANO_AUDIO_BACKEND '%s'; ignored.", env);
     return want;
 }
@@ -149,7 +158,12 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     AnoAudioBackend want = backend_env_override((AnoAudioBackend)c.backend);
     if (want == ANO_AUDIO_BACKEND_AUTO) {
         static const AnoAudioBackend cascade[] = {
-#if defined(__linux__)
+#if defined(_WIN32)
+            ANO_AUDIO_BACKEND_WASAPI,
+            ANO_AUDIO_BACKEND_DSOUND,
+#elif defined(__APPLE__)
+            ANO_AUDIO_BACKEND_COREAUDIO,
+#elif defined(__linux__)
             ANO_AUDIO_BACKEND_PIPEWIRE,
             ANO_AUDIO_BACKEND_ALSA,
 #endif

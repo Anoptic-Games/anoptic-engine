@@ -139,7 +139,17 @@ typedef struct AnoAudioDeviceApi
 // samples. Headless runs, CI, tests.
 const AnoAudioDeviceApi *ano_audio_device_null(void);
 
-#if defined(__linux__)
+#if defined(_WIN32)
+// audio_win64.c — WASAPI (event-driven shared mode, IAudioClient3 low latency
+// when the mix rate matches) and DirectSound (cursor-chase fallback). Both
+// runtime-load their libraries and fail cleanly so AUTO can cascade.
+const AnoAudioDeviceApi *ano_audio_device_wasapi(void);
+const AnoAudioDeviceApi *ano_audio_device_dsound(void);
+#elif defined(__APPLE__)
+// audio_macos.c — the default-output AudioUnit (AUHAL converts rate/format
+// and follows default-device changes).
+const AnoAudioDeviceApi *ano_audio_device_coreaudio(void);
+#elif defined(__linux__)
 // audio_linux.c — both dlopen their library at start() and fail cleanly
 // (returning false) when it is absent, so AUTO can cascade.
 const AnoAudioDeviceApi *ano_audio_device_pipewire(void);

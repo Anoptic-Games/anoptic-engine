@@ -55,17 +55,22 @@
 // ---------------------------------------------------------------------------
 
 // Device backend selection. AUTO tries the platform's backends best-first
-// (Linux: pipewire -> alsa -> null) and settles on the first that opens; a
-// specific value demands exactly that backend and init fails if it cannot
-// open. NULL_DEV consumes cooked blocks at the nominal block cadence without
-// a device — headless runs, CI, tests. The environment variable
-// ANO_AUDIO_BACKEND (pipewire | alsa | null) overrides the config for testing.
+// (Linux: pipewire -> alsa -> null; Windows: wasapi -> dsound -> null; macOS:
+// coreaudio -> null) and settles on the first that opens; a specific value
+// demands exactly that backend and init fails if it cannot open. NULL_DEV
+// consumes cooked blocks at the nominal block cadence without a device —
+// headless runs, CI, tests. The environment variable ANO_AUDIO_BACKEND
+// (pipewire | alsa | wasapi | dsound | coreaudio | null) overrides the config
+// for testing.
 typedef enum AnoAudioBackend
 {
     ANO_AUDIO_BACKEND_AUTO = 0,
     ANO_AUDIO_BACKEND_NULL_DEV,
-    ANO_AUDIO_BACKEND_PIPEWIRE, // Linux
-    ANO_AUDIO_BACKEND_ALSA,     // Linux fallback
+    ANO_AUDIO_BACKEND_PIPEWIRE,  // Linux
+    ANO_AUDIO_BACKEND_ALSA,      // Linux fallback
+    ANO_AUDIO_BACKEND_WASAPI,    // Windows
+    ANO_AUDIO_BACKEND_DSOUND,    // Windows fallback
+    ANO_AUDIO_BACKEND_COREAUDIO, // macOS
 } AnoAudioBackend;
 
 // Insert-effect kinds a bus chain slot can hold. The chain is fixed at init
