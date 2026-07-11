@@ -2807,25 +2807,25 @@ static const LintVio L4_IMIT[] = { { "imitation", 8 } };
 #define LINT_ALL(P)                                                                  \
     do {                                                                             \
         ano_lint_report_reset(&rep);                                                 \
-        ano_lint(RAW, nraw, CTX, nctx, mtr, ANO_LINT_PRE, NULL, &rep);               \
+        ano_lint(RAW, nraw, CTX, nctx, -1, mtr, ANO_LINT_PRE, NULL, &rep);               \
         LINT_CHECK(P##_PRE);                                                         \
         ano_lint_report_reset(&rep);                                                 \
-        ano_lint(FIN, nfin, CTX, nctx, mtr, ANO_LINT_POST, NULL, &rep);              \
+        ano_lint(FIN, nfin, CTX, nctx, -1, mtr, ANO_LINT_POST, NULL, &rep);              \
         LINT_CHECK(P##_POST);                                                        \
         ano_lint_report_reset(&rep);                                                  \
-        ano_lint_groove(RAW, nraw, CTX, PAR, nctx, mtr, &rep);                        \
+        ano_lint_groove(RAW, nraw, CTX, PAR, nctx, -1, mtr, &rep);                        \
         LINT_CHECK(P##_GROOVE);                                                       \
         ano_lint_report_reset(&rep);                                                  \
-        ano_lint_outer(RAW, nraw, CTX, nctx, mtr, 0.5, &rep);                         \
+        ano_lint_outer(RAW, nraw, CTX, nctx, -1, mtr, 0.5, &rep);                         \
         LINT_CHECK(P##_OUTER);                                                        \
         ano_lint_report_reset(&rep);                                                  \
-        ano_lint_periods(RAW, nraw, CTX, nctx, mtr, &rep);                            \
+        ano_lint_periods(RAW, nraw, CTX, nctx, -1, mtr, &rep);                            \
         LINT_CHECK(P##_PERIOD);                                                       \
         ano_lint_report_reset(&rep);                                                  \
-        ano_lint_texture(RAW, nraw, CTX, PAR, nctx, mtr, &rep);                       \
+        ano_lint_texture(RAW, nraw, CTX, PAR, nctx, -1, mtr, &rep);                       \
         LINT_CHECK(P##_TEX);                                                          \
         ano_lint_report_reset(&rep);                                                  \
-        ano_lint_imitation(RAW, nraw, CTX, nctx, leng.st.imitationSet,             \
+        ano_lint_imitation(RAW, nraw, CTX, nctx, -1, leng.st.imitationSet,             \
                            leng.st.imitationCells, ANO_MAX_PHRASES, mtr, 0.9,      \
                            &rep);                                                     \
         LINT_CHECK(P##_IMIT);                                                         \
@@ -2947,7 +2947,7 @@ static const LintVio L4_IMIT[] = { { "imitation", 8 } };
             BAD[30].core.tie = ANO_MUSIC_TIE_IN; // continues a note that never sounded
             BAD[62].core.pitch = 73;             // chromatic, with no licensing role
             ano_lint_report_reset(&rep);
-            ano_lint(BAD, nraw, CTX, nctx, mtr, ANO_LINT_PRE, NULL, &rep);
+            ano_lint(BAD, nraw, CTX, nctx, -1, mtr, ANO_LINT_PRE, NULL, &rep);
             LINT_CHECK(L3_PRE);
 
             // the rules W2 never reaches on its own: obligations, counterpoint,
@@ -2979,16 +2979,16 @@ static const LintVio L4_IMIT[] = { { "imitation", 8 } };
                 PAR4[i].layerCount = PAR4[0].layerCount;
             }
             ano_lint_report_reset(&rep);
-            ano_lint(BAD, nraw, CTX4, nctx, mtr, ANO_LINT_PRE, NULL, &rep);
+            ano_lint(BAD, nraw, CTX4, nctx, -1, mtr, ANO_LINT_PRE, NULL, &rep);
             LINT_CHECK(L4_PRE);
             ano_lint_report_reset(&rep);
-            ano_lint_groove(BAD, nraw, CTX4, PAR4, nctx, mtr, &rep);
+            ano_lint_groove(BAD, nraw, CTX4, PAR4, nctx, -1, mtr, &rep);
             LINT_CHECK(L4_GROOVE);
             ano_lint_report_reset(&rep);
-            ano_lint_texture(BAD, nraw, CTX4, PAR4, nctx, mtr, &rep);
+            ano_lint_texture(BAD, nraw, CTX4, PAR4, nctx, -1, mtr, &rep);
             LINT_CHECK(L4_TEX);
             ano_lint_report_reset(&rep);
-            ano_lint_imitation(BAD, nraw, CTX4, nctx, leng.st.imitationSet,
+            ano_lint_imitation(BAD, nraw, CTX4, nctx, -1, leng.st.imitationSet,
                                leng.st.imitationCells, ANO_MAX_PHRASES, mtr, 0.9, &rep);
             LINT_CHECK(L4_IMIT);
         }
@@ -3004,16 +3004,19 @@ static const LintVio L4_IMIT[] = { { "imitation", 8 } };
     // the raw and final event-stream digests (parity) and the violation
     // multiset across all seven lint families, both stages (acceptance).
     //
-    // 91 of the 120 lint clean. The other 29 carry residue the PYTHON oracle
-    // produces too, so they are conformance data, not port defects: 21 are a
-    // cadential 6/4 planted in the last rendered bar (its resolving V would
-    // land in bar 33 — an artifact of linting a truncated piece, not a music
-    // defect), and 8 are a post-modifier chord-tone where a strum drags a pad
-    // note past a chord change. A third class — a monophonic phrase voicing a
-    // four-note pad at its split bar — was a real bug this matrix found in the
-    // prototype (the D3 split path voiced its own blocks without applying the
-    // C4 dyad rule); it is fixed in both codebases and its 8 configurations
-    // now lint clean.
+    // Each config generates MATRIX_BARS + MATRIX_LOOKAHEAD bars but judges only
+    // the first MATRIX_BARS: the extra contexts let an obligation planted in the
+    // last judged bar (a cadential 6/4) discharge onto the V that follows it,
+    // instead of being reported as unkept merely because the render stopped.
+    // The event digests are identical with and without the lookahead — generation
+    // is causal, so the extra bars cannot reach back into the window.
+    //
+    // 112 of the 120 lint clean. The other 8 carry a post-modifier chord-tone the
+    // PYTHON oracle reports too — a strum drags a pad note past a chord change —
+    // so they are conformance data, not port defects. Two earlier residues are
+    // gone: the truncation artifact above, and a real bug this matrix found in
+    // the prototype (the D3 split-6/4 bar voiced its own blocks without applying
+    // the C4 monophonic dyad rule), now fixed in both codebases.
     {
         typedef struct MatrixRow
         {
@@ -3043,20 +3046,20 @@ static const MatrixRow MATRIX[] = {
     { 2, 0, 3, 12703244242457088652ULL, 14091286791611567372ULL, 0, 16476032584258269876ULL },
     { 2, 0, 4, 14460997696743858526ULL, 15468864261009350057ULL, 0, 16476032584258269876ULL },
     { 2, 1, 0, 9725608565004968258ULL, 1558548449075703361ULL, 0, 16476032584258269876ULL },
-    { 2, 1, 1, 6172520351296540501ULL, 10958244341797607514ULL, 1, 2257515143223141983ULL },
-    { 2, 1, 2, 253304391706424154ULL, 15464051639079502161ULL, 1, 2257515143223141983ULL },
+    { 2, 1, 1, 6172520351296540501ULL, 10958244341797607514ULL, 0, 16476032584258269876ULL },
+    { 2, 1, 2, 253304391706424154ULL, 15464051639079502161ULL, 0, 16476032584258269876ULL },
     { 2, 1, 3, 16002106295852254565ULL, 3380513426159992159ULL, 0, 16476032584258269876ULL },
-    { 2, 1, 4, 6454533556804121647ULL, 1405578048630449018ULL, 1, 2257515143223141983ULL },
+    { 2, 1, 4, 6454533556804121647ULL, 1405578048630449018ULL, 0, 16476032584258269876ULL },
     { 3, 0, 0, 12210437862513041482ULL, 3216511264093701480ULL, 0, 16476032584258269876ULL },
     { 3, 0, 1, 14724725406233964295ULL, 8308983878620509398ULL, 0, 16476032584258269876ULL },
     { 3, 0, 2, 11633937689586703613ULL, 2109356608793455575ULL, 0, 16476032584258269876ULL },
     { 3, 0, 3, 14977019834560244270ULL, 2242229112813133380ULL, 1, 6775317203068202381ULL },
     { 3, 0, 4, 2656377204872844490ULL, 15062665659690275654ULL, 0, 16476032584258269876ULL },
     { 3, 1, 0, 3697632842634662890ULL, 4183553775011498275ULL, 0, 16476032584258269876ULL },
-    { 3, 1, 1, 2199038387103972408ULL, 4465984907253750189ULL, 1, 2257515143223141983ULL },
-    { 3, 1, 2, 7945449463137107889ULL, 16902543763847457245ULL, 1, 2257515143223141983ULL },
+    { 3, 1, 1, 2199038387103972408ULL, 4465984907253750189ULL, 0, 16476032584258269876ULL },
+    { 3, 1, 2, 7945449463137107889ULL, 16902543763847457245ULL, 0, 16476032584258269876ULL },
     { 3, 1, 3, 3187640105413153653ULL, 2888495627724353264ULL, 2, 14433850177243672347ULL },
-    { 3, 1, 4, 12029861642220337377ULL, 5143014348923264685ULL, 1, 2257515143223141983ULL },
+    { 3, 1, 4, 12029861642220337377ULL, 5143014348923264685ULL, 0, 16476032584258269876ULL },
     { 4, 0, 0, 9212518993756229023ULL, 13993856813622308278ULL, 0, 16476032584258269876ULL },
     { 4, 0, 1, 13169664596912191772ULL, 792044637962588242ULL, 0, 16476032584258269876ULL },
     { 4, 0, 2, 5985884718427312036ULL, 10247758371432221678ULL, 0, 16476032584258269876ULL },
@@ -3083,50 +3086,50 @@ static const MatrixRow MATRIX[] = {
     { 6, 0, 3, 10026346494410875931ULL, 9863008502277912481ULL, 1, 6306538872641843341ULL },
     { 6, 0, 4, 13933008626330320667ULL, 2303967422655228447ULL, 0, 16476032584258269876ULL },
     { 6, 1, 0, 14729137817699614523ULL, 3417940479687615284ULL, 0, 16476032584258269876ULL },
-    { 6, 1, 1, 12362527691513888844ULL, 11511375774887132272ULL, 1, 2257515143223141983ULL },
-    { 6, 1, 2, 5396539993592164951ULL, 15581498881440574020ULL, 1, 2257515143223141983ULL },
+    { 6, 1, 1, 12362527691513888844ULL, 11511375774887132272ULL, 0, 16476032584258269876ULL },
+    { 6, 1, 2, 5396539993592164951ULL, 15581498881440574020ULL, 0, 16476032584258269876ULL },
     { 6, 1, 3, 1083187010263572858ULL, 18126282493061215655ULL, 1, 6306538872641843341ULL },
-    { 6, 1, 4, 2353162344165515646ULL, 15811519148870876775ULL, 1, 2257515143223141983ULL },
+    { 6, 1, 4, 2353162344165515646ULL, 15811519148870876775ULL, 0, 16476032584258269876ULL },
     { 7, 0, 0, 936614323891282528ULL, 7103973873930987968ULL, 0, 16476032584258269876ULL },
     { 7, 0, 1, 2820033389566619960ULL, 13205750636505026771ULL, 0, 16476032584258269876ULL },
     { 7, 0, 2, 16197678333332594973ULL, 1065178280293867140ULL, 0, 16476032584258269876ULL },
     { 7, 0, 3, 17384147298657466396ULL, 2898305776771054154ULL, 0, 16476032584258269876ULL },
     { 7, 0, 4, 11596595932719381292ULL, 17444547997141269828ULL, 1, 6775317203068202381ULL },
     { 7, 1, 0, 8501354444765914205ULL, 9083797849648071926ULL, 0, 16476032584258269876ULL },
-    { 7, 1, 1, 2688214233752382707ULL, 12865247069998181181ULL, 1, 2257515143223141983ULL },
-    { 7, 1, 2, 17444894708462338510ULL, 11720422722546499562ULL, 1, 2257515143223141983ULL },
+    { 7, 1, 1, 2688214233752382707ULL, 12865247069998181181ULL, 0, 16476032584258269876ULL },
+    { 7, 1, 2, 17444894708462338510ULL, 11720422722546499562ULL, 0, 16476032584258269876ULL },
     { 7, 1, 3, 9727268129672980071ULL, 6571223963745676988ULL, 0, 16476032584258269876ULL },
-    { 7, 1, 4, 10956741663290794351ULL, 1467583645499226289ULL, 1, 2257515143223141983ULL },
+    { 7, 1, 4, 10956741663290794351ULL, 1467583645499226289ULL, 0, 16476032584258269876ULL },
     { 8, 0, 0, 1622389050377745834ULL, 9216654741356037867ULL, 0, 16476032584258269876ULL },
     { 8, 0, 1, 2985982917626379138ULL, 9537398546816492607ULL, 0, 16476032584258269876ULL },
     { 8, 0, 2, 11833829411946886471ULL, 354415256599089857ULL, 0, 16476032584258269876ULL },
     { 8, 0, 3, 906507618502134603ULL, 1753209953642291121ULL, 1, 8552920214875981452ULL },
     { 8, 0, 4, 4473034090426434113ULL, 10431820584702639428ULL, 0, 16476032584258269876ULL },
     { 8, 1, 0, 18180345509653467423ULL, 5193378549902513251ULL, 0, 16476032584258269876ULL },
-    { 8, 1, 1, 13929125655326294416ULL, 7953927387040721403ULL, 1, 2257515143223141983ULL },
-    { 8, 1, 2, 16978931167202975415ULL, 1602280404117270845ULL, 1, 2257515143223141983ULL },
+    { 8, 1, 1, 13929125655326294416ULL, 7953927387040721403ULL, 0, 16476032584258269876ULL },
+    { 8, 1, 2, 16978931167202975415ULL, 1602280404117270845ULL, 0, 16476032584258269876ULL },
     { 8, 1, 3, 5781832814476013486ULL, 14099458877449157459ULL, 1, 8552920214875981452ULL },
-    { 8, 1, 4, 8908661410992699863ULL, 10866892978233843898ULL, 1, 2257515143223141983ULL },
+    { 8, 1, 4, 8908661410992699863ULL, 10866892978233843898ULL, 0, 16476032584258269876ULL },
     { 9, 0, 0, 10781129208395215290ULL, 16148544423714370117ULL, 0, 16476032584258269876ULL },
     { 9, 0, 1, 13788886758593822830ULL, 8997478697583625701ULL, 0, 16476032584258269876ULL },
     { 9, 0, 2, 859189686921583985ULL, 6260543950509544148ULL, 0, 16476032584258269876ULL },
     { 9, 0, 3, 5074496910348031530ULL, 12598570827131482201ULL, 0, 16476032584258269876ULL },
     { 9, 0, 4, 227736465232277277ULL, 2746576759215259ULL, 0, 16476032584258269876ULL },
     { 9, 1, 0, 12727173590822274905ULL, 2168331141078006778ULL, 0, 16476032584258269876ULL },
-    { 9, 1, 1, 4120663711335273876ULL, 3712501771073718468ULL, 1, 2257515143223141983ULL },
-    { 9, 1, 2, 2728340673427619298ULL, 14923052515774347854ULL, 1, 2257515143223141983ULL },
+    { 9, 1, 1, 4120663711335273876ULL, 3712501771073718468ULL, 0, 16476032584258269876ULL },
+    { 9, 1, 2, 2728340673427619298ULL, 14923052515774347854ULL, 0, 16476032584258269876ULL },
     { 9, 1, 3, 7587223925231502528ULL, 17898051241315301050ULL, 0, 16476032584258269876ULL },
-    { 9, 1, 4, 5551417957544688575ULL, 14981079566062226995ULL, 1, 2257515143223141983ULL },
+    { 9, 1, 4, 5551417957544688575ULL, 14981079566062226995ULL, 0, 16476032584258269876ULL },
     { 10, 0, 0, 7996428744329341695ULL, 13998746601559749154ULL, 0, 16476032584258269876ULL },
     { 10, 0, 1, 11840123975377783964ULL, 13467315015544513136ULL, 0, 16476032584258269876ULL },
     { 10, 0, 2, 8088895617990742102ULL, 252629943504501455ULL, 0, 16476032584258269876ULL },
     { 10, 0, 3, 10442694268860456778ULL, 16269027271828493108ULL, 0, 16476032584258269876ULL },
     { 10, 0, 4, 13312735146132437613ULL, 2576018224425727035ULL, 0, 16476032584258269876ULL },
     { 10, 1, 0, 339864606554133170ULL, 15287270680210776328ULL, 0, 16476032584258269876ULL },
-    { 10, 1, 1, 2685889471672743313ULL, 6377766088801949271ULL, 1, 2257515143223141983ULL },
-    { 10, 1, 2, 10084810714469027213ULL, 15167261546476009918ULL, 1, 2257515143223141983ULL },
+    { 10, 1, 1, 2685889471672743313ULL, 6377766088801949271ULL, 0, 16476032584258269876ULL },
+    { 10, 1, 2, 10084810714469027213ULL, 15167261546476009918ULL, 0, 16476032584258269876ULL },
     { 10, 1, 3, 9974719669004831662ULL, 3120480357982589392ULL, 0, 16476032584258269876ULL },
-    { 10, 1, 4, 3059356575032066665ULL, 2942382818033940503ULL, 1, 2257515143223141983ULL },
+    { 10, 1, 4, 3059356575032066665ULL, 2942382818033940503ULL, 0, 16476032584258269876ULL },
     { 11, 0, 0, 8610578138072370982ULL, 9592529588819022230ULL, 0, 16476032584258269876ULL },
     { 11, 0, 1, 14512963534359521656ULL, 13226096089789594311ULL, 0, 16476032584258269876ULL },
     { 11, 0, 2, 12749699700337631127ULL, 11283593054576037581ULL, 0, 16476032584258269876ULL },
@@ -3149,7 +3152,7 @@ static const MatrixRow MATRIX[] = {
     { 12, 1, 4, 11947769792833776168ULL, 8080480768932514357ULL, 0, 16476032584258269876ULL },
 };
 #define MATRIX_N 120
-#define MATRIX_CLEAN 91
+#define MATRIX_CLEAN 112
 // configurations: 120, lint-clean: 91
 //   seed 2 dram 1 traj 1: [('cadential64', 31)]
 //   seed 2 dram 1 traj 2: [('cadential64', 31)]
@@ -3211,6 +3214,11 @@ static const MatrixRow MATRIX[] = {
               { 24, 0.30, 0.40, 0.10 } },
         };
 
+// The judged window, and the extra bars generated purely so an obligation
+// planted in bar 31 (a cadential 6/4) can discharge onto the V that follows it.
+#define MATRIX_BARS      32
+#define MATRIX_LOOKAHEAD 2
+
         static AnoMusicEngine meng;
         static AnoBarResult   mres;
         static AnoMusicEvent  MRAW[4096], MFIN[4096];
@@ -3251,17 +3259,23 @@ static const MatrixRow MATRIX[] = {
             ano_engine_init(&meng, (uint64_t)g->seed, &cfg);
 
             uint32_t nr = 0, nf = 0, nc = 0;
-            for (int bar = 0; bar < 32; ++bar) {
+            for (int bar = 0; bar < MATRIX_BARS + MATRIX_LOOKAHEAD; ++bar) {
                 for (int k = 0; k < 4; ++k) {
                     const AffectPoint *p = &TRAJ[g->traj][k];
                     if (p->bar == bar)
                         ano_engine_set_affect(&meng, p->v, p->e, p->t, false);
                 }
                 ano_engine_advance_bar(&meng, &mres);
-                memcpy(MRAW + nr, mres.rawEvents, mres.rawEventCount * sizeof MRAW[0]);
-                memcpy(MFIN + nf, mres.events, mres.eventCount * sizeof MFIN[0]);
-                nr += mres.rawEventCount;
-                nf += mres.eventCount;
+                // past the horizon we keep the CONTEXT and drop the events: the
+                // lookahead bars exist only to discharge obligations planted in
+                // the last judged bar, and they must host nothing to judge
+                if (bar < MATRIX_BARS) {
+                    memcpy(MRAW + nr, mres.rawEvents,
+                           mres.rawEventCount * sizeof MRAW[0]);
+                    memcpy(MFIN + nf, mres.events, mres.eventCount * sizeof MFIN[0]);
+                    nr += mres.rawEventCount;
+                    nf += mres.eventCount;
+                }
                 MCTX[nc] = mres.context;
                 MPAR[nc] = mres.params;
                 nc++;
@@ -3276,13 +3290,13 @@ static const MatrixRow MATRIX[] = {
             CHECK(rd == g->rawDigest && fd == g->finDigest, "matrix digests");
 
             ano_lint_report_reset(&mrep);
-            ano_lint(MRAW, nr, MCTX, nc, mmtr, ANO_LINT_PRE, NULL, &mrep);
-            ano_lint(MFIN, nf, MCTX, nc, mmtr, ANO_LINT_POST, NULL, &mrep);
-            ano_lint_groove(MRAW, nr, MCTX, MPAR, nc, mmtr, &mrep);
-            ano_lint_outer(MRAW, nr, MCTX, nc, mmtr, 0.5, &mrep);
-            ano_lint_periods(MRAW, nr, MCTX, nc, mmtr, &mrep);
-            ano_lint_texture(MRAW, nr, MCTX, MPAR, nc, mmtr, &mrep);
-            ano_lint_imitation(MRAW, nr, MCTX, nc, meng.st.imitationSet,
+            ano_lint(MRAW, nr, MCTX, nc, MATRIX_BARS, mmtr, ANO_LINT_PRE, NULL, &mrep);
+            ano_lint(MFIN, nf, MCTX, nc, MATRIX_BARS, mmtr, ANO_LINT_POST, NULL, &mrep);
+            ano_lint_groove(MRAW, nr, MCTX, MPAR, nc, MATRIX_BARS, mmtr, &mrep);
+            ano_lint_outer(MRAW, nr, MCTX, nc, MATRIX_BARS, mmtr, 0.5, &mrep);
+            ano_lint_periods(MRAW, nr, MCTX, nc, MATRIX_BARS, mmtr, &mrep);
+            ano_lint_texture(MRAW, nr, MCTX, MPAR, nc, MATRIX_BARS, mmtr, &mrep);
+            ano_lint_imitation(MRAW, nr, MCTX, nc, MATRIX_BARS, meng.st.imitationSet,
                                meng.st.imitationCells, ANO_MAX_PHRASES, mmtr, 0.9,
                                &mrep);
 

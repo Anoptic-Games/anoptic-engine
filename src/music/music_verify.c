@@ -129,7 +129,17 @@ static void vio(AnoLintReport *r, const char *rule, int bar, const char *fmt, ..
 // Lookups
 // ---------------------------------------------------------------------------
 
+// Is this bar the lint's SUBJECT, or only a lookahead resolution target? A
+// context at or beyond the horizon exists so an obligation planted inside the
+// window can discharge past its edge; it hosts no events, so every
+// event-shaped rule would misread it. horizon < 0 judges everything.
+static bool judged(int bar, int horizon)
+{
+    return horizon < 0 || bar < horizon;
+}
+
 // The prototype's {c.bar: c for c in contexts}: last entry for a bar wins.
+// Always the FULL list — the lookup is what reaches into the lookahead.
 static const AnoHarmonicContext *ctx_of(const AnoHarmonicContext *cx, uint32_t n, int bar)
 {
     const AnoHarmonicContext *hit = NULL;
@@ -761,7 +771,8 @@ static void lint_perc(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
     }
 }
 
-static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, AnoLintReport *out)
+static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, int horizon,
+                          AnoLintReport *out)
 {
     // cadence bar: the policy's arrival degree; pre-cadence: its approach
     static const int8_t ARRIVE[3][2] = { { 1, -1 }, { 5, -1 }, { 6, -1 } };
@@ -770,6 +781,8 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, AnoLintRep
 
     for (uint32_t i = 0; i < ncx; ++i) {
         const AnoHarmonicContext *c = &cx[i];
+        if (!judged(c->bar, horizon))
+            continue;
         if (c->cadenceSlot == ANO_CTX_SLOT_NONE || !c->chord.valid
             || c->cadencePolicy == ANO_CADENCE_NONE)
             continue;
@@ -797,7 +810,7 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, AnoLintRep
 // ---------------------------------------------------------------------------
 
 static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
-                             const AnoHarmonicContext *cx, uint32_t ncx,
+                             const AnoHarmonicContext *cx, uint32_t ncx, int horizon,
                              AnoMeter meter, AnoLintReport *out)
 {
     char a[8];
@@ -880,8 +893,12 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
         i = j + 1;
     }
 
+    // obligations are PLANTED inside the window; ctx_of reaches past it, so a
+    // promise made in the last rendered bar can still be kept by a lookahead
     for (uint32_t i = 0; i < ncx; ++i) {
         const AnoHarmonicContext *c = &cx[i];
+        if (!judged(c->bar, horizon))
+            continue;
         const AnoHarmonicContext *nx = ctx_of(cx, ncx, c->bar + 1);
         if (c->obligation == ANO_OBL_TONICIZE) {
             if (!nx || !nx->chord.valid || nx->chord.degree != c->obligationTarget)
@@ -911,7 +928,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
     int lam[LINT_MAX_BARS];
     uint32_t nlam = 0;
     for (uint32_t i = 0; i < ncx && nlam < LINT_MAX_BARS; ++i)
-        if (cx[i].obligation == ANO_OBL_LAMENT)
+        if (cx[i].obligation == ANO_OBL_LAMENT && judged(cx[i].bar, horizon))
             lam[nlam++] = cx[i].bar;
     sort_ints(lam, nlam);
 
@@ -956,8 +973,9 @@ static void lint_capacity(const AnoMusicEvent *ev, uint32_t n, AnoLintReport *ou
 }
 
 void ano_lint(const AnoMusicEvent *events, uint32_t n,
-              const AnoHarmonicContext *contexts, uint32_t nctx, AnoMeter meter,
-              AnoLintStage stage, const AnoLintLimits *limits, AnoLintReport *out)
+              const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
+              AnoMeter meter, AnoLintStage stage, const AnoLintLimits *limits,
+              AnoLintReport *out)
 {
     AnoLintLimits def = ano_lint_limits_default();
     const AnoLintLimits *L = limits ? limits : &def;
@@ -969,13 +987,13 @@ void ano_lint(const AnoMusicEvent *events, uint32_t n,
     if (stage == ANO_LINT_PRE) {
         // slot-based melodic and obligation analysis assumes the unmodified grid
         lint_melody(events, n, contexts, nctx, meter, L, out);
-        lint_obligations(events, n, contexts, nctx, meter, out);
+        lint_obligations(events, n, contexts, nctx, horizon, meter, out);
         lint_doubling(events, n, contexts, nctx, meter, out);
         lint_counter(events, n, contexts, nctx, meter, L, out);
         lint_ties(events, n, meter, out);
     }
     lint_perc(events, n, meter, L, out);
-    lint_cadences(contexts, nctx, out);
+    lint_cadences(contexts, nctx, horizon, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,7 +1076,7 @@ static bool params_stable(const AnoGenParams *a, const AnoGenParams *b)
 
 void ano_lint_groove(const AnoMusicEvent *events, uint32_t n,
                      const AnoHarmonicContext *contexts, const AnoGenParams *params,
-                     uint32_t nctx, AnoMeter meter, AnoLintReport *out)
+                     uint32_t nctx, int horizon, AnoMeter meter, AnoLintReport *out)
 {
     // Bars are walked in ascending order and a phrase's start bar is
     // non-decreasing in bar, so the previous bar of the CURRENT phrase is all
@@ -1070,7 +1088,8 @@ void ano_lint_groove(const AnoMusicEvent *events, uint32_t n,
         int order[LINT_MAX_BARS];
         uint32_t no = 0;
         for (uint32_t i = 0; i < nctx && no < LINT_MAX_BARS; ++i)
-            order[no++] = (int)i;
+            if (judged(contexts[i].bar, horizon))
+                order[no++] = (int)i;
         for (uint32_t i = 1; i < no; ++i) { // by bar
             int k = order[i];
             uint32_t j = i;
@@ -1128,8 +1147,8 @@ void ano_lint_groove(const AnoMusicEvent *events, uint32_t n,
 // ---------------------------------------------------------------------------
 
 void ano_lint_outer(const AnoMusicEvent *events, uint32_t n,
-                    const AnoHarmonicContext *contexts, uint32_t nctx, AnoMeter meter,
-                    double contraryMin, AnoLintReport *out)
+                    const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
+                    AnoMeter meter, double contraryMin, AnoLintReport *out)
 {
     const AnoMusicEvent *bas[LINT_MAX_LINE], *mel[LINT_MAX_LINE];
     uint32_t nb = 0, nm = 0;
@@ -1188,7 +1207,7 @@ void ano_lint_outer(const AnoMusicEvent *events, uint32_t n,
     uint32_t good = 0, total = 0;
     for (uint32_t i = 0; i < nctx; ++i) {
         const AnoHarmonicContext *c = &contexts[i];
-        if (c->cadenceSlot != ANO_CTX_SLOT_CADENCE)
+        if (!judged(c->bar, horizon) || c->cadenceSlot != ANO_CTX_SLOT_CADENCE)
             continue;
         if (c->phrasePos == 0)
             continue; // an elided cadence (D2) is crashed into, not settled into
@@ -1223,12 +1242,13 @@ void ano_lint_outer(const AnoMusicEvent *events, uint32_t n,
 // ---------------------------------------------------------------------------
 
 void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
-                      const AnoHarmonicContext *contexts, uint32_t nctx,
+                      const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
                       AnoMeter meter, AnoLintReport *out)
 {
     for (uint32_t i = 0; i < nctx; ++i) {
         const AnoHarmonicContext *c = &contexts[i];
-        if (c->form != ANO_FORM_CONSEQUENT || c->phrasePos != 0)
+        if (!judged(c->bar, horizon) || c->form != ANO_FORM_CONSEQUENT
+            || c->phrasePos != 0)
             continue;
         int ante = c->bar - c->phraseBars;
         const AnoHarmonicContext *ac = ctx_of(contexts, nctx, ante);
@@ -1280,10 +1300,13 @@ void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
 // Phrase ranks (elastic-segment-safe: rank by phrase start bar, not bar/len)
 // ---------------------------------------------------------------------------
 
-static uint32_t phrase_ranks(const AnoHarmonicContext *cx, uint32_t ncx, int *starts)
+static uint32_t phrase_ranks(const AnoHarmonicContext *cx, uint32_t ncx, int horizon,
+                             int *starts)
 {
     uint32_t ns = 0;
     for (uint32_t i = 0; i < ncx; ++i) {
+        if (!judged(cx[i].bar, horizon))
+            continue;
         int s = cx[i].bar - cx[i].phrasePos;
         if (!int_in(starts, ns, s) && ns < LINT_MAX_BARS)
             starts[ns++] = s;
@@ -1306,10 +1329,10 @@ static int rank_of(const int *starts, uint32_t ns, int start)
 
 void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
                       const AnoHarmonicContext *contexts, const AnoGenParams *params,
-                      uint32_t nctx, AnoMeter meter, AnoLintReport *out)
+                      uint32_t nctx, int horizon, AnoMeter meter, AnoLintReport *out)
 {
     int starts[LINT_MAX_BARS];
-    uint32_t ns = phrase_ranks(contexts, nctx, starts);
+    uint32_t ns = phrase_ranks(contexts, nctx, horizon, starts);
 
     for (uint32_t r = 0; r < ns; ++r) {
         int bars[LINT_MAX_BARS];
@@ -1321,7 +1344,8 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
 
         for (uint32_t i = 0; i < nctx; ++i) {
             const AnoHarmonicContext *c = &contexts[i];
-            if (rank_of(starts, ns, c->bar - c->phrasePos) != (int)r)
+            if (!judged(c->bar, horizon)
+                || rank_of(starts, ns, c->bar - c->phrasePos) != (int)r)
                 continue;
             if (nbars < LINT_MAX_BARS)
                 bars[nbars++] = c->bar;
@@ -1430,12 +1454,12 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
 // ---------------------------------------------------------------------------
 
 void ano_lint_imitation(const AnoMusicEvent *events, uint32_t n,
-                        const AnoHarmonicContext *contexts, uint32_t nctx,
+                        const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
                         const bool *cellSet, const AnoMotif *cells, uint32_t nCells,
                         AnoMeter meter, double threshold, AnoLintReport *out)
 {
     int starts[LINT_MAX_BARS];
-    uint32_t ns = phrase_ranks(contexts, nctx, starts);
+    uint32_t ns = phrase_ranks(contexts, nctx, horizon, starts);
 
     for (uint32_t r = 0; r < ns; ++r) {
         const AnoMusicEvent *entry[ANO_MOTIF_MAX * 2];

@@ -94,13 +94,20 @@ const char *ano_violation_str(const AnoViolation *v, char *buf, uint32_t cap);
 // live there). params, where taken, is parallel to contexts: params[i] is the
 // parameter block of bar contexts[i].bar.
 //
+// horizon marks a TRUNCATED render: contexts at or beyond it are lookahead —
+// they let an obligation planted in the last rendered bar discharge past the
+// edge (a cadential 6/4 there resolves onto the V of the bar after) without
+// themselves being judged, since they host no events. Render N + k bars, lint
+// the events of the first N, pass every context, set horizon = N. A negative
+// horizon judges every context, which is what a complete piece wants.
+//
 // The per-layer rules work in fixed line buffers (1024 events per layer). A
 // layer past that would be truncated, so ano_lint reports a "capacity"
 // violation rather than let a truncated lint pass as a clean one; run it
 // alongside the standalone contracts, which share the same bound.
 
 void ano_lint(const AnoMusicEvent *events, uint32_t n,
-              const AnoHarmonicContext *contexts, uint32_t nctx,
+              const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
               AnoMeter meter, AnoLintStage stage,
               const AnoLintLimits *limits, AnoLintReport *out);
 
@@ -109,21 +116,21 @@ void ano_lint(const AnoMusicEvent *events, uint32_t n,
 // identity is what makes harmonic change legible. Pre-modifier IR.
 void ano_lint_groove(const AnoMusicEvent *events, uint32_t n,
                      const AnoHarmonicContext *contexts,
-                     const AnoGenParams *params, uint32_t nctx,
+                     const AnoGenParams *params, uint32_t nctx, int horizon,
                      AnoMeter meter, AnoLintReport *out);
 
 // A3: the outer-voice frame — no consecutive or direct perfects between the
 // melody and bass at successive strong-slot onsets; cadences prefer a
 // contrary/oblique approach (contraryMin, prototype default 0.5).
 void ano_lint_outer(const AnoMusicEvent *events, uint32_t n,
-                    const AnoHarmonicContext *contexts, uint32_t nctx,
+                    const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
                     AnoMeter meter, double contraryMin, AnoLintReport *out);
 
 // B2: a committed antecedent-consequent pair must answer — the consequent's
 // opening bar carries the antecedent's melodic rhythm, unless a landmark
 // payoff overrode it (the arrival wins).
 void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
-                      const AnoHarmonicContext *contexts, uint32_t nctx,
+                      const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
                       AnoMeter meter, AnoLintReport *out);
 
 // C4: the Tier-2 texture state is a claim about the sounding events —
@@ -132,7 +139,7 @@ void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
 // dyads. Dormant when params carry no texture.
 void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
                       const AnoHarmonicContext *contexts,
-                      const AnoGenParams *params, uint32_t nctx,
+                      const AnoGenParams *params, uint32_t nctx, int horizon,
                       AnoMeter meter, AnoLintReport *out);
 
 // C3: each phrase's imitation entry must still carry its source cell's
@@ -140,7 +147,7 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
 // engine's per-phrase cache (AnoConductorState.imitationSet/imitationCells),
 // indexed by phrase rank.
 void ano_lint_imitation(const AnoMusicEvent *events, uint32_t n,
-                        const AnoHarmonicContext *contexts, uint32_t nctx,
+                        const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
                         const bool *cellSet, const AnoMotif *cells, uint32_t nCells,
                         AnoMeter meter, double threshold, AnoLintReport *out);
 
