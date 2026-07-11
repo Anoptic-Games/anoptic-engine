@@ -5,11 +5,10 @@
 
 // Calm half of the blackbox: resolve the CRASH.log path once, run the Stage 4 look-back, hand off to the per-platform Stage 1 hooks. The handlers live in the platform TUs.
 
-#include <anoptic_blackbox.h>
-#include <anoptic_logging.h>
+#include <anoptic_log_crash.h>
 #include <anoptic_filesystem.h>
 
-#include "blackbox/blackbox_internal.h"
+#include "log/log_crash_internal.h"
 
 #include <stdio.h>
 
@@ -29,7 +28,7 @@ static void investigate_previous_flight(const char *dir)
     bb_prune_suffix(dir, "_ano.log",   BB_KEEP_LOGS, stamp);
 }
 
-int ano_blackbox_init(void)
+int ano_log_crash_init(void)
 {
     // Resolve <logs>/<stamp>_CRASH.log once at init, handlers only open() it. Fallbacks: <gamedir>, then CWD.
     ano_fspath dir = ano_fs_logpath();
@@ -49,12 +48,12 @@ int ano_blackbox_init(void)
 }
 
 // Thin routing to the per-platform arm/release. Contract in the public header.
-int ano_blackbox_thread_arm(void)
+int ano_log_crash_thread_arm(void)
 {
     return bb_thread_arm();
 }
 
-void ano_blackbox_thread_disarm(void)
+void ano_log_crash_thread_disarm(void)
 {
     bb_thread_disarm();
 }

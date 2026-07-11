@@ -3,16 +3,14 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#ifndef ANOPTIC_BLACKBOX_H
-#define ANOPTIC_BLACKBOX_H
-
 // !! COMMENTS IN THIS FILE STAY! You may add new ones
 
+// Blackbox Module.
 // Crash Trace Functionality
 
 // Scenario: Oh no! The engine writes out of a legal buffer, seizes up, and crashes! The logger is stuck in a spinlock and the queue never get's drain()'d, so no last message can be sent to tell the world what happened... unless?
 
-// Enter: anoptic_blackbox.h
+// Enter: anoptic_log_crash.h
 
 
 // Stage 1: Initializing the blackbox.
@@ -30,6 +28,11 @@
 /// TODO: Ask user if they want to send telemetry (future implement)
 // First boot post-crash, investigate what happened, append it to logs in further details if necessary/possible/desireable.
 
+#ifndef ANOPTIC_LOG_CRASH_H
+#define ANOPTIC_LOG_CRASH_H
+
+#include "anoptic_log.h"
+
 
 /* Lifecycle Functions */
 
@@ -40,18 +43,18 @@
 // Stage 4 announces how many *_CRASH.log files are left over ("n crash logs detected"), then prunes
 // both *_CRASH.log and *_ano.log to the newest 4 each, never touching the live session's files.
 // Output: 0 on success, -1 if a hook failed to install (the engine flies on, crash-naked).
-int ano_blackbox_init(void);
+int ano_log_crash_init(void);
 
 // Arm the CALLING thread's crash stack: an alternate signal stack (POSIX) or a guaranteed
 // stack-overflow handler reservation (win64), so a blown stack on this thread still yields a record.
 // ano_thread_create arms every engine thread automatically; only threads created behind the engine's
 // back (external libraries, OS callbacks) need to call this themselves. The hooks are process-wide
-// and order-independent: arming works before or after ano_blackbox_init. Idempotent per thread.
-// Never call on a thread armed by someone else (main is armed by ano_blackbox_init itself).
+// and order-independent: arming works before or after ano_log_crash_init. Idempotent per thread.
+// Never call on a thread armed by someone else (main is armed by ano_log_crash_init itself).
 // Output: 0 on success, -1 if the OS refused (the thread reports crash-naked, the engine flies on).
-int ano_blackbox_thread_arm(void);
+int ano_log_crash_thread_arm(void);
 
-// Release what ano_blackbox_thread_arm reserved, just before the thread exits. Safe to call unarmed.
-void ano_blackbox_thread_disarm(void);
+// Release what ano_log_crash_thread_arm reserved, just before the thread exits. Safe to call unarmed.
+void ano_log_crash_thread_disarm(void);
 
-#endif
+#endif // ANOPTIC_LOG_CRASH_H

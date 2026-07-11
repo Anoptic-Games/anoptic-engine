@@ -11,7 +11,7 @@
 // anotest_logbench: built so it cannot rot, DISABLED in CTest, run ./anotest_logtail by hand.
 // Always exits 0 and prints a table. argv[1] overrides messages-per-producer for a longer run.
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 

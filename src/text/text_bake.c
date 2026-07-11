@@ -18,7 +18,7 @@
 #include <math.h>
 #include <string.h>
 
-#include "anoptic_logging.h"
+#include "anoptic_log.h"
 #include "anoptic_memory.h"
 
 #include <ft2build.h>

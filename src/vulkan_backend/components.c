@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include <anoptic_memory.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include "vulkan_backend/components.h"
 #include "vulkan_backend/structs.h"
 #include <stdlib.h>

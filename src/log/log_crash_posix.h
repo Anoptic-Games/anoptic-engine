@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The shared POSIX implementation, included by exactly one TU per platform (blackbox_linux.c / blackbox_macos.c). The including TU supplies the two native pieces, forward-declared below: bb_modmap_build (snapshot the loaded modules, calm time only) and bb_crash_regs (pc/fp/lr out of the interrupted mcontext). No <execinfo.h>: the fp chain is walked by hand.
+// The shared POSIX implementation, included by exactly one TU per platform (log_crash_linux.c / log_crash_macos.c). The including TU supplies the two native pieces, forward-declared below: bb_modmap_build (snapshot the loaded modules, calm time only) and bb_crash_regs (pc/fp/lr out of the interrupted mcontext). No <execinfo.h>: the fp chain is walked by hand.
 
-#ifndef BLACKBOX_POSIX_H
-#define BLACKBOX_POSIX_H
+#ifndef LOG_CRASH_POSIX_H
+#define LOG_CRASH_POSIX_H
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_memory.h>
-#include "blackbox/blackbox_internal.h"
+#include "log/log_crash_internal.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -231,7 +231,7 @@ static void bb_handler(int sig, siginfo_t *info, void *uctx)
     _exit(128 + sig);   // unreachable unless the default action was suppressed
 }
 
-// Stage 4 scan, calm time only. Contract in blackbox_internal.h.
+// Stage 4 scan, calm time only. Contract in log_crash_internal.h.
 int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
 {
     DIR *d = opendir(dir);
@@ -252,7 +252,7 @@ int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
     return count;
 }
 
-// Contract in blackbox_internal.h. Pass 1 collects the top-keep newest by mtime, pass 2 removes the rest.
+// Contract in log_crash_internal.h. Pass 1 collects the top-keep newest by mtime, pass 2 removes the rest.
 int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *skip)
 {
     if (keep > 8) keep = 8;
@@ -347,4 +347,4 @@ void bb_thread_disarm(void)
     bb_threadAltStack = NULL;
 }
 
-#endif // BLACKBOX_POSIX_H
+#endif // LOG_CRASH_POSIX_H

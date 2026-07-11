@@ -92,7 +92,7 @@ Cores keep caches coherent with the **MESI** protocol at **cache-line granularit
 
 ### What Anoptic already does
 
-The logger is the first lock-free citizen. `src/logging/logging_core.c` already keeps an `_Atomic int tail_index` over a shared buffer with an `enqueue_log_string` producer path, the seed of a many-producer / single- consumer log bus. The maturation path is textbook: reserve a slot with one atomic `fetch_add`, write into an `ANO_CACHELINE`-aligned slot, then publish with an `atomic_store(…, memory_order_release)` on a commit header so the consumer (`memory_order_acquire`) flushes only fully-written, contiguous runs. No syscall, no lock, no gap-problem ambiguity.
+The logger is the first lock-free citizen. `src/log/log_core.c` already keeps an `_Atomic int tail_index` over a shared buffer with an `enqueue_log_string` producer path, the seed of a many-producer / single- consumer log bus. The maturation path is textbook: reserve a slot with one atomic `fetch_add`, write into an `ANO_CACHELINE`-aligned slot, then publish with an `atomic_store(…, memory_order_release)` on a commit header so the consumer (`memory_order_acquire`) flushes only fully-written, contiguous runs. No syscall, no lock, no gap-problem ambiguity.
 
 And the hardware cooperates on every target, because the atomics *interface* hides the lowering: on Apple Silicon the M1 reports `FEAT_LSE`, so `_Atomic` CAS and add become **single instructions** (`CAS`, `LDADD`, `SWP`). On x86-64 they lower to `lock`-prefixed ops. We write C11 `<stdatomic.h>` once and each platform's compiler emits the right thing. Lock-free is cheap on all three.
 

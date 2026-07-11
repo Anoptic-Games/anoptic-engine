@@ -6,7 +6,7 @@ target_link_libraries(anotest_time PRIVATE anoptic_core)
 add_test(NAME anoptic_time COMMAND anotest_time)
 set_tests_properties(anoptic_time PROPERTIES TIMEOUT 30 LABELS "unit")
 
-# Testing for ``anoptic_logging.h``
+# Testing for ``anoptic_log.h``
 # Scratch dirs are anchored at runtime to the test exe's own directory (ano_fs_chdir_gamepath in
 # main / scratch_anchor_to_exe), so output never lands in the caller's CWD and a cross-built exe
 # writes to a valid path on its own OS -- no compile-time build path is baked in.
@@ -129,11 +129,11 @@ add_test(NAME anoptic_chariots COMMAND anotest_chariots)
 set_tests_properties(anoptic_chariots PROPERTIES DISABLED TRUE LABELS "optional;easteregg")
 
 # Optional logger benchmark: the lock-free ring (in anoptic_core) vs the preserved mutex baseline.
-# logging_old.c is compiled ONLY into this target -- it never enters anoptic_core or the standard
+# log_old.c is compiled ONLY into this target -- it never enters anoptic_core or the standard
 # build, so the two loggers coexist in one executable (the baseline is namespaced mtxlog_*). The
-# src include dir resolves "logging/logging_old.h". Built so it cannot rot, DISABLED in ctest --
+# src include dir resolves "log/log_old.h". Built so it cannot rot, DISABLED in ctest --
 # run ./anotest_logbench by hand.
-add_executable(anotest_logbench anotest_logbench.c ${CMAKE_SOURCE_DIR}/src/logging/logging_old.c)
+add_executable(anotest_logbench anotest_logbench.c ${CMAKE_SOURCE_DIR}/src/log/log_old.c)
 target_include_directories(anotest_logbench PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(anotest_logbench PRIVATE anoptic_core)
 add_test(NAME anoptic_logbench COMMAND anotest_logbench)
@@ -157,7 +157,7 @@ target_link_libraries(anotest_logfuzz PRIVATE anoptic_core)
 add_test(NAME anoptic_logfuzz COMMAND anotest_logfuzz)
 set_tests_properties(anoptic_logfuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;concurrency")
 
-# Testing for ``anoptic_blackbox.h`` (crash hooks, crash records, the logger hail mary, deadman).
+# Testing for ``anoptic_log_crash.h`` (crash hooks, crash records, the logger hail mary, deadman).
 # The binary re-execs itself once per scenario and judges the child's death, its <stamp>_CRASH.log
 # record, and sentinel survival in a scratch session log. The deadman scenario waits through the
 # 5 s watchdog window.

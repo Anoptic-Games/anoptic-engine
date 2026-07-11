@@ -6,7 +6,7 @@
 // Linux: the shared POSIX handler plus the two native pieces it needs. Module map from dl_iterate_phdr at init. _GNU_SOURCE is for REG_RIP/REG_RBP and dl_iterate_phdr.
 
 #define _GNU_SOURCE
-#include "blackbox/blackbox_posix.h"
+#include "log/log_crash_posix.h"
 
 #include <link.h>
 #include <ucontext.h>
