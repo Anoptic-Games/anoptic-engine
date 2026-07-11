@@ -17,7 +17,10 @@
 
 AnoArpConfig ano_arp_config_default(void)
 {
-    return (AnoArpConfig){ .baseOctave = 5, .spanOctaves = 2, .velocityOffset = -16 };
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoArpConfig k = { .baseOctave = 5, .spanOctaves = 2, .velocityOffset = -16 };
+    return k;
 }
 
 uint32_t ano_arp_make_skips(AnoMusicRng *rng, AnoMeter meter, double density)

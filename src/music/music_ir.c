@@ -103,6 +103,40 @@ const char *const ANO_LAYER_NAMES[ANO_MUSIC_LAYER_COUNT] = {
     "pad", "bass", "melody", "counter", "arp", "perc",
 };
 
+// p: the bar's generation-side params. Returns the public bridge block; the
+// gate order of p->layers is dropped (the synth asks only "is it sounding").
+AnoMusicalParams ano_gen_params_bridge(const AnoGenParams *p)
+{
+    AnoMusicalParams o = {
+        .tempoBpm         = p->tempoBpm,
+        .noteDensity      = (float)p->noteDensity,
+        .roughness        = (float)p->roughness,
+        .articulation     = (float)p->articulation,
+        .velocityCenter   = (uint8_t)(p->velocityCenter < 0     ? 0
+                                      : p->velocityCenter > 127 ? 127
+                                                                : p->velocityCenter),
+        .accentDepth      = (uint8_t)(p->accentDepth < 0     ? 0
+                                      : p->accentDepth > 127 ? 127
+                                                             : p->accentDepth),
+        .registerCenter   = (uint8_t)(p->registerCenter < 0     ? 0
+                                      : p->registerCenter > 127 ? 127
+                                                                : p->registerCenter),
+        .harmonicRhythm   = (float)p->harmonicRhythm,
+        .dissonanceBudget = (float)p->dissonanceBudget,
+        .filterCutoff     = (float)p->filterCutoff,
+        .reverbSend       = (float)p->reverbSend,
+        .delaySend        = (float)p->delaySend,
+        .drive            = (float)p->drive,
+        .stereoWidth      = (float)p->stereoWidth,
+    };
+    for (uint32_t i = 0; i < p->layerCount; ++i)
+        if (p->layers[i] < ANO_MUSIC_LAYER_COUNT)
+            o.layersActive |= (uint8_t)(1u << p->layers[i]);
+    for (uint32_t i = 0; i < ANO_MUSIC_LAYER_COUNT; ++i)
+        o.instruments[i] = p->instruments[i];
+    return o;
+}
+
 bool ano_note_event_valid(const AnoNoteEvent *ev)
 {
     if (ev->layer >= ANO_MUSIC_LAYER_COUNT)

@@ -147,6 +147,47 @@ void ano_synth_generator(void *user, float *const *busMix, uint32_t busCount,
 uint32_t ano_synth_dropped(const AnoSynth *s);
 
 // ---------------------------------------------------------------------------
+// Live scoring (audio thread): bars streamed in as they are generated
+// ---------------------------------------------------------------------------
+// The score path above is a batch: the whole piece is loaded while the synth is
+// idle, then played. Live is the same schedule built one bar at a time, so a
+// conductor can drive it from inside the block loop and the music never has to
+// exist ahead of time. The schedule becomes a ring; everything else — the tie
+// merge, the beat clock, the deadline order, the span splitting — is the batch
+// path's code, so the two produce bit-identical audio (the test asserts it).
+//
+// A bar must be appended before the playhead REACHES it, with one bar to spare:
+// a note that ties out of bar N is not final until bar N+1 arrives to extend it,
+// and it must not sound before then. `ano_synth_live_pending` counts the bars
+// appended but not yet started, and the driver tops up while that is below
+// ANO_SYNTH_LIVE_LOOKAHEAD. Falling behind does not corrupt the schedule — the
+// tie dissolves into a plain note and ano_synth_live_late() counts it.
+#define ANO_SYNTH_LIVE_LOOKAHEAD 2u
+
+// Begin a live score. Callable only while idle (like score_begin). Follow with
+// LOOKAHEAD bars, then ano_synth_transport_start.
+bool ano_synth_live_begin(AnoSynth *s, double barQuarters);
+
+// Append one bar: its tempo points (monotonic, absolute beats), its params and
+// affect, and its events in the generator's emission order with tie halves
+// UNMERGED — exactly an AnoBarResult. Bars must arrive in ascending order with
+// no gaps. Called from the audio thread, from the same context that calls the
+// generator (they share the schedule; nothing else may touch it).
+bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
+                        const AnoTempoPoint *tempo, uint32_t tempoCount,
+                        const AnoMusicalParams *p, const AnoMusicAffect *a,
+                        const AnoNoteEvent *events, uint32_t eventCount);
+
+// Bars appended but not yet started at `worldFrame` — the driver's top-up gate.
+uint32_t ano_synth_live_pending(const AnoSynth *s, uint64_t worldFrame);
+
+// Ties that arrived too late to extend a note that had already sounded (they
+// became plain notes), and notes dropped because the ring was full. Both are
+// zero on a driver that respects the lookahead; non-zero means it fell behind.
+uint32_t ano_synth_live_late(const AnoSynth *s);
+uint32_t ano_synth_live_overflow(const AnoSynth *s);
+
+// ---------------------------------------------------------------------------
 // Console helpers
 // ---------------------------------------------------------------------------
 

@@ -21,29 +21,10 @@
 
 #include "music_gen.h"
 
-#define ANO_MOTIF_MAX ANO_RHYTHM_MAX
-
 // "near = None" sentinel for the realizers (ref falls back to (lo+hi)//2).
 #define ANO_NEAR_NONE INT_MIN
 
 // CONTOUR_SHAPES in prototype tuple order (feeds rng.choice).
-typedef enum AnoContourShape
-{
-    ANO_SHAPE_ARCH = 0,
-    ANO_SHAPE_DESCENT,
-    ANO_SHAPE_ASCENT,
-    ANO_SHAPE_ZIGZAG,
-    ANO_SHAPE_COUNT,
-} AnoContourShape;
-
-typedef struct AnoMotif
-{
-    AnoRhythmNote rhythm[ANO_MOTIF_MAX]; // (slot, dur_slots) within one bar
-    int           contour[ANO_MOTIF_MAX]; // diatonic offsets from the anchor
-    uint32_t      n;
-    uint8_t       shape; // AnoContourShape
-} AnoMotif;
-
 // One realized note: (slot, dur_slots, pitch).
 typedef struct AnoPlacedNote
 {

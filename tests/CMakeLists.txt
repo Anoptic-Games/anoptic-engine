@@ -204,6 +204,16 @@ set_tests_properties(anoptic_synth PROPERTIES TIMEOUT 300 LABELS "unit;mem")
 # Live Phase 4 scene: the journey demo in realtime through synth generator +
 # music console + device backend, automation paced from the logic thread.
 # CI-safe on null (8 s); by hand it is the audible three-minute piece.
+add_executable(anotest_musichost anotest_musichost.c)
+target_link_libraries(anotest_musichost PRIVATE anoptic_core)
+target_include_directories(anotest_musichost PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME anoptic_musichost COMMAND anotest_musichost)
+
+add_executable(anotest_synthlive anotest_synthlive.c)
+target_link_libraries(anotest_synthlive PRIVATE anoptic_core)
+target_include_directories(anotest_synthlive PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME anoptic_synthlive COMMAND anotest_synthlive)
+
 add_executable(anotest_synthscene anotest_synthscene.c)
 target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
 target_compile_definitions(anotest_synthscene PRIVATE

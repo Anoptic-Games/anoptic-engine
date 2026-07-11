@@ -17,15 +17,6 @@
 
 #include "music_motif.h"
 
-#define ANO_SIG_MAX 16
-
-typedef struct AnoSignatureMotif
-{
-    const char *tag;        // "hero", "threat", ... — the game's handle
-    AnoMotif    motif;
-    double      importance; // 0..1: landmark (high) vs secondary colour
-} AnoSignatureMotif;
-
 typedef struct AnoMotifDirector
 {
     AnoSignatureMotif library[ANO_SIG_MAX];

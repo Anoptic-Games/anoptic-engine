@@ -16,10 +16,13 @@
 
 AnoMelodyConfig ano_melody_config_default(void)
 {
-    return (AnoMelodyConfig){
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoMelodyConfig k = {
         .rangeSemitones = 12, .barRestMax = 0.30, .spanMin = 2, .spanMax = 4,
         .planApex = false, .counterpoint = false,
     };
+    return k;
 }
 
 void ano_contour_offsets(AnoContourShape shape, uint32_t n, int span,

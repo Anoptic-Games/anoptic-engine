@@ -21,17 +21,9 @@
 // Rhythm (gen/rhythm.py)
 // ---------------------------------------------------------------------------
 
-#define ANO_RHYTHM_MAX 32 // >= any bar's slot count
-
 // Slot indices of the Euclidean rhythm E(k, n), optionally rotated, sorted
 // ascending. E(3, 8) -> (0, 3, 6). Returns the hit count (min(max(k,0),n)).
 uint32_t ano_euclid(int k, int n, int rotation, uint8_t out[ANO_RHYTHM_MAX]);
-
-typedef struct AnoRhythmNote
-{
-    int slot;
-    int durSlots;
-} AnoRhythmNote;
 
 // One bar's rhythm cell as (slot, dur) pairs from an even base_step pulse:
 // merges neighbors ~ roughness (draw gated on a successor existing), splits

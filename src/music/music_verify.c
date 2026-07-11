@@ -79,7 +79,9 @@ static bool is_licensed_nonchord(const char *r)
 
 AnoLintLimits ano_lint_limits_default(void)
 {
-    return (AnoLintLimits){
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoLintLimits k = {
         .maxVoiceMove = 7,
         .padLo = 52, .padHi = 79,
         .bassLo = 26, .bassHi = 55,
@@ -93,6 +95,7 @@ AnoLintLimits ano_lint_limits_default(void)
         .drumPitches = ANO_DRUM_PITCHES,
         .drumPitchCount = ANO_DRUM_COUNT,
     };
+    return k;
 }
 
 void ano_lint_report_reset(AnoLintReport *r)

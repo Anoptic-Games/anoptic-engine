@@ -18,8 +18,11 @@
 
 AnoBassConfig ano_bass_config_default(void)
 {
-    return (AnoBassConfig){ .lo = 28, .hi = 50, .velocityOffset = 8,
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoBassConfig k = { .lo = 28, .hi = 50, .velocityOffset = 8,
                             .approachBeats = 1.0 };
+    return k;
 }
 
 static int nearest_instance(int pc, int near, int lo, int hi)

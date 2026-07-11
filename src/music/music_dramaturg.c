@@ -15,12 +15,15 @@
 
 AnoDramaturgConfig ano_dramaturg_config_default(void)
 {
-    return (AnoDramaturgConfig){
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoDramaturgConfig k = {
         .enabled = true, .leniency = 0.5, .accrueAbove = 0.55, .debtGain = 0.12,
         .escalatePhrases = 2, .holdTier = ANO_MUSIC_ARP, .registerCapMax = 6,
         .escalationCap = 4, .bigSpend = 0.7, .maxDebt = 96,
         .earnedDissonance = true, .motifLifecycle = true, .lamentBass = true,
     };
+    return k;
 }
 
 void ano_ledger_init(AnoLedger *l)

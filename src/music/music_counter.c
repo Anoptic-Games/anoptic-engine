@@ -19,8 +19,11 @@
 
 AnoCounterConfig ano_counter_config_default(void)
 {
-    return (AnoCounterConfig){ .lo = 55, .hi = 79, .velocityOffset = -10,
+    // static: an object with static storage has its PADDING zeroed, and this
+    // struct is copied into the engine, whose bytes are its snapshot.
+    static const AnoCounterConfig k = { .lo = 55, .hi = 79, .velocityOffset = -10,
                                .densityScale = 0.6 };
+    return k;
 }
 
 // The event sounding at t, or NULL (events pre-sorted by start).

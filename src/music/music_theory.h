@@ -22,23 +22,11 @@
 #include <stdbool.h>
 
 #include "music_det.h"
+#include <anoptic_music.h>
 
 // ---------------------------------------------------------------------------
 // Scales (theory/scales.py)
 // ---------------------------------------------------------------------------
-
-typedef enum AnoMode
-{
-    ANO_MODE_IONIAN = 0,
-    ANO_MODE_DORIAN,
-    ANO_MODE_PHRYGIAN,
-    ANO_MODE_LYDIAN,
-    ANO_MODE_MIXOLYDIAN,
-    ANO_MODE_AEOLIAN,
-    ANO_MODE_LOCRIAN,
-    ANO_MODE_COUNT,
-    ANO_MODE_NONE = -1, // "no source mode" (diatonic chord)
-} AnoMode;
 
 extern const char *const ANO_MODE_NAMES[ANO_MODE_COUNT];
 
@@ -167,14 +155,6 @@ typedef enum AnoCadenceSlot
     ANO_SLOT_PRE_CADENCE,
     ANO_SLOT_CADENCE,
 } AnoCadenceSlot;
-
-typedef enum AnoCadencePolicy
-{
-    ANO_CADENCE_AUTHENTIC = 0,
-    ANO_CADENCE_HALF,
-    ANO_CADENCE_DECEPTIVE,
-    ANO_CADENCE_NONE = -1, // the prototype's "" (context outside a cadence)
-} AnoCadencePolicy;
 
 // One step of the functional walk (prototype next_chord, trace elided).
 // prev may be ano_chord_none(). All draws come from rng, in prototype order.
