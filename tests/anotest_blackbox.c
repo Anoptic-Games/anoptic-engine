@@ -70,10 +70,14 @@ typedef unsigned long death_t;
 typedef int death_t;
 #define DIE(win, posix) ((death_t)(posix))
 #define SUB(win, posix) (posix)
+// Forbidden substring in the record for a raised fault signal.
+// NULL on Darwin, where XNU fakes a hardware si_code and si_addr for raise().
 #if defined(__APPLE__)
 #define SIG_SEGVISH (-1)
+#define RAISED_ADDR NULL
 #else
 #define SIG_SEGVISH SIGSEGV
+#define RAISED_ADDR "fault address"
 #endif
 #endif
 
@@ -361,9 +365,9 @@ static const scen_t SCENARIOS[] = {
     { "intdiv",      DIE(0xC0000094, SIGFPE),      1, SUB("EXCEPTION_INT_DIVIDE_BY_ZERO",  "SIGFPE"), NULL, NULL, -1, false, 0, 0, 0, 0 },
 #endif
     // User raise: the CRT hooks catch what SEH never sees. POSIX si_code <= 0 forbids si_addr.
-    { "raise_segv",  DIE(3, SIGSEGV),              1, SUB("SIGSEGV (CRT raise)", "SIGSEGV"), SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
-    { "raise_ill",   DIE(3, SIGILL),               1, SUB("SIGILL (CRT raise)",  "SIGILL"),  SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
-    { "raise_fpe",   DIE(3, SIGFPE),               1, SUB("SIGFPE (CRT raise)",  "SIGFPE"),  SUB(NULL, "fault address"), NULL, -1, false, 0, 0, 0, 0 },
+    { "raise_segv",  DIE(3, SIGSEGV),              1, SUB("SIGSEGV (CRT raise)", "SIGSEGV"), SUB(NULL, RAISED_ADDR), NULL, -1, false, 0, 0, 0, 0 },
+    { "raise_ill",   DIE(3, SIGILL),               1, SUB("SIGILL (CRT raise)",  "SIGILL"),  SUB(NULL, RAISED_ADDR), NULL, -1, false, 0, 0, 0, 0 },
+    { "raise_fpe",   DIE(3, SIGFPE),               1, SUB("SIGFPE (CRT raise)",  "SIGFPE"),  SUB(NULL, RAISED_ADDR), NULL, -1, false, 0, 0, 0, 0 },
     { "thread_segv", DIE(0xC0000005, SIG_SEGVISH), 1, SUB("EXCEPTION_ACCESS_VIOLATION", "fault address:"), NULL, NULL, -1, false, 0, 0, 0, 0 },
     { "hailmary",    DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, "hailmary-sentinel-",       32, false, 0, 0, 0, 0 },
     { "empty_ring",  DIE(0xC0000005, SIG_SEGVISH), 1, NULL, NULL, "empty-ring-sentinel",       1, false, 0, 0, 0, 0 },
