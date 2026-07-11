@@ -31,7 +31,7 @@ Examples:
   python tools/perf/bench_fps_win64.py --res 3840x2160 --dur 30
   python tools/perf/bench_fps_win64.py --no-menu                # static HUD only
   python tools/perf/bench_fps_win64.py --churn                  # resize-storm stress (one row)
-  python tools/perf/bench_fps_win64.py --env ANO_SHADOW_BUDGET=2
+  python tools/perf/bench_fps_win64.py --env ANO_SHADOW_BUDGET=0  # uncapped shadows (harness default caps at 2)
 """
 import argparse, ctypes, os, re, subprocess, sys, time
 
@@ -49,6 +49,10 @@ CHURN_SIZES   = [(640, 480), (1920, 1080), (900, 1500), (2560, 1440), (480, 900)
 CHURN_MS = 33.0
 WINDOW_FRAMES = 128  # engine ANO_PERF_WINDOW_FRAMES; frames per [frame]/[frametime]/[profile] window
 WARMUP_S = 2.0       # leading seconds of [frame]/[frametime] windows to discard
+
+# Engine env applied to every run before --env; --env wins per key. The bench measures the
+# shadow-culled path by default -- pass --env ANO_SHADOW_BUDGET=0 for the uncapped baseline.
+ENGINE_DEFAULTS = {"ANO_SHADOW_BUDGET": "2"}
 
 # Engine log contract, same regexes as the Linux driver.
 PF = re.compile(r"\[frame\] ([0-9.]+) fps")
@@ -216,16 +220,20 @@ def main():
     ap.add_argument("--dur", type=float, default=45.0, help="seconds per data point")
     ap.add_argument("--no-menu", action="store_true", help="static HUD only (no menu open)")
     ap.add_argument("--churn", action="store_true", help="resize-storm stress; single row")
-    ap.add_argument("--env", action="append", default=[], help="KEY=VAL engine env var (repeatable)")
+    ap.add_argument("--env", action="append", default=[],
+                    help="KEY=VAL engine env var (repeatable); overrides defaults. "
+                         "Default caps ANO_SHADOW_BUDGET=2; pass =0 for the uncapped path.")
     args = ap.parse_args()
 
     exe = os.path.abspath(args.exe)
     if not os.path.exists(exe):
         sys.exit(f"exe not found: {exe} (build it, e.g. build.bat 1)")
     env = dict(os.environ)
-    for kv in args.env:
+    env.update(ENGINE_DEFAULTS)                  # harness defaults over ambient
+    for kv in args.env:                          # --env wins over defaults
         k, _, v = kv.partition("="); env[k] = v
-    if args.env: print("engine env: " + "  ".join(args.env))
+    ano = {k: env[k] for k in env if k.startswith("ANO_")}
+    print("ENV_VARS: " + ", ".join(f"{k}={ano[k]}" for k in sorted(ano)))  # paste into the bench template
 
     if args.churn:
         sizes = [(3840, 2160)]  # base res; the run cycles CHURN_SIZES internally

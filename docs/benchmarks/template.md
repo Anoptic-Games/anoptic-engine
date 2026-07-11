@@ -1,7 +1,5 @@
 # YYYY-MM-DD FPS benchmark
 
-One line: sweep or single resolution, GPU, windowing mode, lighting mode.
-
 <!--
 - Specs come from CIM/registry CPU: Get-CimInstance Win32_Processor. GPU name+driver: Win32_VideoController. VRAM: HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000 HardwareInformation.qwMemorySize (Win32_VideoController.AdapterRAM caps at 4 GB, ignore it). RAM: Win32_PhysicalMemory. Board/BIOS: Win32_BaseBoard, Win32_BIOS. OS build: HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion (DisplayVersion + UBR). Scale: HKCU\Control Panel\Desktop\WindowMetrics AppliedDPI / 96.
 - NVIDIA marketing driver = last 5 digits of the Windows version, e.g. 32.0.15.7261 -> 572.61.
@@ -25,6 +23,8 @@ One line: sweep or single resolution, GPU, windowing mode, lighting mode.
 - Renderer: Vulkan, <mesh shaders on/off>, MSAA <N>x, present mode <VK_PRESENT_MODE_*> (<vsync state>), render loop <throttled state>
 - Scene: <scene>, lighting mode <MODE>, <N of 42> shadow frusta per frame, <HUD menu open/closed>
 - Harness: tools/perf/bench_fps_<platform>.py, <flags or "default sweep">, <dur> s per point, warmup dropped, per-point medians, foreground-verified
+
+ENV_VARS: [[enumerate]]
 
 ## Window manager
 

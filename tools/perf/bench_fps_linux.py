@@ -35,7 +35,7 @@ Examples:
   python3 tools/perf/bench_fps_linux.py --res 3840x2160 --dur 30
   python3 tools/perf/bench_fps_linux.py --no-menu                # static HUD only
   python3 tools/perf/bench_fps_linux.py --churn                  # resize-storm stress (one row)
-  python3 tools/perf/bench_fps_linux.py --env ANO_SHADOW_BUDGET=2
+  python3 tools/perf/bench_fps_linux.py --env ANO_SHADOW_BUDGET=0  # uncapped shadows (harness default caps at 2)
 """
 import argparse, os, re, shutil, subprocess, sys, time
 
@@ -45,6 +45,10 @@ CHURN_SIZES   = [(640, 480), (1920, 1080), (900, 1500), (2560, 1440), (480, 900)
 CHURN_MS = 33.0  # target floor, real cadence a little slower
 WINDOW_FRAMES = 128  # engine ANO_PERF_WINDOW_FRAMES; frames per [frame]/[frametime]/[profile] window
 WARMUP_S = 2.0       # leading seconds of [frame]/[frametime] windows to discard
+
+# Engine env applied to every run before --env; --env wins per key. The bench measures the
+# shadow-culled path by default -- pass --env ANO_SHADOW_BUDGET=0 for the uncapped baseline.
+ENGINE_DEFAULTS = {"ANO_SHADOW_BUDGET": "2"}
 
 # Engine log contract, same regexes as the win64 driver.
 PF = re.compile(r"\[frame\] ([0-9.]+) fps")
@@ -228,7 +232,9 @@ def main():
     ap.add_argument("--dur", type=float, default=45.0, help="seconds per data point")
     ap.add_argument("--no-menu", action="store_true", help="static HUD only (no menu open)")
     ap.add_argument("--churn", action="store_true", help="resize-storm stress; single row")
-    ap.add_argument("--env", action="append", default=[], help="KEY=VAL engine env var (repeatable)")
+    ap.add_argument("--env", action="append", default=[],
+                    help="KEY=VAL engine env var (repeatable); overrides defaults. "
+                         "Default caps ANO_SHADOW_BUDGET=2; pass =0 for the uncapped path.")
     args = ap.parse_args()
 
     if shutil.which("xdotool") is None:
@@ -244,9 +250,11 @@ def main():
     env = dict(os.environ)
     # Hide WAYLAND_DISPLAY: the engine comes up as an Xwayland client (--env can restore it).
     env.pop("WAYLAND_DISPLAY", None)
-    for kv in args.env:
+    env.update(ENGINE_DEFAULTS)                  # harness defaults over ambient
+    for kv in args.env:                          # --env wins over defaults
         k, _, v = kv.partition("="); env[k] = v
-    if args.env: print("engine env: " + "  ".join(args.env))
+    ano = {k: env[k] for k in env if k.startswith("ANO_")}
+    print("ENV_VARS: " + ", ".join(f"{k}={ano[k]}" for k in sorted(ano)))  # paste into the bench template
 
     if args.churn:
         sizes = [(3840, 2160)]  # base res, the run cycles CHURN_SIZES
