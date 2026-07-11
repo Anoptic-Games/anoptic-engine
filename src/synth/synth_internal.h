@@ -205,13 +205,21 @@ struct AnoSynth
     uint32_t liveLate, liveOverflow;
 
     // The attached composer (borrowed). musicBar is the pump's landing pad —
-    // 7 KB, too fat for the audio stack. The meaning queue holds each bar's
-    // annotation from the moment it is composed to the moment it sounds.
+    // 7 KB, too fat for the audio stack.
     AnoMusicEngine *music;
     AnoMusicBar     musicBar;
     uint32_t        musicBarUs, musicBarUsMax;
-    AnoMusicMeaning meaningQueue[ANO_SYNTH_MEANING_QUEUE];
-    uint32_t        meaningHead, meaningTail; // absolute; head - tail = depth
+
+    // The engine numbers bars from ITS piece's start; the schedule numbers them
+    // from its own. An attach mid-piece, or a seek, makes those differ — and the
+    // whole of the difference is this constant, added to every beat the engine
+    // hands over. Zero on a schedule that started at the engine's bar 0.
+    double musicBeatOffset;
+
+    // Outbound: what the composer has to say (bars that started sounding, seeks
+    // that landed), drained by the mixer once per block.
+    AnoAudioEvent evtQueue[ANO_SYNTH_EVENT_QUEUE];
+    uint32_t      evtHead, evtTail; // absolute; head - tail = depth
 
     // Transport. IDLE = generator renders nothing and touches nothing.
     _Atomic uint64_t startFrame;

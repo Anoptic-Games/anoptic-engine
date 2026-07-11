@@ -87,7 +87,7 @@ typedef struct Drive
 {
     AnoSynth       *synth;
     AnoMusicEngine *music;
-    AnoMusicMeaning got[64];
+    AnoAudioEvent   got[64];   // AEVT_MUSIC_BAR / AEVT_MUSIC_SEEKED, in order
     uint64_t        gotAt[64]; // the block in which each surfaced
     uint32_t        gotCount;
 } Drive;
@@ -98,11 +98,11 @@ static void drive_generator(void *user, float *const *busMix, uint32_t busCount,
     Drive *d = user;
     ano_synth_generator(d->synth, busMix, busCount, frames, startFrame);
 
-    AnoMusicMeaning m[8];
-    uint32_t n = ano_synth_music_drain(d->synth, m, 8);
+    AnoAudioEvent e[8];
+    uint32_t n = ano_synth_poll(d->synth, e, 8);
     for (uint32_t i = 0; i < n && d->gotCount < 64; ++i) {
         d->gotAt[d->gotCount] = startFrame;
-        d->got[d->gotCount++] = m[i];
+        d->got[d->gotCount++] = e[i];
     }
 }
 
@@ -121,14 +121,19 @@ static void drive_control(void *user, const AnoAudioCommand *cmd)
 // what ano_audio_submit would deliver at a block boundary, made reproducible.
 // wireControl = false leaves generatorControl NULL: the commands still reach the
 // mixer, which is what proves the mixer does not interpret them itself.
-static void render_driven(const AnoMusicConfig *cfg, const AnoAudioOfflineDesc *base,
-                          float *buf, uint64_t frames, const AnoAudioOfflineEvent *cmds,
-                          uint32_t cmdCount, bool wireControl, Drive *d)
+static void render_driven_from(const AnoMusicConfig *cfg, const AnoAudioOfflineDesc *base,
+                               float *buf, uint64_t frames, const AnoAudioOfflineEvent *cmds,
+                               uint32_t cmdCount, bool wireControl, uint32_t startBar,
+                               Drive *d)
 {
     AnoSynthDesc sd = { .sampleRate = RATE, .maxVoices = 64 };
     memset(d, 0, sizeof *d);
     d->synth = ano_synth_create(&sd);
     d->music = ano_music_create(cfg, 42);
+    for (uint32_t b = 0; b < startBar; ++b) { // the off-thread half of a seek
+        static AnoMusicBar skip;
+        ano_music_advance_bar(d->music, &skip);
+    }
     CHECK(ano_synth_attach_music(d->synth, d->music), "attach");
     ano_synth_transport_start(d->synth, 0);
 
@@ -139,6 +144,13 @@ static void render_driven(const AnoMusicConfig *cfg, const AnoAudioOfflineDesc *
     od.eventCount           = cmdCount;
     od.generatorControl     = wireControl ? drive_control : NULL;
     CHECK(ano_audio_render_offline(&od, buf, frames), "driven render");
+}
+
+static void render_driven(const AnoMusicConfig *cfg, const AnoAudioOfflineDesc *base,
+                          float *buf, uint64_t frames, const AnoAudioOfflineEvent *cmds,
+                          uint32_t cmdCount, bool wireControl, Drive *d)
+{
+    render_driven_from(cfg, base, buf, frames, cmds, cmdCount, wireControl, 0, d);
 }
 
 static void drive_free(Drive *d)
@@ -260,7 +272,7 @@ int main(void)
     CHECK(drv.gotCount >= BARS, "every bar reported its meaning");
     bool ordered = true, timely = true;
     for (uint32_t k = 0; k < drv.gotCount; ++k) {
-        if (drv.got[k].bar != (int)k)
+        if (drv.got[k].kind != AEVT_MUSIC_BAR || drv.got[k].u.music.bar != (int)k)
             ordered = false;
         if (k < BARS) {
             uint64_t downbeat =
@@ -276,7 +288,7 @@ int main(void)
 
     uint32_t cadences = 0;
     for (uint32_t k = 0; k < drv.gotCount; ++k)
-        cadences += drv.got[k].isCadence;
+        cadences += drv.got[k].u.music.isCadence;
     CHECK(cadences > 1u, "cadences reached the game");
 
     // --- what it costs the audio thread --------------------------------------
@@ -311,7 +323,7 @@ int main(void)
         CHECK(bufC != NULL, "steer buffer");
 
         // where the baseline is NOT, so the arrival is unambiguous
-        int home = drv.got[0].keyTonic;
+        int home = drv.got[0].u.music.keyTonic;
         int away = (home + 7) % 12; // the dominant: a key it will actually reach
         AnoAudioOfflineEvent cmds[] = {
             { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_KEY, .paramId = (uint32_t)away,
@@ -326,14 +338,14 @@ int main(void)
 
         bool arrived = false, marked = false;
         for (uint32_t k = 0; k < steered.gotCount; ++k) {
-            if (steered.got[k].keyTonic == away)
+            if (steered.got[k].u.music.keyTonic == away)
                 arrived = true;
-            if (steered.got[k].keyArrived && steered.got[k].keyTonic == away)
+            if (steered.got[k].u.music.keyArrived && steered.got[k].u.music.keyTonic == away)
                 marked = true;
         }
         CHECK(arrived, "the requested key arrived");
         CHECK(marked, "and the bar it landed on says so");
-        CHECK(steered.got[0].keyTonic == home, "it was not already there");
+        CHECK(steered.got[0].u.music.keyTonic == home, "it was not already there");
 
         // the music genuinely changed: a different key is different audio
         size_t sdiff = 0;
@@ -356,17 +368,134 @@ int main(void)
         drive_free(&ignored);
     }
 
-    // --- the attach contract -------------------------------------------------
+    // --- the seek: adopting a state built off the audio thread ---------------
+    // Fast-forwarding an engine to bar SEEK_TO costs ~120 ms per 1000 bars — it
+    // can never run in the callback. So the producer builds it on its own thread
+    // and hands over the bytes; the callback does a copy and a rebase.
+    //
+    // THE GATE IS THE REBASE. A seek issued before anything has sounded must be
+    // indistinguishable from having attached that engine in the first place —
+    // same music, same barlines, sample for sample. If the beat offset were off
+    // by anything, or a stale tempo anchor survived the cut, the two would
+    // diverge immediately.
+#define SEEK_TO 40u
     {
-        AnoSynth *s2 = ano_synth_create(&sd);
-        AnoMusicEngine *m2 = ano_music_create(&cfg, 7);
-        AnoMusicBar throwaway;
-        ano_music_advance_bar(m2, &throwaway);
-        // the live schedule starts at bar 0: a mid-piece engine is a SEEK, which
-        // must rebase the clock, not silently start 2 bars in
-        CHECK(!ano_synth_attach_music(s2, m2), "a mid-piece engine is refused");
-        ano_music_destroy(m2);
-        ano_synth_destroy(s2);
+        static Drive seeked, direct;
+        float *bufE = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufE);
+        float *bufF = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufF);
+        CHECK(bufE && bufF, "seek buffers");
+
+        // the producer's half: a fresh engine, fast-forwarded, snapshotted
+        static AnoMusicBar skip;
+        void *snap = malloc(ano_music_snapshot_size());
+        AnoMusicEngine *off = ano_music_create(&cfg, 42);
+        for (uint32_t b = 0; b < SEEK_TO; ++b)
+            ano_music_advance_bar(off, &skip);
+        CHECK(ano_music_snapshot(off, snap, ano_music_snapshot_size()), "snapshot");
+
+        AnoAudioOfflineEvent seekAt0[] = {
+            { .frame = 0, .cmd = { .kind = ACMD_MUSIC_SEEK, .block = snap } },
+        };
+        render_driven(&cfg, &od, bufE, frames, seekAt0, 1, true, &seeked);
+        render_driven_from(&cfg, &od, bufF, frames, NULL, 0, true, SEEK_TO, &direct);
+
+        CHECK(memcmp(bufE, bufF, (size_t)frames * ANO_AUDIO_CHANNELS * sizeof *bufE) == 0,
+              "a seek to bar N is sample-identical to attaching an engine at bar N");
+        CHECK(seeked.gotCount > 2u && direct.gotCount > 2u, "both played");
+
+        // the seek announced itself, and did so BEFORE any of its music sounded
+        CHECK(seeked.got[0].kind == AEVT_MUSIC_SEEKED, "the seek acknowledged first");
+        CHECK(seeked.got[0].u.seekedBar == (int)SEEK_TO, "at the bar it was given");
+        CHECK(seeked.got[1].kind == AEVT_MUSIC_BAR
+                  && seeked.got[1].u.music.bar == (int)SEEK_TO,
+              "and the music that follows IS bar SEEK_TO");
+        // the engine keeps its own numbering across the jump — it is what spells
+        // its RNG streams, so renumbering it would compose a different piece
+        bool numbered = true;
+        for (uint32_t k = 1; k < seeked.gotCount; ++k)
+            if (seeked.got[k].kind != AEVT_MUSIC_BAR
+                || seeked.got[k].u.music.bar != (int)(SEEK_TO + k - 1u))
+                numbered = false;
+        CHECK(numbered, "the bars keep counting from where the engine was");
+        CHECK(ano_synth_live_late(seeked.synth) == 0u
+                  && ano_synth_live_overflow(seeked.synth) == 0u
+                  && ano_synth_dropped(seeked.synth) == 0u,
+              "the seek cost nothing: no lateness, no overflow, no dropped voice");
+
+        // --- and mid-flight: what is already sounding plays out ---------------
+        static Drive jumped;
+        float *bufG = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufG);
+        uint64_t at = (uint64_t)(ano_synth_time_at(batch, 6.0 * BQ) * RATE) - BLOCK;
+        AnoAudioOfflineEvent seekMid[] = {
+            { .frame = at, .cmd = { .kind = ACMD_MUSIC_SEEK, .block = snap } },
+        };
+        render_driven(&cfg, &od, bufG, frames, seekMid, 1, true, &jumped);
+
+        // everything the seek did NOT touch is untouched: the audio before the
+        // command is bit-identical to the unseeked render
+        CHECK(memcmp(bufB, bufG, (size_t)at * ANO_AUDIO_CHANNELS * sizeof *bufB) == 0,
+              "a seek does not disturb what has already sounded");
+
+        // ...and the bars that follow are the NEW piece, landing on barlines that
+        // were already scheduled (so the jump is metrically seamless)
+        int jump = -1;
+        for (uint32_t k = 0; k < jumped.gotCount; ++k)
+            if (jumped.got[k].kind == AEVT_MUSIC_SEEKED)
+                jump = (int)k;
+        CHECK(jump > 0, "the mid-flight seek landed");
+        CHECK(jumped.got[jump + 1].u.music.bar == (int)SEEK_TO,
+              "the next bar to sound is the seeked one");
+        CHECK(jumped.got[jump - 1].u.music.bar < (int)SEEK_TO,
+              "and the one before it was still the old piece");
+
+        // The jump is metrically seamless: the new music's first bar sounds on the
+        // barline the OLD schedule had already fixed — same clock, same beat, the
+        // anchors behind it untouched. (Only the first: past it, the new piece's
+        // own tempo map governs and the old reference no longer applies.)
+        uint64_t barline = (uint64_t)(ano_synth_time_at(batch, (double)jump * BQ) * RATE);
+        CHECK(barline >= jumped.gotAt[jump + 1] && barline < jumped.gotAt[jump + 1] + BLOCK,
+              "the seeked bar lands on the barline the old schedule had already fixed");
+        CHECK(ano_synth_live_late(jumped.synth) == 0u
+                  && ano_synth_dropped(jumped.synth) == 0u,
+              "the mid-flight seek dropped nothing either");
+
+        // --- a different meter is a different piece --------------------------
+        // The clock the schedule is running on was built for THIS meter. Bending
+        // it under a 3/4 engine would re-time everything already scheduled, so the
+        // snapshot is refused outright and the running music carries on.
+        static Drive kept;
+        float *bufH = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufH);
+        AnoMusicConfig waltz = cfg;
+        waltz.meter = (AnoMeter){ 3, 4 };
+        AnoMusicEngine *w = ano_music_create(&waltz, 42);
+        void *snapW = malloc(ano_music_snapshot_size());
+        CHECK(ano_music_snapshot(w, snapW, ano_music_snapshot_size()), "waltz snapshot");
+        AnoAudioOfflineEvent seekWaltz[] = {
+            { .frame = at, .cmd = { .kind = ACMD_MUSIC_SEEK, .block = snapW } },
+        };
+        render_driven(&cfg, &od, bufH, frames, seekWaltz, 1, true, &kept);
+
+        bool refused = true;
+        for (uint32_t k = 0; k < kept.gotCount; ++k)
+            if (kept.got[k].kind == AEVT_MUSIC_SEEKED)
+                refused = false;
+        CHECK(refused, "a snapshot in another meter is refused");
+        CHECK(memcmp(bufB, bufH, (size_t)frames * ANO_AUDIO_CHANNELS * sizeof *bufB) == 0,
+              "and the music that was playing is untouched");
+
+        free(bufH);
+        free(snapW);
+        ano_music_destroy(w);
+        drive_free(&kept);
+
+        free(bufE);
+        free(bufF);
+        free(bufG);
+        free(snap);
+        ano_music_destroy(off);
+        drive_free(&seeked);
+        drive_free(&direct);
+        drive_free(&jumped);
     }
 
     free(bufA);

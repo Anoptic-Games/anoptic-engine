@@ -284,6 +284,14 @@ typedef enum AnoAudioCommandKind
     ACMD_MUSIC_MOTIF,    // state the motif named by `tag` at the next phrase boundary
     ACMD_MUSIC_OVERRIDE, // pin the parameter named by `tag` to `value`
     ACMD_MUSIC_RELEASE,  // release `tag` back to the mapper
+
+    // Jump the music: `block` points at a music-engine snapshot the producer
+    // built OFF the audio thread (fast-forwarding a fresh engine to the target
+    // bar costs ~120 ms per 1000 bars — it can never run in the callback). The
+    // generator adopts it at the next barline; what is already sounding plays
+    // out. The block is BORROWED, not adopted: it must stay valid until
+    // AEVT_MUSIC_SEEKED says it has been consumed.
+    ACMD_MUSIC_SEEK,
 } AnoAudioCommandKind;
 
 // Longest ACMD_MUSIC_* name (a motif tag, a parameter name), NUL included.
@@ -329,6 +337,7 @@ typedef struct AnoAudioCommand
     bool     urgent;      // ACMD_MUSIC_AFFECT / _KEY: at the next barline, not the next phrase
     char     tag[ANO_AUDIO_TAG_MAX]; // ACMD_MUSIC_MOTIF / _OVERRIDE / _RELEASE: the name
     const void *block;    // ACMD_BUFFER_REGISTER: the adopted block
+                          // ACMD_MUSIC_SEEK: the BORROWED engine snapshot
     AnoAudioSourceDesc desc; // ACMD_SOURCE_PLAY only
 } AnoAudioCommand;
 
@@ -351,6 +360,7 @@ typedef enum AnoAudioEventKind
     AEVT_BUFFER_RETIRED, // a released buffer's block, home for freeing (ano_audio_block_free)
     AEVT_CAPACITY,       // mixer-side capacity advisory (voice pool full: a PLAY was dropped)
     AEVT_MUSIC_BAR,      // a composed bar just STARTED SOUNDING: what it means
+    AEVT_MUSIC_SEEKED,   // an ACMD_MUSIC_SEEK snapshot has been consumed; the block is yours again
 } AnoAudioEventKind;
 
 // Fixed-size POD, sub-tagged on `kind`; rides the events ring.
@@ -379,6 +389,12 @@ typedef struct AnoAudioEvent
             int8_t  cadencePolicy;
             bool    isCadence, keyArrived, motifStated;
         } music;
+
+        // AEVT_MUSIC_SEEKED: the bar the engine was adopted at. It is emitted
+        // the moment the snapshot is copied — BEFORE the new music is audible
+        // (that is the next AEVT_MUSIC_BAR) — because its job is the handshake:
+        // the borrowed block is free again.
+        int32_t seekedBar;
     } u;
 } AnoAudioEvent;
 
