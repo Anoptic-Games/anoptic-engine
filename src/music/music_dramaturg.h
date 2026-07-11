@@ -46,7 +46,8 @@ typedef struct AnoLedger
     double peakTension;
     double prevBaseTension;
     bool   hasPrevBaseTension;
-    int8_t phraseCadence[ANO_MAX_PHRASES]; // AnoCadencePolicy; NONE = unset
+    int    cadenceTag[ANO_PHRASE_WINDOW];    // owning phrase, ANO_SLOT_EMPTY = unset
+    int8_t phraseCadence[ANO_PHRASE_WINDOW]; // AnoCadencePolicy
     bool   suppressTonic; // per-bar: the walk circles the tonic
     bool   lament;        // per-bar (B4): the walk rides the lament ground
     int    buildups;      // completed withhold->spend cycles
@@ -54,6 +55,24 @@ typedef struct AnoLedger
 } AnoLedger;
 
 void ano_ledger_init(AnoLedger *l);
+
+// The cadence the dramaturg forced on a phrase, ANO_CADENCE_NONE if it let the
+// phrase alone (or if the phrase has aged out of the ring, which no caller can
+// reach: the ledger is read inside the phrase it was written for).
+static inline int8_t ano_ledger_cadence(const AnoLedger *l, int phrase)
+{
+    if (!ano_phrase_live(l->cadenceTag, phrase))
+        return ANO_CADENCE_NONE;
+    return l->phraseCadence[ano_ring_phrase(phrase)];
+}
+
+static inline void ano_ledger_set_cadence(AnoLedger *l, int phrase, int8_t policy)
+{
+    if (phrase < 0)
+        return;
+    l->cadenceTag[ano_ring_phrase(phrase)] = phrase;
+    l->phraseCadence[ano_ring_phrase(phrase)] = policy;
+}
 
 // What the dramaturg asks of a bar; all-neutral when idle.
 typedef struct AnoDirective

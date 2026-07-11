@@ -25,7 +25,6 @@
 #include "music_perc.h"
 #include "music_signatures.h"
 
-#define ANO_MAX_BARS       1024 // per-bar state windows (lament, splits)
 #define ANO_BAR_MAX_EVENTS 256
 
 typedef struct AnoFormConfig
@@ -148,28 +147,35 @@ typedef struct AnoConductorState
     AnoMelodyState  melody;
     AnoCounterState counter;
     int      padTie; // ANO_NEAR_NONE
-    bool     motifSet[ANO_MAX_PHRASES];
-    AnoMotif motifs[ANO_MAX_PHRASES];
-    bool      grooveSet[ANO_MAX_PHRASES];
-    AnoGroove grooves[ANO_MAX_PHRASES];
-    bool     arpSkipSet[ANO_MAX_PHRASES];
-    uint32_t arpSkips[ANO_MAX_PHRASES];
-    bool        apexSet[ANO_MAX_PHRASES];
-    AnoApexPlan apexes[ANO_MAX_PHRASES];
+    // Phrase- and bar-indexed caches: direct-mapped rings tagged with the index
+    // that owns each slot (music_form.h). The index stays absolute; only the
+    // storage wraps, so the piece runs indefinitely without the form machinery
+    // ageing out from under it.
+    int      motifTag[ANO_PHRASE_WINDOW];
+    AnoMotif motifs[ANO_PHRASE_WINDOW];
+    int       grooveTag[ANO_PHRASE_WINDOW];
+    AnoGroove grooves[ANO_PHRASE_WINDOW];
+    int      arpSkipTag[ANO_PHRASE_WINDOW];
+    uint32_t arpSkips[ANO_PHRASE_WINDOW];
+    int         apexTag[ANO_PHRASE_WINDOW];
+    AnoApexPlan apexes[ANO_PHRASE_WINDOW];
     AnoPeriodPlanner planner;
     AnoPhraseClock   clock;
-    int      elisions[ANO_MAX_BARS]; // resolving phrase, -1 = none
+    int      elisionTag[ANO_BAR_WINDOW];
+    int      elisions[ANO_BAR_WINDOW]; // resolving phrase, -1 = none
     AnoPlacedNote cadenceTail[3];
     uint32_t      cadenceTailLen;
-    bool     imitationSet[ANO_MAX_PHRASES];
-    AnoMotif imitationCells[ANO_MAX_PHRASES];
-    uint8_t phraseTextures[ANO_MAX_PHRASES]; // AnoTexture; NONE = uncommitted
+    int      imitationTag[ANO_PHRASE_WINDOW];
+    AnoMotif imitationCells[ANO_PHRASE_WINDOW];
+    int     textureTag[ANO_PHRASE_WINDOW];
+    uint8_t phraseTextures[ANO_PHRASE_WINDOW]; // AnoTexture; NONE = uncommitted
     int     inversionRun;
-    bool    lamentBars[ANO_MAX_BARS];
-    bool     splitSet[ANO_MAX_BARS];
-    AnoChord splits[ANO_MAX_BARS];
-    bool   splitPhraseSet[ANO_MAX_PHRASES];
-    bool   splitPhrases[ANO_MAX_PHRASES];
+    int     lamentTag[ANO_BAR_WINDOW];
+    bool    lamentBars[ANO_BAR_WINDOW];
+    int      splitTag[ANO_BAR_WINDOW];
+    AnoChord splits[ANO_BAR_WINDOW];
+    int    splitPhraseTag[ANO_PHRASE_WINDOW];
+    bool   splitPhrases[ANO_PHRASE_WINDOW];
     bool             hasLifecycle;
     AnoMotifLifecycle lifecycle;
     AnoMotifDirector director; // libraryCount 0 = absent
@@ -191,7 +197,8 @@ typedef struct AnoConductorState
     uint8_t  activeLayers[ANO_MUSIC_LAYER_COUNT];
     uint32_t activeLayerCount;
     uint8_t currentInstruments[ANO_MUSIC_LAYER_COUNT]; // AnoPatchName
-    int8_t phrasePolicies[ANO_MAX_PHRASES]; // ANO_CADENCE_NONE = unsampled
+    int    policyTag[ANO_PHRASE_WINDOW];
+    int8_t phrasePolicies[ANO_PHRASE_WINDOW]; // ANO_CADENCE_NONE = unsampled
     bool   hasLastEmittedTempo;
     double lastEmittedTempo;
     bool   hasTempoRestore;

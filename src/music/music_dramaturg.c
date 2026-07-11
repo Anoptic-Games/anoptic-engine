@@ -26,8 +26,10 @@ AnoDramaturgConfig ano_dramaturg_config_default(void)
 void ano_ledger_init(AnoLedger *l)
 {
     *l = (AnoLedger){ 0 };
-    for (int i = 0; i < ANO_MAX_PHRASES; ++i)
+    for (uint32_t i = 0; i < ANO_PHRASE_WINDOW; ++i) {
+        l->cadenceTag[i] = ANO_SLOT_EMPTY;
         l->phraseCadence[i] = ANO_CADENCE_NONE;
+    }
 }
 
 double ano_spend_magnitude(const AnoLedger *l, const AnoDramaturgConfig *cfg)
@@ -97,8 +99,7 @@ static AnoDirective accrue(const AnoDramaturgConfig *cfg, AnoLedger *l, AnoPhras
     double prev = l->hasPrevBaseTension ? l->prevBaseTension : 0.0;
     if (prev > l->peakTension)
         l->peakTension = prev;
-    if (pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES)
-        l->phraseCadence[pos.phrase] = ANO_CADENCE_DECEPTIVE; // ration: refuse the tonic
+    ano_ledger_set_cadence(l, pos.phrase, ANO_CADENCE_DECEPTIVE); // ration: refuse the tonic
     AnoDirective d = neutral();
     d.cadence = ANO_CADENCE_DECEPTIVE;
     d.withholdRootTonic = true;
@@ -111,8 +112,7 @@ static AnoDirective spend(const AnoDramaturgConfig *cfg, AnoLedger *l, AnoPhrase
 {
     double magnitude = ano_spend_magnitude(l, cfg);
     int brighten = magnitude >= cfg->bigSpend ? 2 : 1;
-    if (pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES)
-        l->phraseCadence[pos.phrase] = ANO_CADENCE_AUTHENTIC;
+    ano_ledger_set_cadence(l, pos.phrase, ANO_CADENCE_AUTHENTIC);
     l->lastSpend = magnitude;
     l->barsSinceAuthentic = 0; // cashed — reset the ledger
     l->deceptions = 0;
@@ -165,8 +165,7 @@ AnoDirective ano_dramaturg_on_bar(const AnoDramaturgConfig *cfg, AnoLedger *l,
     // M14: ornament a controlled cadence with a prepared suspension; on the
     // payoff cadence also permit the unprepared appoggiatura
     if (cfg->earnedDissonance) {
-        int8_t controlled = pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES
-                          ? l->phraseCadence[pos.phrase] : ANO_CADENCE_NONE;
+        int8_t controlled = ano_ledger_cadence(l, pos.phrase);
         AnoCadenceSlot slot = ano_phrase_slot(pos);
         if (controlled != ANO_CADENCE_NONE
             && (slot == ANO_SLOT_PRE_CADENCE || slot == ANO_SLOT_CADENCE))

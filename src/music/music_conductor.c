@@ -26,6 +26,9 @@
 #include "music_modifiers.h"
 #include "music_pad.h"
 
+
+
+
 static const int8_t DEFAULT_CADENCE_CYCLE[4] = {
     ANO_CADENCE_AUTHENTIC, ANO_CADENCE_HALF, ANO_CADENCE_DECEPTIVE, ANO_CADENCE_AUTHENTIC,
 };
@@ -123,9 +126,7 @@ static AnoPhrasePos pos_of(AnoMusicEngine *e, int bar)
 
 static int8_t ledger_cadence(const AnoMusicEngine *e, int phrase)
 {
-    if (phrase < 0 || phrase >= ANO_MAX_PHRASES)
-        return ANO_CADENCE_NONE;
-    return e->st.ledger.phraseCadence[phrase];
+    return ano_ledger_cadence(&e->st.ledger, phrase);
 }
 
 static int8_t policy_of(AnoMusicEngine *e, int phrase)
@@ -152,11 +153,14 @@ static int8_t policy_of(AnoMusicEngine *e, int phrase)
         return cfg->cadencePolicies[phrase % (int)cfg->cadencePolicyCount];
     if (!cfg->hasMapper)
         return DEFAULT_CADENCE_CYCLE[phrase % 4];
-    if (phrase >= 0 && phrase < ANO_MAX_PHRASES) {
-        if (e->st.phrasePolicies[phrase] == ANO_CADENCE_NONE)
-            e->st.phrasePolicies[phrase] =
+    if (phrase >= 0) {
+        uint32_t sl = ano_ring_phrase(phrase);
+        if (!ano_phrase_live(e->st.policyTag, phrase)) {
+            e->st.policyTag[sl] = phrase;
+            e->st.phrasePolicies[sl] =
                 (int8_t)ano_pick_cadence_policy(e->affect.tension, &cfg->mapper);
-        return e->st.phrasePolicies[phrase];
+        }
+        return e->st.phrasePolicies[sl];
     }
     return ANO_CADENCE_AUTHENTIC;
 }
@@ -255,11 +259,12 @@ static bool wants_split(AnoMusicEngine *e, AnoPhrasePos pos)
     if (!(cfg->form.split64 && cfg->form.cadential64) || pos.bars < 4
         || pos.kind == ANO_SEG_CODETTA)
         return false;
-    if (pos.phrase < 0 || pos.phrase >= ANO_MAX_PHRASES)
+    if (pos.phrase < 0)
         return false;
-    if (!e->st.splitPhraseSet[pos.phrase]) {
-        e->st.splitPhraseSet[pos.phrase] = true;
-        e->st.splitPhrases[pos.phrase] =
+    uint32_t sp = ano_ring_phrase(pos.phrase);
+    if (!ano_phrase_live(e->st.splitPhraseTag, pos.phrase)) {
+        e->st.splitPhraseTag[sp] = pos.phrase;
+        e->st.splitPhrases[sp] =
             !e->st.hasModulation
             && policy_of(e, pos.phrase) == ANO_CADENCE_AUTHENTIC
             && e->affect.energy >= 0.6
@@ -269,7 +274,7 @@ static bool wants_split(AnoMusicEngine *e, AnoPhrasePos pos)
                 || (cfg->form.periods
                     && ano_planner_role(&e->st.planner, pos.phrase) == ANO_FORM_CONSEQUENT));
     }
-    return e->st.splitPhrases[pos.phrase];
+    return e->st.splitPhrases[sp];
 }
 
 static bool wants_64(AnoMusicEngine *e, AnoPhrasePos pos)
@@ -351,14 +356,18 @@ static AnoTexture texture_for(AnoMusicEngine *e, AnoPhrasePos pos,
 {
     AnoConductorState *st = &e->st;
     int phrase = pos.phrase;
-    if (phrase < 0 || phrase >= ANO_MAX_PHRASES)
+    if (phrase < 0)
         return ANO_TEX_HOMOPHONIC;
-    if (st->phraseTextures[phrase] != ANO_TEX_NONE)
-        return (AnoTexture)st->phraseTextures[phrase];
+    if (ano_phrase_live(st->textureTag, phrase))
+        return (AnoTexture)st->phraseTextures[ano_ring_phrase(phrase)];
     AnoTexture pool[5];
     uint32_t pn = texture_pool(e, pool);
-    AnoTexture prev = phrase >= 1 ? (AnoTexture)st->phraseTextures[phrase - 1] : ANO_TEX_NONE;
-    AnoTexture prev2 = phrase >= 2 ? (AnoTexture)st->phraseTextures[phrase - 2] : ANO_TEX_NONE;
+    AnoTexture prev = ano_phrase_live(st->textureTag, phrase - 1)
+                          ? (AnoTexture)st->phraseTextures[ano_ring_phrase(phrase - 1)]
+                          : ANO_TEX_NONE;
+    AnoTexture prev2 = ano_phrase_live(st->textureTag, phrase - 2)
+                           ? (AnoTexture)st->phraseTextures[ano_ring_phrase(phrase - 2)]
+                           : ANO_TEX_NONE;
     AnoTexture tex;
     if (e->overrides.hasTexture) {
         tex = e->overrides.texture;
@@ -407,7 +416,8 @@ static AnoTexture texture_for(AnoMusicEngine *e, AnoPhrasePos pos,
             tex = have ? bestT : base;
         }
     }
-    st->phraseTextures[phrase] = (uint8_t)tex;
+    st->textureTag[ano_ring_phrase(phrase)] = phrase;
+    st->phraseTextures[ano_ring_phrase(phrase)] = (uint8_t)tex;
     return tex;
 }
 
@@ -498,7 +508,7 @@ static AnoChord gen_chord(AnoMusicEngine *e, int bar)
     }
 
     // D2 elision: the shared bar sounds the RESOLUTION
-    if (bar >= 0 && bar < ANO_MAX_BARS && st->elisions[bar] >= 0) {
+    if (ano_bar_live(st->elisionTag, bar)) {
         AnoChord chord = ano_chord(1, 0);
         st->prevChord = chord;
         return chord;
@@ -521,8 +531,8 @@ static AnoChord gen_chord(AnoMusicEngine *e, int bar)
     if (cfg->form.periods && pos.pos == 0
         && ano_planner_role(&st->planner, pos.phrase) == ANO_FORM_CONSEQUENT) {
         int ante = pos.phrase - 1;
-        if (ante >= 0 && ante < ANO_MAX_PHRASES && st->planner.hasOpening[ante]) {
-            AnoChord opening = st->planner.openingChord[ante];
+        if (ano_planner_has_opening(&st->planner, ante)) {
+            AnoChord opening = st->planner.openingChord[ano_ring_phrase(ante)];
             st->prevChord = opening;
             return opening;
         }
@@ -532,9 +542,9 @@ static AnoChord gen_chord(AnoMusicEngine *e, int bar)
     if (ano_phrase_slot(pos) == ANO_SLOT_PRE_CADENCE && wants_split(e, pos)) {
         AnoChord chord = ano_chord(1, 0);
         chord.inversion = 2;
-        if (bar >= 0 && bar < ANO_MAX_BARS) {
-            st->splitSet[bar] = true;
-            st->splits[bar] = ano_chord(5, 0);
+        if (bar >= 0) {
+            st->splitTag[ano_ring_bar(bar)] = bar;
+            st->splits[ano_ring_bar(bar)] = ano_chord(5, 0);
         }
         st->prevChord = ano_chord(5, 0); // the cadence continues from the sounding V
         return chord;
@@ -555,8 +565,10 @@ static AnoChord gen_chord(AnoMusicEngine *e, int bar)
         AnoChord chord = ano_chord(LAMENT_CYCLE[pos.pos % 4][0], 0);
         chord.inversion = (uint8_t)LAMENT_CYCLE[pos.pos % 4][1];
         st->prevChord = chord;
-        if (bar >= 0 && bar < ANO_MAX_BARS)
-            st->lamentBars[bar] = true;
+        if (bar >= 0) {
+            st->lamentTag[ano_ring_bar(bar)] = bar;
+            st->lamentBars[ano_ring_bar(bar)] = true;
+        }
         return chord;
     }
 
@@ -677,17 +689,16 @@ static const AnoMotif *motif_of(AnoMusicEngine *e, int phrase, const AnoGenParam
         phrase -= 1; // B2: the answer develops the question's material
     if (phrase < 0)
         phrase = 0;
-    if (phrase >= ANO_MAX_PHRASES)
-        phrase = ANO_MAX_PHRASES - 1;
-    if (!e->st.motifSet[phrase]) {
+    uint32_t sl = ano_ring_phrase(phrase);
+    if (!ano_phrase_live(e->st.motifTag, phrase)) {
         AnoMusicRng r;
         eng_stream2(e, &r, "motif", phrase);
-        e->st.motifs[phrase] = ano_make_motif(&r, params->noteDensity, params->roughness,
-                                              &e->config.melody,
-                                              ano_meter_slots(e->config.meter));
-        e->st.motifSet[phrase] = true;
+        e->st.motifs[sl] = ano_make_motif(&r, params->noteDensity, params->roughness,
+                                          &e->config.melody,
+                                          ano_meter_slots(e->config.meter));
+        e->st.motifTag[sl] = phrase;
     }
-    return &e->st.motifs[phrase];
+    return &e->st.motifs[sl];
 }
 
 // ---------------------------------------------------------------------------
@@ -707,10 +718,19 @@ void ano_engine_init(AnoMusicEngine *e, uint64_t seed, const AnoEngineConfig *cf
     st->melody = ano_melody_state_init();
     st->counter = ano_counter_state_init();
     ano_ledger_init(&st->ledger);
-    for (int i = 0; i < ANO_MAX_PHRASES; ++i)
+    ano_planner_init(&st->planner);
+    // tags, not values: slot 0 legitimately belongs to phrase 0 / bar 0, so a
+    // zeroed tag would claim them
+    for (uint32_t i = 0; i < ANO_PHRASE_WINDOW; ++i) {
+        st->motifTag[i] = st->grooveTag[i] = st->arpSkipTag[i] = ANO_SLOT_EMPTY;
+        st->apexTag[i] = st->imitationTag[i] = st->textureTag[i] = ANO_SLOT_EMPTY;
+        st->splitPhraseTag[i] = st->policyTag[i] = ANO_SLOT_EMPTY;
         st->phrasePolicies[i] = ANO_CADENCE_NONE;
-    for (int i = 0; i < ANO_MAX_BARS; ++i)
+    }
+    for (uint32_t i = 0; i < ANO_BAR_WINDOW; ++i) {
+        st->elisionTag[i] = st->lamentTag[i] = st->splitTag[i] = ANO_SLOT_EMPTY;
         st->elisions[i] = -1;
+    }
     e->affect = ano_affect_clamped((AnoAffect){ cfg->valence, cfg->energy, cfg->tension });
     if (cfg->motifLibraryCount)
         ano_director_init(&st->director, cfg->motifLibrary, cfg->motifLibraryCount);
@@ -823,8 +843,10 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
                 ano_clock_materialize_through(&st->clock, pos.phrase);
                 AnoSegment seg = ano_clock_schedule(&st->clock, pos.phrase + 1,
                                                     cfg->phraseBars, ANO_SEG_ELISION, 1);
-                if (seg.start >= 0 && seg.start < ANO_MAX_BARS)
-                    st->elisions[seg.start] = pos.phrase;
+                if (seg.start >= 0) {
+                    st->elisionTag[ano_ring_bar(seg.start)] = seg.start;
+                    st->elisions[ano_ring_bar(seg.start)] = pos.phrase;
+                }
             }
         }
     }
@@ -839,8 +861,8 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
 
     // B2 period commitment at even phrase boundaries
     if (cfg->form.periods && pos.pos == 0 && pos.kind == ANO_SEG_REGULAR) {
-        if (pos.phrase % 2 == 0 && pos.phrase < ANO_MAX_PHRASES
-            && st->planner.roles[pos.phrase] == ANO_FORM_NONE
+        if (pos.phrase % 2 == 0
+            && ano_planner_role(&st->planner, pos.phrase) == ANO_FORM_NONE
             && !st->hasModulation && !st->hasPendingKey
             && (int)st->clock.segmentCount <= pos.phrase + 1
             && !(dramaturg_on(e) && ledger_cadence(e, pos.phrase) != ANO_CADENCE_NONE)) {
@@ -972,16 +994,16 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
 
     // A4 apex, drawn once per phrase from the phrase-start params
     const AnoApexPlan *apex = NULL;
-    if (cfg->melody.planApex && pos.kind != ANO_SEG_CODETTA
-        && pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES) {
-        if (!st->apexSet[pos.phrase]) {
+    if (cfg->melody.planApex && pos.kind != ANO_SEG_CODETTA && pos.phrase >= 0) {
+        uint32_t ap = ano_ring_phrase(pos.phrase);
+        if (!ano_phrase_live(st->apexTag, pos.phrase)) {
             AnoMusicRng r;
             eng_stream2(e, &r, "apex", pos.phrase);
-            st->apexes[pos.phrase] = ano_make_apex(&r, pos.bars, params.registerCenter,
-                                                   cfg->melody.rangeSemitones);
-            st->apexSet[pos.phrase] = true;
+            st->apexes[ap] = ano_make_apex(&r, pos.bars, params.registerCenter,
+                                           cfg->melody.rangeSemitones);
+            st->apexTag[ap] = pos.phrase;
         }
-        apex = &st->apexes[pos.phrase];
+        apex = &st->apexes[ap];
     }
 
     // the one-bar chord lookahead
@@ -1026,7 +1048,8 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
                  st->modulation.targetTonic); // annotation only; content elided
     if (chord.degree == 1 && chord.inversion == 2) {
         ctx.obligation = ANO_OBL_CADENTIAL64;
-    } else if (bar >= 0 && bar < ANO_MAX_BARS && st->lamentBars[bar] && st->ledger.lament) {
+    } else if (ano_bar_live(st->lamentTag, bar) && st->lamentBars[ano_ring_bar(bar)]
+               && st->ledger.lament) {
         ctx.obligation = ANO_OBL_LAMENT;
     } else if (chord.applied) {
         ctx.obligation = ANO_OBL_TONICIZE;
@@ -1036,14 +1059,14 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
     ctx.phraseBars = pos.bars;
     ctx.phraseApex = apex ? apex->pos : -1;
     ctx.form = ano_planner_role(&st->planner, pos.phrase);
-    if (bar >= 0 && bar < ANO_MAX_BARS && st->splitSet[bar]) {
+    if (ano_bar_live(st->splitTag, bar)) {
         ctx.chords[0] = (AnoChordSpan){ 0.0, chord };
-        ctx.chords[1] = (AnoChordSpan){ barQ / 2, st->splits[bar] };
+        ctx.chords[1] = (AnoChordSpan){ barQ / 2, st->splits[ano_ring_bar(bar)] };
         ctx.chordSpanCount = 2;
     }
-    if (bar >= 0 && bar < ANO_MAX_BARS && st->elisions[bar] >= 0) {
+    if (ano_bar_live(st->elisionTag, bar)) {
         ctx.cadenceSlot = ANO_CTX_SLOT_CADENCE; // the OLD phrase's promise
-        ctx.cadencePolicy = policy_of(e, st->elisions[bar]);
+        ctx.cadencePolicy = policy_of(e, st->elisions[ano_ring_bar(bar)]);
     }
 
     AnoMusicEvent *events = out->rawEvents;
@@ -1081,8 +1104,7 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
                 led->lastSpend = ano_spend_magnitude(led, &cfg->dramaturg);
                 led->barsSinceAuthentic = 0;
                 led->deceptions = 0;
-                if (pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES)
-                    led->phraseCadence[pos.phrase] = ANO_CADENCE_AUTHENTIC;
+                ano_ledger_set_cadence(led, pos.phrase, ANO_CADENCE_AUTHENTIC);
             }
         } else {
             st->hasPendingSignature = false;
@@ -1096,14 +1118,15 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
 
     // --- pad ---
     if (layers_has(params.layers, params.layerCount, ANO_MUSIC_PAD)
-        && bar >= 0 && bar < ANO_MAX_BARS && st->splitSet[bar]) {
+        && ano_bar_live(st->splitTag, bar)) {
         // D3: the split bar re-voices at the mid-bar pulse
         double half = barQ / 2;
         int vel = params.velocityCenter + (-6);
         vel = vel < 1 ? 1 : vel > 127 ? 127 : vel;
         uint8_t pcs1[5], pcs2[5];
         uint32_t n1 = ano_chord_pitch_classes(chord, e->scale, pcs1);
-        uint32_t n2 = ano_chord_pitch_classes(st->splits[bar], e->scale, pcs2);
+        uint32_t n2 = ano_chord_pitch_classes(st->splits[ano_ring_bar(bar)], e->scale,
+                                              pcs2);
         // C4 "monophonic" thins this bar exactly as it thins an ano_generate_pad
         // bar — the split path voices its own blocks, so it must apply the dyad
         // rule itself or the phrase's leanest state grows a 4-note pad.
@@ -1260,12 +1283,13 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
         if (cfg->form.periods && pos.pos == 0
             && ano_planner_role(&st->planner, pos.phrase) == ANO_FORM_CONSEQUENT) {
             int ante = pos.phrase - 1;
-            if (ante >= 0 && ante < ANO_MAX_PHRASES && st->planner.hasOpening[ante]
-                && memcmp(&st->planner.openingChord[ante], &chord, sizeof chord) == 0
-                && st->planner.openingScale[ante].tonic == e->scale.tonic
-                && st->planner.openingScale[ante].mode == e->scale.mode) {
-                replay = st->planner.openingMelody[ante];
-                replayCount = st->planner.openingMelodyN[ante];
+            uint32_t an = ano_ring_phrase(ante);
+            if (ano_planner_has_opening(&st->planner, ante)
+                && memcmp(&st->planner.openingChord[an], &chord, sizeof chord) == 0
+                && st->planner.openingScale[an].tonic == e->scale.tonic
+                && st->planner.openingScale[an].mode == e->scale.mode) {
+                replay = st->planner.openingMelody[an];
+                replayCount = st->planner.openingMelodyN[an];
             }
         }
         AnoMusicRng melRng, anaRng, syncRng;
@@ -1319,24 +1343,24 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
         }
         if (cfg->form.periods && pos.pos == 0
             && ano_planner_role(&st->planner, pos.phrase) == ANO_FORM_ANTECEDENT
-            && pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES) {
-            st->planner.hasOpening[pos.phrase] = true;
-            st->planner.openingChord[pos.phrase] = chord;
-            st->planner.openingScale[pos.phrase] = e->scale;
+            && pos.phrase >= 0) {
+            uint32_t op = ano_ring_phrase(pos.phrase);
+            st->planner.openingTag[op] = pos.phrase;
+            st->planner.openingChord[op] = chord;
+            st->planner.openingScale[op] = e->scale;
             uint32_t n = 0;
             for (uint32_t i = 0; i < melCount && n < ANO_MOTIF_MAX; ++i)
                 if (strcmp(melEvents[i].role, "doubling") != 0)
-                    st->planner.openingMelody[pos.phrase][n++] = (AnoPlacedNote){
+                    st->planner.openingMelody[op][n++] = (AnoPlacedNote){
                         ano_meter_slot_of(cfg->meter, melEvents[i].core.start),
                         (int)ano_music_round_int(melEvents[i].core.dur / ANO_MUSIC_GRID),
                         melEvents[i].core.pitch };
-            st->planner.openingMelodyN[pos.phrase] = n;
+            st->planner.openingMelodyN[op] = n;
         }
         // C3 imitation: one entry per phrase, the bar after the statement
         if (cfg->texture.imitation && pos.pos == 1 && pos.kind != ANO_SEG_CODETTA
             && (params.texture == ANO_TEX_NONE || params.texture == ANO_TEX_IMITATIVE)
-            && pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES
-            && !st->imitationSet[pos.phrase]
+            && pos.phrase >= 0 && !ano_phrase_live(st->imitationTag, pos.phrase)
             && (layers_has(params.layers, params.layerCount, ANO_MUSIC_ARP)
                 || layers_has(params.layers, params.layerCount, ANO_MUSIC_PAD))) {
             int imitLo, imitHi, imitVel;
@@ -1357,8 +1381,8 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
                                    signature ? signature : motif_of(e, pos.phrase, &params),
                                    melEvents, melCount, host, imitLo, imitHi, imitVel, &ir);
             if (ir.eventCount) {
-                st->imitationSet[pos.phrase] = true;
-                st->imitationCells[pos.phrase] = ir.emitted;
+                st->imitationTag[ano_ring_phrase(pos.phrase)] = pos.phrase;
+                st->imitationCells[ano_ring_phrase(pos.phrase)] = ir.emitted;
                 for (uint32_t i = 0; i < ir.eventCount; ++i)
                     events[nEvents++] = ir.events[i];
             }
@@ -1385,16 +1409,17 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
                                                                 ANO_ARP_PATTERN_COUNT);
         bool hasSkips = false;
         uint32_t skips = 0;
-        if (cfg->phraseGroove && pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES) {
-            if (!st->arpSkipSet[pos.phrase]) {
+        if (cfg->phraseGroove && pos.phrase >= 0) {
+            uint32_t sk = ano_ring_phrase(pos.phrase);
+            if (!ano_phrase_live(st->arpSkipTag, pos.phrase)) {
                 AnoMusicRng r;
                 eng_stream2(e, &r, "arp-groove", pos.phrase);
-                st->arpSkips[pos.phrase] = ano_arp_make_skips(&r, cfg->meter,
-                                                              params.noteDensity);
-                st->arpSkipSet[pos.phrase] = true;
+                st->arpSkips[sk] = ano_arp_make_skips(&r, cfg->meter,
+                                                      params.noteDensity);
+                st->arpSkipTag[sk] = pos.phrase;
             }
             hasSkips = true;
-            skips = st->arpSkips[pos.phrase];
+            skips = st->arpSkips[sk];
         }
         AnoMusicRng arpRng;
         eng_stream2(e, &arpRng, "arp", bar);
@@ -1426,16 +1451,17 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
         if (pos.kind == ANO_SEG_CODETTA)
             percParams.noteDensity = params.noteDensity * 0.5;
         const AnoGroove *groove = NULL;
-        if (cfg->phraseGroove && pos.phrase >= 0 && pos.phrase < ANO_MAX_PHRASES) {
-            if (!st->grooveSet[pos.phrase]) {
+        if (cfg->phraseGroove && pos.phrase >= 0) {
+            uint32_t gr = ano_ring_phrase(pos.phrase);
+            if (!ano_phrase_live(st->grooveTag, pos.phrase)) {
                 AnoMusicRng r;
                 eng_stream2(e, &r, "perc-pattern", pos.phrase);
-                st->grooves[pos.phrase] = ano_make_groove(&r, cfg->meter,
-                                                          percParams.noteDensity,
-                                                          percParams.roughness);
-                st->grooveSet[pos.phrase] = true;
+                st->grooves[gr] = ano_make_groove(&r, cfg->meter,
+                                                  percParams.noteDensity,
+                                                  percParams.roughness);
+                st->grooveTag[gr] = pos.phrase;
             }
-            groove = &st->grooves[pos.phrase];
+            groove = &st->grooves[gr];
         }
         AnoMusicRng r;
         eng_stream2(e, &r, "perc", bar);

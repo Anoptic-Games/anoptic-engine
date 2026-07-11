@@ -1472,7 +1472,7 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
 
 void ano_lint_imitation(const AnoMusicEvent *events, uint32_t n,
                         const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
-                        const bool *cellSet, const AnoMotif *cells, uint32_t nCells,
+                        const int *cellTag, const AnoMotif *cells,
                         AnoMeter meter, double threshold, AnoLintReport *out)
 {
     int starts[LINT_MAX_BARS];
@@ -1496,7 +1496,7 @@ void ano_lint_imitation(const AnoMusicEvent *events, uint32_t n,
             continue;
         sort_evp(entry, ne, by_start);
         int bar = ano_meter_bar_of(meter, entry[0]->core.start);
-        if (r >= nCells || !cellSet[r]) {
+        if (!ano_phrase_live(cellTag, (int)r)) {
             vio(out, "imitation", bar,
                 "imitation events in phrase %u without a recorded source cell", r);
             continue;
@@ -1506,7 +1506,8 @@ void ano_lint_imitation(const AnoMusicEvent *events, uint32_t n,
         int pitches[ANO_MOTIF_MAX * 2];
         for (uint32_t i = 0; i < ne; ++i)
             pitches[i] = entry[i]->core.pitch;
-        double score = ano_recognizability(&cells[r], pitches, ne, ms);
+        double score = ano_recognizability(&cells[ano_ring_phrase((int)r)],
+                                           pitches, ne, ms);
         if (score < threshold)
             vio(out, "imitation", bar,
                 "imitation entry no longer carries its cell's contour "
