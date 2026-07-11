@@ -28,7 +28,7 @@
 // safe by its design but opaque to TSan, not in the logger or this harness, so the teardown frames are
 // suppressed below.
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 

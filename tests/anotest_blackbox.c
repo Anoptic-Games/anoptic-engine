@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_blackbox.h, end to end, on real crashes:
+/* Coverage for anoptic_log_crash.h, end to end, on real crashes:
  *   - the bb_fmt_dec/bb_fmt_hex handler formatters against the printf oracle
- *   - ano_blackbox_init: returns 0, resolves <exe>/logs/<session-stamp>_CRASH.log, creates nothing
+ *   - ano_log_crash_init: returns 0, resolves <exe>/logs/<session-stamp>_CRASH.log, creates nothing
  *   - one child process per scenario dies its scripted death (AV read/write/execute, abort,
  *     illegal instruction, integer divide by zero, CRT raise, a crash on a non-main thread, a
  *     crash inside ano_log_write, a crash under a 6-producer storm, a crash with the ring pinned
@@ -23,13 +23,12 @@
  * exact sentinel counts in the scratch session log.
  * No args = parent mode, argv[1] = crash-child scenario. Exit 0 == pass. */
 
-#include <anoptic_blackbox.h>
-#include <anoptic_logging.h>
+#include <anoptic_log_crash.h>
 #include <anoptic_filesystem.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
-#include "blackbox/blackbox_internal.h"
+#include "log/log_crash_internal.h"
 #include "templates/scratch.h"
 
 #include <signal.h>
@@ -316,14 +315,14 @@ static const child_t CHILDREN[] = {
 static int child_main(const char *name)
 {
     if (strcmp(name, "nolog") == 0) {
-        if (ano_blackbox_init() != 0) return 41;
+        if (ano_log_crash_init() != 0) return 41;
         *(volatile int *)0 = 1;
         return 0;
     }
     if (ano_log_init() != 0) return 40;
     scratch_make_dir(LOG_DIR);
     if (ano_log_output_dir(LOG_DIR) != 0) return 43;
-    if (ano_blackbox_init() != 0) return 41;
+    if (ano_log_crash_init() != 0) return 41;
     for (size_t i = 0; i < NCHILDREN; i++) {
         if (strcmp(CHILDREN[i].name, name) == 0) {
             CHILDREN[i].fn();
@@ -594,7 +593,7 @@ static void test_fmt_helpers(void)
 static void test_init_shape(void)
 {
     remove_all_suffix(CRASH_DIR, CRASH_SUFFIX);
-    CHECK(ano_blackbox_init() == 0, "ano_blackbox_init failed");
+    CHECK(ano_log_crash_init() == 0, "ano_log_crash_init failed");
     char name[MAXPATH];
     CHECK(bb_scan_suffix(CRASH_DIR, CRASH_SUFFIX, name) == 0,
           "init created a crash record on a clean boot");

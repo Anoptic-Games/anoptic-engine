@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include <anoptic_threads.h>
-#include <anoptic_blackbox.h>
+#include <anoptic_log_crash.h>
 #include <anoptic_memory.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -29,14 +29,14 @@ typedef struct {
 static void tramp_disarm(void *unused)
 {
     (void)unused;
-    ano_blackbox_thread_disarm();
+    ano_log_crash_thread_disarm();
 }
 
 static void *thread_trampoline(void *p)
 {
     thread_tramp_t t = *(thread_tramp_t *)p;
     mi_free(p);
-    (void)ano_blackbox_thread_arm();    // best effort: an unarmed thread still runs
+    (void)ano_log_crash_thread_arm();   // best effort: an unarmed thread still runs
     void *ret;
     pthread_cleanup_push(tramp_disarm, NULL);
     ret = t.func(t.arg);

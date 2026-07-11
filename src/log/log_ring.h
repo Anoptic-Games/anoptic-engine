@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private ring for the lock-free MPSC logger (logging_core.c). Variable-length, cache-line-granular
+// Private ring for the lock-free MPSC logger (log_core.c). Variable-length, cache-line-granular
 // (DPDK rte_ring family). One shared bounded ring carries finished text from many producers to one
 // active consumer. The producer formats off-ring, reserves a run of cache lines by bumping `tail`,
 // copies the line in, and publishes with one release store of `tag`. The consumer walks claim order,
@@ -12,10 +12,10 @@
 // ride its release/acquire as plain memory.
 // Migrates to anoptic_collections.h at the lock-free port.
 
-#ifndef ANOPTICENGINE_LOGGING_RING_H
-#define ANOPTICENGINE_LOGGING_RING_H
+#ifndef ANOPTICENGINE_LOG_RING_H
+#define ANOPTICENGINE_LOG_RING_H
 
-#include "logging/logging_core.h"   // ANO_LOG_MSG_MAX, ring sizing
+#include "log/log_core.h"   // ANO_LOG_MSG_MAX, ring sizing
 
 #include <anoptic_memory.h>          // ANO_CACHE_LINE / ANO_THREAD_LINE
 #include <stdatomic.h>
@@ -120,4 +120,4 @@ static inline const char *log_gather(const log_ring_t *r, uint64_t pos, uint16_t
     return scratch;
 }
 
-#endif // ANOPTICENGINE_LOGGING_RING_H
+#endif // ANOPTICENGINE_LOG_RING_H

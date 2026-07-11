@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Optional logger benchmark: the lock-free MPSC ring (anoptic_core) vs the preserved mutex baseline
-// (logging_old.c, namespaced mtxlog_*). Built so it cannot rot, but DISABLED in CTest like
+// (log_old.c, namespaced mtxlog_*). Built so it cannot rot, but DISABLED in CTest like
 // anotest_chariots -- run ./anotest_logbench by hand. It is a benchmark, not a pass/fail test: it
 // always exits 0 and prints a table.
 //
@@ -16,8 +16,8 @@
 //      concurrently (the real single-consumer deployment). This is where the lock-free ring should
 //      pull ahead: producers never serialize on a shared mutex.
 
-#include <anoptic_logging.h>        // ring logger (ano_log_*)
-#include "logging/logging_old.h"    // mutex baseline (mtxlog_*)
+#include <anoptic_log.h>        // ring logger (ano_log_*)
+#include "log/log_old.h"    // mutex baseline (mtxlog_*)
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 

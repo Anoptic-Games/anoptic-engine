@@ -10,7 +10,7 @@
 // config/output-file thrash). Every case drains explicitly via ano_log_flush() before reading back, so
 // its file contents are deterministic. The final case leaves a human-readable log for inspection.
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_strings.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>

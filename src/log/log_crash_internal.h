@@ -5,15 +5,15 @@
 
 // Private module header: state shared between the common TU and the per-platform hooks, plus the async-signal-safe formatters.
 
-#ifndef BLACKBOX_INTERNAL_H
-#define BLACKBOX_INTERNAL_H
+#ifndef LOG_CRASH_INTERNAL_H
+#define LOG_CRASH_INTERNAL_H
 
 #include <anoptic_filesystem.h>   // MAXPATH
 
 #include <stddef.h>
 #include <string.h>
 
-// "<gamedir>/logs/<session-stamp>_CRASH.log", NUL-terminated. Resolved once by ano_blackbox_init, never inside a handler. Fallbacks: <gamedir>, then a CWD-relative name.
+// "<gamedir>/logs/<session-stamp>_CRASH.log", NUL-terminated. Resolved once by ano_log_crash_init, never inside a handler. Fallbacks: <gamedir>, then a CWD-relative name.
 extern char bb_crashPath[];
 
 // Stage 1, per-platform: install the fatal hooks. Output: 0 on success, -1 if any failed.
@@ -45,7 +45,7 @@ static inline void bb_top_insert(bb_prune_t top[], int cap, int *n, unsigned lon
     if (*n < cap) (*n)++;
 }
 
-// Per-thread Stage 1, per-platform: arm/release the calling thread's crash stack (see ano_blackbox_thread_arm). Output: 0 on success, -1 if the OS refused.
+// Per-thread Stage 1, per-platform: arm/release the calling thread's crash stack (see ano_log_crash_thread_arm). Output: 0 on success, -1 if the OS refused.
 int  bb_thread_arm(void);
 void bb_thread_disarm(void);
 
@@ -68,4 +68,4 @@ static inline size_t bb_fmt_hex(char *out, unsigned long long v)
     return 18;
 }
 
-#endif // BLACKBOX_INTERNAL_H
+#endif // LOG_CRASH_INTERNAL_H

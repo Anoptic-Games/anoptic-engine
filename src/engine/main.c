@@ -14,8 +14,7 @@
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
 #include "anoptic_filesystem.h"
-#include "anoptic_logging.h"
-#include "anoptic_blackbox.h"
+#include "anoptic_log_crash.h"   // anoptic_log.h + crash blackbox
 
 #ifndef HEADLESS_BUILD
 // Renderer contract + GLFW, graphical engine only.
@@ -610,7 +609,7 @@ int main()
     }
 
     // Blackbox arms right after the logger: a fatal signal writes the CRASH log, then hail-mary flushes.
-    if (ano_blackbox_init() != 0)
+    if (ano_log_crash_init() != 0)
         ano_log(ANO_WARN, "Blackbox failed to arm; a crash will leave no CRASH log.");
 
     // Warn when the initial thread's stack budget (the environment's) is under ANO_THREAD_STACK_SIZE.

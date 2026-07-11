@@ -474,7 +474,7 @@ stays small:** `ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, an 8-byte t
 
 - **Topology:** one IO thread (the logger's exact pattern: owned consumer, park/wake with
   timedwait cap). Inbound: per-band MPSC request rings (the DPDK-style variable-length
-  ring from `logging_ring.h`); outbound: SPSC completion ring per consumer thread, drained
+  ring from `log_ring.h`); outbound: SPSC completion ring per consumer thread, drained
   by `ano_res_pump()` once per frame on the logic thread. **Completions are only ever
   polled, never callbacks from the IO thread** — the trap Gregory, Bevy, and both in-tree
   ring designs converge on avoiding.

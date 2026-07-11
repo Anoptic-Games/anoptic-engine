@@ -5,7 +5,7 @@
 
 #include <math.h>
 #include <string.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_time.h>
 
 #include "vulkan_backend/vulkanMaster.h"

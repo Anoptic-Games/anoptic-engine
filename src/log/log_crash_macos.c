@@ -5,7 +5,7 @@
 
 // macOS: the shared POSIX handler plus the two native pieces it needs. Module map from the dyld image list at init, one entry per executable segment. base is the slide: recorded offsets are unslid, fed straight to atos -o <module>.
 
-#include "blackbox/blackbox_posix.h"
+#include "log/log_crash_posix.h"
 
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>

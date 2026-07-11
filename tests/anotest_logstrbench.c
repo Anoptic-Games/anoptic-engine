@@ -16,7 +16,7 @@
  * Built so it cannot rot, DISABLED in ctest -- run ./anotest_logstrbench by hand from
  * a -O3 build (build.bat 8). Prints a table; exits nonzero only if an oracle breaks. */
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_memory.h>
 #include <anoptic_strings_utf.h>
 #include <anoptic_threads.h>

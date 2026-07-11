@@ -10,7 +10,7 @@
 // Console output flushes at the end of every drain pass and immediate write.
 // A full ring makes the producer wait for room, never dropping. Stop all producers before ano_log_cleanup.
 
-#include "logging/logging_ring.h"
+#include "log/log_ring.h"
 
 #include <anoptic_threads.h>
 #include <anoptic_filesystem.h>

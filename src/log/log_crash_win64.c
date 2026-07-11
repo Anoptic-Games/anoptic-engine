@@ -5,8 +5,8 @@
 
 // Win64: crashes arrive as SEH exceptions. SetUnhandledExceptionFilter is the hook, with CRT signal() hooks alongside for abort() and raise(SIGSEGV/SIGILL/SIGFPE). The CRT translator hands some hardware faults to those hooks ahead of the filter, parking EXCEPTION_POINTERS in the per-thread _pxcptinfoptrs slot: non-NULL = translated hardware fault (full SEH decode, die with the true NTSTATUS), NULL = genuine raise() (record the signal, CRT default exit). The deadman is a watchdog thread parked on an event since init.
 
-#include <anoptic_logging.h>
-#include "blackbox/blackbox_internal.h"
+#include <anoptic_log.h>
+#include "log/log_crash_internal.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -195,7 +195,7 @@ static void bb_on_signal(int sig)
 }
 
 // Stage 4 scan, calm time only. The suffix recheck guards against 8.3 short-name pattern hits.
-// Contract in blackbox_internal.h.
+// Contract in log_crash_internal.h.
 int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
 {
     char pat[MAXPATH + 8];
@@ -222,7 +222,7 @@ int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
     return count;
 }
 
-// Contract in blackbox_internal.h. Pass 1 collects the top-keep newest by mtime, pass 2 removes the rest.
+// Contract in log_crash_internal.h. Pass 1 collects the top-keep newest by mtime, pass 2 removes the rest.
 int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *skip)
 {
     if (keep > 8) keep = 8;

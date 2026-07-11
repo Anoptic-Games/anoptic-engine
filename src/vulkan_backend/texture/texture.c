@@ -7,7 +7,7 @@
 
 #include "vulkan_backend/texture/texture.h" 
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 extern GpuAllocator textureAllocator;
 extern GpuAllocator stagingAllocator;

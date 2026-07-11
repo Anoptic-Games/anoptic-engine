@@ -2,7 +2,7 @@
 
 The Anoptic logger lets any thread record a line of text without stalling the caller and without losing a line. You call it like `printf`. It formats your message, hands it to a single background thread that owns the output file, and returns. Under load that thread keeps the pipe drained, so frame work never waits on disk.
 
-It is a singleton, one logger per program, owned by `main`. The whole interface lives in `include/anoptic_logging.h`, every symbol prefixed `ano_log_`.
+It is a singleton, one logger per program, owned by `main`. The whole interface lives in `include/anoptic_log.h`, every symbol prefixed `ano_log_`.
 
 ---
 
@@ -51,7 +51,7 @@ int ano_log_init(void);     // build up; 0 on success
 int ano_log_cleanup(void);  // tear down; 0 on success
 ```
 
-Call `ano_log_init()` once at startup. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/logs/<session-stamp>_ano.log` -- one file per session, the stamp from `ano_fs_session_stamp()`, truncated at open so the session owns it from byte zero), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work, writing to `stderr`. `ano_blackbox_init` prunes `logs/` at boot: the newest 4 of each of `*_ano.log` and `*_CRASH.log` survive, the live session's files always kept.
+Call `ano_log_init()` once at startup. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/logs/<session-stamp>_ano.log` -- one file per session, the stamp from `ano_fs_session_stamp()`, truncated at open so the session owns it from byte zero), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work, writing to `stderr`. `ano_log_crash_init` (`anoptic_log_crash.h`, the crash superset of this interface) prunes `logs/` at boot: the newest 4 of each of `*_ano.log` and `*_CRASH.log` survive, the live session's files always kept.
 
 Call `ano_log_cleanup()` once at shutdown. It stops and joins the drain thread, runs one final drain so nothing buffered is lost, then syncs and closes the file.
 
@@ -88,7 +88,7 @@ A route of `0` (what `ano_log` passes) inherits the level's default. `file` is n
 A complete, minimal program shape:
 
 ```c
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 int main(void) {
     ano_log_init();                                 // once, before any logging

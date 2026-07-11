@@ -13,8 +13,8 @@
 //
 // The ANO_ prefix is load-bearing. Bare ERROR is a windows.h macro, bare FILE a stdio typedef.
 
-#ifndef ANOPTIC_LOGGING_H
-#define ANOPTIC_LOGGING_H
+#ifndef ANOPTIC_LOG_H
+#define ANOPTIC_LOG_H
 
 #include <stdarg.h>
 
@@ -100,4 +100,4 @@ void ano_log_flush(void);
 #define ano_debug_rolog(...)((void)0)
 #endif
 
-#endif // ANOPTIC_LOGGING_H
+#endif // ANOPTIC_LOG_H
