@@ -75,6 +75,8 @@ uint32_t ano_meter_strong_slots(AnoMeter m, int out[ANO_METER_MAX_SLOTS]);
 // Annotated events
 // ---------------------------------------------------------------------------
 
+extern const char *const ANO_LAYER_NAMES[ANO_MUSIC_LAYER_COUNT]; // "pad", ...
+
 // NoteEvent.__post_init__ as a predicate (the prototype raises; callers gate).
 bool ano_note_event_valid(const AnoNoteEvent *ev);
 
@@ -88,6 +90,17 @@ typedef struct AnoMusicEvent
     char         chordSym[16]; // roman-numeral symbol in context
     char         role[20];
 } AnoMusicEvent;
+
+// Collapse tie chains into logical notes: consecutive same-layer same-pitch
+// events whose ends meet the next start, flagged out -> both... -> in, become
+// one note with the head's start, velocity and annotations and the summed
+// duration. Untied events pass through in order; an orphan "out" (a tie into a
+// rest) dissolves into a plain note, an orphan "in" passes through struck.
+// Input is expected in chronological per-layer emission order. in == out is
+// legal (the merge only ever writes behind its read cursor). Returns the
+// merged count, clamped to cap.
+uint32_t ano_merge_ties(const AnoMusicEvent *in, uint32_t n,
+                        AnoMusicEvent *out, uint32_t cap);
 
 // ---------------------------------------------------------------------------
 // HarmonicContext

@@ -35,6 +35,7 @@
 #include "music/music_counter.h"
 #include "music/music_modifiers.h"
 #include "music/music_conductor.h"
+#include "music/music_verify.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -2705,6 +2706,297 @@ int main(void)
         }
     }
 
+    // --- theory linter vs verify.py (section 8.4 acceptance, phase 2) ---
+    // The same two walks the engine section proves bit-exact, now run through
+    // the linter: each rule group is compared against the CPython verdicts as
+    // a (rule, bar) multiset. W1 (the prototype default) lints clean on all
+    // seven rule groups. W2 (everything on) carries three real verdicts —
+    // a 6/4 planted in the final bar with no room to discharge, a strummed
+    // pad note landing off its chord post-modifier, and a period whose answer
+    // was overridden. L3 re-lints W2's raw IR with seven deliberate
+    // corruptions: proof the rules FIRE, not merely that both sides are empty.
+    {
+        typedef struct LintVio
+        {
+            const char *rule;
+            int         bar;
+        } LintVio;
+
+static const LintVio L1_PRE[] = { { NULL, 0 } };
+#define L1_PRE_N 0
+static const LintVio L1_POST[] = { { NULL, 0 } };
+#define L1_POST_N 0
+static const LintVio L1_GROOVE[] = { { NULL, 0 } };
+#define L1_GROOVE_N 0
+static const LintVio L1_OUTER[] = { { NULL, 0 } };
+#define L1_OUTER_N 0
+static const LintVio L1_PERIOD[] = { { NULL, 0 } };
+#define L1_PERIOD_N 0
+static const LintVio L1_TEX[] = { { NULL, 0 } };
+#define L1_TEX_N 0
+static const LintVio L1_IMIT[] = { { NULL, 0 } };
+#define L1_IMIT_N 0
+static const LintVio L2_PRE[] = { { "cadential64", 47 } };
+#define L2_PRE_N 1
+static const LintVio L2_POST[] = { { "chord-tone", 24 } };
+#define L2_POST_N 1
+static const LintVio L2_GROOVE[] = { { NULL, 0 } };
+#define L2_GROOVE_N 0
+static const LintVio L2_OUTER[] = { { NULL, 0 } };
+#define L2_OUTER_N 0
+static const LintVio L2_PERIOD[] = { { "period", 42 } };
+#define L2_PERIOD_N 1
+static const LintVio L2_TEX[] = { { NULL, 0 } };
+#define L2_TEX_N 0
+static const LintVio L2_IMIT[] = { { NULL, 0 } };
+#define L2_IMIT_N 0
+static const LintVio L3_PRE[] = { { "bass-range", 0 }, { "bass-root", 0 }, { "cadential64", 47 }, { "chord-tone", 0 }, { "degree", 0 }, { "degree", 0 }, { "degree", 0 }, { "degree", 2 }, { "doubling", 0 }, { "drum-map", 0 }, { "grid", 0 }, { "pad-range", 0 }, { "scale", 0 }, { "scale", 0 }, { "scale", 2 }, { "tie", 1 } };
+#define L3_PRE_N 16
+static const LintVio L4_PRE[] = { { "cadence", 7 }, { "cadential64", 47 }, { "counter-chord-tone", 8 }, { "counter-crossing", 8 }, { "counter-range", 8 }, { "degree", 0 }, { "degree", 5 }, { "degree", 5 }, { "degree", 6 }, { "degree", 8 }, { "degree", 16 }, { "doubling", 0 }, { "melody-leaps", -1 }, { "melody-range", 0 }, { "pedal", 16 }, { "scale", 6 }, { "scale", 8 }, { "scale", 16 }, { "suspension", 6 }, { "suspension-prep", 6 }, { "tie", 6 }, { "unison", 5 }, { "voice-move", 6 }, { "voice-move", 6 }, { "voice-move", 6 } };
+#define L4_PRE_N 25
+static const LintVio L4_GROOVE[] = { { "groove-perc", 1 }, { "groove-perc", 2 }, { "groove-perc", 3 }, { "groove-perc", 4 }, { "groove-perc", 5 }, { "groove-perc", 6 } };
+#define L4_GROOVE_N 6
+static const LintVio L4_TEX[] = { { "texture", 0 }, { "texture", 5 }, { "texture", 8 } };
+#define L4_TEX_N 3
+static const LintVio L4_IMIT[] = { { "imitation", 8 } };
+#define L4_IMIT_N 1
+
+        static AnoMusicEngine leng;
+        static AnoBarResult   lres;
+        static AnoMusicEvent  RAW[2048], FIN[2048], BAD[2048];
+        static AnoHarmonicContext CTX[64];
+        static AnoGenParams       PAR[64];
+        static AnoLintReport      rep;
+        AnoMeter mtr = ano_meter_default();
+        uint32_t nraw = 0, nfin = 0, nctx = 0;
+
+// The report's (rule, bar) multiset against the golden one, order-independent.
+#define LINT_CHECK(NAME)                                                              \
+    do {                                                                              \
+        LintVio got[ANO_LINT_MAX_VIOLATIONS];                                         \
+        for (uint32_t i = 0; i < rep.count; ++i)                                      \
+            got[i] = (LintVio){ rep.v[i].rule, rep.v[i].bar };                        \
+        for (uint32_t i = 1; i < rep.count; ++i) {                                    \
+            LintVio k = got[i];                                                       \
+            uint32_t j = i;                                                           \
+            while (j > 0                                                              \
+                   && (strcmp(k.rule, got[j - 1].rule) < 0                            \
+                       || (strcmp(k.rule, got[j - 1].rule) == 0                       \
+                           && k.bar < got[j - 1].bar))) {                             \
+                got[j] = got[j - 1];                                                  \
+                --j;                                                                  \
+            }                                                                         \
+            got[j] = k;                                                               \
+        }                                                                             \
+        bool ok = rep.count == (uint32_t)NAME##_N && rep.dropped == 0;                \
+        for (uint32_t i = 0; ok && i < rep.count; ++i)                                \
+            ok = strcmp(got[i].rule, NAME[i].rule) == 0 && got[i].bar == NAME[i].bar; \
+        if (!ok) {                                                                    \
+            printf("  %s: %u violations, want %d\n", #NAME, rep.count, NAME##_N);     \
+            for (uint32_t i = 0; i < rep.count; ++i) {                                \
+                char b[280];                                                          \
+                printf("    got  %s\n", ano_violation_str(&rep.v[i], b, sizeof b));   \
+            }                                                                         \
+            for (int i = 0; i < NAME##_N; ++i)                                        \
+                printf("    want [%s] bar %d\n", NAME[i].rule, NAME[i].bar + 1);      \
+        }                                                                             \
+        CHECK(ok, #NAME);                                                             \
+    } while (0)
+
+// Every rule group, on one accumulated walk.
+#define LINT_ALL(P)                                                                  \
+    do {                                                                             \
+        ano_lint_report_reset(&rep);                                                 \
+        ano_lint(RAW, nraw, CTX, nctx, mtr, ANO_LINT_PRE, NULL, &rep);               \
+        LINT_CHECK(P##_PRE);                                                         \
+        ano_lint_report_reset(&rep);                                                 \
+        ano_lint(FIN, nfin, CTX, nctx, mtr, ANO_LINT_POST, NULL, &rep);              \
+        LINT_CHECK(P##_POST);                                                        \
+        ano_lint_report_reset(&rep);                                                  \
+        ano_lint_groove(RAW, nraw, CTX, PAR, nctx, mtr, &rep);                        \
+        LINT_CHECK(P##_GROOVE);                                                       \
+        ano_lint_report_reset(&rep);                                                  \
+        ano_lint_outer(RAW, nraw, CTX, nctx, mtr, 0.5, &rep);                         \
+        LINT_CHECK(P##_OUTER);                                                        \
+        ano_lint_report_reset(&rep);                                                  \
+        ano_lint_periods(RAW, nraw, CTX, nctx, mtr, &rep);                            \
+        LINT_CHECK(P##_PERIOD);                                                       \
+        ano_lint_report_reset(&rep);                                                  \
+        ano_lint_texture(RAW, nraw, CTX, PAR, nctx, mtr, &rep);                       \
+        LINT_CHECK(P##_TEX);                                                          \
+        ano_lint_report_reset(&rep);                                                  \
+        ano_lint_imitation(RAW, nraw, CTX, nctx, leng.st.imitationSet,             \
+                           leng.st.imitationCells, ANO_MAX_PHRASES, mtr, 0.9,      \
+                           &rep);                                                     \
+        LINT_CHECK(P##_IMIT);                                                         \
+    } while (0)
+
+#define LINT_ACCUM()                                                            \
+    do {                                                                        \
+        ano_engine_advance_bar(&leng, &lres);                                   \
+        memcpy(RAW + nraw, lres.rawEvents, lres.rawEventCount * sizeof RAW[0]); \
+        memcpy(FIN + nfin, lres.events, lres.eventCount * sizeof FIN[0]);       \
+        nraw += lres.rawEventCount;                                             \
+        nfin += lres.eventCount;                                                \
+        CTX[nctx] = lres.context;                                               \
+        PAR[nctx] = lres.params;                                                \
+        nctx++;                                                                 \
+    } while (0)
+
+        {
+            AnoEngineConfig cfg = ano_engine_config_default();
+            ano_engine_init(&leng, 42, &cfg);
+            for (int i = 0; i < 24; ++i)
+                LINT_ACCUM();
+            CHECK(nraw == 143 && nfin == 143 && nctx == 24, "L1 stream size");
+            LINT_ALL(L1);
+        }
+
+        {
+            AnoEngineConfig cfg = ano_engine_config_default();
+            cfg.hasMapper = true;
+            cfg.mapper = ano_mapping_table_default();
+            cfg.hasDramaturg = true;
+            cfg.dramaturg = ano_dramaturg_config_default();
+            AnoMotif hero = { 0 }, threat = { 0 };
+            hero.n = 4;
+            hero.shape = ANO_SHAPE_ARCH;
+            {
+                static const int RC[8] = { 0, 4, 4, 2, 6, 2, 8, 4 };
+                static const int CT[4] = { 0, 2, 1, 0 };
+                for (int j = 0; j < 4; ++j) {
+                    hero.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                    hero.contour[j] = CT[j];
+                }
+            }
+            threat.n = 3;
+            threat.shape = ANO_SHAPE_DESCENT;
+            {
+                static const int RC[6] = { 0, 2, 2, 2, 4, 4 };
+                static const int CT[3] = { 0, -1, -2 };
+                for (int j = 0; j < 3; ++j) {
+                    threat.rhythm[j] = (AnoRhythmNote){ RC[2 * j], RC[2 * j + 1] };
+                    threat.contour[j] = CT[j];
+                }
+            }
+            cfg.motifLibrary[0] = (AnoSignatureMotif){ "hero", hero, 0.9 };
+            cfg.motifLibrary[1] = (AnoSignatureMotif){ "threat", threat, 0.5 };
+            cfg.motifLibraryCount = 2;
+            cfg.cadenceRit = 0.12;
+            cfg.phraseGroove = true;
+            cfg.wanderPhrases = 4;
+            cfg.form.cadential64 = true;
+            cfg.form.periods = true;
+            cfg.form.hypermeter = true;
+            cfg.form.bassInversions = true;
+            cfg.form.split64 = true;
+            cfg.texture.doubling = true;
+            cfg.texture.animate = true;
+            cfg.texture.imitation = true;
+            cfg.texture.rotate = true;
+            cfg.texture.counter = true;
+            cfg.ties.anacrusis = true;
+            cfg.ties.suspension = true;
+            cfg.ties.syncopation = true;
+            cfg.clock.codetta = true;
+            cfg.clock.extension = true;
+            cfg.clock.elision = true;
+            cfg.melody.planApex = true;
+            cfg.melody.counterpoint = true;
+            ano_engine_init(&leng, 42, &cfg);
+            nraw = nfin = nctx = 0;
+            for (int i = 0; i < 48; ++i) {
+                switch (i) {
+                case 8:
+                    ano_engine_set_affect(&leng, NAN, 0.65, 0.8, false);
+                    break;
+                case 16:
+                    ano_engine_set_affect(&leng, 0.6, NAN, NAN, true);
+                    break;
+                case 24:
+                    ano_engine_set_affect(&leng, NAN, 0.3, 0.08, false);
+                    break;
+                case 28:
+                    leng.overrides.hasReverbSend = true;
+                    leng.overrides.reverbSend = 0.5;
+                    ano_engine_request_key(&leng, 7, false);
+                    break;
+                case 36:
+                    ano_engine_set_affect(&leng, NAN, 0.9, 0.3, false);
+                    ano_engine_request_motif(&leng, "hero");
+                    break;
+                case 44:
+                    leng.overrides.hasReverbSend = false;
+                    ano_engine_set_affect(&leng, -0.5, 0.2, NAN, false);
+                    break;
+                default:
+                    break;
+                }
+                LINT_ACCUM();
+            }
+            CHECK(nraw == 1270 && nfin == 1446 && nctx == 48, "L2 stream size");
+            LINT_ALL(L2);
+
+            // the same raw IR, corrupted: the rules must fire
+            memcpy(BAD, RAW, nraw * sizeof BAD[0]);
+            BAD[0].core.pitch = 25;   // bass below its floor, chromatic, degree a lie
+            BAD[1].core.pitch = 99;   // a drum off the map
+            BAD[3].core.pitch = 90;   // pad above its ceiling, chromatic, non-chord
+            BAD[6].core.start = 0.55; // off the grid — its doubling loses its source
+            BAD[12].degree = 7;       // an annotation that contradicts the scale
+            BAD[30].core.tie = ANO_MUSIC_TIE_IN; // continues a note that never sounded
+            BAD[62].core.pitch = 73;             // chromatic, with no licensing role
+            ano_lint_report_reset(&rep);
+            ano_lint(BAD, nraw, CTX, nctx, mtr, ANO_LINT_PRE, NULL, &rep);
+            LINT_CHECK(L3_PRE);
+
+            // the rules W2 never reaches on its own: obligations, counterpoint,
+            // groove, texture, cadence. Events, contexts and params all bent.
+            static AnoHarmonicContext CTX4[64];
+            static AnoGenParams       PAR4[64];
+            memcpy(BAD, RAW, nraw * sizeof BAD[0]);
+            memcpy(CTX4, CTX, nctx * sizeof CTX4[0]);
+            memcpy(PAR4, PAR, nctx * sizeof PAR4[0]);
+            BAD[146].core.pitch = 63; // a suspension that neither prepares nor resolves
+            BAD[438].core.pitch = 32; // the pedal run breaks before its cadence
+            BAD[205].core.layer = ANO_MUSIC_COUNTER; // a crossing countermelody
+            BAD[205].core.pitch = 85;
+            BAD[212].core.layer = ANO_MUSIC_COUNTER; // ...and its neighbour
+            snprintf(BAD[215].role, sizeof BAD[215].role, "imitation"); // no cell
+            BAD[25].core.velocity = 40; // the groove re-rolled mid-phrase
+            BAD[124].core.pitch = 60;   // a pad voicing doubling a unison
+            BAD[126].core.pitch = 52;   // ...and a voice leaping to reach it
+            BAD[6].core.pitch = 100;    // a melody note off its ceiling
+            CTX4[7].chord.degree = 4;   // an authentic cadence on IV
+            for (int i = 0; i < 8; ++i) {
+                PAR4[i].texture = ANO_TEX_MONOPHONIC; // phrase 0 claims monophony
+                // the mapper moves the shaping params every bar, which is exactly
+                // when the groove contract does NOT apply — pin the fingerprint
+                PAR4[i].noteDensity = 0.5;
+                PAR4[i].roughness = 0.0;
+                PAR4[i].velocityCenter = 80;
+                memcpy(PAR4[i].layers, PAR4[0].layers, sizeof PAR4[0].layers);
+                PAR4[i].layerCount = PAR4[0].layerCount;
+            }
+            ano_lint_report_reset(&rep);
+            ano_lint(BAD, nraw, CTX4, nctx, mtr, ANO_LINT_PRE, NULL, &rep);
+            LINT_CHECK(L4_PRE);
+            ano_lint_report_reset(&rep);
+            ano_lint_groove(BAD, nraw, CTX4, PAR4, nctx, mtr, &rep);
+            LINT_CHECK(L4_GROOVE);
+            ano_lint_report_reset(&rep);
+            ano_lint_texture(BAD, nraw, CTX4, PAR4, nctx, mtr, &rep);
+            LINT_CHECK(L4_TEX);
+            ano_lint_report_reset(&rep);
+            ano_lint_imitation(BAD, nraw, CTX4, nctx, leng.st.imitationSet,
+                               leng.st.imitationCells, ANO_MAX_PHRASES, mtr, 0.9, &rep);
+            LINT_CHECK(L4_IMIT);
+        }
+
+#undef LINT_ACCUM
+#undef LINT_ALL
+#undef LINT_CHECK
+    }
     if (failures) {
         printf("anotest_music: %d FAILURE(S)\n", failures);
         return 1;

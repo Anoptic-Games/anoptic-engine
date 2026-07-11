@@ -14,6 +14,8 @@
 
 #include "music_ir.h"
 
+#include <math.h>
+
 double ano_meter_bar_quarters(AnoMeter m)
 {
     return m.numerator * 4.0 / m.denominator;
@@ -97,6 +99,10 @@ uint32_t ano_meter_strong_slots(AnoMeter m, int out[ANO_METER_MAX_SLOTS])
     return n;
 }
 
+const char *const ANO_LAYER_NAMES[ANO_MUSIC_LAYER_COUNT] = {
+    "pad", "bass", "melody", "counter", "arp", "perc",
+};
+
 bool ano_note_event_valid(const AnoNoteEvent *ev)
 {
     if (ev->layer >= ANO_MUSIC_LAYER_COUNT)
@@ -111,6 +117,42 @@ bool ano_note_event_valid(const AnoNoteEvent *ev)
     if (ev->tie > ANO_MUSIC_TIE_BOTH)
         return false;
     return true;
+}
+
+// in/out: the event streams (in == out merges in place). cap bounds out.
+// Invariant: a chain's head is the only event kept; its dur accumulates with
+// round(.,10) exactly as the prototype does, so a half-open chain left by a
+// truncated render still yields the head's own duration.
+uint32_t ano_merge_ties(const AnoMusicEvent *in, uint32_t n,
+                        AnoMusicEvent *out, uint32_t cap)
+{
+    int open[ANO_MUSIC_LAYER_COUNT][128]; // (layer, pitch) -> index of the open head
+    for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l)
+        for (uint32_t p = 0; p < 128; ++p)
+            open[l][p] = -1;
+
+    uint32_t m = 0;
+    for (uint32_t i = 0; i < n && m < cap; ++i) {
+        AnoMusicEvent ev = in[i]; // copied: in may alias out
+        uint32_t l = ev.core.layer, p = ev.core.pitch;
+        if (l >= ANO_MUSIC_LAYER_COUNT || p > 127)
+            continue;
+        if (ev.core.tie == ANO_MUSIC_TIE_IN || ev.core.tie == ANO_MUSIC_TIE_BOTH) {
+            int h = open[l][p];
+            if (h >= 0 && fabs(out[h].core.start + out[h].core.dur - ev.core.start) < 1e-9) {
+                out[h].core.dur = ano_music_round(out[h].core.dur + ev.core.dur, 10);
+                if (ev.core.tie == ANO_MUSIC_TIE_IN)
+                    open[l][p] = -1; // the chain closed
+                continue;
+            }
+        }
+        if (ev.core.tie == ANO_MUSIC_TIE_OUT || ev.core.tie == ANO_MUSIC_TIE_BOTH) {
+            ev.core.tie = ANO_MUSIC_TIE_NONE;
+            open[l][p] = (int)m;
+        }
+        out[m++] = ev;
+    }
+    return m;
 }
 
 AnoChord ano_ctx_chord_at(const AnoHarmonicContext *ctx, double beatOffset)
