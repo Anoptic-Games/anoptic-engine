@@ -54,6 +54,36 @@ int  ano_res_init(void);
 // namespace, or before init.
 int  ano_res_mount(const char *prefix, ano_fspath root);
 
+// -- Identity and handles -----------------------------------------------------------------------
+
+// A resource handle as a value. rid = FNV-1a-64 of the logical path (ANOSTR_SID's twin:
+// same key space as compiled literals) inline for pointer-free identity checks; slot+gen
+// index the registry; {0,0,0} is the failure sentinel. A retired gen makes stale copies
+// politely invalid -- lookups yield the sentinel view, never UB.
+typedef struct { uint64_t rid; uint32_t slot; uint32_t gen; } anores_t;
+
+// The handle for a logical path, loading and taking ownership on first request
+// (single-copy: same path twice = same handle). Placement is the manager's business.
+// Sentinel handle on refusal or load failure, one log line.
+anores_t ano_res_get(const char *logical);
+
+// The whole payload as a byte view -- borrowed, never owned by the caller. One guard NUL
+// sits past the end. Valid until the handle's generation retires; the empty view on
+// sentinel/stale handles.
+anostr_t ano_res_bytes(anores_t h);
+
+// Destructively reclaim the payload: the manager relinquishes the block (the Vulkan
+// staging hand-off), the generation retires, outstanding views die. The caller owns the
+// block and frees it with ano_aligned_free. Large payloads transfer zero-copy; payloads
+// small enough to live in the shared pool are copied out (their pool block recycles).
+// Output: the block (size + one guard NUL) and its size via out-params; -1 on
+// sentinel/stale handles.
+int  ano_res_release(anores_t h, void **data, size_t *size);
+
+// Drop the manager's copy without taking it (level teardown does this in bulk via
+// allocator wink-out; this is the single-resource form). -1 on sentinel/stale handles.
+int  ano_res_unload(anores_t h);
+
 // -- Resolution (escape hatch; every call site is migration debt) ------------------------------
 
 // Absolute OS path where a logical path's bytes live right now, loose mounts only
@@ -106,5 +136,14 @@ int  ano_res_quarantine(const char *logical);
 // generation intact).
 int  ano_res_save_commit(const char *slot, uint32_t format_version,
                          const void *payload, size_t size);
+
+// Load the newest VALID gamesave: newest-seq-first, fresh handle each, framing + hashes
+// validated (never stat metadata), the frame's seq must echo the filename's, first pass
+// wins; a torn newest degrades one generation, silently to the caller, loudly in the
+// log. Orphaned protocol temps are tried last, then purged. The payload becomes an
+// owned resource under the manager, keyed "saves/<slot>" (a later call re-reads disk
+// and retires the previous generation's handles). format_version and seq out-params
+// are optional. Sentinel handle when no valid generation exists -- "start fresh".
+anores_t ano_res_save_load(const char *slot, uint32_t *format_version, uint64_t *seq);
 
 #endif // ANOPTICENGINE_ANOPTIC_RESOURCES_H

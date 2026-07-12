@@ -151,4 +151,149 @@ resources_win64.c}`. Decisions where the plan left latitude:
 - [x] resources core (non-allocation) + OS TUs
 - [x] anotest_resources (Debug, ASan, O3)
 - [x] step-0 bench bar met, numbers recorded
-- [x] Phase A commit
+- [x] Phase A commit (`8726743`)
+
+---
+
+## Phase B
+
+### B.1 — the registry (`resources_registry.c`)
+
+The intern table's shape generalized, with two deliberate divergences, both recorded as
+design decisions:
+
+- **A rid binds to its row forever.** No tombstones, no slot recycling: unload/release
+  keep the row and bump its generation; a later `get` of the same path reloads into the
+  same slot with a fresh generation. Collision-proof (the row keeps its name; a real
+  64-bit FNV collision between two live paths is detected and refused loudly), trivially
+  debuggable, and bounded by the game's distinct-path population (~48 B + name per path
+  ever seen). The free-list + tombstone machinery a recycling design needs would buy
+  nothing at that scale.
+- **Loads run under the registry mutex.** Single-copy enforcement comes free (no
+  in-flight duplicate loads, no TOCTOU), and sync load stays the primitive the async
+  tier (plan step 5) will move off-thread without changing this contract.
+
+**The thread-safety correction to model A** (the significant deviation, taken early):
+mimalloc heaps are single-thread-owner — `mi_heap_malloc` from a foreign thread is UB,
+mutex or not. The registry is cross-thread by contract, so "one multipool over one
+mi_heap" cannot be implemented literally. Landed instead:
+
+- A new pools parent, **`ano_mem_parent_default()`** (public API addition): acquires via
+  `mi_malloc_aligned` from the *acquiring thread's* default heap; frees route home
+  cross-thread. The registry's multipool sits on it, mutex-guarded — model A's "one
+  shared multipool" holds exactly, minus the wink-out (which the public V1 surface
+  cannot reach anyway: there is no shutdown function).
+- **Placement split at the multipool's top class (1 MiB)**: pooled below (recycling
+  churn), standalone `mi_malloc_aligned` above, tracked per-row with a `direct` flag.
+  This makes `ano_res_release` a true zero-copy hand-off for exactly the payloads that
+  matter (textures, buffers — the Vulkan staging shapes): the taker owns the block and
+  frees it with `ano_aligned_free`. Pool-resident payloads copy out on release and their
+  block recycles. Both documented in the header.
+- **Read-to-home for direct payloads**: `res_read_all`'s buffer *is* the resident
+  payload for direct-class loads — zero copies from disk to residence. Pooled loads do
+  one bounded (≤1 MiB) copy into their class block.
+- Payloads carry the same guard-NUL contract as slurp; `ano_res_bytes` views stay valid
+  after unlock until the generation retires (the handle contract, not the mutex's).
+- `res_read_all` gained a NULL-heap mode (default-heap mi family) for exactly this
+  cross-thread consumer; the public slurp contract is unchanged.
+
+### B.2 — gamesave loading
+
+`ano_res_save_load`: newest-seq-first over a scan (no mtime, ever), fresh read + full
+frame validation per candidate, the frame's seq must echo the filename's (rename
+masquerade refused), first valid wins and becomes the owned resource `"saves/<slot>"`
+(a later load re-reads disk and retires the previous generation's handles). Orphaned
+protocol temps are tried last — a valid one is *recovered* (the crash happened between
+fsync and rename; the data is real) — then purged unconditionally. Serialized against
+commits on the save mutex.
+
+The corruption battery in `anotest_resources` drives every degradation path with
+independent in-test oracles: payload bit-flip (body damage → degrade one), header
+bit-flip (header damage → degrade), truncation (→ degrade), rename masquerade (skipped
+via seq echo), all-corrupt (→ sentinel, start fresh), valid orphan temp (recovered,
+fmt/seq/payload exact, then purged), garbage temp (purged). The write-protocol crash
+harness (`anotest_resfault`) compiles `resources_core.c` privately with
+`ANO_RES_FAULT_INJECT` (the `log_old.c` link-override trick) and longjmps out after
+each protocol step: the target file is old-complete or new-complete at every crash
+instant, pre-rename crashes keep the old bytes, post-rename crashes have the new.
+
+### B.3 — `anoptic_res_graphics.h` (the parsing extension)
+
+- **cgltf and stb_image live in `src/resources/graphics/res_graphics.c` and nowhere
+  else.** The renderer's `ano_GltfParser.c` lost its `CGLTF_IMPLEMENTATION` (it links
+  the core's copy until Phase C deletes it). stb is compiled `STB_IMAGE_STATIC` +
+  `STBI_NO_STDIO` (decode-from-memory only — file IO is *structurally* impossible in
+  the decoder) + `STBI_NO_HDR/LINEAR` (keeps libm out of anoptic_core).
+- **All parse-time allocation is a monotonic arena over a scoped heap** — cgltf's
+  memory hooks bump-allocate, its free hook is a no-op, and the whole staging (JSON
+  DOM, .bin payloads, base64 decodes) winks out when ingest returns. Zero loose
+  malloc/free in the ingest path, exactly the plan's §8 CPU shape.
+- **cgltf's file callback routes through the mount walk**: sibling `.bin` URIs resolve
+  against the glTF's own *logical* directory, percent-decoded and `./..`-collapsed,
+  then read through `res_candidates` — pack mounts and write-root shadowing will apply
+  to buffer files for free. GLB and data: URIs ride the same hooks.
+- **The conditioned scene is one self-contained offset-based block** (16-aligned
+  arrays, zero-filled padding for byte determinism) adopted into the registry as
+  `"<source>#gfx"` — single-copy, generation-guarded, and already load-in-place shaped
+  for the step-7 bake. Serving is `ano_resgfx_scene(h)`: bounds-checked views, zeroed
+  struct on stale handles.
+- **File truth only**: materials mirror every factor/texref the file declares (feature
+  bits value-compatible with the renderer's `PbrFeatureFlags`, static-assert planned at
+  the consumer); images are logical paths + an sRGB slot-aggregation hint. GPU concerns
+  (activeFeatures gating, which images to decode, bindless registration, SSBO baking)
+  stay in the renderer, applied on these views in Phase C.
+- `ano_resgfx_image`: stb decode of a handle's bytes to caller-owned RGBA8
+  (`ano_aligned_free`), the release-style hand-off.
+
+### B.4 — Phase B verification
+
+- `anotest_resources` grew the handle oracles (single-copy double-get, SID/rid key-space
+  equivalence *at compile time*, stale-generation sentinels on every entry point,
+  pooled copy-out vs direct zero-copy release — pointer-equality proven) and the
+  save-load battery above.
+- `anotest_resgfx`: handcrafted triangle glTF asserted field-by-field (vertices, indices,
+  node graph, transform translation, every material factor and feature bit, decoded
+  percent-encoded URI grafted onto the source dir, sRGB hint), base64 data: URI variant,
+  single-copy scenes, stale-source refusal, PNG round-trip against stb_image_write as an
+  independent encoder oracle, garbage-decode refusal, and the real viking_room.gltf
+  (17406 verts, 3 images) ingested + its texture decoded through the namespace.
+- Full suite green; ASan green on all resource tests; adversarial review workflow run
+  before commit (findings and dispositions below).
+
+### B.5 — pre-commit adversarial review: findings and dispositions
+
+A 4-dimension review fan-out (concurrency, memory, durability protocol, parsing) ran
+before the commit; its verification stage was cut short by a session usage limit, so
+every surfaced finding was re-verified by hand instead. Dispositions:
+
+**Fixed:**
+1. *Ingest never called `cgltf_validate`* — real: hostile accessor offsets could walk
+   the conditioning loops out of bounds. Now validated after `cgltf_load_buffers`.
+2. *`ano_resgfx_scene` bounds math could wrap in u64* — real: any loaded handle can be
+   passed as a scene, so a crafted header could serve wild view pointers. Rewritten
+   overflow-proof (offset ≤ len, then count ≤ remaining/elemsize).
+3. *Orphan-temp matcher cross-matched dotted-prefix slot names* — real: slot `save`
+   would claim `save.backup.3.anosave...tmp`. Matcher now requires the strict
+   `<slot>.<digits>.anosave*.tmp` shape.
+4. *`save_commit` ignored a failed directory scan* — real: a guessed seq=1 could
+   rename-replace a live generation. Scan failure now refuses the commit.
+5. *`save_load` conflated unreadable-dir with fresh-start* — logs a distinct warning
+   now (behavior stays "start fresh": nothing readable is nothing loadable).
+6. *A winning orphan temp was unlinked, deleting the save's only on-disk copy* — real
+   and the best find of the run. The load path now **completes the interrupted
+   protocol**: a validating temp is renamed to `<slot>.<frame-seq>.anosave` (its seq
+   echo holds by construction) + dir fsync; only then do stale temps purge. Test
+   strengthened to assert the recovered generation survives a reload.
+7. *seq parser accepted leading zeros* (duplicate-seq aliasing could mis-prune) and
+   *`UINT64_MAX` filenames wrapped max+1 to 0* — both rejected in the now-shared
+   `res_save_name_seq` (also de-duplicating the commit/load parser copies).
+8. *Load scan kept the FIRST 64 seqs in readdir order* — real under tampering/prune
+   failure backlogs: newest could be silently skipped. Now a sorted keep-newest-64
+   insertion.
+
+**Rejected / recorded:**
+- *Dir-fsync failure returns success* — per plan §10, verbatim ("logs loudly, returns
+  0"); not changed.
+- *Non-save protocol temps are never garbage-collected* — true; correctness holds
+  (O_EXCL + fresh nonce per attempt). Recorded as a rung for the step-4 config client.
+- One duplicate of the bounds-math finding.

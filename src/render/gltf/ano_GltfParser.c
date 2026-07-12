@@ -6,8 +6,24 @@
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
 
-#define CGLTF_IMPLEMENTATION
+// The cgltf implementation now lives in anoptic_core (src/resources/graphics/): this
+// TU consumes declarations only, and dies entirely at the phase-C migration.
 #include <cgltf.h>
+
+// Local copy of cgltf's static combine_paths (implementation-private there).
+static void gltf_combine_paths(char *path, const char *base, const char *uri)
+{
+    const char *s0 = strrchr(base, '/');
+    const char *s1 = strrchr(base, '\\');
+    const char *slash = s0 ? (s1 && s1 > s0 ? s1 : s0) : s1;
+    if (slash) {
+        size_t prefix = (size_t)(slash - base) + 1;
+        strncpy(path, base, prefix);
+        strcpy(path + prefix, uri);
+    } else {
+        strcpy(path, uri);
+    }
+}
 
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
@@ -265,7 +281,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 textureLoaded[t] = false;
                 continue;
             }
-            cgltf_combine_paths(texPath, fileName, tex->image->uri);
+            gltf_combine_paths(texPath, fileName, tex->image->uri);
             cgltf_decode_uri(texPath + strlen(texPath) - strlen(tex->image->uri));
             bool success = createTextureImage(
                 ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],

@@ -13,4 +13,6 @@ endif ()
 # Universally compiled source files
 target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/resources_core.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources_registry.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/res_graphics.c
 )
