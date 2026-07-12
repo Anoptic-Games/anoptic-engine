@@ -6,6 +6,8 @@
   #   nix build .#<type>[-headless]-<platform>-<arch>[-<backend>]   any permutation:
   #     release-linux-x64[-wayland|-x11]   debug-linux-x64[-wayland|-x11]
   #     release-headless-linux-x64         debug-headless-linux-x64
+  #     release-linux-x64-anygpu (alias: .#anygpu)   debug-linux-x64-anygpu   bundled mesa ICDs
+  #   nix run .#nvidia|.#nvidia-debug      pure engine on the host NVIDIA driver (nixglhost)
   #     (same set with -aarch64 on ARM Linux; -macos-aarch64 on Apple Silicon)
   #     release-windows-x64 (alias: release-wsl)  debug-windows-x64  *-headless-windows-x64
   #   nix build .#tests-headless           run a CTest suite in the sandbox (fails = red)
@@ -19,6 +21,7 @@
   #                                        auto-inits absent submodules, stages assets/ best-effort,
   #                                        then launches the engine for N=1|2 (renderer) or N=3
   #                                        (headless console, runs in WSL too); test profiles run ctest
+  #                                        foreign distros bridge to the host GPU (nixglhost / mesa ICDs)
   #   nix develop [.#windows]              the same env, you drive
   #
   # git flakes see tracked files only: `git add` new files or nix will not.
@@ -52,6 +55,12 @@
       url = "github:Anoptic-Games/assets-free";
       flake = false;
     };
+
+    # Host NVIDIA userspace bridge for non-NixOS hosts.
+    nix-gl-host = {
+      url = "github:numtide/nix-gl-host";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -63,6 +72,7 @@
       glfw-src,
       cgltf-src,
       anoptic-assets,
+      nix-gl-host,
     }:
     let
       lib = nixpkgs.lib;
@@ -83,6 +93,18 @@
           pkgs.vulkan-validation-layers
         else
           null;
+
+      # Store mesa Vulkan ICDs, colon-joined: hardware first, lvp last.
+      mesaVkIcdPaths =
+        pkgs: host:
+        lib.concatStringsSep ":" (
+          map (d: "${pkgs.mesa}/share/vulkan/icd.d/${d}_icd.${host.parsed.cpu.name}.json") [
+            "radeon"
+            "intel"
+            "nouveau"
+            "lvp"
+          ]
+        );
 
       # libdecor without its GTK plugin: the cairo plugin draws the decorations and GTK3's
       # ~290 MiB closure stays out of the engine's runtime.
@@ -128,6 +150,7 @@
       # wayland/x11: Linux renderer backends (both on = runtime-selected).
       # tests: ANOPTIC_TESTS + ctest in checkPhase. sanitize: asan | tsan | "".
       # softwareVulkan: point the loader at mesa's lavapipe ICD (sandboxed GPU tests).
+      # anyGpu: mesa ICDs as a VK_ADD_DRIVER_FILES default. Opt out: VK_ADD_DRIVER_FILES="".
       # Invariant: install ships bin/anopticengine + bin/resources/shaders.
       mkEngine =
         {
@@ -141,6 +164,7 @@
           tests ? false,
           sanitize ? "",
           softwareVulkan ? false,
+          anyGpu ? false,
         }:
         let
           renderer = !headless;
@@ -160,6 +184,12 @@
               "VK_LAYER_PATH"
               ":"
               "${vvl}/share/vulkan/explicit_layer.d"
+            ]
+            # Additive to the host ICD scan.
+            ++ lib.optionals (renderer && host.isLinux && anyGpu) [
+              "--set-default"
+              "VK_ADD_DRIVER_FILES"
+              (mesaVkIcdPaths pkgs host)
             ];
           # Render libs on Linux: GLFW 3.4 links none of them — every one is dlopen()ed at
           # runtime (see postFixup). Doubling as buildInputs supplies headers plus the dev-shell
@@ -365,6 +395,14 @@
                 buildType = "Debug";
                 wayland = false;
               };
+              "release-${hostTag}-anygpu" = {
+                buildType = "Release";
+                anyGpu = true;
+              };
+              "debug-${hostTag}-anygpu" = {
+                buildType = "Debug";
+                anyGpu = true;
+              };
             }
           );
 
@@ -398,6 +436,9 @@
             release-headless = native."release-headless-${hostTag}";
             debug-headless = native."debug-headless-${hostTag}";
             headless = native."release-headless-${hostTag}";
+          }
+          // lib.optionalAttrs isLinux {
+            anygpu = native."release-${hostTag}-anygpu";
           };
 
           # Sandbox test suites. Building one runs it. Sanitized suites run headless.
@@ -431,6 +472,9 @@
               };
             }
           );
+
+          # nixglhost: harvests the host NVIDIA userspace at runtime (non-NixOS).
+          nixglhost = if isLinux then nix-gl-host.packages.${system}.default else null;
 
           # nix run [-- N]: the impure entry. Fatal pin check, submodule/asset supply,
           # then ./build.sh N in the dev shell.
@@ -517,10 +561,38 @@
                   exit 1
                 fi
                 echo "[anoptic] launching $bin"
+                ${lib.optionalString isLinux ''
+                  # Foreign distro: stage store mesa ICDs, bridge NVIDIA via nixglhost.
+                  if [ ! -e /run/opengl-driver ] && [ "$mode" != "3" ]; then
+                    export VK_ADD_DRIVER_FILES="''${VK_ADD_DRIVER_FILES-${mesaVkIcdPaths pkgs host}}"
+                    if [ -e /proc/driver/nvidia/version ]; then
+                      echo "[anoptic] NVIDIA kernel module detected — bridging via nixglhost."
+                      exec nix develop "$root" --command ${nixglhost}/bin/nixglhost "$bin"
+                    fi
+                  fi
+                ''}
                 exec nix develop "$root" --command "$bin"
               fi
             '';
           };
+
+          # Pure engine on the host NVIDIA driver via nixglhost.
+          nvidiaLaunchers = lib.optionalAttrs isLinux (
+            lib.mapAttrs
+              (
+                name: engine:
+                pkgs.writeShellApplication {
+                  name = "anoptic-${name}";
+                  text = ''
+                    exec ${nixglhost}/bin/nixglhost ${lib.getExe engine} "$@"
+                  '';
+                }
+              )
+              {
+                nvidia = native."release-${hostTag}";
+                nvidia-debug = native."debug-${hostTag}";
+              }
+          );
 
           # llvm: llvm-ar/-ranlib keep ThinLTO in-shell. lldb version-matched to clang.
           shellTools =
@@ -619,13 +691,20 @@
           };
         in
         {
-          packages = native // windows // aliases // checks;
+          packages = native // windows // aliases // checks // nvidiaLaunchers;
           inherit checks devShells;
-          apps.default = {
+          apps = {
+            default = {
+              type = "app";
+              program = lib.getExe runWrapper;
+              meta.description = "Anoptic Engine — C23 game engine for million-entity simulation";
+            };
+          }
+          // lib.mapAttrs (name: launcher: {
             type = "app";
-            program = lib.getExe runWrapper;
-            meta.description = "Anoptic Engine — C23 game engine for million-entity simulation";
-          };
+            program = lib.getExe launcher;
+            meta.description = "Anoptic Engine — pure ${name} launch on the host NVIDIA driver";
+          }) nvidiaLaunchers;
         };
       # Evaluate each system once, then project the output types.
       perSys = forAllSystems perSystem;
