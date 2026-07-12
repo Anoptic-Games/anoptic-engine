@@ -612,20 +612,40 @@ int main(void)
         };
 
         static const double IE[] = { 0x0.0p+0, 0x1.0000000000000p-1, 0x1.1eb851eb851ecp-1, 0x1.3851eb851eb85p-1, 0x1.428f5c28f5c29p-1, 0x1.6666666666666p-1, 0x1.75c28f5c28f5cp-1, 0x1.51eb851eb851fp-1, 0x1.28f5c28f5c28fp-1, 0x1.147ae147ae148p-1, 0x1.0000000000000p-1, 0x1.999999999999ap-2 };
+        // The oracle emits patch NAMES; the id is this engine's own business, so
+        // the golden is written in names. (It was written in raw ints, which
+        // silently encoded one particular numbering of AnoPatchName — and broke
+        // the moment the vocabulary grew.)
+        #define W ANO_PATCH_WARM
+        #define B ANO_PATCH_BRIGHT
+        #define R ANO_PATCH_ROUND
+        #define D ANO_PATCH_DRIVEN
+        #define S ANO_PATCH_SOFT
+        #define H ANO_PATCH_HARD
+        #define P ANO_PATCH_PLUCK
+        #define G ANO_PATCH_GLASS
         static const struct { int pad, bass, melody, arp; } IP[] = {
-            { 1, 3, 5, 7 },
-            { 1, 3, 5, 7 },
-            { 1, 3, 6, 7 },
-            { 2, 3, 6, 7 },
-            { 2, 4, 6, 7 },
-            { 2, 4, 6, 7 },
-            { 2, 4, 6, 8 },
-            { 2, 4, 6, 8 },
-            { 2, 4, 6, 7 },
-            { 2, 4, 6, 7 },
-            { 1, 3, 6, 7 },
-            { 1, 3, 5, 7 },
+            { W, R, S, P },
+            { W, R, S, P },
+            { W, R, H, P },
+            { B, R, H, P },
+            { B, D, H, P },
+            { B, D, H, P },
+            { B, D, H, G },
+            { B, D, H, G },
+            { B, D, H, P },
+            { B, D, H, P },
+            { W, R, H, P },
+            { W, R, S, P },
         };
+        #undef W
+        #undef B
+        #undef R
+        #undef D
+        #undef S
+        #undef H
+        #undef P
+        #undef G
 
         static const struct { double c, tg, m, out; } SL[] = {
             { 0x1.9000000000000p+6, 0x1.0400000000000p+7, 0x1.0000000000000p+1, 0x1.9800000000000p+6 },

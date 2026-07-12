@@ -221,12 +221,22 @@ int main(int argc, char **argv)
         AnoMusicalParams p = { .tempoBpm = 100.0, .filterCutoff = 3200.0f,
                                .reverbSend = 0.25f, .delaySend = 0.1f,
                                .drive = 0.15f, .stereoWidth = 0.9f };
-        p.instruments[ANO_MUSIC_PAD]    = ANO_SYNTH_PATCH_MORPH;
-        p.instruments[ANO_MUSIC_MELODY] = ANO_SYNTH_PATCH_KEYS;
-        p.instruments[ANO_MUSIC_ARP]    = ANO_SYNTH_PATCH_CHIMES;
+        // The composer names a timbre; this synth decides which voice plays it.
+        // Two id spaces, one table — and a row keyed to the wrong voice is
+        // SILENT: the music plays on, in the wrong instrument. (It did. The bass
+        // patch played the melody for a while, and only an ear caught it.) So the
+        // seam is checked by name, which is the thing both sides actually agree on.
+        for (uint32_t i = 0; i < ANO_PATCH_COUNT; ++i)
+            CHECK(strcmp(ano_music_patch_name(i),
+                         ano_synth_patch_name(ano_synth_patch_of(i))) == 0,
+                  "every timbre the composer can name is played by the voice of that name");
+
+        p.instruments[ANO_MUSIC_PAD]    = ANO_PATCH_MORPH;
+        p.instruments[ANO_MUSIC_MELODY] = ANO_PATCH_KEYS;
+        p.instruments[ANO_MUSIC_ARP]    = ANO_PATCH_CHIMES;
         AnoMusicAffect a = { 0.2f, 0.5f, 0.4f };
         for (uint32_t b = 0; b < 4; ++b) {
-            if (b == 2) p.instruments[ANO_MUSIC_ARP] = ANO_SYNTH_PATCH_GLASS;
+            if (b == 2) p.instruments[ANO_MUSIC_ARP] = ANO_PATCH_GLASS;
             ano_synth_score_bar(syn, b, &p, &a);
         }
         // one long morphing pad, a bell phrase, chime/glass arps

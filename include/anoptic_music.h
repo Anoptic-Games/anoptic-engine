@@ -94,8 +94,9 @@ typedef struct AnoMusicAffect
 // 4.4; defaults are tuning). An immutable value struct: the conductor derives
 // variants by copy. The DSP-tier fields (filterCutoff .. stereoWidth) reach
 // the audio library as retarget values, never per-sample automation. String
-// fields of the prototype are interned: `instruments` holds per-layer patch
-// ids from the synth's registry (anoptic_synth.h), 0 = the layer's default.
+// fields of the prototype are interned: `instruments` holds an AnoPatchName per
+// layer (NOT a backend's own id — the composer names a timbre and the backend
+// decides what plays it), 0 = the layer's default.
 typedef struct AnoMusicalParams
 {
     double   tempoBpm;         // 100.0
@@ -108,7 +109,7 @@ typedef struct AnoMusicalParams
     uint8_t  layersActive;     // bitmask by AnoMusicLayer; bit set = sounding
     float    harmonicRhythm;   // 1.0
     float    dissonanceBudget; // 0.0
-    uint16_t instruments[ANO_MUSIC_LAYER_COUNT]; // synth patch ids; 0 = default
+    uint16_t instruments[ANO_MUSIC_LAYER_COUNT]; // AnoPatchName; 0 = layer default
 
     // DSP tier
     float filterCutoff; // Hz, 2500.0
@@ -166,17 +167,32 @@ typedef enum AnoTexture
 // maps them to voice variants).
 typedef enum AnoPatchName
 {
-    ANO_PATCH_NONE = 0,
-    ANO_PATCH_WARM,
-    ANO_PATCH_BRIGHT,
-    ANO_PATCH_ROUND,
-    ANO_PATCH_DRIVEN,
-    ANO_PATCH_SOFT,
-    ANO_PATCH_HARD,
-    ANO_PATCH_PLUCK,
-    ANO_PATCH_GLASS,
+    ANO_PATCH_NONE = 0,   // the layer's own default
+    // pads
+    ANO_PATCH_WARM,       // tight-detune 3-saw, mono, slow attack
+    ANO_PATCH_BRIGHT,     // wide-detune 3-saw, stereo spread, fast attack
+    ANO_PATCH_MORPH,      // morphing wavetable
+    ANO_PATCH_BREEZE,     // texture (reserved by the synth; falls back)
+    // basses
+    ANO_PATCH_ROUND,      // saw + sub sine, filter-envelope pluck
+    ANO_PATCH_DRIVEN,     // the same, tanh pre-drive, hotter sweep
+    ANO_PATCH_BAD_GROUND, // texture (reserved)
+    // melodic voices
+    ANO_PATCH_SOFT,       // lead: tri + saw, delayed vibrato
+    ANO_PATCH_HARD,       // lead: saw + square, faster hotter vibrato
+    ANO_PATCH_MELLOW,     // lead: tri + sine — the countermelody voice
+    ANO_PATCH_KEYS,       // repitched bell sampler
+    ANO_PATCH_WHISTLE,    // texture (reserved)
+    // arps
+    ANO_PATCH_PLUCK,      // 2-op FM
+    ANO_PATCH_GLASS,      // 2-op FM, higher ratio
+    ANO_PATCH_CHIMES,     // 5-partial tubular additive
     ANO_PATCH_COUNT,
 } AnoPatchName;
+
+// Name <-> id, for config text and authored fixtures. Unknown name returns 0.
+uint32_t    ano_music_patch_id(const char *name);
+const char *ano_music_patch_name(uint32_t id);
 
 // ---------------------------------------------------------------------------
 // Authored motifs (TECH_SPEC section 5.5: the game's one place to bind meaning)
@@ -320,6 +336,14 @@ typedef struct AnoMappingTable
 } AnoMappingTable;
 
 AnoMappingTable ano_mapping_table_default(void);
+
+// A second personality, and the point of the table being public: the same engine,
+// the same seed, a different band. Where the default reaches for the acoustic
+// vocabulary (saw pads, a plucked bass, a lead over the top), this one reaches for
+// the synthetic one — a wavetable bass, filter-envelope plucks carrying the
+// melody, a soft lead in the arp. Nothing here is a different ENGINE; it is a
+// different set of instruments handed to the same composer.
+AnoMappingTable ano_mapping_table_electronic(void);
 
 // ---------------------------------------------------------------------------
 // The dramaturg: the tension ledger (TECH_SPEC section 5.8)

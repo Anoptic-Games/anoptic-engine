@@ -36,6 +36,34 @@ static const char *const PATCH_NAMES[ANO_SYNTH_PATCH_COUNT] = {
     "soft", "hard", "mellow", "keys", "whistle", "pluck", "glass", "chimes",
 };
 
+// The composer names a TIMBRE (AnoPatchName, anoptic_music.h); the synth owns a
+// REGISTRY of voices that can play one. Two id spaces, and this is the only place
+// they meet — the music module cannot know what a backend implements, and this
+// backend's palette is its own business. They happen to line up today; the map is
+// explicit anyway, because the day they stop lining up must be a compile error and
+// not a bass patch quietly playing the melody. (It was, for a while. It sounded
+// great, and it was wrong.)
+static const uint8_t PATCH_OF_MUSIC[ANO_PATCH_COUNT] = {
+    [ANO_PATCH_NONE]       = ANO_SYNTH_PATCH_DEFAULT,
+    [ANO_PATCH_WARM]       = ANO_SYNTH_PATCH_WARM,
+    [ANO_PATCH_BRIGHT]     = ANO_SYNTH_PATCH_BRIGHT,
+    [ANO_PATCH_MORPH]      = ANO_SYNTH_PATCH_MORPH,
+    [ANO_PATCH_BREEZE]     = ANO_SYNTH_PATCH_BREEZE,
+    [ANO_PATCH_ROUND]      = ANO_SYNTH_PATCH_ROUND,
+    [ANO_PATCH_DRIVEN]     = ANO_SYNTH_PATCH_DRIVEN,
+    [ANO_PATCH_BAD_GROUND] = ANO_SYNTH_PATCH_BAD_GROUND,
+    [ANO_PATCH_SOFT]       = ANO_SYNTH_PATCH_SOFT,
+    [ANO_PATCH_HARD]       = ANO_SYNTH_PATCH_HARD,
+    [ANO_PATCH_MELLOW]     = ANO_SYNTH_PATCH_MELLOW,
+    [ANO_PATCH_KEYS]       = ANO_SYNTH_PATCH_KEYS,
+    [ANO_PATCH_WHISTLE]    = ANO_SYNTH_PATCH_WHISTLE,
+    [ANO_PATCH_PLUCK]      = ANO_SYNTH_PATCH_PLUCK,
+    [ANO_PATCH_GLASS]      = ANO_SYNTH_PATCH_GLASS,
+    [ANO_PATCH_CHIMES]     = ANO_SYNTH_PATCH_CHIMES,
+};
+_Static_assert(ANO_PATCH_COUNT == 16,
+               "a new AnoPatchName needs a synth patch to play it (PATCH_OF_MUSIC)");
+
 uint32_t ano_synth_patch_id(const char *name)
 {
     if (!name)
@@ -49,6 +77,12 @@ uint32_t ano_synth_patch_id(const char *name)
 const char *ano_synth_patch_name(uint32_t id)
 {
     return id < ANO_SYNTH_PATCH_COUNT ? PATCH_NAMES[id] : "";
+}
+
+uint32_t ano_synth_patch_of(uint32_t musicPatch)
+{
+    return musicPatch < ANO_PATCH_COUNT ? PATCH_OF_MUSIC[musicPatch]
+                                        : ANO_SYNTH_PATCH_DEFAULT;
 }
 
 // ---------------------------------------------------------------------------
@@ -845,7 +879,11 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
     s->duckDepth.target = 0.4f * bar->affect.energy * bar->affect.energy;
     s->shimGain.target  = 0.35f * bar->affect.tension * bar->affect.tension;
     s->grain.density    = 2.0f + bar->affect.tension * 14.0f;
-    memcpy(s->instruments, p->instruments, sizeof s->instruments);
+    for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l) {
+        uint16_t want = p->instruments[l];
+        s->instruments[l] = want < ANO_PATCH_COUNT ? PATCH_OF_MUSIC[want]
+                                                   : ANO_SYNTH_PATCH_DEFAULT;
+    }
 }
 
 static void synth_spawn_note(AnoSynth *s, AnoSynthNote *n)
