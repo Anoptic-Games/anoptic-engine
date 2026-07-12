@@ -9,6 +9,8 @@ The Anoptic Game Engine is designed to create games that can handle large number
 - **Parallel logic/render worlds**: The simulation (logic/ECS master thread) and the renderer (its own thread) run as two parallel worlds joined by lock-free single-producer/single-consumer rings. The logic side streams only *discrete* state transitions; continuous, GPU-parameterized motion is sent once and never restreamed. See [Architecture](#architecture).
 - **Events**: Enable interactions between different systems via a generalized event bus.
 - **Vulkan Renderer**: GPU-driven Vulkan backend, run on a dedicated render thread that owns all GPU resources and the renderable slot space. Meshlet rendering via `VK_EXT_mesh_shader` on modern hardware, with an automatic vertex-shader fallback for devices that lack the extension (see [Rendering Compatibility](#rendering-compatibility)). Per-entity GPU buffers grow dynamically, so entity count is not capped by a fixed ceiling.
+- **Audio**: Lock-free mixer on its own thread — buses, insert chains, sends, constant-power spatialization — fed by the logic thread over a command/event bridge. Device backends are hand-rolled per platform (PipeWire/ALSA, WASAPI/DirectSound, CoreAudio) with an automatic cascade to a null device for headless runs. See [Audio Credits](#audio-credits).
+- **Generative music**: The engine does not play a soundtrack; it *composes* one. A conductor decides each bar — harmony, melody, counterpoint, rhythm, instrumentation — from an affect signal the game drives (valence, energy, tension), and hands it to a synthesizer, both running inside the audio callback about two bars ahead of the playhead. The piece has no length and no loop point. Steering, a bar's musical meaning (cadences, key arrivals, motif landings), and save/seek all ride the audio bridge. Composition is deterministic to the bit, so a save file is a seed and a control script rather than a recording. See [`src/music/ANOPTIC_MUSICGEN.md`](src/music/ANOPTIC_MUSICGEN.md).
 - **Custom Allocators**: Uses mimalloc for a fast global allocator implementation, as well as several special-purpose local allocators.
 - **Platform Compatibility**: Built and tested for full feature parity on Linux, macOS, and Windows.
 - **Networking**: Built-in networking support for p2p or authoritative server.
@@ -255,6 +257,25 @@ ANO_DEVICE=direct3d12 ./build/Release/anopticengine    # deliberately test a lay
 ```
 
 If nothing matches, the engine warns and selects automatically.
+
+### Audio Credits
+
+The audio module's device backends are our own, but they would have taken far longer, and
+worked far less well, without [miniaudio](https://github.com/mackron/miniaudio) to read.
+David Reid (mackron) and miniaudio's contributors have done the unglamorous work of getting
+audio right on every platform anyone actually ships on, and then given it away — public
+domain or MIT-0, no strings.
+
+We chose to hand-roll rather than vendor (the charter rules out heavyweight dependencies,
+and we wanted native PipeWire, which miniaudio does not target). But miniaudio was the
+reference baseline throughout: the COM-from-C vtable dance for WASAPI, the DirectSound
+cursor-chase loop, the libasound protocol for ALSA, and the AUHAL setup on macOS were all
+learned from its source, and the backends cite it by line where they lean on it
+(`docs/references/miniaudio-legend.md`). sokol_audio was valuable reading on the same
+questions.
+
+Thank you. Reading a good implementation is the cheapest education in this field, and
+miniaudio is a good implementation.
 
 ### More
 
