@@ -16,6 +16,7 @@
 
 #include <anoptic_filesystem.h>
 #include <anoptic_memory.h>
+#include <anoptic_memory_pools.h>   // ano_mem_stats for res_reg_stats
 #include <anoptic_resources.h>      // anores_t
 
 #include "resources_os.h"
@@ -69,6 +70,43 @@ int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
 
 // Registry construction (resources_registry.c), called once from ano_res_init.
 int res_registry_init(void);
+
+// ---------------------------------------------------------------------------------------------
+// The section-5 bake-off switch, read once from ANO_RES_MODEL at registry init.
+// Model E is the shipped default (the Phase D decision); "A" selects the baseline so
+// the bench comparison cannot rot. One binary serves both; the bench runs twice.
+
+typedef enum { RES_MODEL_A = 0, RES_MODEL_E = 1 } res_model_t;
+res_model_t res_model(void);
+
+// Lifetime groups (internal-only for the bake-off; public promotion waits for a real
+// level consumer). The open group is AMBIENT under the registry mutex: any load on any
+// thread during an open scope joins it -- the level-load shape, revisited at step 5.
+// Group 0 is engine-forever: always open, never retirable; saves pin to it
+// structurally. Under model A groups are registry tags over the one shared pool and
+// retire sweeps per-object; under model E each group owns a multipool destroyed whole
+// at retire (chunk-granular teardown; heap wink-out arrives with the loader thread).
+
+// Open a scope and make it ambient. Output: group id >= 1, or -1 (table full, not
+// ready, or the group pool could not be made).
+int  res_group_begin(void);
+
+// End the ambient scope (payloads stay live until retire). Hostile ids are a no-op.
+void res_group_end(int g);
+
+// Retire a group: every loaded row of g goes sentinel (gen bump, the unload contract),
+// direct blocks free, pooled payloads free per-object (A) or die with the group pool
+// (E, destroyed outside the lock). Output: 0; -1 on group 0, unopened, or junk ids.
+int  res_group_retire(int g);
+
+// Aggregate placement stats for tests and the bench: pool stats summed over open
+// groups, plus live direct-class payloads (guard NUL included in bytes).
+typedef struct res_reg_stats {
+    ano_mem_stats pools;
+    size_t direct_bytes;
+    size_t direct_blocks;
+} res_reg_stats;
+res_reg_stats res_registry_stats(void);
 
 // Registry access for the domain extensions.
 // The logical name of a LIVE handle (NUL-terminated into out). 0 / -1.

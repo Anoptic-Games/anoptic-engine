@@ -120,11 +120,19 @@ static void sc_illegal(void)
 }
 
 #if defined(__x86_64__) || defined(_M_X64)
-// Hardware integer divide fault (x86-only, aarch64 does not trap).
-static void sc_intdiv(void)
+// Optimizers may not touch a crash inducer: InstCombine folds constant-dividend 1/x
+// into icmp+select (no idiv, no trap, "wrong death: exit 0" at -O2+).
+#if defined(__clang__)
+#define BB_NOOPT __attribute__((optnone))
+#else
+#define BB_NOOPT __attribute__((optimize("O0")))
+#endif
+// Hardware integer divide fault (x86-only, aarch64 does not trap). Both operands
+// volatile so the divide itself must be emitted.
+static BB_NOOPT void sc_intdiv(void)
 {
-    volatile int z = 0;
-    volatile int r = 1 / z;
+    volatile int n = 1, z = 0;
+    volatile int r = n / z;
     (void)r;
 }
 #endif

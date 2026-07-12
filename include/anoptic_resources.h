@@ -37,7 +37,8 @@
 #include "anoptic_strings.h"      // anostr_t views, ANOSTR_SID, interning
 
 #define ANO_RES_MAX_MOUNTS 8  // read-only roots beyond the two built-ins
-#define ANO_RES_SAVE_KEEP  3  // gamesave generations retained per slot
+#define ANO_RES_SAVE_KEEP  3  // ADVISORY bulk hint: generations beyond this suggest
+                              // prompting the user (nothing is ever auto-deleted)
 
 // -- Lifecycle and mounts ---------------------------------------------------------------------
 
@@ -130,12 +131,24 @@ int  ano_res_quarantine(const char *logical);
 
 // Commit a gamesave generation: framed payload (48-byte header, hashed, 16-byte
 // footer) via the full protocol to a BRAND-NEW filename "saves/<slot>.<seq>.anosave",
-// verified through a fresh read handle before older generations are pruned (keep
-// ANO_RES_SAVE_KEEP). slot is a single path segment. Same-slot commits serialize
-// internally. Output: 0 when durable AND verified; -1 otherwise (every prior
-// generation intact).
+// verified through a fresh read handle. Saves are user data: NOTHING older is ever
+// deleted by the engine -- hint with ano_res_save_stats, delete only on the user's
+// say-so via ano_res_save_delete. slot is a single path segment. Same-slot commits
+// serialize internally. Output: 0 when durable AND verified; -1 otherwise (every
+// prior generation intact).
 int  ano_res_save_commit(const char *slot, uint32_t format_version,
                          const void *payload, size_t size);
+
+// Count and total on-disk bytes of a slot's generations -- the bulk hint the game
+// shows the user (compare against ANO_RES_SAVE_KEEP if a threshold is wanted). Bytes
+// are fstat sizes: prompt material, not a contract. An absent saves dir is zero
+// generations. Output: 0 (+ optional out-params); -1 on bad slot or before init.
+int  ano_res_save_stats(const char *slot, uint32_t *generations, uint64_t *bytes);
+
+// USER-INITIATED deletion of exactly one generation, "saves/<slot>.<seq>.anosave".
+// The engine never calls this on its own behalf. Output: 0; -1 if absent, invalid,
+// or before init.
+int  ano_res_save_delete(const char *slot, uint64_t seq);
 
 // Load the newest VALID gamesave: newest-seq-first, fresh handle each, framing + hashes
 // validated (never stat metadata), the frame's seq must echo the filename's, first pass

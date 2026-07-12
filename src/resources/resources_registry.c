@@ -11,16 +11,23 @@
 // and liveness rides a per-row generation that bumps on every load/unload/release, so
 // every outstanding copy of a stale handle goes politely invalid.
 //
-// Placement (the section-5 bake-off's model A, the null hypothesis): one shared
-// multipool, mutex-guarded ("rings for queues, mutex for maps"), over the DEFAULT-heap
-// parent -- mi_heap_t parents are single-thread-owner and the registry is cross-thread
-// by contract. Payloads past the multipool's top class are standalone mi allocations:
-// zero-copy ano_res_release hands the block to the taker, who frees it with
-// ano_aligned_free. Pool-resident payloads copy out on release and their block recycles.
+// Placement (the section-5 bake-off pair; model E is the SHIPPED DEFAULT, decided by
+// the Phase D bench -- ANO_RES_MODEL=A keeps the baseline alive so the comparison
+// cannot rot): rows carry a lifetime-group tag in both models; group 0 is
+// engine-forever. Model A -- one shared multipool (groups[0]) over the DEFAULT-heap
+// parent; category and lifetime are tags, retire sweeps per-object (A's recorded
+// wound: it kept 1.3 MiB of high-water chunks across every bench cycle). Model E --
+// lifetime-major: each
+// open group owns its own multipool, retire destroys it whole (chunk-granular
+// teardown; true heap wink-out needs the step-5 loader thread, mi_heap_t parents are
+// single-thread-owner). In both models payloads past the top class are standalone mi
+// allocations: zero-copy ano_res_release hands the block to the taker, who frees it
+// with ano_aligned_free (a pool passthrough block would not be). Pool-resident
+// payloads copy out on release and their block recycles.
 //
-// Threading: one mutex guards map + rows + placement. Sync loads run under it --
-// single-copy comes free, and the async tier (plan step 5) moves loads off-thread
-// without changing this contract.
+// Threading: one mutex guards map + rows + placement + the ambient group. Sync loads
+// run under it -- single-copy comes free, and the async tier (plan step 5) moves loads
+// off-thread without changing this contract.
 
 #include <anoptic_resources.h>
 
@@ -28,12 +35,14 @@
 #include <anoptic_threads.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "resources_internal.h"
 
 #define REG_INITIAL_SLOTS 64u                   // pow2
 #define REG_ROW_INITIAL   32u
+#define RES_GROUP_MAX     8u                    // group 0 + 7 concurrent scopes
 
 typedef struct res_row {
     uint64_t rid;
@@ -43,6 +52,7 @@ typedef struct res_row {
     void    *data;          // size + 1 bytes (guard NUL); NULL when not loaded
     size_t   size;
     bool     direct;        // standalone mi allocation (zero-copy release) vs pooled
+    uint8_t  group;         // lifetime group of THIS load; reassigned per install
 } res_row;
 
 static struct {
@@ -53,8 +63,15 @@ static struct {
     res_row  *rows;
     uint32_t  row_count;
     uint32_t  row_cap;
-    ano_mem_multipool *pool;    // shared payload multipool (model A)
-    size_t    pool_max;         // its top class; bigger payloads go direct
+    struct {
+        ano_mem_multipool *pool;    // model A: only groups[0]; model E: one per open group
+        bool open;
+    } groups[RES_GROUP_MAX];
+    uint8_t     cur_group;      // the ambient scope; 0 = engine-forever
+    res_model_t model;
+    size_t    pool_max;         // multipool top class; bigger payloads go direct
+    size_t    direct_bytes;     // live direct payloads, guard NUL included
+    size_t    direct_blocks;
 } g_reg;
 
 int res_registry_init(void)
@@ -63,20 +80,29 @@ int res_registry_init(void)
         return -1;
     g_reg.slots = mi_zalloc(REG_INITIAL_SLOTS * sizeof *g_reg.slots);
     g_reg.rows  = mi_malloc(REG_ROW_INITIAL * sizeof *g_reg.rows);
-    g_reg.pool  = ano_mem_multipool_make(ano_mem_parent_default(), NULL);
-    if (g_reg.slots == NULL || g_reg.rows == NULL || g_reg.pool == NULL) {
+    g_reg.groups[0].pool = ano_mem_multipool_make(ano_mem_parent_default(), NULL);
+    if (g_reg.slots == NULL || g_reg.rows == NULL || g_reg.groups[0].pool == NULL) {
         mi_free(g_reg.slots);
         mi_free(g_reg.rows);
-        ano_mem_multipool_destroy(g_reg.pool);
+        ano_mem_multipool_destroy(g_reg.groups[0].pool);
         ano_mutex_destroy(&g_reg.mtx);
         return -1;
     }
+    const char *model = getenv("ANO_RES_MODEL");   // "A" = the bench baseline
+    g_reg.model     = model != NULL && model[0] == 'A' ? RES_MODEL_A : RES_MODEL_E;
+    g_reg.groups[0].open = true;                // engine-forever, never retires
+    g_reg.cur_group = 0;
     g_reg.slot_mask = REG_INITIAL_SLOTS - 1;
     g_reg.row_cap   = REG_ROW_INITIAL;
     g_reg.row_count = 0;
     g_reg.pool_max  = 1u << 20;                 // the default multipool max_block
     g_reg.alive     = true;
     return 0;
+}
+
+res_model_t res_model(void)
+{
+    return g_reg.model;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -171,38 +197,48 @@ static res_row *row_of(anores_t h)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Placement: pooled vs direct, per the top-class threshold. alloc includes the guard NUL.
+// Placement: pooled vs direct, per the top-class threshold. alloc includes the guard
+// NUL. group picks the pooled destination: always groups[0] under model A (tags only),
+// the group's own pool under model E. Direct-class blocks are standalone in both.
 
-static void *payload_alloc(size_t size, bool *direct)
+static void *payload_alloc(size_t size, uint8_t group, bool *direct)
 {
     if (size + 1 > g_reg.pool_max) {
         *direct = true;
         return mi_malloc_aligned(size + 1, ANO_CACHE_LINE);
     }
     *direct = false;
-    return ano_mem_multipool_alloc(g_reg.pool, size + 1);
+    uint8_t g = g_reg.model == RES_MODEL_E ? group : 0;
+    return ano_mem_multipool_alloc(g_reg.groups[g].pool, size + 1);
 }
 
 static void payload_free(res_row *row)
 {
-    if (row->direct)
+    if (row->direct) {
         mi_free(row->data);
-    else
-        ano_mem_multipool_free(g_reg.pool, row->data, row->size + 1);
+        g_reg.direct_bytes  -= row->size + 1;
+        g_reg.direct_blocks -= 1;
+    } else {
+        uint8_t g = g_reg.model == RES_MODEL_E ? row->group : 0;
+        ano_mem_multipool_free(g_reg.groups[g].pool, row->data, row->size + 1);
+    }
     row->data = NULL;
     row->size = 0;
 }
 
 // Install a loaded payload (takes ownership of buf, a default-heap mi allocation from
-// res_read_all). Direct-class payloads keep buf itself: read-to-home, zero copy.
+// res_read_all) into the AMBIENT group. Direct-class payloads keep buf itself:
+// read-to-home, zero copy.
 static int row_install(res_row *row, void *buf, size_t size)
 {
     if (size + 1 > g_reg.pool_max) {
         row->data   = buf;
         row->direct = true;
+        g_reg.direct_bytes  += size + 1;
+        g_reg.direct_blocks += 1;
     } else {
         bool direct;
-        void *home = payload_alloc(size, &direct);
+        void *home = payload_alloc(size, g_reg.cur_group, &direct);
         if (home == NULL) {
             mi_free(buf);
             return -1;
@@ -212,6 +248,7 @@ static int row_install(res_row *row, void *buf, size_t size)
         row->data   = home;
         row->direct = direct;
     }
+    row->group = g_reg.cur_group;
     row->size = size;
     row->gen += 1;                              // this load's generation
     return 0;
@@ -307,6 +344,8 @@ int ano_res_release(anores_t h, void **data, size_t *size)
     if (row->direct) {
         *data = row->data;                      // zero-copy hand-off
         *size = row->size;
+        g_reg.direct_bytes  -= row->size + 1;   // the group forgets the block here
+        g_reg.direct_blocks -= 1;
         row->data = NULL;
         row->size = 0;
     } else {
@@ -407,6 +446,101 @@ anores_t res_registry_adopt(const char *logical, void *buf, size_t size)
     anores_t h = { rid, slot, row->gen };
     ano_mutex_unlock(&g_reg.mtx);
     return h;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lifetime groups (contracts in resources_internal.h). The ambient group is registry
+// state under the one mutex; retire is the bulk form of the unload contract.
+
+int res_group_begin(void)
+{
+    if (!res_ready())
+        return -1;
+    ano_mutex_lock(&g_reg.mtx);
+    int g = -1;
+    for (uint32_t i = 1; i < RES_GROUP_MAX; i++)
+        if (!g_reg.groups[i].open) { g = (int)i; break; }
+    if (g < 0) {
+        ano_mutex_unlock(&g_reg.mtx);
+        ano_log(ANO_ERROR, "resources: group table full (%u scopes)", RES_GROUP_MAX - 1);
+        return -1;
+    }
+    if (g_reg.model == RES_MODEL_E) {
+        g_reg.groups[g].pool = ano_mem_multipool_make(ano_mem_parent_default(), NULL);
+        if (g_reg.groups[g].pool == NULL) {
+            ano_mutex_unlock(&g_reg.mtx);
+            ano_log(ANO_ERROR, "resources: group pool creation failed");
+            return -1;
+        }
+    }
+    g_reg.groups[g].open = true;
+    g_reg.cur_group = (uint8_t)g;
+    ano_mutex_unlock(&g_reg.mtx);
+    return g;
+}
+
+void res_group_end(int g)
+{
+    if (!res_ready() || g < 1 || g >= (int)RES_GROUP_MAX)
+        return;
+    ano_mutex_lock(&g_reg.mtx);
+    if (g_reg.cur_group == (uint8_t)g)
+        g_reg.cur_group = 0;
+    ano_mutex_unlock(&g_reg.mtx);
+}
+
+int res_group_retire(int g)
+{
+    if (!res_ready() || g < 1 || g >= (int)RES_GROUP_MAX)
+        return -1;
+    ano_mutex_lock(&g_reg.mtx);
+    if (!g_reg.groups[g].open) {
+        ano_mutex_unlock(&g_reg.mtx);
+        return -1;
+    }
+    if (g_reg.cur_group == (uint8_t)g)          // retiring the ambient scope ends it
+        g_reg.cur_group = 0;
+    for (uint32_t r = 0; r < g_reg.row_count; r++) {
+        res_row *row = &g_reg.rows[r];
+        if (row->group != (uint8_t)g || row->data == NULL)
+            continue;
+        if (row->direct || g_reg.model == RES_MODEL_A) {
+            payload_free(row);                  // per-object: A's wound, direct in both
+        } else {
+            row->data = NULL;                   // E: the block dies with the group pool
+            row->size = 0;
+        }
+        row->gen += 1;                          // outstanding handles go sentinel
+    }
+    ano_mem_multipool *dead = g_reg.groups[g].pool;     // NULL under model A
+    g_reg.groups[g].pool = NULL;
+    g_reg.groups[g].open = false;
+    ano_mutex_unlock(&g_reg.mtx);
+    ano_mem_multipool_destroy(dead);            // O(chunks), off the mutex; no-op on NULL
+    return 0;
+}
+
+res_reg_stats res_registry_stats(void)
+{
+    res_reg_stats s = {0};
+    if (!res_ready())
+        return s;
+    ano_mutex_lock(&g_reg.mtx);
+    for (uint32_t i = 0; i < RES_GROUP_MAX; i++) {
+        if (g_reg.groups[i].pool == NULL)
+            continue;
+        ano_mem_stats p = ano_mem_multipool_stats(g_reg.groups[i].pool);
+        s.pools.live_bytes  += p.live_bytes;
+        s.pools.live_blocks += p.live_blocks;
+        s.pools.peak_bytes  += p.peak_bytes;
+        s.pools.peak_blocks += p.peak_blocks;
+        s.pools.chunk_bytes += p.chunk_bytes;
+        s.pools.chunk_count += p.chunk_count;
+    }
+    s.direct_bytes  = g_reg.direct_bytes;
+    s.direct_blocks = g_reg.direct_blocks;
+    ano_mutex_unlock(&g_reg.mtx);
+    return s;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -520,7 +654,7 @@ static int save_try_file(const char *abs, const char *slot, size_t slot_len,
         row->gen += 1;
     }
     bool direct;
-    void *home = payload_alloc(plen, &direct);
+    void *home = payload_alloc(plen, 0, &direct);   // saves pin to group 0, structurally
     if (home == NULL) {
         ano_mutex_unlock(&g_reg.mtx);
         mi_free(bytes);
@@ -531,6 +665,11 @@ static int save_try_file(const char *abs, const char *slot, size_t slot_len,
     row->data   = home;
     row->size   = plen;
     row->direct = direct;
+    row->group  = 0;
+    if (direct) {
+        g_reg.direct_bytes  += plen + 1;
+        g_reg.direct_blocks += 1;
+    }
     row->gen   += 1;
     *out = (anores_t){ rid, slot_idx, row->gen };
     ano_mutex_unlock(&g_reg.mtx);
