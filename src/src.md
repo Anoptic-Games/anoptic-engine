@@ -25,6 +25,9 @@ src/
 ├── vulkan_backend/ # GPU-driven Vulkan renderer (render master thread); owns GPU slots + all GLFW
 ├── render/         # Asset-facing render support: glTF loader (gltf/), text/font stack (text/)
 ├── mesh/           # clean-room mesh ops: meshlet decomposition, vertex-cache opt, LOD simplify
+├── audio/          # Lock-free mixer thread + DSP library + per-platform device backends
+├── synth/          # The synthesizer: music IR -> voices -> the audio module's bus graph
+├── music/          # The composer: decides each bar (see music/ANOPTIC_MUSICGEN.md)
 ├── memory/         # Aligned allocation + mimalloc integration (per-platform)
 ├── threads/        # Thread / mutex / condvar / atomics abstraction over pthreads + Win32
 ├── time/           # High-resolution monotonic timing and OS-scheduled sleeps
@@ -34,6 +37,23 @@ src/
 ```
 
 ## Purpose of Each Subdirectory
+
+- `audio/` (public `include/anoptic_audio.h`): The audio world. A mixer thread owns every
+  audio structure — sources, buses, insert chains, sends — and structural change reaches it
+  only as commands applied at block boundaries, over lock-free rings; telemetry and the
+  listener pose ride published double buffers. Device backends are per-platform and
+  hand-rolled, cascading to a null device when none opens. A `generator` seam lets another
+  module render into the bus mixes; the synth is the one that does.
+
+- `synth/` (public `include/anoptic_synth.h`): Voices, patches, a beat clock, and a
+  deadline-sorted schedule. It renders the music IR into the audio module's buses through
+  that seam, and it is where a live music engine is hosted: attach one and the generator
+  composes ahead of the playhead every block, with steering, per-bar musical meaning, and
+  seek riding the audio bridge.
+
+- `music/` (public `include/anoptic_music.h`): The composer — harmony, form, motifs,
+  dramaturgy, and one generator per layer, held bit-exact against a Python oracle. It knows
+  nothing of audio, threads, or devices; it emits notes. See `music/ANOPTIC_MUSICGEN.md`.
 
 - `engine/`: The process entry point. `main.c` runs the render world (all Vulkan +
   GLFW) directly on the main thread — GLFW pins window/event handling to the process
