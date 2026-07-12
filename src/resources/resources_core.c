@@ -44,7 +44,13 @@ static struct {
 static _Atomic bool     g_frozen;
 static _Atomic uint32_t g_tmp_counter = 1;
 
+#ifdef ANO_RES_FAULT_INJECT
+void (*res_fault_hook)(res_fault_step step);
+#endif
+
 bool res_ready(void)            { return g_res.init_done && g_res.init_result == 0; }
+void res_save_lock(void)        { ano_mutex_lock(&g_res.save_mtx); }
+void res_save_unlock(void)      { ano_mutex_unlock(&g_res.save_mtx); }
 void res_freeze(void)           { atomic_store(&g_frozen, true); }
 ano_fspath res_write_root(void) { return res_ready() ? g_res.write_root : (ano_fspath){0}; }
 
@@ -238,6 +244,12 @@ int ano_res_init(void)
     g_res.intern      = intern;
     g_res.mount_count = 0;
     atomic_store(&g_frozen, false);
+    if (res_registry_init() != 0) {
+        ano_log(ANO_ERROR, "resources: init failed, registry");
+        mi_heap_destroy(heap);
+        g_res.heap = NULL;
+        return -1;
+    }
     g_res.init_result = 0;
     return 0;
 }
@@ -348,7 +360,8 @@ int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
 
     int64_t hint = rmos_size_hint(f);           // a HINT: the loop believes only EOF
     size_t cap = hint > 0 ? (size_t)hint + 1 : 4096;
-    uint8_t *buf = mi_heap_malloc_aligned(heap, cap, ANO_CACHE_LINE);
+    uint8_t *buf = heap ? mi_heap_malloc_aligned(heap, cap, ANO_CACHE_LINE)
+                        : mi_malloc_aligned(cap, ANO_CACHE_LINE);
     if (buf == NULL) {
         rmos_read_close(f);
         return -2;
@@ -362,7 +375,8 @@ int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
                 rmos_read_close(f);
                 return -2;
             }
-            uint8_t *grown = mi_heap_realloc_aligned(heap, buf, cap * 2, ANO_CACHE_LINE);
+            uint8_t *grown = heap ? mi_heap_realloc_aligned(heap, buf, cap * 2, ANO_CACHE_LINE)
+                                  : mi_realloc_aligned(buf, cap * 2, ANO_CACHE_LINE);
             if (grown == NULL) {
                 mi_free(buf);
                 rmos_read_close(f);
@@ -386,7 +400,8 @@ int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
     rmos_read_close(f);
     buf[size] = 0;                              // the guard NUL
     if (cap > size + 1) {
-        uint8_t *tight = mi_heap_realloc_aligned(heap, buf, size + 1, ANO_CACHE_LINE);
+        uint8_t *tight = heap ? mi_heap_realloc_aligned(heap, buf, size + 1, ANO_CACHE_LINE)
+                              : mi_realloc_aligned(buf, size + 1, ANO_CACHE_LINE);
         if (tight != NULL)
             buf = tight;
     }
@@ -471,16 +486,20 @@ int res_write_protocol(const char *final_abs, const res_iovec *parts, int nparts
         if (rmos_write_all(f, parts[i].data, parts[i].len) != 0)
             goto fail_open;
     }
+    RES_FAULT(RES_FAULT_AFTER_WRITE);
     if (rmos_sync(f) != 0)                      // fsyncgate: one shot, never retried
         goto fail_open;
+    RES_FAULT(RES_FAULT_AFTER_SYNC);
     if (rmos_close(f) != 0) {
         rmos_unlink(tmp);
         return -1;
     }
+    RES_FAULT(RES_FAULT_AFTER_CLOSE);
     if (rmos_rename_replace(tmp, final_abs) != 0) {
         rmos_unlink(tmp);
         return -1;
     }
+    RES_FAULT(RES_FAULT_AFTER_RENAME);
     if (rmos_sync_dir(parent) != 0)
         ano_log(ANO_ERROR, "resources: parent-dir fsync failed after replacing %s "
                            "(rename landed; the directory entry may not be durable yet)",
@@ -626,9 +645,8 @@ typedef struct save_scan {
     bool        pruning;
 } save_scan;
 
-// "<slot>.<digits>.anosave" -> seq. Anything else is not ours.
-static bool save_name_seq(const char *name, const char *slot, size_t slot_len,
-                          uint64_t *out_seq)
+bool res_save_name_seq(const char *name, const char *slot, size_t slot_len,
+                       uint64_t *out_seq)
 {
     size_t nlen = strlen(name);
     if (nlen < slot_len + 10)                   // '.' + digit + ".anosave"
@@ -639,14 +657,15 @@ static bool save_name_seq(const char *name, const char *slot, size_t slot_len,
     const char *suffix = name + nlen - 8;
     if (memcmp(suffix, ".anosave", 8) != 0 || suffix <= digits)
         return false;
+    if (digits[0] == '0' && suffix - digits > 1)
+        return false;                           // leading zeros would alias seqs
     uint64_t v = 0;
     for (const char *p = digits; p < suffix; p++) {
         if (*p < '0' || *p > '9')
             return false;
-        uint64_t d = (uint64_t)(*p - '0');
-        if (v > (UINT64_MAX - d) / 10)
+        v = v * 10 + (uint64_t)(*p - '0');
+        if (v > UINT64_MAX / 2)                 // planted max must not wrap max+1
             return false;
-        v = v * 10 + d;
     }
     *out_seq = v;
     return true;
@@ -656,7 +675,7 @@ static void save_scan_cb(const char *name, void *ctx)
 {
     save_scan *s = ctx;
     uint64_t seq;
-    if (!save_name_seq(name, s->slot, s->slot_len, &seq))
+    if (!res_save_name_seq(name, s->slot, s->slot_len, &seq))
         return;
     if (seq > s->max_seq)
         s->max_seq = seq;
@@ -693,9 +712,13 @@ static int save_commit_locked(const char *slot, size_t slot_len, uint32_t format
         return -1;
     }
 
-    // Next sequence number: one past the highest ever seen for this slot.
+    // Next sequence number: one past the highest ever seen for this slot. A failed
+    // scan must refuse: guessing seq = 1 could rename-replace a live generation.
     save_scan scan = { .slot = slot, .slot_len = slot_len };
-    rmos_scan_dir(saves.str, save_scan_cb, &scan);
+    if (rmos_scan_dir(saves.str, save_scan_cb, &scan) != 0) {
+        ano_log(ANO_ERROR, "resources: saves dir unreadable, commit refused");
+        return -1;
+    }
     uint64_t seq = scan.max_seq + 1;
 
     char rel[MAXPATH];

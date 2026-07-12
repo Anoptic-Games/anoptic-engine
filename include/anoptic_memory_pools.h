@@ -63,6 +63,12 @@ typedef struct ano_mem_parent {
 // A parent over a mimalloc heap. Chunks come from mi_heap_malloc_aligned, return via mi_free.
 ano_mem_parent ano_mem_parent_heap(mi_heap_t *heap);
 
+// A parent over the DEFAULT heap of whichever thread acquires (mi_malloc_aligned/mi_free).
+// The one parent that is safe when the owning allocator is mutex-shared across threads
+// (mi_heap_t parents are single-thread-owner; frees route home from any thread). No
+// wink-out exists here: destroy() is the only teardown.
+ano_mem_parent ano_mem_parent_default(void);
+
 // A parent over a monotonic arena: chunks bump-allocate and never return retail.
 ano_mem_parent ano_mem_parent_monotonic(ano_mem_monotonic *mono);
 

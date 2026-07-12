@@ -264,7 +264,8 @@ static void test_read_contract(mi_heap_t *heap)
     CHECK(anostr_len(ano_res_slurp(heap, "anotest_res/empty.bin")) == 0, "empty file slurps empty");
 
     // Multi-chunk: 1.5 MiB spans three 512 KiB reads; byte-identical end to end.
-    size_t bigLen = 3u * 512u * 1024u / 2u + 17u;
+    // (Also past the pool's 1 MiB top class, so test_handles gets a direct-class row.)
+    size_t bigLen = 3u * 1024u * 1024u / 2u + 17u;
     uint8_t *big = mi_heap_malloc(heap, bigLen);
     CHECK(big != NULL, "big staging buffer");
     if (big) {
@@ -397,12 +398,253 @@ static void test_saves(void)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Phase B: handles.
+
+static void test_handles(mi_heap_t *heap)
+{
+    (void)heap;
+    uint8_t own[100];
+    for (size_t i = 0; i < sizeof own; i++)
+        own[i] = (uint8_t)(i * 7 + 3);
+    CHECK(write_file("resources/anotest_res/own.bin", own, sizeof own), "stage own");
+
+    anores_t h = ano_res_get("anotest_res/own.bin");
+    CHECK(h.gen != 0 && h.rid != 0, "get returns a live handle");
+    CHECK(h.rid == anostr_hash(anostr_lit("anotest_res/own.bin")),
+          "rid lives in the anostr_hash key space");
+    CHECK(h.rid == ANOSTR_SID("anotest_res/own.bin"),
+          "rid == compile-time ANOSTR_SID (one key space)");
+
+    anores_t h2 = ano_res_get("anotest_res/own.bin");
+    CHECK(h2.rid == h.rid && h2.slot == h.slot && h2.gen == h.gen,
+          "single-copy: double-get is the same handle");
+
+    anostr_t v = ano_res_bytes(h);
+    CHECK(anostr_len(v) == sizeof own, "bytes view size");
+    CHECK(memcmp(anostr_bytes(&v), own, sizeof own) == 0, "bytes view content");
+    CHECK(anostr_bytes(&v)[sizeof own] == 0, "owned payload guard NUL");
+
+    // Sentinel and hostile handles: polite refusal, never UB.
+    anores_t s0 = {0, 0, 0};
+    CHECK(anostr_len(ano_res_bytes(s0)) == 0, "sentinel bytes is the empty view");
+    CHECK(ano_res_unload(s0) == -1, "sentinel unload refuses");
+    anores_t junk = { h.rid, 999999u, 7u };
+    CHECK(anostr_len(ano_res_bytes(junk)) == 0, "out-of-range slot is empty");
+    void *jd; size_t js;
+    CHECK(ano_res_release(junk, &jd, &js) == -1, "junk release refuses");
+
+    // Unload retires every outstanding copy of the handle.
+    CHECK(ano_res_unload(h) == 0, "unload");
+    CHECK(anostr_len(ano_res_bytes(h)) == 0, "stale handle view is the sentinel");
+    CHECK(anostr_len(ano_res_bytes(h2)) == 0, "every copy went stale");
+    CHECK(ano_res_unload(h) == -1, "double unload refuses");
+
+    // Reload: permanent rid->slot binding, fresh generation.
+    anores_t h3 = ano_res_get("anotest_res/own.bin");
+    CHECK(h3.slot == h.slot && h3.rid == h.rid, "reload keeps the slot binding");
+    CHECK(h3.gen > h.gen, "reload bumps the generation");
+
+    // Pooled release: copy-out, caller owns, views die.
+    void *blk = NULL; size_t bs = 0;
+    CHECK(ano_res_release(h3, &blk, &bs) == 0, "pooled release");
+    CHECK(bs == sizeof own && blk != NULL, "released size");
+    CHECK(memcmp(blk, own, sizeof own) == 0, "released content");
+    CHECK(((uint8_t *)blk)[sizeof own] == 0, "released guard NUL");
+    ano_aligned_free(blk);
+    CHECK(anostr_len(ano_res_bytes(h3)) == 0, "release retires views");
+    CHECK(ano_res_release(h3, &blk, &bs) == -1, "double release refuses");
+
+    // Direct release: > pool top class, zero-copy -- the handed block IS the view's.
+    anores_t hb = ano_res_get("anotest_res/big.bin");
+    CHECK(hb.gen != 0, "big get");
+    anostr_t bv = ano_res_bytes(hb);
+    const char *resident = anostr_bytes(&bv);
+    size_t bigLen = anostr_len(bv);
+    CHECK(bigLen > (1u << 20), "big payload is direct-class");
+    CHECK(ano_res_release(hb, &blk, &bs) == 0, "direct release");
+    CHECK(blk == (void *)resident && bs == bigLen, "direct release is zero-copy");
+    ano_aligned_free(blk);
+
+    // Absent path: sentinel, one log line.
+    anores_t ha = ano_res_get("anotest_res/never-here.bin");
+    CHECK(ha.rid == 0 && ha.slot == 0 && ha.gen == 0, "absent get is the sentinel");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase B: gamesave loading -- the corruption battery.
+
+static bool flip_byte(const char *path, long off)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    if (fseek(f, off, SEEK_SET) != 0) { fclose(f); return false; }
+    int c = fgetc(f);
+    if (c == EOF) { fclose(f); return false; }
+    fseek(f, off, SEEK_SET);
+    fputc(c ^ 0x5A, f);
+    fclose(f);
+    return true;
+}
+
+static bool copy_file_stdio(const char *from, const char *to, long truncate_to)
+{
+    FILE *a = fopen(from, "rb");
+    if (!a) return false;
+    FILE *b = fopen(to, "wb");
+    if (!b) { fclose(a); return false; }
+    long n = 0;
+    int c;
+    while ((c = fgetc(a)) != EOF && (truncate_to < 0 || n < truncate_to)) {
+        fputc(c, b);
+        n++;
+    }
+    fclose(a);
+    return fclose(b) == 0;
+}
+
+static void test_save_load(void)
+{
+    ano_fspath user = ano_fs_userpath();
+    char p3[MAXPATH + 48], p2[MAXPATH + 48], px[MAXPATH + 48];
+    uint32_t fmt = 0;
+    uint64_t seq = 0;
+
+    // Clean slate.
+    for (int i = 1; i <= 20; i++) {
+        char p[MAXPATH + 48];
+        snprintf(p, sizeof p, "%s/saves/anoloadslot.%d.anosave", user.str, i);
+        remove(p);
+    }
+
+    // Nothing on disk: the sentinel, start fresh.
+    anores_t none = ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(none.gen == 0, "no generations -> sentinel");
+
+    // Three generations, distinct payloads.
+    uint8_t pay[100];
+    for (int g = 1; g <= 3; g++) {
+        memset(pay, 0x30 + g, sizeof pay);
+        CHECK(ano_res_save_commit("anoloadslot", 42u, pay, sizeof pay) == 0, "commit gen");
+    }
+    snprintf(p3, sizeof p3, "%s/saves/anoloadslot.3.anosave", user.str);
+    snprintf(p2, sizeof p2, "%s/saves/anoloadslot.2.anosave", user.str);
+
+    anores_t h = ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(h.gen != 0, "newest loads");
+    CHECK(fmt == 42u && seq == 3u, "fmt and seq echo");
+    anostr_t v = ano_res_bytes(h);
+    memset(pay, 0x33, sizeof pay);
+    CHECK(anostr_len(v) == sizeof pay
+          && memcmp(anostr_bytes(&v), pay, sizeof pay) == 0, "newest payload bytes");
+
+    // A later load re-reads disk and retires the previous handle.
+    anores_t h2 = ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(h2.slot == h.slot && h2.gen > h.gen, "save reload bumps generation");
+    CHECK(anostr_len(ano_res_bytes(h)) == 0, "old save handle retired");
+
+    // (a) Body damage: flip one payload byte of the newest -> degrade one generation.
+    CHECK(flip_byte(p3, 48 + 10), "flip payload byte");
+    (void)ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(seq == 2u, "body damage degrades to gen 2");
+    CHECK(flip_byte(p3, 48 + 10), "restore payload byte");
+    (void)ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(seq == 3u, "restored newest wins again");
+
+    // (b) Header damage: flip a header field byte.
+    CHECK(flip_byte(p3, 5), "flip header byte");
+    (void)ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(seq == 2u, "header damage degrades to gen 2");
+    CHECK(flip_byte(p3, 5), "restore header byte");
+
+    // (c) Truncation: rewrite the newest shorter (three catches: length is the first).
+    snprintf(px, sizeof px, "%s/saves/anoloadslot.keep", user.str);
+    CHECK(copy_file_stdio(p3, px, -1), "stash full copy");
+    CHECK(copy_file_stdio(px, p3, 48 + 100 + 16 - 10), "truncate newest");
+    (void)ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(seq == 2u, "truncation degrades to gen 2");
+    CHECK(copy_file_stdio(px, p3, -1), "restore newest");
+    remove(px);
+
+    // (d) Rename masquerade: gen-2 bytes under a seq-9 name; the frame seq must echo
+    //     the filename, so it is skipped and the intact newest still wins. A garbage
+    //     orphan temp rides along and must be purged.
+    snprintf(px, sizeof px, "%s/saves/anoloadslot.9.anosave", user.str);
+    CHECK(copy_file_stdio(p2, px, -1), "plant masquerade");
+    char tmpgarbage[MAXPATH + 64];
+    snprintf(tmpgarbage, sizeof tmpgarbage, "%s/saves/anoloadslot.3.anosave.beef.tmp",
+             user.str);
+    CHECK(write_file(tmpgarbage, "not a frame", 11), "plant garbage temp");
+    (void)ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(seq == 3u, "masquerade skipped, newest wins");
+    CHECK(!file_exists_stdio(tmpgarbage), "orphan temp purged");
+    remove(px);
+
+    // (e) Every generation corrupt -> sentinel, start fresh, prior files untouched.
+    for (int g = 1; g <= 3; g++) {
+        char p[MAXPATH + 48];
+        snprintf(p, sizeof p, "%s/saves/anoloadslot.%d.anosave", user.str, g);
+        flip_byte(p, 48 + 1);
+    }
+    anores_t dead = ano_res_save_load("anoloadslot", &fmt, &seq);
+    CHECK(dead.gen == 0, "all-corrupt -> sentinel, start fresh");
+
+    // (f) A VALID orphan temp is tried last and recovered, then purged.
+    {
+        uint8_t frame[48 + 5 + 16];
+        memcpy(frame, "ANOS", 4);
+        frame[4] = 1; frame[5] = 0;             // container_version 1 LE
+        frame[6] = 1; frame[7] = 0;             // FNV-1a-64, flags 0
+        for (int i = 8; i < 48; i++) frame[i] = 0;
+        frame[8] = 9;                           // format_version 9
+        frame[12] = 9;                          // min_reader_version
+        frame[16] = 5;                          // payload_len 5
+        frame[24] = 7;                          // seq 7
+        uint64_t hh = oracle_fnv(frame, 32);
+        for (int i = 0; i < 8; i++) frame[32 + i] = (uint8_t)(hh >> 8 * i);
+        memcpy(frame + 48, "hello", 5);
+        uint64_t ph = oracle_fnv(frame + 48, 5);
+        for (int i = 0; i < 8; i++) frame[48 + 5 + i] = (uint8_t)(ph >> 8 * i);
+        memcpy(frame + 48 + 5 + 8, "ANOSDONE", 8);
+
+        char tmpvalid[MAXPATH + 64];
+        snprintf(tmpvalid, sizeof tmpvalid, "%s/saves/anoloadslot2.7.anosave.cafe.tmp",
+                 user.str);
+        CHECK(write_file(tmpvalid, frame, sizeof frame), "plant valid orphan temp");
+        anores_t ht = ano_res_save_load("anoloadslot2", &fmt, &seq);
+        CHECK(ht.gen != 0, "orphan temp recovered");
+        CHECK(fmt == 9u && seq == 7u, "orphan temp fmt/seq");
+        anostr_t tv = ano_res_bytes(ht);
+        CHECK(anostr_len(tv) == 5 && memcmp(anostr_bytes(&tv), "hello", 5) == 0,
+              "orphan temp payload");
+        CHECK(!file_exists_stdio(tmpvalid), "valid orphan temp purged after recovery");
+        // The interrupted protocol was COMPLETED, not discarded: the frame now lives
+        // under its real generation name and survives a relaunch.
+        char recovered[MAXPATH + 48];
+        snprintf(recovered, sizeof recovered, "%s/saves/anoloadslot2.7.anosave", user.str);
+        CHECK(file_exists_stdio(recovered), "recovered temp renamed to its generation");
+        uint32_t rfmt = 0;
+        uint64_t rseq = 0;
+        anores_t hr = ano_res_save_load("anoloadslot2", &rfmt, &rseq);
+        CHECK(hr.gen != 0 && rfmt == 9u && rseq == 7u, "recovered generation reloads");
+        remove(recovered);
+    }
+
+    // Cleanup.
+    for (int i = 1; i <= 20; i++) {
+        char p[MAXPATH + 48];
+        snprintf(p, sizeof p, "%s/saves/anoloadslot.%d.anosave", user.str, i);
+        remove(p);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 
 static void cleanup(void)
 {
     // Exe-side scratch.
     remove("resources/anotest_res/shadow.txt");
     remove("resources/anotest_res/base_only.txt");
+    remove("resources/anotest_res/own.bin");
     remove("resources/anotest_res/blob.bin");
     remove("resources/anotest_res/tiny.txt");
     remove("resources/anotest_res/empty.bin");
@@ -450,6 +692,8 @@ int main(void)
         test_read_contract(heap);
         test_write_and_quarantine(heap);
         test_saves();
+        test_handles(heap);                 // needs read-contract staging still on disk
+        test_save_load();
     }
     cleanup();
 

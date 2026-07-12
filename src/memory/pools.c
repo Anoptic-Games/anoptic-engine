@@ -67,6 +67,18 @@ ano_mem_parent ano_mem_parent_heap(mi_heap_t *heap)
     return p;
 }
 
+static void *parent_default_acquire(void *ctx, size_t size, size_t align)
+{
+    (void)ctx;
+    return mi_malloc_aligned(size, align);
+}
+
+ano_mem_parent ano_mem_parent_default(void)
+{
+    ano_mem_parent p = { NULL, parent_default_acquire, parent_heap_release };
+    return p;
+}
+
 static void *parent_mono_acquire(void *ctx, size_t size, size_t align)
 {
     return ano_mem_monotonic_alloc((ano_mem_monotonic *)ctx, size, align);

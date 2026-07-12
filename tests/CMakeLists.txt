@@ -129,6 +129,30 @@ target_link_libraries(anotest_resources PRIVATE anoptic_core)
 add_test(NAME anoptic_resources COMMAND anotest_resources)
 set_tests_properties(anoptic_resources PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
+# Testing for ``anoptic_res_graphics.h``: glTF ingest against a handcrafted-in-test
+# scene (every vertex/node/material asserted), URI decode + directory grafting, base64
+# data: buffers, single-copy scenes, and a PNG decode round-trip with stb_image_write
+# as the independent encoder oracle. Real-asset smoke when the source assets/ exists.
+add_executable(anotest_resgfx anotest_resgfx.c)
+target_link_libraries(anotest_resgfx PRIVATE anoptic_core)
+if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
+    target_compile_definitions(anotest_resgfx PRIVATE ANO_TEST_ASSETS="${CMAKE_SOURCE_DIR}/assets")
+endif()
+add_test(NAME anoptic_resgfx COMMAND anotest_resgfx)
+set_tests_properties(anoptic_resgfx PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+
+# Write-protocol crash harness: compiles resources_core.c PRIVATELY with
+# ANO_RES_FAULT_INJECT (link-time override of the anoptic_core copy, the log_old.c
+# trick) and longjmps out after every protocol step; the target file must be
+# old-complete or new-complete at each crash instant, never torn.
+add_executable(anotest_resfault anotest_resfault.c
+        ${CMAKE_SOURCE_DIR}/src/resources/resources_core.c)
+target_compile_definitions(anotest_resfault PRIVATE ANO_RES_FAULT_INJECT)
+target_include_directories(anotest_resfault PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resfault PRIVATE anoptic_core)
+add_test(NAME anoptic_resfault COMMAND anotest_resfault)
+set_tests_properties(anoptic_resfault PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Testing for ``anoptic_memory_pools.h`` (monotonic/multipool/pool over parents): hostile
 # input totality, shadow-oracle churn fuzz, alignment contracts, reset/recycle behavior,
 # false-on-empty at the pool cap, Multipool<Monotonic> composition, wink-out.

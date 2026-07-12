@@ -16,6 +16,7 @@
 
 #include <anoptic_filesystem.h>
 #include <anoptic_memory.h>
+#include <anoptic_resources.h>      // anores_t
 
 #include "resources_os.h"
 
@@ -59,8 +60,47 @@ ano_fspath res_write_root(void);
 // ---------------------------------------------------------------------------------------------
 // The gulp primitive: whole file into heap, ANO_CACHE_LINE-aligned, one guard NUL at
 // [size], fstat as a hint only, EOF decided by the read loop, <= RMOS_CHUNK_MAX per
-// read. 0 (+ buffer, byte count) / -1 with nothing allocated. Caller logs.
+// read. heap == NULL allocates from the calling thread's DEFAULT heap (mi_malloc
+// family: thread-safe, mi_free-able from any thread -- the registry's mode; a mi_heap_t
+// is single-thread-owner and only sound when the caller owns it).
+// 0 (+ buffer, byte count) / -1 could not open / -2 opened but read or alloc failed
+// (nothing stays allocated on failure). Caller logs.
 int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size);
+
+// Registry construction (resources_registry.c), called once from ano_res_init.
+int res_registry_init(void);
+
+// Registry access for the domain extensions.
+// The logical name of a LIVE handle (NUL-terminated into out). 0 / -1.
+int res_registry_name(anores_t h, char *out, size_t cap);
+// A live handle for a logical path WITHOUT loading anything, or the sentinel.
+anores_t res_registry_find(const char *logical);
+// Hand a default-heap mi allocation (size + 1 bytes, guard NUL at [size]) to the
+// registry under `logical`. Takes ownership of buf in every outcome: on success it is
+// the payload (or copied into placement and freed); if the path is already loaded it
+// is freed and the EXISTING handle returns (single-copy); on failure it is freed and
+// the sentinel returns.
+anores_t res_registry_adopt(const char *logical, void *buf, size_t size);
+
+// The save mutex, shared by commit (core) and save_load (registry).
+void res_save_lock(void);
+void res_save_unlock(void);
+
+// Fault-injection points for the protocol crash harness. Production builds compile the
+// hook away; the test compiles this TU privately with ANO_RES_FAULT_INJECT and installs
+// a hook that dies mid-protocol.
+typedef enum {
+    RES_FAULT_AFTER_WRITE = 1,      // temp bytes written, not yet fsynced
+    RES_FAULT_AFTER_SYNC,           // temp fsynced, not yet closed
+    RES_FAULT_AFTER_CLOSE,          // temp closed, not yet renamed
+    RES_FAULT_AFTER_RENAME,         // renamed over final, dir not yet fsynced
+} res_fault_step;
+#ifdef ANO_RES_FAULT_INJECT
+extern void (*res_fault_hook)(res_fault_step step);
+#define RES_FAULT(step) do { if (res_fault_hook) res_fault_hook(step); } while (0)
+#else
+#define RES_FAULT(step) ((void)0)
+#endif
 
 // The full durable-replace protocol (plan section 10) writing the concatenation of
 // nparts buffers to final_abs: same-dir O_EXCL temp, write all, fsync, close, rename,
@@ -92,6 +132,12 @@ uint64_t res_fnv1a64(const void *data, size_t len);
 void res_save_frame(uint8_t hdr[RES_SAVE_HDR_BYTES], uint8_t ftr[RES_SAVE_FTR_BYTES],
                     uint32_t format_version, const void *payload, size_t payload_len,
                     uint64_t seq);
+
+// "<slot>.<seq>.anosave" -> seq. Strict: canonical digits only (no leading zeros), seq
+// capped at UINT64_MAX/2 (a planted max-value name must not wrap max+1 to zero).
+// Anything else is not ours. Shared by commit-side pruning and load-side scanning.
+bool res_save_name_seq(const char *name, const char *slot, size_t slot_len,
+                       uint64_t *out_seq);
 
 // Validate a whole in-memory save file. 0 valid (+ outs) / -1. Distinguishing header
 // vs body damage is the caller's log line, via which check failed first:
