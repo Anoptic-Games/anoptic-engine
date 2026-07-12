@@ -177,7 +177,11 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	
+
+	// ANO_FLOAT keeps the window above normal windows (bench: unoccluded without focus).
+	if (getenv("ANO_FLOAT") != NULL)
+		glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
+
 	// Choose the monitor
 	GLFWmonitor* chosenMonitor = NULL;
 	uint32_t monitorIndex = getChosenMonitor();
@@ -206,7 +210,17 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	}
 	
 	GLFWwindow *window = glfwCreateWindow((int)resolution.width, (int)resolution.height, "Vulkan", chosenMonitor, NULL);
-	
+
+	// ANO_POS=XxY places the window, in screen coordinates. Windowed mode only.
+	const char* posEnv = getenv("ANO_POS");
+	if (posEnv != NULL && chosenMonitor == NULL) {
+		int px = 0, py = 0;
+		if (sscanf(posEnv, "%dx%d", &px, &py) == 2)
+			glfwSetWindowPos(window, px, py);
+		else
+			ano_log(ANO_WARN, "ANO_POS \"%s\" invalid (want XxY); ignoring", posEnv);
+	}
+
 	glfwSetWindowUserPointer(window, &rendererState);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 	// Overlay surface scale: seed from the live value, track monitor/DPI changes.

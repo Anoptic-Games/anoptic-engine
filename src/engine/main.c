@@ -408,8 +408,9 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t camSeq = 0;
 	uint64_t lastSnapLog = ano_timestamp_us();
 
-	// UI demo state: blocks resubmit on change only.
-	bool     menuVisible = false, menuDirty = false, barSubmitted = false;
+	// UI demo state: blocks resubmit on change only. ANO_MENU opens the menu at boot (bench drivers that cannot inject keys).
+	bool     menuVisible = getenv("ANO_MENU") != NULL;
+	bool     menuDirty = menuVisible, barSubmitted = false;
 	int      menuHovered = -1;
 	uint32_t optionsCount = 0;
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)

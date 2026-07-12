@@ -39,6 +39,8 @@ void ano_ts(VkCommandBuffer cmd, uint32_t query) {
 }
 
 // Print averaged per-pass GPU times + per-allocator resident VRAM. shadowAtlas reported separately.
+// res= is the realized swapchain extent -- the render-resolution ground truth for bench drivers
+// (a window label or DPI-scaled request can lie; this cannot).
 static void ano_print_profiling(void) {
     static const char* const modeNames[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RC" };
     uint32_t m = rendererState.lightingMode;
@@ -62,9 +64,10 @@ static void ano_print_profiling(void) {
 
     double frusta = g_shadowRenderFrames ? (double)g_shadowRenderAccum / (double)g_shadowRenderFrames : 0.0;
     // TODO: gate on a dedicated profiling build tag; ano_log keeps this periodic frame-time line in release for now.
-    ano_log(ANO_INFO, "[profile mode=%s] GPU ms: upload=%.3f compute=%.3f shadow=%.3f (frusta %.1f/%u) lighting=%.3f composite=%.3f total=%.3f"
+    ano_log(ANO_INFO, "[profile mode=%s res=%ux%u] GPU ms: upload=%.3f compute=%.3f shadow=%.3f (frusta %.1f/%u) lighting=%.3f composite=%.3f total=%.3f"
            " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f",
-           mn, up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co, total, gpu, tex, swap, stg, atlas);
+           mn, rendererState.imageExtent.width, rendererState.imageExtent.height,
+           up, cp, sh, frusta, ANO_SHADOW_FRUSTUM_COUNT, li, co, total, gpu, tex, swap, stg, atlas);
     g_shadowRenderAccum = 0;
     g_shadowRenderFrames = 0;
 
