@@ -1,0 +1,110 @@
+/* SPDX-FileCopyrightText: 2026 Anoptic Game Engine Authors
+ *
+ * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
+
+// Anoptic Resource Manager -- the core surface.
+//
+// The place where loadables live. One namespace of ordered roots resolves logical paths
+// ("shaders/flat.frag.spv"); the manager owns resources in purpose-built allocators and
+// hands out handles, views, copies, or destructive hand-offs. Saves and configs fall out
+// of doing that well. Design brief: anoptic_strings.h -- the value/view/intern/reclaim
+// grammar at asset-population scale. Plan of record: docs/resourcemanager-real.md.
+//
+// Logical paths, everywhere: forward slashes, relative, no leading '/', no empty, '.'
+// or '..' segments, no backslashes, no ':' or control bytes; root + '/' + path fits
+// MAXPATH - 1; compiled literals fit ANOSTR_SID_MAX. Violations hit the failure
+// sentinel, never UB.
+//
+// Threading: ano_res_init and all ano_res_mount calls happen on the main thread before
+// other threads touch the namespace (the ano_log_init discipline). The mount table then
+// freezes at first use: resolution is stateless and thread-safe, registry mutation is
+// mutex-guarded, same-slot save commits serialize internally.
+//
+// Remote-FS floor: 9P/SMB is a real deployment target. Believe only bytes you have
+// read -- never stat size or mtime, never file locks; content validates by framing and
+// hashes. ano_res_exists is advisory ONLY.
+
+#ifndef ANOPTICENGINE_ANOPTIC_RESOURCES_H
+#define ANOPTICENGINE_ANOPTIC_RESOURCES_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "anoptic_filesystem.h"   // ano_fspath and the OS roots this module composes
+#include "anoptic_memory_pools.h" // the allocators the manager owns
+#include "anoptic_strings.h"      // anostr_t views, ANOSTR_SID, interning
+
+#define ANO_RES_MAX_MOUNTS 8  // read-only roots beyond the two built-ins
+#define ANO_RES_SAVE_KEEP  3  // gamesave generations retained per slot
+
+// -- Lifecycle and mounts ---------------------------------------------------------------------
+
+// Pin write root (ano_fs_userpath(), created if absent) and base mount
+// (<gamepath>/resources); create the registry and the manager's allocators.
+// Main thread, after ano_log_init. Repeat calls are no-ops returning the first result.
+// Output: 0, or -1 if either root failed.
+int  ano_res_init(void);
+
+// Register an additional read-only root, shadowing base and earlier mounts (the
+// write root still wins). prefix scopes the mount to a logical subtree ("" = whole
+// namespace); interned on registration. One dev-build call site in main().
+// Output: 0; -1 on invalid prefix, root.length == 0, a full table, a frozen
+// namespace, or before init.
+int  ano_res_mount(const char *prefix, ano_fspath root);
+
+// -- Resolution (escape hatch; every call site is migration debt) ------------------------------
+
+// Absolute OS path where a logical path's bytes live right now, loose mounts only
+// (a packed asset resolves empty). For the transition while parsers still self-open.
+// Output: the path by value; length == 0 if no mount contains it or the path is invalid.
+ano_fspath ano_res_resolve(const char *logical);
+
+// Where a write to this logical path would land under the write root; parents
+// created, so a non-empty result is ready to open.
+ano_fspath ano_res_resolve_write(const char *logical);
+
+// Validated join of a relative fragment onto a base directory (the glTF image-URI
+// case); kills ad-hoc snprintf joins. The fragment obeys logical-path rules.
+// Output: the joined path; length == 0 on invalid input or overflow.
+ano_fspath ano_res_subpath(ano_fspath base, const char *relative);
+
+// Whether any mount currently contains the path. ADVISORY ONLY -- metadata caches
+// lie (9P/SMB); gate on the load itself and handle the sentinel instead.
+bool ano_res_exists(const char *logical);
+
+// -- Unowned reads ------------------------------------------------------------------------------
+
+// One-shot gulp into a caller-supplied heap, bypassing the registry: fresh handle,
+// fstat as hint only, read loop to EOF in bounded chunks, ANO_CACHE_LINE-aligned
+// buffer, one guard NUL past the end, length == bytes read. For config bootstrap and
+// genuinely unowned reads; also the internal primitive every owned load is built on.
+// Output: the bytes as an anostr_t in heap (inline if tiny, per the string rules).
+// The empty string on refusal or failure (one log line), never UB.
+anostr_t ano_res_slurp(mi_heap_t *heap, const char *logical);
+
+// -- The write path: durable and atomic, always under the write root ---------------------------
+
+// Durably replace a fixed-name file (config, keybindings). Full protocol
+// (same-dir O_EXCL temp, write, fsync, close, rename, parent-dir fsync); on any error
+// the temp is unlinked, fsync is never retried on the same handle, the caller's buffer
+// is the source of truth -- call again to retry.
+// Output: 0 only when the replacement is durable on disk; -1 otherwise (previous
+// file intact).
+int  ano_res_write(const char *logical, const void *data, size_t size);
+
+// Rename a damaged file under the write root to "<name>.broken": regenerate
+// defaults without destroying evidence. Output: 0; -1 if absent or rename failed.
+int  ano_res_quarantine(const char *logical);
+
+// Commit a gamesave generation: framed payload (48-byte header, hashed, 16-byte
+// footer) via the full protocol to a BRAND-NEW filename "saves/<slot>.<seq>.anosave",
+// verified through a fresh read handle before older generations are pruned (keep
+// ANO_RES_SAVE_KEEP). slot is a single path segment. Same-slot commits serialize
+// internally. Output: 0 when durable AND verified; -1 otherwise (every prior
+// generation intact).
+int  ano_res_save_commit(const char *slot, uint32_t format_version,
+                         const void *payload, size_t size);
+
+#endif // ANOPTICENGINE_ANOPTIC_RESOURCES_H

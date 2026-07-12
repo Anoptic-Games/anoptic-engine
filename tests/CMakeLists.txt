@@ -119,7 +119,33 @@ target_link_libraries(anotest_memory PRIVATE anoptic_core)
 add_test(NAME anoptic_memory COMMAND anotest_memory)
 set_tests_properties(anoptic_memory PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
-# Easter egg: the original allocator experiment, preserved verbatim (see the file banner). 
+# Testing for the ``anoptic_resources.h`` core: namespace/mounts/shadow order, hostile-path
+# grammar fuzz, slurp read contract (byte-identical, guard NUL, alignment, multi-chunk),
+# durable writes + quarantine, save-frame commits with an independent FNV/layout oracle.
+# Writes real probe files under the user root (that is the write path's actual contract)
+# and cleans them on exit.
+add_executable(anotest_resources anotest_resources.c)
+target_link_libraries(anotest_resources PRIVATE anoptic_core)
+add_test(NAME anoptic_resources COMMAND anotest_resources)
+set_tests_properties(anoptic_resources PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+
+# Testing for ``anoptic_memory_pools.h`` (monotonic/multipool/pool over parents): hostile
+# input totality, shadow-oracle churn fuzz, alignment contracts, reset/recycle behavior,
+# false-on-empty at the pool cap, Multipool<Monotonic> composition, wink-out.
+add_executable(anotest_mempools anotest_mempools.c)
+target_link_libraries(anotest_mempools PRIVATE anoptic_core)
+add_test(NAME anoptic_mempools COMMAND anotest_mempools)
+set_tests_properties(anoptic_mempools PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+
+# Memory-pools benchmark: the Lakos grid (churn / batch-and-wink / composition) vs the raw
+# mi_heap baseline, percentiles + wall ops/sec. DISABLED in ctest, run ./anotest_mempoolbench
+# by hand from a -O3 build (build.sh 8).
+add_executable(anotest_mempoolbench anotest_mempoolbench.c)
+target_link_libraries(anotest_mempoolbench PRIVATE anoptic_core)
+add_test(NAME anoptic_mempoolbench COMMAND anotest_mempoolbench)
+set_tests_properties(anoptic_mempoolbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# Easter egg: the original allocator experiment, preserved verbatim (see the file banner).
 # Built so it cannot rot, but DISABLED in ctest
 # -- run ./anotest_chariots by hand. -w
 add_executable(anotest_chariots anotest_chariots.c)
