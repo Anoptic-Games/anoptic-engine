@@ -392,6 +392,8 @@ The interface freezes; what a heap *is* does not. At least four models compete, 
 
 **Bar:** the winner beats every loser on its own home bench or shows why the loss doesn't matter at our shapes; the decision and numbers are recorded in this document.
 
+**Result (2026-07-12, `anotest_resbench` at -O3, Linux ext4 primary + Windows native cross-check): E ships.** A vs E, best of two: churn is a structural tie (E outside a scope IS model A — group 0 — so the loss cannot exist; measured identical, hit p50 50 ns both); E wins its home bench outright (residual footprint 0 vs A's 1,318,912 bytes of high-water chunks retained every one of 50 level cycles, cycle wall 6.49 vs 6.79 ms mean, p99 8.1 vs 12.9 ms); hand-off ties (200/200 zero-copy both, release p50 30 ns). E-v1 retire is chunk-granular multipool destroy (mi heaps are single-thread-owner; true heap wink-out arrives with the step-5 loader thread — the upgrade changes only the parent constructor at scope-begin). A stays behind `ANO_RES_MODEL=A` as the bench baseline. Full grid and decisions: RESOURCE_MANAGER_IMPL.md Phase D.
+
 ## 6. Module layout
 
 - **`include/anoptic_memory_pools.h`** + `src/memory/pools.c` — the allocators of §3. Platform-free (mimalloc is already the platform layer).
@@ -433,7 +435,7 @@ POSIX: same-dir `O_EXCL` unique temp → write all (loop short/EINTR) → `fsync
 
 Windows: `CreateFileW` temp share-mode 0, `WriteFile` loop, `FlushFileBuffers`, `CloseHandle`; `ReplaceFileW` when the target exists else `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`; both retried 5× with 100 ms backoff on `ERROR_SHARING_VIOLATION`.
 
-**Saves.** Every generation is a brand-new filename `saves/<slot>.<seq>.anosave` (a name that never existed has no stale cache entry), framed per §9, re-opened fresh and re-validated before pruning (keep `ANO_RES_SAVE_KEEP` = 3, oldest-first, only after the newest verifies). Load: scan newest-seq-first, fresh handle each, first valid wins; orphaned `.tmp` tried last then purged; all fail → sentinel, "start fresh", never garbage. Per-slot commits serialize on an internal save mutex. Migration: in-memory v(n)→v(n+1) chain at load, written back through commit, never in place.
+**Saves.** Every generation is a brand-new filename `saves/<slot>.<seq>.anosave` (a name that never existed has no stale cache entry), framed per §9, re-opened fresh and re-validated. Saves are user data and the engine NEVER deletes them on its own (revised 2026-07-12; `ANO_RES_SAVE_KEEP` survives as the advisory bulk threshold): `ano_res_save_stats` is the "getting bulky" hint, `ano_res_save_delete` is the user-initiated removal. Load: scan newest-seq-first, fresh handle each, first valid wins; orphaned `.tmp` tried last then purged; all fail → sentinel, "start fresh", never garbage. Per-slot commits serialize on an internal save mutex. Migration: in-memory v(n)→v(n+1) chain at load, written back through commit, never in place.
 
 ## 11. The public surface
 

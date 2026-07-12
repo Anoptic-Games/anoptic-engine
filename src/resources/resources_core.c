@@ -12,6 +12,7 @@
 
 #include <anoptic_log.h>
 #include <anoptic_threads.h>
+#include <anoptic_time.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -205,6 +206,82 @@ int res_candidates(const char *logical, size_t len, ano_fspath *out, int cap)
 // ---------------------------------------------------------------------------------------------
 // Lifecycle.
 
+// ---------------------------------------------------------------------------------------------
+// Write-root temp GC. A crash between O_EXCL create and rename strands
+// "<final>.<8 hex>.tmp"; stranded temps accumulate (the nonce counter restarts every
+// boot) until eight consecutive nonces are taken and the protocol's attempt loop
+// starves -- observed live: 15 strays wedged the crash harness. Calm time only,
+// before any protocol can run, so every match is orphaned by definition. saves/ is
+// EXCLUDED: its temps are ano_res_save_load's recovery candidates (a valid one
+// COMPLETES the interrupted rename). Best effort: bounded batch per directory per
+// boot, bounded depth; a flood drains across boots.
+
+#define RES_GC_BATCH 32
+#define RES_GC_DEPTH 3
+
+// "<stem>.<8 lowercase hex>.tmp" -- exactly the protocol's temp shape, nothing else.
+static bool res_tmp_name(const char *name)
+{
+    size_t n = strlen(name);
+    if (n < 14 || strcmp(name + n - 4, ".tmp") != 0 || name[n - 13] != '.')
+        return false;
+    for (size_t i = n - 12; i < n - 4; i++)
+        if (!((name[i] >= '0' && name[i] <= '9') || (name[i] >= 'a' && name[i] <= 'f')))
+            return false;
+    return true;
+}
+
+typedef struct gc_scan {
+    char names[RES_GC_BATCH][MAXPATH];
+    int  n_tmp;
+    char dirs[RES_GC_BATCH][MAXPATH];   // candidate subdirs; recursion probes them
+    int  n_dir;
+    bool skip_saves;                    // top level only
+} gc_scan;
+
+static void gc_scan_cb(const char *name, void *ctx)
+{
+    gc_scan *s = ctx;
+    size_t n = strlen(name);
+    if (n >= MAXPATH)
+        return;
+    if (res_tmp_name(name)) {
+        if (s->n_tmp < RES_GC_BATCH)
+            memcpy(s->names[s->n_tmp++], name, n + 1);
+        return;
+    }
+    if (s->skip_saves && strcmp(name, "saves") == 0)
+        return;
+    if (s->n_dir < RES_GC_BATCH)
+        memcpy(s->dirs[s->n_dir++], name, n + 1);
+}
+
+// Sweep one directory, recurse into subdirs (a non-dir just fails the scan: no
+// entry-type query needed). Returns the number removed.
+static int res_temp_gc_dir(const ano_fspath *dir, int depth, bool top)
+{
+    gc_scan *s = mi_zalloc(sizeof *s);  // ~16 KiB: off the recursion stack
+    if (s == NULL)
+        return 0;
+    s->skip_saves = top;
+    int removed = 0;
+    if (rmos_scan_dir(dir->str, gc_scan_cb, s) == 0) {
+        for (int i = 0; i < s->n_tmp; i++) {
+            ano_fspath vic = res_join(dir, s->names[i], strlen(s->names[i]));
+            if (vic.length != 0 && rmos_unlink(vic.str) == 0)
+                removed++;
+        }
+        if (depth > 0)
+            for (int i = 0; i < s->n_dir; i++) {
+                ano_fspath sub = res_join(dir, s->dirs[i], strlen(s->dirs[i]));
+                if (sub.length != 0)
+                    removed += res_temp_gc_dir(&sub, depth - 1, false);
+            }
+    }
+    mi_free(s);
+    return removed;
+}
+
 int ano_res_init(void)
 {
     if (g_res.init_done)
@@ -250,6 +327,12 @@ int ano_res_init(void)
         g_res.heap = NULL;
         return -1;
     }
+    // Nonce counter off the clock: two instances sharing a write root must not walk
+    // the same temp names. Then the calm-time sweep of stranded protocol temps.
+    atomic_store(&g_tmp_counter, (uint32_t)ano_timestamp_ticks() | 1u);
+    int swept = res_temp_gc_dir(&g_res.write_root, RES_GC_DEPTH, true);
+    if (swept > 0)
+        ano_log(ANO_WARN, "resources: swept %d stranded write-protocol temp(s)", swept);
     g_res.init_result = 0;
     return 0;
 }
@@ -631,18 +714,14 @@ int res_save_validate(const uint8_t *bytes, size_t len, uint32_t *out_format_ver
 
 // ---------------------------------------------------------------------------------------------
 // Gamesave commits. Serialized on one internal mutex; every generation is a brand-new
-// filename, verified through a fresh handle before anything older is pruned.
+// filename, verified through a fresh handle. NOTHING older is ever touched: saves are
+// user data and only the user deletes them (ano_res_save_delete). ANO_RES_SAVE_KEEP
+// survives as the advisory bulk hint for ano_res_save_stats callers.
 
 typedef struct save_scan {
     const char *slot;
     size_t      slot_len;
-    uint64_t    top[ANO_RES_SAVE_KEEP];         // newest seqs, descending
-    int         top_count;
     uint64_t    max_seq;
-    uint64_t    victims[64];                    // seqs to prune this pass
-    int         victim_count;
-    uint64_t    keep_min;                       // pruning pass: keep seq >= this
-    bool        pruning;
 } save_scan;
 
 bool res_save_name_seq(const char *name, const char *slot, size_t slot_len,
@@ -679,23 +758,6 @@ static void save_scan_cb(const char *name, void *ctx)
         return;
     if (seq > s->max_seq)
         s->max_seq = seq;
-    if (s->pruning) {
-        if (seq < s->keep_min && s->victim_count < (int)(sizeof s->victims / sizeof s->victims[0]))
-            s->victims[s->victim_count++] = seq;
-        return;
-    }
-    // Insert into the descending top-K.
-    for (int i = 0; i < ANO_RES_SAVE_KEEP; i++) {
-        if (i >= s->top_count || seq > s->top[i]) {
-            for (int j = (s->top_count < ANO_RES_SAVE_KEEP ? s->top_count : ANO_RES_SAVE_KEEP - 1);
-                 j > i; j--)
-                s->top[j] = s->top[j - 1];
-            s->top[i] = seq;
-            if (s->top_count < ANO_RES_SAVE_KEEP)
-                s->top_count++;
-            return;
-        }
-    }
 }
 
 static int save_commit_locked(const char *slot, size_t slot_len, uint32_t format_version,
@@ -761,20 +823,8 @@ static int save_commit_locked(const char *slot, size_t slot_len, uint32_t format
         }
     }
 
-    // Prune to the newest ANO_RES_SAVE_KEEP. A failed unlink only leaves extras.
-    if (scan.top_count >= ANO_RES_SAVE_KEEP) {          // seq joined an already-full set
-        save_scan prune = { .slot = slot, .slot_len = slot_len, .pruning = true,
-                            .keep_min = scan.top[ANO_RES_SAVE_KEEP - 2] };
-        // keep: seq (new), top[0], top[1] -- everything below top[KEEP-2] goes.
-        rmos_scan_dir(saves.str, save_scan_cb, &prune);
-        for (int i = 0; i < prune.victim_count; i++) {
-            char vic[MAXPATH];
-            int vw = snprintf(vic, sizeof vic, "%s/%s.%llu.anosave", saves.str, slot,
-                              (unsigned long long)prune.victims[i]);
-            if (vw > 0 && vw < (int)sizeof vic && rmos_unlink(vic) != 0)
-                ano_log(ANO_WARN, "resources: could not prune old save %s", vic);
-        }
-    }
+    // Every prior generation stays: saves are user data, pruning is the user's call
+    // (ano_res_save_delete), never the engine's.
     return 0;
 }
 
@@ -794,4 +844,76 @@ int ano_res_save_commit(const char *slot, uint32_t format_version,
     int rc = save_commit_locked(slot, slot_len, format_version, payload, size);
     ano_mutex_unlock(&g_res.save_mtx);
     return rc;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Save bookkeeping: the engine counts and reports, only the USER deletes.
+
+typedef struct save_stats_scan {
+    const char *slot;
+    size_t      slot_len;
+    const char *dir;
+    uint32_t    count;
+    uint64_t    bytes;
+} save_stats_scan;
+
+static void save_stats_cb(const char *name, void *ctx)
+{
+    save_stats_scan *s = ctx;
+    uint64_t seq;
+    if (!res_save_name_seq(name, s->slot, s->slot_len, &seq))
+        return;
+    s->count++;
+    char abs[MAXPATH * 2];
+    int w = snprintf(abs, sizeof abs, "%s/%s", s->dir, name);
+    if (w <= 0 || w >= (int)sizeof abs)
+        return;
+    rmos_file f;
+    if (rmos_read_open(abs, &f) != 0)
+        return;                                 // counted, size unknown
+    int64_t sz = rmos_size_hint(f);
+    rmos_read_close(f);
+    if (sz > 0)
+        s->bytes += (uint64_t)sz;
+}
+
+int ano_res_save_stats(const char *slot, uint32_t *generations, uint64_t *bytes)
+{
+    size_t slot_len;
+    if (res_segment_validate(slot, &slot_len) != 0 || !res_ready())
+        return -1;
+    ano_fspath wroot = res_write_root();
+    ano_fspath saves = res_join(&wroot, "saves", 5);
+    if (saves.length == 0)
+        return -1;
+    save_stats_scan s = { .slot = slot, .slot_len = slot_len, .dir = saves.str };
+    ano_mutex_lock(&g_res.save_mtx);
+    (void)rmos_scan_dir(saves.str, save_stats_cb, &s);  // absent dir = zero generations
+    ano_mutex_unlock(&g_res.save_mtx);
+    if (generations) *generations = s.count;
+    if (bytes)       *bytes       = s.bytes;
+    return 0;
+}
+
+int ano_res_save_delete(const char *slot, uint64_t seq)
+{
+    size_t slot_len;
+    if (res_segment_validate(slot, &slot_len) != 0 || !res_ready())
+        return -1;
+    char rel[MAXPATH];
+    int w = snprintf(rel, sizeof rel, "saves/%s.%llu.anosave", slot,
+                     (unsigned long long)seq);
+    if (w < 0 || w >= (int)sizeof rel)
+        return -1;
+    ano_fspath wroot = res_write_root();
+    ano_fspath vic = res_join(&wroot, rel, (size_t)w);
+    if (vic.length == 0)
+        return -1;
+    ano_mutex_lock(&g_res.save_mtx);
+    int rc = rmos_unlink(vic.str);
+    ano_mutex_unlock(&g_res.save_mtx);
+    if (rc != 0)
+        return -1;
+    ano_log(ANO_INFO, "resources: user deleted save %s", rel);
+    return 0;
 }

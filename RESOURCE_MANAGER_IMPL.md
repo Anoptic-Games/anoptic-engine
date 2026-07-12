@@ -373,6 +373,17 @@ engine itself never opens a font by path.
   scenario ("wrong death: exit 0"). **Proven pre-existing**: a clean worktree at
   `2fb1ee6` (the plan commit, zero resource-manager code) fails identically in a
   Release build on this machine. Debug passes everywhere. Left for a separate fix.
+  **CLOSED (Phase D prologue)**: root cause was the scenario, not the handler --
+  `sc_intdiv` guarded only the divisor with `volatile`, and LLVM InstCombine
+  strength-reduces constant-dividend `1/x` into icmp+select (proven by disassembly:
+  `leal 1(%rax); cmpl $3; cmovbl` where the `idiv` should be), so no trap exists at
+  -O2+. Fix in `tests/anotest_blackbox.c` only: both operands volatile plus a
+  `BB_NOOPT` (optnone) attribute on the inducer. Verified: `idiv` present in the -O3
+  binary; Linux -O3 `intdiv` green across 4 consecutive runs; Windows clang64 -O3 full
+  suite 22/22. Separate observation from the reruns: `ring_full` is flaky ONLY under
+  WSL/9p (dies to the 5 s deadman SIGALRM while the hail-mary drains a full ring
+  through 9p writes; ~97 s per blackbox run there vs 8 s native) -- environmental, not
+  code; native runs are clean.
 - Pre-existing (not introduced here): a spirv-val debug-info complaint from the
   validation layers on one Debug-compiled shader (`glslangValidator -gV` artifact); the
   bytes served are byte-identical to what `loadFile` read, per the read-contract tests.
@@ -398,14 +409,265 @@ Phase C committed as `fccad69`.
 | §14 bar | State |
 |---|---|
 | Installed tree runs from any CWD; nothing outside `src/resources/` + logger opens a file | **Met** (grep-verified; `/tmp` smoke run; install rule ships the full resources tree). Windows path written per plan §10, untested on real Windows in this run. |
-| Every loadable in a manager-owned allocator; teardown by wink-out; zero loose malloc/free in ingest | **Met for the shipped model A** (shared multipool + direct blocks; ingest staging is a monotonic arena winked per ingest). Lifetime-group wink-out arrives with the B–E bake-off. |
+| Every loadable in a manager-owned allocator; teardown by wink-out; zero loose malloc/free in ingest | **Met — model E shipped by the Phase D bake-off**: lifetime groups with bulk chunk-granular teardown (residual returns to zero every level cycle), saves pinned to engine-forever, ingest staging a monotonic arena winked per ingest. True O(1) heap wink-out upgrades with the step-5 loader thread (parent-constructor change only). |
 | Consumers hold `anores_t` handles/views; stale = sentinel; GPU hand-off destructive | **Met** (views drive shaders/scenes/fonts; release is zero-copy for direct-class payloads). |
 | kill -9 at every protocol step: old-complete or new-complete; torn newest degrades one generation | **Met and harness-proven** (`anotest_resfault` + the corruption battery; orphan temps now complete their interrupted rename). |
 | Resource names are `ANOSTR_SID` literals or interned strings | **Met** (rid = FNV-1a-64 in the SID key space, compile-time equivalence tested; mount prefixes interned). |
-| TSan-clean transport + streaming | Step 5–6 rungs (not built, per plan gating). The full non-vk suite (19 tests, all resource/mempool tests included) runs **TSan-clean**. The 4 vk tests SEGV under TSan inside the sanitizer's own allocator on an NVIDIA **driver** thread (`libnvidia-glcore` → `__interceptor_calloc` → `__tsan::user_calloc`, no engine frames) — an environmental TSan×NVIDIA-ICD incompatibility on this box, not engine code; the house TSan workflow (`build.sh 7 under WSL`) never runs vk tests. |
+| TSan-clean transport + streaming | The transport's INTERCONNECT tier now exists (Phase F): `anoptic_collections.h` rings + `anoptic_threads_bridges.h` channels, conservation-stressed and in the `build.sh 7` TSan net. The loader-thread rung and streaming economy remain step 5–6 rungs. The full non-vk suite runs **TSan-clean**; the 4 vk tests SEGV under TSan inside the sanitizer's own allocator on an NVIDIA **driver** thread (`libnvidia-glcore` → `__interceptor_calloc` → `__tsan::user_calloc`, no engine frames) — an environmental TSan×NVIDIA-ICD incompatibility on this box, not engine code; the house TSan workflow never runs vk tests. |
 | Compressed reads, zero-parse baked scene | Step 6–7 rungs. The scene block is already offset-based/load-in-place-shaped for the bake. |
 
 **Three commits: `8726743` (A), `c5bbda1` (B), `fccad69` (C).** The engine's frame is
 the old frame; its file IO is one namespace; its assets live in a manager that owns
 them. What was deferred is recorded above as bench-gated rungs with their bars, per
 plan rules 7/8 — none of it is silent.
+
+---
+
+# Phase D — the §5 bake-off runs: A vs E, E ships
+
+The owner's directive after the branch review: no null hypothesis — run the bake-off,
+best of two minimum, A against the plan's own favored hybrid E (C×D). Decisions first,
+then the numbers.
+
+## Decisions
+
+- **Model A is the degenerate case of model E.** Rows carry a lifetime-group tag in
+  both models; group 0 is engine-forever, always open, never retirable. Under A every
+  pooled payload lands in `groups[0].pool` (the old `g_reg.pool`) and retire sweeps
+  per-object; under E each open group lazily owns its own multipool and retire
+  destroys it whole, outside the mutex. One code path, both models benched at
+  identical call sites — the diff is ~170 lines of registry.
+- **Groups are internal, ambient, and the surface stays frozen.** `res_group_begin/
+  end/retire` live in `resources_internal.h`; the open scope is ambient under the
+  registry mutex (any load during an open scope joins it — the level-load shape,
+  revisited when loads move to the step-5 loader thread). Public `ano_res_group_*`
+  promotion waits for a real level consumer.
+- **Saves pin to group 0 structurally** — `save_try_file` passes group 0 explicitly,
+  not by path convention. A level retire can never invalidate a loaded save
+  (`anotest_resgroups` asserts it).
+- **Direct-class payloads stay standalone mi blocks in both models.** The multipool's
+  oversize passthrough cannot serve `ano_res_release` (an interior pointer is not
+  `ano_aligned_free`-able), and read-to-home depends on the buffer being the payload.
+- **The honest E-v1 compromise:** mi_heap_t parents are single-thread-owner and loads
+  run on caller threads, so true O(1) `mi_heap_destroy` wink-out waits for the loader
+  thread. E-v1 retire = `multipool_destroy` (O(chunks)) + per-object frees of the few
+  huge direct blocks. Measured below: sub-5 µs at the level-cycle population — the
+  compromise costs nothing at our shapes. Upgrade path recorded: loader-thread-owned
+  per-group heaps change only the parent constructor at `begin` and the retire tail.
+- **Switch:** `ANO_RES_MODEL` env read once at registry init (the house getenv
+  pattern). After the decision below the default is **E**; `=A` keeps the baseline.
+- **Loser's fate:** A stays behind the switch — the `log_old.c` precedent (keep the
+  baseline so the comparison cannot rot). A inside the unified design is ~25 lines.
+  ctest runs the resource suites under BOTH models every pass (`*_modelA` variants).
+
+## The grid (`anotest_resbench`, -O3, best of two full runs each)
+
+Primary: Linux x86-64, clang + LTO, WSL2 on ext4 (the tree copied off 9p; a 9p mount
+distorts every IO-bound number and starves the blackbox deadman). Cross-check:
+Windows 11 native NTFS, MSYS2 clang64. Quiet box both times — the first Windows pass
+ran concurrent with a nix build and its churn tails were 2× pure noise; discarded.
+
+**(a) Steady-state churn — A's home.** 256-file synthetic tree, streaming mix
+{1K..256K pooled, 2 MiB direct}, 100k get/unload + 20k pure hits, fixed seed. Linux:
+
+| series (ns) | A p50 | A p99 | A p99.9 | E p50 | E p99 | E p99.9 |
+|---|---|---|---|---|---|---|
+| get(load), group 0 | 8460 | 229628 | 299107 | 8350 | 218658 | 278117 |
+| unload, group 0 | 60 | 430 | 670 | 60 | 380 | 590 |
+| get(hit), group 0 | 50 | 80 | 100 | 50 | 80 | 90 |
+| get(load), in scope | 8340 | 219798 | 281707 | 8360 | 217428 | 268318 |
+| get(hit), in scope | 50 | 80 | 100 | 50 | 80 | 100 |
+
+Verdict: identical within noise, exactly as construction predicts — E outside a scope
+routes through group 0, which IS model A, so a churn loss for E cannot exist (the §5
+"shows why the loss doesn't matter" arm); the in-scope series proves a group pool in
+the path costs nothing measurable. Windows cross-check agrees (hit p50 40 ns both).
+
+**(b) 50 level cycles over real assets — E's home.** Per cycle: scope → viking_room +
+candle holder + Sponza glTF ingest (`ano_resgfx_model`, ~6.6 MiB conditioned) →
+retire. Linux:
+
+| metric | A | E |
+|---|---|---|
+| residual footprint, EVERY cycle | **1,318,912 B retained** | **0 B** |
+| level cycle wall, mean | 6.786 ms | **6.492 ms** |
+| level cycle wall, p50 | 6.585 ms | **6.324 ms** |
+| level cycle wall, p99 | 12.898 ms | **8.135 ms** |
+| retire alone, p50 | 1.6 µs | 2.7 µs |
+
+Verdict: **E wins its home bench outright.** A's wound is exactly the predicted one —
+the shared pool keeps its high-water chunks forever (1.29 MiB flat across all 50
+cycles; grows with level size). E returns to baseline every cycle and is ~4% faster
+per cycle with a 37% tighter p99. The one number A wins — retire-alone (per-object
+frees of ~40 blobs beat one chunk-walk destroy by ~1 µs) — is 0.02% of a cycle:
+recorded, dismissed. Windows: same story (residual 1,318,912 vs 0; cycle p50 11.18 vs
+11.06 ms; retire parity at ~443 µs both — Windows frees are pricier for both equally).
+
+**(c) Direct-class hand-off + ingest — the D side.** Linux: 200/200 zero-copy releases
+(pointer equality every rep, both models), release p50 30 ns both, ~7.2k vs ~7.1k
+hand-offs/s (get+release+free of 2 MiB), Sponza ingest 1465 vs 1399 MB/s conditioned
+(≈ run noise; Windows re-run inverts it: 886 vs 913 MB/s). Verdict: tie — placement
+identity for direct blocks is byte-for-byte the same code in both models.
+
+## The §5 bar, applied
+
+E beats A on E's home bench (residual + wall + tails), ties A's home bench by
+construction (empirically confirmed), ties the hand-off bench. A beats E nowhere that
+matters and loses residual footprint unambiguously. **E ships as the default.**
+`anotest_resgroups` (+ `_modelA` variant) covers the seam: retire sentinels, group-0
+survival, release-then-retire double-free watch (ASan), save pinning, stats balance —
+green under Debug (28/28 native) and ASan (WSL, all non-vk) before the flip.
+
+Post-flip gates: full native Debug suite 30/30 (both models in every pass), TSan
+non-vk clean, Windows -O3 28/28, and the C.4 engine smoke from a foreign CWD on the
+real GPU — 20 s at ~720 fps, 442 MiB textures resident, shadow atlas live, zero
+ERROR/FATAL lines. The renderer's frame rides model E and cannot tell.
+
+---
+
+# Phase E — saves are user data; the write root sweeps its own strays
+
+Two policy corrections from the same review, one file (`resources_core.c`), and a
+discovery that proved the second one on our own test suite before it even shipped.
+
+## Saves: the engine deletes NOTHING
+
+The shipped `save_commit_locked` pruned to the newest `ANO_RES_SAVE_KEEP` = 3
+generations after every verified commit — auto-deleting user data. Wrong default,
+now dead: commit = write + verify, every prior generation intact forever. The
+3-generation retention was torn-write safety machinery, but never-delete preserves
+the degradation property trivially (load still scans newest-first) at the cost of
+disk the USER controls. The replacement contract, additions-only per §11:
+
+- `ano_res_save_stats(slot, &generations, &bytes)` — the "getting bulky" hint the
+  game shows; `ANO_RES_SAVE_KEEP` survives as the advisory threshold to compare it
+  against.
+- `ano_res_save_delete(slot, seq)` — the user-initiated removal of exactly one
+  generation. The engine never calls it on its own behalf.
+
+`save_scan` shrank to a `max_seq` tracker (seq assignment needs nothing else);
+`anotest_resources` now asserts all five commits survive, stats counts frame-exact
+bytes, and delete removes exactly what it names.
+
+## Write-root temp GC — and the wedge that demanded it
+
+`ano_res_init` now runs `res_temp_gc`: a calm-time, depth-3, batch-32 sweep of
+stranded protocol temps (`<stem>.<8 hex>.tmp`, exactly the protocol's shape) under
+the write root, **excluding `saves/`** — save temps are `ano_res_save_load`'s
+recovery candidates (a valid one COMPLETES the interrupted rename; sweeping them
+early would delete the only on-disk copy of a crashed commit). The nonce counter is
+also seeded from the clock at init so two instances sharing a write root cannot walk
+the same temp names.
+
+The demand was proven live before the feature landed: after ~5 suite runs on the
+Windows box, `anotest_resfault` went red with "fault hook did not fire" — 15
+stranded temps (the harness's own crash artifacts; its POSIX-only `purge_temps` is a
+no-op on Windows, and the counter restarted at 0 every process) had occupied 8+
+consecutive nonces, exhausting the protocol's O_EXCL attempt window. `ano_res_write`
+failed before reaching any fault hook. Exactly the accumulate-until-wedged failure
+the GC exists to prevent, caught in the wild on our own harness. The fix run swept
+all 15 at init and the suite went green with the strays' directory empty.
+
+Isolation coverage in `anotest_resources`: orphans planted before init at the root
+and nested both swept; a legit file, a non-protocol `.tmp`, and a `saves/` temp all
+survive untouched.
+
+---
+
+# Phase F — "async" spelled correctly: the lock-free interconnect tier
+
+The owner's recast of step 5: "async" is not a C keyword — in practice it means
+lock-free rings of prior art, shipped as their own modules before any loader thread
+exists to ride them. Two deliverables, both landing in the homes the codebase had
+already reserved (`log_ring.h:13` and `render_bridge.h:91` both said "migrates to
+anoptic_collections.h"; the stub header existed, empty, waiting).
+
+## `anoptic_collections.h` + `src/collections/`
+
+The primitives as allocator-parameterized value types over `ano_mem_parent` (composes
+over mi heaps AND the multipool hierarchy; `release == NULL` gives wink-out semantics
+for free). Cache discipline throughout: `_Alignas(ANO_THREAD_LINE)` cursor
+separation, compile-time-asserted in the tests ("real, not aspirational").
+
+- `anoticket_t` — the pure-FAA unique-number dispenser (lockfree.md's easy case).
+- `anoring_spsc` — the render bridge's proven `AnoSpscRing`, promoted: owner cursors,
+  no CAS anywhere.
+- `anoring_mpsc` / `anoring_spmc` / `anoring_mpmc` — the Vyukov bounded ring at fixed
+  stride with SoA planes: one `_Atomic u64` sequence word per slot (the log ring's
+  cycle/commit tag generalized — lap encoded in the word, reuse without zeroing)
+  beside a dense POD payload column. The single-owner side of each asymmetric variant
+  drops its CAS: MPSC's consumer owns head (plus batch `drain`, the log drain's
+  bounded walk); SPMC's producer owns tail — the fan-out shape (one loader thread
+  publishing to worker pools) pays NO RMW at all on push. SPMC was initially argued
+  away as "MPMC with one producer"; the owner overruled — the no-RMW push and the
+  named fan-out consumer earn the fourth implementation.
+- `anoseqpub` — the seqlock latest-wins lane, promoted with an owned value plane.
+
+Ordering per lockfree.md §8, the pairing named in every contract: relaxed claim
+(uniqueness only) → acquire on the slot's sequence word (previous life over) → plain
+payload copy → ONE release store as the publish gate. No seq_cst anywhere in
+collections. Hazards documented in the header, not hidden: Vyukov's wedged-producer
+caveat (with SCQ/LPRQ as the named benchmark-gated upgrade when a channel's producers
+can genuinely stall), 64-bit-monotonic ABA immunity, the ARM-without-LSE trap.
+Michael&Scott deliberately omitted: node-based, drags safe-memory-reclamation — the
+burden the array-ring family exists to sidestep; the mutex baseline serves the
+comparison role instead.
+
+## `anoptic_threads_bridges.h` + `src/threads/threads_bridges.c`
+
+The general extension of anoptic_threads.h: a bridge is a named, typed,
+policy-carrying channel. Topology (`SPSC|MPSC|SPMC|MPMC`) picks the cheapest ring;
+policy says what full means — `TRYFAIL` (command channels, the render-bridge
+contract) or `WAIT` (work channels: the log ring's escalating 64 ns → 8 µs backoff
+with a stall cap that degrades to false — never a silent drop, never an unbounded
+block). `anobridge_waiter` packages the log drainer's park/wake discipline (seq_cst
+parked flag, recheck under it, capped timedwait: a lost wakeup costs one cap, never a
+hang). Specialty channels: `anobridge_handles` — anores_t by VALUE, 16-byte POD slots
+on the SoA plane, payloads stay in the manager's allocators, only handles cross
+threads; `anobridge_latest` — the broadcast lane.
+
+`src/log/` and `src/render_bridge/` are NOT migrated in this phase — collections is
+the generalized extraction of their proven disciplines; re-basing them is recorded
+follow-up work.
+
+## Verification
+
+`anotest_collections`: layout static asserts; unit edges every flavor (full at
+exactly capacity, empty, ≥4 laps, u32 cursor wrap); conservation stress — 8P×8C MPMC
+and 8P×1C MPSC(drain) with count+sum+xor conservation and per-producer FIFO at every
+consumer, 1P×8C SPMC with the stronger single-sequence oracle, 1M-item SPSC mirror,
+8-thread ticket-uniqueness bitmap. `anotest_bridges`: park/wake soak against the
+publish-just-before-park window (joining at all is the liveness oracle), WAIT vs a
+dead consumer degrades instead of hanging, handle-channel exactly-once. Both carry
+the `concurrency` label: every lock-free line is in the `build.sh 7` TSan net, and
+the merge bar is TSan-clean with zero suppressions for our code.
+
+`anotest_ringbench` (DISABLED, by hand at -O3): the grid vs a mutex+array-queue
+baseline at identical layouts; bar = every lock-free flavor ≥ the mutex baseline at
+≥4 threads.
+
+## The grid (-O3, Linux x86-64 ext4 primary; 1M items, cap 1024)
+
+| config (s16) | ring Mops/s | mutex Mops/s | ring p99.9 push (ns) | mutex p99.9 (ns) |
+|---|---|---|---|---|
+| spsc 1×1 | 12.22 | 4.45 | 90 | 1,920 |
+| mpsc 4×1 | 13.52 | 6.45 | 2,380 | 41,419 |
+| mpsc 8×1 | 7.27 | 2.48 | 11,590 | 93,039 |
+| **spmc 1×4** | **12.07** | 2.17 | **190** | 22,620 |
+| **spmc 1×8** | **5.28** | 0.61 | **690** | 38,780 |
+| mpmc 4×4 | 8.66 | 4.96 | 6,740 | 32,520 |
+| mpmc 8×8 | 6.34 | 3.19 | 11,970 | 49,009 |
+
+Stride 64 tells the same story (mpsc 4×1: 13.79 vs 6.50; spmc 1×8: 5.42 vs 0.59;
+mpmc 8×8: 6.29 vs 2.46). Ticket dispenser, 8×500k: FAA 96.7 Mops/s vs mutex counter
+47.9. **Bar held on every ≥4-thread point.** The owner's SPMC call is the standout:
+the no-RMW push holds a 190 ns p99.9 while fanning out to 4 consumers, and beats the
+mutex queue 8.7× at 1×8 — the loader-to-workers shape justified in one table.
+
+Windows cross-check (native NTFS, clang64): bar held everywhere except one
+INTERMITTENT point, mpmc 4×4 s16 (2 misses in 3 runs, e.g. 8.03 vs 8.24; the same
+shape at s64 wins 6.62 vs 4.43). Traced to a harness artifact, recorded not tuned:
+the bench's termination counter (`g_consumed`, one fetch_add per item plus spin
+reads) is a second contended atomic that taxes the lock-free path while the mutex
+queue's lock incidentally throttles it. A poison-pill termination protocol would
+remove it; noted for the bench's next revision.

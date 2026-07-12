@@ -15,8 +15,9 @@
  *     guard NUL, ANO_CACHE_LINE alignment, absent -> empty;
  *   - write: durable replace visible to the namespace, overwrite works, no temp litter;
  *     quarantine renames to .broken and refuses when absent;
- *   - save frames: five commits keep exactly ANO_RES_SAVE_KEEP generations; the newest
- *     is validated with an INDEPENDENT FNV/layout oracle in this file.
+ *   - save frames: five commits keep ALL FIVE generations (user data is never
+ *     auto-deleted; stats hint, only ano_res_save_delete removes); the newest is
+ *     validated with an INDEPENDENT FNV/layout oracle in this file.
  * Scratch lives next to the exe (scratch_anchor_to_exe) and in the real user root
  * (that is ano_res_write's actual contract); both are cleaned on exit.
  * Exit 0 == pass. */
@@ -350,15 +351,24 @@ static void test_saves(void)
               "save commit succeeds");
     }
 
-    // Exactly ANO_RES_SAVE_KEEP newest generations remain: 3, 4, 5.
+    // ALL five generations remain: saves are user data, the engine prunes nothing.
     for (int i = 1; i <= 5; i++) {
         snprintf(path, sizeof path, "%s/saves/anotestslot.%d.anosave", user.str, i);
-        bool present = file_exists_stdio(path);
-        if (i <= 5 - ANO_RES_SAVE_KEEP)
-            CHECK(!present, "old generation pruned");
-        else
-            CHECK(present, "recent generation kept");
+        CHECK(file_exists_stdio(path), "every generation kept");
     }
+
+    // The bulk hint counts what is on disk; the user's delete removes exactly one.
+    uint32_t gens = 0;
+    uint64_t bytes = 0;
+    CHECK(ano_res_save_stats("anotestslot", &gens, &bytes) == 0, "stats");
+    CHECK(gens == 5, "stats counts five generations");
+    CHECK(bytes == 5u * (48u + 512u + 16u), "stats sums the exact frame bytes");
+    CHECK(ano_res_save_delete("anotestslot", 2) == 0, "user delete");
+    snprintf(path, sizeof path, "%s/saves/anotestslot.2.anosave", user.str);
+    CHECK(!file_exists_stdio(path), "deleted generation gone");
+    CHECK(ano_res_save_delete("anotestslot", 2) == -1, "double delete refuses");
+    CHECK(ano_res_save_stats("anotestslot", &gens, NULL) == 0 && gens == 4,
+          "stats sees the deletion");
 
     // Independent oracle over the newest file: layout, hashes, payload, seq.
     snprintf(path, sizeof path, "%s/saves/anotestslot.5.anosave", user.str);
@@ -672,6 +682,50 @@ static void cleanup(void)
     snprintf(p, sizeof p, "%s/anotest_res", user.str);                   scratch_remove_dir(p);
 }
 
+// The init-time write-root temp GC, in isolation: orphans planted BEFORE init must be
+// swept (root and nested), while legit files, non-protocol .tmp names, and anything
+// under saves/ (save_load's recovery territory) survive untouched.
+static void gc_plant(void)
+{
+    ano_fspath user = ano_fs_userpath();
+    char p[MAXPATH + 64];
+    snprintf(p, sizeof p, "%s/gcnest", user.str);
+    scratch_make_dir(p);
+    snprintf(p, sizeof p, "%s/saves", user.str);
+    scratch_make_dir(p);
+    snprintf(p, sizeof p, "%s/gcprobe.cfg.00000abc.tmp", user.str);
+    CHECK(write_file(p, "stranded", 8), "plant root orphan");
+    snprintf(p, sizeof p, "%s/gcnest/opts.bin.deadbeef.tmp", user.str);
+    CHECK(write_file(p, "stranded", 8), "plant nested orphan");
+    snprintf(p, sizeof p, "%s/gckeep.bin", user.str);
+    CHECK(write_file(p, "keep", 4), "plant legit file");
+    snprintf(p, sizeof p, "%s/gcnot.tmp", user.str);
+    CHECK(write_file(p, "keep", 4), "plant non-protocol .tmp");
+    snprintf(p, sizeof p, "%s/saves/gcslot.1.anosave.cafebabe.tmp", user.str);
+    CHECK(write_file(p, "keep", 4), "plant save-territory temp");
+}
+
+static void gc_check_and_clean(void)
+{
+    ano_fspath user = ano_fs_userpath();
+    char p[MAXPATH + 64];
+    snprintf(p, sizeof p, "%s/gcprobe.cfg.00000abc.tmp", user.str);
+    CHECK(!file_exists_stdio(p), "root orphan swept");
+    snprintf(p, sizeof p, "%s/gcnest/opts.bin.deadbeef.tmp", user.str);
+    CHECK(!file_exists_stdio(p), "nested orphan swept");
+    snprintf(p, sizeof p, "%s/gckeep.bin", user.str);
+    CHECK(file_exists_stdio(p), "legit file survives");
+    remove(p);
+    snprintf(p, sizeof p, "%s/gcnot.tmp", user.str);
+    CHECK(file_exists_stdio(p), "non-protocol .tmp survives");
+    remove(p);
+    snprintf(p, sizeof p, "%s/saves/gcslot.1.anosave.cafebabe.tmp", user.str);
+    CHECK(file_exists_stdio(p), "saves/ temp untouched by GC");
+    remove(p);
+    snprintf(p, sizeof p, "%s/gcnest", user.str);
+    scratch_remove_dir(p);
+}
+
 int main(void)
 {
     scratch_anchor_to_exe();
@@ -679,9 +733,11 @@ int main(void)
     (void)logAlive;
 
     test_before_init();
+    gc_plant();
 
     CHECK(ano_res_init() == 0, "ano_res_init");
     CHECK(ano_res_init() == 0, "repeat init is a no-op success");
+    gc_check_and_clean();
 
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
     CHECK(heap != NULL, "test heap");

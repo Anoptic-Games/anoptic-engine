@@ -141,6 +141,36 @@ endif()
 add_test(NAME anoptic_resgfx COMMAND anotest_resgfx)
 set_tests_properties(anoptic_resgfx PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
+# Lifetime groups: the section-5 bake-off seam (res_group_begin/end/retire) -- scope
+# retire semantics, group-0 survival, release-then-retire double-free watch, save
+# pinning, stats balance. One binary, TWO registrations: the frozen surface must behave
+# identically under model E (the shipped default) and model A (ANO_RES_MODEL=A, the
+# bench baseline kept alive so the comparison cannot rot). anotest_resfault stays
+# model-free: it compiles resources_core.c privately and never places a payload.
+add_executable(anotest_resgroups anotest_resgroups.c)
+target_include_directories(anotest_resgroups PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resgroups PRIVATE anoptic_core)
+add_test(NAME anoptic_resgroups COMMAND anotest_resgroups)
+set_tests_properties(anoptic_resgroups PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+add_test(NAME anoptic_resgroups_modelA COMMAND anotest_resgroups)
+set_tests_properties(anoptic_resgroups_modelA PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_MODEL=A")
+add_test(NAME anoptic_resources_modelA COMMAND anotest_resources)
+set_tests_properties(anoptic_resources_modelA PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_MODEL=A")
+add_test(NAME anoptic_resgfx_modelA COMMAND anotest_resgfx)
+set_tests_properties(anoptic_resgfx_modelA PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_MODEL=A")
+
+# Lock-free collections: layout asserts (cursor separation real, not aspirational),
+# unit edges (full/empty/wrap/laps, u32 cursor wrap), then the conservation stress
+# battery (8P x 8C MPMC, 8P x 1C MPSC drain, 1P x 8C SPMC strictly-increasing, SPSC
+# mirror, ticket bitmap) -- the TSan gate's food, hence the concurrency label.
+add_executable(anotest_collections anotest_collections.c)
+target_link_libraries(anotest_collections PRIVATE anoptic_core)
+add_test(NAME anoptic_collections COMMAND anotest_collections)
+set_tests_properties(anoptic_collections PROPERTIES TIMEOUT 120 LABELS "unit;concurrency")
+
 # Write-protocol crash harness: compiles resources_core.c PRIVATELY with
 # ANO_RES_FAULT_INJECT (link-time override of the anoptic_core copy, the log_old.c
 # trick) and longjmps out after every protocol step; the target file must be
@@ -168,6 +198,35 @@ add_executable(anotest_mempoolbench anotest_mempoolbench.c)
 target_link_libraries(anotest_mempoolbench PRIVATE anoptic_core)
 add_test(NAME anoptic_mempoolbench COMMAND anotest_mempoolbench)
 set_tests_properties(anoptic_mempoolbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# Thread bridges: waiter park/wake soak (adversarial publish-vs-park window; joining
+# at all is the liveness oracle), policy semantics (TRYFAIL truthful, WAIT degrades
+# against a dead consumer), and the anores_t handle channel's exactly-once oracle.
+add_executable(anotest_bridges anotest_bridges.c)
+target_link_libraries(anotest_bridges PRIVATE anoptic_core)
+add_test(NAME anoptic_bridges COMMAND anotest_bridges)
+set_tests_properties(anoptic_bridges PROPERTIES TIMEOUT 120 LABELS "unit;concurrency")
+
+# Ring benchmark: every lock-free flavor vs a mutex+array-queue baseline at the same
+# layouts, plus the FAA ticket vs a mutex counter. DISABLED in ctest; run by hand from
+# a -O3 build (build.sh 8 / build.bat 8).
+add_executable(anotest_ringbench anotest_ringbench.c)
+target_link_libraries(anotest_ringbench PRIVATE anoptic_core)
+add_test(NAME anoptic_ringbench COMMAND anotest_ringbench)
+set_tests_properties(anoptic_ringbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
+# The section-5 hierarchy bake-off: model A vs model E behind the frozen surface,
+# three home benches (churn / level cycles over the real assets / hand-off rate).
+# DISABLED in ctest; run twice by hand from a -O3 build (build.sh 8 / build.bat 8):
+#   ANO_RES_MODEL=A ./anotest_resbench && ANO_RES_MODEL=E ./anotest_resbench
+add_executable(anotest_resbench anotest_resbench.c)
+target_include_directories(anotest_resbench PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resbench PRIVATE anoptic_core)
+if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
+    target_compile_definitions(anotest_resbench PRIVATE ANO_TEST_ASSETS="${CMAKE_SOURCE_DIR}/assets")
+endif()
+add_test(NAME anoptic_resbench COMMAND anotest_resbench)
+set_tests_properties(anoptic_resbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
 # Easter egg: the original allocator experiment, preserved verbatim (see the file banner).
 # Built so it cannot rot, but DISABLED in ctest
