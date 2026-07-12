@@ -202,7 +202,10 @@ if(TARGET anoptic_render)
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
-    set_tests_properties(anotest_vk_lifecycle PROPERTIES TIMEOUT 30 LABELS "unit;vulkan")
+    # SKIP_RETURN_CODE 77: the device tests skip (not fail) where no Vulkan device can
+    # run the renderer, e.g. lavapipe-only sandboxes (no multisampled integer color).
+    set_tests_properties(anotest_vk_lifecycle PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
+        SKIP_RETURN_CODE 77)
 
     add_executable(anotest_vk_components anotest_vk_components.c)
     target_link_libraries(anotest_vk_components PRIVATE anoptic_render)
@@ -214,19 +217,20 @@ if(TARGET anoptic_render)
     add_test(NAME anotest_vk_compliance_layers COMMAND anotest_vk_compliance_layers)
     # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
     set_tests_properties(anotest_vk_compliance_layers PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
-        DISABLED "$<CONFIG:Release>")
+        DISABLED "$<CONFIG:Release>" SKIP_RETURN_CODE 77)
 
     add_executable(anotest_vk_memory anotest_vk_memory.c)
     target_link_libraries(anotest_vk_memory PRIVATE anoptic_render)
     add_test(NAME anotest_vk_memory COMMAND anotest_vk_memory)
-    set_tests_properties(anotest_vk_memory PROPERTIES TIMEOUT 30 LABELS "unit;vulkan")
+    set_tests_properties(anotest_vk_memory PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
+        SKIP_RETURN_CODE 77)
 
     add_executable(anotest_vk_sync anotest_vk_sync.c)
     target_link_libraries(anotest_vk_sync PRIVATE anoptic_render)
     add_test(NAME anotest_vk_sync COMMAND anotest_vk_sync)
     # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
     set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
-        DISABLED "$<CONFIG:Release>")
+        DISABLED "$<CONFIG:Release>" SKIP_RETURN_CODE 77)
 
     # A lone `--build --target anotest_vk_*` must still stage this directory's
     # shaders/assets before the test can run.
