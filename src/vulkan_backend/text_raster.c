@@ -21,12 +21,13 @@
 
 #include <anoptic_filesystem.h>
 #include <anoptic_log.h>
+#include <anoptic_resources.h>
 #include <anoptic_strings.h>
 #include <anoptic_text.h>
 
-#define ANO_TEXT_FONT_REL      "resources/fonts/Geist/static/Geist-Regular.ttf"
-#define ANO_TEXT_RUNE_FONT_REL "resources/fonts/NotoSansRunic/NotoSansRunic-Regular.ttf"
-#define ANO_TEXT_GREEK_FONT_REL "resources/fonts/NotoSans/NotoSans-Regular.ttf"
+#define ANO_TEXT_FONT_LOGICAL      "fonts/Geist/static/Geist-Regular.ttf"
+#define ANO_TEXT_RUNE_FONT_LOGICAL "fonts/NotoSansRunic/NotoSansRunic-Regular.ttf"
+#define ANO_TEXT_GREEK_FONT_LOGICAL "fonts/NotoSans/NotoSans-Regular.ttf"
 // Frame-data capacity: ~21k glyph instances, rewritten wholesale on text change.
 #define ANO_TEXT_FRAME_BYTES (1u << 20)
 
@@ -338,10 +339,9 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     if (state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations == NULL)
         return false;
 
-    struct Buffer code;
-    if (!loadFile("resources/shaders/textraster.comp.spv", &code))
+    VkShaderModule module = ano_pipeline_shader(ctx->device, "shaders/textraster.comp.spv");
+    if (module == VK_NULL_HANDLE)
         return false;
-    VkShaderModule module = createShaderModule(ctx->device, &code);
 
     VkPipelineCacheCreateInfo cacheInfo = {};
     cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -360,7 +360,6 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
                                           &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].pipeline);
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(code.data);
     vkDestroyShaderModule(ctx->device, module, NULL);
     return r == VK_SUCCESS;
 }
@@ -368,16 +367,12 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 // Composite blend pipeline: tonemap's twin, premultiplied src-over, overlay.frag samples the overlay image.
 static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
 {
-    struct Buffer vertCode, fragCode;
-    if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode))
+    VkShaderModule vertModule = ano_pipeline_shader(ctx->device, "shaders/tonemap.vert.spv");
+    if (vertModule == VK_NULL_HANDLE)
         return false;
-    if (!loadFile("resources/shaders/overlay.frag.spv", &fragCode))
-    {
-        ano_aligned_free(vertCode.data);
+    VkShaderModule fragModule = ano_pipeline_shader(ctx->device, "shaders/overlay.frag.spv");
+    if (fragModule == VK_NULL_HANDLE)
         return false;
-    }
-    VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-    VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
 
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -455,8 +450,6 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
 
     VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo,
                                            NULL, &state->textOverlayPipeline);
-    ano_aligned_free(vertCode.data);
-    ano_aligned_free(fragCode.data);
     vkDestroyShaderModule(ctx->device, vertModule, NULL);
     vkDestroyShaderModule(ctx->device, fragModule, NULL);
     return r == VK_SUCCESS;
@@ -478,16 +471,12 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
     if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->textWorldLayout) != VK_SUCCESS)
         return false;
 
-    struct Buffer vertCode, fragCode;
-    if (!loadFile("resources/shaders/textworld.vert.spv", &vertCode))
+    VkShaderModule vertModule = ano_pipeline_shader(ctx->device, "shaders/textworld.vert.spv");
+    if (vertModule == VK_NULL_HANDLE)
         return false;
-    if (!loadFile("resources/shaders/textworld.frag.spv", &fragCode))
-    {
-        ano_aligned_free(vertCode.data);
+    VkShaderModule fragModule = ano_pipeline_shader(ctx->device, "shaders/textworld.frag.spv");
+    if (fragModule == VK_NULL_HANDLE)
         return false;
-    }
-    VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-    VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
 
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -571,8 +560,6 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
 
     VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo,
                                            NULL, &state->textWorldPipeline);
-    ano_aligned_free(vertCode.data);
-    ano_aligned_free(fragCode.data);
     vkDestroyShaderModule(ctx->device, vertModule, NULL);
     vkDestroyShaderModule(ctx->device, fragModule, NULL);
     return r == VK_SUCCESS;
@@ -583,16 +570,16 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     if (!state->textOverlay)
         return true;
 
-    // CPU side: bake blobs live on textHeap.
+    // CPU side: bake blobs live on textHeap. Font bytes are manager-owned resources
+    // (the handles stay loaded: FreeType memory faces borrow them for their lifetime).
     state->textHeap = mi_heap_new();
-    ano_fspath game = ano_fs_gamepath();
-    char fontPath[512];
-    snprintf(fontPath, sizeof fontPath, "%s/%s", game.str, ANO_TEXT_FONT_REL);
     AnoFontId font = 0;
     if (state->textHeap == NULL || ano_text_init() != 0
-        || (font = ano_text_font_load(anostr_view(fontPath, strlen(fontPath)))) == 0)
+        || (font = ano_text_font_load_memory(
+                ano_res_bytes(ano_res_get(ANO_TEXT_FONT_LOGICAL)))) == 0)
     {
-        ano_log(ANO_WARN, "Text overlay disabled: font load failed ('%s').", fontPath);
+        ano_log(ANO_WARN, "Text overlay disabled: font load failed ('%s').",
+                ANO_TEXT_FONT_LOGICAL);
         state->textOverlay = false;
         state->asyncText = false;
         return true;
@@ -601,15 +588,16 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     // Bake coverage: ASCII, Latin-1, core Cyrillic from Geist, Greek (mono + poly) from
     // Noto Sans, Runic from Noto Sans Runic. Ranges must stay codepoint-sorted and
     // disjoint. A missing auxiliary font degrades to the remaining ranges.
-    char runePath[512], greekPath[512];
-    snprintf(runePath, sizeof runePath, "%s/%s", game.str, ANO_TEXT_RUNE_FONT_REL);
-    AnoFontId runeFont = ano_text_font_load(anostr_view(runePath, strlen(runePath)));
+    AnoFontId runeFont = ano_text_font_load_memory(
+        ano_res_bytes(ano_res_get(ANO_TEXT_RUNE_FONT_LOGICAL)));
     if (runeFont == 0)
-        ano_log(ANO_WARN, "Text overlay: rune font missing ('%s'); Runic will not render.", runePath);
-    snprintf(greekPath, sizeof greekPath, "%s/%s", game.str, ANO_TEXT_GREEK_FONT_REL);
-    AnoFontId greekFont = ano_text_font_load(anostr_view(greekPath, strlen(greekPath)));
+        ano_log(ANO_WARN, "Text overlay: rune font missing ('%s'); Runic will not render.",
+                ANO_TEXT_RUNE_FONT_LOGICAL);
+    AnoFontId greekFont = ano_text_font_load_memory(
+        ano_res_bytes(ano_res_get(ANO_TEXT_GREEK_FONT_LOGICAL)));
     if (greekFont == 0)
-        ano_log(ANO_WARN, "Text overlay: greek font missing ('%s'); Greek will not render.", greekPath);
+        ano_log(ANO_WARN, "Text overlay: greek font missing ('%s'); Greek will not render.",
+                ANO_TEXT_GREEK_FONT_LOGICAL);
     AnoBakeRange ranges[6];
     uint32_t rangeCount = 0;
     ranges[rangeCount++] = (AnoBakeRange){ .font = font, .first = 0x0020, .last = 0x007E }; // ASCII

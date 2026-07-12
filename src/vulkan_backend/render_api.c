@@ -140,16 +140,16 @@ bool ano_render_load_scene_assets(void)
 	g_defaultMaterial = ANO_DEFAULT_MATERIAL_INDEX;
 
 	// Load the scene's glTF assets into GPU memory. Load order is the asset_id namespace.
-	g_assets[0] = parseGltf(&ctx, "viking_room.gltf");
+	g_assets[0] = parseGltf(&ctx, "models/viking_room.gltf");
 	if (!g_assets[0])
 		ano_log(ANO_ERROR, "viking_room unavailable; continuing without it.");
 
-	g_assets[1] = parseGltf(&ctx, "GlassHurricaneCandleHolder.gltf");
+	g_assets[1] = parseGltf(&ctx, "models/GlassHurricaneCandleHolder.gltf");
 	if (!g_assets[1])
 		ano_log(ANO_ERROR, "GlassHurricaneCandleHolder unavailable; continuing without it.");
 
 	// Sponza: the scene environment, parsed under one node.
-	g_assets[2] = parseGltf(&ctx, "sponza/2.0/Sponza/glTF/Sponza.gltf");
+	g_assets[2] = parseGltf(&ctx, "models/sponza/2.0/Sponza/glTF/Sponza.gltf");
 	if (!g_assets[2])
 		ano_log(ANO_WARN, "Warning: failed to parse Sponza glTF; continuing without it.");
 

@@ -10,31 +10,22 @@
 #include <vulkan/vulkan.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <stb_image.h>
 #include <math.h>
 
 #include "vulkan_backend/instance/instanceInit.h"
 
 // Structs
 
-typedef struct Texture8
-{
-	int32_t texWidth;
-	int32_t texHeight;
-	int32_t texChannels;
-	uint32_t mipLevels;
-	stbi_uc* pixels;
-} Texture8;
-
 // Functions
 
 // Reads an image from storage and returns Vulkan-compatible 8-bit binary texture data
-Texture8 readTexture8bit(char* fileName);
 
 // Loads binary texture data into a Vulkan image. srgb -> R8G8B8A8_SRGB, false -> UNORM
-bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, bool srgb, VkBuffer* outStagingBuffer);
 
-bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height, VkBuffer* outStagingBuffer);
+// Upload tightly-packed RGBA8 pixels: sRGB or UNORM per `srgb`, full mip chain when
+// `genMips` (blit-generated inside `cmd`). The one texture-upload routine: decode
+// happens in the resource manager, files never open here.
+bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height, bool srgb, bool genMips, VkBuffer* outStagingBuffer);
 
 // Creates an image view for an entity with an existing texture
 bool createTextureImageView(VulkanContext* ctx, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels);

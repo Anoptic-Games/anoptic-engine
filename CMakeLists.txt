@@ -284,11 +284,11 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
     if(Vulkan_FOUND)
         target_link_libraries(anopticengine PRIVATE anoptic_render)
 
-        # Stage test assets next to the binary.
+        # Stage models into the namespace: <exe>/resources/models ("models/..." logical).
         if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
             add_custom_command(TARGET anopticengine POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:anopticengine>
-                    COMMENT "Staging assets/ next to anopticengine"
+                    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:anopticengine>/resources/models
+                    COMMENT "Staging assets/ into resources/models"
                     VERBATIM)
         endif()
 
@@ -297,14 +297,26 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
                 COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/resources/fonts $<TARGET_FILE_DIR:anopticengine>/resources/fonts
                 COMMENT "Staging fonts next to anopticengine"
                 VERBATIM)
+
+        # Dev builds mount the SOURCE resources/ in main() (live font/texture edits).
+        target_compile_definitions(anopticengine PRIVATE
+                $<$<CONFIG:Debug>:ANO_DEV_RESOURCES="${CMAKE_SOURCE_DIR}/resources">)
     else()
         target_link_libraries(anopticengine PRIVATE anoptic_core)
     endif()
 
-    # Install: bin/anopticengine plus bin/resources/shaders.
+    # Install: bin/anopticengine plus the full bin/resources tree (the installed base
+    # mount: shaders, fonts, textures, models).
     install(TARGETS anopticengine RUNTIME DESTINATION bin)
     if(Vulkan_FOUND)
         install(DIRECTORY ${SHADER_BIN_DIR} DESTINATION bin/resources)
+        install(DIRECTORY ${CMAKE_SOURCE_DIR}/resources/fonts DESTINATION bin/resources)
+        if(EXISTS ${CMAKE_SOURCE_DIR}/resources/textures)
+            install(DIRECTORY ${CMAKE_SOURCE_DIR}/resources/textures DESTINATION bin/resources)
+        endif()
+        if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
+            install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/ DESTINATION bin/resources/models)
+        endif()
     endif()
 endif()
 

@@ -14,6 +14,7 @@
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
 #include "anoptic_filesystem.h"
+#include "anoptic_resources.h"
 #include "anoptic_log_crash.h"   // anoptic_log.h + crash blackbox
 
 #ifndef HEADLESS_BUILD
@@ -584,14 +585,6 @@ int main()
 {
     mi_version();
 
-    // Resolve assets relative to the executable, not the launch directory.
-    // Shaders resolve against ano_fs_gamepath() directly (loadFile in pipeline.c);
-    // only the CWD-relative asset loads (glTF, textures) need this.
-    // Interim shim until the Resource Manager owns asset paths.
-    if (!ano_fs_chdir_gamepath())
-        ano_rlog(ANO_WARN, ANO_TERM | ANO_NOW, "Warning: could not set the working directory to the executable's; "
-               "assets will load relative to the current working directory.");
-
     #ifdef DEBUG_BUILD
 
     mi_option_enable(mi_option_show_errors);
@@ -612,6 +605,28 @@ int main()
     // Blackbox arms right after the logger: a fatal signal writes the CRASH log, then hail-mary flushes.
     if (ano_log_crash_init() != 0)
         ano_log(ANO_WARN, "Blackbox failed to arm; a crash will leave no CRASH log.");
+
+    // The resource namespace: pinned roots (write root + <exe>/resources), then the
+    // dev-tree mount. Everything the engine loads resolves through it -- the CWD is
+    // irrelevant from here on (the old chdir shim is gone).
+    if (ano_res_init() != 0) {
+        ano_log(ANO_FATAL, "Resource manager initialization failed.");
+        return EXIT_FAILURE;
+    }
+#ifdef ANO_DEV_RESOURCES
+    {
+        // Dev builds shadow the staged tree with the SOURCE resources/ so font/texture
+        // edits go live without re-staging (compiled shaders still come from the base
+        // mount: the source tree has no .spv files to collide).
+        ano_fspath devRes = {0};
+        int devLen = snprintf(devRes.str, sizeof devRes.str, "%s", ANO_DEV_RESOURCES);
+        if (devLen > 0 && devLen < (int)sizeof devRes.str) {
+            devRes.length = (uint16_t)devLen;
+            if (ano_res_mount("", devRes) != 0)
+                ano_log(ANO_WARN, "Dev resources mount refused: %s", ANO_DEV_RESOURCES);
+        }
+    }
+#endif
 
     // Warn when the initial thread's stack budget (the environment's) is under ANO_THREAD_STACK_SIZE.
     size_t mainStack = ano_thread_main_stack();

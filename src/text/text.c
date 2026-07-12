@@ -178,6 +178,52 @@ AnoFontId ano_text_font_load(anostr_t path)
     return slot + 1u;
 }
 
+// Memory-face sibling: the caller's blob must outlive the face (manager-owned payloads
+// are the intended source; FreeType borrows, never copies). Must run on the init thread.
+AnoFontId ano_text_font_load_memory(anostr_t blob)
+{
+    if (g_ftLibrary == NULL || anostr_is_empty(blob))
+        return 0;
+
+    uint32_t slot = ANO_TEXT_MAX_FONTS;
+    for (uint32_t i = 0; i < ANO_TEXT_MAX_FONTS; i++)
+    {
+        if (g_faces[i] == NULL)
+        {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == ANO_TEXT_MAX_FONTS)
+    {
+        ano_log(ANO_ERROR, "text: font registry full (%u faces), cannot load a memory face",
+                      ANO_TEXT_MAX_FONTS);
+        return 0;
+    }
+
+    FT_Face  face = NULL;
+    FT_Error err  = FT_New_Memory_Face(g_ftLibrary, (const FT_Byte *)anostr_bytes(&blob),
+                                       (FT_Long)anostr_len(blob), 0, &face);
+    if (err != FT_Err_Ok)
+    {
+        const char *msg = FT_Error_String(err);
+        ano_log(ANO_ERROR, "text: FT_New_Memory_Face (%u bytes) failed: %d (%s)",
+                      (unsigned)anostr_len(blob), (int)err, msg ? msg : "?");
+        return 0;
+    }
+    if (!FT_IS_SCALABLE(face))
+    {
+        ano_log(ANO_ERROR, "text: memory face is not a scalable outline face");
+        FT_Done_Face(face);
+        return 0;
+    }
+
+    g_faces[slot] = face;
+    ano_log(ANO_INFO, "text: loaded memory face (%ld glyphs, upem %u)",
+                 (long)face->num_glyphs, (unsigned)face->units_per_EM);
+    return slot + 1u;
+}
+
 // Internal: the FT_Face behind a handle as an opaque pointer, NULL when invalid.
 void *ano_text_face(AnoFontId font)
 {

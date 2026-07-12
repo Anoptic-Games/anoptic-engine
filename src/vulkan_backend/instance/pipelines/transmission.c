@@ -60,20 +60,17 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE -> double-sided
 
 	// Load shaders: mesh on capable devices, vertex on fallback.
-	struct Buffer geomShaderCode;
 	char geomShaderPath[64];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "shaders/%s.spv",
 		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
-
-	struct Buffer fragShaderCode;
+	VkShaderModule geomShaderModule = ano_pipeline_shader(ctx->device, geomShaderPath);
+	if (geomShaderModule == VK_NULL_HANDLE) return false;
 	// fp16 CDF-reconstruct variant when shaderFloat16 available.
-	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/transmission_fp16.frag.spv"
-	                                                    : "resources/shaders/transmission.frag.spv",
-	              &fragShaderCode)) return false;
-
-	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+	VkShaderModule fragShaderModule =
+	    ano_pipeline_shader(ctx->device,
+	        ctx->deviceCapabilities.shaderFloat16 ? "shaders/transmission_fp16.frag.spv"
+	                                              : "shaders/transmission.frag.spv");
+	if (fragShaderModule == VK_NULL_HANDLE) return false;
 
 	VkShaderModule taskModule = VK_NULL_HANDLE;
 	TaskStageStorage taskStore;
@@ -232,8 +229,6 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
 
-	ano_aligned_free(geomShaderCode.data);
-	ano_aligned_free(fragShaderCode.data);
 
 	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);

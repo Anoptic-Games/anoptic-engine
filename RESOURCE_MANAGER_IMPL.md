@@ -297,3 +297,94 @@ every surfaced finding was re-verified by hand instead. Dispositions:
 - *Non-save protocol temps are never garbage-collected* — true; correctness holds
   (O_EXCL + fresh nonce per attempt). Recorded as a rung for the step-4 config client.
 - One duplicate of the bounds-math finding.
+
+Phase B committed as `c5bbda1`.
+
+---
+
+## Phase C — full integration
+
+### C.1 — shaders ride it (plan step 2)
+
+All 27 `loadFile` call sites across `pipeline.c`, `flat.c`, `transmission.c`,
+`additive.c`, `tonemap.c`, `shadow_pipe.c`, `compute.c`, and `text_raster.c` became one
+call: `ano_pipeline_shader(device, "shaders/x.spv")` — get + view + `vkCreateShaderModule`
+in one place, with a `size % 4` guard. **Deleted:** `loadFile`, `openEngineFile`,
+`struct Buffer`, `createShaderModule`, every `ano_aligned_free(code.data)` site, and
+with them the audit's standing defects (the `free()`-vs-`ano_aligned_free` mismatch and
+the early-return shader-buffer leaks — there is no buffer to leak anymore). The SPIR-V
+stays manager-owned: swapchain-recreate pipeline rebuilds re-request it for free
+(single-copy) instead of re-reading files.
+
+### C.2 — the renderer consumes conditioned scenes (plan step 3)
+
+`ano_GltfParser.c` was rewritten as pure GPU ingest of `anoresgfx_scene` views:
+- geometry uploads straight from the scene view (`static_assert`ed layout equality
+  between `Vertex` and `anoresgfx_vertex`; `upload_chain` takes const pointers — zero
+  staging copies on the CPU side);
+- texture gating (file-truth features ∩ `activeFeatures`) drives decode-on-demand
+  through `ano_res_get` + `ano_resgfx_image`; a data-driven slot-rule table replaced
+  ~100 lines of copy-pasted texture-needed marking;
+- material SSBO baking maps `anoresgfx_material` fields 1:1 to `MaterialData`
+  (`PbrFeatureFlags`/`ANORESGFX_PBR_*` bit equality `static_assert`ed);
+- raw glTF bytes unload right after conditioning, the conditioned scene right after GPU
+  upload — steady-state CPU residency for models is zero.
+
+`texture.c` lost `readTexture8bit`, the path-based `createTextureImage`, and its
+`stb_image` include; `createTextureImageFromPixels` gained `srgb` + `genMips` and is
+now the single upload routine (in passing this retired the old path loader's latent
+`copyBufferToImage(..., texWidth, texWidth)` height bug). Fonts: `text_raster.c`'s
+hand-rolled gamepath joins died; `ano_text_font_load_memory` (new, `FT_New_Memory_Face`)
+consumes manager-owned blobs whose handles stay loaded for the face lifetime. The
+path-based `ano_text_font_load` remains for `anotest_text`'s isolated harness — the
+engine itself never opens a font by path.
+
+### C.3 — the shim dies; namespace wiring
+
+- `main.c`: the chdir shim is gone; `ano_res_init` is FATAL-checked right after the
+  crash blackbox, and Debug builds mount the source tree's `resources/` via
+  `ANO_DEV_RESOURCES` (defined in CMake, consumed at that one site) — live font/texture
+  edits without re-staging, while compiled shaders keep coming from the staged base
+  mount (the source tree has no `.spv` to collide). `ano_fs_chdir_gamepath` the
+  FUNCTION survives for the test templates' scratch anchoring; the engine no longer
+  calls it — recorded deviation from the plan's "then delete" phrasing.
+- `initVulkan` opens with an idempotent `ano_res_init()`: the vk test binaries reach
+  pipeline creation without `main()` and get the base roots for free.
+- Models staged/installed under `resources/models/` (`models/...` logical paths in
+  `render_api.c`); the install rule now ships the full `bin/resources` tree (shaders,
+  fonts, textures, models) — the installed-tree bar.
+
+### C.4 — verification
+
+- Full suite 24/24 green in Debug — including the vk tests, which build every pipeline
+  through `ano_res_get` against their own staged tree.
+- Grep bars hold: **zero** `fopen`/`stbi_load`/`cgltf_parse_file` outside
+  `src/resources/`, the logger, and the filesystem module; `CGLTF_IMPLEMENTATION` and
+  `STB_IMAGE_IMPLEMENTATION` exist only in `src/resources/graphics/res_graphics.c`.
+- Engine smoke from a foreign CWD (`/tmp`): 25 s clean run; session log shows all three
+  fonts as memory faces and all three models ingested
+  (`Successfully ingested ModelAsset: models/sponza/...`); missing-texture parity
+  (assets/ genuinely lacks two PNGs viking_room references — the old path failed them
+  too, now a logged skip).
+- **Visual verification**: window captured mid-run — Sponza renders (textured curtains,
+  floor, columns), text overlay shapes Geist + Runic + Greek from manager blobs,
+  ~432 MiB of textures resident on the GPU. The frame is the old path's frame.
+- Release (-O3) suite: 21/22, the one failure being `anoptic_blackbox`'s `intdiv`
+  scenario ("wrong death: exit 0"). **Proven pre-existing**: a clean worktree at
+  `2fb1ee6` (the plan commit, zero resource-manager code) fails identically in a
+  Release build on this machine. Debug passes everywhere. Left for a separate fix.
+- Pre-existing (not introduced here): a spirv-val debug-info complaint from the
+  validation layers on one Debug-compiled shader (`glslangValidator -gV` artifact); the
+  bytes served are byte-identical to what `loadFile` read, per the read-contract tests.
+
+### Recorded rungs (deliberately not implemented, per plan rules 7/8)
+
+- **The §5 hierarchy bake-off (models B–E)**: the surface is frozen, model A ships as
+  the null hypothesis, and real asset loads now exist to bench against — the bake-off
+  is *runnable* work, gated on `anotest_resbench` which lands with it.
+- **Step 4 clients** (`anoptic_config.h`, keybindings): the write machinery they need
+  (`ano_res_write`/`quarantine`/`save_commit`/`save_load`) is shipped and
+  crash-hardened; the clients are their own subsystem.
+- **Steps 5–8** (async transport, streaming economy, packs/bake, parallel pread): the
+  plan's own bench-gated performance rungs ("io_uring may never ship").
+- General write-root temp GC (from the review) — rides with the config client.

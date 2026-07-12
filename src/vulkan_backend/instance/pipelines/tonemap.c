@@ -49,11 +49,10 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->tonemapCache);
 
-	struct Buffer vertCode, fragCode;
-	if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode)) return false;
-	if (!loadFile("resources/shaders/tonemap.frag.spv", &fragCode)) return false;
-	VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+	VkShaderModule vertModule = ano_pipeline_shader(ctx->device, "shaders/tonemap.vert.spv");
+	if (vertModule == VK_NULL_HANDLE) return false;
+	VkShaderModule fragModule = ano_pipeline_shader(ctx->device, "shaders/tonemap.frag.spv");
+	if (fragModule == VK_NULL_HANDLE) return false;
 
 	VkPipelineShaderStageCreateInfo stages[2] = {};
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -135,8 +134,6 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 
 	VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo, NULL, &state->tonemapPipeline);
 
-	ano_aligned_free(vertCode.data);
-	ano_aligned_free(fragCode.data);
 	vkDestroyShaderModule(ctx->device, vertModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragModule, NULL);
 

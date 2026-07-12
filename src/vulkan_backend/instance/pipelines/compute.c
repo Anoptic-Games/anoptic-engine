@@ -77,10 +77,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_UPDATE].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer updateShaderCode;
-    if (!loadFile("resources/shaders/update.comp.spv", &updateShaderCode)) return false;
-
-    VkShaderModule updateShaderModule = createShaderModule(ctx->device, &updateShaderCode);
+    VkShaderModule updateShaderModule = ano_pipeline_shader(ctx->device, "shaders/update.comp.spv");
+    if (updateShaderModule == VK_NULL_HANDLE) return false;
 
     VkComputePipelineCreateInfo updatePipelineInfo = {};
     updatePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -98,7 +96,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     
     state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(updateShaderCode.data);
     vkDestroyShaderModule(ctx->device, updateShaderModule, NULL);
 
     // Compute Scatter Pipeline (streamed transforms, Path B)
@@ -146,10 +143,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_SCATTER].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer scatterShaderCode;
-    if (!loadFile("resources/shaders/scatter.comp.spv", &scatterShaderCode)) return false;
-
-    VkShaderModule scatterShaderModule = createShaderModule(ctx->device, &scatterShaderCode);
+    VkShaderModule scatterShaderModule = ano_pipeline_shader(ctx->device, "shaders/scatter.comp.spv");
+    if (scatterShaderModule == VK_NULL_HANDLE) return false;
 
     VkComputePipelineCreateInfo scatterPipelineInfo = {};
     scatterPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -167,7 +162,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 
     state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(scatterShaderCode.data);
     vkDestroyShaderModule(ctx->device, scatterShaderModule, NULL);
 
     // Compute Culling Pipeline
@@ -191,10 +185,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_CULL].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_CULL].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer compShaderCode;
-    if (!loadFile("resources/shaders/cull.comp.spv", &compShaderCode)) return false;
-
-    VkShaderModule compShaderModule = createShaderModule(ctx->device, &compShaderCode);
+    VkShaderModule compShaderModule = ano_pipeline_shader(ctx->device, "shaders/cull.comp.spv");
+    if (compShaderModule == VK_NULL_HANDLE) return false;
 
     // constant_id 1: useMeshShader
     VkBool32 compUseMeshShader = ctx->deviceCapabilities.meshShader ? VK_TRUE : VK_FALSE;
@@ -223,7 +215,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     
     state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(compShaderCode.data);
     vkDestroyShaderModule(ctx->device, compShaderModule, NULL);
 
     // Compute Hi-Z Pyramid Build Pipeline. [0] reduce, [1] downsample via isReduce spec constant (0).
@@ -249,17 +240,15 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_HIZ].implementations = calloc(2, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_HIZ].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer hizShaderCode;
-    if (!loadFile("resources/shaders/hiz.comp.spv", &hizShaderCode)) return false;
-    VkShaderModule hizShaderModule = createShaderModule(ctx->device, &hizShaderCode);
+    VkShaderModule hizShaderModule = ano_pipeline_shader(ctx->device, "shaders/hiz.comp.spv");
+    if (hizShaderModule == VK_NULL_HANDLE) return false;
 
     // Depth MAX-resolve: both Hi-Z pipelines use the resolved single-sample module, else the base sampler2DMS.
-    struct Buffer hizResolveCode = {0};
     VkShaderModule hizResolveModule = VK_NULL_HANDLE;
     if (ctx->deviceCapabilities.depthMaxResolve)
     {
-        if (!loadFile("resources/shaders/hiz_resolve.comp.spv", &hizResolveCode)) return false;
-        hizResolveModule = createShaderModule(ctx->device, &hizResolveCode);
+        hizResolveModule = ano_pipeline_shader(ctx->device, "shaders/hiz_resolve.comp.spv");
+        if (hizResolveModule == VK_NULL_HANDLE) return false;
     }
 
     // Spec constants: id 0 isReduce, id 1 msaaSamples (reduce source sample count).
@@ -293,11 +282,9 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         state->prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
     }
 
-    ano_aligned_free(hizShaderCode.data);
     vkDestroyShaderModule(ctx->device, hizShaderModule, NULL);
     if (hizResolveModule != VK_NULL_HANDLE)
     {
-        ano_aligned_free(hizResolveCode.data);
         vkDestroyShaderModule(ctx->device, hizResolveModule, NULL);
     }
 
@@ -321,9 +308,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_TPSORT].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer tpsortShaderCode;
-    if (!loadFile("resources/shaders/tpsort.comp.spv", &tpsortShaderCode)) return false;
-    VkShaderModule tpsortShaderModule = createShaderModule(ctx->device, &tpsortShaderCode);
+    VkShaderModule tpsortShaderModule = ano_pipeline_shader(ctx->device, "shaders/tpsort.comp.spv");
+    if (tpsortShaderModule == VK_NULL_HANDLE) return false;
 
     VkBool32 tpsortUseMeshShader = ctx->deviceCapabilities.meshShader ? VK_TRUE : VK_FALSE;
     VkSpecializationMapEntry tpsortSpecMapEntry = {};
@@ -348,7 +334,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TPSORT].cache, 1, &tpsortPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(tpsortShaderCode.data);
     vkDestroyShaderModule(ctx->device, tpsortShaderModule, NULL);
 
     // Compute Light-cull Pipeline (clustered-forward froxel light assignment).
@@ -381,9 +366,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer lightcullShaderCode;
-    if (!loadFile("resources/shaders/lightcull.comp.spv", &lightcullShaderCode)) return false;
-    VkShaderModule lightcullShaderModule = createShaderModule(ctx->device, &lightcullShaderCode);
+    VkShaderModule lightcullShaderModule = ano_pipeline_shader(ctx->device, "shaders/lightcull.comp.spv");
+    if (lightcullShaderModule == VK_NULL_HANDLE) return false;
 
     VkComputePipelineCreateInfo lightcullPipelineInfo = {};
     lightcullPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -400,7 +384,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache, 1, &lightcullPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(lightcullShaderCode.data);
     vkDestroyShaderModule(ctx->device, lightcullShaderModule, NULL);
 
     // Compute Light-setup Pipeline: per-light world pose (worldPos/worldDir) precompute.
@@ -438,9 +421,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer lightsetupShaderCode;
-    if (!loadFile("resources/shaders/lightsetup.comp.spv", &lightsetupShaderCode)) return false;
-    VkShaderModule lightsetupShaderModule = createShaderModule(ctx->device, &lightsetupShaderCode);
+    VkShaderModule lightsetupShaderModule = ano_pipeline_shader(ctx->device, "shaders/lightsetup.comp.spv");
+    if (lightsetupShaderModule == VK_NULL_HANDLE) return false;
 
     VkComputePipelineCreateInfo lightsetupPipelineInfo = {};
     lightsetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -457,7 +439,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache, 1, &lightsetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(lightsetupShaderCode.data);
     vkDestroyShaderModule(ctx->device, lightsetupShaderModule, NULL);
 
     // Compute Shadow-setup Pipeline: builds each shadow frustum's light-space viewProj + planes.
@@ -473,9 +454,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].supportedFeatures = PBR_FEATURE_NONE;
 
-    struct Buffer shadowSetupCode;
-    if (!loadFile("resources/shaders/shadowsetup.comp.spv", &shadowSetupCode)) return false;
-    VkShaderModule shadowSetupModule = createShaderModule(ctx->device, &shadowSetupCode);
+    VkShaderModule shadowSetupModule = ano_pipeline_shader(ctx->device, "shaders/shadowsetup.comp.spv");
+    if (shadowSetupModule == VK_NULL_HANDLE) return false;
 
     VkComputePipelineCreateInfo shadowSetupPipelineInfo = {};
     shadowSetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -492,7 +472,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache, 1, &shadowSetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
-    ano_aligned_free(shadowSetupCode.data);
     vkDestroyShaderModule(ctx->device, shadowSetupModule, NULL);
 
     return true;

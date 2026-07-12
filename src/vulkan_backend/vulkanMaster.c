@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
+#include <anoptic_resources.h>
 #include <anoptic_time.h>
 
 #include "vulkan_backend/vulkanMaster.h"
@@ -291,6 +292,13 @@ void drawFrame()
 
 bool initVulkan() // Initializes Vulkan
 {
+	// Shader/model/font loads below all ride the resource namespace. main() pins it
+	// (plus dev mounts) before we run; standalone hosts (the vk test binaries) reach
+	// this idempotent init as their first touch and get the base roots.
+	if (ano_res_init() != 0) {
+		ano_log(ANO_ERROR, "initVulkan: resource manager unavailable.");
+		return false;
+	}
 
 	// Window initialization. ANO_RES=WxH overrides, in screen coordinates (callers own any DPI math).
 	Dimensions2D initDimensions = {800, 600};

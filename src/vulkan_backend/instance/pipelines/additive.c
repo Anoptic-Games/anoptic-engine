@@ -56,17 +56,14 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE
 
 	// Load shaders: mesh on capable devices, vertex on fallback.
-	struct Buffer geomShaderCode;
 	char geomShaderPath[64];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "shaders/%s.spv",
 		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
+	VkShaderModule geomShaderModule = ano_pipeline_shader(ctx->device, geomShaderPath);
+	if (geomShaderModule == VK_NULL_HANDLE) return false;
 
-	struct Buffer fragShaderCode;
-	if (!loadFile("resources/shaders/additive.frag.spv", &fragShaderCode)) return false;
-
-	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+	VkShaderModule fragShaderModule = ano_pipeline_shader(ctx->device, "shaders/additive.frag.spv");
+	if (fragShaderModule == VK_NULL_HANDLE) return false;
 
 	VkShaderModule taskModule = VK_NULL_HANDLE;
 	TaskStageStorage taskStore;
@@ -203,8 +200,6 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 	proto->implementations[0].depthWrite = VK_FALSE;
 	proto->implementations[0].blendEnable = VK_TRUE;
 
-	ano_aligned_free(geomShaderCode.data);
-	ano_aligned_free(fragShaderCode.data);
 
 	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);

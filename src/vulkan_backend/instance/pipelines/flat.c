@@ -66,30 +66,26 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
 	// Depth pre-pass variant (index 2) uses the ANO_DEPTH_ONLY compile of the same source.
-	// Paths are exe-relative; loadFile resolves them against ano_fs_gamepath().
-	struct Buffer geomShaderCode;
+	// Logical names; the resource manager resolves and owns the SPIR-V.
 	char geomShaderPath[64];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "shaders/%s.spv",
 		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
+	VkShaderModule geomShaderModule = ano_pipeline_shader(ctx->device, geomShaderPath);
+	if (geomShaderModule == VK_NULL_HANDLE) return false;
 
-	struct Buffer depthGeomShaderCode;
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
+	snprintf(geomShaderPath, sizeof(geomShaderPath), "shaders/%s.spv",
 		useMesh ? (useTask ? "flat_depth_task.mesh" : "flat_depth.mesh") : "flat_depth.vert");
-	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) return false;
+	VkShaderModule depthGeomShaderModule = ano_pipeline_shader(ctx->device, geomShaderPath);
+	if (depthGeomShaderModule == VK_NULL_HANDLE) return false;
 
-	struct Buffer fragShaderCode;
 	// fp16 variant when the device has shaderFloat16; masked lane loads the ANO_ALPHA_MASK compile.
 	const char* fragPath = masked
-		? (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_masked_fp16.frag.spv"
-		                                         : "resources/shaders/flat_masked.frag.spv")
-		: (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_fp16.frag.spv"
-		                                         : "resources/shaders/flat.frag.spv");
-	if (!loadFile(fragPath, &fragShaderCode)) return false;
-
-	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
-	VkShaderModule depthGeomShaderModule = createShaderModule(ctx->device, &depthGeomShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+		? (ctx->deviceCapabilities.shaderFloat16 ? "shaders/flat_masked_fp16.frag.spv"
+		                                         : "shaders/flat_masked.frag.spv")
+		: (ctx->deviceCapabilities.shaderFloat16 ? "shaders/flat_fp16.frag.spv"
+		                                         : "shaders/flat.frag.spv");
+	VkShaderModule fragShaderModule = ano_pipeline_shader(ctx->device, fragPath);
+	if (fragShaderModule == VK_NULL_HANDLE) return false;
 
 	// Task meshlet-cull stage: cone culling only on the BACK-culled lane.
 	VkShaderModule taskModule = VK_NULL_HANDLE;
@@ -297,10 +293,6 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	proto->implementations[2].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[2].depthWrite = VK_TRUE;
 	proto->implementations[2].blendEnable = VK_FALSE;
-
-	ano_aligned_free(geomShaderCode.data);
-	ano_aligned_free(depthGeomShaderCode.data);
-	ano_aligned_free(fragShaderCode.data);
 
 	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
 	vkDestroyShaderModule(ctx->device, depthGeomShaderModule, NULL);

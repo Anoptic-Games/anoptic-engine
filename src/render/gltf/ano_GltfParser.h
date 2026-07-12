@@ -54,8 +54,10 @@ typedef struct ModelAsset {
 // Functions
 // ---------------------------------------------------------
 
-// Parses a glTF file, loading assets into GPU memory and returning a ModelAsset blueprint.
-ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName);
+// Ingest a glTF by LOGICAL resource path ("models/x.gltf") through the resource
+// manager's graphics extension, loading geometry/textures/materials into GPU memory
+// and returning a ModelAsset blueprint.
+ModelAsset* parseGltf(VulkanContext* ctx, const char* logical);
 
 // Flattens a parsed asset, at `rootTransform`, into renderable primitive descriptors (one per mesh
 // primitive: its geometry-pool mesh index, material index, and world transform). Pure CPU, no GPU
@@ -63,11 +65,5 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName);
 // emits the creates itself (audit: logic owns the scene). Returns the TOTAL primitive count; fills
 // out[0..min(count,cap)). Call once with cap 0 (or out NULL) to size, then again to fill.
 uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRenderableDesc* out, uint32_t cap);
-
-// Forward declaration of cgltf_material to avoid header inclusion issues
-struct cgltf_material;
-
-// Identifies all the PBR properties and extensions used by a glTF material
-PbrFeatureFlags ano_gltf_identify_material_features(const struct cgltf_material* material);
 
 #endif
