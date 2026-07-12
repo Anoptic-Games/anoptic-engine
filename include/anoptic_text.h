@@ -41,6 +41,12 @@ AnoFontId ano_text_font_load(anostr_t path);
 // ano_text_font_load over a path literal.
 #define ano_text_font_load_lit(pathlit) ano_text_font_load(anostr_lit(pathlit))
 
+// Opens a scalable face from an in-memory blob (FT_New_Memory_Face). The blob's BYTES
+// must outlive the face: resource-manager-owned payloads (ano_res_bytes of a handle
+// that stays loaded) are the intended source. Same registry and returns as
+// ano_text_font_load; the empty blob fails cleanly with 0.
+AnoFontId ano_text_font_load_memory(anostr_t blob);
+
 // ---------------------------------------------------------------------------------------------
 // The baked glyph form consumed by the GPU rasterizer. The renderer uploads the
 // points/glyphs as opaque blobs. Wire format in src/text/text_internal.h.

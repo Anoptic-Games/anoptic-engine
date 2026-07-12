@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include <anoptic_memory.h>
-#include <anoptic_filesystem.h>
+#include <anoptic_resources.h>
 #include <anoptic_log.h>
 #include "pipeline.h"
 #include "pipelines/flat.h"
@@ -18,77 +18,31 @@
 
 
 
-// TODO: add a struct to hold all discovered shaders and their buffers
 
-// Utility functions
-
-// TODO: add a generalized function to loop over
-
-// Open a shipped engine file resolved against ano_fs_gamepath()
-static FILE* openEngineFile(const char* relative)
+// Shader bytes ride the resource manager: logical names, any-CWD resolution, the
+// manager owns the SPIR-V (single-copy; pipeline rebuilds re-request for free).
+VkShaderModule ano_pipeline_shader(VkDevice device, const char* logical)
 {
-	ano_fspath dir = ano_fs_gamepath();
-	if (dir.length == 0)
-		return NULL;
-
-	char path[MAXPATH + 128];
-	int n = snprintf(path, sizeof path, "%s/%s", dir.str, relative);
-	if (n < 0 || n >= (int)sizeof path)
-		return NULL;
-	return fopen(path, "rb");
-}
-
-bool loadFile(const char* filename, struct Buffer* buffer)
-{
-	FILE* file = openEngineFile(filename);
-	if (file == NULL)
+	anores_t h = ano_res_get(logical);
+	anostr_t code = ano_res_bytes(h);
+	size_t size = anostr_len(code);
+	if (size == 0 || size % 4 != 0)
 	{
-		ano_log(ANO_ERROR, "Failed to open file (relative to the executable): %s", filename);
-		return false;
+		ano_log(ANO_ERROR, "Shader unavailable or not SPIR-V-sized: %s", logical);
+		return VK_NULL_HANDLE;
 	}
 
-	fseek(file, 0, SEEK_END);
-	uint32_t size = ftell(file);
-	fseek(file, 0, SEEK_SET);
-
-
-	buffer->data = ano_aligned_malloc(size, alignof(uint32_t));
-	if (buffer->data == NULL) 
-	{
-		ano_log(ANO_ERROR, "Failed to allocate memory for file: %s", filename);
-		fclose(file);
-		return false;
-	}
-
-	if (fread(buffer->data, 1, size, file) != size) 
-	{
-		ano_log(ANO_ERROR, "Failed to read file: %s", filename);
-		free(buffer->data);
-		fclose(file);
-		return false;
-	}
-
-	//buffer->data[size] = 0;
-	buffer->size = size;
-	
-	fclose(file);
-	return true;
-}
-
-VkShaderModule createShaderModule(VkDevice device, struct Buffer* code) 
-{
 	VkShaderModuleCreateInfo createInfo = {};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-	createInfo.codeSize = code->size;
-	createInfo.pCode = (uint32_t *) code->data; // cursed
-	
+	createInfo.codeSize = size;
+	createInfo.pCode = (const uint32_t *) anostr_bytes(&code); // payloads are >=16-aligned
+
 	VkShaderModule shaderModule;
 	if (vkCreateShaderModule(device, &createInfo, NULL, &shaderModule) != VK_SUCCESS)
 	{
-		ano_olog(ANO_ERROR, "Failed to create shader module!");
-		return NULL;
+		ano_log(ANO_ERROR, "Failed to create shader module: %s", logical);
+		return VK_NULL_HANDLE;
 	}
-
 	return shaderModule;
 }
 
@@ -97,11 +51,8 @@ bool ano_pipeline_task_stage(VulkanContext* ctx, VkBool32 shadowPass, VkBool32 c
                              TaskStageStorage* store, VkShaderModule* outModule,
                              VkPipelineShaderStageCreateInfo* stage)
 {
-	struct Buffer code;
-	if (!loadFile("resources/shaders/flat.task.spv", &code)) return false;
-	*outModule = createShaderModule(ctx->device, &code);
-	ano_aligned_free(code.data);
-	if (*outModule == NULL) return false;
+	*outModule = ano_pipeline_shader(ctx->device, "shaders/flat.task.spv");
+	if (*outModule == VK_NULL_HANDLE) return false;
 
 	store->entries[0] = (VkSpecializationMapEntry){ .constantID = 0, .offset = 0, .size = sizeof(VkBool32) };
 	store->entries[1] = (VkSpecializationMapEntry){ .constantID = 1, .offset = sizeof(VkBool32), .size = sizeof(VkBool32) };

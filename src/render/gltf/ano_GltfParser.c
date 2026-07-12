@@ -1,118 +1,119 @@
 /* SPDX-FileCopyrightText: 2023 Anoptic Game Engine Authors
  * SPDX-License-Identifier: LGPL-3.0 */
 
+// GPU-side glTF ingest. Parsing left this file: the resource manager's graphics
+// extension (anoptic_res_graphics.h) does the understanding -- cgltf and stb_image
+// appear nowhere here -- and this TU consumes its conditioned scene views: geometry
+// into the geometry pool as LOD chains, needed textures decoded + uploaded + bound
+// bindless, materials baked into the SSBO, node graph copied into the ModelAsset
+// blueprint. No file opens by path anywhere in the renderer anymore.
+
 #include "ano_GltfParser.h"
 #include <string.h>
-#include <anoptic_memory.h>
 #include <anoptic_log.h>
-
-// The cgltf implementation now lives in anoptic_core (src/resources/graphics/): this
-// TU consumes declarations only, and dies entirely at the phase-C migration.
-#include <cgltf.h>
-
-// Local copy of cgltf's static combine_paths (implementation-private there).
-static void gltf_combine_paths(char *path, const char *base, const char *uri)
-{
-    const char *s0 = strrchr(base, '/');
-    const char *s1 = strrchr(base, '\\');
-    const char *slash = s0 ? (s1 && s1 > s0 ? s1 : s0) : s1;
-    if (slash) {
-        size_t prefix = (size_t)(slash - base) + 1;
-        strncpy(path, base, prefix);
-        strcpy(path + prefix, uri);
-    } else {
-        strcpy(path, uri);
-    }
-}
+#include <anoptic_memory.h>
+#include <anoptic_res_graphics.h>
+#include <anoptic_resources.h>
 
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
+
+// The scene view's vertex layout must BE the renderer's Vertex, and the file-truth
+// feature bits must BE PbrFeatureFlags, or every cast below is a lie.
+static_assert(sizeof(Vertex) == sizeof(anoresgfx_vertex),
+              "Vertex and anoresgfx_vertex must share one layout");
+static_assert(offsetof(Vertex, normal) == offsetof(anoresgfx_vertex, normal)
+              && offsetof(Vertex, texCoord) == offsetof(anoresgfx_vertex, texcoord),
+              "Vertex field offsets must match the scene view");
+static_assert(PBR_FEATURE_BASE_COLOR_FACTOR == ANORESGFX_PBR_BASE_COLOR_FACTOR
+              && PBR_FEATURE_NORMAL_TEXTURE == ANORESGFX_PBR_NORMAL_TEXTURE
+              && PBR_FEATURE_ALPHA_MODE_BLEND == ANORESGFX_PBR_ALPHA_MODE_BLEND
+              && PBR_FEATURE_CLEARCOAT == ANORESGFX_PBR_CLEARCOAT
+              && PBR_FEATURE_EMISSIVE_STRENGTH == ANORESGFX_PBR_EMISSIVE_STRENGTH
+              && PBR_FEATURE_SPECULAR_GLOSSINESS == ANORESGFX_PBR_SPECULAR_GLOSSINESS,
+              "PbrFeatureFlags and ANORESGFX_PBR_* must agree bit for bit");
 
 // Recursive flatten walk.
 static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
                          AnoRenderableDesc* out, uint32_t cap, uint32_t* idx);
 
-ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
-{
-    cgltf_options options = {0};
-    cgltf_data* data = NULL;
-    cgltf_result result = cgltf_parse_file(&options, fileName, &data);
-    
-    if (result != cgltf_result_success) {
-        ano_log(ANO_ERROR, "Failed to parse glTF file: %s", fileName);
-        return NULL;
-    }
-    
-    result = cgltf_load_buffers(&options, data, fileName);
-    if (result != cgltf_result_success) {
-        ano_log(ANO_ERROR, "Failed to load glTF buffers for: %s", fileName);
-        cgltf_free(data);
-        return NULL;
-    }
+// One gated texture slot: which feature admits it, whether it samples as color.
+typedef struct SlotRule {
+    uint32_t feature;
+    bool     srgb;
+    const anoresgfx_texref* (*ref)(const anoresgfx_material*);
+} SlotRule;
 
-    ano_debug_log(ANO_INFO, "Successfully parsed %s with cgltf!", fileName);
+#define SLOT(field) \
+    static const anoresgfx_texref* slot_##field(const anoresgfx_material* m) { return &m->field; }
+SLOT(base_color) SLOT(metallic_roughness) SLOT(normal) SLOT(occlusion) SLOT(emissive)
+SLOT(clearcoat) SLOT(clearcoat_roughness) SLOT(clearcoat_normal)
+SLOT(transmission) SLOT(thickness) SLOT(specular) SLOT(specular_color)
+SLOT(sheen_color) SLOT(sheen_roughness) SLOT(iridescence) SLOT(iridescence_thickness)
+SLOT(anisotropy) SLOT(diffuse_transmission) SLOT(diffuse_transmission_color)
+#undef SLOT
+
+static const SlotRule SLOT_RULES[] = {
+    { PBR_FEATURE_BASE_COLOR_TEXTURE,         true,  slot_base_color },
+    { PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE, false, slot_metallic_roughness },
+    { PBR_FEATURE_NORMAL_TEXTURE,             false, slot_normal },
+    { PBR_FEATURE_OCCLUSION_TEXTURE,          false, slot_occlusion },
+    { PBR_FEATURE_EMISSIVE_TEXTURE,           true,  slot_emissive },
+    { PBR_FEATURE_CLEARCOAT,                  false, slot_clearcoat },
+    { PBR_FEATURE_CLEARCOAT,                  false, slot_clearcoat_roughness },
+    { PBR_FEATURE_CLEARCOAT,                  false, slot_clearcoat_normal },
+    { PBR_FEATURE_TRANSMISSION,               false, slot_transmission },
+    { PBR_FEATURE_VOLUME,                     false, slot_thickness },
+    { PBR_FEATURE_SPECULAR,                   false, slot_specular },
+    { PBR_FEATURE_SPECULAR,                   true,  slot_specular_color },
+    { PBR_FEATURE_SHEEN,                      true,  slot_sheen_color },
+    { PBR_FEATURE_SHEEN,                      false, slot_sheen_roughness },
+    { PBR_FEATURE_IRIDESCENCE,                false, slot_iridescence },
+    { PBR_FEATURE_IRIDESCENCE,                false, slot_iridescence_thickness },
+    { PBR_FEATURE_ANISOTROPY,                 false, slot_anisotropy },
+    { PBR_FEATURE_DIFFUSE_TRANSMISSION,       false, slot_diffuse_transmission },
+    { PBR_FEATURE_DIFFUSE_TRANSMISSION,       true,  slot_diffuse_transmission_color },
+};
+
+// Bindless index for a slot's image if it made it to the GPU, else leave the default.
+static void bind_slot(const anoresgfx_texref* ref, const bool* loaded,
+                      const uint32_t* bindless, uint32_t* out)
+{
+    if (ref->image >= 0 && loaded[ref->image])
+        *out = bindless[ref->image];
+}
+
+ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
+{
+    // 1. Parse + condition through the resource manager (single-copy; the raw JSON is
+    //    dropped right after, the conditioned scene at the end of this function).
+    anores_t src = ano_res_get(logical);
+    if (src.gen == 0) {
+        ano_log(ANO_ERROR, "Failed to load glTF resource: %s", logical);
+        return NULL;
+    }
+    anores_t sceneH = ano_resgfx_model(src);
+    ano_res_unload(src);
+    anoresgfx_scene s = ano_resgfx_scene(sceneH);
+    if (sceneH.gen == 0 || s.node_count == 0) {
+        ano_log(ANO_ERROR, "Failed to condition glTF scene: %s", logical);
+        return NULL;
+    }
 
     ModelAsset* asset = calloc(1, sizeof(ModelAsset));
-    strncpy(asset->name, fileName, 63);
+    strncpy(asset->name, logical, 63);
 
-    // 1. Upload Geometry & Map to Asset Meshes
-    asset->meshCount = data->meshes_count;
+    // 2. Geometry: every conditioned primitive uploads as an LOD chain. The scene view
+    //    IS the staging data (layout asserted above), no copy.
+    asset->meshCount = s.mesh_count;
     asset->meshes = calloc(asset->meshCount, sizeof(ModelMesh));
-    
-    for (size_t m = 0; m < data->meshes_count; ++m) {
-        cgltf_mesh* cgMesh = &data->meshes[m];
+    for (uint32_t m = 0; m < s.mesh_count; ++m) {
+        const anoresgfx_mesh* inMesh = &s.meshes[m];
         ModelMesh* outMesh = &asset->meshes[m];
-        
-        outMesh->primitiveCount = cgMesh->primitives_count;
-        outMesh->primitives = calloc(outMesh->primitiveCount, sizeof(ModelPrimitive));
-        
-        for (size_t p = 0; p < cgMesh->primitives_count; ++p) {
-            cgltf_primitive* prim = &cgMesh->primitives[p];
-            
-            // Find accessors
-            cgltf_accessor* posAccessor = NULL;
-            cgltf_accessor* normAccessor = NULL;
-            cgltf_accessor* texAccessor = NULL;
-            
-            for (size_t a = 0; a < prim->attributes_count; ++a) {
-                if (prim->attributes[a].type == cgltf_attribute_type_position) {
-                    posAccessor = prim->attributes[a].data;
-                } else if (prim->attributes[a].type == cgltf_attribute_type_normal) {
-                    normAccessor = prim->attributes[a].data;
-                } else if (prim->attributes[a].type == cgltf_attribute_type_texcoord) {
-                    texAccessor = prim->attributes[a].data;
-                }
-            }
-            
-            if (!posAccessor || !prim->indices) {
-                ano_log(ANO_WARN, "Warning: Primitive missing positions or indices. Skipping.");
-                continue;
-            }
-            
-            uint32_t vertexCount = posAccessor->count;
-            Vertex* vertices = calloc(vertexCount, sizeof(Vertex));
-            
-            for (uint32_t v = 0; v < vertexCount; ++v) {
-                cgltf_accessor_read_float(posAccessor, v, &vertices[v].position.v[0], 3);
-                if (normAccessor) {
-                    cgltf_accessor_read_float(normAccessor, v, &vertices[v].normal.v[0], 3);
-                } else {
-                    vertices[v].normal.v[0] = 0.0f;
-                    vertices[v].normal.v[1] = 1.0f;
-                    vertices[v].normal.v[2] = 0.0f;
-                }
-                if (texAccessor) {
-                    cgltf_accessor_read_float(texAccessor, v, &vertices[v].texCoord.v[0], 2);
-                }
-            }
-            
-            uint32_t indexCount = prim->indices->count;
-            uint32_t* indices = calloc(indexCount, sizeof(uint32_t));
-            for (uint32_t i = 0; i < indexCount; ++i) {
-                indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
-            }
-            
-            // Upload as an LOD chain; geometryPoolIndex is the chain base.
+        outMesh->primitiveCount = inMesh->prim_count;
+        outMesh->primitives = calloc(inMesh->prim_count, sizeof(ModelPrimitive));
+        for (uint32_t p = 0; p < inMesh->prim_count; ++p) {
+            const anoresgfx_prim* prim = &s.prims[inMesh->prim_first + p];
             AnoLodConfig lodCfg = ano_lod_config_default(ANO_DEFAULT_LOD_COUNT);
             uint32_t lodBase = 0u, lodProduced = 0u;
             geometry_pool_upload_chain(
@@ -121,572 +122,289 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 ctx->device,
                 ctx->queueFamilyIndices.transferFamily,
                 ctx->transferQueue,
-                vertices, vertexCount,
-                indices, indexCount,
+                (const Vertex*)(s.vertices + prim->vertex_first), prim->vertex_count,
+                s.indices + prim->index_first, prim->index_count,
                 &lodCfg, &lodBase, &lodProduced
             );
             outMesh->primitives[p].geometryPoolIndex = lodBase;
-            
-            free(vertices);
-            free(indices);
         }
     }
 
-    // Identify PBR features globally supported by the active pipelines
+    // 3. Textures: gate by what the file wants AND the active pipelines support,
+    //    decode through the manager, upload, bind bindless.
     PbrFeatureFlags activeFeatures = ano_vk_get_active_pipelines_supported_features(&rendererState);
-    ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
-    // Mark needed textures and their color space; color slots decode sRGB, data slots stay linear.
-    bool* textureNeeded = NULL;
-    bool* textureSrgb = NULL;
-    if (data->textures_count > 0) {
-        textureNeeded = calloc(data->textures_count, sizeof(bool));
-        textureSrgb = calloc(data->textures_count, sizeof(bool));
-        for (size_t m = 0; m < data->materials_count; ++m) {
-            cgltf_material* mat = &data->materials[m];
-            PbrFeatureFlags matFeatures = ano_gltf_identify_material_features(mat);
-            PbrFeatureFlags supportedFeatures = matFeatures & activeFeatures;
-            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Material %zu (%s): required features = 0x%08X, supported = 0x%08X",
-                   m, mat->name ? mat->name : "unnamed", matFeatures, supportedFeatures);
+    bool*     needed   = calloc(s.image_count ? s.image_count : 1, sizeof(bool));
+    bool*     srgb     = calloc(s.image_count ? s.image_count : 1, sizeof(bool));
+    bool*     loaded   = calloc(s.image_count ? s.image_count : 1, sizeof(bool));
+    uint32_t* bindless = calloc(s.image_count ? s.image_count : 1, sizeof(uint32_t));
 
-            if (mat->has_pbr_metallic_roughness) {
-                if ((supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) && mat->pbr_metallic_roughness.base_color_texture.texture) {
-                    size_t texIdx = mat->pbr_metallic_roughness.base_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
-                if ((supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) && mat->pbr_metallic_roughness.metallic_roughness_texture.texture) {
-                    size_t texIdx = mat->pbr_metallic_roughness.metallic_roughness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if ((supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE) && mat->normal_texture.texture) {
-                size_t texIdx = mat->normal_texture.texture - data->textures;
-                textureNeeded[texIdx] = true;
-            }
-            if ((supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE) && mat->occlusion_texture.texture) {
-                size_t texIdx = mat->occlusion_texture.texture - data->textures;
-                textureNeeded[texIdx] = true;
-            }
-            if ((supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) && mat->emissive_texture.texture) {
-                size_t texIdx = mat->emissive_texture.texture - data->textures;
-                textureNeeded[texIdx] = true;
-                textureSrgb[texIdx] = true;
-            }
-            if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
-                if (mat->clearcoat.clearcoat_texture.texture) {
-                    size_t texIdx = mat->clearcoat.clearcoat_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->clearcoat.clearcoat_roughness_texture.texture) {
-                    size_t texIdx = mat->clearcoat.clearcoat_roughness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->clearcoat.clearcoat_normal_texture.texture) {
-                    size_t texIdx = mat->clearcoat.clearcoat_normal_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_TRANSMISSION) {
-                if (mat->transmission.transmission_texture.texture) {
-                    size_t texIdx = mat->transmission.transmission_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_VOLUME) {
-                if (mat->volume.thickness_texture.texture) {
-                    size_t texIdx = mat->volume.thickness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_SPECULAR) {
-                if (mat->specular.specular_texture.texture) {
-                    size_t texIdx = mat->specular.specular_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->specular.specular_color_texture.texture) {
-                    size_t texIdx = mat->specular.specular_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_SHEEN) {
-                if (mat->sheen.sheen_color_texture.texture) {
-                    size_t texIdx = mat->sheen.sheen_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
-                if (mat->sheen.sheen_roughness_texture.texture) {
-                    size_t texIdx = mat->sheen.sheen_roughness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_IRIDESCENCE) {
-                if (mat->iridescence.iridescence_texture.texture) {
-                    size_t texIdx = mat->iridescence.iridescence_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->iridescence.iridescence_thickness_texture.texture) {
-                    size_t texIdx = mat->iridescence.iridescence_thickness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_ANISOTROPY) {
-                if (mat->anisotropy.anisotropy_texture.texture) {
-                    size_t texIdx = mat->anisotropy.anisotropy_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_DIFFUSE_TRANSMISSION) {
-                if (mat->diffuse_transmission.diffuse_transmission_texture.texture) {
-                    size_t texIdx = mat->diffuse_transmission.diffuse_transmission_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->diffuse_transmission.diffuse_transmission_color_texture.texture) {
-                    size_t texIdx = mat->diffuse_transmission.diffuse_transmission_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
-            }
+    for (uint32_t m = 0; m < s.material_count; ++m) {
+        const anoresgfx_material* mat = &s.materials[m];
+        PbrFeatureFlags supported = mat->features & activeFeatures;
+        for (size_t r = 0; r < sizeof SLOT_RULES / sizeof SLOT_RULES[0]; ++r) {
+            if (!(supported & SLOT_RULES[r].feature))
+                continue;
+            const anoresgfx_texref* ref = SLOT_RULES[r].ref(mat);
+            if (ref->image < 0 || (uint32_t)ref->image >= s.image_count)
+                continue;
+            needed[ref->image] = true;
+            if (SLOT_RULES[r].srgb)
+                srgb[ref->image] = true;
         }
     }
 
-    // Count staging buffers needed for textures
     uint32_t maxStaging = 10;
-    for (size_t t = 0; t < data->textures_count; ++t) {
-        if (data->textures[t].image && data->textures[t].image->uri && textureNeeded && textureNeeded[t]) {
+    for (uint32_t t = 0; t < s.image_count; ++t)
+        if (needed[t] && s.images[t].path[0] != '\0')
             maxStaging++;
-        }
-    }
 
-    // 2. Upload Textures & Bind Materials
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
     VkBuffer* stagingBuffers = calloc(maxStaging, sizeof(VkBuffer));
     uint32_t stagingCount = 0;
-    
-    VkImageView* loadedTextures = calloc(data->textures_count, sizeof(VkImageView));
-    VkImage* loadedImages = calloc(data->textures_count, sizeof(VkImage));
-    GpuAllocation* loadedAllocs = calloc(data->textures_count, sizeof(GpuAllocation));
-    bool* textureLoaded = calloc(data->textures_count, sizeof(bool));
-    uint32_t* bindlessIndices = calloc(data->textures_count, sizeof(uint32_t));
 
-    for (size_t t = 0; t < data->textures_count; ++t) {
-        cgltf_texture* tex = &data->textures[t];
-        if (tex->image && tex->image->uri && textureNeeded && textureNeeded[t]) {
-            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading texture %zu: %s", t, tex->image->uri);
-            // Resolve image URI against the glTF file's directory, then percent-decode the tail.
-            char texPath[1024];
-            if (strlen(fileName) + strlen(tex->image->uri) + 1 >= sizeof texPath) {
-                ano_log(ANO_WARN, "Texture URI too long, skipping: %s", tex->image->uri);
-                textureLoaded[t] = false;
-                continue;
-            }
-            gltf_combine_paths(texPath, fileName, tex->image->uri);
-            cgltf_decode_uri(texPath + strlen(texPath) - strlen(tex->image->uri));
-            bool success = createTextureImage(
-                ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],
-                &loadedTextures[t], texPath, false,
-                textureSrgb[t], // sRGB color slots, linear data slots
-                &stagingBuffers[stagingCount++]
-            );
-            textureLoaded[t] = success;
-            if (success) {
-                TextureData td = {0};
-                td.textureImage = loadedImages[t];
-                td.textureImageAlloc = loadedAllocs[t];
-                td.textureImageView = loadedTextures[t];
-                ano_vk_register_texture(&rendererState.primitives, td);
-                
-                bindlessIndices[t] = bindless_register_texture(
-                    ctx, &rendererState.bindlessTextures, 
-                    loadedTextures[t], rendererState.textureSampler
-                );
-            }
-        } else if (tex->image && tex->image->uri) {
-            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Skipping texture %zu: %s (not needed or unsupported by pipeline)", t, tex->image->uri);
+    for (uint32_t t = 0; t < s.image_count; ++t) {
+        if (!needed[t] || s.images[t].path[0] == '\0')
+            continue;
+        anores_t img = ano_res_get(s.images[t].path);
+        if (img.gen == 0)
+            continue;                           // get already logged the miss
+        anoresgfx_pixels px = ano_resgfx_image(img);
+        if (px.rgba == NULL) {
+            ano_log(ANO_WARN, "Texture decode failed, skipping: %s", s.images[t].path);
+            ano_res_unload(img);
+            continue;
         }
+        VkImage image; GpuAllocation alloc; VkImageView view;
+        bool ok = createTextureImageFromPixels(ctx, textureCmd, &image, &alloc, &view,
+                                               px.rgba, px.width, px.height,
+                                               srgb[t], true,
+                                               &stagingBuffers[stagingCount]);
+        ano_aligned_free(px.rgba);
+        ano_res_unload(img);                    // encoded bytes are done too
+        if (!ok)
+            continue;
+        stagingCount++;
+        TextureData td = {0};
+        td.textureImage = image;
+        td.textureImageAlloc = alloc;
+        td.textureImageView = view;
+        ano_vk_register_texture(&rendererState.primitives, td);
+        bindless[t] = bindless_register_texture(ctx, &rendererState.bindlessTextures,
+                                                view, rendererState.textureSampler);
+        loaded[t] = true;
     }
 
     endSingleTimeCommands(ctx, textureCmd);
-
-    for (uint32_t i = 0; i < stagingCount; ++i) {
+    for (uint32_t i = 0; i < stagingCount; ++i)
         vkDestroyBuffer(ctx->device, stagingBuffers[i], NULL);
-    }
     free(stagingBuffers);
     gpu_alloc_reset(&stagingAllocator);
 
-    // Pre-validate material buffer capacity
+    // 4. Bake material SSBO entries per primitive.
     uint32_t totalPrimitives = 0;
-    for (size_t m = 0; m < data->meshes_count; ++m) {
-        totalPrimitives += data->meshes[m].primitives_count;
-    }
-    if (rendererState.materialBuffer.count + totalPrimitives > rendererState.materialBuffer.capacity) {
-        ano_log(ANO_WARN, "Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.", 
-               totalPrimitives, rendererState.materialBuffer.capacity, rendererState.materialBuffer.count);
-    }
+    for (uint32_t m = 0; m < s.mesh_count; ++m)
+        totalPrimitives += s.meshes[m].prim_count;
+    if (rendererState.materialBuffer.count + totalPrimitives > rendererState.materialBuffer.capacity)
+        ano_log(ANO_WARN, "Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.",
+                totalPrimitives, rendererState.materialBuffer.capacity, rendererState.materialBuffer.count);
 
-    // 3. Bake Material SSBO entries per primitive
-    for (size_t m = 0; m < data->meshes_count; ++m) {
-        cgltf_mesh* cgMesh = &data->meshes[m];
+    for (uint32_t m = 0; m < s.mesh_count; ++m) {
+        const anoresgfx_mesh* inMesh = &s.meshes[m];
         ModelMesh* outMesh = &asset->meshes[m];
-        
-        for (size_t p = 0; p < cgMesh->primitives_count; ++p) {
-            cgltf_primitive* prim = &cgMesh->primitives[p];
-            
-            // Assign a persistent material index in the global SSBO
+        for (uint32_t p = 0; p < inMesh->prim_count; ++p) {
+            const anoresgfx_prim* prim = &s.prims[inMesh->prim_first + p];
+
             uint32_t matIdx = 0;
             bool writeMaterial = false;
-            
             if (rendererState.materialBuffer.count < rendererState.materialBuffer.capacity) {
                 matIdx = rendererState.materialBuffer.count++;
                 writeMaterial = true;
-            } else {
-                // Fallback to index 0
-                matIdx = 0;
             }
-            
             outMesh->primitives[p].materialIndex = matIdx;
-            
-            if (writeMaterial) {
-                MaterialData matData;
-                ano_vk_init_default_material_data(&matData);
-                
-                if (prim->material) {
-                    PbrFeatureFlags matFeatures = ano_gltf_identify_material_features(prim->material);
-                    PbrFeatureFlags supportedFeatures = matFeatures & activeFeatures;
-                    
-                    matData.features = supportedFeatures;
-                    
-                    // 1. pbrMetallicRoughness
-                    if (prim->material->has_pbr_metallic_roughness) {
-                        if (supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) {
-                            cgltf_texture_view* texView = &prim->material->pbr_metallic_roughness.base_color_texture;
-                            if (texView->texture) {
-                                size_t texIdx = texView->texture - data->textures;
-                                if (textureLoaded[texIdx]) {
-                                    matData.baseColorTexture = bindlessIndices[texIdx];
-                                }
-                            }
-                        }
-                        
-                        for (int i = 0; i < 4; i++) {
-                            matData.baseColorFactor[i] = (float)prim->material->pbr_metallic_roughness.base_color_factor[i];
-                        }
-                        matData.metallicFactor = (float)prim->material->pbr_metallic_roughness.metallic_factor;
-                        matData.roughnessFactor = (float)prim->material->pbr_metallic_roughness.roughness_factor;
-                        
-                        if (supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) {
-                            cgltf_texture_view* texView = &prim->material->pbr_metallic_roughness.metallic_roughness_texture;
-                            if (texView->texture) {
-                                size_t texIdx = texView->texture - data->textures;
-                                if (textureLoaded[texIdx]) {
-                                    matData.metallicRoughnessTexture = bindlessIndices[texIdx];
-                                }
-                            }
-                        }
+            if (!writeMaterial)
+                continue;
+
+            MaterialData matData;
+            ano_vk_init_default_material_data(&matData);
+
+            if (prim->material >= 0 && (uint32_t)prim->material < s.material_count) {
+                const anoresgfx_material* mat = &s.materials[prim->material];
+                PbrFeatureFlags supported = mat->features & activeFeatures;
+                matData.features = supported;
+
+                // 1. pbrMetallicRoughness
+                if (supported & PBR_FEATURE_BASE_COLOR_TEXTURE)
+                    bind_slot(&mat->base_color, loaded, bindless, &matData.baseColorTexture);
+                for (int i = 0; i < 4; i++)
+                    matData.baseColorFactor[i] = mat->base_color_factor[i];
+                matData.metallicFactor  = mat->metallic_factor;
+                matData.roughnessFactor = mat->roughness_factor;
+                if (supported & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE)
+                    bind_slot(&mat->metallic_roughness, loaded, bindless,
+                              &matData.metallicRoughnessTexture);
+
+                // 2. Core properties
+                if (supported & PBR_FEATURE_NORMAL_TEXTURE) {
+                    if (mat->normal.image >= 0 && loaded[mat->normal.image]) {
+                        matData.normalTexture = bindless[mat->normal.image];
+                        matData.normalScale   = mat->normal.scale;
                     }
-                    
-                    // 2. Core properties
-                    if (supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE) {
-                        if (prim->material->normal_texture.texture) {
-                            size_t texIdx = prim->material->normal_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.normalTexture = bindlessIndices[texIdx];
-                                matData.normalScale = (float)prim->material->normal_texture.scale;
-                            }
-                        }
-                    }
-                    
-                    if (supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE) {
-                        if (prim->material->occlusion_texture.texture) {
-                            size_t texIdx = prim->material->occlusion_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.occlusionTexture = bindlessIndices[texIdx];
-                                matData.occlusionStrength = (float)prim->material->occlusion_texture.scale;
-                            }
-                        }
-                    }
-                    
-                    if (supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) {
-                        if (prim->material->emissive_texture.texture) {
-                            size_t texIdx = prim->material->emissive_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.emissiveTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    for (int i = 0; i < 3; i++) {
-                        matData.emissiveFactor[i] = (float)prim->material->emissive_factor[i];
-                    }
-                    matData.emissiveFactor[3] = 1.0f; // Padding
-                    
-                    if (prim->material->alpha_mode == cgltf_alpha_mode_opaque) {
-                        matData.alphaMode = 0;
-                    } else if (prim->material->alpha_mode == cgltf_alpha_mode_mask) {
-                        matData.alphaMode = 1;
-                        matData.alphaCutoff = (float)prim->material->alpha_cutoff;
-                    } else if (prim->material->alpha_mode == cgltf_alpha_mode_blend) {
-                        matData.alphaMode = 2;
-                    }
-                    
-                    matData.doubleSided = prim->material->double_sided ? 1 : 0;
-                    
-                    // 3. Clearcoat
-                    if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
-                        matData.clearcoatFactor = (float)prim->material->clearcoat.clearcoat_factor;
-                        matData.clearcoatRoughnessFactor = (float)prim->material->clearcoat.clearcoat_roughness_factor;
-                        
-                        if (prim->material->clearcoat.clearcoat_texture.texture) {
-                            size_t texIdx = prim->material->clearcoat.clearcoat_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.clearcoatTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                        if (prim->material->clearcoat.clearcoat_roughness_texture.texture) {
-                            size_t texIdx = prim->material->clearcoat.clearcoat_roughness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.clearcoatRoughnessTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                        if (prim->material->clearcoat.clearcoat_normal_texture.texture) {
-                            size_t texIdx = prim->material->clearcoat.clearcoat_normal_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.clearcoatNormalTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 4. Transmission
-                    if (supportedFeatures & PBR_FEATURE_TRANSMISSION) {
-                        matData.transmissionFactor = (float)prim->material->transmission.transmission_factor;
-                        if (prim->material->transmission.transmission_texture.texture) {
-                            size_t texIdx = prim->material->transmission.transmission_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.transmissionTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 5. Volume
-                    if (supportedFeatures & PBR_FEATURE_VOLUME) {
-                        matData.thicknessFactor = (float)prim->material->volume.thickness_factor;
-                        matData.attenuationDistance = (float)prim->material->volume.attenuation_distance;
-                        for (int i = 0; i < 3; i++) {
-                            matData.attenuationColor[i] = (float)prim->material->volume.attenuation_color[i];
-                        }
-                        matData.attenuationColor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->volume.thickness_texture.texture) {
-                            size_t texIdx = prim->material->volume.thickness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.thicknessTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 6. IOR
-                    if (supportedFeatures & PBR_FEATURE_IOR) {
-                        matData.ior = (float)prim->material->ior.ior;
-                    }
-                    
-                    // 7. Specular
-                    if (supportedFeatures & PBR_FEATURE_SPECULAR) {
-                        matData.specularFactor = (float)prim->material->specular.specular_factor;
-                        for (int i = 0; i < 3; i++) {
-                            matData.specularColorFactor[i] = (float)prim->material->specular.specular_color_factor[i];
-                        }
-                        matData.specularColorFactor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->specular.specular_texture.texture) {
-                            size_t texIdx = prim->material->specular.specular_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.specularTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                        if (prim->material->specular.specular_color_texture.texture) {
-                            size_t texIdx = prim->material->specular.specular_color_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.specularColorTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 8. Sheen
-                    if (supportedFeatures & PBR_FEATURE_SHEEN) {
-                        matData.sheenRoughnessFactor = (float)prim->material->sheen.sheen_roughness_factor;
-                        for (int i = 0; i < 3; i++) {
-                            matData.sheenColorFactor[i] = (float)prim->material->sheen.sheen_color_factor[i];
-                        }
-                        matData.sheenColorFactor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->sheen.sheen_color_texture.texture) {
-                            size_t texIdx = prim->material->sheen.sheen_color_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.sheenColorTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                        if (prim->material->sheen.sheen_roughness_texture.texture) {
-                            size_t texIdx = prim->material->sheen.sheen_roughness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.sheenRoughnessTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 9. Iridescence
-                    if (supportedFeatures & PBR_FEATURE_IRIDESCENCE) {
-                        matData.iridescenceFactor = (float)prim->material->iridescence.iridescence_factor;
-                        matData.iridescenceIor = (float)prim->material->iridescence.iridescence_ior;
-                        matData.iridescenceThicknessMinimum = (float)prim->material->iridescence.iridescence_thickness_min;
-                        matData.iridescenceThicknessMaximum = (float)prim->material->iridescence.iridescence_thickness_max;
-                        
-                        if (prim->material->iridescence.iridescence_texture.texture) {
-                            size_t texIdx = prim->material->iridescence.iridescence_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.iridescenceTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                        if (prim->material->iridescence.iridescence_thickness_texture.texture) {
-                            size_t texIdx = prim->material->iridescence.iridescence_thickness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.iridescenceThicknessTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 10. Anisotropy
-                    if (supportedFeatures & PBR_FEATURE_ANISOTROPY) {
-                        matData.anisotropyStrength = (float)prim->material->anisotropy.anisotropy_strength;
-                        matData.anisotropyRotation = (float)prim->material->anisotropy.anisotropy_rotation;
-                        
-                        if (prim->material->anisotropy.anisotropy_texture.texture) {
-                            size_t texIdx = prim->material->anisotropy.anisotropy_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.anisotropyTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 11. Dispersion
-                    if (supportedFeatures & PBR_FEATURE_DISPERSION) {
-                        matData.dispersion = (float)prim->material->dispersion.dispersion;
-                    }
-                    
-                    // 12. Diffuse Transmission
-                    if (supportedFeatures & PBR_FEATURE_DIFFUSE_TRANSMISSION) {
-                        matData.diffuseTransmissionFactor = (float)prim->material->diffuse_transmission.diffuse_transmission_factor;
-                        for (int i = 0; i < 3; i++) {
-                            matData.diffuseTransmissionColorFactor[i] = (float)prim->material->diffuse_transmission.diffuse_transmission_color_factor[i];
-                        }
-                        matData.diffuseTransmissionColorFactor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->diffuse_transmission.diffuse_transmission_texture.texture) {
-                            size_t texIdx = prim->material->diffuse_transmission.diffuse_transmission_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.diffuseTransmissionTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                        if (prim->material->diffuse_transmission.diffuse_transmission_color_texture.texture) {
-                            size_t texIdx = prim->material->diffuse_transmission.diffuse_transmission_color_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.diffuseTransmissionColorTexture = bindlessIndices[texIdx];
-                            }
-                        }
-                    }
-                    
-                    // 13. Emissive Strength
-                    if (supportedFeatures & PBR_FEATURE_EMISSIVE_STRENGTH) {
-                        matData.emissiveStrength = (float)prim->material->emissive_strength.emissive_strength;
-                    }
-                    
-                    // Pipeline routing:
-                    //   transmission/volume         -> PIPELINE_TRANSMISSION
-                    //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE
-                    //   alphaMode MASK               -> PIPELINE_FLAT_MASKED
-                    //   opaque + doubleSided         -> PIPELINE_FLAT_TWOSIDED
-                    //   otherwise                    -> PIPELINE_FLAT
-                    uint32_t selectedPipeline = PIPELINE_FLAT;
-                    if (supportedFeatures & (PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME)) {
-                        selectedPipeline = PIPELINE_TRANSMISSION;
-                    } else if (matData.emissiveStrength > 1.0f || matData.alphaMode == 2u) {
-                        selectedPipeline = PIPELINE_ADDITIVE;
-                    } else if (matData.alphaMode == 1u) {
-                        selectedPipeline = PIPELINE_FLAT_MASKED;
-                    } else if (matData.doubleSided) {
-                        selectedPipeline = PIPELINE_FLAT_TWOSIDED;
-                    }
-                    matData.pipelineType = selectedPipeline;
                 }
-                
-                for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame) {
-                    rendererState.materialBuffer.mapped[frame][matIdx] = matData;
+                if (supported & PBR_FEATURE_OCCLUSION_TEXTURE) {
+                    if (mat->occlusion.image >= 0 && loaded[mat->occlusion.image]) {
+                        matData.occlusionTexture  = bindless[mat->occlusion.image];
+                        matData.occlusionStrength = mat->occlusion.scale;
+                    }
                 }
+                if (supported & PBR_FEATURE_EMISSIVE_TEXTURE)
+                    bind_slot(&mat->emissive, loaded, bindless, &matData.emissiveTexture);
+                for (int i = 0; i < 3; i++)
+                    matData.emissiveFactor[i] = mat->emissive_factor[i];
+                matData.emissiveFactor[3] = 1.0f;
+
+                matData.alphaMode = mat->alpha_mode;
+                if (mat->alpha_mode == 1u)
+                    matData.alphaCutoff = mat->alpha_cutoff;
+                matData.doubleSided = mat->double_sided ? 1 : 0;
+
+                // 3. Clearcoat
+                if (supported & PBR_FEATURE_CLEARCOAT) {
+                    matData.clearcoatFactor          = mat->clearcoat_factor;
+                    matData.clearcoatRoughnessFactor = mat->clearcoat_roughness_factor;
+                    bind_slot(&mat->clearcoat, loaded, bindless, &matData.clearcoatTexture);
+                    bind_slot(&mat->clearcoat_roughness, loaded, bindless,
+                              &matData.clearcoatRoughnessTexture);
+                    bind_slot(&mat->clearcoat_normal, loaded, bindless,
+                              &matData.clearcoatNormalTexture);
+                }
+                // 4. Transmission
+                if (supported & PBR_FEATURE_TRANSMISSION) {
+                    matData.transmissionFactor = mat->transmission_factor;
+                    bind_slot(&mat->transmission, loaded, bindless, &matData.transmissionTexture);
+                }
+                // 5. Volume
+                if (supported & PBR_FEATURE_VOLUME) {
+                    matData.thicknessFactor     = mat->thickness_factor;
+                    matData.attenuationDistance = mat->attenuation_distance;
+                    for (int i = 0; i < 3; i++)
+                        matData.attenuationColor[i] = mat->attenuation_color[i];
+                    matData.attenuationColor[3] = 1.0f;
+                    bind_slot(&mat->thickness, loaded, bindless, &matData.thicknessTexture);
+                }
+                // 6. IOR
+                if (supported & PBR_FEATURE_IOR)
+                    matData.ior = mat->ior;
+                // 7. Specular
+                if (supported & PBR_FEATURE_SPECULAR) {
+                    matData.specularFactor = mat->specular_factor;
+                    for (int i = 0; i < 3; i++)
+                        matData.specularColorFactor[i] = mat->specular_color_factor[i];
+                    matData.specularColorFactor[3] = 1.0f;
+                    bind_slot(&mat->specular, loaded, bindless, &matData.specularTexture);
+                    bind_slot(&mat->specular_color, loaded, bindless,
+                              &matData.specularColorTexture);
+                }
+                // 8. Sheen
+                if (supported & PBR_FEATURE_SHEEN) {
+                    matData.sheenRoughnessFactor = mat->sheen_roughness_factor;
+                    for (int i = 0; i < 3; i++)
+                        matData.sheenColorFactor[i] = mat->sheen_color_factor[i];
+                    matData.sheenColorFactor[3] = 1.0f;
+                    bind_slot(&mat->sheen_color, loaded, bindless, &matData.sheenColorTexture);
+                    bind_slot(&mat->sheen_roughness, loaded, bindless,
+                              &matData.sheenRoughnessTexture);
+                }
+                // 9. Iridescence
+                if (supported & PBR_FEATURE_IRIDESCENCE) {
+                    matData.iridescenceFactor            = mat->iridescence_factor;
+                    matData.iridescenceIor               = mat->iridescence_ior;
+                    matData.iridescenceThicknessMinimum  = mat->iridescence_thickness_min;
+                    matData.iridescenceThicknessMaximum  = mat->iridescence_thickness_max;
+                    bind_slot(&mat->iridescence, loaded, bindless, &matData.iridescenceTexture);
+                    bind_slot(&mat->iridescence_thickness, loaded, bindless,
+                              &matData.iridescenceThicknessTexture);
+                }
+                // 10. Anisotropy
+                if (supported & PBR_FEATURE_ANISOTROPY) {
+                    matData.anisotropyStrength = mat->anisotropy_strength;
+                    matData.anisotropyRotation = mat->anisotropy_rotation;
+                    bind_slot(&mat->anisotropy, loaded, bindless, &matData.anisotropyTexture);
+                }
+                // 11. Dispersion
+                if (supported & PBR_FEATURE_DISPERSION)
+                    matData.dispersion = mat->dispersion;
+                // 12. Diffuse Transmission
+                if (supported & PBR_FEATURE_DIFFUSE_TRANSMISSION) {
+                    matData.diffuseTransmissionFactor = mat->diffuse_transmission_factor;
+                    for (int i = 0; i < 3; i++)
+                        matData.diffuseTransmissionColorFactor[i] =
+                            mat->diffuse_transmission_color_factor[i];
+                    matData.diffuseTransmissionColorFactor[3] = 1.0f;
+                    bind_slot(&mat->diffuse_transmission, loaded, bindless,
+                              &matData.diffuseTransmissionTexture);
+                    bind_slot(&mat->diffuse_transmission_color, loaded, bindless,
+                              &matData.diffuseTransmissionColorTexture);
+                }
+                // 13. Emissive Strength
+                if (supported & PBR_FEATURE_EMISSIVE_STRENGTH)
+                    matData.emissiveStrength = mat->emissive_strength;
+
+                // Pipeline routing:
+                //   transmission/volume          -> PIPELINE_TRANSMISSION
+                //   emissiveStrength>1 OR BLEND  -> PIPELINE_ADDITIVE
+                //   alphaMode MASK               -> PIPELINE_FLAT_MASKED
+                //   opaque + doubleSided         -> PIPELINE_FLAT_TWOSIDED
+                //   otherwise                    -> PIPELINE_FLAT
+                uint32_t selectedPipeline = PIPELINE_FLAT;
+                if (supported & (PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME)) {
+                    selectedPipeline = PIPELINE_TRANSMISSION;
+                } else if (matData.emissiveStrength > 1.0f || matData.alphaMode == 2u) {
+                    selectedPipeline = PIPELINE_ADDITIVE;
+                } else if (matData.alphaMode == 1u) {
+                    selectedPipeline = PIPELINE_FLAT_MASKED;
+                } else if (matData.doubleSided) {
+                    selectedPipeline = PIPELINE_FLAT_TWOSIDED;
+                }
+                matData.pipelineType = selectedPipeline;
             }
+
+            for (size_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame)
+                rendererState.materialBuffer.mapped[frame][matIdx] = matData;
         }
     }
 
-    if (textureNeeded) {
-        free(textureNeeded);
-    }
-    if (textureSrgb) {
-        free(textureSrgb);
-    }
-    free(loadedTextures);
-    free(loadedImages);
-    free(loadedAllocs);
-    free(textureLoaded);
-    free(bindlessIndices);
+    free(needed);
+    free(srgb);
+    free(loaded);
+    free(bindless);
 
-    // 4. Construct Node Hierarchy
-    asset->nodeCount = data->nodes_count;
+    // 5. Node hierarchy into the blueprint.
+    asset->nodeCount = s.node_count;
     asset->nodes = calloc(asset->nodeCount, sizeof(ModelNode));
-    
-    for (size_t n = 0; n < data->nodes_count; ++n) {
-        cgltf_node* cgNode = &data->nodes[n];
+    for (uint32_t n = 0; n < s.node_count; ++n) {
+        const anoresgfx_node* in = &s.nodes[n];
         ModelNode* outNode = &asset->nodes[n];
-        
-        if (cgNode->name) {
-            strncpy(outNode->name, cgNode->name, 63);
-        }
-        
-        // Extract local transform
-        cgltf_float matrix[16];
-        cgltf_node_transform_local(cgNode, matrix);
-        float* destMat = (float*)&outNode->localTransform;
-        for (int i = 0; i < 16; i++) destMat[i] = matrix[i];
-        
-        outNode->meshIndex = cgNode->mesh ? (cgNode->mesh - data->meshes) : -1;
-        outNode->parentIndex = cgNode->parent ? (cgNode->parent - data->nodes) : -1;
-        
-        outNode->childCount = cgNode->children_count;
-        if (outNode->childCount > 0) {
-            outNode->childIndices = calloc(outNode->childCount, sizeof(uint32_t));
-            for (uint32_t c = 0; c < outNode->childCount; ++c) {
-                outNode->childIndices[c] = cgNode->children[c] - data->nodes;
-            }
+        memcpy(outNode->name, in->name, sizeof outNode->name);
+        memcpy(&outNode->localTransform, in->local, sizeof(mat4));
+        outNode->meshIndex   = in->mesh;
+        outNode->parentIndex = in->parent;
+        outNode->childCount  = in->child_count;
+        if (in->child_count > 0) {
+            outNode->childIndices = calloc(in->child_count, sizeof(uint32_t));
+            memcpy(outNode->childIndices, s.children + in->child_first,
+                   in->child_count * sizeof(uint32_t));
         }
     }
-    
-    // Store root nodes (all parentless nodes)
-    uint32_t rootCount = 0;
-    for (size_t n = 0; n < data->nodes_count; ++n) {
-        if (!data->nodes[n].parent) rootCount++;
-    }
-    
-    asset->rootNodeCount = rootCount;
-    if (rootCount > 0) {
-        asset->rootNodes = calloc(rootCount, sizeof(uint32_t));
-        uint32_t rIdx = 0;
-        for (size_t n = 0; n < data->nodes_count; ++n) {
-            if (!data->nodes[n].parent) {
-                asset->rootNodes[rIdx++] = n;
-            }
-        }
+    asset->rootNodeCount = s.root_count;
+    if (s.root_count > 0) {
+        asset->rootNodes = calloc(s.root_count, sizeof(uint32_t));
+        memcpy(asset->rootNodes, s.roots, s.root_count * sizeof(uint32_t));
     }
 
-    cgltf_free(data);
-    ano_debug_log(ANO_INFO, "Successfully extracted ModelAsset: %s", fileName);
+    // The conditioned CPU scene served its purpose; the GPU owns the data now.
+    ano_res_unload(sceneH);
+    ano_debug_log(ANO_INFO, "Successfully ingested ModelAsset: %s", logical);
     return asset;
 }
 
@@ -722,92 +440,4 @@ uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRen
     for (uint32_t r = 0; r < asset->rootNodeCount; r++)
         flatten_node(asset, asset->rootNodes[r], rootTransform, out, cap, &idx);
     return idx;
-}
-
-PbrFeatureFlags ano_gltf_identify_material_features(const cgltf_material* material) {
-    if (!material) {
-        return PBR_FEATURE_NONE;
-    }
-    
-    PbrFeatureFlags features = PBR_FEATURE_NONE;
-    
-    // 1. pbrMetallicRoughness
-    if (material->has_pbr_metallic_roughness) {
-        features |= PBR_FEATURE_BASE_COLOR_FACTOR;
-        features |= PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR;
-        
-        if (material->pbr_metallic_roughness.base_color_texture.texture) {
-            features |= PBR_FEATURE_BASE_COLOR_TEXTURE;
-        }
-        if (material->pbr_metallic_roughness.metallic_roughness_texture.texture) {
-            features |= PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE;
-        }
-    }
-    
-    // 2. Core properties
-    if (material->normal_texture.texture) {
-        features |= PBR_FEATURE_NORMAL_TEXTURE;
-    }
-    if (material->occlusion_texture.texture) {
-        features |= PBR_FEATURE_OCCLUSION_TEXTURE;
-    }
-    if (material->emissive_texture.texture) {
-        features |= PBR_FEATURE_EMISSIVE_TEXTURE;
-    }
-    if (material->emissive_factor[0] > 0.0f || material->emissive_factor[1] > 0.0f || material->emissive_factor[2] > 0.0f) {
-        features |= PBR_FEATURE_EMISSIVE_FACTOR;
-    }
-    
-    // Alpha modes
-    if (material->alpha_mode == cgltf_alpha_mode_opaque) {
-        features |= PBR_FEATURE_ALPHA_MODE_OPAQUE;
-    } else if (material->alpha_mode == cgltf_alpha_mode_mask) {
-        features |= PBR_FEATURE_ALPHA_MODE_MASK;
-    } else if (material->alpha_mode == cgltf_alpha_mode_blend) {
-        features |= PBR_FEATURE_ALPHA_MODE_BLEND;
-    }
-    
-    if (material->double_sided) {
-        features |= PBR_FEATURE_DOUBLE_SIDED;
-    }
-    
-    // Extensions
-    if (material->has_clearcoat) {
-        features |= PBR_FEATURE_CLEARCOAT;
-    }
-    if (material->has_transmission) {
-        features |= PBR_FEATURE_TRANSMISSION;
-    }
-    if (material->has_volume) {
-        features |= PBR_FEATURE_VOLUME;
-    }
-    if (material->has_ior) {
-        features |= PBR_FEATURE_IOR;
-    }
-    if (material->has_specular) {
-        features |= PBR_FEATURE_SPECULAR;
-    }
-    if (material->has_sheen) {
-        features |= PBR_FEATURE_SHEEN;
-    }
-    if (material->has_iridescence) {
-        features |= PBR_FEATURE_IRIDESCENCE;
-    }
-    if (material->has_anisotropy) {
-        features |= PBR_FEATURE_ANISOTROPY;
-    }
-    if (material->has_dispersion) {
-        features |= PBR_FEATURE_DISPERSION;
-    }
-    if (material->has_diffuse_transmission) {
-        features |= PBR_FEATURE_DIFFUSE_TRANSMISSION;
-    }
-    if (material->has_emissive_strength) {
-        features |= PBR_FEATURE_EMISSIVE_STRENGTH;
-    }
-    if (material->has_pbr_specular_glossiness) {
-        features |= PBR_FEATURE_SPECULAR_GLOSSINESS;
-    }
-    
-    return features;
 }

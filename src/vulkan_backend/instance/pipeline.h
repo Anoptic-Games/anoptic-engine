@@ -13,17 +13,11 @@
 #include <anoptic_memory.h>
 #include "vulkan_backend/vertex/vertex.h"
 
-// Pipeline-specific structs
-struct Buffer
-{
-    uint32_t size;
-    char* data;
-};
-
-// Shader loading utilities.
-// filename is relative to the executable directory ("resources/shaders/x.spv").
-bool loadFile(const char* filename, struct Buffer* buffer);
-VkShaderModule createShaderModule(VkDevice device, struct Buffer* code);
+// Shader module from a logical resource ("shaders/x.spv") through the resource
+// manager. The SPIR-V stays owned by the manager (single-copy: swapchain-recreate
+// pipeline rebuilds re-request it for free); the module is the caller's to destroy.
+// VK_NULL_HANDLE + one log line on a missing/short blob.
+VkShaderModule ano_pipeline_shader(VkDevice device, const char* logical);
 
 // Task meshlet-cull stage shared by mesh-drawing pipeline builders.
 // Caller-provided storage must outlive pipeline creation.
