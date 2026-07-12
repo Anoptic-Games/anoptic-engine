@@ -388,3 +388,24 @@ engine itself never opens a font by path.
 - **Steps 5–8** (async transport, streaming economy, packs/bake, parallel pread): the
   plan's own bench-gated performance rungs ("io_uring may never ship").
 - General write-root temp GC (from the review) — rides with the config client.
+
+Phase C committed as `fccad69`.
+
+---
+
+## Closing state vs. the plan's "Done means" (§14)
+
+| §14 bar | State |
+|---|---|
+| Installed tree runs from any CWD; nothing outside `src/resources/` + logger opens a file | **Met** (grep-verified; `/tmp` smoke run; install rule ships the full resources tree). Windows path written per plan §10, untested on real Windows in this run. |
+| Every loadable in a manager-owned allocator; teardown by wink-out; zero loose malloc/free in ingest | **Met for the shipped model A** (shared multipool + direct blocks; ingest staging is a monotonic arena winked per ingest). Lifetime-group wink-out arrives with the B–E bake-off. |
+| Consumers hold `anores_t` handles/views; stale = sentinel; GPU hand-off destructive | **Met** (views drive shaders/scenes/fonts; release is zero-copy for direct-class payloads). |
+| kill -9 at every protocol step: old-complete or new-complete; torn newest degrades one generation | **Met and harness-proven** (`anotest_resfault` + the corruption battery; orphan temps now complete their interrupted rename). |
+| Resource names are `ANOSTR_SID` literals or interned strings | **Met** (rid = FNV-1a-64 in the SID key space, compile-time equivalence tested; mount prefixes interned). |
+| TSan-clean transport + streaming | Step 5–6 rungs (not built, per plan gating). The full non-vk suite (19 tests, all resource/mempool tests included) runs **TSan-clean**. The 4 vk tests SEGV under TSan inside the sanitizer's own allocator on an NVIDIA **driver** thread (`libnvidia-glcore` → `__interceptor_calloc` → `__tsan::user_calloc`, no engine frames) — an environmental TSan×NVIDIA-ICD incompatibility on this box, not engine code; the house TSan workflow (`build.sh 7 under WSL`) never runs vk tests. |
+| Compressed reads, zero-parse baked scene | Step 6–7 rungs. The scene block is already offset-based/load-in-place-shaped for the bake. |
+
+**Three commits: `8726743` (A), `c5bbda1` (B), `fccad69` (C).** The engine's frame is
+the old frame; its file IO is one namespace; its assets live in a manager that owns
+them. What was deferred is recorded above as bench-gated rungs with their bars, per
+plan rules 7/8 — none of it is silent.
