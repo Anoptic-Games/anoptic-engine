@@ -20,6 +20,14 @@
 // Renderer contract + GLFW, graphical engine only.
 #include <anoptic_render.h>
 #include <anoptic_text.h> // logic-side shaping over anoRenderTextBake()
+#include <anoptic_ui.h>
+// The music world: the composer runs INSIDE the audio callback (src/music/
+// ANOPTIC_MUSICGEN.md). The logic thread never touches it — it steers it over the
+// audio bridge and hears back about the bars as they sound, exactly as it steers
+// the renderer over the render bridge.
+#include <anoptic_audio.h>
+#include <anoptic_music.h>
+#include <anoptic_synth.h>
 #include <vulkan/vulkan.h>
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -195,7 +203,7 @@ static bool hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
 // whose hover/click state resubmits the block on change (never per tick).
 #define HUD_UI_BAR   1u
 #define HUD_UI_MENU  2u
-#define HUD_UI_GCAP  96u
+#define HUD_UI_GCAP  192u
 
 // Menu geometry from the logical viewport (RenderSnapshot.uiWidth/uiHeight): one
 // source of truth for rendering AND hit-testing, in overlay logical units end to end.
@@ -322,6 +330,349 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	return ano_render_ui_set(bridge, HUD_UI_MENU, 128, &b, glyphs, gcount);
 }
 
+// ---------------------------------------------------------------------------
+// The music world
+// ---------------------------------------------------------------------------
+// Brought up on the MAIN thread before the logic producer exists, and torn down
+// after it has been joined — the same discipline the render bridge follows, for
+// the same reason: no submit may race the bridge's destruction.
+//
+// The composer itself lives on the audio thread, hosted inside the mixer callback
+// two bars ahead of the playhead. Nothing below this line is touched again by
+// anyone: the logic thread reaches the music ONLY through the audio bridge.
+
+#define MUSIC_RATE 48000u
+#define MUSIC_SEED 2718u
+
+static AnoSynth       *g_synth;
+static AnoMusicEngine *g_music;
+
+static void music_config(AnoMusicConfig *c)
+{
+	*c = ano_music_config_default();
+	c->hasMapper = true;
+	c->mapper = ano_mapping_table_electronic();
+	c->hasDramaturg = true;
+	c->dramaturg = ano_dramaturg_config_default();
+	c->phraseGroove = true;
+	c->cadenceRit = 0.03;
+	c->wanderPhrases = 6;
+	c->form.cadential64 = c->form.periods = c->form.hypermeter = true;
+	c->form.bassInversions = c->form.split64 = true;
+	c->texture.doubling = c->texture.animate = c->texture.imitation = true;
+	c->texture.rotate = c->texture.counter = true;
+	c->ties.anacrusis = c->ties.suspension = c->ties.syncopation = true;
+	c->clock.codetta = c->clock.extension = c->clock.elision = true;
+	c->melody.planApex = c->melody.counterpoint = true;
+	c->useChains = c->performChains = true;
+	// where the panel starts: a calm, slightly bright bed
+	c->valence = 0.30f;
+	c->energy = 0.35f;
+	c->tension = 0.20f;
+}
+
+// false is survivable: the engine runs silent. It is never fatal — a missing sound
+// device is not a reason to refuse to start.
+static bool music_world_start(void)
+{
+	AnoMusicConfig cfg;
+	music_config(&cfg);
+
+	g_synth = ano_synth_create(&(AnoSynthDesc){ .sampleRate = MUSIC_RATE });
+	g_music = ano_music_create(&cfg, MUSIC_SEED);
+	if (g_synth == NULL || g_music == NULL)
+		return false;
+	if (!ano_synth_attach_music(g_synth, g_music))
+		return false;
+
+	AnoAudioBusDesc layout[ANO_SYNTH_CONSOLE_BUSES];
+	uint32_t buses = ano_synth_console_layout(layout, ANO_SYNTH_CONSOLE_BUSES);
+
+	// Every seam the synth offers: it renders, it takes steering, it reports the
+	// bars it sounds, it meters itself, and it drives the desk it plays through.
+	AnoAudioConfig acfg = {
+		.sampleRate = MUSIC_RATE,
+		.busCount = buses,
+		.busLayout = layout,
+		.generator         = ano_synth_generator,
+		.generatorUser     = g_synth,
+		.generatorControl  = ano_synth_control,
+		.generatorPoll     = ano_synth_poll,
+		.generatorStats    = ano_synth_stats,
+		.generatorCommands = ano_synth_commands,
+	};
+	if (!ano_audio_init(&acfg))
+		return false;
+
+	AnoAudioBridge *ab = anoAudioBridge();
+	AnoAudioOfflineEvent setup[64];
+	uint32_t n = ano_synth_console_setup(setup, 64);
+	for (uint32_t i = 0; i < n; i++)
+		while (!ano_audio_submit(ab, &setup[i].cmd))
+			ano_sleep(1000);
+
+	// Start a few blocks out, so the first bars are composed before they are due.
+	AnoAudioTelemetry t;
+	for (uint32_t spin = 0; spin < 200u && !ano_audio_acquire_telemetry(ab, &t); spin++)
+		ano_sleep(5000);
+	ano_synth_transport_start(g_synth, (t.blockIndex + 8u) * (uint64_t)t.blockFrames);
+	ano_log(ANO_INFO, "Music: composing live at %u Hz (seed %u).", MUSIC_RATE,
+	        (unsigned)MUSIC_SEED);
+	return true;
+}
+
+static void music_world_stop(void)
+{
+	if (g_synth != NULL) {
+		ano_synth_transport_stop(g_synth);
+		ano_sleep(50000); // let the mixer pass the stop and the tails ring down
+	}
+	ano_audio_shutdown();
+	ano_synth_destroy(g_synth);
+	ano_music_destroy(g_music);
+	g_synth = NULL;
+	g_music = NULL;
+}
+
+// ---------------------------------------------------------------------------
+// The music panel (logic thread)
+// ---------------------------------------------------------------------------
+// Three controls, and they are the composer's three axes verbatim — no invented
+// middle layer. The XY square is brightness (valence: which modes it reaches for)
+// against energy (which dominates tempo and gates the layers in); the slider is
+// tension (which drives the cadence policy and the dissonance it will accept).
+
+#define HUD_UI_MUSIC 3u
+
+enum { MUS_DRAG_NONE = 0, MUS_DRAG_XY, MUS_DRAG_TENSION };
+
+typedef struct MusicLayout {
+	float panel[4];  // x0, y0, x1, y1
+	float pad[4];    // the brightness x energy square
+	float slider[4]; // the tension track
+} MusicLayout;
+
+static void music_layout(float vpW, float vpH, MusicLayout* o)
+{
+	(void)vpH;
+	const float w = 300.0f, h = 436.0f, pad = 220.0f;
+	// clear of the renderer's own profiling OSD, which owns the top of the screen
+	float x0 = vpW - w - 24.0f, y0 = 104.0f;
+	o->panel[0] = x0;      o->panel[1] = y0;
+	o->panel[2] = x0 + w;  o->panel[3] = y0 + h;
+	float px = x0 + (w - pad) * 0.5f, py = y0 + 62.0f;
+	o->pad[0] = px;        o->pad[1] = py;
+	o->pad[2] = px + pad;  o->pad[3] = py + pad;
+	o->slider[0] = px;              o->slider[1] = py + pad + 52.0f;
+	o->slider[2] = px + pad;        o->slider[3] = py + pad + 52.0f + 14.0f;
+}
+
+static bool in_rect(const float r[4], float x, float y)
+{
+	return x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
+}
+
+// Which control the cursor is over. The slider's grab box is taller than its track:
+// a 14 px target is a 14 px target, and nobody enjoys hunting for it.
+static int music_hit(const MusicLayout* m, float x, float y)
+{
+	if (in_rect(m->pad, x, y))
+		return MUS_DRAG_XY;
+	float grab[4] = { m->slider[0] - 10.0f, m->slider[1] - 12.0f,
+	                  m->slider[2] + 10.0f, m->slider[3] + 12.0f };
+	if (in_rect(grab, x, y))
+		return MUS_DRAG_TENSION;
+	return MUS_DRAG_NONE;
+}
+
+static float clamp01f(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
+// What the music told us it was doing. Filled from AEVT_MUSIC_BAR — which arrives on
+// the bar's DOWNBEAT, not when it was composed, so a cadence lights the panel exactly
+// when it is audible.
+typedef struct MusicState {
+	float valence, energy, tension; // the three axes, as the panel holds them
+	int   bar, keyTonic, mode, chordDegree;
+	bool  isCadence;
+	uint32_t genUs;   // what composing that bar cost the audio thread
+	uint64_t flashUntil; // a cadence lights the rim until this timestamp
+} MusicState;
+
+static const char *const MODE_NAMES[7] = { "ionian", "dorian", "phrygian", "lydian",
+                                           "mixolydian", "aeolian", "locrian" };
+static const char *const PC_NAMES[12] = { "C", "C#", "D", "D#", "E", "F",
+                                          "F#", "G", "G#", "A", "A#", "B" };
+static const char *const ROMAN[8] = { "-", "I", "II", "III", "IV", "V", "VI", "VII" };
+
+// Cursor -> the axes. The square is brightness across and energy up; the slider is
+// tension. Dragging outside the control keeps tracking (clamped) rather than dropping
+// the grab, which is what every mixer in the world does and what hands expect.
+static void music_drag_apply(const MusicLayout* m, int drag, float x, float y,
+                             MusicState* st)
+{
+	if (drag == MUS_DRAG_XY) {
+		float u = (x - m->pad[0]) / (m->pad[2] - m->pad[0]);
+		float v = (m->pad[3] - y) / (m->pad[3] - m->pad[1]);
+		st->valence = clamp01f(u) * 2.0f - 1.0f; // -1 .. +1
+		st->energy = clamp01f(v);                //  0 .. 1
+	} else if (drag == MUS_DRAG_TENSION) {
+		st->tension = clamp01f((x - m->slider[0]) / (m->slider[2] - m->slider[0]));
+	}
+}
+
+// Builds + submits the music panel (or clears it). false == ring full, retry next tick.
+static bool submit_music(AnoRenderBridge* bridge, const AnoFontBake* bake,
+                         const MusicLayout* m, bool visible, const MusicState* st,
+                         int hovered, uint64_t now)
+{
+	if (!visible)
+		return ano_render_ui_clear(bridge, HUD_UI_MUSIC);
+
+	AnoUiPrim prims[40];
+	AnoUiPaint paints[4];
+	AnoUiStop stops[8];
+	AnoGlyphInstance glyphs[HUD_UI_GCAP];
+	uint32_t gcount = 0;
+	AnoUiBuilder b;
+	ano_ui_builder_init(&b, prims, 40, NULL, 0, paints, 4, stops, 8);
+
+	float shadow[4], white[4], rim[4], label[4], title[4], track[4], knob[4], glow[4], dim[4];
+	ano_ui_color_srgb((float[4]){ 0.00f, 0.00f, 0.00f, 0.60f }, shadow);
+	ano_ui_color_srgb((float[4]){ 1.00f, 1.00f, 1.00f, 1.00f }, white); // gradient carrier
+	ano_ui_color_srgb((float[4]){ 0.62f, 0.65f, 0.70f, 1.00f }, rim);
+	ano_ui_color_srgb((float[4]){ 0.92f, 0.94f, 0.97f, 1.00f }, label);
+	ano_ui_color_srgb((float[4]){ 0.55f, 0.85f, 1.00f, 1.00f }, title);
+	ano_ui_color_srgb((float[4]){ 0.10f, 0.11f, 0.14f, 1.00f }, track);
+	ano_ui_color_srgb((float[4]){ 0.96f, 0.97f, 1.00f, 1.00f }, knob);
+	ano_ui_color_srgb((float[4]){ 0.30f, 0.70f, 1.00f, 0.00f }, glow); // ADD: rgb only
+	ano_ui_color_srgb((float[4]){ 0.55f, 0.60f, 0.68f, 1.00f }, dim);
+
+	// The plate.
+	AnoUiStop plate[2];
+	ano_ui_color_srgb((float[4]){ 0.17f, 0.18f, 0.22f, 0.97f }, plate[0].color);
+	plate[0].t = 0.0f;
+	ano_ui_color_srgb((float[4]){ 0.09f, 0.10f, 0.13f, 0.97f }, plate[1].color);
+	plate[1].t = 1.0f;
+	uint32_t plateGrad = ano_ui_paint_linear(&b, (float[2]){ m->panel[0], m->panel[1] },
+	                                         (float[2]){ m->panel[0], m->panel[3] }, plate, 2);
+	float r12[4] = { 12, 12, 12, 12 }, r6[4] = { 6, 6, 6, 6 };
+	ano_ui_shadow(&b, (float[2]){ m->panel[0] + 6, m->panel[1] + 10 },
+	              (float[2]){ m->panel[2] + 6, m->panel[3] + 10 }, 12.0f, 9.0f, shadow,
+	              ANO_UI_REF_NONE, 0);
+
+	// The cadence flash: the music reaching back out at the picture. It decays over
+	// half a second, so the panel breathes with the phrase rather than blinking.
+	if (now < st->flashUntil) {
+		float k = (float)(st->flashUntil - now) / 500000.0f;
+		float pulse[4];
+		ano_ui_color_srgb((float[4]){ 0.35f * k, 0.75f * k, 1.00f * k, 0.0f }, pulse);
+		ano_ui_shadow(&b, (float[2]){ m->panel[0] - 2, m->panel[1] - 2 },
+		              (float[2]){ m->panel[2] + 2, m->panel[3] + 2 }, 14.0f, 12.0f, pulse,
+		              ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
+	}
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, white, 0.0f, plateGrad,
+	             ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, rim, 2.0f, ANO_UI_REF_NONE,
+	             ANO_UI_REF_NONE, 0);
+	float titleRect[4] = { m->panel[0], m->panel[1] + 12, m->panel[2], m->panel[1] + 52 };
+	ui_label(&b, bake, anostr_lit("MUSIC"), 24.0f, titleRect, title, glyphs, &gcount);
+
+	// --- the brightness x energy square ------------------------------------------
+	// The gradient IS the axis legend: cold-dark on the left, warm-bright on the
+	// right, which is what valence actually does to the mode it reaches for.
+	AnoUiStop axis[3];
+	ano_ui_color_srgb((float[4]){ 0.10f, 0.13f, 0.26f, 1.0f }, axis[0].color);
+	axis[0].t = 0.0f;
+	ano_ui_color_srgb((float[4]){ 0.16f, 0.17f, 0.20f, 1.0f }, axis[1].color);
+	axis[1].t = 0.5f;
+	ano_ui_color_srgb((float[4]){ 0.34f, 0.26f, 0.13f, 1.0f }, axis[2].color);
+	axis[2].t = 1.0f;
+	uint32_t axisGrad = ano_ui_paint_linear(&b, (float[2]){ m->pad[0], m->pad[1] },
+	                                        (float[2]){ m->pad[2], m->pad[1] }, axis, 3);
+	ano_ui_rrect(&b, &m->pad[0], &m->pad[2], r6, white, 0.0f, axisGrad,
+	             ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &m->pad[0], &m->pad[2], r6, hovered == MUS_DRAG_XY ? rim : dim,
+	             hovered == MUS_DRAG_XY ? 2.0f : 1.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+
+	// the knob, where the two axes put it (energy up = louder = higher)
+	float kx = m->pad[0] + (st->valence * 0.5f + 0.5f) * (m->pad[2] - m->pad[0]);
+	float ky = m->pad[3] - st->energy * (m->pad[3] - m->pad[1]);
+	float hair[4];
+	ano_ui_color_srgb((float[4]){ 0.80f, 0.85f, 0.92f, 0.22f }, hair);
+	ano_ui_rrect(&b, (float[2]){ m->pad[0] + 1, ky - 0.5f },
+	             (float[2]){ m->pad[2] - 1, ky + 0.5f }, (float[4]){ 0, 0, 0, 0 }, hair,
+	             0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, (float[2]){ kx - 0.5f, m->pad[1] + 1 },
+	             (float[2]){ kx + 0.5f, m->pad[3] - 1 }, (float[4]){ 0, 0, 0, 0 }, hair,
+	             0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	// the glow grows with energy — the control shows its own value, not just its position
+	float gr = 10.0f + 16.0f * st->energy;
+	float lit[4];
+	ano_ui_color_srgb((float[4]){ 0.30f * (0.3f + st->energy), 0.70f * (0.3f + st->energy),
+	                              1.00f * (0.3f + st->energy), 0.0f }, lit);
+	ano_ui_shadow(&b, (float[2]){ kx - gr, ky - gr }, (float[2]){ kx + gr, ky + gr },
+	              gr, 9.0f, lit, ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
+	float kr[4] = { 7, 7, 7, 7 };
+	ano_ui_rrect(&b, (float[2]){ kx - 7, ky - 7 }, (float[2]){ kx + 7, ky + 7 }, kr, knob,
+	             0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+
+	float axisRow[4] = { m->pad[0], m->pad[3] + 2, m->pad[2], m->pad[3] + 26 };
+	ui_label(&b, bake, anostr_lit("dark  <  brightness  >  bright"), 15.0f, axisRow, dim,
+	         glyphs, &gcount);
+
+	// --- the tension slider -------------------------------------------------------
+	ano_ui_rrect(&b, &m->slider[0], &m->slider[2], r6, track, 0.0f, ANO_UI_REF_NONE,
+	             ANO_UI_REF_NONE, 0);
+	float fillX = m->slider[0] + st->tension * (m->slider[2] - m->slider[0]);
+	if (fillX > m->slider[0] + 1.0f) {
+		float hot[4];
+		ano_ui_color_srgb((float[4]){ 0.85f, 0.30f + 0.30f * (1.0f - st->tension), 0.30f,
+		                              1.0f }, hot);
+		ano_ui_rrect(&b, &m->slider[0], (float[2]){ fillX, m->slider[3] }, r6, hot, 0.0f,
+		             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	}
+	ano_ui_rrect(&b, &m->slider[0], &m->slider[2], r6,
+	             hovered == MUS_DRAG_TENSION ? rim : dim,
+	             hovered == MUS_DRAG_TENSION ? 2.0f : 1.0f, ANO_UI_REF_NONE,
+	             ANO_UI_REF_NONE, 0);
+	float sy = 0.5f * (m->slider[1] + m->slider[3]);
+	ano_ui_rrect(&b, (float[2]){ fillX - 6, sy - 10 }, (float[2]){ fillX + 6, sy + 10 },
+	             (float[4]){ 5, 5, 5, 5 }, knob, 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	char tenText[40];
+	int tl = snprintf(tenText, sizeof tenText, "tension  %.2f", (double)st->tension);
+	float tenRow[4] = { m->slider[0], m->slider[1] - 26, m->slider[2], m->slider[1] - 4 };
+	if (tl > 0)
+		ui_label(&b, bake, anostr_view(tenText, (size_t)tl), 15.0f, tenRow, dim, glyphs,
+		         &gcount);
+
+	// --- what came back --------------------------------------------------------
+	// Not decoration: this is AEVT_MUSIC_BAR, the composer telling the game what it
+	// just played. A game would react to these; the panel merely shows them.
+	char line1[64], line2[64];
+	int n1, n2;
+	if (st->bar >= 0) {
+		n1 = snprintf(line1, sizeof line1, "bar %d  %s %s  %s", st->bar,
+		              PC_NAMES[st->keyTonic % 12], MODE_NAMES[st->mode % 7],
+		              ROMAN[(st->chordDegree >= 0 && st->chordDegree <= 7)
+		                        ? st->chordDegree : 0]);
+		n2 = snprintf(line2, sizeof line2, "composed in %u us on the audio thread",
+		              st->genUs);
+	} else {
+		n1 = snprintf(line1, sizeof line1, "waiting for the first bar");
+		n2 = snprintf(line2, sizeof line2, " ");
+	}
+	float row1[4] = { m->panel[0], m->slider[3] + 16, m->panel[2], m->slider[3] + 42 };
+	float row2[4] = { m->panel[0], m->slider[3] + 40, m->panel[2], m->slider[3] + 62 };
+	if (n1 > 0)
+		ui_label(&b, bake, anostr_view(line1, (size_t)n1), 17.0f,
+		         row1, st->isCadence ? title : label, glyphs, &gcount);
+	if (n2 > 0)
+		ui_label(&b, bake, anostr_view(line2, (size_t)n2), 13.0f, row2, dim, glyphs,
+		         &gcount);
+
+	return ano_render_ui_set(bridge, HUD_UI_MUSIC, 96, &b, glyphs, gcount);
+}
+
 // The persistent status bar, bottom-left. Resubmitted whenever the logical viewport
 // changes (resize, DPI change) — layout is pure over the snapshot's logical extent.
 static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float vpH)
@@ -342,7 +693,7 @@ static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float v
 	              10.0f, 6.0f, shadow, ANO_UI_REF_NONE, 0);
 	ano_ui_rrect(&b, &rect[0], &rect[2], r10, plate, 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	ano_ui_rrect(&b, &rect[0], &rect[2], r10, rim, 1.5f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
-	ui_label(&b, bake, anostr_lit("UI bridge v0 · M toggles menu"), 20.0f, rect, label,
+	ui_label(&b, bake, anostr_lit("M menu · N music · drag the square"), 20.0f, rect, label,
 	         glyphs, &gcount);
 	return ano_render_ui_set(bridge, HUD_UI_BAR, 16, &b, glyphs, gcount);
 }
@@ -419,6 +770,16 @@ void* anoLogicThreadMain(void* arg)
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
 	float    barVpH = 0.0f;          // logical height the bar was last laid out for
 
+	// Music panel. The logic thread is the bridge: it owns the layout and the input,
+	// and it is the only place the two worlds meet. It never touches the composer —
+	// that lives on the audio thread — it steers it with commands and listens for
+	// what came back, exactly as it does with the renderer.
+	AnoAudioBridge* ab = anoAudioBridge(); // NULL if the audio world failed to come up
+	MusicState mus = { .valence = 0.30f, .energy = 0.35f, .tension = 0.20f, .bar = -1 };
+	bool musicVisible = false, musicDirty = false, affectDirty = false, flashOn = false;
+	int  musicDrag = MUS_DRAG_NONE, musicHovered = MUS_DRAG_NONE;
+	uint64_t lastTelem = 0;
+
 	while (!atomic_load(&g_logicShouldStop))
 	{
 		uint64_t now = ano_timestamp_us();
@@ -445,12 +806,37 @@ void* anoLogicThreadMain(void* arg)
 							menuDirty = true;
 						}
 						break;
+					case GLFW_KEY_N:
+						if (ie->u.key.action == GLFW_PRESS && ab != NULL) {
+							musicVisible = !musicVisible;
+							musicHovered = MUS_DRAG_NONE;
+							musicDrag = MUS_DRAG_NONE;
+							musicDirty = true;
+						}
+						break;
 					default: break;
 					}
 				} else if (ie->kind == ANO_INPUT_MOUSE_BUTTON) {
 					if (ie->u.button.button == GLFW_MOUSE_BUTTON_RIGHT)
 						looking = (ie->u.button.action == GLFW_PRESS);
 					else if (ie->u.button.button == GLFW_MOUSE_BUTTON_LEFT
+					         && ie->u.button.action == GLFW_RELEASE) {
+						musicDrag = MUS_DRAG_NONE;
+					}
+					if (ie->u.button.button == GLFW_MOUSE_BUTTON_LEFT
+					    && ie->u.button.action == GLFW_PRESS
+					    && musicVisible && vpW > 0.0f) {
+						// The click resolves against the same layout the block drew:
+						// one source of truth for the picture and for the hit.
+						MusicLayout ml;
+						music_layout(vpW, vpH, &ml);
+						musicDrag = music_hit(&ml, prevCx, prevCy);
+						if (musicDrag != MUS_DRAG_NONE) {
+							music_drag_apply(&ml, musicDrag, prevCx, prevCy, &mus);
+							affectDirty = musicDirty = true;
+						}
+					}
+					if (ie->u.button.button == GLFW_MOUSE_BUTTON_LEFT
 					         && ie->u.button.action == GLFW_PRESS
 					         && menuVisible && vpW > 0.0f) {
 						// Click resolves against the same layout the block rendered.
@@ -469,6 +855,12 @@ void* anoLogicThreadMain(void* arg)
 					}
 				} else if (ie->kind == ANO_INPUT_CURSOR_POS) {
 					float cx = ie->u.cursor.x, cy = ie->u.cursor.y;
+					if (musicDrag != MUS_DRAG_NONE && vpW > 0.0f) {
+						MusicLayout ml;
+						music_layout(vpW, vpH, &ml);
+						music_drag_apply(&ml, musicDrag, cx, cy, &mus);
+						affectDirty = musicDirty = true; // coalesced: one command per tick
+					}
 					if (looking && haveCursor) {
 						camYaw   += (cx - prevCx) * 0.003f;
 						camPitch -= (cy - prevCy) * 0.003f;
@@ -539,6 +931,68 @@ void* anoLogicThreadMain(void* arg)
 				menuDirty = false;
 		}
 
+		// --- the audiovisual loop ------------------------------------------------
+		if (ab != NULL) {
+			// Down: the hand on the controls, coalesced to one command per tick. The
+			// cursor fires far faster than the music can care, and the bridge is not
+			// a place to shout. `urgent` is what an interactive control wants: land at
+			// the next BARLINE, not at the next phrase, or the panel feels dead.
+			if (affectDirty) {
+				AnoAudioCommand c = { .kind = ACMD_MUSIC_AFFECT, .urgent = true,
+				                      .affect = { mus.valence, mus.energy, mus.tension } };
+				if (ano_audio_submit(ab, &c))
+					affectDirty = false; // else: ring full, try again next tick
+			}
+
+			// Up: what the composer actually played. This arrives on the bar's
+			// downbeat — the composer ran two bars ahead to make it, and the meaning
+			// was held back until it was audible.
+			AnoAudioEvent aev;
+			while (ano_audio_poll_event(ab, &aev)) {
+				if (aev.kind != AEVT_MUSIC_BAR)
+					continue;
+				mus.bar = aev.u.music.bar;
+				mus.keyTonic = aev.u.music.keyTonic;
+				mus.mode = aev.u.music.mode;
+				mus.chordDegree = aev.u.music.chordDegree;
+				mus.isCadence = aev.u.music.isCadence;
+				if (aev.u.music.isCadence) {
+					mus.flashUntil = now + 500000ull; // the picture answers the music
+					flashOn = true;
+				}
+				musicDirty = musicVisible;
+			}
+			if (flashOn && now >= mus.flashUntil) { // the flash decayed: one last frame
+				flashOn = false;
+				musicDirty = musicVisible;
+			}
+			if (musicVisible && now - lastTelem > 500000ull) {
+				AnoAudioTelemetry t;
+				if (ano_audio_acquire_telemetry(ab, &t) && t.genUs != mus.genUs) {
+					mus.genUs = t.genUs;
+					musicDirty = true;
+				}
+				lastTelem = now;
+			}
+		}
+
+		// Hover tracks the cursor exactly as the menu's does.
+		if (musicVisible && vpW > 0.0f) {
+			MusicLayout ml;
+			music_layout(vpW, vpH, &ml);
+			int h = musicDrag != MUS_DRAG_NONE ? musicDrag : music_hit(&ml, prevCx, prevCy);
+			if (h != musicHovered) {
+				musicHovered = h;
+				musicDirty = true;
+			}
+		}
+		if (musicDirty && vpW > 0.0f) {
+			MusicLayout ml;
+			music_layout(vpW, vpH, &ml);
+			if (submit_music(bridge, bake, &ml, musicVisible, &mus, musicHovered, now))
+				musicDirty = false;
+		}
+
 		// Snapshot path: log the renderer's published frame id ~once/sec, and refresh the camera
 		// readout block on the same cadence (REPLACE semantics).
 		{
@@ -549,6 +1003,8 @@ void* anoLogicThreadMain(void* arg)
 				// A menu laid out for the old viewport re-centers on the new one.
 				if (menuVisible && (vpW != snap.uiWidth || vpH != snap.uiHeight))
 					menuDirty = true;
+				if (musicVisible && (vpW != snap.uiWidth || vpH != snap.uiHeight))
+					musicDirty = true; // the panel is anchored right: a resize moves it
 				vpW = snap.uiWidth;
 				vpH = snap.uiHeight;
 			}
@@ -624,11 +1080,20 @@ int main()
         return -1;
     }
 
+    // The audio world, before the producer exists — the same ordering the render
+    // bridge demands, for the same reason: nothing may submit into a bridge that is
+    // being destroyed. A machine with no sound device cascades to the null backend;
+    // a machine where even that fails runs silent, which is not a reason to refuse
+    // to start.
+    if (!music_world_start())
+        ano_log(ANO_WARN, "Music: the audio world did not come up; running silent.");
+
     // Logic/ECS master spun onto its own thread as the sole render-command producer.
     anothread_t logicThread;
     if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
     {
         ano_log(ANO_FATAL, "Failed to spawn logic thread.");
+        music_world_stop();
         unInitVulkan();
         return -1;
     }
@@ -645,6 +1110,9 @@ int main()
     // No submit can then race the bridge destruction in unInitVulkan().
     atomic_store(&g_logicShouldStop, true);
     ano_thread_join(logicThread, NULL);
+
+    // The producer is quiesced; only now may the audio bridge be destroyed.
+    music_world_stop();
 
     unInitVulkan();
 #else
