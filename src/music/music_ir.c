@@ -15,6 +15,7 @@
 #include "music_ir.h"
 
 #include <math.h>
+#include <string.h>
 
 double ano_meter_bar_quarters(AnoMeter m)
 {
@@ -199,8 +200,24 @@ AnoChord ano_ctx_chord_at(const AnoHarmonicContext *ctx, double beatOffset)
 }
 
 const char *const ANO_PATCH_NAMES[ANO_PATCH_COUNT] = {
-    "", "warm", "bright", "round", "driven", "soft", "hard", "pluck", "glass",
+    "", "warm", "bright", "morph", "breeze", "round", "driven", "bad_ground",
+    "soft", "hard", "mellow", "keys", "whistle", "pluck", "glass", "chimes",
 };
+
+uint32_t ano_music_patch_id(const char *name)
+{
+    if (!name)
+        return 0;
+    for (uint32_t i = 1; i < ANO_PATCH_COUNT; ++i)
+        if (strcmp(name, ANO_PATCH_NAMES[i]) == 0)
+            return i;
+    return 0;
+}
+
+const char *ano_music_patch_name(uint32_t id)
+{
+    return id < ANO_PATCH_COUNT ? ANO_PATCH_NAMES[id] : "";
+}
 
 AnoGenParams ano_gen_params_default(void)
 {

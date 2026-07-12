@@ -60,7 +60,7 @@ static void author_config(AnoMusicConfig *c)
 {
     *c = ano_music_config_default();
     c->hasMapper = true;
-    c->mapper = ano_mapping_table_default();
+    c->mapper = ano_mapping_table_electronic(); // the synthetic band, on purpose
     c->hasDramaturg = true;
     c->dramaturg = ano_dramaturg_config_default();
     c->phraseGroove = true;

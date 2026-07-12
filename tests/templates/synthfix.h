@@ -52,10 +52,10 @@ static bool synthfix_load(AnoSynth *s, const char *path)
             .tempoBpm = bpm, .filterCutoff = cut, .reverbSend = rev,
             .delaySend = dly, .drive = drv, .stereoWidth = wid,
         };
-        p.instruments[ANO_MUSIC_PAD]    = (uint16_t)ano_synth_patch_id(pad);
-        p.instruments[ANO_MUSIC_BASS]   = (uint16_t)ano_synth_patch_id(bass);
-        p.instruments[ANO_MUSIC_MELODY] = (uint16_t)ano_synth_patch_id(melody);
-        p.instruments[ANO_MUSIC_ARP]    = (uint16_t)ano_synth_patch_id(arp);
+        p.instruments[ANO_MUSIC_PAD]    = (uint16_t)ano_music_patch_id(pad);
+        p.instruments[ANO_MUSIC_BASS]   = (uint16_t)ano_music_patch_id(bass);
+        p.instruments[ANO_MUSIC_MELODY] = (uint16_t)ano_music_patch_id(melody);
+        p.instruments[ANO_MUSIC_ARP]    = (uint16_t)ano_music_patch_id(arp);
         if (!ano_synth_score_bar(s, idx, &p, &a))
             goto out;
     }

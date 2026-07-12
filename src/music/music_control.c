@@ -80,6 +80,24 @@ AnoMappingTable ano_mapping_table_default(void)
     return z;
 }
 
+AnoMappingTable ano_mapping_table_electronic(void)
+{
+    // Everything about WHAT to play is the default's; only the band changes.
+    // The rows deliberately cross the layer/patch grain: a bass patch is a saw
+    // plus a sub with a filter envelope on it, and that is a lead — if you put it
+    // on the melody. The composer names timbres, not instruments, so it can.
+    AnoMappingTable t = ano_mapping_table_default();
+    t.instrumentRows[0] = (AnoInstrumentRow){
+        ANO_MUSIC_PAD, 2, { { ANO_PATCH_WARM, 0.0 }, { ANO_PATCH_BRIGHT, 0.60 } } };
+    t.instrumentRows[1] = (AnoInstrumentRow){
+        ANO_MUSIC_BASS, 2, { { ANO_PATCH_MORPH, 0.0 }, { ANO_PATCH_ROUND, 0.62 } } };
+    t.instrumentRows[2] = (AnoInstrumentRow){
+        ANO_MUSIC_MELODY, 2, { { ANO_PATCH_ROUND, 0.0 }, { ANO_PATCH_DRIVEN, 0.55 } } };
+    t.instrumentRows[3] = (AnoInstrumentRow){
+        ANO_MUSIC_ARP, 2, { { ANO_PATCH_PLUCK, 0.0 }, { ANO_PATCH_SOFT, 0.72 } } };
+    return t;
+}
+
 double ano_map_tempo(AnoAffect a, const AnoMappingTable *t)
 {
     double raw = t->tempoBase + t->tempoEnergy * a.energy + t->tempoValence * a.valence;

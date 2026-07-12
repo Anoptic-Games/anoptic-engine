@@ -78,6 +78,12 @@ typedef enum AnoSynthPatch
 uint32_t    ano_synth_patch_id(const char *name);
 const char *ano_synth_patch_name(uint32_t id);
 
+// The voice this synth uses to play a timbre the composer named (AnoPatchName ->
+// this registry). The composer names timbres; a backend decides what plays them,
+// and these are two id spaces. Exposed so the mapping can be inspected and
+// TESTED — a row keyed to the wrong voice is silent, and sounds fine.
+uint32_t ano_synth_patch_of(uint32_t musicPatch);
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
