@@ -236,6 +236,8 @@
             # glslangValidator -gV: Debug shader debug info.
             ++ lib.optionals (renderer && isDebug) [ pkgs.buildPackages.glslang ]
             ++ lib.optionals (renderer && host.isLinux && wayland) [ pkgs.buildPackages.wayland-scanner ]
+            # Renderer test suites need a display server for glfwInit(); Xvfb keeps it hermetic.
+            ++ lib.optionals (tests && renderer && host.isLinux) [ pkgs.buildPackages.xvfb-run ]
             ++ lib.optionals (wrapArgs != [ ]) [ pkgs.buildPackages.makeWrapper ];
 
           buildInputs =
@@ -270,17 +272,35 @@
           doCheck = tests;
           # ano_fs_userpath() needs a HOME (plus the macOS Application Support parents).
           # until-pass:2 absorbs sleep-precision flakes.
+          # Renderer suites (tests-full): ctest under xvfb-run — the vk device tests reach
+          # initVulkan() -> glfwInit(), and the sandbox has no display server of its own.
           checkPhase = ''
             runHook preCheck
             export HOME="$TMPDIR/anoptic-home"
             mkdir -p "$HOME/Library/Application Support"
+            ${lib.optionalString (renderer && host.isLinux) ''xvfb-run -a -s "-screen 0 1280x720x24" \''}
             ctest --output-on-failure --repeat until-pass:2
             runHook postCheck
           '';
 
-          env = lib.optionalAttrs softwareVulkan {
-            VK_ICD_FILENAMES = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
-          };
+          # NIX_LDFLAGS -rpath: the ld-wrapper only rpaths -L dirs whose libs are -l linked,
+          # and GLFW dlopen()s its platform libs — so bake their paths in at link time. The
+          # vk test executables run in checkPhase (pre-shrink-rpath) and need this to reach
+          # Xlib; the installed renderer gets the equivalent from the postFixup patchelf.
+          # VK_LAYER_PATH: anotest_vk_compliance_layers/_sync assert that validation
+          # layers intercept an intentional error, so the sandbox must supply them.
+          env =
+            lib.optionalAttrs (linuxRenderLibs != [ ]) {
+              NIX_LDFLAGS = "-rpath ${lib.makeLibraryPath linuxRenderLibs}";
+            }
+            // lib.optionalAttrs softwareVulkan (
+              {
+                VK_ICD_FILENAMES = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
+              }
+              // lib.optionalAttrs (vvl != null) {
+                VK_LAYER_PATH = "${vvl}/share/vulkan/explicit_layer.d";
+              }
+            );
 
           # Fonts always, assets best-effort (an empty input warns).
           postInstall = lib.optionalString renderer (
@@ -303,10 +323,11 @@
           );
 
           # GLFW 3.4 dlopen()s libX11/libwayland/libxkbcommon at runtime, so they never enter
-          # DT_NEEDED and fixupPhase's --shrink-rpath prunes their store paths — glfwInit() then
-          # fails on the pure artifact. Re-add them post-shrink: the RUNPATH a dev-shell build.sh
-          # binary keeps unshrunk. patchelf ships in the Linux stdenv; run it before wrapProgram
-          # so the ELF, not its shell wrapper, is patched.
+          # DT_NEEDED: the ld-wrapper rpaths only -L dirs of -l linked libs (NIX_LDFLAGS above
+          # covers the pre-install/checkPhase binaries), and fixupPhase's --shrink-rpath prunes
+          # non-NEEDED entries from the installed ELF — glfwInit() then fails on the pure
+          # artifact. Re-add them post-shrink. patchelf ships in the Linux stdenv; run it
+          # before wrapProgram so the ELF, not its shell wrapper, is patched.
           postFixup =
             lib.optionalString (linuxRenderLibs != [ ]) ''
               patchelf --add-rpath "${lib.makeLibraryPath linuxRenderLibs}" "$out/bin/anopticengine"
@@ -610,6 +631,25 @@
             ];
           vvlShell = vvlFor pkgs host;
 
+          # The dlopen()ed render libs (see mkEngine's linuxRenderLibs): GLFW never -l links
+          # them, so the ld-wrapper adds no RUNPATH — bake one in via NIX_LDFLAGS so the
+          # build.sh binaries can init GLFW outside the shell too (e.g. under nixglhost).
+          shellRenderLibs =
+            (with pkgs; [
+              libGL
+              libx11
+              libxrandr
+              libxinerama
+              libxcursor
+              libxi
+              libxext
+              libxrender
+              libxxf86vm
+              wayland
+              libxkbcommon
+            ])
+            ++ [ (libdecorSlim pkgs) ];
+
           devShells = {
             default =
               if isLinux then
@@ -622,20 +662,10 @@
                       (with pkgs; [
                         vulkan-headers
                         vulkan-loader
-                        libGL
-                        libx11
-                        libxrandr
-                        libxinerama
-                        libxcursor
-                        libxi
-                        libxext
-                        libxrender
-                        libxxf86vm
-                        wayland
-                        libxkbcommon
                       ])
-                      ++ [ (libdecorSlim pkgs) ]
+                      ++ shellRenderLibs
                       ++ lib.optional (vvlShell != null) vvlShell;
+                    NIX_LDFLAGS = "-rpath ${lib.makeLibraryPath shellRenderLibs}";
                     # GPU-less full-suite runs: VK_ICD_FILENAMES=$ANO_LAVAPIPE_ICD ctest ...
                     ANO_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
                     shellHook = ''

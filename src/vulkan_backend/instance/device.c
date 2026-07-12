@@ -370,11 +370,16 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 
 	VkDeviceSize maxDedicatedMemory = 0;
 	VkDeviceSize maxIntegratedMemory = 0;
+	VkDeviceSize maxFallbackMemory = 0;
 
 	VkPhysicalDevice bestDedicatedDevice = VK_NULL_HANDLE;
 	VkPhysicalDevice bestIntegratedDevice = VK_NULL_HANDLE;
+	// Last resort: suitable but neither discrete nor integrated (CPU/virtual/other),
+	// e.g. lavapipe. Keeps software Vulkan and VMs viable.
+	VkPhysicalDevice bestFallbackDevice = VK_NULL_HANDLE;
 	bool bestDedicatedMesh = false;
 	bool bestIntegratedMesh = false;
+	bool bestFallbackMesh = false;
 
 	ano_log(ANO_INFO, "DeviceCount: %d", ctx->deviceCount);
 	
@@ -423,6 +428,15 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 				bestIntegratedMesh = currentMesh;
 				maxIntegratedMemory = currentMemorySize;
 			}
+			else if (deviceProperties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+			         deviceProperties.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
+			         ((currentMesh && !bestFallbackMesh) ||
+			          (currentMesh == bestFallbackMesh && currentMemorySize > maxFallbackMemory)))
+			{
+				bestFallbackDevice = devices[i];
+				bestFallbackMesh = currentMesh;
+				maxFallbackMemory = currentMemorySize;
+			}
 			(ctx->availableDevices)[i] = (char*)mi_malloc(strlen(deviceProperties.deviceName) +1);
 			strcpy((ctx->availableDevices)[i], deviceProperties.deviceName);
 			ano_debug_log(ANO_INFO, "Device %u is suitable: %s", i, ctx->availableDevices[i]);
@@ -451,6 +465,13 @@ bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, st
 		else if (bestIntegratedDevice != VK_NULL_HANDLE)
 		{
 			ctx->physicalDevice = bestIntegratedDevice;
+			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
+			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
+		}
+		else if (bestFallbackDevice != VK_NULL_HANDLE)
+		{
+			ano_log(ANO_WARN, "No discrete or integrated GPU; using a fallback adapter (software or virtual).");
+			ctx->physicalDevice = bestFallbackDevice;
 			ctx->deviceCapabilities = populateCapabilities(ctx->physicalDevice);
 			ctx->queueFamilyIndices = findQueueFamilies(ctx->physicalDevice, &(ctx->surface));
 		}
