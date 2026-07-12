@@ -292,8 +292,20 @@ void drawFrame()
 bool initVulkan() // Initializes Vulkan
 {
 
-	// Window initialization
+	// Window initialization. ANO_RES=WxH overrides, in screen coordinates (callers own any DPI math).
 	Dimensions2D initDimensions = {800, 600};
+	const char* resEnv = getenv("ANO_RES");
+	if (resEnv != NULL) {
+		unsigned w = 0, h = 0;
+		if (sscanf(resEnv, "%ux%u", &w, &h) == 2 && w >= 64 && h >= 64 && w <= 16384 && h <= 16384) {
+			initDimensions.width = w;
+			initDimensions.height = h;
+			ano_log(ANO_INFO, "Window size: %ux%u (ANO_RES)", w, h);
+		} else {
+			ano_log(ANO_WARN, "ANO_RES \"%s\" invalid (want WxH, 64..16384); keeping %ux%u",
+			        resEnv, initDimensions.width, initDimensions.height);
+		}
+	}
 	setResolution(initDimensions);
 	setMonitor(-1);
 	setBorderless(0);
