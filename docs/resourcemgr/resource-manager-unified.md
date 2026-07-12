@@ -4,7 +4,7 @@ SPDX-License-Identifier: LGPL-3.0 -->
 
 # Resource Manager: The Unified Plan
 
-**Status:** the single plan of record for `anoptic_resourcemg.h`. Supersedes `resource-manager.md`, `resource-manager-SoA.md`, and `resource-manager-plan.md`; where they disagreed, the newest decision is recorded here.
+**Status:** the single plan of record for `anoptic_resourcemg.h`. What we code, we ship: every step lands whole, tested, and permanent — no placeholders, no throwaway tier. Deferrals exist only as bench-gated rungs, never as "correct design later." Supersedes `resource-manager.md`, `resource-manager-SoA.md`, and `resource-manager-plan.md`; where they disagreed, the newest decision is recorded here.
 **House premise:** the hard part is already in-tree. The logger is the async transport (lock-free MPSC ring, owned drain thread, 22–48 ns enqueue, TSan-clean, fuzz-oracled), the render bridge ships SPSC ownership transfer and false-on-full tickets, `anoptic_strings.h` ships the one key space (`ANOSTR_SID` / `anostr_hash`, intern table). The async tier is a port, not a design.
 
 ---
@@ -75,25 +75,119 @@ Windows: `CreateFileW` temp share-mode 0, `WriteFile` loop, `FlushFileBuffers`, 
 
 **Saves.** Every generation is a brand-new filename `saves/<slot>.<seq>.anosave` (a name that never existed has no stale cache entry), framed per §6, re-opened fresh and re-validated before pruning (keep `ANO_RES_SAVE_KEEP` = 3, oldest-first, only after the newest verifies). Load: scan newest-seq-first, fresh handle each, first valid wins; orphaned `.tmp` tried last then purged; all fail → NULL sentinel, "start fresh", never garbage. Per-slot commits serialize on an internal save mutex. Migration: in-memory v(n)→v(n+1) chain at load, written back through commit, never in place.
 
-## 8. v0 public surface
+## 8. The public surface
 
-Eleven functions, three value types, three constants (full doc-commented sketch: `resource-manager.md` §2):
+This is V1, the shipped API, not a prototype tier. Step 0 lands these eleven functions, two value types, two constants; step 5 adds the four async entries (`ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, the ticket). Additions only — nothing here is ever removed, renamed, or re-signatured.
+
+Threading: `ano_res_init` and all `ano_res_mount` calls happen on the main thread before other threads load (the `ano_log_init` discipline); after that every read is stateless and thread-safe, writes are safe from any thread, same-slot commits serialize internally.
 
 ```c
-int ano_res_init(void);                                        // pin write root + base mount; main thread, after ano_log_init
-int ano_res_mount(const char *prefix, ano_fspath root);        // extra read-only root; dev build's one call in main()
-ano_fspath ano_res_resolve(const char *logical);               // escape hatch for self-opening parsers; every call site is migration debt
-ano_fspath ano_res_resolve_write(const char *logical);         // where a write would land; mkdir -p'd
-ano_fspath ano_res_subpath(ano_fspath base, const char *rel);  // validated join; the glTF image-URI case
-bool ano_res_exists(const char *logical);                      // ADVISORY ONLY; gate on ano_res_load, not this
-ano_res_blob ano_res_load(mi_heap_t *heap, const char *logical);      // fresh handle, fstat as hint, read to EOF, ANO_CACHE_LINE aligned, guard NUL
-int ano_res_write(const char *logical, const void *data, size_t n);   // full durable protocol, §7
-int ano_res_quarantine(const char *logical);                   // rename to <name>.broken
-int ano_res_save_commit(const char *slot, uint32_t fmt, const void *p, size_t n);
+#include "anoptic_filesystem.h" // ano_fspath and the OS roots this module composes
+#include "anoptic_memory.h"     // mi_heap_t, ANO_CACHE_LINE
+
+#define ANO_RES_MAX_MOUNTS 8  // read-only roots beyond the two built-ins
+#define ANO_RES_SAVE_KEEP  3  // gamesave generations retained per slot
+
+// -- Lifecycle and mounts -----------------------------------------------------------------
+
+// Resolve and pin the built-in roots (write root = ano_fs_userpath(), created if absent;
+// base mount = <ano_fs_gamepath()>/resources). Main thread, after ano_log_init, before
+// any other ano_res_* call. Output: 0 on success, -1 if either root failed to resolve.
+int ano_res_init(void);
+
+// Register an additional read-only root, shadowing the base mount and earlier
+// registrations (the write root still wins). prefix scopes the mount to a logical
+// subtree ("" = whole namespace; "models/" grafts root at models/...). The dev build's
+// single call site lives in main() -- never at a load site.
+// Output: 0; -1 on invalid prefix, root.length == 0, or a full table.
+int ano_res_mount(const char *prefix, ano_fspath root);
+
+// -- Resolution (escape hatch; new code should prefer ano_res_load) ------------------------
+
+// Absolute OS path where a logical path's bytes live right now -- for parser libraries
+// that open files themselves (cgltf sibling URIs, stb_image). Loose-directory mounts
+// only: once an asset moves into a pack (step 7), resolution for it returns the empty
+// path. Every call site of this function is migration debt owed to ano_res_load.
+// Output: path by value; length == 0 if invalid or absent from every mount.
+ano_fspath ano_res_resolve(const char *logical);
+
+// The absolute OS path a write to this logical path would land at, under the write root.
+// Creates missing parent directories, so a non-empty result is ready to open. For
+// subsystems streaming through long-lived handles (the logger is the intended first user).
+ano_fspath ano_res_resolve_write(const char *logical);
+
+// Join a relative fragment onto a base directory path, validating the same rules as
+// logical paths. For the glTF image-URI-against-model-directory case; kills ad-hoc
+// snprintf joins at call sites. Output: joined path; length == 0 on invalid input/overflow.
+ano_fspath ano_res_subpath(ano_fspath base, const char *relative);
+
+// Whether any mount currently contains the logical path. ADVISORY ONLY -- metadata
+// caches lie (9P/SMB); never gate correctness on this, ask ano_res_load and handle the
+// NULL blob instead.
+bool ano_res_exists(const char *logical);
+
+// -- The read path --------------------------------------------------------------------------
+
+// A loaded resource as a value. data == NULL (and size == 0) means the load failed.
+// The bytes live in the heap the caller passed and die with it -- no free function on
+// purpose (the anostr_intern_t lifetime discipline).
+typedef struct {
+    void  *data;
+    size_t size;
+} ano_res_blob;
+
+// Load a whole resource through the mount table. The allocation is ANO_CACHE_LINE-
+// aligned (covers SPIR-V's uint32_t pCode requirement and future GPU-staging grain) with
+// one 0x00 guard byte past the end, so text resources parse as C strings without a copy.
+// size is the byte count actually read to EOF -- never the stat() size: network
+// filesystems lie about metadata (the WSL-9P lesson); this module believes only bytes it
+// has read. Total: no failure path is UB.
+ano_res_blob ano_res_load(mi_heap_t *heap, const char *logical);
+
+// -- The write path: durable and atomic, always under the write root -----------------------
+
+// Durably replace a fixed-name file (config, keybindings -- raw bytes, human-editable).
+// Full crash-consistency protocol (§7): same-dir O_EXCL temp, write, fsync, close,
+// rename, directory fsync; ReplaceFileW/MoveFileExW + FlushFileBuffers on Windows with
+// sharing-violation backoff. On any write/fsync error the temp is unlinked and fsync is
+// NEVER retried on the same handle (fsyncgate); the caller's buffer is the source of
+// truth -- call again to retry.
+// Output: 0 only when the replacement is durable on disk; -1 otherwise (previous file
+// intact).
+int ano_res_write(const char *logical, const void *data, size_t size);
+
+// Rename a damaged file under the write root to "<name>.broken" so the caller can
+// regenerate defaults without destroying evidence. Completes the never-crash-on-bad-
+// config story. Output: 0 on success, -1 if absent or the rename failed.
+int ano_res_quarantine(const char *logical);
+
+// Commit a gamesave generation: framed payload (self-proving completeness, §6) written
+// via the full protocol to a BRAND-NEW filename "saves/<slot>.<seq>.anosave" -- a name
+// that never existed cannot have a stale 9P/SMB cache entry. Verified via a fresh read
+// handle before older generations are pruned (keep ANO_RES_SAVE_KEEP). Commits to the
+// same slot serialize internally -- concurrent callers cannot clobber each other's
+// generation.
+// Input: slot name (letters, digits, '-', '_'), your format version, payload.
+// Output: 0 when the new generation is durable AND verified; -1 otherwise (every prior
+// generation intact).
+int ano_res_save_commit(const char *slot, uint32_t format_version,
+                        const void *payload, size_t size);
+
+// A loaded gamesave. blob.data == NULL means no valid generation exists for the slot.
+typedef struct {
+    ano_res_blob blob;           // payload only, framing stripped; lives in the caller's heap
+    uint32_t     format_version; // as passed to ano_res_save_commit
+    uint64_t     seq;            // the generation that passed validation
+} ano_res_savedata;
+
+// Load the newest VALID gamesave: enumerate generations newest-seq-first, open each with
+// a FRESH handle, validate framing + hashes (never stat metadata), return the first that
+// passes. A torn/stale/half-synced newest generation degrades to the previous save, not
+// to corruption. Orphaned temps from interrupted commits are tried last, then purged.
 ano_res_savedata ano_res_save_load(mi_heap_t *heap, const char *slot);
 ```
 
-Files: `include/anoptic_resourcemg.h`; `src/resourcemg/resourcemg_core.c` (platform-free: validation/join, mount walk, framing, generation selection) + per-platform TUs behind internal `resourcemg_os.h` (`rmos_exists`, `rmos_read_all`, `rmos_mkdir_p`, `rmos_open_temp_excl`, `rmos_write_all/sync/close`, `rmos_rename_replace`, `rmos_sync_dir`, `rmos_scan_dir`), POSIX half shared Linux/macOS. Path internals ride anostr (`anostr_view` over `ano_fspath`, `anostr_split` for segment validation, builder for joins); `ano_fspath` materializes only at the OS boundary. Platform layer reads in ≤ 512 KiB chunks from day one. Caller-visible allocations go in the caller's heap (heap-first parameter, `LOCALHEAPATTR` scoped heaps as the idiom); no module-owned long-lived allocations in v0, no cleanup function.
+Files: `include/anoptic_resourcemg.h`; `src/resourcemg/resourcemg_core.c` (platform-free: validation/join, mount walk, framing, generation selection) + per-platform TUs behind internal `resourcemg_os.h` (`rmos_exists`, `rmos_read_all`, `rmos_mkdir_p`, `rmos_open_temp_excl`, `rmos_write_all/sync/close`, `rmos_rename_replace`, `rmos_sync_dir`, `rmos_scan_dir`), POSIX half shared Linux/macOS. Path internals ride anostr (`anostr_view` over `ano_fspath`, `anostr_split` for segment validation, builder for joins); `ano_fspath` materializes only at the OS boundary. Platform layer reads in ≤ 512 KiB chunks from day one. Caller-visible allocations go in the caller's heap (heap-first parameter, `LOCALHEAPATTR` scoped heaps as the idiom); the module owns no long-lived allocations and needs no cleanup function: the mount table is static memory, everything else lives in caller heaps.
 
 ## 9. The sequence
 
@@ -156,7 +250,7 @@ Each step independently mergeable. **Lands** = new capability. **Deletes** = the
 | Rejected | The flat alternative that won |
 |---|---|
 | reference-counted lifetimes | group = one mi_heap, teardown = bulk free |
-| handles + generations (now) | level-lifetime heaps; revisit when unload-while-running exists |
+| handles + generations | level-lifetime heaps; revisit when unload-while-running exists |
 | four priority bands + byte budgets | two bands + boost-on-wait, until a starvation bench |
 | io_uring / IOCP / SQPOLL / O_DIRECT default | parallel `pread`; keep the warm dev loop |
 | mmap as a load path | fault stalls, SIGBUS over 9P/SMB (CIDR'22) |
