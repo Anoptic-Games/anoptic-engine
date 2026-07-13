@@ -4,6 +4,8 @@ SPDX-License-Identifier: LGPL-3.0 -->
 
 # Resource Manager: Implementation & Testing Sequence
 
+Status: historical research and superseded planning material. The authoritative resource-manager specification is `../resourcemanager-comprehensive.md`; authority, API-freeze, implementation-state, threading, and completion claims below are not current unless restated there.
+
 **Status:** the build order. Machinery rationale and sources live in
 `resource-manager-SoA.md`; this document is the keepers only, in ascending order, each
 step with its test battery and its merge bar.

@@ -2,6 +2,8 @@
 
 SPDX-License-Identifier: LGPL-3.0 -->
 
+Status: historical provenance and superseded planning material. The current resource-manager specification is `docs/resourcemanager-comprehensive.md`; authority, implementation-state, model-result, API-freeze, threading, save-policy, async-topology, and completion claims below are historical unless restated there.
+
 # A User's Prompt
 1. Remote-FS floor: 9P/SMB is a real deployment target; believe only bytes    
   read, never stat size/mtime, no file locks.                                   
@@ -324,6 +326,8 @@ SPDX-License-Identifier: LGPL-3.0 -->
   function, librarian hands you a buffer."
 
 # The Resource Manager, For Real
+
+Status of this section: superseded plan preserved in place. Its 2026-07-12 audit, permanent mutex doctrine, reduced A-versus-E result, frozen V1 surface, save-retention text, logger-port transport, and former done bar are not current specification; see `docs/resourcemanager-comprehensive.md`.
 
 **Status:** the single plan of record. Supersedes `resource-manager-unified.md` and everything it superseded. What we code, we ship: every step lands whole, tested, and permanent — no placeholders, no throwaway tier. Deferrals exist only as bench-gated rungs, never as "correct design later."
 **The correction this plan encodes:** the previous plan designed a librarian — finds bytes, hands them to whoever asked, owns nothing, parses nothing. A resource manager is an **owner**: the place where loadables live, backed by purpose-built allocators, handing out handles you can count on, doing the parse/skin/condition work inside its own walls and passing finished, usable data to the modules that need it. Gregory ch. 7 §7.2, not §7.1.

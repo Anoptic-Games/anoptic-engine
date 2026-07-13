@@ -64,8 +64,7 @@ Pipfile.lock
 poetry.lock
 
 # Docs and doc artifacts
-docs/*.pdf
-docs/references/*.pdf
+docs/**/*.pdf
 docs/artifacts/*
 docs/study/
 

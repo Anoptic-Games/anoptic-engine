@@ -3,21 +3,19 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for the section-5 lifetime-group seam (res_group_begin/end/retire), run
- * under BOTH placement models (ANO_RES_MODEL unset/A and =E -- two ctest
- * registrations, one binary; the header prints the active model):
+/* Coverage for the lifetime-group placement scaffold (res_group_begin/end/retire), run
+ * under explicit global-pool and scoped-pool CTest registrations:
  *   - loads inside an open scope go sentinel after retire; loads outside (group 0)
  *     survive; re-get after retire reloads the same slot at a fresh generation;
  *   - release-then-retire on a direct row: the handed-off block outlives the group
  *     and there is no double free (ASan is the oracle);
  *   - a gamesave loaded DURING an open scope pins to group 0 and survives the retire;
- *   - stats balance: direct bytes return to baseline after retire under both models;
- *     pool chunk bytes return to baseline under E only (the group pool dies whole),
- *     and stay at high-water under A (its recorded wound) -- asserted via res_model();
- *   - totality: retire of group 0 / unopened / junk ids refuses; the group table
- *     exhausts at RES_GROUP_MAX - 1 concurrent scopes and recovers after retire.
- * Scratch lives next to the exe; saves use the real user root; both cleaned on exit.
- * Exit 0 == pass. */
+ *   - direct bytes rebalance under both placements; scoped-pool chunks return to the
+ *     baseline while the global pool retains high-water chunks;
+ *   - retire of group 0 / unopened / junk ids refuses; the group table exhausts at
+ *     RES_GROUP_MAX - 1 concurrent scopes and recovers after retire.
+ * Neither placement is a complete allocator-contest model. Scratch lives next to the
+ * exe; saves use the real user root; both are cleaned on exit. Exit 0 == pass. */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -174,8 +172,8 @@ static void test_save_pinning(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Stats balance around one scope cycle. Direct bytes rebalance under both models; chunk
-// bytes rebalance under E only (A's shared pool keeps its high-water chunks: the wound).
+// Stats balance around one scope cycle. Direct bytes rebalance under both placements;
+// scoped chunks return whole while the global pool keeps its high-water chunks.
 
 static void test_stats_balance(void)
 {
@@ -200,12 +198,12 @@ static void test_stats_balance(void)
     CHECK(end.direct_bytes == base.direct_bytes, "direct bytes back to baseline");
     CHECK(end.direct_blocks == base.direct_blocks, "direct blocks back to baseline");
     CHECK(end.pools.live_bytes == base.pools.live_bytes, "live bytes back to baseline");
-    if (res_model() == RES_MODEL_E)
+    if (res_placement() == RES_PLACEMENT_SCOPED_POOL)
         CHECK(end.pools.chunk_bytes == base.pools.chunk_bytes,
-              "E: group chunks returned whole");
+              "scoped pool returns group chunks whole");
     else
         CHECK(end.pools.chunk_bytes >= base.pools.chunk_bytes,
-              "A: shared pool keeps high-water chunks");
+              "global pool keeps high-water chunks");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -247,7 +245,8 @@ int main(void)
 
     CHECK(stage(), "stage fixtures");
     CHECK(ano_res_init() == 0, "ano_res_init");
-    printf("anotest_resgroups: model %c\n", res_model() == RES_MODEL_E ? 'E' : 'A');
+    printf("anotest_resgroups: placement %s\n",
+           res_placement() == RES_PLACEMENT_SCOPED_POOL ? "scoped-pool" : "global-pool");
 
     test_scopes();
     test_release_then_retire();

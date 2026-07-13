@@ -99,7 +99,8 @@ typedef struct anoresgfx_texref {
 
 // An image the file references, as a LOGICAL path resolved against the glTF's own
 // directory (URI percent-decoding and ./.. collapsing done). "" when the image is not
-// URI-addressed (embedded images are not served in v1). srgb aggregates the slots that
+// URI-addressed (embedded images are not yet served by the current graphics scaffold). srgb
+// aggregates the slots that
 // sample it as color -- decode hint, exactly today's renderer classification.
 typedef struct anoresgfx_image {
     char     path[MAXPATH];
