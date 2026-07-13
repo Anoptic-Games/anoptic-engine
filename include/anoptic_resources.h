@@ -9,7 +9,8 @@
 // ("shaders/flat.frag.spv"); the manager owns resources in purpose-built allocators and
 // hands out handles, views, copies, or destructive hand-offs. Saves and configs fall out
 // of doing that well. Design brief: anoptic_strings.h -- the value/view/intern/reclaim
-// grammar at asset-population scale. Plan of record: docs/resourcemanager-real.md.
+// grammar at asset-population scale. Current specification:
+// docs/resourcemanager-comprehensive.md.
 //
 // Logical paths, everywhere: forward slashes, relative, no leading '/', no empty, '.'
 // or '..' segments, no backslashes, no ':' or control bytes; root + '/' + path fits
@@ -18,8 +19,9 @@
 //
 // Threading: ano_res_init and all ano_res_mount calls happen on the main thread before
 // other threads touch the namespace (the ano_log_init discipline). The mount table then
-// freezes at first use: resolution is stateless and thread-safe, registry mutation is
-// mutex-guarded, same-slot save commits serialize internally.
+// freezes at first use. The current scaffold serializes registry mutation and save commits;
+// the final contract replaces those mutexes with owner-only mutation and immutable published
+// reads after interface review.
 //
 // Remote-FS floor: 9P/SMB is a real deployment target. Believe only bytes you have
 // read -- never stat size or mtime, never file locks; content validates by framing and

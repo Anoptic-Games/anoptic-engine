@@ -4,6 +4,8 @@ SPDX-License-Identifier: LGPL-3.0 -->
 
 # Resource Manager: State of the Art
 
+Status: historical research and superseded planning material. The authoritative resource-manager specification is `../resourcemanager-comprehensive.md`; authority, API-freeze, implementation-state, threading, and completion claims below are not current unless restated there.
+
 **Status:** the machinery rationale and source base.
 **Scope:** `resource-manager-plan.md` is the ordered implementation and testing sequence
 (the keepers); this document is the reasoning underneath: how bytes move at hardware

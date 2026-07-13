@@ -86,7 +86,7 @@ default:
 This is the pattern for every "text outside, integers inside" boundary: scene files, prefab
 definitions, animation event tracks, particle system descriptors.
 
-## Scenario 3 — asset keys / resource GUIDs *(sketch, see `docs/resource-manager.md`)*
+## Scenario 3 — asset keys / resource GUIDs *(sketch, see [the resource-manager completion plan](resourcemanager-comprehensive.md))*
 
 The resource registry's GUID is the hashed path. Call sites that know their asset at build
 time bake the key; mod loaders and hot-reload watchers hash the paths they discover. One

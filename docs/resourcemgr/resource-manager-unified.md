@@ -4,6 +4,8 @@ SPDX-License-Identifier: LGPL-3.0 -->
 
 # Resource Manager: The Unified Plan
 
+Status: historical research and superseded planning material. The authoritative resource-manager specification is `../resourcemanager-comprehensive.md`; authority, API-freeze, implementation-state, threading, and completion claims below are not current unless restated there.
+
 **Status:** the single plan of record for `anoptic_resourcemg.h`. What we code, we ship: every step lands whole, tested, and permanent — no placeholders, no throwaway tier. Deferrals exist only as bench-gated rungs, never as "correct design later." Supersedes `resource-manager.md`, `resource-manager-SoA.md`, and `resource-manager-plan.md`; where they disagreed, the newest decision is recorded here.
 **House premise:** the hard part is already in-tree. The logger is the async transport (lock-free MPSC ring, owned drain thread, 22–48 ns enqueue, TSan-clean, fuzz-oracled), the render bridge ships SPSC ownership transfer and false-on-full tickets, `anoptic_strings.h` ships the one key space (`ANOSTR_SID` / `anostr_hash`, intern table). The async tier is a port, not a design.
 

@@ -72,20 +72,21 @@ int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
 int res_registry_init(void);
 
 // ---------------------------------------------------------------------------------------------
-// The section-5 bake-off switch, read once from ANO_RES_MODEL at registry init.
-// Model E is the shipped default (the Phase D decision); "A" selects the baseline so
-// the bench comparison cannot rot. One binary serves both; the bench runs twice.
+// Placement scaffold selector, read once from ANO_RES_PLACEMENT at registry init.
+// "global" selects the shared global pool; absent or "scoped" selects per-scope pools.
+// These are prototype placements, not complete allocator-contest models.
 
-typedef enum { RES_MODEL_A = 0, RES_MODEL_E = 1 } res_model_t;
-res_model_t res_model(void);
+typedef enum {
+    RES_PLACEMENT_GLOBAL_POOL = 0,
+    RES_PLACEMENT_SCOPED_POOL = 1
+} res_placement_t;
+res_placement_t res_placement(void);
 
-// Lifetime groups (internal-only for the bake-off; public promotion waits for a real
-// level consumer). The open group is AMBIENT under the registry mutex: any load on any
-// thread during an open scope joins it -- the level-load shape, revisited at step 5.
-// Group 0 is engine-forever: always open, never retirable; saves pin to it
-// structurally. Under model A groups are registry tags over the one shared pool and
-// retire sweeps per-object; under model E each group owns a multipool destroyed whole
-// at retire (chunk-granular teardown; heap wink-out arrives with the loader thread).
+// Lifetime groups (internal-only until a real level consumer exists). The open group is
+// AMBIENT under the registry mutex: any load on any thread during an open scope joins it.
+// Group 0 is engine-forever: always open, never retirable; saves pin to it structurally.
+// Global-pool placement treats groups as registry tags and retires per object; scoped-pool
+// placement gives each group a multipool destroyed whole at retire (chunk-granular only).
 
 // Open a scope and make it ambient. Output: group id >= 1, or -1 (table full, not
 // ready, or the group pool could not be made).

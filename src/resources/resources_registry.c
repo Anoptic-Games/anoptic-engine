@@ -11,23 +11,16 @@
 // and liveness rides a per-row generation that bumps on every load/unload/release, so
 // every outstanding copy of a stale handle goes politely invalid.
 //
-// Placement (the section-5 bake-off pair; model E is the SHIPPED DEFAULT, decided by
-// the Phase D bench -- ANO_RES_MODEL=A keeps the baseline alive so the comparison
-// cannot rot): rows carry a lifetime-group tag in both models; group 0 is
-// engine-forever. Model A -- one shared multipool (groups[0]) over the DEFAULT-heap
-// parent; category and lifetime are tags, retire sweeps per-object (A's recorded
-// wound: it kept 1.3 MiB of high-water chunks across every bench cycle). Model E --
-// lifetime-major: each
-// open group owns its own multipool, retire destroys it whole (chunk-granular
-// teardown; true heap wink-out needs the step-5 loader thread, mi_heap_t parents are
-// single-thread-owner). In both models payloads past the top class are standalone mi
-// allocations: zero-copy ano_res_release hands the block to the taker, who frees it
-// with ano_aligned_free (a pool passthrough block would not be). Pool-resident
-// payloads copy out on release and their block recycles.
+// Placement scaffolds: rows carry a lifetime-group tag in both paths and group 0 is
+// engine-forever. Global-pool placement uses one shared default-parent multipool and
+// retires grouped payloads per object. Scoped-pool placement gives each open group a
+// default-parent multipool and destroys its chunks together at retire. Neither path is
+// a complete allocator-contest model. Payloads past the top class remain standalone mi
+// allocations; pool-resident release copies out and recycles its block.
 //
-// Threading: one mutex guards map + rows + placement + the ambient group. Sync loads
-// run under it -- single-copy comes free, and the async tier (plan step 5) moves loads
-// off-thread without changing this contract.
+// Threading: the current scaffold guards map, rows, placement, and the ambient group
+// with one mutex. The comprehensive Stage C contract replaces this with owner-only
+// mutation and immutable published reads.
 
 #include <anoptic_resources.h>
 
@@ -64,12 +57,12 @@ static struct {
     uint32_t  row_count;
     uint32_t  row_cap;
     struct {
-        ano_mem_multipool *pool;    // model A: only groups[0]; model E: one per open group
+        ano_mem_multipool *pool;    // global: groups[0] only; scoped: one per open group
         bool open;
     } groups[RES_GROUP_MAX];
-    uint8_t     cur_group;      // the ambient scope; 0 = engine-forever
-    res_model_t model;
-    size_t    pool_max;         // multipool top class; bigger payloads go direct
+    uint8_t         cur_group;      // the ambient scope; 0 = engine-forever
+    res_placement_t placement;
+    size_t          pool_max;       // multipool top class; bigger payloads go direct
     size_t    direct_bytes;     // live direct payloads, guard NUL included
     size_t    direct_blocks;
 } g_reg;
@@ -88,8 +81,9 @@ int res_registry_init(void)
         ano_mutex_destroy(&g_reg.mtx);
         return -1;
     }
-    const char *model = getenv("ANO_RES_MODEL");   // "A" = the bench baseline
-    g_reg.model     = model != NULL && model[0] == 'A' ? RES_MODEL_A : RES_MODEL_E;
+    const char *placement = getenv("ANO_RES_PLACEMENT");
+    g_reg.placement = placement != NULL && strcmp(placement, "global") == 0
+                    ? RES_PLACEMENT_GLOBAL_POOL : RES_PLACEMENT_SCOPED_POOL;
     g_reg.groups[0].open = true;                // engine-forever, never retires
     g_reg.cur_group = 0;
     g_reg.slot_mask = REG_INITIAL_SLOTS - 1;
@@ -100,9 +94,9 @@ int res_registry_init(void)
     return 0;
 }
 
-res_model_t res_model(void)
+res_placement_t res_placement(void)
 {
-    return g_reg.model;
+    return g_reg.placement;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -198,8 +192,8 @@ static res_row *row_of(anores_t h)
 
 // ---------------------------------------------------------------------------------------------
 // Placement: pooled vs direct, per the top-class threshold. alloc includes the guard
-// NUL. group picks the pooled destination: always groups[0] under model A (tags only),
-// the group's own pool under model E. Direct-class blocks are standalone in both.
+// NUL. Global placement always uses groups[0]; scoped placement uses the group's pool.
+// Direct-class blocks are standalone in both.
 
 static void *payload_alloc(size_t size, uint8_t group, bool *direct)
 {
@@ -208,7 +202,7 @@ static void *payload_alloc(size_t size, uint8_t group, bool *direct)
         return mi_malloc_aligned(size + 1, ANO_CACHE_LINE);
     }
     *direct = false;
-    uint8_t g = g_reg.model == RES_MODEL_E ? group : 0;
+    uint8_t g = g_reg.placement == RES_PLACEMENT_SCOPED_POOL ? group : 0;
     return ano_mem_multipool_alloc(g_reg.groups[g].pool, size + 1);
 }
 
@@ -219,7 +213,7 @@ static void payload_free(res_row *row)
         g_reg.direct_bytes  -= row->size + 1;
         g_reg.direct_blocks -= 1;
     } else {
-        uint8_t g = g_reg.model == RES_MODEL_E ? row->group : 0;
+        uint8_t g = g_reg.placement == RES_PLACEMENT_SCOPED_POOL ? row->group : 0;
         ano_mem_multipool_free(g_reg.groups[g].pool, row->data, row->size + 1);
     }
     row->data = NULL;
@@ -465,7 +459,7 @@ int res_group_begin(void)
         ano_log(ANO_ERROR, "resources: group table full (%u scopes)", RES_GROUP_MAX - 1);
         return -1;
     }
-    if (g_reg.model == RES_MODEL_E) {
+    if (g_reg.placement == RES_PLACEMENT_SCOPED_POOL) {
         g_reg.groups[g].pool = ano_mem_multipool_make(ano_mem_parent_default(), NULL);
         if (g_reg.groups[g].pool == NULL) {
             ano_mutex_unlock(&g_reg.mtx);
@@ -504,15 +498,15 @@ int res_group_retire(int g)
         res_row *row = &g_reg.rows[r];
         if (row->group != (uint8_t)g || row->data == NULL)
             continue;
-        if (row->direct || g_reg.model == RES_MODEL_A) {
-            payload_free(row);                  // per-object: A's wound, direct in both
+        if (row->direct || g_reg.placement == RES_PLACEMENT_GLOBAL_POOL) {
+            payload_free(row);                  // per-object globally; direct in both
         } else {
-            row->data = NULL;                   // E: the block dies with the group pool
+            row->data = NULL;                   // block dies with the scoped pool
             row->size = 0;
         }
         row->gen += 1;                          // outstanding handles go sentinel
     }
-    ano_mem_multipool *dead = g_reg.groups[g].pool;     // NULL under model A
+    ano_mem_multipool *dead = g_reg.groups[g].pool;     // NULL under global placement
     g_reg.groups[g].pool = NULL;
     g_reg.groups[g].open = false;
     ano_mutex_unlock(&g_reg.mtx);

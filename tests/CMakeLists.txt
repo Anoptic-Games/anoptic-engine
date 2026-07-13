@@ -123,11 +123,15 @@ set_tests_properties(anoptic_memory PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 # grammar fuzz, slurp read contract (byte-identical, guard NUL, alignment, multi-chunk),
 # durable writes + quarantine, save-frame commits with an independent FNV/layout oracle.
 # Writes real probe files under the user root (that is the write path's actual contract)
-# and cleans them on exit.
+# and cleans them on exit. Both placement scaffolds run explicitly.
 add_executable(anotest_resources anotest_resources.c)
 target_link_libraries(anotest_resources PRIVATE anoptic_core)
-add_test(NAME anoptic_resources COMMAND anotest_resources)
-set_tests_properties(anoptic_resources PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+add_test(NAME anoptic_resources_scoped_pool COMMAND anotest_resources)
+set_tests_properties(anoptic_resources_scoped_pool PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_PLACEMENT=scoped")
+add_test(NAME anoptic_resources_global_pool COMMAND anotest_resources)
+set_tests_properties(anoptic_resources_global_pool PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_PLACEMENT=global")
 
 # Testing for ``anoptic_res_graphics.h``: glTF ingest against a handcrafted-in-test
 # scene (every vertex/node/material asserted), URI decode + directory grafting, base64
@@ -138,29 +142,26 @@ target_link_libraries(anotest_resgfx PRIVATE anoptic_core)
 if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
     target_compile_definitions(anotest_resgfx PRIVATE ANO_TEST_ASSETS="${CMAKE_SOURCE_DIR}/assets")
 endif()
-add_test(NAME anoptic_resgfx COMMAND anotest_resgfx)
-set_tests_properties(anoptic_resgfx PROPERTIES TIMEOUT 60 LABELS "unit;mem")
+add_test(NAME anoptic_resgfx_scoped_pool COMMAND anotest_resgfx)
+set_tests_properties(anoptic_resgfx_scoped_pool PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_PLACEMENT=scoped")
+add_test(NAME anoptic_resgfx_global_pool COMMAND anotest_resgfx)
+set_tests_properties(anoptic_resgfx_global_pool PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_PLACEMENT=global")
 
-# Lifetime groups: the section-5 bake-off seam (res_group_begin/end/retire) -- scope
-# retire semantics, group-0 survival, release-then-retire double-free watch, save
-# pinning, stats balance. One binary, TWO registrations: the frozen surface must behave
-# identically under model E (the shipped default) and model A (ANO_RES_MODEL=A, the
-# bench baseline kept alive so the comparison cannot rot). anotest_resfault stays
-# model-free: it compiles resources_core.c privately and never places a payload.
+# Lifetime groups: the placement-scaffold seam (res_group_begin/end/retire) -- scope
+# retire semantics, group-0 survival, release-then-retire double-free watch, save pinning,
+# and stats balance. One binary, two explicit registrations. anotest_resfault stays
+# placement-free: it compiles resources_core.c privately and never places a payload.
 add_executable(anotest_resgroups anotest_resgroups.c)
 target_include_directories(anotest_resgroups PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
 target_link_libraries(anotest_resgroups PRIVATE anoptic_core)
-add_test(NAME anoptic_resgroups COMMAND anotest_resgroups)
-set_tests_properties(anoptic_resgroups PROPERTIES TIMEOUT 60 LABELS "unit;mem")
-add_test(NAME anoptic_resgroups_modelA COMMAND anotest_resgroups)
-set_tests_properties(anoptic_resgroups_modelA PROPERTIES TIMEOUT 60 LABELS "unit;mem"
-        ENVIRONMENT "ANO_RES_MODEL=A")
-add_test(NAME anoptic_resources_modelA COMMAND anotest_resources)
-set_tests_properties(anoptic_resources_modelA PROPERTIES TIMEOUT 60 LABELS "unit;mem"
-        ENVIRONMENT "ANO_RES_MODEL=A")
-add_test(NAME anoptic_resgfx_modelA COMMAND anotest_resgfx)
-set_tests_properties(anoptic_resgfx_modelA PROPERTIES TIMEOUT 60 LABELS "unit;mem"
-        ENVIRONMENT "ANO_RES_MODEL=A")
+add_test(NAME anoptic_resgroups_scoped_pool COMMAND anotest_resgroups)
+set_tests_properties(anoptic_resgroups_scoped_pool PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_PLACEMENT=scoped")
+add_test(NAME anoptic_resgroups_global_pool COMMAND anotest_resgroups)
+set_tests_properties(anoptic_resgroups_global_pool PROPERTIES TIMEOUT 60 LABELS "unit;mem"
+        ENVIRONMENT "ANO_RES_PLACEMENT=global")
 
 # Lock-free collections: layout asserts (cursor separation real, not aspirational),
 # unit edges (full/empty/wrap/laps, u32 cursor wrap), then the conservation stress
@@ -215,10 +216,11 @@ target_link_libraries(anotest_ringbench PRIVATE anoptic_core)
 add_test(NAME anoptic_ringbench COMMAND anotest_ringbench)
 set_tests_properties(anoptic_ringbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
-# The section-5 hierarchy bake-off: model A vs model E behind the frozen surface,
-# three home benches (churn / level cycles over the real assets / hand-off rate).
-# DISABLED in ctest; run twice by hand from a -O3 build (build.sh 8 / build.bat 8):
-#   ANO_RES_MODEL=A ./anotest_resbench && ANO_RES_MODEL=E ./anotest_resbench
+# Historical placement-scaffold benchmark: global pool vs scoped pools over the same
+# churn / real-asset scope-cycle / direct hand-off workloads. This is not the full
+# allocator hierarchy contest. DISABLED in ctest; run twice from a -O3 build:
+#   ANO_RES_PLACEMENT=global ./anotest_resbench
+#   ANO_RES_PLACEMENT=scoped ./anotest_resbench
 add_executable(anotest_resbench anotest_resbench.c)
 target_include_directories(anotest_resbench PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
 target_link_libraries(anotest_resbench PRIVATE anoptic_core)

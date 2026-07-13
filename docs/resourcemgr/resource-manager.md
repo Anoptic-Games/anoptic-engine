@@ -4,6 +4,8 @@ SPDX-License-Identifier: LGPL-3.0 -->
 
 # Resource Management: Report & Design of Record for `anoptic_resourcemg.h`
 
+Status: historical research and superseded planning material. The authoritative resource-manager specification is `../resourcemanager-comprehensive.md`; authority, API-freeze, implementation-state, threading, and completion claims below are not current unless restated there.
+
 **Status:** design of record, pre-implementation.
 **Scope:** Part I reports everything that surfaced around `anoptic_filesystem.h` — the bug
 history, the audit of how the engine actually touches disk today, and the threat model that

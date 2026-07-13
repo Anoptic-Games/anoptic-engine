@@ -3,26 +3,16 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* The section-5 hierarchy bake-off: model A (one shared multipool) vs model E
- * (lifetime-major groups), behind the frozen anoptic_resources.h surface at identical
- * call sites. One binary; the model is picked by ANO_RES_MODEL at init, so a full
- * comparison is two runs from a -O3 build (build.sh 8 / build.bat 8):
- *   ANO_RES_MODEL=A ./anotest_resbench && ANO_RES_MODEL=E ./anotest_resbench
- * Three scenarios, each a home bench from the plan doc section 5:
- *   (a) steady-state churn, A's home: get/unload over a 256-file synthetic tree in a
- *       streaming size mix, per-op percentiles split load/hit/unload. Outside a scope
- *       E routes through group 0, which IS model A -- a churn loss for E cannot exist
- *       by construction (the "shows why the loss doesn't matter" arm); the in-scope
- *       series proves the same shape holds with a group pool in the path.
- *   (b) level cycles, E's home: begin -> real glTF ingest (viking_room, candle holder,
- *       Sponza when the assets tree is present) -> retire, 50 cycles. Wall per cycle,
- *       retire-only latency, and residual allocator footprint per cycle -- A's shared
- *       pool keeps its high-water chunks forever (its recorded wound), E must return
- *       to baseline every cycle.
- *   (c) hand-off, the D side: direct-class release must be zero-copy every rep (pointer
- *       equality asserted), plus one ingest-throughput row (staging is identical
- *       machinery in both models; recorded so the third tool visibly pays rent).
- * DISABLED in ctest; numbers go to RESOURCE_MANAGER_IMPL.md Phase D. Exit 0 == pass. */
+/* Historical placement-scaffold benchmark: one global multipool versus per-scope
+ * multipools at identical call sites. One binary reads ANO_RES_PLACEMENT at init; run
+ * `global` and `scoped` from a -O3 build for the comparison. The scenarios are:
+ *   (a) steady-state get/unload churn over a 256-file synthetic streaming-size mix;
+ *   (b) 50 scoped cycles over the available real glTF assets, including wall time,
+ *       retire latency, and residual allocator footprint;
+ *   (c) direct-class pointer-equality release plus conditioned-ingest throughput.
+ * These workloads preserve the Phase D evidence but do not represent the complete
+ * allocator hierarchy contest or establish any named contestant. DISABLED in ctest;
+ * historical numbers live in RESOURCE_MANAGER_IMPL.md. Exit 0 == pass. */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -36,7 +26,7 @@
 #include "templates/rng.h"
 #include "templates/scratch.h"
 
-#include "resources_internal.h"     // res_model / res_group_* / res_registry_stats
+#include "resources_internal.h"     // placement / groups / registry stats
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -265,13 +255,13 @@ static void run_cycles(bool have_assets)
     printf("(b) ~%.1f MiB ingested per cycle; residual after cycle 1: %zu bytes\n",
            mbPerCycle, residual1);
 
-    // The bar's structural check: E returns to baseline every cycle; A's shared pool
-    // may keep high-water chunks (reported above, not asserted -- that is the wound).
+    // Scoped placement returns group chunks to baseline; global placement may retain
+    // high-water chunks (reported above, not asserted).
     res_reg_stats end = res_registry_stats();
     CHECK(end.direct_bytes == base.direct_bytes, "no direct leak across cycles");
-    if (res_model() == RES_MODEL_E)
+    if (res_placement() == RES_PLACEMENT_SCOPED_POOL)
         CHECK(end.pools.chunk_bytes == base.pools.chunk_bytes,
-              "E returns chunk bytes to baseline");
+              "scoped pool returns chunk bytes to baseline");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -309,8 +299,8 @@ static void run_handoff(bool have_assets)
            bench_ops_per_sec(RB_REPS, ano_ticks_to_ns(wall)));
     CHECK(zerocopy == RB_REPS, "every direct release is zero-copy");
 
-    // Ingest throughput: the biggest present glTF, 3 reps, best. Identical staging
-    // machinery in both models; recorded so the third Lakos tool visibly pays rent.
+    // Ingest throughput: the biggest present glTF, 3 reps, best. Staging machinery is
+    // identical in both placement scaffolds.
     if (have_assets) {
         const char *best = NULL;
         size_t bestLen = 0;
@@ -369,8 +359,8 @@ int main(void)
     }
 #endif
 
-    printf("anotest_resbench: model %c%s\n",
-           res_model() == RES_MODEL_E ? 'E' : 'A',
+    printf("anotest_resbench: placement %s%s\n",
+           res_placement() == RES_PLACEMENT_SCOPED_POOL ? "scoped-pool" : "global-pool",
            have_assets ? "" : " (no assets tree: scenario (b) reduced)");
     bench_lat_header();
 
