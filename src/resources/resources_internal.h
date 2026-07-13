@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Module-private surface of src/resources/: path grammar, namespace access, the gulp
-// primitive, and the save-frame format. resources_core.c owns the state; the registry
-// and domain-extension TUs consume these.
+// Module-private surface of src/resources/: namespace access, ownership planning,
+// registry publication, and the save-frame format.
+//
+// FROZEN SEAM (blueprint 2.3). The kind axis is a FOURCC tag, never an enum: adding a
+// resource class registers one res_ext (resources_ext.h) and edits no table here.
 
 #ifndef ANOPTIC_RESOURCES_INTERNAL_H
 #define ANOPTIC_RESOURCES_INTERNAL_H
@@ -16,123 +18,173 @@
 
 #include <anoptic_filesystem.h>
 #include <anoptic_memory.h>
-#include <anoptic_memory_pools.h>   // ano_mem_stats for res_reg_stats
-#include <anoptic_resources.h>      // anores_t
+#include <anoptic_memory_pools.h>
+#include <anoptic_resources.h>
 
 #include "resources_os.h"
+#include "resources_place.h"
 
-// ---------------------------------------------------------------------------------------------
-// Path grammar (plan rule 3). Total: hostile input returns -1, never UB.
+#define RES_DEPS_MAX 32u
 
-// Validate a logical FILE path: forward slashes, relative, no empty/'.'/'..' segments,
-// no '\\', ':' or control bytes, 1..MAXPATH-1 bytes. 0 valid (+ length out), -1 not.
 int res_path_validate(const char *logical, size_t *out_len);
-
-// Validate a single path SEGMENT (a save slot name): same byte rules, no '/' at all.
 int res_segment_validate(const char *seg, size_t *out_len);
-
-// Canonicalize a mount prefix: "" stays empty; otherwise a valid logical path with an
-// optional trailing '/', emitted WITH exactly one trailing '/'. 0 (+ length out) / -1.
-// out must hold MAXPATH bytes.
 int res_prefix_canon(const char *prefix, char *out, size_t *out_len);
-
-// root + '/' + rel as an ano_fspath; length == 0 if it cannot fit MAXPATH - 1 or the
-// root is empty. rel need not be NUL-terminated (rel_len bytes are taken).
 ano_fspath res_join(const ano_fspath *root, const char *rel, size_t rel_len);
 
-// ---------------------------------------------------------------------------------------------
-// Namespace access for sibling TUs.
-
-// True once ano_res_init has succeeded.
 bool res_ready(void);
-
-// Mark the mount table frozen (any later mount refuses). Called by every read-side
-// entry point before it walks the table.
 void res_freeze(void);
-
-// Candidate absolute paths for a logical path, in shadow order (write root first,
-// mounts newest-first, base last). Returns the count written, 0 if none fit.
-// cap should be ANO_RES_MAX_MOUNTS + 2.
-int res_candidates(const char *logical, size_t len, ano_fspath *out, int cap);
-
-// The pinned write root (length 0 before init).
 ano_fspath res_write_root(void);
 
+// The mount table, for the candidate walk in resources_read.c. Owner-written at mount,
+// frozen at first read, read-only afterwards.
+int        res_mount_count(void);
+ano_fspath res_mount_root(int i);
+anostr_t   res_mount_prefix(int i);
+ano_fspath res_base_root(void);
+
+int  res_registry_init(void);
+int  res_registry_shutdown(void);
+
+typedef enum res_disposition {
+    RES_DISPOSITION_RETAIN = 1,
+    RES_DISPOSITION_PROMOTE,
+    RES_DISPOSITION_DUPLICATE,
+    RES_DISPOSITION_TRANSFER,
+} res_disposition;
+
+// The routing input. PURE: res_place_plan() reads it, allocates nothing, mutates nothing.
+// No transfer_compatible: transferability is the arena's grant (RES_SITE_TRANSFERABLE).
+typedef struct res_place_plan {
+    uint32_t         tag;          // FOURCC, not a dense id
+    ano_res_lifetime lifetime;
+    res_role         role;
+    res_operation    operation;
+    res_destination  destination;
+    res_provenance   provenance;
+    size_t           alignment;    // what the CALLER needs. Refused, never silently dropped.
+} res_place_plan;
+
+typedef struct res_dependency_meta {
+    uint64_t rid;
+    uint32_t tag;
+    uint32_t flags;
+} res_dependency_meta;
+
+// No `pooled` bool: the site carries serving, alignment, arena, backing, flags and cell,
+// so free() never recomputes what alloc() decided (the serving_size() sin).
+typedef struct res_owned_block {
+    void          *data;
+    size_t         size;
+    res_site       site;
+    res_place_plan plan;
+} res_owned_block;
+
+// The six verbs. res_owned_alloc keeps its EXACT signature across every model.
+// Single-owner heap access is enforced by the registry's owner-thread gate.
+// res_owned_free is for unpublished blocks only.
+int  res_owned_plan  (const res_place_plan *, size_t, res_site *out);
+int  res_owned_alloc (const res_place_plan *, size_t, res_owned_block *out);
+int  res_owned_stage (const res_place_plan *, size_t hint, res_owned_block *out);
+int  res_owned_commit(res_owned_block *staged, const res_place_plan *home, res_owned_block *out);
+int  res_owned_move  (res_owned_block *from, const res_place_plan *to, res_owned_block *out);
+void res_owned_free  (res_owned_block *, res_free_mode);
+
+void res_account_copy(const res_place_plan *plan, size_t bytes);
+void res_account_transfer(const res_place_plan *plan, size_t bytes);
+
+// TODO(W2, M8): becomes PURE (drop `transferable`, mutate no counters). The real operations
+// charge the DESTINATION's cell.
+int  res_disposition_allowed(ano_res_lifetime from, ano_res_lifetime to,
+                             res_disposition disposition, bool transferable);
+
+int res_registry_name(const ano_res_read *read, anores_t h, char *out, size_t cap);
+anores_t res_registry_find(const ano_res_read *read, const char *logical);
+anores_t res_registry_adopt(const char *logical, res_owned_block *block,
+                            const res_dependency_meta *deps, size_t dep_count);
+
+// DEPRECATED. Deleted at M9 (W2) with its one call site (res_graphics.c's decode path),
+// which moves onto res_owned_alloc + ano_res_take. It charges and is never reversed, so
+// `allocations == frees at shutdown` cannot become an oracle while it lives.
+void res_registry_external_allocation(const res_place_plan *plan, size_t bytes);
+
+// Test-only private probes; not part of the module interface.
+const void *res_test_row_address(uint32_t slot);
+int res_test_set_generation(anores_t h, uint32_t generation);
+int res_test_set_owner_generation(ano_res_lifetime lifetime, uint32_t generation);
+
 // ---------------------------------------------------------------------------------------------
-// The gulp primitive: whole file into heap, ANO_CACHE_LINE-aligned, one guard NUL at
-// [size], fstat as a hint only, EOF decided by the read loop, <= RMOS_CHUNK_MAX per
-// read. heap == NULL allocates from the calling thread's DEFAULT heap (mi_malloc
-// family: thread-safe, mi_free-able from any thread -- the registry's mode; a mi_heap_t
-// is single-thread-owner and only sound when the caller owns it).
-// 0 (+ buffer, byte count) / -1 could not open / -2 opened but read or alloc failed
-// (nothing stays allocated on failure). Caller logs.
+// Identity. No string key ever exists for a derived or duplicate resource: a RES_IDENT_DERIVED
+// ident cannot be resolved from the filesystem, so derived-key type confusion is
+// unrepresentable and the public path alphabet stays untouched (D8).
+
+uint64_t res_rid_file     (const char *logical, size_t len);            // FNV-1a-64, basis A
+uint64_t res_rid_file2    (const char *logical, size_t len);            // FNV-1a-64, basis B
+uint64_t res_rid_derived  (uint64_t src_rid, uint32_t kind_tag);
+uint64_t res_rid_duplicate(uint64_t src_rid, uint32_t owner_index);
+
+// ---------------------------------------------------------------------------------------------
+// The read side: the two-pass source walk, destination-aware sinks, ranges, hashes, chunks.
+// Loose-shadows-pack is an invariant of the WALK (pass 1 = every DIR candidate, pass 2 =
+// every PACK candidate), never of registration order.
+
+typedef struct res_pack res_pack;
+
+typedef enum res_source_kind { RES_SRC_DIR = 1, RES_SRC_PACK } res_source_kind;
+
+typedef struct res_source {
+    res_source_kind kind;
+    ano_fspath      path;
+    const res_pack *pack;
+    uint32_t        entry;
+} res_source;
+
+int res_candidates(const char *logical, size_t len, ano_fspath *out, int cap);
+int res_candidates_ex(const char *logical, size_t len, res_source *out, int cap);
+
+// Destination-aware read. reserve() may hand back the HOME block; grow() is the charged
+// spill when the size hint LIED (rmos_size_hint is a hint by deliberate design, and a
+// multipool class block cannot grow in place).
+typedef struct res_sink {
+    void *ctx;
+    void *(*reserve)(void *ctx, size_t hint, size_t *out_cap);
+    void *(*grow)   (void *ctx, size_t need, size_t *out_cap);
+    void  (*commit) (void *ctx, size_t final);
+} res_sink;
+
+int res_read_sink(const res_sink *, const char *abs, size_t *out_size);
+int res_source_read_sink(const res_source *, const res_sink *, size_t *out_size);
+
+// res_read_all becomes a res_read_sink wrapper at M10. EOF-truth preserved verbatim.
 int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size);
 
-// Registry construction (resources_registry.c), called once from ano_res_init.
-int res_registry_init(void);
+#define RES_RANGE_EOF (-3)
+int   res_read_range   (const res_source *, uint64_t off, size_t len, void *dst);
+int   res_hash_file    (const res_source *, uint64_t *hash, uint64_t *size);
+void *res_chunk_acquire(ano_res_lifetime);   // routed THROUGH placement (D13)
+void  res_chunk_release(ano_res_lifetime, void *);
 
 // ---------------------------------------------------------------------------------------------
-// Placement scaffold selector, read once from ANO_RES_PLACEMENT at registry init.
-// "global" selects the shared global pool; absent or "scoped" selects per-scope pools.
-// These are prototype placements, not complete allocator-contest models.
+// The save protocol.
+
+typedef struct res_save_guard {
+    void *lane;
+} res_save_guard;
+
+// Exact-slot sequencing seam. The map lock is held only while locating a lane; unrelated
+// slots then execute concurrently. Stage C moves these lanes into the owner ticket service.
+int  res_save_begin(const char *slot, size_t slot_len, res_save_guard *guard);
+void res_save_end(res_save_guard *guard);
+
+// Test probe after the exact-slot lane is held, before the operation begins.
+extern void (*res_test_save_enter_hook)(const char *slot);
 
 typedef enum {
-    RES_PLACEMENT_GLOBAL_POOL = 0,
-    RES_PLACEMENT_SCOPED_POOL = 1
-} res_placement_t;
-res_placement_t res_placement(void);
-
-// Lifetime groups (internal-only until a real level consumer exists). The open group is
-// AMBIENT under the registry mutex: any load on any thread during an open scope joins it.
-// Group 0 is engine-forever: always open, never retirable; saves pin to it structurally.
-// Global-pool placement treats groups as registry tags and retires per object; scoped-pool
-// placement gives each group a multipool destroyed whole at retire (chunk-granular only).
-
-// Open a scope and make it ambient. Output: group id >= 1, or -1 (table full, not
-// ready, or the group pool could not be made).
-int  res_group_begin(void);
-
-// End the ambient scope (payloads stay live until retire). Hostile ids are a no-op.
-void res_group_end(int g);
-
-// Retire a group: every loaded row of g goes sentinel (gen bump, the unload contract),
-// direct blocks free, pooled payloads free per-object (A) or die with the group pool
-// (E, destroyed outside the lock). Output: 0; -1 on group 0, unopened, or junk ids.
-int  res_group_retire(int g);
-
-// Aggregate placement stats for tests and the bench: pool stats summed over open
-// groups, plus live direct-class payloads (guard NUL included in bytes).
-typedef struct res_reg_stats {
-    ano_mem_stats pools;
-    size_t direct_bytes;
-    size_t direct_blocks;
-} res_reg_stats;
-res_reg_stats res_registry_stats(void);
-
-// Registry access for the domain extensions.
-// The logical name of a LIVE handle (NUL-terminated into out). 0 / -1.
-int res_registry_name(anores_t h, char *out, size_t cap);
-// A live handle for a logical path WITHOUT loading anything, or the sentinel.
-anores_t res_registry_find(const char *logical);
-// Hand a default-heap mi allocation (size + 1 bytes, guard NUL at [size]) to the
-// registry under `logical`. Takes ownership of buf in every outcome: on success it is
-// the payload (or copied into placement and freed); if the path is already loaded it
-// is freed and the EXISTING handle returns (single-copy); on failure it is freed and
-// the sentinel returns.
-anores_t res_registry_adopt(const char *logical, void *buf, size_t size);
-
-// The save mutex, shared by commit (core) and save_load (registry).
-void res_save_lock(void);
-void res_save_unlock(void);
-
-// Fault-injection points for the protocol crash harness. Production builds compile the
-// hook away; the test compiles this TU privately with ANO_RES_FAULT_INJECT and installs
-// a hook that dies mid-protocol.
-typedef enum {
-    RES_FAULT_AFTER_WRITE = 1,      // temp bytes written, not yet fsynced
-    RES_FAULT_AFTER_SYNC,           // temp fsynced, not yet closed
-    RES_FAULT_AFTER_CLOSE,          // temp closed, not yet renamed
-    RES_FAULT_AFTER_RENAME,         // renamed over final, dir not yet fsynced
+    RES_FAULT_AFTER_OPEN_EXCL = 1,   // the state that produces orphan temps
+    RES_FAULT_AFTER_WRITE,
+    RES_FAULT_AFTER_SYNC,
+    RES_FAULT_AFTER_CLOSE,
+    RES_FAULT_AFTER_RENAME,
+    RES_FAULT_AFTER_DIR_SYNC,
 } res_fault_step;
 #ifdef ANO_RES_FAULT_INJECT
 extern void (*res_fault_hook)(res_fault_step step);
@@ -141,49 +193,23 @@ extern void (*res_fault_hook)(res_fault_step step);
 #define RES_FAULT(step) ((void)0)
 #endif
 
-// The full durable-replace protocol (plan section 10) writing the concatenation of
-// nparts buffers to final_abs: same-dir O_EXCL temp, write all, fsync, close, rename,
-// parent-dir fsync. 0 only when durable; on failure the temp is gone and any previous
-// final_abs content is intact.
 typedef struct res_iovec { const void *data; size_t len; } res_iovec;
 int res_write_protocol(const char *final_abs, const res_iovec *parts, int nparts);
 
-// ---------------------------------------------------------------------------------------------
-// FNV-1a-64 over arbitrary bytes (same constants as ANOSTR_SID / anostr_hash; hash_id 1
-// in the save frame). Handles len > UINT32_MAX, which anostr_hash cannot.
 uint64_t res_fnv1a64(const void *data, size_t len);
-
-// ---------------------------------------------------------------------------------------------
-// Save frame v1 (plan section 9). Little-endian, byte-exact:
-//   header (48): magic 'ANOS' | u16 container_version=1 | u8 hash_id=1 | u8 flags=0 |
-//                u32 format_version | u32 min_reader_version | u64 payload_len |
-//                u64 seq | u64 header_hash (FNV-1a-64 over bytes 0..31) | u64 reserved
-//   payload (payload_len)
-//   footer (16): u64 payload_hash | 'ANOSDONE'
-// Truncation is caught three independent ways (total length, header_hash, footer).
 
 #define RES_SAVE_HDR_BYTES 48u
 #define RES_SAVE_FTR_BYTES 16u
 #define RES_SAVE_CONTAINER_VERSION 1u
 #define RES_SAVE_HASH_FNV1A64 1u
 
-// Fill a 48-byte header and 16-byte footer for one payload.
 void res_save_frame(uint8_t hdr[RES_SAVE_HDR_BYTES], uint8_t ftr[RES_SAVE_FTR_BYTES],
-                    uint32_t format_version, const void *payload, size_t payload_len,
-                    uint64_t seq);
-
-// "<slot>.<seq>.anosave" -> seq. Strict: canonical digits only (no leading zeros), seq
-// capped at UINT64_MAX/2 (a planted max-value name must not wrap max+1 to zero).
-// Anything else is not ours. Shared by commit-side pruning and load-side scanning.
+                    uint32_t format_version, uint32_t min_reader_version,
+                    const void *payload, size_t payload_len, uint64_t seq);
 bool res_save_name_seq(const char *name, const char *slot, size_t slot_len,
                        uint64_t *out_seq);
-
-// Validate a whole in-memory save file. 0 valid (+ outs) / -1. Distinguishing header
-// vs body damage is the caller's log line, via which check failed first:
-//   -1 = too short / bad magic / bad header fields or header_hash (header damage)
-//   -2 = length mismatch, footer magic, or payload_hash (body damage)
 int res_save_validate(const uint8_t *bytes, size_t len, uint32_t *out_format_version,
-                      uint64_t *out_seq, const uint8_t **out_payload,
-                      size_t *out_payload_len);
+                      uint32_t *out_min_reader_version, uint64_t *out_seq,
+                      const uint8_t **out_payload, size_t *out_payload_len);
 
 #endif // ANOPTIC_RESOURCES_INTERNAL_H

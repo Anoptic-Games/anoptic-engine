@@ -99,6 +99,11 @@ anothread_t ano_thread_self(void) {
     return pthread_self();
 }
 
+int ano_thread_equal(anothread_t a, anothread_t b) {
+
+    return pthread_equal(a, b) != 0;
+}
+
 // Inputs: none.
 // Output: the initial thread's stack budget in bytes, 0 when the query fails.
 // POSIX: RLIMIT_STACK soft (SIZE_MAX when unlimited). Win64: the PE-header reserve.

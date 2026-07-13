@@ -1,0 +1,59 @@
+warning: Git tree '/mnt/c/Users/Pyrus/Code/anoptic-engine' is dirty
+[anoptic] Linux target — clang version 22.1.8
+=== Running anoptic_blackbox test in isolation with output ===
+Test project /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests
+    Start 44: anoptic_blackbox
+1/1 Test #44: anoptic_blackbox .................***Failed   95.74 sec
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_229895_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_103314_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_433017_CRASH.log
+anoptic: fatal SIGABRT, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_236876_CRASH.log
+anoptic: fatal SIGILL, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_733534_CRASH.log
+anoptic: fatal SIGFPE, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_358221_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_341505_CRASH.log
+anoptic: fatal SIGILL, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_970697_CRASH.log
+anoptic: fatal SIGFPE, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_335961_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_037075_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_891298_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_849658_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_443020_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_229001_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_337009_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_523658_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_668441_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_103547_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_297440_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_460910_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_688455_CRASH.log
+22:24:05 WARN  blackbox: 1 crash log detected, /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_688455_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_304627_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_382513_CRASH.log
+22:24:11 WARN  blackbox: 1 crash log detected, /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_382513_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_438037_CRASH.log
+22:24:14 WARN  blackbox: 1 crash log detected, /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_438037_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_214941_CRASH.log
+22:24:17 WARN  blackbox: 2 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_438037_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_551596_CRASH.log
+22:24:20 WARN  blackbox: 3 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_551596_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_913228_CRASH.log
+22:24:23 WARN  blackbox: 4 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_913228_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_338640_CRASH.log
+22:24:26 WARN  blackbox: 5 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_913228_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_326099_CRASH.log
+22:24:29 WARN  blackbox: 5 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_913228_CRASH.log.
+22:24:29 WARN  blackbox: 6 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2006-01-01_000001_CRASH.log.
+FAIL (533): ring_full: wrong death: signal 14
+anotest_blackbox: 1 check(s) failed
+
+
+0% tests passed, 1 tests failed out of 1
+
+Label Time Summary:
+concurrency    =  95.74 sec*proc (1 test)
+unit           =  95.74 sec*proc (1 test)
+
+Total Test time (real) =  95.80 sec
+
+The following tests FAILED:
+	 44 - anoptic_blackbox (Failed)                         concurrency unit
+Errors while running CTest

@@ -23,11 +23,18 @@
 // manager owns the SPIR-V (single-copy; pipeline rebuilds re-request for free).
 VkShaderModule ano_pipeline_shader(VkDevice device, const char* logical)
 {
-	anores_t h = ano_res_get(logical);
-	anostr_t code = ano_res_bytes(h);
+	ano_res_lifetime lifetime = ano_res_lifetime_engine();
+	ano_res_reader reader = { .lane = ANO_RES_READER_NONE };
+	ano_res_read read = {0};
+	if (ano_res_reader_register(&reader) != 0 || ano_res_read_begin(&reader, &read) != 0)
+		return VK_NULL_HANDLE;
+	anores_t h = ano_res_get(lifetime, logical);
+	anostr_t code = ano_res_bytes(&read, h);
 	size_t size = anostr_len(code);
 	if (size == 0 || size % 4 != 0)
 	{
+		ano_res_read_end(&read);
+		ano_res_reader_unregister(&reader);
 		ano_log(ANO_ERROR, "Shader unavailable or not SPIR-V-sized: %s", logical);
 		return VK_NULL_HANDLE;
 	}
@@ -38,7 +45,10 @@ VkShaderModule ano_pipeline_shader(VkDevice device, const char* logical)
 	createInfo.pCode = (const uint32_t *) anostr_bytes(&code); // payloads are >=16-aligned
 
 	VkShaderModule shaderModule;
-	if (vkCreateShaderModule(device, &createInfo, NULL, &shaderModule) != VK_SUCCESS)
+	VkResult result = vkCreateShaderModule(device, &createInfo, NULL, &shaderModule);
+	ano_res_read_end(&read);
+	ano_res_reader_unregister(&reader);
+	if (result != VK_SUCCESS)
 	{
 		ano_log(ANO_ERROR, "Failed to create shader module: %s", logical);
 		return VK_NULL_HANDLE;

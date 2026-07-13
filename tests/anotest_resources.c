@@ -32,11 +32,23 @@
 #include "templates/scratch.h"
 #include "templates/rng.h"
 
-#ifndef _WIN32
-#include <dirent.h>
-#endif
+// The temp-litter oracle needs a directory scan on BOTH platforms; this target does not carry
+// src/resources on its include path (W0 owns tests/CMakeLists.txt), so the module-private
+// header is reached by relative path.
+#include "../src/resources/resources_os.h"
 
 static int failures = 0;
+static ano_res_lifetime g_engine_lifetime;
+static ano_res_lifetime g_save_lifetime;
+static ano_res_reader g_reader = { .lane = ANO_RES_READER_NONE };
+static ano_res_read g_read;
+#define ano_res_get(path) ano_res_get(g_engine_lifetime, (path))
+#define ano_res_bytes(handle) ano_res_bytes(&g_read, (handle))
+#define ano_res_unload(handle) ano_res_unload(g_engine_lifetime, (handle))
+#define ano_res_release(handle, data, size) \
+    ano_res_release(g_engine_lifetime, (handle), (data), (size))
+#define ano_res_save_load(slot, fmt, seq) \
+    ano_res_save_load(g_save_lifetime, (slot), (fmt), (seq))
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
@@ -70,6 +82,14 @@ static bool file_exists_stdio(const char *path)
         return false;
     fclose(f);
     return true;
+}
+
+// rmos_scan_dir callback: counts .tmp entries. ctx is int *.
+static void count_tmp_cb(const char *name, void *ctx)
+{
+    size_t n = strlen(name);
+    if (n >= 4 && strcmp(name + n - 4, ".tmp") == 0)
+        (*(int *)ctx)++;
 }
 
 static bool slurp_equals(mi_heap_t *heap, const char *logical, const void *data, size_t len)
@@ -311,24 +331,14 @@ static void test_write_and_quarantine(mi_heap_t *heap)
     CHECK(file_exists_stdio(broken), ".broken evidence exists");
     CHECK(ano_res_quarantine("anotest_res/cfg.bin") == -1, "re-quarantine refuses (absent)");
 
-#ifndef _WIN32
-    // No temp litter in the write directory.
+    // No temp litter in the write directory. rmos_scan_dir, not a #ifndef _WIN32 dirent block:
+    // this oracle used to be compiled out on Windows -- the one platform whose ReplaceFileW
+    // path is likeliest to strand a temp, i.e. exactly where it needed to run.
     char wdir[MAXPATH + 16];
     snprintf(wdir, sizeof wdir, "%s/anotest_res", user.str);
-    DIR *d = opendir(wdir);
-    CHECK(d != NULL, "write dir opens");
-    if (d) {
-        struct dirent *e;
-        int tmps = 0;
-        while ((e = readdir(d)) != NULL) {
-            size_t n = strlen(e->d_name);
-            if (n >= 4 && strcmp(e->d_name + n - 4, ".tmp") == 0)
-                tmps++;
-        }
-        closedir(d);
-        CHECK(tmps == 0, "no .tmp litter after writes");
-    }
-#endif
+    int tmps = 0;
+    CHECK(rmos_scan_dir(wdir, count_tmp_cb, &tmps) == 0, "write dir scans");
+    CHECK(tmps == 0, "no .tmp litter after writes");
 }
 
 static void test_saves(void)
@@ -456,7 +466,9 @@ static void test_handles(mi_heap_t *heap)
 
     // Pooled release: copy-out, caller owns, views die.
     void *blk = NULL; size_t bs = 0;
+    ano_res_read_end(&g_read);
     CHECK(ano_res_release(h3, &blk, &bs) == 0, "pooled release");
+    CHECK(ano_res_read_begin(&g_reader, &g_read) == 0, "read resumes after pooled release");
     CHECK(bs == sizeof own && blk != NULL, "released size");
     CHECK(memcmp(blk, own, sizeof own) == 0, "released content");
     CHECK(((uint8_t *)blk)[sizeof own] == 0, "released guard NUL");
@@ -471,7 +483,9 @@ static void test_handles(mi_heap_t *heap)
     const char *resident = anostr_bytes(&bv);
     size_t bigLen = anostr_len(bv);
     CHECK(bigLen > (1u << 20), "big payload is direct-class");
+    ano_res_read_end(&g_read);
     CHECK(ano_res_release(hb, &blk, &bs) == 0, "direct release");
+    CHECK(ano_res_read_begin(&g_reader, &g_read) == 0, "read resumes after direct release");
     CHECK(blk == (void *)resident && bs == bigLen, "direct release is zero-copy");
     ano_aligned_free(blk);
 
@@ -737,6 +751,11 @@ int main(void)
 
     CHECK(ano_res_init() == 0, "ano_res_init");
     CHECK(ano_res_init() == 0, "repeat init is a no-op success");
+    g_engine_lifetime = ano_res_lifetime_engine();
+    CHECK(ano_res_domain_open(ANO_RES_LIFETIME_SAVE_CONFIG, &g_save_lifetime) == 0,
+          "save domain");
+    CHECK(ano_res_reader_register(&g_reader) == 0, "reader register");
+    CHECK(ano_res_read_begin(&g_reader, &g_read) == 0, "read begin");
     gc_check_and_clean();
 
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
@@ -752,6 +771,11 @@ int main(void)
         test_save_load();
     }
     cleanup();
+    ano_res_read_end(&g_read);
+    CHECK(ano_res_reader_unregister(&g_reader) == 0, "reader unregister");
+    CHECK(ano_res_domain_retire(g_save_lifetime) == 0, "save domain retire");
+    (void)ano_res_collect();
+    CHECK(ano_res_shutdown() == 0, "resource shutdown");
 
     if (failures == 0) { printf("anotest_resources: all checks passed\n"); return 0; }
     printf("anotest_resources: %d check(s) failed\n", failures);
