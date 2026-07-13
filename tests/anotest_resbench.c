@@ -12,7 +12,7 @@
  *   (c) direct-class pointer-equality release plus conditioned-ingest throughput.
  * These workloads preserve the Phase D evidence but do not represent the complete
  * allocator hierarchy contest or establish any named contestant. DISABLED in ctest;
- * historical numbers live in RESOURCE_MANAGER_IMPL.md. Exit 0 == pass. */
+ * historical numbers live in docs/resourcemgr/RESOURCE_MANAGER_IMPL.md. Exit 0 == pass. */
 
 #include <stdio.h>
 #include <stdint.h>
