@@ -34,6 +34,14 @@
 #pragma GCC diagnostic pop
 
 static int failures = 0;
+static ano_res_lifetime g_lifetime;
+static ano_res_reader g_reader = { .lane = ANO_RES_READER_NONE };
+static ano_res_read g_read;
+#define ano_res_get(path) ano_res_get(g_lifetime, (path))
+#define ano_res_unload(handle) ano_res_unload(g_lifetime, (handle))
+#define ano_resgfx_model(handle) ano_resgfx_model(g_lifetime, &g_read, (handle))
+#define ano_resgfx_scene(handle) ano_resgfx_scene(&g_read, (handle))
+#define ano_resgfx_image(handle) ano_resgfx_image(g_lifetime, &g_read, (handle))
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
@@ -114,15 +122,28 @@ static size_t base64(const uint8_t *in, size_t n, char *out)
 
 // ---------------------------------------------------------------------------------------------
 
+// Ground truth for one ingested scene. The shape checks below gate only the DEREFERENCES that
+// follow them, and only on THIS scene: keying that gate on the global `failures` (as this did)
+// silently skipped every per-field assertion once any unrelated earlier check had failed, so a
+// single staging typo could hide every wrong vertex in the file. An unusable shape is now a
+// LOUD failure, never a quiet skip.
 static void check_scene(anoresgfx_scene s, const char *variant)
 {
     printf("  checking scene variant: %s\n", variant);
+    int shape = failures;
     CHECK(s.vertex_count == 3 && s.index_count == 3, "counts: geometry");
     CHECK(s.prim_count == 1 && s.mesh_count == 1, "counts: prims/meshes");
     CHECK(s.node_count == 2 && s.child_count == 1 && s.root_count == 1, "counts: nodes");
     CHECK(s.material_count == 1 && s.image_count == 1, "counts: materials/images");
-    if (failures)
+
+    bool derefable = failures == shape && s.vertices && s.indices && s.prims && s.meshes
+                     && s.nodes && s.children && s.roots && s.materials && s.images;
+    if (!derefable) {
+        printf("FAIL: scene shape unusable, ground truth NOT checked (%s) (%s:%d)\n",
+               variant, __FILE__, __LINE__);
+        failures++;
         return;
+    }
 
     for (int v = 0; v < 3; v++) {
         CHECK(memcmp(s.vertices[v].position, TRI_POS + v * 3, 12) == 0, "vertex position");
@@ -327,6 +348,7 @@ int main(void)
     (void)logAlive;
 
     CHECK(ano_res_init() == 0, "ano_res_init");
+    g_lifetime = ano_res_lifetime_engine();
 #ifdef ANO_TEST_ASSETS
     {
         ano_fspath assets = {0};
@@ -337,11 +359,17 @@ int main(void)
         }
     }
 #endif
+    CHECK(ano_res_reader_register(&g_reader) == 0, "reader register");
+    CHECK(ano_res_read_begin(&g_reader, &g_read) == 0, "read begin");
 
     test_model_ingest();
     test_image_decode();
     test_real_assets();
     cleanup();
+    ano_res_read_end(&g_read);
+    CHECK(ano_res_reader_unregister(&g_reader) == 0, "reader unregister");
+    (void)ano_res_collect();
+    CHECK(ano_res_shutdown() == 0, "resource shutdown");
 
     if (failures == 0) { printf("anotest_resgfx: all checks passed\n"); return 0; }
     printf("anotest_resgfx: %d check(s) failed\n", failures);

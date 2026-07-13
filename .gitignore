@@ -67,6 +67,7 @@ poetry.lock
 docs/**/*.pdf
 docs/artifacts/*
 docs/study/
+docs/.archive/
 
 # IDE-specific directories
 .vscode/
@@ -141,3 +142,4 @@ tools/ucd/
 !.claude/hooks/**
 !.claude/tools/
 !.claude/tools/**
+.claude/skills/coding-campaign/

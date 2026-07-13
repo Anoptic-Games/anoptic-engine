@@ -4,9 +4,9 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // The platform-free resource core: namespace and mounts, the logical-path grammar, the
-// gulp primitive, the durable write protocol, and gamesave commits. Registry/handles
-// live in resources_registry.c; parsing lives under graphics/. OS calls go through
-// resources_os.h only.
+// durable write protocol, and gamesave commits. The READ side (candidate walk, sinks,
+// source dispatch, ranges) lives in resources_read.c; registry/handles in
+// resources_registry.c; parsing under graphics/. OS calls go through resources_os.h only.
 
 #include <anoptic_resources.h>
 
@@ -30,6 +30,13 @@ typedef struct res_mount {
     anostr_t   prefix;      // canonical: empty, or "seg/.../" with one trailing '/'
 } res_mount;
 
+typedef struct res_save_lane {
+    struct res_save_lane *next;
+    anothread_mutex_t mutex;
+    size_t slot_len;
+    char slot[MAXPATH];
+} res_save_lane;
+
 static struct {
     bool  init_done;
     int   init_result;
@@ -39,7 +46,8 @@ static struct {
     int        mount_count;
     mi_heap_t *heap;                    // module heap: interned prefixes live here
     anostr_intern_t  *intern;
-    anothread_mutex_t save_mtx;
+    anothread_mutex_t save_map_mtx;
+    res_save_lane *save_lanes;
 } g_res;
 
 static _Atomic bool     g_frozen;
@@ -50,10 +58,49 @@ void (*res_fault_hook)(res_fault_step step);
 #endif
 
 bool res_ready(void)            { return g_res.init_done && g_res.init_result == 0; }
-void res_save_lock(void)        { ano_mutex_lock(&g_res.save_mtx); }
-void res_save_unlock(void)      { ano_mutex_unlock(&g_res.save_mtx); }
 void res_freeze(void)           { atomic_store(&g_frozen, true); }
 ano_fspath res_write_root(void) { return res_ready() ? g_res.write_root : (ano_fspath){0}; }
+
+void (*res_test_save_enter_hook)(const char *slot);
+
+int res_save_begin(const char *slot, size_t slot_len, res_save_guard *guard)
+{
+    if (!res_ready() || slot == NULL || guard == NULL || slot_len == 0 || slot_len >= MAXPATH)
+        return -1;
+    ano_mutex_lock(&g_res.save_map_mtx);
+    res_save_lane *lane = g_res.save_lanes;
+    while (lane != NULL
+           && (lane->slot_len != slot_len || memcmp(lane->slot, slot, slot_len) != 0))
+        lane = lane->next;
+    if (lane == NULL) {
+        lane = mi_zalloc(sizeof *lane);
+        if (lane == NULL || ano_mutex_init(&lane->mutex, NULL) != 0) {
+            mi_free(lane);
+            ano_mutex_unlock(&g_res.save_map_mtx);
+            return -1;
+        }
+        memcpy(lane->slot, slot, slot_len);
+        lane->slot[slot_len] = '\0';
+        lane->slot_len = slot_len;
+        lane->next = g_res.save_lanes;
+        g_res.save_lanes = lane;
+    }
+    ano_mutex_unlock(&g_res.save_map_mtx);
+    ano_mutex_lock(&lane->mutex);
+    guard->lane = lane;
+    if (res_test_save_enter_hook != NULL)
+        res_test_save_enter_hook(lane->slot);
+    return 0;
+}
+
+void res_save_end(res_save_guard *guard)
+{
+    if (guard == NULL || guard->lane == NULL)
+        return;
+    res_save_lane *lane = guard->lane;
+    guard->lane = NULL;
+    ano_mutex_unlock(&lane->mutex);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Path grammar.
@@ -162,45 +209,31 @@ ano_fspath res_join(const ano_fspath *root, const char *rel, size_t rel_len)
 }
 
 // ---------------------------------------------------------------------------------------------
-// The namespace walk.
+// The mount table, for the candidate walk in resources_read.c. Owner-written at mount,
+// frozen at first read, read-only afterwards -- so the walk needs no lock.
 
-static bool prefix_applies(anostr_t prefix, const char *logical, size_t len,
-                           const char **rem, size_t *rem_len)
+int res_mount_count(void)
 {
-    size_t plen = anostr_len(prefix);
-    if (plen == 0) {
-        *rem = logical;
-        *rem_len = len;
-        return true;
-    }
-    if (len <= plen || memcmp(anostr_bytes(&prefix), logical, plen) != 0)
-        return false;
-    *rem = logical + plen;
-    *rem_len = len - plen;
-    return true;
+    return res_ready() ? g_res.mount_count : 0;
 }
 
-int res_candidates(const char *logical, size_t len, ano_fspath *out, int cap)
+ano_fspath res_mount_root(int i)
 {
-    if (!res_ready() || cap <= 0)
-        return 0;
-    int n = 0;
-    ano_fspath p = res_join(&g_res.write_root, logical, len);
-    if (p.length && n < cap)
-        out[n++] = p;
-    for (int i = g_res.mount_count - 1; i >= 0; i--) {      // newest-first
-        const char *rem;
-        size_t rlen;
-        if (!prefix_applies(g_res.mounts[i].prefix, logical, len, &rem, &rlen))
-            continue;
-        p = res_join(&g_res.mounts[i].root, rem, rlen);
-        if (p.length && n < cap)
-            out[n++] = p;
-    }
-    p = res_join(&g_res.base, logical, len);
-    if (p.length && n < cap)
-        out[n++] = p;
-    return n;
+    if (!res_ready() || i < 0 || i >= g_res.mount_count)
+        return (ano_fspath){0};
+    return g_res.mounts[i].root;
+}
+
+anostr_t res_mount_prefix(int i)
+{
+    if (!res_ready() || i < 0 || i >= g_res.mount_count)
+        return anostr_empty();
+    return g_res.mounts[i].prefix;
+}
+
+ano_fspath res_base_root(void)
+{
+    return res_ready() ? g_res.base : (ano_fspath){0};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -310,7 +343,7 @@ int ano_res_init(void)
         return -1;
     }
     anostr_intern_t *intern = anostr_intern_make(heap);
-    if (intern == NULL || ano_mutex_init(&g_res.save_mtx, NULL) != 0) {
+    if (intern == NULL || ano_mutex_init(&g_res.save_map_mtx, NULL) != 0) {
         ano_log(ANO_ERROR, "resources: init failed, intern table or mutex");
         mi_heap_destroy(heap);
         return -1;
@@ -323,6 +356,7 @@ int ano_res_init(void)
     atomic_store(&g_frozen, false);
     if (res_registry_init() != 0) {
         ano_log(ANO_ERROR, "resources: init failed, registry");
+        ano_mutex_destroy(&g_res.save_map_mtx);
         mi_heap_destroy(heap);
         g_res.heap = NULL;
         return -1;
@@ -334,6 +368,33 @@ int ano_res_init(void)
     if (swept > 0)
         ano_log(ANO_WARN, "resources: swept %d stranded write-protocol temp(s)", swept);
     g_res.init_result = 0;
+    return 0;
+}
+
+// Inputs: none. Output: 0 after registry readers, domains, namespace metadata, and locks
+// are gone; -1 while registered readers still pin registry reclamation. Invariant: the
+// init thread calls shutdown, matching the owner-thread heap creation contract.
+int ano_res_shutdown(void)
+{
+    if (!g_res.init_done)
+        return 0;
+    if (g_res.init_result == 0 && res_registry_shutdown() != 0)
+        return -1;
+    if (g_res.heap != NULL)
+        mi_heap_destroy(g_res.heap);
+    if (g_res.init_result == 0) {
+        res_save_lane *lane = g_res.save_lanes;
+        while (lane != NULL) {
+            res_save_lane *next = lane->next;
+            ano_mutex_destroy(&lane->mutex);
+            mi_free(lane);
+            lane = next;
+        }
+        ano_mutex_destroy(&g_res.save_map_mtx);
+    }
+    g_res = (typeof(g_res)){0};
+    atomic_store(&g_frozen, false);
+    atomic_store(&g_tmp_counter, 1);
     return 0;
 }
 
@@ -433,106 +494,6 @@ bool ano_res_exists(const char *logical)
 }
 
 // ---------------------------------------------------------------------------------------------
-// The gulp primitive and the unowned read.
-
-int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
-{
-    rmos_file f;
-    if (rmos_read_open(abs, &f) != 0)
-        return -1;
-
-    int64_t hint = rmos_size_hint(f);           // a HINT: the loop believes only EOF
-    size_t cap = hint > 0 ? (size_t)hint + 1 : 4096;
-    uint8_t *buf = heap ? mi_heap_malloc_aligned(heap, cap, ANO_CACHE_LINE)
-                        : mi_malloc_aligned(cap, ANO_CACHE_LINE);
-    if (buf == NULL) {
-        rmos_read_close(f);
-        return -2;
-    }
-    size_t size = 0;
-    for (;;) {
-        size_t space = cap - 1 - size;
-        if (space == 0) {
-            if (cap > SIZE_MAX / 2) {
-                mi_free(buf);
-                rmos_read_close(f);
-                return -2;
-            }
-            uint8_t *grown = heap ? mi_heap_realloc_aligned(heap, buf, cap * 2, ANO_CACHE_LINE)
-                                  : mi_realloc_aligned(buf, cap * 2, ANO_CACHE_LINE);
-            if (grown == NULL) {
-                mi_free(buf);
-                rmos_read_close(f);
-                return -2;
-            }
-            buf = grown;
-            cap *= 2;
-            space = cap - 1 - size;
-        }
-        size_t want = space < RMOS_CHUNK_MAX ? space : RMOS_CHUNK_MAX;
-        size_t got  = 0;
-        if (rmos_read_chunk(f, buf + size, want, &got) != 0) {
-            mi_free(buf);
-            rmos_read_close(f);
-            return -2;
-        }
-        if (got == 0)
-            break;                              // EOF, the only truth
-        size += got;
-    }
-    rmos_read_close(f);
-    buf[size] = 0;                              // the guard NUL
-    if (cap > size + 1) {
-        uint8_t *tight = heap ? mi_heap_realloc_aligned(heap, buf, size + 1, ANO_CACHE_LINE)
-                              : mi_realloc_aligned(buf, size + 1, ANO_CACHE_LINE);
-        if (tight != NULL)
-            buf = tight;
-    }
-    *out      = buf;
-    *out_size = size;
-    return 0;
-}
-
-anostr_t ano_res_slurp(mi_heap_t *heap, const char *logical)
-{
-    size_t len;
-    if (heap == NULL || res_path_validate(logical, &len) != 0) {
-        ano_log(ANO_ERROR, "resources: slurp refused (bad heap or path)");
-        return anostr_empty();
-    }
-    if (!res_ready()) {
-        ano_log(ANO_ERROR, "resources: slurp before init: %s", logical);
-        return anostr_empty();
-    }
-    res_freeze();
-    ano_fspath cand[ANO_RES_MAX_MOUNTS + 2];
-    int n = res_candidates(logical, len, cand, ANO_RES_MAX_MOUNTS + 2);
-    for (int i = 0; i < n; i++) {
-        void  *buf  = NULL;
-        size_t size = 0;
-        int rc = res_read_all(heap, cand[i].str, &buf, &size);
-        if (rc == -1)
-            continue;                           // this root cannot even open it
-        if (rc != 0) {
-            ano_log(ANO_ERROR, "resources: read failed mid-file: %s", cand[i].str);
-            return anostr_empty();
-        }
-        if (size > UINT32_MAX) {
-            ano_log(ANO_ERROR, "resources: slurp cannot express %zu bytes: %s",
-                    size, logical);
-            mi_free(buf);
-            return anostr_empty();
-        }
-        anostr_t v = anostr_view(buf, size);
-        if (size <= ANOSTR_INLINE_CAP)
-            mi_free(buf);                       // the value is self-contained now
-        return v;
-    }
-    ano_log(ANO_ERROR, "resources: not found in any mount: %s", logical);
-    return anostr_empty();
-}
-
-// ---------------------------------------------------------------------------------------------
 // The durable write protocol.
 
 int res_write_protocol(const char *final_abs, const res_iovec *parts, int nparts)
@@ -562,6 +523,7 @@ int res_write_protocol(const char *final_abs, const res_iovec *parts, int nparts
     }
     if (!open_ok)
         return -1;
+    RES_FAULT(RES_FAULT_AFTER_OPEN_EXCL);       // the state that strands an orphan temp
 
     for (int i = 0; i < nparts; i++) {
         if (parts[i].len == 0)
@@ -587,6 +549,7 @@ int res_write_protocol(const char *final_abs, const res_iovec *parts, int nparts
         ano_log(ANO_ERROR, "resources: parent-dir fsync failed after replacing %s "
                            "(rename landed; the directory entry may not be durable yet)",
                 final_abs);
+    RES_FAULT(RES_FAULT_AFTER_DIR_SYNC);
     return 0;
 
 fail_open:
@@ -659,15 +622,15 @@ static uint32_t get32(const uint8_t *p) { uint32_t v = 0; for (int i = 3; i >= 0
 static uint64_t get64(const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = v << 8 | p[i]; return v; }
 
 void res_save_frame(uint8_t hdr[RES_SAVE_HDR_BYTES], uint8_t ftr[RES_SAVE_FTR_BYTES],
-                    uint32_t format_version, const void *payload, size_t payload_len,
-                    uint64_t seq)
+                    uint32_t format_version, uint32_t min_reader_version,
+                    const void *payload, size_t payload_len, uint64_t seq)
 {
     memcpy(hdr, "ANOS", 4);
     put16(hdr + 4, RES_SAVE_CONTAINER_VERSION);
     hdr[6] = RES_SAVE_HASH_FNV1A64;
     hdr[7] = 0;                                 // flags
     put32(hdr + 8, format_version);
-    put32(hdr + 12, format_version);            // min_reader_version, conservative
+    put32(hdr + 12, min_reader_version);
     put64(hdr + 16, (uint64_t)payload_len);
     put64(hdr + 24, seq);
     put64(hdr + 32, res_fnv1a64(hdr, 32));
@@ -678,8 +641,8 @@ void res_save_frame(uint8_t hdr[RES_SAVE_HDR_BYTES], uint8_t ftr[RES_SAVE_FTR_BY
 }
 
 int res_save_validate(const uint8_t *bytes, size_t len, uint32_t *out_format_version,
-                      uint64_t *out_seq, const uint8_t **out_payload,
-                      size_t *out_payload_len)
+                      uint32_t *out_min_reader_version, uint64_t *out_seq,
+                      const uint8_t **out_payload, size_t *out_payload_len)
 {
     if (bytes == NULL || len < RES_SAVE_HDR_BYTES + RES_SAVE_FTR_BYTES)
         return -1;
@@ -705,18 +668,22 @@ int res_save_validate(const uint8_t *bytes, size_t len, uint32_t *out_format_ver
         return -2;
     if (get64(ftr) != res_fnv1a64(payload, (size_t)payload_len))
         return -2;
-    if (out_format_version) *out_format_version = get32(bytes + 8);
-    if (out_seq)            *out_seq            = get64(bytes + 24);
+    uint32_t format_version = get32(bytes + 8);
+    uint32_t min_reader_version = get32(bytes + 12);
+    if (format_version == 0 || min_reader_version == 0 || min_reader_version > format_version)
+        return -1;
+    if (out_format_version)     *out_format_version     = format_version;
+    if (out_min_reader_version) *out_min_reader_version = min_reader_version;
+    if (out_seq)                *out_seq                = get64(bytes + 24);
     if (out_payload)        *out_payload        = payload;
     if (out_payload_len)    *out_payload_len    = (size_t)payload_len;
     return 0;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Gamesave commits. Serialized on one internal mutex; every generation is a brand-new
-// filename, verified through a fresh handle. NOTHING older is ever touched: saves are
-// user data and only the user deletes them (ano_res_save_delete). ANO_RES_SAVE_KEEP
-// survives as the advisory bulk hint for ano_res_save_stats callers.
+// Gamesave commits. Same-slot operations serialize; distinct slots proceed independently.
+// Every generation is a brand-new filename verified through a fresh handle. NOTHING older
+// is ever touched: saves are user data and only the user deletes them.
 
 typedef struct save_scan {
     const char *slot;
@@ -761,7 +728,7 @@ static void save_scan_cb(const char *name, void *ctx)
 }
 
 static int save_commit_locked(const char *slot, size_t slot_len, uint32_t format_version,
-                              const void *payload, size_t size)
+                              uint32_t min_reader_version, const void *payload, size_t size)
 {
     // saves/ under the write root, created if absent.
     ano_fspath saves = res_join(&g_res.write_root, "saves", 5);
@@ -795,7 +762,7 @@ static int save_commit_locked(const char *slot, size_t slot_len, uint32_t format
     }
 
     uint8_t hdr[RES_SAVE_HDR_BYTES], ftr[RES_SAVE_FTR_BYTES];
-    res_save_frame(hdr, ftr, format_version, payload, size, seq);
+    res_save_frame(hdr, ftr, format_version, min_reader_version, payload, size, seq);
     res_iovec parts[3] = { { hdr, sizeof hdr }, { payload, size }, { ftr, sizeof ftr } };
     if (res_write_protocol(final.str, parts, 3) != 0) {
         ano_log(ANO_ERROR, "resources: save commit failed for slot %s", slot);
@@ -811,11 +778,11 @@ static int save_commit_locked(const char *slot, size_t slot_len, uint32_t format
         }
         void  *bytes = NULL;
         size_t blen  = 0;
-        uint32_t vfmt = 0;
+        uint32_t vfmt = 0, vmin = 0;
         uint64_t vseq = 0;
         if (res_read_all(scratch, final.str, &bytes, &blen) != 0
-            || res_save_validate(bytes, blen, &vfmt, &vseq, NULL, NULL) != 0
-            || vfmt != format_version || vseq != seq) {
+            || res_save_validate(bytes, blen, &vfmt, &vmin, &vseq, NULL, NULL) != 0
+            || vfmt != format_version || vmin != min_reader_version || vseq != seq) {
             ano_log(ANO_ERROR, "resources: save verify FAILED for %s; removing it, "
                                "prior generations untouched", rel);
             rmos_unlink(final.str);
@@ -828,22 +795,33 @@ static int save_commit_locked(const char *slot, size_t slot_len, uint32_t format
     return 0;
 }
 
-int ano_res_save_commit(const char *slot, uint32_t format_version,
-                        const void *payload, size_t size)
+int ano_res_save_commit_ex(const char *slot, uint32_t format_version,
+                           uint32_t min_reader_version, const void *payload, size_t size)
 {
     size_t slot_len;
-    if (res_segment_validate(slot, &slot_len) != 0 || (payload == NULL && size != 0)) {
-        ano_log(ANO_ERROR, "resources: save commit refused (bad slot or payload)");
+    if (res_segment_validate(slot, &slot_len) != 0 || (payload == NULL && size != 0)
+        || format_version == 0 || min_reader_version == 0
+        || min_reader_version > format_version) {
+        ano_log(ANO_ERROR, "resources: save commit refused (bad slot, version, or payload)");
         return -1;
     }
     if (!res_ready()) {
         ano_log(ANO_ERROR, "resources: save commit before init");
         return -1;
     }
-    ano_mutex_lock(&g_res.save_mtx);
-    int rc = save_commit_locked(slot, slot_len, format_version, payload, size);
-    ano_mutex_unlock(&g_res.save_mtx);
+    res_save_guard guard = {0};
+    if (res_save_begin(slot, slot_len, &guard) != 0)
+        return -1;
+    int rc = save_commit_locked(slot, slot_len, format_version, min_reader_version,
+                                payload, size);
+    res_save_end(&guard);
     return rc;
+}
+
+int ano_res_save_commit(const char *slot, uint32_t format_version,
+                        const void *payload, size_t size)
+{
+    return ano_res_save_commit_ex(slot, format_version, format_version, payload, size);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -871,10 +849,20 @@ static void save_stats_cb(const char *name, void *ctx)
     rmos_file f;
     if (rmos_read_open(abs, &f) != 0)
         return;                                 // counted, size unknown
-    int64_t sz = rmos_size_hint(f);
+    uint8_t chunk[4096];
+    uint64_t total = 0;
+    for (;;) {
+        size_t got = 0;
+        if (rmos_read_chunk(f, chunk, sizeof chunk, &got) != 0) {
+            total = 0;
+            break;
+        }
+        if (got == 0)
+            break;
+        total += got;
+    }
     rmos_read_close(f);
-    if (sz > 0)
-        s->bytes += (uint64_t)sz;
+    s->bytes += total;
 }
 
 int ano_res_save_stats(const char *slot, uint32_t *generations, uint64_t *bytes)
@@ -887,9 +875,11 @@ int ano_res_save_stats(const char *slot, uint32_t *generations, uint64_t *bytes)
     if (saves.length == 0)
         return -1;
     save_stats_scan s = { .slot = slot, .slot_len = slot_len, .dir = saves.str };
-    ano_mutex_lock(&g_res.save_mtx);
+    res_save_guard guard = {0};
+    if (res_save_begin(slot, slot_len, &guard) != 0)
+        return -1;
     (void)rmos_scan_dir(saves.str, save_stats_cb, &s);  // absent dir = zero generations
-    ano_mutex_unlock(&g_res.save_mtx);
+    res_save_end(&guard);
     if (generations) *generations = s.count;
     if (bytes)       *bytes       = s.bytes;
     return 0;
@@ -909,9 +899,11 @@ int ano_res_save_delete(const char *slot, uint64_t seq)
     ano_fspath vic = res_join(&wroot, rel, (size_t)w);
     if (vic.length == 0)
         return -1;
-    ano_mutex_lock(&g_res.save_mtx);
+    res_save_guard guard = {0};
+    if (res_save_begin(slot, slot_len, &guard) != 0)
+        return -1;
     int rc = rmos_unlink(vic.str);
-    ano_mutex_unlock(&g_res.save_mtx);
+    res_save_end(&guard);
     if (rc != 0)
         return -1;
     ano_log(ANO_INFO, "resources: user deleted save %s", rel);

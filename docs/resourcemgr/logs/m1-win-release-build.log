@@ -1,0 +1,233 @@
+TOOLCHAIN_PATH is set to: C:\Users\Pyrus\Code\anoptic-engine\cmake\platforms\release_clang-windows-x64-mingw.cmake
+-- Toolchain file specified: C:\Users\Pyrus\Code\anoptic-engine\cmake\platforms\release_clang-windows-x64-mingw.cmake
+-- System name: Windows
+-- System version: 
+-- System processor: x86_64
+-- C Compiler: C:/msys64/clang64/bin/clang.exe
+-- C++ Compiler: C:/msys64/clang64/bin/clang++.exe
+-- 64-bit compiler detected.
+-- Release link-time optimization: ON
+-- 
+-- Architecture: x64
+-- 
+-- Library name     : mimalloc
+-- Version          : 2.3.2
+-- Build type       : release
+-- C Compiler       : C:/msys64/clang64/bin/clang.exe
+-- Compiler flags   : -Wall;-Wextra;-Wpedantic;-Wno-unknown-pragmas;-fvisibility=hidden;-Wstrict-prototypes;-Wno-static-in-inline;-ftls-model=initial-exec
+-- Compiler defines : MI_CMAKE_BUILD_TYPE=release;MI_BUILD_RELEASE
+-- Link libraries   : psapi;shell32;user32;advapi32;bcrypt
+-- Build targets    : static
+-- 
+-- Including Win32 support
+-- Shader compiler: glslc
+-- Configuring done (1.5s)
+-- Generating done (0.3s)
+-- Build files have been written to: C:/Users/Pyrus/Code/anoptic-engine/build/Release
+[0/2] Re-checking globbed directories...
+[1/2] Scrubbing object files (whole rebuild ahead)
+-- ano_scrub: removed 164 object files from C:/Users/Pyrus/Code/anoptic-engine/build/Release
+[0/2] Re-checking globbed directories...
+[1/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc-aligned.c.obj
+[2/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc-posix.c.obj
+[3/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbbox.c.obj
+[4/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbdf.c.obj
+[5/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftcid.c.obj
+[6/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftfstype.c.obj
+[7/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftgasp.c.obj
+[8/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftglyph.c.obj
+[9/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftgxval.c.obj
+[10/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftinit.c.obj
+[11/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftmm.c.obj
+[12/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftotval.c.obj
+[13/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftpatent.c.obj
+[14/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftpfr.c.obj
+[15/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftstroke.c.obj
+[16/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftsynth.c.obj
+[17/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/fttype1.c.obj
+[18/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc.c.obj
+[19/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftwinfnt.c.obj
+[20/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/bdf/bdf.c.obj
+[21/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/bitmap.c.obj
+[22/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/bzip2/ftbzip2.c.obj
+[23/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/libc.c.obj
+[24/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/heap.c.obj
+[25/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/arena.c.obj
+[26/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbitmap.c.obj
+[27/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/cache/ftcache.c.obj
+[28/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/random.c.obj
+[29/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/options.c.obj
+[30/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/cff/cff.c.obj
+[31/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/init.c.obj
+[32/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/os.c.obj
+[33/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/segment-map.c.obj
+[34/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/cid/type1cid.c.obj
+[35/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/gzip/ftgzip.c.obj
+[36/191] Building C object CMakeFiles/anoptic_lz4.dir/external/lz4/lz4.c.obj
+[37/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/lzw/ftlzw.c.obj
+[38/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/pcf/pcf.c.obj
+[39/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/pfr/pfr.c.obj
+[40/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/psaux/psaux.c.obj
+[41/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/page.c.obj
+[42/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/pshinter/pshinter.c.obj
+[43/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/segment.c.obj
+[44/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/psnames/psnames.c.obj
+[45/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/raster/raster.c.obj
+[46/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/sdf/sdf.c.obj
+[47/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/sfnt/sfnt.c.obj
+[48/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/prim/prim.c.obj
+[49/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/smooth/smooth.c.obj
+[50/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/autofit/autofit.c.obj
+[51/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbase.c.obj
+[52/191] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/stats.c.obj
+[53/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/svg/svg.c.obj
+[54/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/truetype/truetype.c.obj
+[55/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/type1/type1.c.obj
+[56/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/type42/type42.c.obj
+[57/191] Building C object external/freetype/CMakeFiles/freetype.dir/src/winfonts/winfnt.c.obj
+[58/191] Building C object external/freetype/CMakeFiles/freetype.dir/builds/windows/ftsystem.c.obj
+[59/191] Building C object external/freetype/CMakeFiles/freetype.dir/builds/windows/ftdebug.c.obj
+[60/191] Building RC object external/freetype/CMakeFiles/freetype.dir/src/base/ftver.rc.obj
+[61/191] Building C object CMakeFiles/anoptic_core.dir/src/memory/memalign_win64.c.obj
+[62/191] Building C object CMakeFiles/anoptic_core.dir/src/memory/memory.c.obj
+[63/191] Building C object CMakeFiles/anoptic_core.dir/src/memory/pools.c.obj
+[64/191] Building C object CMakeFiles/anoptic_core.dir/src/memory/stripe.c.obj
+[65/191] Building C object CMakeFiles/anoptic_core.dir/src/collections/collections.c.obj
+[66/191] Building C object CMakeFiles/anoptic_core.dir/src/threads/threads.c.obj
+[67/191] Building C object CMakeFiles/anoptic_core.dir/src/threads/threads_bridges.c.obj
+[68/191] Building C object CMakeFiles/anoptic_core.dir/src/time/time.c.obj
+[69/191] Building C object CMakeFiles/anoptic_core.dir/src/time/time_win64.c.obj
+[70/191] Linking C static library libanoptic_lz4.a
+[71/191] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings.c.obj
+[72/191] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_ops.c.obj
+[73/191] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_intern.c.obj
+[74/191] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_utf.c.obj
+[75/191] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_collate.c.obj
+[76/191] Building C object CMakeFiles/anoptic_core.dir/src/filesystem/filesystem.c.obj
+[77/191] Building C object CMakeFiles/anoptic_core.dir/src/filesystem/filesystem_win64.c.obj
+[78/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_win64.c.obj
+[79/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_core.c.obj
+[80/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_read.c.obj
+[81/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_registry.c.obj
+[82/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_ident.c.obj
+[83/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_ext.c.obj
+[84/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_place.c.obj
+[85/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_models.c.obj
+[86/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_tel.c.obj
+[87/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_block.c.obj
+[88/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_stream.c.obj
+[89/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_reload.c.obj
+[90/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/audio/res_audio.c.obj
+[91/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/script/res_script.c.obj
+[92/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/text/res_font.c.obj
+[93/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/world/res_level.c.obj
+[94/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/codec/res_codec.c.obj
+[95/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/pack/res_pack.c.obj
+[96/191] Building C object CMakeFiles/anoptic_core.dir/src/config/config.c.obj
+[97/191] Building C object CMakeFiles/anoptic_core.dir/src/log/log_core.c.obj
+[98/191] Building C object CMakeFiles/anoptic_core.dir/src/log/log_crash.c.obj
+[99/191] Building C object CMakeFiles/anoptic_core.dir/src/log/log_crash_win64.c.obj
+[100/191] Building C object CMakeFiles/anoptic_core.dir/src/mesh/ano_meshoptimizer.c.obj
+[101/191] Building C object CMakeFiles/anoptic_core.dir/src/text/text.c.obj
+[102/191] Building C object CMakeFiles/anoptic_core.dir/src/text/text_bake.c.obj
+[103/191] Building C object CMakeFiles/anoptic_core.dir/src/text/text_gpos.c.obj
+[104/191] Building C object CMakeFiles/anoptic_core.dir/src/text/text_raster_ref.c.obj
+[105/191] Building C object CMakeFiles/anoptic_core.dir/src/text/text_shape.c.obj
+[106/191] Building C object CMakeFiles/anoptic_core.dir/src/audio/audio.c.obj
+[107/191] Building C object CMakeFiles/anoptic_core.dir/src/script/script.c.obj
+[108/191] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_build.c.obj
+[109/191] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_demo.c.obj
+[110/191] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_path.c.obj
+[111/191] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_raster_ref.c.obj
+[112/191] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_tiles.c.obj
+[113/191] Building C object CMakeFiles/anoptic_core.dir/src/render_bridge/ano_render_bridge.c.obj
+[114/191] Linking C static library external\mimalloc\libmimalloc.a
+[115/191] Linking C static library external\freetype\libfreetype.a
+[116/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/context.c.obj
+[117/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/init.c.obj
+[118/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/input.c.obj
+[119/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/monitor.c.obj
+[120/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/platform.c.obj
+[121/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/vulkan.c.obj
+[122/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/window.c.obj
+[123/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/egl_context.c.obj
+[124/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/osmesa_context.c.obj
+[125/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_init.c.obj
+[126/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_monitor.c.obj
+[127/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_window.c.obj
+[128/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_joystick.c.obj
+[129/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_module.c.obj
+[130/191] Building C object CMakeFiles/anoptic_core.dir/src/keybindings/keybindings.c.obj
+[131/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_time.c.obj
+[132/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_thread.c.obj
+[133/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_init.c.obj
+[134/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_joystick.c.obj
+[135/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_monitor.c.obj
+[136/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_window.c.obj
+[137/191] Building C object external/glfw/src/CMakeFiles/glfw.dir/wgl_context.c.obj
+[138/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vulkanMaster.c.obj
+[139/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/profiling.c.obj
+[140/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/update.c.obj
+[141/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/passes.c.obj
+[142/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/hiz.c.obj
+[143/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/record_views.c.obj
+[144/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/record.c.obj
+[145/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/submit.c.obj
+[146/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/slot_upload.c.obj
+[147/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/light_registry.c.obj
+[148/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_cache.c.obj
+[149/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_casters.c.obj
+[150/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_resources.c.obj
+[151/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_record.c.obj
+[152/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/scene_buffers.c.obj
+[153/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/bridge/apply.c.obj
+[154/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/bridge/producer.c.obj
+[155/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/render_api.c.obj
+[156/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/components.c.obj
+[157/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/window.c.obj
+[158/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/instance.c.obj
+[159/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/device.c.obj
+[160/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/swapchain.c.obj
+[161/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/attachments.c.obj
+[162/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/descriptors.c.obj
+[163/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/graphics/res_graphics.c.obj
+[164/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/commands.c.obj
+[165/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/cleanup.c.obj
+[166/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipeline.c.obj
+[167/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/layouts.c.obj
+[168/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/tonemap.c.obj
+[169/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/shadow_pipe.c.obj
+[170/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/compute.c.obj
+[171/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/flat.c.obj
+[172/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/transmission.c.obj
+[173/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/additive.c.obj
+[174/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vulkanConfig.c.obj
+[175/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vertex/vertex.c.obj
+[176/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/texture/texture.c.obj
+[177/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/gpu_alloc.c.obj
+[178/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/render_slots.c.obj
+[179/191] Building C object CMakeFiles/anoptic_pack.dir/tools/anopak/anopak.c.obj
+[180/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/geometry.c.obj
+[181/191] Linking C static library external\glfw\src\libglfw3.a
+[182/191] Building C object CMakeFiles/anoptic_core.dir/src/resources/world/res_world.c.obj
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:172:27: warning: passing 'const char *' to parameter of type 'const uint8_t *' (aka 'const unsigned char *') converts between pointers to integer types where one is of the unique plain 'char' type and the other is not [-Wpointer-sign]
+  172 |         valid = decode_v1(anostr_bytes(&payload), anostr_len(payload), state);
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:82:38: note: passing argument to parameter 'bytes' here
+   82 | static bool decode_v1(const uint8_t *bytes, size_t len, anoresworld_state *state)
+      |                                      ^
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:174:27: warning: passing 'const char *' to parameter of type 'const uint8_t *' (aka 'const unsigned char *') converts between pointers to integer types where one is of the unique plain 'char' type and the other is not [-Wpointer-sign]
+  174 |         valid = decode_v2(anostr_bytes(&payload), anostr_len(payload), state);
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:97:38: note: passing argument to parameter 'bytes' here
+   97 | static bool decode_v2(const uint8_t *bytes, size_t len, anoresworld_state *state)
+      |                                      ^
+2 warnings generated.
+[183/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/ui_raster.c.obj
+[184/191] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/text_raster.c.obj
+[185/191] Building C object CMakeFiles/anoptic_render.dir/src/render/gltf/ano_GltfParser.c.obj
+[186/191] Linking C static library libanoptic_core.a
+[187/191] Linking C static library libanoptic_render.a
+[188/191] Linking C executable anoptic_pack.exe
+[189/191] Building C object CMakeFiles/anopticengine.dir/src/engine/main.c.obj
+[190/191] Linking C executable anopticengine.exe
