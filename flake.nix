@@ -7,13 +7,13 @@
   #     release-linux-x64[-wayland|-x11]   debug-linux-x64[-wayland|-x11]
   #     release-headless-linux-x64         debug-headless-linux-x64
   #     release-linux-x64-anygpu (alias: .#anygpu)   debug-linux-x64-anygpu   bundled mesa ICDs
-  #   nix run .#nvidia|.#nvidia-debug      pure engine on the host NVIDIA driver (nixglhost)
   #     (same set with -aarch64 on ARM Linux; -macos-aarch64 on Apple Silicon)
   #     release-windows-x64 (alias: release-wsl)  debug-windows-x64  *-headless-windows-x64
+  #   nix run .#nvidia|.#nvidia-debug      pure engine on the host NVIDIA driver (nixglhost)
   #   nix build .#tests-headless           run a CTest suite in the sandbox (fails = red)
   #   nix build .#tests-asan|tests-tsan    sanitized non-GPU suite        (Linux)
-  #   nix build .#tests-full               full suite incl. Vulkan on lavapipe (Linux, experimental)
-  #   nix flake check                      all of the host's suites at once
+  #   nix build .#tests-full               full suite under Xvfb; device tests skip sans capable GPU (Linux)
+  #   nix flake check                      evaluates every output (suites are packages — build them)
   #
   # Impure side — your working tree, output in ./build/<label>/ like build.sh:
   #   nix run [-- N]                       dev-env wrapper around ./build.sh N (default 1):

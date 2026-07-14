@@ -3,7 +3,7 @@
 Branch `nix-anygpu`. Validation machine: Ubuntu 24.04 (glibc 2.39, X11/Cinnamon,
 `DISPLAY=:0`), NVIDIA open kernel module 590.48.01, RTX 3090 + RTX 3060, Nix 2.18.1,
 no `/run/opengl-driver` (foreign distro). This report closes out the runbook in
-`docs/nixfuckery.md`: every step was executed, the one previously-unexplained failure
+`docs/nix/nixfuckery.md`: every step was executed, the one previously-unexplained failure
 was root-caused (it was **not** a stale CMakeCache), and two engine bugs plus one
 packaging hole were fixed along the way.
 
@@ -39,7 +39,7 @@ design and now has runtime confirmation on hardware.
 
 ### 2. `glfwInit()` failure in dev-shell builds — the real cause (not a stale CMakeCache)
 
-`docs/nixfuckery.md` step 4 suspected a stale CMakeCache. Disproven: a from-scratch
+`docs/nix/nixfuckery.md` step 4 suspected a stale CMakeCache. Disproven: a from-scratch
 `build/` rebuild failed identically. The `glfwGetError()` diagnostic added at
 `src/vulkan_backend/instance/window.c:173` reported:
 
@@ -150,7 +150,7 @@ unaffected.
   pixel substrate, until a 1x-MSAA path exists.
 - **Store runs drop file logs** (`logs/` beside a read-only store binary,
   `src/filesystem/filesystem.c:40`). Pre-existing engine issue, explicitly out of scope
-  per `docs/nixfuckery.md`; stderr logging works.
+  per `docs/nix/nixfuckery.md`; stderr logging works.
 - **"Not responding" dialogs** during the ~7 s blocking asset load are expected and
   harmless; the window recovers once frames flow.
 - The escape hatch (`nixGL`) was not needed: host glibc 2.39 < the pin's 2.42, so
