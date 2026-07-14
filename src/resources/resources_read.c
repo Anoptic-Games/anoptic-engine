@@ -15,6 +15,8 @@
 #include <string.h>
 
 #include "resources_internal.h"
+#include "codec/res_codec.h"
+#include "pack/res_pack.h"
 
 // ---------------------------------------------------------------------------------------------
 // The namespace walk. Write root, then mounts newest-first, then the base mount.
@@ -206,27 +208,150 @@ int res_source_read_sink(const res_source *src, const res_sink *sink, size_t *ou
 }
 
 // ---------------------------------------------------------------------------------------------
-// Ranges and hashes. STUB.
+// Ranges and hashes.
 //
-// TODO(W4, M14): 0 / RES_RANGE_EOF / -1 / -2 -- never a silent partial. res_hash_file is
-// what hot reload CONFIRMS with, because mtime lies on 9P and SMB.
+// 0 / RES_RANGE_EOF / -1 / -2 -- never a silent partial. res_hash_file is what hot reload
+// CONFIRMS with, because mtime lies on 9P and SMB.
 
+// Streaming FNV-1a-64: fold `len` bytes into a running hash seeded with res_fnv1a64's basis.
+static uint64_t fnv1a64_acc(uint64_t h, const void *data, size_t len)
+{
+    const uint8_t *p = data;
+    for (size_t i = 0; i < len; i++) {
+        h ^= p[i];
+        h *= UINT64_C(0x100000001b3);
+    }
+    return h;
+}
+
+// Deliver exactly len bytes of a DIR source at off. The seam reports short reads; the loop
+// here owns termination: only *got == 0 (true EOF) ends it early, and early is RES_RANGE_EOF.
+static int dir_read_range(const char *abs, uint64_t off, size_t len, void *dst)
+{
+    rmos_file f;
+    if (rmos_read_open(abs, &f) != 0)
+        return -1;
+    uint8_t *p = dst;
+    size_t done = 0;
+    while (done < len) {
+        size_t want = len - done;
+        if (want > RMOS_CHUNK_MAX)
+            want = RMOS_CHUNK_MAX;
+        size_t got = 0;
+        if (rmos_read_at(f, off + done, p + done, want, &got) != 0) {
+            rmos_read_close(f);
+            return -1;
+        }
+        if (got == 0) {                         // the ONLY EOF signal: the range ran past the end
+            rmos_read_close(f);
+            return RES_RANGE_EOF;
+        }
+        done += got;
+    }
+    rmos_read_close(f);
+    return 0;
+}
+
+// Inputs: a source, an absolute range, a destination of at least len bytes. Output: 0 with
+// exactly len bytes delivered / RES_RANGE_EOF when the range exceeds the file / -1 IO error /
+// -2 invalid arguments. len == 0 is trivially delivered without IO.
 int res_read_range(const res_source *src, uint64_t off, size_t len, void *dst)
 {
-    (void)src; (void)off; (void)len; (void)dst;
-    return -1;                                  // TODO(W4, M14)
+    if (src == NULL || (dst == NULL && len > 0))
+        return -2;
+    if (len > 0 && off + (uint64_t)len < off)
+        return -2;                              // off + len overflows: no file holds it
+    if (len == 0)
+        return 0;
+    switch (src->kind) {
+    case RES_SRC_DIR:
+        if (src->path.length == 0)
+            return -2;
+        return dir_read_range(src->path.str, off, len, dst);
+    case RES_SRC_PACK:
+        return res_pack_read_range(src->pack, src->entry, off, len, dst);
+    default:
+        return -2;
+    }
 }
 
+// FNV-1a-64 over the WHOLE source in bounded chunks, plus its total size. For a PACK source
+// the hash covers the DECODED bytes -- the same bytes a loose file would deliver -- so hot
+// reload's confirm step compares like with like. 0 / -1.
 int res_hash_file(const res_source *src, uint64_t *hash, uint64_t *size)
 {
-    (void)src; (void)hash; (void)size;
-    return -1;                                  // TODO(W4, M14)
+    if (src == NULL)
+        return -1;
+    uint64_t h = UINT64_C(0xcbf29ce484222325);
+    uint64_t total = 0;
+    uint8_t *buf = mi_malloc(RES_CODEC_CHUNK);
+    if (buf == NULL)
+        return -1;
+    if (src->kind == RES_SRC_DIR) {
+        rmos_file f;
+        if (src->path.length == 0 || rmos_read_open(src->path.str, &f) != 0) {
+            mi_free(buf);
+            return -1;
+        }
+        for (;;) {
+            size_t got = 0;
+            if (rmos_read_chunk(f, buf, RES_CODEC_CHUNK, &got) != 0) {
+                rmos_read_close(f);
+                mi_free(buf);
+                return -1;
+            }
+            if (got == 0)
+                break;                          // EOF, the only truth
+            h = fnv1a64_acc(h, buf, got);
+            total += got;
+        }
+        rmos_read_close(f);
+    } else if (src->kind == RES_SRC_PACK) {
+        if (src->pack == NULL || src->entry >= src->pack->hdr.entry_count) {
+            mi_free(buf);
+            return -1;
+        }
+        uint64_t raw = src->pack->toc[src->entry].raw_size;
+        // Chunk-aligned steps: each res_pack_read_range decodes exactly the chunks it touches.
+        while (total < raw) {
+            size_t want = raw - total > RES_CODEC_CHUNK ? RES_CODEC_CHUNK
+                                                        : (size_t)(raw - total);
+            if (res_pack_read_range(src->pack, src->entry, total, want, buf) != 0) {
+                mi_free(buf);
+                return -1;
+            }
+            h = fnv1a64_acc(h, buf, want);
+            total += want;
+        }
+    } else {
+        mi_free(buf);
+        return -1;
+    }
+    mi_free(buf);
+    if (hash) *hash = h;
+    if (size) *size = total;
+    return 0;
 }
 
+// Public boundary: 0 / -1 / ANO_RES_RANGE_EOF -- invalid arguments fold into -1 out here.
+// The first PRESENT candidate decides; a mid-file failure is loud, never a silent fallback.
 int ano_res_read_range(const char *logical, uint64_t off, size_t len, void *dst)
 {
-    (void)logical; (void)off; (void)len; (void)dst;
-    return -1;                                  // TODO(W4, M14)
+    size_t llen;
+    if (res_path_validate(logical, &llen) != 0 || (dst == NULL && len > 0) || !res_ready())
+        return -1;
+    res_freeze();
+    res_source srcs[ANO_RES_MAX_MOUNTS + 2 + ANO_PACK_MAX];
+    int n = res_candidates_ex(logical, llen, srcs, ANO_RES_MAX_MOUNTS + 2 + ANO_PACK_MAX);
+    for (int i = 0; i < n; i++) {
+        // rmos_exists is ADVISORY: it only picks the candidate. If the file vanishes between
+        // this probe and the read, the read fails loudly rather than falling through.
+        if (srcs[i].kind == RES_SRC_DIR && !rmos_exists(srcs[i].path.str))
+            continue;
+        int rc = res_read_range(&srcs[i], off, len, dst);
+        return rc == -2 ? -1 : rc;
+    }
+    return -1;
 }
 
 anores_t ano_res_get_range(ano_res_lifetime lifetime, const char *logical,

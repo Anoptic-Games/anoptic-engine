@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_memory_pools.h: monotonic, multipool, fixed pool, parent
- * composition, stats, wink-out.
+/* Coverage for anoptic_memory_pools.h: monotonic, multipool, fixed pool, stripe, parent
+ * composition, the counting parent ledger, stats, wink-out.
  *   - hostile-but-typed input: every call is total, failure is NULL/no-op, never UB;
  *   - correctness fuzz: random alloc/free churn with a shadow oracle -- every live block
  *     holds its fill pattern until the moment it is freed (no overlap, no corruption);
@@ -13,6 +13,13 @@
  *   - pool false-on-empty at the max_blocks cap, recovery after a free;
  *   - composition: multipool over monotonic (release-less parent) churns correctly and
  *     tears down as a no-op;
+ *   - stripe: two different lanes never share a grain-sized region (probed at every grain
+ *     granule any allocation touches), plane bases on the grain from ONE parent
+ *     acquisition, reset keeps chunks and reuses the same bytes;
+ *   - multipool explicit classes: a size routes to the smallest declared class, hits are
+ *     counted per class, invalid class lists refuse;
+ *   - counting parent: bytes_out - bytes_back == live_bytes at every step, drains to zero
+ *     at destroy, release-less inner parents stay release-less;
  *   - wink-out: allocators + payloads die with their backing heap, nothing to free.
  * Exit 0 == pass. */
 
@@ -375,6 +382,477 @@ static void test_composition(void)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Stripe.
+
+static void test_stripe_hostile(void)
+{
+    ano_mem_parent dead = ano_mem_parent_heap(NULL);
+    CHECK(ano_mem_stripe_make(dead, NULL) == NULL, "stripe over dead parent refuses");
+
+    mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
+    if (!heap) { CHECK(false, "mi_heap_new"); return; }
+    ano_mem_parent par = ano_mem_parent_heap(heap);
+
+    ano_mem_stripe_cfg bad1 = { .lanes = 4, .grain = 24 };      // non-pow2 grain
+    ano_mem_stripe_cfg bad2 = { .lanes = 4, .grain = 8192 };    // grain > 4096
+    CHECK(ano_mem_stripe_make(par, &bad1) == NULL, "non-pow2 grain refuses");
+    CHECK(ano_mem_stripe_make(par, &bad2) == NULL, "grain > 4096 refuses");
+
+    // NULL-stripe entry points are no-ops / NULL / zero.
+    CHECK(ano_mem_stripe_alloc(NULL, 0, 64, 0) == NULL, "NULL stripe alloc is NULL");
+    size_t one = 1;
+    void *plane = NULL;
+    CHECK(ano_mem_stripe_planes(NULL, &one, &one, 1, &plane) == -1, "NULL stripe planes is -1");
+    ano_mem_stripe_reset(NULL);
+    ano_mem_stripe_destroy(NULL);
+    ano_mem_stats z = ano_mem_stripe_stats(NULL);
+    CHECK(z.live_bytes == 0 && z.chunk_count == 0, "NULL stripe stats are zero");
+
+    ano_mem_stripe *s = ano_mem_stripe_make(par, &(ano_mem_stripe_cfg){ .lanes = 4 });
+    CHECK(s != NULL, "stripe make (4 lanes, default grain)");
+    if (!s) return;
+    CHECK(ano_mem_stripe_alloc(s, 4, 64, 0) == NULL, "lane out of range is NULL");
+    CHECK(ano_mem_stripe_alloc(s, 0, 0, 0) == NULL, "stripe size 0 is NULL");
+    CHECK(ano_mem_stripe_alloc(s, 0, 64, 3) == NULL, "stripe align 3 is NULL");
+    CHECK(ano_mem_stripe_alloc(s, 0, 64, 8192) == NULL, "stripe align 8192 is NULL");
+    CHECK(ano_mem_stripe_alloc(s, 0, SIZE_MAX - 8, 0) == NULL, "stripe huge size is NULL");
+
+    // Plane overflow arithmetic refuses: count * elem_size wraps.
+    size_t hostileCount[2] = { 8, SIZE_MAX / 4 };
+    size_t hostileElem[2]  = { 8, 8 };
+    void *out[2];
+    CHECK(ano_mem_stripe_planes(s, hostileCount, hostileElem, 2, out) == -1,
+          "plane count*elem overflow refuses");
+    CHECK(ano_mem_stripe_planes(s, hostileCount, hostileElem, 0, out) == -1,
+          "zero planes refuses");
+    ano_mem_stats st = ano_mem_stripe_stats(s);
+    CHECK(st.live_blocks == 0 && st.live_bytes == 0, "refused calls charged nothing");
+    ano_mem_stripe_destroy(s);
+}
+
+// Every allocation records the grain-granule span it occupies; the oracle asserts no granule
+// ever holds bytes of two different lanes -- the isolation contract probed at every grain
+// boundary any allocation touches, not just at block bases.
+typedef struct { uintptr_t g0, g1; uint32_t lane; } span_t;
+
+static void test_stripe_isolation_one(mi_heap_t *heap, size_t lanes, size_t grain_cfg,
+                                      size_t grain_real, size_t chunk_hint)
+{
+    ano_mem_stripe_cfg cfg = { .lanes = lanes, .grain = grain_cfg, .chunk_hint = chunk_hint };
+    ano_mem_stripe *s = ano_mem_stripe_make(ano_mem_parent_heap(heap), &cfg);
+    CHECK(s != NULL, "isolation stripe make");
+    if (!s) return;
+
+    enum { ALLOCS = 1500 };
+    static span_t spans[ALLOCS];
+    static shadow_t shadows[ALLOCS];
+    size_t n = 0;
+    test_rng rng = rng_make((uint32_t)(0xA5A5u + lanes * 31 + grain_real));
+
+    for (size_t it = 0; it < ALLOCS; it++) {
+        size_t lane  = rng_below(&rng, (uint32_t)lanes);
+        size_t size  = 1 + rng_below(&rng, 700);
+        size_t align = (size_t)1 << rng_below(&rng, 7);        // 1..64
+        uint8_t *p = ano_mem_stripe_alloc(s, lane, size, align);
+        CHECK(p != NULL, "isolation alloc serves");
+        if (!p) break;
+        if (((uintptr_t)p & (align - 1)) != 0) { CHECK(false, "stripe honors align"); break; }
+        spans[n] = (span_t){ (uintptr_t)p / grain_real,
+                             ((uintptr_t)p + size - 1) / grain_real, (uint32_t)lane };
+        shadows[n] = (shadow_t){ p, size, (uint8_t)rng_next(&rng) };
+        shadow_fill(&shadows[n]);
+        n++;
+    }
+    // Default align (0) lands on the grain itself.
+    void *g = ano_mem_stripe_alloc(s, 0, 1, 0);
+    CHECK(g != NULL && ((uintptr_t)g % grain_real) == 0, "align 0 is the grain");
+
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = i + 1; j < n; j++)
+            if (spans[i].lane != spans[j].lane
+                && spans[i].g0 <= spans[j].g1 && spans[j].g0 <= spans[i].g1) {
+                CHECK(false, "two lanes never share a grain-sized region");
+                printf("  (lane %u [%llx..%llx] vs lane %u [%llx..%llx], grain %zu)\n",
+                       spans[i].lane, (unsigned long long)spans[i].g0,
+                       (unsigned long long)spans[i].g1, spans[j].lane,
+                       (unsigned long long)spans[j].g0, (unsigned long long)spans[j].g1,
+                       grain_real);
+                ano_mem_stripe_destroy(s);
+                return;
+            }
+    // Fill patterns survived the whole storm: no overlap anywhere, same or cross lane.
+    for (size_t i = 0; i < n; i++)
+        if (!shadow_ok(&shadows[i])) { CHECK(false, "stripe blocks do not overlap"); break; }
+
+    ano_mem_stats st = ano_mem_stripe_stats(s);
+    CHECK(st.live_blocks == n + 1, "stripe live_blocks counts allocs");
+    CHECK(st.requested_bytes == st.live_bytes, "stripe requested == live (bump serving)");
+    CHECK(st.parent_acquires >= lanes, "every touched lane owns at least one chunk");
+    ano_mem_stripe_destroy(s);
+}
+
+static void test_stripe_isolation(void)
+{
+    mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
+    if (!heap) { CHECK(false, "mi_heap_new"); return; }
+    test_stripe_isolation_one(heap, 8, 0, ANO_THREAD_LINE, 4096);  // default grain
+    test_stripe_isolation_one(heap, 5, 64, 64, 1024);              // explicit small grain
+    test_stripe_isolation_one(heap, 3, 512, 512, 512);             // grain > default, tiny chunks
+}
+
+static void test_stripe_planes(void)
+{
+    mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
+    if (!heap) { CHECK(false, "mi_heap_new"); return; }
+    ano_mem_stripe_cfg cfg = { .lanes = 2, .grain = 128 };
+    ano_mem_stripe *s = ano_mem_stripe_make(ano_mem_parent_heap(heap), &cfg);
+    CHECK(s != NULL, "planes stripe make");
+    if (!s) return;
+
+    // A mixed SoA layout: u8 / u32 / u64 / odd element planes, one zero-length plane.
+    size_t count[5] = { 1000, 333, 100, 7, 0 };
+    size_t elem[5]  = { 1, 4, 8, 24, 16 };
+    void *plane[5] = {0};
+    ano_mem_stats before = ano_mem_stripe_stats(s);
+    CHECK(ano_mem_stripe_planes(s, count, elem, 5, plane) == 0, "planes serves");
+    ano_mem_stats after = ano_mem_stripe_stats(s);
+    CHECK(after.parent_acquires == before.parent_acquires + 1,
+          "planes is ONE parent acquisition");
+    for (int i = 0; i < 5; i++) {
+        CHECK(plane[i] != NULL, "plane base non-NULL");
+        CHECK(((uintptr_t)plane[i] & 127) == 0, "plane base on the grain");
+    }
+    // Ascending, non-overlapping (fill + verify catches any overlap byte-exactly).
+    shadow_t sh[4];
+    for (int i = 0; i < 4; i++) {
+        sh[i] = (shadow_t){ plane[i], count[i] * elem[i], (uint8_t)(0x11 * (i + 1)) };
+        shadow_fill(&sh[i]);
+    }
+    for (int i = 0; i < 4; i++)
+        CHECK(shadow_ok(&sh[i]), "planes do not overlap");
+    CHECK(after.live_blocks == before.live_blocks + 5, "planes charged as five blocks");
+
+    // Retail lanes keep working beside plane sets, still isolated from each other.
+    void *l0 = ano_mem_stripe_alloc(s, 0, 64, 0);
+    void *l1 = ano_mem_stripe_alloc(s, 1, 64, 0);
+    CHECK(l0 && l1 && ((uintptr_t)l0 / 128) != ((uintptr_t)l1 / 128),
+          "retail lanes stay isolated beside planes");
+    ano_mem_stripe_destroy(s);
+}
+
+static void test_stripe_reset(void)
+{
+    mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
+    if (!heap) { CHECK(false, "mi_heap_new"); return; }
+    ano_mem_stripe_cfg cfg = { .lanes = 4, .grain = 64, .chunk_hint = 2048 };
+    ano_mem_stripe *s = ano_mem_stripe_make(ano_mem_parent_heap(heap), &cfg);
+    CHECK(s != NULL, "reset stripe make");
+    if (!s) return;
+
+    void *first[4];
+    for (size_t lane = 0; lane < 4; lane++) {
+        first[lane] = ano_mem_stripe_alloc(s, lane, 96, 0);
+        CHECK(first[lane] != NULL, "reset seed alloc");
+        for (int k = 0; k < 40; k++)
+            CHECK(ano_mem_stripe_alloc(s, lane, 33, 8) != NULL, "reset filler alloc");
+    }
+    size_t bigCount[2] = { 256, 64 };
+    size_t bigElem[2]  = { 8, 16 };
+    void *bigPlane[2];
+    CHECK(ano_mem_stripe_planes(s, bigCount, bigElem, 2, bigPlane) == 0, "reset plane set");
+
+    ano_mem_stats st = ano_mem_stripe_stats(s);
+    size_t chunks = st.chunk_count, chunkBytes = st.chunk_bytes, acquires = st.parent_acquires;
+    CHECK(st.peak_bytes >= st.live_bytes && st.live_blocks > 0, "reset pre-state sane");
+
+    ano_mem_stripe_reset(s);
+    st = ano_mem_stripe_stats(s);
+    CHECK(st.live_bytes == 0 && st.live_blocks == 0 && st.requested_bytes == 0,
+          "reset rezeroes live stats");
+    CHECK(st.chunk_count == chunks && st.chunk_bytes == chunkBytes, "reset KEEPS the chunks");
+    CHECK(st.peak_bytes > 0 && st.peak_blocks > 0, "reset folds peaks");
+
+    // Same walk, same bytes: the first post-reset alloc per lane reuses the same address,
+    // with no new parent traffic.
+    for (size_t lane = 0; lane < 4; lane++)
+        CHECK(ano_mem_stripe_alloc(s, lane, 96, 0) == first[lane],
+              "reset reuses lane bytes from the start");
+    st = ano_mem_stripe_stats(s);
+    CHECK(st.parent_acquires == acquires, "post-reset allocs touch no parent");
+    ano_mem_stripe_destroy(s);
+
+    // Stripe over a release-less parent: destroy is a bookkeeping no-op, arena keeps all.
+    ano_mem_monotonic *arena = ano_mem_monotonic_make(ano_mem_parent_heap(heap), 0);
+    CHECK(arena != NULL, "arena for stripe composition");
+    if (arena) {
+        ano_mem_stripe *cs = ano_mem_stripe_make(ano_mem_parent_monotonic(arena), &cfg);
+        CHECK(cs != NULL, "stripe over monotonic");
+        if (cs) {
+            CHECK(ano_mem_stripe_alloc(cs, 1, 100, 0) != NULL, "composed stripe serves");
+            ano_mem_stripe_destroy(cs);     // no-op per block: parent has no release
+        }
+        ano_mem_stats ast = ano_mem_monotonic_stats(arena);
+        CHECK(ast.live_blocks > 0, "arena still holds the stripe's chunks");
+        ano_mem_monotonic_destroy(arena);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Multipool explicit classes (D20) and the class histogram.
+
+static void test_multipool_classes(void)
+{
+    mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
+    if (!heap) { CHECK(false, "mi_heap_new"); return; }
+    ano_mem_parent par = ano_mem_parent_heap(heap);
+
+    // Invalid explicit lists refuse.
+    size_t badMult[1] = { 40 };                       // not a multiple of 16
+    size_t badOrder[2] = { 64, 32 };                  // descending
+    size_t badDup[2] = { 64, 64 };                    // not strictly ascending
+    size_t badSmall[1] = { 0 };                       // < 16
+    CHECK(ano_mem_multipool_make(par, &(ano_mem_multipool_cfg){ .classes = badMult, .class_count = 1 }) == NULL,
+          "class not multiple of 16 refuses");
+    CHECK(ano_mem_multipool_make(par, &(ano_mem_multipool_cfg){ .classes = badOrder, .class_count = 2 }) == NULL,
+          "descending classes refuse");
+    CHECK(ano_mem_multipool_make(par, &(ano_mem_multipool_cfg){ .classes = badDup, .class_count = 2 }) == NULL,
+          "duplicate classes refuse");
+    CHECK(ano_mem_multipool_make(par, &(ano_mem_multipool_cfg){ .classes = badSmall, .class_count = 1 }) == NULL,
+          "class below 16 refuses");
+
+    // The histogram-tuned shape: four classes, none a power-of-two ladder.
+    static const size_t CL[4] = { 48, 160, 1024, 4096 };
+    ano_mem_multipool_cfg cfg = { .classes = CL, .class_count = 4 };
+    ano_mem_multipool *mp = ano_mem_multipool_make(par, &cfg);
+    CHECK(mp != NULL, "explicit-class multipool make");
+    if (!mp) return;
+
+    // Routing oracle: a size lands in the smallest declared class that fits, and the class
+    // stride is what live accounting charges.
+    struct { size_t size, stride; } route[] = {
+        { 1, 48 }, { 48, 48 }, { 49, 160 }, { 160, 160 },
+        { 161, 1024 }, { 1024, 1024 }, { 1025, 4096 }, { 4096, 4096 },
+    };
+    void *held[8];
+    for (int i = 0; i < 8; i++) {
+        ano_mem_stats b = ano_mem_multipool_stats(mp);
+        held[i] = ano_mem_multipool_alloc(mp, route[i].size);
+        CHECK(held[i] != NULL, "explicit class serves");
+        ano_mem_stats a = ano_mem_multipool_stats(mp);
+        if (a.live_bytes - b.live_bytes != route[i].stride) {
+            CHECK(false, "size routes to the declared class");
+            printf("  (size %zu charged %zu, want %zu)\n", route[i].size,
+                   a.live_bytes - b.live_bytes, route[i].stride);
+        }
+        CHECK(((uintptr_t)held[i] & 15) == 0, "explicit class blocks at least 16-aligned");
+    }
+
+    // The histogram: stride/hits/live/free per class, cap-truncation contract.
+    ano_mem_class_stats cs[8];
+    size_t ncls = ano_mem_multipool_class_stats(mp, cs, 8);
+    CHECK(ncls == 4, "class_stats reports the class count");
+    CHECK(cs[0].stride == 48 && cs[1].stride == 160 && cs[2].stride == 1024
+          && cs[3].stride == 4096, "class_stats strides match the declared list");
+    CHECK(cs[0].hits == 2 && cs[1].hits == 2 && cs[2].hits == 2 && cs[3].hits == 2,
+          "class_stats hits count per class");
+    CHECK(cs[0].live_blocks == 2 && cs[3].live_blocks == 2, "class_stats live per class");
+    CHECK(ano_mem_multipool_class_stats(mp, cs, 2) == 4, "cap-truncated count still total");
+    CHECK(ano_mem_multipool_class_stats(NULL, cs, 8) == 0, "NULL multipool reports zero");
+
+    // Frees move live -> free within the same class; LIFO recycling holds for explicit
+    // classes; hits keep counting.
+    ano_mem_multipool_free(mp, held[2], 49);
+    ano_mem_multipool_free(mp, held[3], 160);
+    ano_mem_multipool_class_stats(mp, cs, 8);
+    CHECK(cs[1].live_blocks == 0 && cs[1].free_blocks >= 2, "frees return to the class");
+    void *re = ano_mem_multipool_alloc(mp, 150);
+    CHECK(re == held[3], "explicit class recycles LIFO");
+    ano_mem_multipool_free(mp, re, 150);
+    ano_mem_multipool_free(mp, held[0], 1);
+    ano_mem_multipool_free(mp, held[1], 48);
+    ano_mem_multipool_free(mp, held[4], 161);
+    ano_mem_multipool_free(mp, held[5], 1024);
+    ano_mem_multipool_free(mp, held[6], 1025);
+    ano_mem_multipool_free(mp, held[7], 4096);
+
+    // Past the last class: oversize passthrough, counted as such.
+    ano_mem_stats b = ano_mem_multipool_stats(mp);
+    void *ov = ano_mem_multipool_alloc(mp, 4097);
+    ano_mem_stats a = ano_mem_multipool_stats(mp);
+    CHECK(ov != NULL && a.oversize_hits == b.oversize_hits + 1, "past last class is oversize");
+    ano_mem_multipool_free(mp, ov, 4097);
+    a = ano_mem_multipool_stats(mp);
+    CHECK(a.live_blocks == 0 && a.live_bytes == 0 && a.requested_bytes == 0,
+          "explicit-class pool drains to zero");
+    ano_mem_multipool_destroy(mp);
+
+    // The geometric ladder reports a histogram too.
+    ano_mem_multipool *gm = ano_mem_multipool_make(par, NULL);
+    CHECK(gm != NULL, "geometric multipool make");
+    if (gm) {
+        void *a16 = ano_mem_multipool_alloc(gm, 16);
+        void *b16 = ano_mem_multipool_alloc(gm, 9);
+        void *c32 = ano_mem_multipool_alloc(gm, 17);
+        (void)a16; (void)b16; (void)c32;
+        size_t ng = ano_mem_multipool_class_stats(gm, cs, 8);
+        CHECK(ng == 17, "geometric default has 17 classes (16..1MiB)");
+        CHECK(cs[0].stride == 16 && cs[1].stride == 32, "geometric strides double");
+        CHECK(cs[0].hits == 2 && cs[0].live_blocks == 2, "geometric class 0 histogram");
+        CHECK(cs[1].hits == 1 && cs[1].live_blocks == 1, "geometric class 1 histogram");
+        ano_mem_multipool_destroy(gm);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The parent ledger (D19).
+
+static void test_parent_counting(void)
+{
+    ano_mem_parent_ledger ledger = {0};
+    ano_mem_parent dead = ano_mem_parent_heap(NULL);
+    CHECK(ano_mem_parent_counting(dead, &ledger).acquire == NULL,
+          "counting over dead parent is dead");
+
+    mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
+    if (!heap) { CHECK(false, "mi_heap_new"); return; }
+    CHECK(ano_mem_parent_counting(ano_mem_parent_heap(heap), NULL).acquire == NULL,
+          "counting without a ledger is dead");
+
+    ano_mem_parent counted = ano_mem_parent_counting(ano_mem_parent_heap(heap), &ledger);
+    CHECK(counted.acquire != NULL && counted.release != NULL, "counting parent is live");
+
+    // A multipool over the counted seam: every chunk, oversize block and the control struct
+    // crosses the ledger; balance holds at every step and drains to zero at destroy.
+    ano_mem_multipool *mp = ano_mem_multipool_make(counted, NULL);
+    CHECK(mp != NULL, "multipool over counting parent");
+    if (!mp) return;
+    CHECK(ledger.acquires >= 1 && ledger.bytes_out > 0, "control acquisition counted");
+    CHECK(ledger.bytes_out - ledger.bytes_back == ledger.live_bytes, "ledger balance (make)");
+
+    test_rng rng = rng_make(0xD19u);
+    enum { SLOTS = 64 };
+    void  *p[SLOTS] = {0};
+    size_t sz[SLOTS] = {0};
+    for (int it = 0; it < 3000; it++) {
+        int slot = (int)rng_below(&rng, SLOTS);
+        if (p[slot]) {
+            ano_mem_multipool_free(mp, p[slot], sz[slot]);
+            p[slot] = NULL;
+        } else {
+            sz[slot] = 1 + rng_below(&rng, 8000);
+            p[slot] = ano_mem_multipool_alloc(mp, sz[slot]);
+            CHECK(p[slot] != NULL, "counted churn serves");
+            if (!p[slot]) return;
+        }
+        if ((it & 0xFF) == 0)
+            CHECK(ledger.bytes_out - ledger.bytes_back == ledger.live_bytes,
+                  "ledger balance (churn)");
+    }
+    // Oversize passthrough releases retail through the counting seam.
+    size_t before_rel = ledger.releases;
+    void *ov = ano_mem_multipool_alloc(mp, (1u << 20) + 99);
+    CHECK(ov != NULL, "counted oversize serves");
+    ano_mem_multipool_free(mp, ov, (1u << 20) + 99);
+    CHECK(ledger.releases > before_rel, "oversize free crossed the counting seam");
+    CHECK(ledger.bytes_out - ledger.bytes_back == ledger.live_bytes, "ledger balance (oversize)");
+
+    for (int slot = 0; slot < SLOTS; slot++)
+        if (p[slot]) ano_mem_multipool_free(mp, p[slot], sz[slot]);
+    ano_mem_multipool_destroy(mp);
+    CHECK(ledger.releases == ledger.acquires, "destroy returned every counted acquisition");
+    CHECK(ledger.live_bytes == 0 && ledger.bytes_out == ledger.bytes_back,
+          "ledger drains to zero at destroy");
+    CHECK(ledger.peak_bytes > 0 && ledger.peak_bytes <= ledger.bytes_out, "ledger peak sane");
+
+    // A stripe over the counted seam balances the same way.
+    ano_mem_parent_ledger sled = {0};
+    ano_mem_parent scount = ano_mem_parent_counting(ano_mem_parent_heap(heap), &sled);
+    ano_mem_stripe *s = ano_mem_stripe_make(scount, &(ano_mem_stripe_cfg){ .lanes = 3 });
+    CHECK(s != NULL, "stripe over counting parent");
+    if (s) {
+        for (size_t lane = 0; lane < 3; lane++)
+            CHECK(ano_mem_stripe_alloc(s, lane, 200, 0) != NULL, "counted stripe serves");
+        CHECK(sled.bytes_out - sled.bytes_back == sled.live_bytes, "stripe ledger balance");
+        ano_mem_stripe_destroy(s);
+        CHECK(sled.live_bytes == 0 && sled.releases == sled.acquires,
+              "stripe drains its ledger at destroy");
+    }
+
+    // Over a release-less inner parent the counting parent is release-less too.
+    ano_mem_monotonic *arena = ano_mem_monotonic_make(ano_mem_parent_heap(heap), 0);
+    if (arena) {
+        ano_mem_parent_ledger mled = {0};
+        ano_mem_parent mcount = ano_mem_parent_counting(ano_mem_parent_monotonic(arena), &mled);
+        CHECK(mcount.acquire != NULL && mcount.release == NULL,
+              "counting keeps a release-less parent release-less");
+        ano_mem_monotonic_destroy(arena);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The grown stats fields: requested / parent seam / oversize, per allocator.
+
+static void test_grown_stats(void)
+{
+    mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
+    if (!heap) { CHECK(false, "mi_heap_new"); return; }
+    ano_mem_parent par = ano_mem_parent_heap(heap);
+
+    ano_mem_monotonic *m = ano_mem_monotonic_make(par, 0);
+    CHECK(m != NULL, "grown-stats monotonic make");
+    if (m) {
+        ano_mem_stats st = ano_mem_monotonic_stats(m);
+        CHECK(st.parent_acquires == 1 && st.parent_bytes == st.chunk_bytes,
+              "monotonic make counted at the parent seam");
+        void *a = ano_mem_monotonic_alloc(m, 100, 0);
+        (void)a;
+        st = ano_mem_monotonic_stats(m);
+        CHECK(st.requested_bytes == st.live_bytes && st.requested_bytes == 100,
+              "monotonic requested == live");
+        CHECK(st.parent_acquires == 2 && st.oversize_hits == 0, "slab growth counted");
+        void *big = ano_mem_monotonic_alloc(m, 9u << 20, 0);    // past the 8 MiB slab cap
+        CHECK(big != NULL, "dedicated slab serves");
+        st = ano_mem_monotonic_stats(m);
+        CHECK(st.oversize_hits == 1, "dedicated slab counts as an oversize hit");
+        ano_mem_monotonic_destroy(m);
+    }
+
+    ano_mem_multipool *mp = ano_mem_multipool_make(par, NULL);
+    CHECK(mp != NULL, "grown-stats multipool make");
+    if (mp) {
+        void *a = ano_mem_multipool_alloc(mp, 100);             // class 128
+        ano_mem_stats st = ano_mem_multipool_stats(mp);
+        CHECK(st.requested_bytes == 100 && st.live_bytes == 128,
+              "multipool requested tracks the ask, live the class");
+        ano_mem_multipool_free(mp, a, 100);
+        st = ano_mem_multipool_stats(mp);
+        CHECK(st.requested_bytes == 0 && st.live_bytes == 0, "multipool requested drains");
+        CHECK(st.parent_acquires >= 2 && st.parent_bytes >= st.chunk_bytes,
+              "multipool parent seam counted");
+        CHECK(st.oversize_hits == 0, "no oversize yet");
+        void *ov = ano_mem_multipool_alloc(mp, (1u << 20) + 1);
+        st = ano_mem_multipool_stats(mp);
+        CHECK(ov != NULL && st.oversize_hits == 1, "multipool oversize hit counted");
+        ano_mem_multipool_free(mp, ov, (1u << 20) + 1);
+        ano_mem_multipool_destroy(mp);
+    }
+
+    ano_mem_pool *p = ano_mem_pool_make(par, 100, 0, 0);
+    CHECK(p != NULL, "grown-stats pool make");
+    if (p) {
+        void *b1 = ano_mem_pool_alloc(p);
+        void *b2 = ano_mem_pool_alloc(p);
+        ano_mem_stats st = ano_mem_pool_stats(p);
+        CHECK(b1 && b2 && st.requested_bytes == 200, "pool requested = live blocks * size");
+        CHECK(st.parent_acquires >= 2, "pool parent seam counted");
+        ano_mem_pool_free(p, b1);
+        st = ano_mem_pool_stats(p);
+        CHECK(st.requested_bytes == 100, "pool requested drains with frees");
+        ano_mem_pool_destroy(p);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 
 static void test_winkout(void)
 {
@@ -385,20 +863,29 @@ static void test_winkout(void)
     CHECK(heap != NULL, "wink-out heap");
     if (!heap) return;
 
+    static ano_mem_parent_ledger ledger;    // must outlive the allocators, not the heap
+    ledger = (ano_mem_parent_ledger){0};
+    ano_mem_parent counted = ano_mem_parent_counting(ano_mem_parent_heap(heap), &ledger);
     ano_mem_monotonic *staging = ano_mem_monotonic_make(ano_mem_parent_heap(heap), 0);
-    ano_mem_multipool *pools   = ano_mem_multipool_make(ano_mem_parent_heap(heap), NULL);
+    ano_mem_multipool *pools   = ano_mem_multipool_make(counted, NULL);
     ano_mem_pool      *chunks  = ano_mem_pool_make(ano_mem_parent_heap(heap), 64 * 1024, 0, 0);
-    CHECK(staging && pools && chunks, "wink-out family built");
-    if (staging && pools && chunks) {
+    ano_mem_stripe    *planes  = ano_mem_stripe_make(ano_mem_parent_heap(heap),
+                                                     &(ano_mem_stripe_cfg){ .lanes = 4 });
+    CHECK(staging && pools && chunks && planes, "wink-out family built");
+    if (staging && pools && chunks && planes) {
         for (int i = 0; i < 512; i++) {
             void *s = ano_mem_monotonic_alloc(staging, 100 + (size_t)i * 7, 0);
             void *m = ano_mem_multipool_alloc(pools, 1 + (size_t)(i * 37) % 5000);
             void *c = ano_mem_pool_alloc(chunks);
-            CHECK(s && m && c, "wink-out family serves");
-            if (!(s && m && c)) break;
+            void *l = ano_mem_stripe_alloc(planes, (size_t)i & 3, 48, 0);
+            CHECK(s && m && c && l, "wink-out family serves");
+            if (!(s && m && c && l)) break;
             memset(s, 1, 100 + (size_t)i * 7);
             memset(c, 3, 64 * 1024);
+            memset(l, 4, 48);
         }
+        CHECK(ledger.bytes_out - ledger.bytes_back == ledger.live_bytes,
+              "counted family balances before the wink");
     }
     mi_heap_destroy(heap);      // the wink-out: no destroys, no frees, no leaks
 }
@@ -412,6 +899,13 @@ int main(void)
     test_multipool();
     test_pool();
     test_composition();
+    test_stripe_hostile();
+    test_stripe_isolation();
+    test_stripe_planes();
+    test_stripe_reset();
+    test_multipool_classes();
+    test_parent_counting();
+    test_grown_stats();
     test_winkout();
 
     if (failures == 0) { printf("anotest_mempools: all checks passed\n"); return 0; }

@@ -148,8 +148,10 @@ ano_mem_monotonic *ano_mem_monotonic_make(ano_mem_parent parent, size_t first_sl
     if (first_slab < MONO_SLAB_MIN) first_slab = MONO_SLAB_MIN;
     if (first_slab > MONO_SLAB_MAX) first_slab = MONO_SLAB_MAX;
     m->next_slab = first_slab;
-    m->st.chunk_bytes = sizeof *m;
-    m->st.chunk_count = 1;
+    m->st.chunk_bytes     = sizeof *m;
+    m->st.chunk_count     = 1;
+    m->st.parent_acquires = 1;
+    m->st.parent_bytes    = sizeof *m;
     return m;
 }
 
@@ -164,8 +166,10 @@ static mono_slab *mono_grow(ano_mem_monotonic *m, size_t bytes)
     if (m->tail) m->tail->next = s;
     else         m->head = s;
     m->tail = s;
-    m->st.chunk_bytes += bytes;
-    m->st.chunk_count += 1;
+    m->st.chunk_bytes     += bytes;
+    m->st.chunk_count     += 1;
+    m->st.parent_acquires += 1;
+    m->st.parent_bytes    += bytes;
     return s;
 }
 
@@ -203,8 +207,11 @@ static void *mono_alloc_slow(ano_mem_monotonic *m, size_t size, size_t align)
         s->cap  = want;
         s->next = m->dedicated;
         m->dedicated = s;
-        m->st.chunk_bytes += want;
-        m->st.chunk_count += 1;
+        m->st.chunk_bytes     += want;
+        m->st.chunk_count     += 1;
+        m->st.parent_acquires += 1;
+        m->st.parent_bytes    += want;
+        m->st.oversize_hits   += 1;
         uintptr_t p = ((uintptr_t)s + MONO_HDR + (align - 1)) & ~(uintptr_t)(align - 1);
         m->st.live_bytes  += size;
         m->st.live_blocks += 1;
@@ -291,6 +298,7 @@ ano_mem_stats ano_mem_monotonic_stats(const ano_mem_monotonic *m)
     s = m->st;      // fold peaks into the copy: live only grows between resets
     if (s.live_bytes  > s.peak_bytes)  s.peak_bytes  = s.live_bytes;
     if (s.live_blocks > s.peak_blocks) s.peak_blocks = s.live_blocks;
+    s.requested_bytes = s.live_bytes;  // bump charges at request size: identical by construction
     return s;
 }
 
@@ -308,6 +316,8 @@ typedef struct pool_core {
     size_t align;
     size_t next_blocks;     // geometric refill, in blocks
     size_t total_blocks;    // ever carved (the pool cap checks against this)
+    size_t hits;            // cumulative allocs served from this class
+    size_t live;            // blocks currently out
 } pool_core;
 
 static void pool_core_init(pool_core *c, size_t stride, size_t align)
@@ -319,6 +329,8 @@ static void pool_core_init(pool_core *c, size_t stride, size_t align)
     if (c->next_blocks == 0)
         c->next_blocks = 1;
     c->total_blocks = 0;
+    c->hits         = 0;
+    c->live         = 0;
 }
 
 // Carve one chunk of up to c->next_blocks blocks (at least min_blocks, at most max_blocks
@@ -345,8 +357,10 @@ static size_t pool_core_refill(pool_core *c, const ano_mem_parent *parent,
     ck->next  = *chunks;
     ck->bytes = bytes;
     *chunks   = ck;
-    st->chunk_bytes += bytes;
-    st->chunk_count += 1;
+    st->chunk_bytes     += bytes;
+    st->chunk_count     += 1;
+    st->parent_acquires += 1;
+    st->parent_bytes    += bytes;
 
     char *base = (char *)ck + hdr;
     for (size_t i = n; i-- > 0; ) {         // push descending so pops walk ascending
@@ -391,6 +405,7 @@ struct ano_mem_multipool {
     ano_mem_parent parent;
     size_t   min_block, max_block;
     uint32_t log2min, nclasses;
+    bool     explicit_cls;      // classes came from cfg.classes, not the geometric ladder
     pool_chunk *chunks;
     ov_hdr     *oversize;
     ano_mem_stats st;
@@ -404,35 +419,82 @@ static inline uint32_t mp_class_of(const ano_mem_multipool *mp, size_t size)
     return (uint32_t)(64 - __builtin_clzll((unsigned long long)(size - 1))) - mp->log2min;
 }
 
+// The class serving `size` (caller guarantees size <= max_block): one clz on the geometric
+// ladder, smallest fitting stride on an explicit list (ascending, so a forward scan).
+static inline pool_core *mp_class_for(ano_mem_multipool *mp, size_t size)
+{
+    if (!mp->explicit_cls)
+        return &mp->cls[mp_class_of(mp, size)];
+    uint32_t i = 0;
+    while (mp->cls[i].stride < size)
+        i++;
+    return &mp->cls[i];
+}
+
+// An explicit list is valid when every class is a multiple of 16 and the list ascends
+// strictly (D20: each a multiple of 16; the last is max_block).
+static bool mp_classes_valid(const size_t *classes, size_t n)
+{
+    if (n == 0 || n > UINT32_MAX)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        if (classes[i] < 16 || classes[i] % 16 != 0)
+            return false;
+        if (i > 0 && classes[i] <= classes[i - 1])
+            return false;
+    }
+    return true;
+}
+
 ano_mem_multipool *ano_mem_multipool_make(ano_mem_parent parent,
                                           const ano_mem_multipool_cfg *cfg)
 {
     if (parent.acquire == NULL)
         return NULL;
-    size_t minb = cfg && cfg->min_block ? cfg->min_block : 16;
-    size_t maxb = cfg && cfg->max_block ? cfg->max_block : (size_t)1 << 20;
-    if (!is_pow2(minb) || !is_pow2(maxb) || minb < 16 || maxb < minb)
-        return NULL;
-
-    uint32_t log2min  = (uint32_t)__builtin_ctzll((unsigned long long)minb);
-    uint32_t nclasses = (uint32_t)__builtin_ctzll((unsigned long long)maxb) - log2min + 1;
+    bool explicit_cls = cfg && cfg->classes != NULL && cfg->class_count != 0;
+    size_t minb, maxb;
+    uint32_t nclasses;
+    if (explicit_cls) {
+        if (!mp_classes_valid(cfg->classes, cfg->class_count))
+            return NULL;
+        if (cfg->class_count > (SIZE_MAX - sizeof(ano_mem_multipool)) / sizeof(pool_core))
+            return NULL;
+        nclasses = (uint32_t)cfg->class_count;
+        minb = cfg->classes[0];
+        maxb = cfg->classes[nclasses - 1];
+    } else {
+        minb = cfg && cfg->min_block ? cfg->min_block : 16;
+        maxb = cfg && cfg->max_block ? cfg->max_block : (size_t)1 << 20;
+        if (!is_pow2(minb) || !is_pow2(maxb) || minb < 16 || maxb < minb)
+            return NULL;
+        nclasses = (uint32_t)__builtin_ctzll((unsigned long long)maxb)
+                 - (uint32_t)__builtin_ctzll((unsigned long long)minb) + 1;
+    }
 
     ano_mem_multipool *mp = pacquire(&parent, sizeof *mp + nclasses * sizeof(pool_core), 64);
     if (mp == NULL)
         return NULL;
     memset(mp, 0, sizeof *mp + nclasses * sizeof(pool_core));
-    mp->parent    = parent;
-    mp->min_block = minb;
-    mp->max_block = maxb;
-    mp->log2min   = log2min;
-    mp->nclasses  = nclasses;
+    mp->parent       = parent;
+    mp->min_block    = minb;
+    mp->max_block    = maxb;
+    mp->log2min      = explicit_cls ? 0 : (uint32_t)__builtin_ctzll((unsigned long long)minb);
+    mp->nclasses     = nclasses;
+    mp->explicit_cls = explicit_cls;
     for (uint32_t i = 0; i < nclasses; i++) {
-        size_t stride = minb << i;
-        size_t align  = stride < MAX_ALIGN ? stride : MAX_ALIGN;
+        // Positional alignment: the largest power of 2 dividing the stride (== the stride
+        // itself on the geometric ladder), capped at 4096. Explicit classes are multiples
+        // of 16, so every block is at least 16-aligned.
+        size_t stride = explicit_cls ? cfg->classes[i] : minb << i;
+        size_t align  = stride & (~stride + 1);
+        if (align > MAX_ALIGN)
+            align = MAX_ALIGN;
         pool_core_init(&mp->cls[i], stride, align);
     }
-    mp->st.chunk_bytes = sizeof *mp + nclasses * sizeof(pool_core);
-    mp->st.chunk_count = 1;
+    mp->st.chunk_bytes     = sizeof *mp + nclasses * sizeof(pool_core);
+    mp->st.chunk_count     = 1;
+    mp->st.parent_acquires = 1;
+    mp->st.parent_bytes    = mp->st.chunk_bytes;
     return mp;
 }
 
@@ -449,21 +511,30 @@ static void *mp_oversize_alloc(ano_mem_multipool *mp, size_t size)
     if (mp->oversize)
         mp->oversize->prev = h;
     mp->oversize = h;
-    mp->st.chunk_bytes += h->bytes;
-    mp->st.chunk_count += 1;
+    mp->st.chunk_bytes     += h->bytes;
+    mp->st.chunk_count     += 1;
+    mp->st.parent_acquires += 1;
+    mp->st.parent_bytes    += h->bytes;
+    mp->st.oversize_hits   += 1;
+    mp->st.requested_bytes += size;
     stats_on_alloc(&mp->st, size);
     return (char *)h + OVERSIZE_HDR;
 }
 
 static void mp_oversize_free(ano_mem_multipool *mp, void *p, size_t size)
 {
+    (void)size;                                 // the header records the truth; the claim can lie
     ov_hdr *h = (ov_hdr *)((char *)p - OVERSIZE_HDR);
+    size_t rec = h->bytes - OVERSIZE_HDR;
     if (h->prev) h->prev->next = h->next;
     else         mp->oversize  = h->next;
     if (h->next) h->next->prev = h->prev;
-    mp->st.chunk_bytes -= h->bytes;
-    mp->st.chunk_count -= 1;
-    stats_on_free(&mp->st, size);
+    mp->st.chunk_bytes     -= h->bytes;
+    mp->st.chunk_count     -= 1;
+    if (mp->parent.release != NULL)
+        mp->st.parent_releases += 1;            // a releaseless parent keeps the block
+    mp->st.requested_bytes -= rec;
+    stats_on_free(&mp->st, rec);
     prelease(&mp->parent, h);
 }
 
@@ -473,13 +544,16 @@ void *ano_mem_multipool_alloc(ano_mem_multipool *mp, size_t size)
         return NULL;
     if (size > mp->max_block)
         return mp_oversize_alloc(mp, size);
-    pool_core *c = &mp->cls[mp_class_of(mp, size)];
+    pool_core *c = mp_class_for(mp, size);
     void *p = pool_core_pop(c);
     if (p == NULL) {
         if (pool_core_refill(c, &mp->parent, &mp->chunks, &mp->st, 0) == 0)
             return NULL;
         p = pool_core_pop(c);
     }
+    c->hits += 1;
+    c->live += 1;
+    mp->st.requested_bytes += size;
     stats_on_alloc(&mp->st, c->stride);
     return p;
 }
@@ -492,9 +566,36 @@ void ano_mem_multipool_free(ano_mem_multipool *mp, void *p, size_t size)
         mp_oversize_free(mp, p, size);
         return;
     }
-    pool_core *c = &mp->cls[mp_class_of(mp, size)];
+    pool_core *c = mp_class_for(mp, size);
     pool_core_push(c, p);
+    c->live -= 1;
+    // requested is LIVE-requested; a legal same-class free at a different size makes it an
+    // approximation, so it saturates rather than wraps -- and resyncs to zero at quiescence.
+    mp->st.requested_bytes -= size < mp->st.requested_bytes ? size : mp->st.requested_bytes;
     stats_on_free(&mp->st, c->stride);
+    if (mp->st.live_blocks == 0)
+        mp->st.requested_bytes = 0;
+}
+
+size_t ano_mem_multipool_class_stats(const ano_mem_multipool *mp, ano_mem_class_stats *out,
+                                     size_t cap)
+{
+    if (mp == NULL)
+        return 0;
+    size_t n = mp->nclasses;
+    if (out != NULL) {
+        size_t m = n < cap ? n : cap;
+        for (size_t i = 0; i < m; i++) {
+            const pool_core *c = &mp->cls[i];
+            out[i] = (ano_mem_class_stats){
+                .stride      = c->stride,
+                .hits        = c->hits,
+                .live_blocks = c->live,
+                .free_blocks = c->total_blocks - c->live,
+            };
+        }
+    }
+    return n;
 }
 
 void ano_mem_multipool_destroy(ano_mem_multipool *mp)
@@ -547,6 +648,8 @@ ano_mem_pool *ano_mem_pool_make(ano_mem_parent parent, size_t block_size,
     }
     if (!is_pow2(block_align) || block_align > MAX_ALIGN)
         return NULL;
+    if (block_align < alignof(void *))
+        block_align = alignof(void *);          // free-list links live IN the block
 
     size_t stride = block_size < sizeof(void *) ? sizeof(void *) : block_size;
     stride = align_up(stride, block_align);
@@ -559,8 +662,10 @@ ano_mem_pool *ano_mem_pool_make(ano_mem_parent parent, size_t block_size,
     p->max_blocks = max_blocks;
     p->usable     = block_size;
     pool_core_init(&p->core, stride, block_align);
-    p->st.chunk_bytes = sizeof *p;
-    p->st.chunk_count = 1;
+    p->st.chunk_bytes     = sizeof *p;
+    p->st.chunk_count     = 1;
+    p->st.parent_acquires = 1;
+    p->st.parent_bytes    = sizeof *p;
     return p;
 }
 
@@ -587,6 +692,8 @@ void *ano_mem_pool_alloc(ano_mem_pool *p)
             return NULL;                    // capped-and-empty or parent exhausted
         b = pool_core_pop(&p->core);
     }
+    p->core.hits += 1;
+    p->core.live += 1;
     stats_on_alloc(&p->st, p->core.stride);
     return b;
 }
@@ -596,6 +703,7 @@ void ano_mem_pool_free(ano_mem_pool *p, void *block)
     if (p == NULL || block == NULL)
         return;
     pool_core_push(&p->core, block);
+    p->core.live -= 1;
     stats_on_free(&p->st, p->core.stride);
 }
 
@@ -616,5 +724,9 @@ void ano_mem_pool_destroy(ano_mem_pool *p)
 ano_mem_stats ano_mem_pool_stats(const ano_mem_pool *p)
 {
     ano_mem_stats z = {0};
-    return p ? p->st : z;
+    if (p == NULL)
+        return z;
+    z = p->st;
+    z.requested_bytes = z.live_blocks * p->usable;  // every request is exactly block_size
+    return z;
 }
