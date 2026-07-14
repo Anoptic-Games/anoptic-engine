@@ -144,3 +144,5 @@ tools/ucd/
 !.claude/hooks/**
 !.claude/tools/
 !.claude/tools/**
+build.stale-preclean/
+build*/

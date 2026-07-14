@@ -5,6 +5,7 @@
 
 extern uint32_t g_ValidationErrors;
 extern struct VulkanGarbage vulkanGarbage;
+extern bool g_AnoVkNoSuitableGpu;
 // rendererState is declared extern in vulkanMaster.h
 
 int main() {
@@ -12,6 +13,10 @@ int main() {
     g_ValidationErrors = 0;
 
     if (!initVulkan()) {
+        if (g_AnoVkNoSuitableGpu) {
+            printf("SKIP: no Vulkan device here can run the renderer.\n");
+            return 77; // ctest SKIP_RETURN_CODE
+        }
         printf("Failed to init Vulkan!\n");
         return 1;
     }
