@@ -16,7 +16,7 @@
   #   nix build .#tests-headless           run a CTest suite in the sandbox (fails = red)
   #   nix build .#tests-asan|tests-tsan    sanitized non-GPU suite        (Linux)
   #   nix build .#tests-full               full suite under Xvfb; device tests skip sans capable GPU (Linux)
-  #   nix flake check                      evaluates every output (suites are packages — build them)
+  #   nix flake check --no-build --all-systems   eval-only sweep; plain flake check BUILDS+runs the Linux suites (they are checks outputs)
   #
   # Impure side — your working tree, output in ./build/<label>/ like build.sh:
   #   nix run .#dev [-- N]                 dev-env wrapper around ./build.sh N (default 1):
