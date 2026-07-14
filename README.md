@@ -52,10 +52,11 @@ This should automagically take care of everything. (Thank you GLSLtesseract!)
 
 Keep reading if that didn't work or if you want to learn about every other build option.
 
+- `nix run github:Anoptic-Games/anoptic-engine`: the same launch with no clone and no submodules.
 - `nix run .#nvidia` (or `.#nvidia-debug`): for non-NixOS distros where the Nix loader cannot dlopen host ICDs.
 
 **In general:**
-`nix run [-- N]` builds in-tree and runs the result: it checks submodule pointers against the flake, fetches anything missing, stages assets, and runs `./build.sh N` in the dev shell. Profiles `1|2` then launch the renderer, `3` launches the headless console engine (WSL included); test profiles run their CTest suite instead. On foreign distros (no `/run/opengl-driver`) the launch auto-bridges to the host GPU: mesa ICDs from the store, plus `nixglhost` when an NVIDIA kernel module is present. Bare `nix run` is `build.sh 1` — Release into `build/Release/`, then the window.
+Bare `nix run` (alias `.#play`) is the store Release engine launched on whatever GPU is present, with the same auto-bridge; in WSL it refuses and points at `.#release-wsl`. `nix run .#dev [-- N]` builds in-tree and runs the result: it checks submodule pointers against the flake, fetches anything missing, stages assets, and runs `./build.sh N` in the dev shell. Profiles `1|2` then launch the renderer, `3` launches the headless console engine (WSL included); test profiles run their CTest suite instead. On foreign distros (no `/run/opengl-driver`) the launch auto-bridges to the host GPU: mesa ICDs from the store, plus `nixglhost` when an NVIDIA kernel module is present. `nix run .#dev` is `build.sh 1` — Release into `build/Release/`, then the window.
 
 
 #### Pure Nix Install (Compliant Systems)
@@ -85,7 +86,7 @@ Private assets instead of the public pack:
 ```bash
 nix build --override-input anoptic-assets git+ssh://git@github.com/Anoptic-Games/assets
 ```
-`nix run` tries the private repo and falls back to the public pack.
+`nix run .#dev` tries the private repo and falls back to the public pack.
 
 Native Windows has no Nix; that is the `build.bat` path below.
 
@@ -163,7 +164,7 @@ Vulkan runs through MoltenVK; the Nix packages bake in the ICD path, and the dev
 
 ```bash
 nix build                              # store artifact -> ./result/bin/anopticengine
-nix develop --command ./build.sh 1     # in-tree -> build/Release/   (or: nix run)
+nix develop --command ./build.sh 1     # in-tree -> build/Release/   (or: nix run .#dev)
 ```
 
 Without Nix: yeahh you know what you're doing so you can figure it out.
