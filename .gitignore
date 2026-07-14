@@ -46,7 +46,7 @@
 *.pdb
 *.save
 *.py
-# ...except the checked-in perf harness drivers (see docs/profiling.md).
+# ...except the checked-in perf harness drivers (see tools/perf/bench_fps.md).
 !tools/perf/bench_fps_*.py
 
 # macOS metadata
@@ -63,10 +63,13 @@ Pipfile
 Pipfile.lock
 poetry.lock
 
-# Doc-generated pdfs
+# Docs and doc artifacts
 docs/*.pdf
 docs/references/*.pdf
 docs/artifacts/*
+docs/study/
+docs/.archive/
+docs/.archive/**/
 
 # IDE-specific directories
 .vscode/
@@ -141,4 +144,5 @@ tools/ucd/
 !.claude/hooks/**
 !.claude/tools/
 !.claude/tools/**
-docs/study/
+build.stale-preclean/
+build*/

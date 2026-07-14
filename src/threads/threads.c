@@ -4,14 +4,79 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include <anoptic_threads.h>
+#include <anoptic_log_crash.h>
+#include <anoptic_memory.h>
 #include <pthread.h>
+#include <stdint.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>    // PE header walk for ano_thread_main_stack
+#else
+#include <sys/resource.h>
+#endif
 
 
 /* Thread Management */
 
+// Spawn shim: arms each thread's crash stack before user code runs.
+// The cleanup handler disarms on any exit path (return, pthread_exit, ano_thread_exit).
+typedef struct {
+    void *(*func)(void *);
+    void   *arg;
+} thread_tramp_t;
+
+static void tramp_disarm(void *unused)
+{
+    (void)unused;
+    ano_log_crash_thread_disarm();
+}
+
+static void *thread_trampoline(void *p)
+{
+    thread_tramp_t t = *(thread_tramp_t *)p;
+    mi_free(p);
+    (void)ano_log_crash_thread_arm();   // best effort: an unarmed thread still runs
+    void *ret;
+    pthread_cleanup_push(tramp_disarm, NULL);
+    ret = t.func(t.arg);
+    pthread_cleanup_pop(1);
+    return ret;
+}
+
 int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(* func)(void *), void *arg) {
 
-    return pthread_create(thread, attr, func, arg);
+    // NULL attr gets ANO_THREAD_STACK_SIZE, lazily committed. Explicit attrs pass through untouched.
+    // Skipped on win64: the PE header reserve (--stack, root CMakeLists) sizes NULL-attr threads.
+#if !defined(_WIN32)
+    pthread_attr_t engineAttr;
+    bool engineOwned = attr == NULL && pthread_attr_init(&engineAttr) == 0;
+    if (engineOwned) {
+        if (pthread_attr_setstacksize(&engineAttr, ANO_THREAD_STACK_SIZE) == 0) {
+            attr = &engineAttr;
+        } else {
+            pthread_attr_destroy(&engineAttr);    // libc default beats no thread
+            engineOwned = false;
+        }
+    }
+#endif
+
+    int rc;
+    thread_tramp_t *t = mi_malloc(sizeof *t);
+    if (t == NULL) {
+        rc = pthread_create(thread, attr, func, arg);    // no shim beats no thread
+    } else {
+        *t = (thread_tramp_t){ .func = func, .arg = arg };
+        rc = pthread_create(thread, attr, thread_trampoline, t);
+        if (rc != 0)
+            mi_free(t);
+    }
+
+#if !defined(_WIN32)
+    if (engineOwned)
+        pthread_attr_destroy(&engineAttr);
+#endif
+    return rc;
 }
 
 int ano_thread_join(anothread_t thread, void **res) {
@@ -32,6 +97,23 @@ int ano_thread_detach(anothread_t thread) {
 anothread_t ano_thread_self(void) {
 
     return pthread_self();
+}
+
+// Inputs: none.
+// Output: the initial thread's stack budget in bytes, 0 when the query fails.
+// POSIX: RLIMIT_STACK soft (SIZE_MAX when unlimited). Win64: the PE-header reserve.
+size_t ano_thread_main_stack(void) {
+
+#if defined(_WIN32)
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)GetModuleHandleW(NULL);
+    const IMAGE_NT_HEADERS *nt  = (const IMAGE_NT_HEADERS *)((const char *)dos + dos->e_lfanew);
+    return (size_t)nt->OptionalHeader.SizeOfStackReserve;
+#else
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) != 0)
+        return 0;
+    return rl.rlim_cur == RLIM_INFINITY ? SIZE_MAX : (size_t)rl.rlim_cur;
+#endif
 }
 
 

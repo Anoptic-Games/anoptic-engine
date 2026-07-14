@@ -14,7 +14,7 @@
 #include "anoptic_time.h"
 #include "anoptic_threads.h"
 #include "anoptic_filesystem.h"
-#include "anoptic_logging.h"
+#include "anoptic_log_crash.h"   // anoptic_log.h + crash blackbox
 
 #ifndef HEADLESS_BUILD
 // Renderer contract + GLFW, graphical engine only.
@@ -190,15 +190,13 @@ static bool hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
 	return ano_render_text_set(bridge, text_id, inst, shaped);
 }
 
-// Logic-side UI (v0 bridge): layout, styling, and hit-testing live HERE; the renderer
-// only receives prim blocks. Two blocks: a persistent status bar and an M-toggled menu
-// whose hover/click state resubmits the block on change (never per tick).
+// Logic-side UI (v0 bridge): layout, styling, and hit-testing. The renderer only receives prim blocks.
+// Two blocks: a persistent status bar and an M-toggled menu, resubmitted on change only.
 #define HUD_UI_BAR   1u
 #define HUD_UI_MENU  2u
 #define HUD_UI_GCAP  96u
 
-// Menu geometry from the logical viewport (RenderSnapshot.uiWidth/uiHeight): one
-// source of truth for rendering AND hit-testing, in overlay logical units end to end.
+// Menu geometry in overlay logical units, shared by rendering and hit-testing.
 typedef struct MenuLayout {
 	float panel[4];      // minX minY maxX maxY
 	float button[3][4];
@@ -216,7 +214,7 @@ static void menu_layout(float vpW, float vpH, MenuLayout* out)
 	}
 }
 
-// Cursor (overlay logical units, the layout's own space) -> hovered button, -1 when none.
+// Cursor (overlay logical units) -> hovered button, -1 when none.
 static int menu_hit(const MenuLayout* m, float cx, float cy)
 {
 	for (int i = 0; i < 3; i++)
@@ -226,8 +224,8 @@ static int menu_hit(const MenuLayout* m, float cx, float cy)
 	return -1;
 }
 
-// Shapes one horizontally-centered label into the block's glyph array and emits its
-// UI_GLYPHS prim (aux block-local). Baseline set for optical centering (~0.7 em caps).
+// Shapes one centered label into the glyph array and emits its UI_GLYPHS prim (aux block-local).
+// Baseline: optical centering (~0.7 em caps).
 static void ui_label(AnoUiBuilder* b, const AnoFontBake* bake, anostr_t text, float sizePx,
                      const float rect[4], const float color[4],
                      AnoGlyphInstance* glyphs, uint32_t* gcount)
@@ -273,7 +271,7 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	ano_ui_color_srgb((float[4]){ 0.92f, 0.94f, 0.97f, 1.0f }, label);
 	ano_ui_color_srgb((float[4]){ 1.00f, 0.80f, 0.35f, 1.0f }, title);
 	ano_ui_color_srgb((float[4]){ 0.25f, 0.45f, 0.85f, 0.0f }, glow); // ADD: rgb only
-	// Vertical plate gradient (lighter top -> darker bottom) submitted through the bridge.
+	// Vertical plate gradient (lighter top -> darker bottom).
 	AnoUiStop plateStops[2];
 	ano_ui_color_srgb((float[4]){ 0.17f, 0.18f, 0.22f, 0.97f }, plateStops[0].color);
 	plateStops[0].t = 0.0f;
@@ -310,8 +308,7 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 			ui_label(&b, bake, anostr_view(text, (size_t)len), 20.0f, m->button[i],
 			         label, glyphs, &gcount);
 	}
-	// Filled play-triangle on RESUME, baked to monotone quads and sent over the bridge
-	// curve transport (exercises the full submit -> compose -> GPU path for UI_PATH).
+	// Filled play-triangle on RESUME, baked to monotone quads, sent over the bridge curve transport.
 	float rb0 = m->button[0][0], rcy = 0.5f * (m->button[0][1] + m->button[0][3]);
 	AnoUiPathSeg play[3] = {
 		{ ANO_UI_SEG_MOVE, { rb0 + 22.0f, rcy - 9.0f, 0.0f, 0.0f } },
@@ -322,8 +319,7 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	return ano_render_ui_set(bridge, HUD_UI_MENU, 128, &b, glyphs, gcount);
 }
 
-// The persistent status bar, bottom-left. Resubmitted whenever the logical viewport
-// changes (resize, DPI change) — layout is pure over the snapshot's logical extent.
+// Persistent status bar, bottom-left. Resubmitted when the logical viewport changes.
 static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float vpH)
 {
 	AnoUiPrim prims[8];
@@ -412,8 +408,9 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t camSeq = 0;
 	uint64_t lastSnapLog = ano_timestamp_us();
 
-	// UI demo state: layout + hit-testing live here; blocks resubmit on CHANGE only.
-	bool     menuVisible = false, menuDirty = false, barSubmitted = false;
+	// UI demo state: blocks resubmit on change only. ANO_MENU opens the menu at boot (bench drivers that cannot inject keys).
+	bool     menuVisible = getenv("ANO_MENU") != NULL;
+	bool     menuDirty = menuVisible, barSubmitted = false;
 	int      menuHovered = -1;
 	uint32_t optionsCount = 0;
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
@@ -453,7 +450,7 @@ void* anoLogicThreadMain(void* arg)
 					else if (ie->u.button.button == GLFW_MOUSE_BUTTON_LEFT
 					         && ie->u.button.action == GLFW_PRESS
 					         && menuVisible && vpW > 0.0f) {
-						// Click resolves against the same layout the block rendered.
+						// Click resolves against the rendered layout.
 						MenuLayout ml;
 						menu_layout(vpW, vpH, &ml);
 						switch (menu_hit(&ml, prevCx, prevCy)) {
@@ -521,8 +518,8 @@ void* anoLogicThreadMain(void* arg)
 		if (bake != NULL && !noticeCleared && noticeDeadline != 0 && now > noticeDeadline)
 			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE);
 
-		// Menu hover tracks the cursor; any state change resubmits the block (full
-		// replace). A full ring keeps it dirty for the next tick.
+		// Menu hover tracks the cursor. Any change resubmits the block (full replace).
+		// A full ring keeps it dirty for the next tick.
 		if (menuVisible && vpW > 0.0f) {
 			MenuLayout ml;
 			menu_layout(vpW, vpH, &ml);
@@ -546,14 +543,13 @@ void* anoLogicThreadMain(void* arg)
 			if (noticeDeadline == 0 && ano_render_acquire_snapshot(bridge, &snap))
 				noticeDeadline = now + 15000000ull; // first published frame: arm the notice
 			if (ano_render_acquire_snapshot(bridge, &snap)) {
-				// A menu laid out for the old viewport re-centers on the new one.
+				// Re-center the menu on viewport change.
 				if (menuVisible && (vpW != snap.uiWidth || vpH != snap.uiHeight))
 					menuDirty = true;
 				vpW = snap.uiWidth;
 				vpH = snap.uiHeight;
 			}
-			// UI status bar: (re)submitted whenever the logical viewport height moves
-			// (backpressure-retried per tick).
+			// Status bar: resubmitted when the logical viewport height moves, retried per tick.
 			if ((!barSubmitted || barVpH != vpH) && vpH > 0.0f) {
 				barSubmitted = submit_bar(bridge, bake, vpH);
 				if (barSubmitted)
@@ -612,6 +608,17 @@ int main()
         ano_log(ANO_FATAL, "Logger initialization failed; something is very wrong.");
         return EXIT_FAILURE;
     }
+
+    // Blackbox arms right after the logger: a fatal signal writes the CRASH log, then hail-mary flushes.
+    if (ano_log_crash_init() != 0)
+        ano_log(ANO_WARN, "Blackbox failed to arm; a crash will leave no CRASH log.");
+
+    // Warn when the initial thread's stack budget (the environment's) is under ANO_THREAD_STACK_SIZE.
+    size_t mainStack = ano_thread_main_stack();
+    if (mainStack != 0 && mainStack < ANO_THREAD_STACK_SIZE)
+        ano_log(ANO_WARN, "Main-thread stack budget is %zu KiB, under the engine's %zu KiB: "
+                "deep main-thread call chains may overflow (raise `ulimit -s`).",
+                mainStack >> 10, (size_t)ANO_THREAD_STACK_SIZE >> 10);
 
 #ifndef HEADLESS_BUILD
     // GLFW pins window + event handling to the main thread (mandatory on macOS).

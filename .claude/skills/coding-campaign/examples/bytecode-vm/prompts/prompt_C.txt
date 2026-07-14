@@ -1,0 +1,18 @@
+Implement a single Rust function: a semantics-preserving peephole optimizer for a stack-machine bytecode.
+
+The instruction type is ALREADY DEFINED elsewhere in the crate as the following enum. Do NOT redefine it, do NOT write `enum Op`, do NOT write any `use` for it — just refer to `Op` and its variants directly:
+
+    enum Op { Push(i64), Pop, Add, Sub, Mul, Div, Mod, Neg, Dup, Swap, Jmp(usize), Jz(usize), Print, Halt }
+
+Define exactly (it MUST be `pub`):
+
+    pub fn optimize(program: &[Op]) -> Vec<Op>
+
+Apply safe optimizations that make the program shorter without changing its observable behavior, for example:
+- Constant folding of arithmetic over adjacent Push constants: Push(a),Push(b),Add -> Push(a+b); likewise Sub/Mul/Div/Mod; and Push(a),Neg -> Push(-a). Do NOT fold a Div or Mod whose divisor is 0 — leave those instructions unchanged. Prefer wrapping arithmetic when folding so you never panic.
+- Push(x),Pop -> (remove both).
+- Any other rewrite you can prove is sound.
+
+CRITICAL CORRECTNESS REQUIREMENT: `Jmp(index)` and `Jz(index)` operands are ABSOLUTE instruction indices into the program. Whenever you remove or insert instructions you MUST rewrite every jump target so it still points at the correct instruction. An optimizer that folds constants but leaves stale jump targets is WRONG and will be rejected. `run(optimize(p))` must equal `run(p)` for every program. When in doubt, leave a region unchanged — a correct non-shrinking result beats an incorrect shrinking one.
+
+Output ONLY the Rust source for `pub fn optimize` plus any private helper items it needs. No `Op` definition. No `main`. No tests. No external crates (std only). No markdown code fences. No prose before or after.

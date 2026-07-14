@@ -10,7 +10,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <anoptic_memory.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -78,11 +78,12 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	}
 	#endif
 
-	if (vkCreateInstance(&createInfo, NULL, &(ctx->instance)) != VK_SUCCESS)
+    VkResult result = vkCreateInstance(&createInfo, NULL, &(ctx->instance));
+	if (result != VK_SUCCESS)
 	{
-		ano_log(ANO_FATAL, "Failed to create Vulkan instance!");
+		ano_log(ANO_FATAL, "Failed to create Vulkan instance! Error code: %d", result);
 		free(extensions);
-		return VK_ERROR_INITIALIZATION_FAILED;
+		return result; // Returning the actual error is usually better than hardcoding VK_ERROR_INITIALIZATION_FAILED
 	}
 
 	#ifdef DEBUG_BUILD

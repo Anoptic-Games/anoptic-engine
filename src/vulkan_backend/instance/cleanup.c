@@ -10,7 +10,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <anoptic_memory.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -33,7 +33,12 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
 		return;
 	}
 
-	vkDeviceWaitIdle(ctx->device);
+	// Init can fail before the logical device exists; the loader crashes on a
+	// VK_NULL_HANDLE device, and the guarded destroys below all no-op then anyway.
+	if (ctx->device != VK_NULL_HANDLE)
+	{
+		vkDeviceWaitIdle(ctx->device);
+	}
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         flush_deletion_queue(ctx, &rendererState, i);
@@ -109,7 +114,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
 	}
 	// Text overlay: frame-data, glyph buffers, bake heap, FreeType backend
 	ano_vk_text_destroy(ctx, &rendererState);
-	// UI overlay lane (groundwork stub: handle-guarded no-op)
+	// UI overlay lane: adopted blocks + table buffers, handle-guarded
 	ano_vk_ui_destroy(ctx, &rendererState);
 
 	// Shared shadow images: atlas, blur temp, transient caster depth

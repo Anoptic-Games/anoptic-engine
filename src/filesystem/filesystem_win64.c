@@ -6,6 +6,7 @@
 #if defined(_WIN32)
 
 #include "anoptic_filesystem.h"
+#include "filesystem/filesystem_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>       // getenv
@@ -69,6 +70,12 @@ bool ano_fs_chdir_gamepath(void)
     return dir.length > 0 && _chdir(dir.str) == 0;
 }
 
+// Output: 0 when `path` exists as a directory afterward, -1 on failure.
+int fs_mkdir(const char *path)
+{
+    return (_mkdir(path) == 0 || errno == EEXIST) ? 0 : -1;
+}
+
 
 /* Append-only file sink (Win32). The opaque handle wraps a single file HANDLE. */
 
@@ -98,7 +105,22 @@ ano_file *ano_fs_open_append(const char *path)
     return file;
 }
 
-// Output: 0 once all bytes are written, -1 on error. Chunks past the DWORD count limit.
+// Output: append handle on a freshly truncated file, or NULL on failure.
+// CREATE_ALWAYS needs GENERIC_WRITE, and FILE_WRITE_DATA would break EOF-append atomicity,
+// so truncate in a throwaway open and reopen FILE_APPEND_DATA.
+ano_file *ano_fs_open_trunc(const char *path)
+{
+    if (path == NULL)
+        return NULL;
+
+    HANDLE trunc = CreateFileA(path, GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_DELETE, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (trunc == INVALID_HANDLE_VALUE)
+        return NULL;
+    CloseHandle(trunc);
+    return ano_fs_open_append(path);
+}
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
     if (file == NULL || (data == NULL && length != 0))

@@ -5,12 +5,17 @@
 
 extern uint32_t g_ValidationErrors;
 extern struct VulkanGarbage vulkanGarbage;
+extern bool g_AnoVkNoSuitableGpu;
 
 int main() {
     printf("Starting Vulkan Compliance Layer test...\n");
     g_ValidationErrors = 0;
 
     if (!initVulkan()) {
+        if (g_AnoVkNoSuitableGpu) {
+            printf("SKIP: no Vulkan device here can run the renderer.\n");
+            return 77; // ctest SKIP_RETURN_CODE
+        }
         printf("Failed to init Vulkan!\n");
         return 1;
     }
@@ -31,7 +36,7 @@ int main() {
     badInfo.usage = 0; // Invalid usage
     VkBuffer badBuffer = VK_NULL_HANDLE;
     vkCreateBuffer(ctx->device, &badInfo, NULL, &badBuffer);
-    // Some drivers create the object anyway; destroy it or vkDestroyDevice reports a leak.
+    // Some drivers create the object anyway.
     if (badBuffer != VK_NULL_HANDLE)
         vkDestroyBuffer(ctx->device, badBuffer, NULL);
 

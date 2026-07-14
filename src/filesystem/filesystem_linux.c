@@ -6,6 +6,7 @@
 #if defined(__linux__)
 
 #include "anoptic_filesystem.h"
+#include "filesystem/filesystem_internal.h"
 
 #include <unistd.h>     // readlink, chdir, write, fsync, close
 #include <stdio.h>      // snprintf
@@ -73,6 +74,12 @@ bool ano_fs_chdir_gamepath(void)
     return dir.length > 0 && chdir(dir.str) == 0;
 }
 
+// Output: 0 when `path` exists as a directory afterward, -1 on failure.
+int fs_mkdir(const char *path)
+{
+    return (mkdir(path, 0755) == 0 || errno == EEXIST) ? 0 : -1;
+}
+
 
 /* Append-only file sink (POSIX). The opaque handle wraps a single file descriptor. */
 
@@ -87,6 +94,25 @@ ano_file *ano_fs_open_append(const char *path)
         return NULL;
 
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0)
+        return NULL;
+
+    ano_file *file = mi_malloc(sizeof *file);
+    if (file == NULL) {
+        close(fd);
+        return NULL;
+    }
+    file->fd = fd;
+    return file;
+}
+
+// Output: handle opened O_APPEND after an O_TRUNC, or NULL on failure.
+ano_file *ano_fs_open_trunc(const char *path)
+{
+    if (path == NULL)
+        return NULL;
+
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
     if (fd < 0)
         return NULL;
 

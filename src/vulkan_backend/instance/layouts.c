@@ -5,7 +5,7 @@
 
 #include <anoptic_memory.h>
 #include <anoptic_filesystem.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include "pipeline.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
@@ -338,8 +338,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	if (indexingProps.maxDescriptorSetUpdateAfterBindSampledImages < uabLimit)
 		uabLimit = indexingProps.maxDescriptorSetUpdateAfterBindSampledImages;
 
-	// The limits count every sampler in a pipeline layout, so the fixed bindings sharing
-	// layouts with this array (shadow atlas, Hi-Z pyramid) need headroom reserved here.
+	// Reserve headroom for the fixed samplers sharing pipeline layouts (shadow atlas, Hi-Z).
 	const uint32_t fixedSamplerReserve = 16u;
 	uint32_t uabBudget = uabLimit > fixedSamplerReserve ? uabLimit - fixedSamplerReserve : 1u;
 
@@ -353,7 +352,7 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	samplerLayoutBinding.descriptorCount = state->bindlessTextures.maxTextures;
 	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	samplerLayoutBinding.pImmutableSamplers = NULL;
-	// FRAGMENT for geometry sampling; COMPUTE for the UI overlay raster's image prims.
+	// FRAGMENT for geometry sampling, COMPUTE for UI overlay image prims.
 	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorBindingFlags bindlessFlags = 

@@ -29,9 +29,7 @@
 #ifndef ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
 #define ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H
 
-// <uchar.h> is C11 but reached Apple's SDK only with the macOS 15 era; probe the header
-// itself, not the OS. The shim covers the one type this API uses, with the standard's
-// exact definition (char16_t is uint_least16_t, C17 7.28).
+// Shim char16_t (uint_least16_t, C17 7.28) where <uchar.h> is missing.
 #if __has_include(<uchar.h>)
     #include <uchar.h>
 #else

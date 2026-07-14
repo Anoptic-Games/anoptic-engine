@@ -14,9 +14,9 @@
  *     NOT NUL-terminated (inline anostr_t) and the drain renders them verbatim.
  * Deterministic (fixed seed). argv[1] overrides messages-per-producer.
  * Built so it cannot rot, DISABLED in ctest -- run ./anotest_logstrbench by hand from
- * a -O3 build (build.bat 7). Prints a table; exits nonzero only if an oracle breaks. */
+ * a -O3 build (build.bat 8). Prints a table; exits nonzero only if an oracle breaks. */
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_memory.h>
 #include <anoptic_strings_utf.h>
 #include <anoptic_threads.h>
@@ -205,7 +205,9 @@ int main(int argc, char **argv)
     ano_log_cleanup();  // final drain + close, so the file below is complete
 
     int failures = 0;
-    uint64_t lines = scratch_count_lines(OUT_DIR "/anoptic.log");
+    char outLog[96];    // the logger's file is session-stamped: <dir>/<stamp>_ano.log
+    snprintf(outLog, sizeof outLog, "%s/%s_ano.log", OUT_DIR, ano_fs_session_stamp());
+    uint64_t lines = scratch_count_lines(outLog);
     if (lines != expected) {
         printf("ORACLE BROKEN: %llu lines in file, %llu records enqueued\n",
                (unsigned long long)lines, (unsigned long long)expected);
@@ -214,14 +216,14 @@ int main(int argc, char **argv)
         printf("\nno-loss oracle: %llu lines == %llu records\n",
                (unsigned long long)lines, (unsigned long long)expected);
     }
-    if (!file_contains(OUT_DIR "/anoptic.log", "sentinel: " SENTINEL " / inline-12b!!")) {
+    if (!file_contains(outLog, "sentinel: " SENTINEL " / inline-12b!!")) {
         printf("ORACLE BROKEN: sentinel UTF-8 bytes corrupted or missing\n");
         failures++;
     } else {
         printf("byte-transparency oracle: sentinel UTF-8 intact in the file\n");
     }
 
-    remove(OUT_DIR "/anoptic.log");
+    remove(outLog);
     scratch_remove_dir(OUT_DIR);
     free(buf);
     return failures == 0 ? 0 : 1;
