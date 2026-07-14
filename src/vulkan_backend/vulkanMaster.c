@@ -41,6 +41,11 @@ GpuAllocator textureAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
+// Set when initVulkan() fails at physical-device selection: no present device can run
+// the renderer (e.g. lavapipe lacks multisampled integer color). Test harnesses read
+// this to SKIP device tests instead of failing them.
+bool g_AnoVkNoSuitableGpu = false;
+
 static GLFWwindow* window;
 
 static Monitors monitors =
@@ -352,6 +357,7 @@ bool initVulkan() // Initializes Vulkan
 	char* preferredDevice = getChosenDevice();
 	if (!pickPhysicalDevice(&ctx, &capabilities, &(ctx.queueFamilyIndices), preferredDevice))
 	{
+		g_AnoVkNoSuitableGpu = true;
 		ano_log(ANO_FATAL, "Quitting init: physical device failure!");
 		unInitVulkan();
 		return false;

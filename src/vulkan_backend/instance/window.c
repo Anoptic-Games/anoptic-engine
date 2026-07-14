@@ -172,7 +172,9 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 {
 	if (!glfwInit())
 	{
-		ano_log(ANO_FATAL, "Failed to initialize GLFW!");
+		const char* desc = NULL;
+		int code = glfwGetError(&desc);
+		ano_log(ANO_FATAL, "Failed to initialize GLFW! (0x%08X: %s)", code, desc ? desc : "no description");
 		return NULL;
 	}
 
