@@ -4,7 +4,7 @@ The Anoptic Game Engine is designed to create games that can handle large number
 
 ### Features
 
-- **ECS**: En entity component system that hopefully doesn't suck.
+- **ECS**: An entity component system that hopefully doesn't suck.
 - **ano Scripting**: A neat scripting language designed for batched invocations over an ECS runtime.
 - **Event System**: Message-passing between different systems via a generalized event bus.
 - **Native Parallelism**: Robust multithreading through the use of lockfree interconnects.
@@ -72,9 +72,9 @@ Here's a list of the valid build targets:
 - `nix build .#debug`: Debug with renderer validation layers enabled.
 - `nix build .#headless`: server release build. No renderer, GPU, or display.
 - `nix build .#release-headless`: same as `.#headless`.
-- `nix build .#release-wsl`: cross-built Windowss `.exe` with renderer (see [Building for Windows with WSL](#building-for-windows-with-wsl)).
+- `nix build .#release-wsl`: cross-built Windows `.exe` with renderer (see [Building for Windows with WSL](#building-for-windows-with-wsl)).
 - `nix build .#anygpu` — Linux renderer with mesa's Vulkan ICDs bundled as a driver default (`VK_ADD_DRIVER_FILES`, opt out by setting it empty): AMD/Intel/NVK hardware works on any distro with no host driver packages.
-- `nix build .#tests-headless` — CTest suite in the sandbox (`.#tests-asan`, `.#testsI wan-tsan`, `.#tests-full` on Linux; `tests-full` runs the renderer suite under Xvfb, and the Vulkan device tests skip where no device can run the renderer). The suites are packages — build them explicitly; `nix flake check` only evaluates.
+- `nix build .#tests-headless` — CTest suite in the sandbox (`.#tests-asan`, `.#tests-tsan`, `.#tests-full` on Linux; `tests-full` runs the renderer suite under Xvfb, and the Vulkan device tests skip where no device can run the renderer). The suites are packages — build them explicitly; `nix flake check` only evaluates.
 
 **In general:**
 `nix build .#<type>[-headless]-<platform>-<arch>[-wayland|-x11|-anygpu]`: any permutation, e.g. `.#release-linux-x64-x11`.
@@ -199,7 +199,7 @@ On VSCode, use the [clangd extension](https://marketplace.visualstudio.com/items
 
 The build script's test option runs a full CTest suite.
 
-You can see the tests in test/ and look at test/CMakeLists.txt.
+You can see the tests in tests/ and look at tests/CMakeLists.txt.
 
 They are 100% vibe-coded by frontier models.
 
@@ -224,11 +224,12 @@ The startup log prints which rendering path is active, e.g. `Enabling 3 device e
 
 #### Device selection
 
-The engine ranks suitable Vulkan devices by the following metrics, in order:
-1. mesh-shader capability
-2. largest DEVICE_LOCAL memory
-3. suitable CPU integrated graphics
-4. virtual devices (software rasterizers, VM adapters) as a last-resort fallback.
+The engine ranks suitable Vulkan devices in buckets, in order:
+1. discrete GPUs
+2. integrated GPUs
+3. everything else (software rasterizers, VM adapters) as a last-resort fallback.
+
+Within each bucket: mesh-shader capability first, then largest DEVICE_LOCAL memory.
 
 The chosen rendering device is logged as `Selected device: <name>`.
 
