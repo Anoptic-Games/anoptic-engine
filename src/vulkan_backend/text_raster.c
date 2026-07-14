@@ -570,14 +570,26 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     if (!state->textOverlay)
         return true;
 
-    // CPU side: bake blobs live on textHeap. Font bytes are manager-owned resources
-    // (the handles stay loaded: FreeType memory faces borrow them for their lifetime).
+    // CPU side: bake blobs live on textHeap. FreeType memory faces retain their source
+    // pointers, so one registered read scope pins the engine-domain font bytes until cleanup.
+    ano_res_lifetime lifetime = ano_res_lifetime_engine();
+    state->textResourceReader = (ano_res_reader){ .lane = ANO_RES_READER_NONE };
+    if (ano_res_reader_register(&state->textResourceReader) != 0
+        || ano_res_read_begin(&state->textResourceReader, &state->textResourceRead) != 0)
+    {
+        state->textOverlay = false;
+        state->asyncText = false;
+        return true;
+    }
     state->textHeap = mi_heap_new();
     AnoFontId font = 0;
+    anores_t fontHandle = ano_res_get(lifetime, ANO_TEXT_FONT_LOGICAL);
     if (state->textHeap == NULL || ano_text_init() != 0
         || (font = ano_text_font_load_memory(
-                ano_res_bytes(ano_res_get(ANO_TEXT_FONT_LOGICAL)))) == 0)
+                ano_res_bytes(&state->textResourceRead, fontHandle))) == 0)
     {
+        ano_res_read_end(&state->textResourceRead);
+        ano_res_reader_unregister(&state->textResourceReader);
         ano_log(ANO_WARN, "Text overlay disabled: font load failed ('%s').",
                 ANO_TEXT_FONT_LOGICAL);
         state->textOverlay = false;
@@ -588,13 +600,13 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     // Bake coverage: ASCII, Latin-1, core Cyrillic from Geist, Greek (mono + poly) from
     // Noto Sans, Runic from Noto Sans Runic. Ranges must stay codepoint-sorted and
     // disjoint. A missing auxiliary font degrades to the remaining ranges.
-    AnoFontId runeFont = ano_text_font_load_memory(
-        ano_res_bytes(ano_res_get(ANO_TEXT_RUNE_FONT_LOGICAL)));
+    AnoFontId runeFont = ano_text_font_load_memory(ano_res_bytes(
+        &state->textResourceRead, ano_res_get(lifetime, ANO_TEXT_RUNE_FONT_LOGICAL)));
     if (runeFont == 0)
         ano_log(ANO_WARN, "Text overlay: rune font missing ('%s'); Runic will not render.",
                 ANO_TEXT_RUNE_FONT_LOGICAL);
-    AnoFontId greekFont = ano_text_font_load_memory(
-        ano_res_bytes(ano_res_get(ANO_TEXT_GREEK_FONT_LOGICAL)));
+    AnoFontId greekFont = ano_text_font_load_memory(ano_res_bytes(
+        &state->textResourceRead, ano_res_get(lifetime, ANO_TEXT_GREEK_FONT_LOGICAL)));
     if (greekFont == 0)
         ano_log(ANO_WARN, "Text overlay: greek font missing ('%s'); Greek will not render.",
                 ANO_TEXT_GREEK_FONT_LOGICAL);
@@ -1105,8 +1117,12 @@ void ano_vk_text_destroy(VulkanContext* ctx, RendererState* state)
     for (uint32_t i = 0; i < state->textBlockCount; i++)
         mi_free((void*)state->textBlocks[i].blk);
     state->textBlockCount = 0;
-    // CPU side: FreeType down, bake blobs die with the heap.
+    // CPU side: FreeType down, then its borrowed resource bytes may cross quiescent.
     ano_text_shutdown();
+    ano_res_read_end(&state->textResourceRead);
+    if (state->textResourceReader.cookie != 0)
+        ano_res_reader_unregister(&state->textResourceReader);
+    ano_res_collect();
     if (state->textHeap != NULL)
     {
         mi_heap_destroy(state->textHeap);

@@ -3,16 +3,16 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Historical placement-scaffold benchmark: one global multipool versus per-scope
- * multipools at identical call sites. One binary reads ANO_RES_PLACEMENT at init; run
- * `global` and `scoped` from a -O3 build for the comparison. The scenarios are:
+/* Historical resource-placement workloads retained behind the explicit lifetime-domain
+ * grammar. This no longer selects or claims an allocator-contest model. The scenarios are:
  *   (a) steady-state get/unload churn over a 256-file synthetic streaming-size mix;
  *   (b) 50 scoped cycles over the available real glTF assets, including wall time,
  *       retire latency, and residual allocator footprint;
  *   (c) direct-class pointer-equality release plus conditioned-ingest throughput.
  * These workloads preserve the Phase D evidence but do not represent the complete
- * allocator hierarchy contest or establish any named contestant. DISABLED in ctest;
- * historical numbers live in RESOURCE_MANAGER_IMPL.md. Exit 0 == pass. */
+ * allocator hierarchy contest or establish any named contestant. NO FIGURE FROM THIS FILE MAY
+ * ENTER A CONTEST TABLE -- see the deleted res_registry_stats() shim below. DISABLED in ctest;
+ * historical numbers live in docs/resourcemgr/RESOURCE_MANAGER_IMPL.md. Exit 0 == pass. */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -26,7 +26,75 @@
 #include "templates/rng.h"
 #include "templates/scratch.h"
 
-#include "resources_internal.h"     // placement / groups / registry stats
+#include "resources_internal.h"     // neutral placement vocabulary
+
+static ano_res_lifetime g_engine_lifetime;
+static ano_res_lifetime g_current_lifetime;
+static ano_res_reader g_reader = { .lane = ANO_RES_READER_NONE };
+static ano_res_read g_read;
+static bool g_read_active;
+
+/* DELETED: the res_registry_stats() shim. It aliased ONE field to two names --
+ * direct_bytes = pools.live_bytes = ano_res_stats().live_bytes -- and the file then compared
+ * them, printed their difference as a "direct" figure, and summed them into a "residual". The
+ * manager exposes no direct-vs-pooled split today (that arrives with the telemetry cells), so
+ * every number the shim produced was a tautology wearing a measurement's name. It is gone, and
+ * NO FIGURE FROM THIS FILE MAY ENTER A CONTEST TABLE: ano_res_stats().live_bytes is the total
+ * of pooled AND direct live bytes, chunk_bytes is what the arenas hold from the parent, and the
+ * two OVERLAP -- they are reported separately below and are never added together. */
+
+static void bench_read_begin(void)
+{
+    if (!g_read_active && ano_res_read_begin(&g_reader, &g_read) == 0)
+        g_read_active = true;
+}
+static void bench_read_end(void)
+{
+    if (g_read_active) {
+        ano_res_read_end(&g_read);
+        g_read_active = false;
+    }
+}
+static int bench_domain_begin(void)
+{
+    ano_res_lifetime scope = {0};
+    if (ano_res_domain_open(ANO_RES_LIFETIME_WORLD_LEVEL, &scope) != 0)
+        return -1;
+    g_current_lifetime = scope;
+    return (int)scope.owner;
+}
+static void bench_domain_end(int g) { (void)g; }
+static int bench_domain_retire(int g)
+{
+    (void)g;
+    bench_read_end();
+    int rc = ano_res_domain_retire(g_current_lifetime);
+    (void)ano_res_collect();
+    g_current_lifetime = g_engine_lifetime;
+    bench_read_begin();
+    return rc;
+}
+static int bench_unload(anores_t h)
+{
+    bench_read_end();
+    int rc = ano_res_unload(g_current_lifetime, h);
+    (void)ano_res_collect();
+    bench_read_begin();
+    return rc;
+}
+static int bench_release(anores_t h, void **data, size_t *size)
+{
+    bench_read_end();
+    int rc = ano_res_release(g_current_lifetime, h, data, size);
+    bench_read_begin();
+    return rc;
+}
+#define ano_res_get(path) ano_res_get(g_current_lifetime, (path))
+#define ano_res_bytes(handle) ano_res_bytes(&g_read, (handle))
+#define ano_res_unload(handle) bench_unload((handle))
+#define ano_res_release(handle, data, size) bench_release((handle), (data), (size))
+#define ano_resgfx_model(handle) ano_resgfx_model(g_current_lifetime, &g_read, (handle))
+#define ano_resgfx_scene(handle) ano_resgfx_scene(&g_read, (handle))
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -107,7 +175,7 @@ static void run_churn(const char *tag, bool in_scope)
 
     int g = -1;
     if (in_scope) {
-        g = res_group_begin();
+        g = bench_domain_begin();
         CHECK(g >= 1, "churn scope opens");
     }
 
@@ -182,8 +250,8 @@ static void run_churn(const char *tag, bool in_scope)
            bench_ops_per_sec(RB_OPS, ano_ticks_to_ns(wall)) / 1e6);
 
     if (in_scope) {
-        res_group_end(g);
-        CHECK(res_group_retire(g) == 0, "churn scope retires");
+        bench_domain_end(g);
+        CHECK(bench_domain_retire(g) == 0, "churn scope retires");
     }
 }
 
@@ -208,13 +276,13 @@ static void run_cycles(bool have_assets)
     bench_lat_init(&cyc, cycleTicks, RB_CYCLES);
     bench_lat_init(&ret, retireTicks, RB_CYCLES);
 
-    res_reg_stats base = res_registry_stats();
-    size_t residual1 = 0;
+    ano_res_allocator_stats base = ano_res_stats();
+    size_t liveResidual1 = 0, chunkResidual1 = 0;
     double mbPerCycle = 0.0;
 
     for (uint32_t c = 0; c < RB_CYCLES; c++) {
         uint64_t t0 = bench_begin();
-        int g = res_group_begin();
+        int g = bench_domain_begin();
         CHECK(g >= 1, "cycle scope opens");
         size_t loaded = 0;
         for (size_t m = 0; m < N_GLTFS; m++) {
@@ -229,39 +297,38 @@ static void run_cycles(bool have_assets)
             loaded += (size_t)view.vertex_count * sizeof(anoresgfx_vertex);
             g_sink += view.vertex_count;
         }
-        res_group_end(g);
+        bench_domain_end(g);
         uint64_t r0 = bench_begin();
-        CHECK(res_group_retire(g) == 0, "cycle retire");
+        CHECK(bench_domain_retire(g) == 0, "cycle retire");
         bench_lat_add(&ret, bench_end(r0));
         bench_lat_add(&cyc, bench_end(t0));
 
-        res_reg_stats now = res_registry_stats();
-        size_t residual = (now.pools.chunk_bytes - base.pools.chunk_bytes)
-                        + (now.direct_bytes - base.direct_bytes);
+        // Live and chunk deltas OVERLAP (pooled live bytes are served out of chunks). Reported
+        // side by side, never summed: the old shim's "residual" double-counted them.
+        ano_res_allocator_stats now = ano_res_stats();
+        size_t liveResidual  = now.live_bytes  - base.live_bytes;
+        size_t chunkResidual = now.chunk_bytes - base.chunk_bytes;
         if (c == 0) {
-            residual1  = residual;
-            mbPerCycle = (double)loaded / (1024.0 * 1024.0);
+            liveResidual1  = liveResidual;
+            chunkResidual1 = chunkResidual;
+            mbPerCycle     = (double)loaded / (1024.0 * 1024.0);
         }
         if (c == 0 || c == RB_CYCLES / 2 - 1 || c == RB_CYCLES - 1)
-            printf("(b) cycle %2u: residual footprint %zu bytes "
-                   "(chunks +%zu, direct +%zu)\n",
-                   c + 1, residual,
-                   now.pools.chunk_bytes - base.pools.chunk_bytes,
-                   now.direct_bytes - base.direct_bytes);
+            printf("(b) cycle %2u: live +%zu B, chunks +%zu B (over baseline; NOT summed)\n",
+                   c + 1, liveResidual, chunkResidual);
     }
 
     bench_lat_row("level cycle", bench_lat_stats(&cyc));
     bench_lat_row("retire only", bench_lat_stats(&ret));
-    printf("(b) ~%.1f MiB ingested per cycle; residual after cycle 1: %zu bytes\n",
-           mbPerCycle, residual1);
+    printf("(b) ~%.1f MiB ingested per cycle; after cycle 1: live +%zu B, chunks +%zu B\n",
+           mbPerCycle, liveResidual1, chunkResidual1);
 
     // Scoped placement returns group chunks to baseline; global placement may retain
     // high-water chunks (reported above, not asserted).
-    res_reg_stats end = res_registry_stats();
-    CHECK(end.direct_bytes == base.direct_bytes, "no direct leak across cycles");
-    if (res_placement() == RES_PLACEMENT_SCOPED_POOL)
-        CHECK(end.pools.chunk_bytes == base.pools.chunk_bytes,
-              "scoped pool returns chunk bytes to baseline");
+    ano_res_allocator_stats end = ano_res_stats();
+    CHECK(end.live_bytes == base.live_bytes, "no live leak across cycles");
+    CHECK(end.chunk_bytes == base.chunk_bytes,
+          "retired domains return chunk bytes to baseline");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -315,7 +382,7 @@ static void run_handoff(bool have_assets)
             double bestMs = 1e30;
             size_t bytes = 0;
             for (int rep = 0; rep < 3; rep++) {
-                int g = res_group_begin();
+                int g = bench_domain_begin();
                 anores_t src = ano_res_get(best);
                 uint64_t t0 = bench_begin();
                 anores_t scene = ano_resgfx_model(src);
@@ -327,8 +394,8 @@ static void run_handoff(bool have_assets)
                       + (size_t)view.index_count * 4u;
                 if ((double)ns / 1e6 < bestMs)
                     bestMs = (double)ns / 1e6;
-                res_group_end(g);
-                res_group_retire(g);
+                bench_domain_end(g);
+                bench_domain_retire(g);
             }
             printf("(c) ingest %s: best %.2f ms, %.1f MB/s conditioned\n",
                    best, bestMs, (double)bytes / (1024.0 * 1024.0) / (bestMs / 1e3));
@@ -358,9 +425,12 @@ int main(void)
         }
     }
 #endif
+    g_engine_lifetime = ano_res_lifetime_engine();
+    g_current_lifetime = g_engine_lifetime;
+    CHECK(ano_res_reader_register(&g_reader) == 0, "reader register");
+    bench_read_begin();
 
-    printf("anotest_resbench: placement %s%s\n",
-           res_placement() == RES_PLACEMENT_SCOPED_POOL ? "scoped-pool" : "global-pool",
+    printf("anotest_resbench: explicit lifetime domains%s\n",
            have_assets ? "" : " (no assets tree: scenario (b) reduced)");
     bench_lat_header();
 
@@ -370,6 +440,10 @@ int main(void)
     run_handoff(have_assets);
 
     unstage();
+    bench_read_end();
+    CHECK(ano_res_reader_unregister(&g_reader) == 0, "reader unregister");
+    (void)ano_res_collect();
+    CHECK(ano_res_shutdown() == 0, "resource shutdown");
     printf("sink %llu\n", (unsigned long long)g_sink);
     if (failures == 0) { printf("anotest_resbench: all checks passed\n"); return 0; }
     printf("anotest_resbench: %d check(s) failed\n", failures);

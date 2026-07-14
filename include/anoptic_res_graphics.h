@@ -11,11 +11,17 @@
 // everything else: handles in, views out, generations retire.
 //
 // What a scene view serves is FILE TRUTH: geometry conditioned to the engine's vertex
-// layout, the node hierarchy, materials with every factor and texture reference the
-// file declares (feature bits below), and image entries as logical paths ready for
-// ano_res_get + ano_resgfx_image. GPU concerns -- which features the active pipelines
-// support, which images to decode, bindless registration, SSBO baking -- stay in the
-// renderer, applied ON these views.
+// layout, the node hierarchy, skins and animations, materials with every factor and
+// texture reference the file declares (feature bits below), cameras, punctual lights,
+// and image entries -- as logical paths for URI-addressed images, or as byte ranges
+// INSIDE the scene block for embedded (data: URI and GLB bufferView) images. GPU
+// concerns -- which features the active pipelines support, which images to decode,
+// bindless registration, SSBO baking -- stay in the renderer, applied ON these views.
+//
+// FROZEN (freeze item 11). This header is the final form: the vertex carries every
+// attribute the engine will ever condition, so W6 (ingest) and W7 (renderer) work in
+// parallel without a layout fight. The renderer catches up to the widened vertex at
+// M13 (vertex.h, the VkVertexInputAttributeDescriptions, and every shader).
 
 #ifndef ANOPTICENGINE_ANOPTIC_RES_GRAPHICS_H
 #define ANOPTICENGINE_ANOPTIC_RES_GRAPHICS_H
@@ -26,11 +32,15 @@
 #include "anoptic_math.h"         // mat4, row-major, the engine-wide convention
 #include "anoptic_resources.h"
 
+// The scene block's kind tag. Stable on disk, in packs, forever.
+#define ANORESGFX_TAG_SCENE   0x58464752u   // 'RGFX'
+#define ANORESGFX_TAG_BINDING 0x444E4247u   // 'GBND' -- the derived GPU binding table (M12)
+
 // ---------------------------------------------------------------------------------------------
 // Material feature bits: pure file truth (what the glTF declares), the canonical
 // definition. Values deliberately mirror the renderer's PbrFeatureFlags so the
 // integration masks them straight against pipeline capabilities (static_asserted at
-// the consumer).
+// the consumer). New bits only ever APPEND: an existing bit never moves.
 
 enum {
     ANORESGFX_PBR_NONE                       = 0,
@@ -58,16 +68,25 @@ enum {
     ANORESGFX_PBR_DIFFUSE_TRANSMISSION       = 1 << 21,
     ANORESGFX_PBR_EMISSIVE_STRENGTH          = 1 << 22,
     ANORESGFX_PBR_SPECULAR_GLOSSINESS        = 1 << 23,
+    ANORESGFX_PBR_TEXTURE_TRANSFORM          = 1 << 24,  // any slot carries KHR_texture_transform
+    ANORESGFX_PBR_UNLIT                      = 1 << 25,  // KHR_materials_unlit
 };
 
 // ---------------------------------------------------------------------------------------------
 // The conditioned scene, all views into one manager-owned block.
 
-// Matches the renderer's Vertex layout (8 packed floats); asserted at the consumer.
+// The engine vertex, final form. 96 bytes. Absent attributes carry their glTF defaults:
+// normal (0,1,0), tangent (1,0,0,1), color (1,1,1,1), uv 0, joints 0, weights (0,0,0,0).
+// The renderer's Vertex becomes exactly this at M13.
 typedef struct anoresgfx_vertex {
-    float position[3];
-    float normal[3];        // (0,1,0) when the file has none
-    float texcoord[2];      // 0 when the file has none
+    float    position[3];
+    float    normal[3];
+    float    tangent[4];    // xyz = tangent, w = bitangent handedness sign (+/-1)
+    float    color[4];      // COLOR_0, promoted to linear float4
+    float    texcoord[2];   // TEXCOORD_0
+    float    texcoord1[2];  // TEXCOORD_1
+    uint16_t joints[4];     // JOINTS_0, widened to u16 regardless of the file's component type
+    float    weights[4];    // WEIGHTS_0, normalized to sum 1 (or all-zero when unskinned)
 } anoresgfx_vertex;
 
 // One drawable primitive: ranges into the scene's shared vertex/index arrays.
@@ -85,30 +104,149 @@ typedef struct anoresgfx_mesh {
 typedef struct anoresgfx_node {
     char     name[64];
     mat4     local;                         // local transform, row-major
-    int32_t  mesh;                          // into meshes[], -1 = none
-    int32_t  parent;                        // into nodes[], -1 = root
+    int32_t  mesh;                          // into meshes[],     -1 = none
+    int32_t  parent;                        // into nodes[],      -1 = root
     uint32_t child_first, child_count;      // into children[] (node indices)
+    int32_t  skin;                          // into skins[],      -1 = none
+    int32_t  camera;                        // into cameras[],    -1 = none
+    int32_t  light;                         // into lights[],     -1 = none
+    uint32_t _pad;
 } anoresgfx_node;
 
-// A texture reference: an index into images[], -1 = absent. scale carries the slot's
-// scalar (normal scale, occlusion strength), 1.0 elsewhere.
+// ---------------------------------------------------------------------------------------------
+// Skinning.
+
+// A skin: a joint span into joints[] (node indices) and the matching inverse-bind matrices.
+typedef struct anoresgfx_skin {
+    char     name[64];
+    uint32_t joint_first, joint_count;      // into joints[] and inverse_binds[], parallel
+    int32_t  skeleton;                      // into nodes[], -1 = none (the common root)
+    uint32_t _pad;
+} anoresgfx_skin;
+
+// ---------------------------------------------------------------------------------------------
+// Animation. Samplers hold the keyframe data; channels bind a sampler to a node property.
+
+typedef enum anoresgfx_interp {
+    ANORESGFX_INTERP_LINEAR = 0,
+    ANORESGFX_INTERP_STEP,
+    ANORESGFX_INTERP_CUBICSPLINE,           // output stride is 3x: in-tangent, value, out-tangent
+} anoresgfx_interp;
+
+typedef enum anoresgfx_anim_path {
+    ANORESGFX_PATH_TRANSLATION = 0,         // vec3
+    ANORESGFX_PATH_ROTATION,                // vec4 quaternion (xyzw)
+    ANORESGFX_PATH_SCALE,                   // vec3
+    ANORESGFX_PATH_WEIGHTS,                 // morph weights, `components` per key
+} anoresgfx_anim_path;
+
+typedef struct anoresgfx_anim_sampler {
+    uint32_t input_first,  input_count;     // into anim_input[]  (keyframe times, seconds)
+    uint32_t output_first, output_count;    // into anim_output[] (floats)
+    uint32_t interpolation;                 // anoresgfx_interp
+    uint32_t components;                    // floats per key (3, 4, or the morph target count)
+} anoresgfx_anim_sampler;
+
+typedef struct anoresgfx_anim_channel {
+    uint32_t sampler;                       // into anim_samplers[]
+    int32_t  target_node;                   // into nodes[], -1 = channel dropped at ingest
+    uint32_t path;                          // anoresgfx_anim_path
+    uint32_t _pad;
+} anoresgfx_anim_channel;
+
+typedef struct anoresgfx_animation {
+    char     name[64];
+    uint32_t channel_first, channel_count;  // into anim_channels[]
+    float    duration;                      // seconds; the max input time across its samplers
+    uint32_t _pad;
+} anoresgfx_animation;
+
+// ---------------------------------------------------------------------------------------------
+// Texture references and the sampler table.
+
+// glTF sampler enums, verbatim (0 = "unspecified, pick the engine default").
+typedef struct anoresgfx_sampler {
+    uint32_t mag_filter, min_filter;        // GL enums as the file declares them
+    uint32_t wrap_s, wrap_t;
+} anoresgfx_sampler;
+
+enum {
+    ANORESGFX_TEXREF_TRANSFORM = 1u << 0,   // KHR_texture_transform present on this slot
+};
+
+// A texture reference: an index into images[], -1 = absent. scale carries the slot's scalar
+// (normal scale, occlusion strength), 1.0 elsewhere. uv_set is the TEXCOORD_n this slot
+// samples (0 or 1; the vertex carries both). The KHR_texture_transform fields are the
+// IDENTITY (offset 0, rotation 0, scale 1) unless ANORESGFX_TEXREF_TRANSFORM is set.
 typedef struct anoresgfx_texref {
-    int32_t image;
-    float   scale;
+    int32_t  image;
+    float    scale;
+    uint32_t uv_set;
+    int32_t  sampler;                       // into samplers[], -1 = engine default
+    uint32_t flags;                         // ANORESGFX_TEXREF_*
+    float    xform_offset[2];
+    float    xform_rotation;                // radians, counter-clockwise about (0,0)
+    float    xform_scale[2];
 } anoresgfx_texref;
 
-// An image the file references, as a LOGICAL path resolved against the glTF's own
-// directory (URI percent-decoding and ./.. collapsing done). "" when the image is not
-// URI-addressed (embedded images are not yet served by the current graphics scaffold). srgb
-// aggregates the slots that
-// sample it as color -- decode hint, exactly today's renderer classification.
+// ---------------------------------------------------------------------------------------------
+// Images. A file-referenced image is a LOGICAL path resolved against the glTF's own
+// directory (URI percent-decoding and ./.. collapsing done). An EMBEDDED image (base64
+// data: URI, or a GLB bufferView) has an empty path and its encoded bytes live INSIDE the
+// scene block at [bytes_off, bytes_off + bytes_len) -- fetch them with
+// ano_resgfx_image_bytes. srgb aggregates the slots that sample it as color (a decode hint,
+// exactly today's renderer classification). Exactly one of path[0] and bytes_len is set; an
+// image with neither was dropped at ingest, loudly.
+
 typedef struct anoresgfx_image {
     char     path[MAXPATH];
     uint32_t srgb;
+    uint32_t mime;                          // FOURCC-ish: 'PNG ', 'JPEG', 'KTX2', 0 = unknown
+    uint64_t bytes_off;                     // offset INTO THE SCENE BLOCK, 0 when URI-addressed
+    uint64_t bytes_len;                     // 0 when URI-addressed
 } anoresgfx_image;
 
-// Every factor and reference the file declares; features says which groups carry
-// meaning. Untouched groups hold glTF defaults, texrefs hold -1.
+#define ANORESGFX_MIME_PNG  0x20474E50u   // 'PNG '
+#define ANORESGFX_MIME_JPEG 0x4745504Au   // 'JPEG'
+#define ANORESGFX_MIME_KTX2 0x3258544Bu   // 'KTX2'
+
+// ---------------------------------------------------------------------------------------------
+// Cameras and punctual lights (KHR_lights_punctual). Both are FILE TRUTH; the renderer
+// decides what to do with them. A node's camera/light index points here.
+
+typedef enum anoresgfx_camera_type {
+    ANORESGFX_CAMERA_PERSPECTIVE = 0,
+    ANORESGFX_CAMERA_ORTHOGRAPHIC,
+} anoresgfx_camera_type;
+
+typedef struct anoresgfx_camera {
+    char     name[64];
+    uint32_t type;                          // anoresgfx_camera_type
+    float    yfov;                          // perspective: vertical fov, radians
+    float    aspect;                        // perspective: 0 = "use the viewport's"
+    float    xmag, ymag;                    // orthographic half-extents
+    float    znear, zfar;                   // zfar 0 = infinite perspective
+} anoresgfx_camera;
+
+typedef enum anoresgfx_light_type {
+    ANORESGFX_LIGHT_DIRECTIONAL = 0,
+    ANORESGFX_LIGHT_POINT,
+    ANORESGFX_LIGHT_SPOT,
+} anoresgfx_light_type;
+
+typedef struct anoresgfx_light {
+    char     name[64];
+    float    color[3];                      // linear RGB, normalized
+    float    intensity;                     // candela (point/spot) or lux (directional)
+    float    range;                         // 0 = unbounded
+    float    inner_cone, outer_cone;        // spot half-angles, radians
+    uint32_t type;                          // anoresgfx_light_type
+} anoresgfx_light;
+
+// ---------------------------------------------------------------------------------------------
+// Material: every factor and reference the file declares; `features` says which groups carry
+// meaning. Untouched groups hold glTF defaults, texrefs hold image -1.
+
 typedef struct anoresgfx_material {
     char     name[64];
     uint32_t features;                      // ANORESGFX_PBR_*
@@ -159,8 +297,11 @@ typedef struct anoresgfx_material {
     float emissive_strength;
 } anoresgfx_material;
 
-// The scene view: counted arrays borrowing manager memory, valid until the scene
-// handle's generation retires. A zeroed struct means the handle was stale/sentinel.
+// ---------------------------------------------------------------------------------------------
+// The scene view: counted arrays borrowing manager memory, valid until the scene handle's
+// generation retires. A zeroed struct means the handle was stale, sentinel, or the block
+// failed validation.
+
 typedef struct anoresgfx_scene {
     const anoresgfx_vertex   *vertices;   uint32_t vertex_count;
     const uint32_t           *indices;    uint32_t index_count;
@@ -171,32 +312,54 @@ typedef struct anoresgfx_scene {
     const anoresgfx_material *materials;  uint32_t material_count;
     const anoresgfx_image    *images;     uint32_t image_count;
     const uint32_t           *roots;      uint32_t root_count;   // parentless nodes
+
+    const anoresgfx_skin     *skins;      uint32_t skin_count;
+    const uint32_t           *joints;     uint32_t joint_count;  // node indices, skin-spanned
+    const mat4               *inverse_binds;                     // parallel to joints[]
+
+    const anoresgfx_animation     *animations;    uint32_t animation_count;
+    const anoresgfx_anim_channel  *anim_channels; uint32_t anim_channel_count;
+    const anoresgfx_anim_sampler  *anim_samplers; uint32_t anim_sampler_count;
+    const float                   *anim_input;    uint32_t anim_input_count;
+    const float                   *anim_output;   uint32_t anim_output_count;
+
+    const anoresgfx_sampler  *samplers;   uint32_t sampler_count;
+    const anoresgfx_camera   *cameras;    uint32_t camera_count;
+    const anoresgfx_light    *lights;     uint32_t light_count;
 } anoresgfx_scene;
+
 
 // ---------------------------------------------------------------------------------------------
 // Ingest and serve.
 
-// Ingest a glTF resource into a conditioned scene. src is a live handle to the .gltf
-// bytes (ano_res_get); sibling buffers (.bin) and data: URIs resolve through the
-// namespace against the source's own logical directory. The scene becomes an owned
-// resource keyed "<source>#gfx" -- single-copy: repeat ingest of the same source
-// returns the same handle. src itself is left loaded (unload it if the raw JSON is no
-// longer wanted). Sentinel on parse failure, one log line. Parse staging is a
-// monotonic arena winked out before return; zero loose malloc/free.
-anores_t ano_resgfx_model(anores_t src);
+// Ingest a glTF resource into a conditioned scene. src is a live handle to the .gltf/.glb
+// bytes (ano_res_get); sibling buffers (.bin), data: URIs, and GLB chunks resolve through
+// the namespace against the source's own logical directory. The scene becomes an owned
+// resource under res_rid_derived(src_rid, 'RGFX') -- single-copy: repeat ingest of the same
+// source returns the same handle, and no string key exists for it. src itself is left
+// loaded (unload it if the raw JSON is no longer wanted). Sentinel on parse failure, one
+// log line. Parse staging is a monotonic arena winked out before return; zero loose
+// malloc/free.
+anores_t ano_resgfx_model(ano_res_lifetime lifetime, const ano_res_read *read, anores_t src);
 
-// The scene view for a conditioned handle. Zeroed struct on sentinel/stale handles.
-anoresgfx_scene ano_resgfx_scene(anores_t scene);
+// The scene view for a conditioned handle. Its pointers die with read; zeroed on refusal.
+anoresgfx_scene ano_resgfx_scene(const ano_res_read *read, anores_t scene);
+
+// The encoded bytes of an EMBEDDED image (data: URI or GLB bufferView), borrowed from the
+// scene block. Empty for a URI-addressed image (use ano_res_get on images[i].path), for an
+// out-of-range index, or outside an active read scope.
+anostr_t ano_resgfx_image_bytes(const ano_res_read *read, anores_t scene, uint32_t image);
 
 // Decoded pixels, tightly packed RGBA8, top-left origin.
+// TODO(W6/W7, M12): pixels become MANAGER-OWNED -- decode into the staging arena, copy once
+// into the planned home, and hand back an anores_t. Until then the block is the CALLER's
+// (free with ano_aligned_free) and the src handle stays loaded.
 typedef struct anoresgfx_pixels {
-    uint8_t *rgba;                  // caller-owned: free with ano_aligned_free
+    uint8_t *rgba;
     uint32_t width, height;
 } anoresgfx_pixels;
 
-// Decode an image resource (PNG/JPEG/TGA/BMP/...) into RGBA8. The block is the
-// CALLER's -- an ano_res_release-style hand-off; the src handle stays loaded (unload
-// it to drop the encoded bytes). Zeroed struct on failure, one log line.
-anoresgfx_pixels ano_resgfx_image(anores_t src);
+anoresgfx_pixels ano_resgfx_image(ano_res_lifetime lifetime, const ano_res_read *read,
+                                  anores_t src);
 
 #endif // ANOPTICENGINE_ANOPTIC_RES_GRAPHICS_H

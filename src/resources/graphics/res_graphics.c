@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "../resources_ext.h"
 #include "../resources_internal.h"
 
 #define CGLTF_IMPLEMENTATION
@@ -334,12 +335,13 @@ static void mark_srgb(const cgltf_data *data, anoresgfx_image *images)
 // ---------------------------------------------------------------------------------------------
 // Ingest.
 
-anores_t ano_resgfx_model(anores_t src)
+anores_t ano_resgfx_model(ano_res_lifetime lifetime, const ano_res_read *read, anores_t src)
 {
     anores_t none = {0};
-    anostr_t bytes = ano_res_bytes(src);
+    anostr_t bytes = ano_res_bytes(read, src);
     char srcname[MAXPATH];
-    if (anostr_len(bytes) == 0 || res_registry_name(src, srcname, sizeof srcname) != 0) {
+    if (anostr_len(bytes) == 0
+        || res_registry_name(read, src, srcname, sizeof srcname) != 0) {
         ano_log(ANO_ERROR, "res_graphics: model ingest on a stale/sentinel handle");
         return none;
     }
@@ -349,7 +351,7 @@ anores_t ano_resgfx_model(anores_t src)
         ano_log(ANO_ERROR, "res_graphics: scene key overflows: %s", srcname);
         return none;
     }
-    anores_t existing = res_registry_find(key);
+    anores_t existing = res_registry_find(read, key);
     if (existing.gen != 0)
         return existing;                        // single-copy: already conditioned
 
@@ -446,11 +448,21 @@ anores_t ano_resgfx_model(anores_t src)
         return none;
     }
 
-    uint8_t *blk = mi_malloc_aligned((size_t)total + 1, ANO_CACHE_LINE);
-    if (blk == NULL) {
+    res_place_plan scene_plan = {
+        .tag = RES_TAG_GFX_SCENE,
+        .lifetime = lifetime,
+        .role = RES_ROLE_DERIVED,
+        .operation = RES_OP_ADOPT,
+        .destination = RES_DEST_BULK,
+        .provenance = RES_PROVENANCE_CONDITIONED,
+        .alignment = ANO_CACHE_LINE,
+    };
+    res_owned_block scene_block = {0};
+    if (res_owned_alloc(&scene_plan, (size_t)total, &scene_block) != 0) {
         ano_log(ANO_ERROR, "res_graphics: scene block allocation failed: %s", srcname);
         return none;
     }
+    uint8_t *blk = scene_block.data;
     memset(blk, 0, (size_t)total + 1);          // deterministic padding + guard NUL
     memcpy(blk, &hdr, sizeof hdr);
 
@@ -557,16 +569,39 @@ anores_t ano_resgfx_model(anores_t src)
     }
     mark_srgb(data, images);
 
-    return res_registry_adopt(key, blk, (size_t)total);
+    size_t dep_cap = 1 + hdr.image_count;
+    res_dependency_meta *deps = ano_mem_monotonic_alloc(arena,
+                                                         dep_cap * sizeof *deps,
+                                                         _Alignof(res_dependency_meta));
+    size_t dep_count = 0;
+    if (deps != NULL) {
+        deps[dep_count++] = (res_dependency_meta){
+            .rid = src.rid, .tag = RES_TAG_BYTES, .flags = 1,
+        };
+        for (uint32_t i = 0; i < hdr.image_count; i++) {
+            size_t plen = strlen(images[i].path);
+            if (plen == 0)
+                continue;
+            deps[dep_count++] = (res_dependency_meta){
+                .rid = res_fnv1a64(images[i].path, plen),
+                .tag = RES_TAG_IMAGE_ENC,
+                .flags = images[i].srgb,
+            };
+        }
+    }
+    anores_t adopted = res_registry_adopt(key, &scene_block, deps, dep_count);
+    if (adopted.gen == 0)
+        res_owned_free(&scene_block, RES_FREE_RETAIL);
+    return adopted;
 }   // scratch heap dies here: cgltf data, buffers, and the arena wink out
 
 // ---------------------------------------------------------------------------------------------
 // Serving.
 
-anoresgfx_scene ano_resgfx_scene(anores_t scene)
+anoresgfx_scene ano_resgfx_scene(const ano_res_read *read, anores_t scene)
 {
     anoresgfx_scene v = {0};
-    anostr_t bytes = ano_res_bytes(scene);
+    anostr_t bytes = ano_res_bytes(read, scene);
     size_t len = anostr_len(bytes);
     if (len < sizeof(scene_hdr))
         return v;
@@ -613,10 +648,11 @@ anoresgfx_scene ano_resgfx_scene(anores_t scene)
     return v;
 }
 
-anoresgfx_pixels ano_resgfx_image(anores_t src)
+anoresgfx_pixels ano_resgfx_image(ano_res_lifetime lifetime, const ano_res_read *read,
+                                  anores_t src)
 {
     anoresgfx_pixels px = {0};
-    anostr_t bytes = ano_res_bytes(src);
+    anostr_t bytes = ano_res_bytes(read, src);
     if (anostr_len(bytes) == 0 || anostr_len(bytes) > INT32_MAX) {
         ano_log(ANO_ERROR, "res_graphics: image decode on a stale/oversize handle");
         return px;
@@ -633,6 +669,21 @@ anoresgfx_pixels ano_resgfx_image(anores_t src)
             stbi_image_free(rgba);
         return px;
     }
+    size_t pixel_bytes = (size_t)w * (size_t)h * 4;
+    res_place_plan plan = {
+        .tag = RES_TAG_IMAGE_DEC,
+        .lifetime = lifetime,
+        .role = RES_ROLE_TRANSFER,
+        .operation = RES_OP_DECODE,
+        .destination = RES_DEST_EXTERNAL_TRANSFER,
+        .provenance = RES_PROVENANCE_DECODED,
+        .alignment = _Alignof(max_align_t),
+    };
+    // TODO(W6, M12): manager-owned pixels -- STBI_MALLOC/REALLOC/FREE route into the staging
+    // arena, decode then copy ONCE into the planned home, and res_account_copy charges that
+    // copy honestly. This external-allocation charge is never reversed, which is why
+    // `allocations == frees at shutdown` cannot be an oracle yet.
+    res_registry_external_allocation(&plan, pixel_bytes);
     px.rgba   = rgba;
     px.width  = (uint32_t)w;
     px.height = (uint32_t)h;

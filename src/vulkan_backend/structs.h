@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <anoptic_resources.h>
 
 
 #define GLFW_INCLUDE_VULKAN
@@ -579,6 +580,8 @@ typedef struct RendererState
     GpuAllocation           textGlyphAlloc;
     AnoFontBake             textBake;
     mi_heap_t*              textHeap;
+    ano_res_reader          textResourceReader;
+    ano_res_read            textResourceRead;
     uint32_t                textInstanceCount; // instances in the CURRENT slot's frame buffer
     uint32_t                textFlags;         // TextRasterPush.flags (bit 0 = opaque self-test)
     // Pending on-screen text: ano_vk_text_set shapes into this canonical array and bumps textVersion.

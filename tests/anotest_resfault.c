@@ -21,11 +21,8 @@
 
 #include "anoptic_resources.h"
 #include "resources_internal.h"
+#include "resources_os.h"       // rmos_scan_dir: the temp-litter sweep must run on Windows too
 #include "templates/scratch.h"
-
-#ifndef _WIN32
-#include <dirent.h>
-#endif
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -52,25 +49,42 @@ static long read_back(const char *path, char *buf, long cap)
     return n;
 }
 
-static void purge_temps(const char *dir)
+// rmos_scan_dir ctx. dir = the directory walked; purge = attempt removal; left = .tmp entries
+// still present when the walk ends.
+typedef struct temp_sweep {
+    const char *dir;
+    bool        purge;
+    int         left;
+} temp_sweep;
+
+static void sweep_cb(const char *name, void *ctx)
 {
-#ifndef _WIN32
-    DIR *d = opendir(dir);
-    if (!d)
+    temp_sweep *s = (temp_sweep *)ctx;
+    size_t n = strlen(name);
+    if (n < 4 || strcmp(name + n - 4, ".tmp") != 0)
         return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        size_t n = strlen(e->d_name);
-        if (n >= 4 && strcmp(e->d_name + n - 4, ".tmp") == 0) {
-            char p[MAXPATH + 300];
-            snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
-            remove(p);
-        }
-    }
-    closedir(d);
-#else
-    (void)dir;
-#endif
+    char p[MAXPATH + 300];
+    snprintf(p, sizeof p, "%s/%s", s->dir, name);
+    if (s->purge && remove(p) == 0)
+        return;
+    s->left++;
+}
+
+// .tmp entries in dir that survive the walk; purge asks for removal first. -1 if dir won't scan.
+// rmos_scan_dir, not a #ifndef _WIN32 dirent block: this ran on nothing at all on Windows, the
+// one platform whose ReplaceFileW path is likeliest to strand a temp.
+//
+// A temp CANNOT be removed here when a crash step longjmped out of ano_res_write with its
+// handle still open: Win64 rmos_open_excl takes share mode 0, so the name is locked until the
+// process exits, while POSIX unlink never cares. That is a property of THIS harness (a real
+// crash closes the handle and leaves a deletable orphan), not of the write protocol -- so the
+// clean-write oracle below is a DELTA, not an absolute zero.
+static int scan_temps(const char *dir, bool purge)
+{
+    temp_sweep s = { .dir = dir, .purge = purge, .left = 0 };
+    if (rmos_scan_dir(dir, sweep_cb, &s) != 0)
+        return -1;
+    return s.left;
 }
 
 int main(void)
@@ -117,17 +131,22 @@ int main(void)
             snprintf(keep, sizeof keep, "%s", fresh);
             expect = keep;
         }
-        purge_temps(dir);                   // crash artifacts, swept between runs
+        (void)scan_temps(dir, true);        // crash artifacts, swept between runs
     }
 
-    // A clean run after all that carnage still lands durably.
+    // A clean run after all that carnage still lands durably, and strands no temp OF ITS OWN.
+    // Census first: what the longjmp harness is still holding open is not this write's fault.
+    int held = scan_temps(dir, false);
+    CHECK(held >= 0, "write dir scans");
     const char *last = "FINAL-CLEAN-WRITE";
     CHECK(ano_res_write("anotest_fault/fault.bin", last, strlen(last)) == 0, "clean write");
     long n = read_back(final, got, sizeof got);
     CHECK(n == (long)strlen(last) && memcmp(got, last, (size_t)n) == 0, "clean readback");
+    CHECK(scan_temps(dir, false) == held, "clean write strands no new .tmp");
+    printf("anotest_resfault: %d crash temp(s) still held open by the longjmp harness\n", held);
 
     remove(final);
-    purge_temps(dir);
+    (void)scan_temps(dir, true);
     scratch_remove_dir(dir);
 
     if (failures == 0) { printf("anotest_resfault: all checks passed\n"); return 0; }

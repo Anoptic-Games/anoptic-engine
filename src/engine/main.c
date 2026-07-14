@@ -15,6 +15,9 @@
 #include "anoptic_threads.h"
 #include "anoptic_filesystem.h"
 #include "anoptic_resources.h"
+#include "anoptic_config.h"
+#include "anoptic_keybindings.h"
+#include "anoptic_res_world.h"
 #include "anoptic_log_crash.h"   // anoptic_log.h + crash blackbox
 
 #ifndef HEADLESS_BUILD
@@ -30,6 +33,13 @@
 #endif // !HEADLESS_BUILD
 
 // Variables
+
+static ano_config g_engineConfig;
+static anoresworld_state g_worldState = {
+    .world_seed = UINT64_C(0x414e4f50544943),
+    .camera_position = { 0.0f, 0.9f, 3.5f },
+    .camera_pitch = -0.211f,
+};
 
 #ifndef HEADLESS_BUILD
 // Logic/ECS master: the sole render-command producer.
@@ -400,8 +410,9 @@ void* anoLogicThreadMain(void* arg)
 	// Free-fly camera owned by logic (audit 4.11): drain forwarded input, integrate a WASD + right-drag
 	// look camera, publish its pose. Starts at the renderer's old fallback pose, with the forward derived
 	// (pitch ~ -0.21 rad) so there is no jump on the first publish.
-	float    camEye[3] = { 0.0f, 0.9f, 3.5f };
-	float    camYaw = 0.0f, camPitch = -0.211f;
+	float    camEye[3] = { g_worldState.camera_position[0], g_worldState.camera_position[1],
+	                       g_worldState.camera_position[2] };
+	float    camYaw = g_worldState.camera_yaw, camPitch = g_worldState.camera_pitch;
 	bool     inW = false, inA = false, inS = false, inD = false, inUp = false, inDown = false;
 	bool     looking = false, haveCursor = false;
 	float    prevCx = 0.0f, prevCy = 0.0f;
@@ -410,7 +421,7 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t lastSnapLog = ano_timestamp_us();
 
 	// UI demo state: blocks resubmit on change only. ANO_MENU opens the menu at boot (bench drivers that cannot inject keys).
-	bool     menuVisible = getenv("ANO_MENU") != NULL;
+	bool     menuVisible = g_engineConfig.menu_at_start || getenv("ANO_MENU") != NULL;
 	bool     menuDirty = menuVisible, barSubmitted = false;
 	int      menuHovered = -1;
 	uint32_t optionsCount = 0;
@@ -429,14 +440,15 @@ void* anoLogicThreadMain(void* arg)
 				const AnoInputEvent* ie = &ev.u.input;
 				if (ie->kind == ANO_INPUT_KEY) {
 					bool down = (ie->u.key.action != GLFW_RELEASE); // PRESS or REPEAT
-					switch (ie->u.key.key) {
-					case GLFW_KEY_W:            inW = down;    break;
-					case GLFW_KEY_S:            inS = down;    break;
-					case GLFW_KEY_A:            inA = down;    break;
-					case GLFW_KEY_D:            inD = down;    break;
-					case GLFW_KEY_SPACE:        inUp = down;   break;
-					case GLFW_KEY_LEFT_CONTROL: inDown = down; break;
-					case GLFW_KEY_M:
+					anostr_sid action = ano_keybindings_current_action(ie->u.key.key, ie->u.key.mods);
+					switch (action) {
+					case ANO_ACTION_MOVE_FORWARD:  inW = down;    break;
+					case ANO_ACTION_MOVE_BACKWARD: inS = down;    break;
+					case ANO_ACTION_MOVE_LEFT:     inA = down;    break;
+					case ANO_ACTION_MOVE_RIGHT:    inD = down;    break;
+					case ANO_ACTION_MOVE_UP:       inUp = down;   break;
+					case ANO_ACTION_MOVE_DOWN:     inDown = down; break;
+					case ANO_ACTION_MENU_TOGGLE:
 						if (ie->u.key.action == GLFW_PRESS) {
 							menuVisible = !menuVisible;
 							menuHovered = -1;
@@ -468,8 +480,8 @@ void* anoLogicThreadMain(void* arg)
 				} else if (ie->kind == ANO_INPUT_CURSOR_POS) {
 					float cx = ie->u.cursor.x, cy = ie->u.cursor.y;
 					if (looking && haveCursor) {
-						camYaw   += (cx - prevCx) * 0.003f;
-						camPitch -= (cy - prevCy) * 0.003f;
+						camYaw   += (cx - prevCx) * g_engineConfig.camera_look_sensitivity;
+						camPitch -= (cy - prevCy) * g_engineConfig.camera_look_sensitivity;
 						if (camPitch >  1.5f) camPitch =  1.5f;   // avoid gimbal at the poles
 						if (camPitch < -1.5f) camPitch = -1.5f;
 					}
@@ -496,7 +508,7 @@ void* anoLogicThreadMain(void* arg)
 			float cp = cosf(camPitch), sp = sinf(camPitch), sy = sinf(camYaw), cy = cosf(camYaw);
 			float fwd[3]   = { cp * sy, sp, -cp * cy }; // RH, looks down -Z at yaw 0
 			float right[3] = { cy, 0.0f, sy };          // normalize(cross(fwd, worldUp))
-			float step = 2.5f * dt;                     // units/sec
+			float step = g_engineConfig.camera_move_speed * dt;
 			float mF = (float)((int)inW - (int)inS);
 			float mR = (float)((int)inD - (int)inA);
 			float mU = (float)((int)inUp - (int)inDown);
@@ -576,6 +588,10 @@ void* anoLogicThreadMain(void* arg)
 		}
 		ano_sleep(2000); // ~2 ms logic tick
 	}
+	g_worldState.simulation_tick++;
+	memcpy(g_worldState.camera_position, camEye, sizeof camEye);
+	g_worldState.camera_yaw = camYaw;
+	g_worldState.camera_pitch = camPitch;
 	return NULL;
 }
 #endif // !HEADLESS_BUILD
@@ -628,6 +644,29 @@ int main()
     }
 #endif
 
+    ano_res_lifetime persistenceLifetime = {0};
+    if (ano_res_domain_open(ANO_RES_LIFETIME_SAVE_CONFIG, &persistenceLifetime) != 0) {
+        ano_log(ANO_FATAL, "Could not open the settings/save resource lifetime.");
+        ano_res_shutdown();
+        return EXIT_FAILURE;
+    }
+    ano_config_status configStatus = ano_config_load(persistenceLifetime, &g_engineConfig);
+    if (configStatus == ANO_CONFIG_IO_ERROR || configStatus == ANO_CONFIG_INVALID_ARGUMENT)
+        ano_log(ANO_WARN, "Settings persistence failed; using validated defaults in memory.");
+    ano_keybindings bindings;
+    ano_keybindings_status bindingStatus = ano_keybindings_load(persistenceLifetime, &bindings);
+    if (bindingStatus == ANO_KEYBINDINGS_IO_ERROR
+        || bindingStatus == ANO_KEYBINDINGS_INVALID_ARGUMENT)
+        ano_log(ANO_WARN, "Keybinding persistence failed; using validated defaults in memory.");
+    ano_keybindings_install(&bindings);
+    anoresworld_save_info saveInfo = {0};
+    anoresworld_save_status saveStatus = ano_resworld_save_load(
+        persistenceLifetime, "autosave", &g_worldState, &saveInfo);
+    if (saveStatus != ANO_RESWORLD_OK && saveStatus != ANO_RESWORLD_MIGRATED
+        && saveStatus != ANO_RESWORLD_NOT_FOUND)
+        ano_log(ANO_WARN, "Autosave load refused with status %d; source generations preserved.",
+                (int)saveStatus);
+
     // Warn when the initial thread's stack budget (the environment's) is under ANO_THREAD_STACK_SIZE.
     size_t mainStack = ano_thread_main_stack();
     if (mainStack != 0 && mainStack < ANO_THREAD_STACK_SIZE)
@@ -643,6 +682,8 @@ int main()
     if (!initVulkan())
     {
         ano_log(ANO_FATAL, "Vulkan initialization failed.");
+        (void)ano_res_domain_retire(persistenceLifetime);
+        ano_res_shutdown();
         return -1;
     }
 
@@ -652,6 +693,8 @@ int main()
     {
         ano_log(ANO_FATAL, "Failed to spawn logic thread.");
         unInitVulkan();
+        (void)ano_res_domain_retire(persistenceLifetime);
+        ano_res_shutdown();
         return -1;
     }
 
@@ -668,7 +711,12 @@ int main()
     atomic_store(&g_logicShouldStop, true);
     ano_thread_join(logicThread, NULL);
 
+    if (ano_resworld_save_commit("autosave", &g_worldState) != 0)
+        ano_log(ANO_ERROR, "Autosave commit failed; every prior generation remains intact.");
     unInitVulkan();
+    (void)ano_res_domain_retire(persistenceLifetime);
+    if (ano_res_shutdown() != 0)
+        ano_log(ANO_ERROR, "Resource manager shutdown remained reader-pinned.");
 #else
     // Headless engine: no renderer. Console / server entry point.
     ano_rlog(ANO_INFO, ANO_TERM, "Anoptic Engine — headless console mode.");

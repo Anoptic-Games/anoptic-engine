@@ -18,13 +18,21 @@
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
 
-// The scene view's vertex layout must BE the renderer's Vertex, and the file-truth
-// feature bits must BE PbrFeatureFlags, or every cast below is a lie.
-static_assert(sizeof(Vertex) == sizeof(anoresgfx_vertex),
-              "Vertex and anoresgfx_vertex must share one layout");
-static_assert(offsetof(Vertex, normal) == offsetof(anoresgfx_vertex, normal)
-              && offsetof(Vertex, texCoord) == offsetof(anoresgfx_vertex, texcoord),
-              "Vertex field offsets must match the scene view");
+// The scene view's vertex is the FROZEN final layout (tangent / color / uv1 / joints /
+// weights); the renderer's Vertex is still the narrow position+normal+uv triple, so geometry
+// is NARROWED field by field per primitive below. The three shared fields must agree in
+// width or that copy is a lie.
+// TODO(W7, M13): Vertex BECOMES anoresgfx_vertex -- vertex.h, every
+// VkVertexInputAttributeDescription and every shader widen in that commit, the offsets line
+// up again, and the narrowing copy dies (the scene view goes straight to the uploader).
+static_assert(sizeof(((Vertex *)0)->position) == sizeof(((anoresgfx_vertex *)0)->position)
+              && sizeof(((Vertex *)0)->normal) == sizeof(((anoresgfx_vertex *)0)->normal)
+              && sizeof(((Vertex *)0)->texCoord) == sizeof(((anoresgfx_vertex *)0)->texcoord),
+              "the narrowing copy moves whole fields: their widths must match");
+static_assert(sizeof(Vertex) < sizeof(anoresgfx_vertex),
+              "the GPU vertex has not caught up to the conditioned one yet (M13)");
+
+// The file-truth feature bits must BE PbrFeatureFlags, or every material cast is a lie.
 static_assert(PBR_FEATURE_BASE_COLOR_FACTOR == ANORESGFX_PBR_BASE_COLOR_FACTOR
               && PBR_FEATURE_NORMAL_TEXTURE == ANORESGFX_PBR_NORMAL_TEXTURE
               && PBR_FEATURE_ALPHA_MODE_BLEND == ANORESGFX_PBR_ALPHA_MODE_BLEND
@@ -87,15 +95,32 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
 {
     // 1. Parse + condition through the resource manager (single-copy; the raw JSON is
     //    dropped right after, the conditioned scene at the end of this function).
-    anores_t src = ano_res_get(logical);
+    ano_res_lifetime lifetime = ano_res_lifetime_engine();
+    ano_res_reader reader = { .lane = ANO_RES_READER_NONE };
+    ano_res_read read = {0};
+    if (ano_res_reader_register(&reader) != 0 || ano_res_read_begin(&reader, &read) != 0)
+        return NULL;
+    anores_t src = ano_res_get(lifetime, logical);
     if (src.gen == 0) {
+        ano_res_read_end(&read);
+        ano_res_reader_unregister(&reader);
         ano_log(ANO_ERROR, "Failed to load glTF resource: %s", logical);
         return NULL;
     }
-    anores_t sceneH = ano_resgfx_model(src);
-    ano_res_unload(src);
-    anoresgfx_scene s = ano_resgfx_scene(sceneH);
+    anores_t sceneH = ano_resgfx_model(lifetime, &read, src);
+    ano_res_read_end(&read);
+    ano_res_unload(lifetime, src);
+    if (ano_res_read_begin(&reader, &read) != 0) {
+        ano_res_reader_unregister(&reader);
+        return NULL;
+    }
+    anoresgfx_scene s = ano_resgfx_scene(&read, sceneH);
     if (sceneH.gen == 0 || s.node_count == 0) {
+        if (sceneH.gen != 0)
+            ano_res_unload(lifetime, sceneH);
+        ano_res_read_end(&read);
+        ano_res_reader_unregister(&reader);
+        ano_res_collect();
         ano_log(ANO_ERROR, "Failed to condition glTF scene: %s", logical);
         return NULL;
     }
@@ -103,8 +128,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
     ModelAsset* asset = calloc(1, sizeof(ModelAsset));
     strncpy(asset->name, logical, 63);
 
-    // 2. Geometry: every conditioned primitive uploads as an LOD chain. The scene view
-    //    IS the staging data (layout asserted above), no copy.
+    // 2. Geometry: every conditioned primitive uploads as an LOD chain. The conditioned
+    //    vertex is wider than the GPU's, so each primitive narrows into a scratch array.
+    //    TODO(W7, M13): the widened Vertex deletes this copy -- the scene view goes straight
+    //    to the uploader again, as it did before the layout froze.
     asset->meshCount = s.mesh_count;
     asset->meshes = calloc(asset->meshCount, sizeof(ModelMesh));
     for (uint32_t m = 0; m < s.mesh_count; ++m) {
@@ -114,6 +141,15 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
         outMesh->primitives = calloc(inMesh->prim_count, sizeof(ModelPrimitive));
         for (uint32_t p = 0; p < inMesh->prim_count; ++p) {
             const anoresgfx_prim* prim = &s.prims[inMesh->prim_first + p];
+            Vertex* verts = calloc(prim->vertex_count ? prim->vertex_count : 1, sizeof(Vertex));
+            if (verts == NULL)
+                continue;
+            for (uint32_t v = 0; v < prim->vertex_count; ++v) {
+                const anoresgfx_vertex* sv = &s.vertices[prim->vertex_first + v];
+                memcpy(&verts[v].position, sv->position, sizeof sv->position);
+                memcpy(&verts[v].normal,   sv->normal,   sizeof sv->normal);
+                memcpy(&verts[v].texCoord, sv->texcoord, sizeof sv->texcoord);
+            }
             AnoLodConfig lodCfg = ano_lod_config_default(ANO_DEFAULT_LOD_COUNT);
             uint32_t lodBase = 0u, lodProduced = 0u;
             geometry_pool_upload_chain(
@@ -122,10 +158,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
                 ctx->device,
                 ctx->queueFamilyIndices.transferFamily,
                 ctx->transferQueue,
-                (const Vertex*)(s.vertices + prim->vertex_first), prim->vertex_count,
+                verts, prim->vertex_count,
                 s.indices + prim->index_first, prim->index_count,
                 &lodCfg, &lodBase, &lodProduced
             );
+            free(verts);
             outMesh->primitives[p].geometryPoolIndex = lodBase;
         }
     }
@@ -166,13 +203,13 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
     for (uint32_t t = 0; t < s.image_count; ++t) {
         if (!needed[t] || s.images[t].path[0] == '\0')
             continue;
-        anores_t img = ano_res_get(s.images[t].path);
+        anores_t img = ano_res_get(lifetime, s.images[t].path);
         if (img.gen == 0)
             continue;                           // get already logged the miss
-        anoresgfx_pixels px = ano_resgfx_image(img);
+        anoresgfx_pixels px = ano_resgfx_image(lifetime, &read, img);
         if (px.rgba == NULL) {
             ano_log(ANO_WARN, "Texture decode failed, skipping: %s", s.images[t].path);
-            ano_res_unload(img);
+            ano_res_unload(lifetime, img);
             continue;
         }
         VkImage image; GpuAllocation alloc; VkImageView view;
@@ -181,7 +218,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
                                                srgb[t], true,
                                                &stagingBuffers[stagingCount]);
         ano_aligned_free(px.rgba);
-        ano_res_unload(img);                    // encoded bytes are done too
+        ano_res_unload(lifetime, img);                    // encoded bytes are done too
         if (!ok)
             continue;
         stagingCount++;
@@ -403,7 +440,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
     }
 
     // The conditioned CPU scene served its purpose; the GPU owns the data now.
-    ano_res_unload(sceneH);
+    ano_res_unload(lifetime, sceneH);
+    ano_res_read_end(&read);
+    ano_res_reader_unregister(&reader);
+    ano_res_collect();
     ano_debug_log(ANO_INFO, "Successfully ingested ModelAsset: %s", logical);
     return asset;
 }

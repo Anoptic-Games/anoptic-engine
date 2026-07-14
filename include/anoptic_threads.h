@@ -80,6 +80,8 @@ int ano_thread_detach(anothread_t thread);
 
 anothread_t ano_thread_self(void);
 
+int ano_thread_equal(anothread_t a, anothread_t b);
+
 
 /* Mutexes */
 
