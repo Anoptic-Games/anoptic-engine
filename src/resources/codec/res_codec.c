@@ -105,13 +105,16 @@ size_t res_codec_decode(res_codec_id id, const void *src, size_t src_len,
     case RES_CODEC_LZ4: {
         if (src_len > (size_t)0x7fffffff)
             return 0;
+        // dst_cap is the TOC-known uncompressed length: a chunk that decodes SHORT is as
+        // malformed as one that would overrun. LZ4_decompress_safe already refuses the
+        // overrun (never writes past dst_cap); requiring n == dst_cap refuses the short lie.
         int n = LZ4_decompress_safe(src, dst, (int)src_len, (int)dst_cap);
-        return n > 0 ? (size_t)n : 0;
+        return n > 0 && (size_t)n == dst_cap ? (size_t)n : 0;
     }
 #ifdef ANOPTIC_ZSTD
     case RES_CODEC_ZSTD: {
         size_t n = ZSTD_decompress(dst, dst_cap, src, src_len);
-        return ZSTD_isError(n) ? 0 : n;
+        return !ZSTD_isError(n) && n == dst_cap ? n : 0;
     }
 #endif
     default:

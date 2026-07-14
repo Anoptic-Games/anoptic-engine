@@ -21,13 +21,18 @@
 #include "resources_ext.h"
 #include "resources_internal.h"
 #include "resources_place.h"
+#include "resources_tel.h"
+
+// The graphics extension's registration hook (res_graphics.c). An extern here rather than
+// a header: every .h under src/resources/ is frozen at W0, and the roster call moves into
+// the W6 graphics split (res_gfx_ext.c) with the rest of the extension surface.
+extern void res_gfx_register_ext(void);
 
 #define RES_SLOT_MAX       4096u
 #define RES_ROW_CHUNK      64u
 #define RES_ROW_CHUNKS     (RES_SLOT_MAX / RES_ROW_CHUNK)
 #define RES_DOMAIN_MAX     32u
 #define RES_READER_MAX     64u
-#define RES_POOL_MAX       (1u << 20)
 #define RES_QUIESCENT      UINT64_MAX
 
 static_assert(ATOMIC_POINTER_LOCK_FREE == 2, "resource publication requires lock-free pointers");
@@ -64,9 +69,9 @@ typedef enum res_domain_state {
     RES_DOMAIN_RETIRING,
 } res_domain_state;
 
+// M5: the domain no longer owns a heap or a pool -- memory ownership lives in the
+// placement root keyed by the owner index. The registry keeps identity and teardown state.
 typedef struct res_domain {
-    mi_heap_t *heap;
-    ano_mem_multipool *pool;
     ano_res_lifetime_kind kind;
     uint32_t generation;
     res_domain_state state;
@@ -86,18 +91,25 @@ typedef struct res_reader_lane {
     _Atomic uint64_t epoch;
 } res_reader_lane;
 
+// Reader lanes are stripe-backed (ano_mem_stripe's first production consumer): one 16-byte
+// lane per reader thread, each on its own ANO_THREAD_LINE granule. The old
+// `res_reader_lane g_readers[64]` packed four raced lanes per cache line, so every reader's
+// epoch store false-shared with three neighbors across 1.2M+ observations per race run.
+// Pointers publish with release at init and become NULL at shutdown; a stale reader handle
+// observes NULL and refuses instead of touching reclaimed memory.
 static _Atomic(res_pub *) g_directory[RES_SLOT_MAX];
-static res_reader_lane g_readers[RES_READER_MAX];
+static _Atomic(res_reader_lane *) g_readers[RES_READER_MAX];
+static ano_mem_stripe *g_reader_stripe;
 static _Atomic uint64_t g_epoch = 1;
 static _Atomic uint32_t g_reader_cookie = 1;
 static uint32_t g_owner_generations[RES_DOMAIN_MAX];
 static uint32_t g_row_seed;
+static uint32_t g_row_gen_high;                 // highest generation ever PUBLISHED, across inits
 
 static struct {
     anothread_mutex_t mtx;
     anothread_t owner_thread;
-    bool alive;
-    bool shutting_down;
+    _Atomic bool alive;                         // read by reader registration off-thread
     uint32_t *slots;
     res_owned_block slots_storage;
     uint32_t slot_mask;
@@ -109,9 +121,14 @@ static struct {
     ano_res_allocator_stats stats;
 } g_reg;
 
+static inline bool reg_alive(void)
+{
+    return atomic_load_explicit(&g_reg.alive, memory_order_acquire);
+}
+
 static bool owner_thread(void)
 {
-    return g_reg.alive && ano_thread_equal(g_reg.owner_thread, ano_thread_self());
+    return reg_alive() && ano_thread_equal(g_reg.owner_thread, ano_thread_self());
 }
 
 static res_row *row_at(uint32_t slot)
@@ -136,68 +153,26 @@ static res_domain *domain_of(ano_res_lifetime lifetime, bool live_only)
     return d;
 }
 
-static size_t serving_size(size_t size)
-{
-    size_t n = size < 16 ? 16 : size;
-    if (n > RES_POOL_MAX)
-        return size;
-    n--;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-#if SIZE_MAX > UINT32_MAX
-    n |= n >> 32;
-#endif
-    return n + 1;
-}
-
-// The M1 stand-in for the route plane: what the registry ALREADY does, restated as a
-// (operation, destination, size) predicate rather than the caller-supplied
-// transfer_compatible bool the frozen plan no longer carries. Behavior is byte-identical to
-// what every current call site asked for.
-// TODO(W1+W2, M5): DELETED. res_place_plan() returns the site and the ARENA confers the flags.
-static uint8_t legacy_site_flags(const res_place_plan *plan, size_t bytes)
-{
-    bool adoptable = (plan->operation == RES_OP_LOAD || plan->operation == RES_OP_ADOPT)
-                  && (plan->destination == RES_DEST_VARIABLE_PAYLOAD
-                      || plan->destination == RES_DEST_BULK);
-    return bytes > RES_POOL_MAX && adoptable ? RES_SITE_TRANSFERABLE : 0u;
-}
-
+// The seam (M5). The domain check stays HERE: the placement root table is keyed by owner
+// index alone, so a stale lifetime (dead generation, wrong kind) must be refused by the
+// registry before the route ever sees the key. serving_size() and legacy_site_flags() are
+// DELETED -- the site carries serving/alignment/flags and free() never recomputes them.
 static int owned_alloc_locked(const res_place_plan *plan, size_t size, res_owned_block *out)
 {
     res_domain *d = domain_of(plan->lifetime, true);
     if (d == NULL)
         return -1;
-    size_t bytes = size + 1;
-    uint8_t flags = legacy_site_flags(plan, bytes);
-    bool transferable = (flags & RES_SITE_TRANSFERABLE) != 0;
-    bool pooled = !transferable && bytes <= RES_POOL_MAX;
-    size_t align = plan->alignment ? plan->alignment : ANO_CACHE_LINE;
-    void *p = pooled ? ano_mem_multipool_alloc(d->pool, bytes)
-                     : transferable ? mi_malloc_aligned(bytes, align)
-                                    : mi_heap_malloc_aligned(d->heap, bytes, align);
+    size_t bytes = size + 1;                    // guard NUL, exactly as before
+    res_site site;
+    if (res_place_route(plan, bytes, &site) != 0)
+        return -1;
+    void *p = res_place_alloc(&site, bytes);
     if (p == NULL)
         return -1;
-    size_t serving = pooled ? serving_size(bytes) : bytes;
-    *out = (res_owned_block){
-        .data = p, .size = size, .plan = *plan,
-        .site = {
-            .allocator = pooled ? (void *)d->pool : (void *)d->heap,
-            .serving   = serving,
-            .alignment = align,
-            .root      = plan->lifetime.owner,
-            .cell      = 0,                     // TODO(W1, M3): res_tel_intern(plan)
-            .arena     = (uint8_t)(pooled ? RES_ARENA_SMALL : RES_ARENA_BULK),
-            .backing   = (uint8_t)(pooled ? RES_BACK_MULTIPOOL : RES_BACK_HEAP),
-            .flags     = flags,
-        },
-    };
+    *out = (res_owned_block){ .data = p, .size = size, .site = site, .plan = *plan };
     g_reg.stats.requested_bytes += size;
-    g_reg.stats.serving_bytes += serving;
-    g_reg.stats.live_bytes += serving;
+    g_reg.stats.serving_bytes += site.serving;
+    g_reg.stats.live_bytes += site.serving;
     g_reg.stats.live_blocks++;
     g_reg.stats.allocations++;
     if (g_reg.stats.live_bytes > g_reg.stats.peak_bytes)
@@ -219,15 +194,14 @@ int res_owned_alloc(const res_place_plan *plan, size_t size, res_owned_block *ou
     return rc;
 }
 
+// The block's site says where it lives; nobody re-derives the pool from the domain. The
+// pool outlives every block routed into it: a domain stays RETIRING (root un-winked) while
+// pending_blocks > 0, so this free never races the root teardown.
 static void block_free_locked(res_owned_block *block)
 {
     if (block == NULL || block->data == NULL)
         return;
-    res_domain *d = domain_of(block->plan.lifetime, false);
-    if (block->site.backing == RES_BACK_MULTIPOOL && d != NULL && d->pool != NULL)
-        ano_mem_multipool_free(d->pool, block->data, block->size + 1);
-    else
-        mi_free(block->data);
+    res_place_free(&block->site, block->data, block->size + 1, RES_FREE_RETAIL);
     g_reg.stats.live_bytes -= block->site.serving;
     g_reg.stats.live_blocks--;
     g_reg.stats.frees++;
@@ -247,10 +221,16 @@ void res_owned_free(res_owned_block *block, res_free_mode mode)
     ano_mutex_unlock(&g_reg.mtx);
 }
 
+// The pure half of res_owned_alloc: same domain gate, same route, no allocation.
 int res_owned_plan(const res_place_plan *plan, size_t size, res_site *out)
 {
-    (void)plan; (void)size; (void)out;
-    return -1;                                  // TODO(W1+W2, M5): res_place_plan()
+    if (plan == NULL || out == NULL || size == SIZE_MAX || !owner_thread())
+        return -1;
+    ano_mutex_lock(&g_reg.mtx);
+    int rc = domain_of(plan->lifetime, true) != NULL
+           ? res_place_route(plan, size + 1, out) : -1;
+    ano_mutex_unlock(&g_reg.mtx);
+    return rc;
 }
 
 int res_owned_stage(const res_place_plan *plan, size_t hint, res_owned_block *out)
@@ -271,31 +251,33 @@ int res_owned_move(res_owned_block *from, const res_place_plan *to, res_owned_bl
     return -1;                                  // TODO(W2, M8): promote / duplicate ride this
 }
 
+// M3: the plan is no longer discarded -- the five-axis cube charges the plan's cell
+// alongside the module-wide totals.
 void res_account_copy(const res_place_plan *plan, size_t bytes)
 {
-    (void)plan;
-    if (!g_reg.alive)
+    if (!reg_alive())
         return;
     ano_mutex_lock(&g_reg.mtx);
     g_reg.stats.copies++;
     g_reg.stats.bytes_copied += bytes;
+    res_tel_copy(res_tel_intern(plan), bytes);
     ano_mutex_unlock(&g_reg.mtx);
 }
 
 void res_account_transfer(const res_place_plan *plan, size_t bytes)
 {
-    (void)plan;
-    if (!g_reg.alive)
+    if (!reg_alive())
         return;
     ano_mutex_lock(&g_reg.mtx);
     g_reg.stats.transfers++;
     g_reg.stats.transfer_bytes += bytes;
+    res_tel_transfer(res_tel_intern(plan), bytes, true);
     ano_mutex_unlock(&g_reg.mtx);
 }
 
 void res_registry_external_allocation(const res_place_plan *plan, size_t bytes)
 {
-    if (plan == NULL || !g_reg.alive)
+    if (plan == NULL || !reg_alive())
         return;
     ano_mutex_lock(&g_reg.mtx);
     g_reg.stats.requested_bytes += bytes;
@@ -303,6 +285,9 @@ void res_registry_external_allocation(const res_place_plan *plan, size_t bytes)
     g_reg.stats.allocations++;
     g_reg.stats.transfers++;
     g_reg.stats.transfer_bytes += bytes;
+    uint16_t cell = res_tel_intern(plan);
+    res_tel_alloc(cell, bytes, bytes);          // charged and never reversed: the M9 wound
+    res_tel_transfer(cell, bytes, true);
     ano_mutex_unlock(&g_reg.mtx);
 }
 
@@ -319,12 +304,12 @@ int res_disposition_allowed(ano_res_lifetime from, ano_res_lifetime to,
             && !(from.kind == ANO_RES_LIFETIME_TRANSIENT_IMPORT
                  && to.kind == ANO_RES_LIFETIME_TOOL_IMPORT))
             return -1;
-        if (g_reg.alive) {
+        if (reg_alive()) {
             ano_mutex_lock(&g_reg.mtx); g_reg.stats.promotions++; ano_mutex_unlock(&g_reg.mtx);
         }
         return 0;
     case RES_DISPOSITION_DUPLICATE:
-        if (g_reg.alive) {
+        if (reg_alive()) {
             ano_mutex_lock(&g_reg.mtx); g_reg.stats.duplications++; ano_mutex_unlock(&g_reg.mtx);
         }
         return 0;
@@ -460,13 +445,24 @@ static res_row *row_live(anores_t h)
     return row;
 }
 
+// The lane for slot i, or NULL outside the init..shutdown window. Acquire pairs with the
+// release publication in res_registry_init.
+static inline res_reader_lane *reader_lane_at(uint32_t i)
+{
+    return atomic_load_explicit(&g_readers[i], memory_order_acquire);
+}
+
 static bool reader_safe(uint64_t retired_epoch, size_t *stalled)
 {
     bool safe = true;
     for (uint32_t i = 0; i < RES_READER_MAX; i++) {
-        if (atomic_load_explicit(&g_readers[i].cookie, memory_order_acquire) == 0)
+        res_reader_lane *lane = reader_lane_at(i);
+        if (lane == NULL || atomic_load_explicit(&lane->cookie, memory_order_acquire) == 0)
             continue;
-        uint64_t e = atomic_load_explicit(&g_readers[i].epoch, memory_order_acquire);
+        // seq_cst pairs with the seq_cst epoch publication in ano_res_read_begin: without a
+        // single total order this load and the reader's store could miss each other
+        // (store-buffering) and a pinned payload would be reclaimed under a live read scope.
+        uint64_t e = atomic_load_explicit(&lane->epoch, memory_order_seq_cst);
         if (e != RES_QUIESCENT && e <= retired_epoch) {
             safe = false;
             if (stalled) (*stalled)++;
@@ -477,7 +473,7 @@ static bool reader_safe(uint64_t retired_epoch, size_t *stalled)
 
 static void queue_retire_locked(res_retired *r, res_pub *pub, res_owned_block block)
 {
-    uint64_t epoch = atomic_fetch_add_explicit(&g_epoch, 1, memory_order_acq_rel) + 1;
+    uint64_t epoch = atomic_fetch_add_explicit(&g_epoch, 1, memory_order_seq_cst) + 1;
     *r = (res_retired){ .next = g_reg.retired, .pub = pub, .block = block, .epoch = epoch };
     g_reg.retired = r;
     g_reg.stats.retired_pending++;
@@ -491,10 +487,8 @@ static void finish_domains_locked(void)
         res_domain *d = &g_reg.domains[i];
         if (d->state != RES_DOMAIN_RETIRING || d->live_rows != 0 || d->pending_blocks != 0)
             continue;
-        ano_mem_multipool_destroy(d->pool);
-        d->pool = NULL;
-        mi_heap_destroy(d->heap);
-        d->heap = NULL;
+        res_place_domain_wink((ano_res_lifetime){
+            .owner = i + 1, .generation = d->generation, .kind = d->kind });
         d->state = RES_DOMAIN_FREE;
         if (g_reg.stats.domains_live > 0)
             g_reg.stats.domains_live--;
@@ -547,6 +541,8 @@ static int publish_locked(uint32_t slot, res_row *row)
     if (row->generation_exhausted || row->generation == UINT32_MAX)
         return -1;
     row->generation++;
+    if (row->generation > g_row_gen_high)
+        g_row_gen_high = row->generation;       // handles never validate across a reinit
     res_pub *pub = mi_malloc(sizeof *pub);
     if (pub == NULL)
         return -1;
@@ -594,35 +590,68 @@ static int retire_locked(uint32_t slot, res_row *row)
 }
 
 // Inputs: none. Output: 0 on complete construction. Invariant: the calling thread becomes
-// the synchronous Stage A owner and creates every backing heap.
+// the synchronous Stage A owner; extensions register and freeze, telemetry and placement
+// come up, and every backing heap is created THROUGH the placement seam.
 int res_registry_init(void)
 {
     memset(&g_reg, 0, sizeof g_reg);
     if (ano_mutex_init(&g_reg.mtx, NULL) != 0)
         return -1;
     g_reg.owner_thread = ano_thread_self();
-    g_reg.alive = true;
+    atomic_store_explicit(&g_reg.alive, true, memory_order_release);
+    bool place_live = false;
     res_domain *root = &g_reg.domains[0];
+    // The seed must clear every generation the LAST init ever published, not just the last
+    // seed: a busy run pushes row generations far past seed + 2, and a surviving {rid, slot,
+    // gen} handle would validate against the reborn registry.
+    if (g_row_gen_high >= UINT32_MAX - 2)
+        goto fail;
+    if (g_row_seed < g_row_gen_high)
+        g_row_seed = g_row_gen_high + (g_row_gen_high & 1u);
     if (g_row_seed > UINT32_MAX - 2)
         goto fail;
     g_row_seed += 2;
     for (uint32_t i = 0; i < RES_SLOT_MAX; i++)
         atomic_store_explicit(&g_directory[i], NULL, memory_order_relaxed);
-    for (uint32_t i = 0; i < RES_READER_MAX; i++) {
-        atomic_store_explicit(&g_readers[i].cookie, 0, memory_order_relaxed);
-        atomic_store_explicit(&g_readers[i].epoch, RES_QUIESCENT, memory_order_relaxed);
-    }
     if (g_owner_generations[0] == UINT32_MAX)
         goto fail;
+    // M2: MEANING first. The core owns only RES_TAG_BYTES (dense id 0 by construction);
+    // the extensions register their kinds, then the set freezes -- sorted by fourcc, so
+    // dense ids are a function of the tag set, never of this call order (D17).
+    res_ext_reset();
+    res_gfx_register_ext();
+    res_ext_freeze();
+    if (res_tel_init() != 0)
+        goto fail;
+    // M5: the placement scaffold, chosen once per init (7.1). getenv is read here and
+    // nowhere else; the INFO line is logged by res_place_init.
+    if (res_place_init(getenv("ANO_RES_PLACEMENT")) != 0)
+        goto fail;
+    place_live = true;
     root->generation = ++g_owner_generations[0];
     root->kind = ANO_RES_LIFETIME_ENGINE;
     root->state = RES_DOMAIN_LIVE;
-    root->heap = mi_heap_new();
-    if (root->heap == NULL)
+    if (res_place_domain_open((ano_res_lifetime){
+            .owner = 1, .generation = root->generation,
+            .kind = ANO_RES_LIFETIME_ENGINE }) != 0)
         goto fail;
-    root->pool = ano_mem_multipool_make(ano_mem_parent_heap(root->heap), NULL);
-    if (root->pool == NULL)
+    // Grain-isolated reader lanes: 64 lanes, one ANO_THREAD_LINE granule each. Registry
+    // infrastructure, not domain memory: parented on the process default heap, destroyed
+    // explicitly at shutdown and on this fail path.
+    ano_mem_stripe_cfg lane_cfg = {
+        .lanes = RES_READER_MAX, .grain = 0, .chunk_hint = ANO_THREAD_LINE,
+    };
+    g_reader_stripe = ano_mem_stripe_make(ano_mem_parent_default(), &lane_cfg);
+    if (g_reader_stripe == NULL)
         goto fail;
+    for (uint32_t i = 0; i < RES_READER_MAX; i++) {
+        res_reader_lane *lane = ano_mem_stripe_alloc(g_reader_stripe, i, sizeof *lane, 0);
+        if (lane == NULL)
+            goto fail;
+        atomic_store_explicit(&lane->cookie, 0, memory_order_relaxed);
+        atomic_store_explicit(&lane->epoch, RES_QUIESCENT, memory_order_relaxed);
+        atomic_store_explicit(&g_readers[i], lane, memory_order_release);
+    }
     res_place_plan registry_plan = root_plan(RES_ROLE_REGISTRY);
     size_t registry_bytes = 64u * sizeof *g_reg.slots;
     if (owned_alloc_locked(&registry_plan, registry_bytes, &g_reg.slots_storage) != 0)
@@ -633,16 +662,24 @@ int res_registry_init(void)
     g_reg.stats.domains_live = 1;
     return 0;
 fail:
-    if (root->pool) ano_mem_multipool_destroy(root->pool);
-    if (root->heap) mi_heap_destroy(root->heap);
-    g_reg.alive = false;
+    for (uint32_t i = 0; i < RES_READER_MAX; i++)
+        atomic_store_explicit(&g_readers[i], NULL, memory_order_release);
+    if (g_reader_stripe != NULL) {
+        ano_mem_stripe_destroy(g_reader_stripe);
+        g_reader_stripe = NULL;
+    }
+    if (place_live)
+        res_place_shutdown();
+    res_tel_shutdown();
+    res_ext_reset();
+    atomic_store_explicit(&g_reg.alive, false, memory_order_release);
     ano_mutex_destroy(&g_reg.mtx);
     return -1;
 }
 
 ano_res_lifetime ano_res_lifetime_engine(void)
 {
-    if (!g_reg.alive)
+    if (!reg_alive())
         return (ano_res_lifetime){0};
     return (ano_res_lifetime){
         .owner = 1, .generation = g_reg.domains[0].generation,
@@ -667,20 +704,13 @@ int ano_res_domain_open(ano_res_lifetime_kind kind, ano_res_lifetime *out)
         }
         d->generation = ++g_owner_generations[i];
         d->kind = kind;
-        d->heap = mi_heap_new();
-        if (d->heap == NULL) {
-            ano_mutex_unlock(&g_reg.mtx);
-            return -1;
-        }
-        d->pool = ano_mem_multipool_make(ano_mem_parent_heap(d->heap), NULL);
-        if (d->pool == NULL) {
-            mi_heap_destroy(d->heap);
-            d->heap = NULL;
+        ano_res_lifetime lt = { .owner = i + 1, .generation = d->generation, .kind = kind };
+        if (res_place_domain_open(lt) != 0) {
             ano_mutex_unlock(&g_reg.mtx);
             return -1;
         }
         d->state = RES_DOMAIN_LIVE;
-        *out = (ano_res_lifetime){ .owner = i + 1, .generation = d->generation, .kind = kind };
+        *out = lt;
         g_reg.stats.domains_live++;
         ano_mutex_unlock(&g_reg.mtx);
         return 0;
@@ -694,7 +724,9 @@ int ano_res_domain_retire(ano_res_lifetime lifetime)
     if (!owner_thread() || lifetime.kind == ANO_RES_LIFETIME_ENGINE)
         return -1;
     ano_mutex_lock(&g_reg.mtx);
-    res_domain *d = domain_of(lifetime, true);
+    // live_only == false: a retire that failed mid-scan (retirement-record OOM) leaves the
+    // domain RETIRING, and the retry must be able to find it again.
+    res_domain *d = domain_of(lifetime, false);
     if (d == NULL) {
         ano_mutex_unlock(&g_reg.mtx);
         return -1;
@@ -718,16 +750,19 @@ int ano_res_domain_retire(ano_res_lifetime lifetime)
 
 int ano_res_reader_register(ano_res_reader *reader)
 {
-    if (reader == NULL || !g_reg.alive)
+    if (reader == NULL || !reg_alive())
         return -1;
     for (uint32_t i = 0; i < RES_READER_MAX; i++) {
+        res_reader_lane *lane = reader_lane_at(i);
+        if (lane == NULL)
+            return -1;
         uint32_t expect = 0;
         uint32_t cookie = atomic_fetch_add_explicit(&g_reader_cookie, 1, memory_order_relaxed) + 1;
         if (cookie == 0)
             return -1;
-        if (atomic_compare_exchange_strong_explicit(&g_readers[i].cookie, &expect, cookie,
+        if (atomic_compare_exchange_strong_explicit(&lane->cookie, &expect, cookie,
                                                     memory_order_acq_rel, memory_order_relaxed)) {
-            atomic_store_explicit(&g_readers[i].epoch, RES_QUIESCENT, memory_order_release);
+            atomic_store_explicit(&lane->epoch, RES_QUIESCENT, memory_order_release);
             *reader = (ano_res_reader){ .lane = i, .cookie = cookie };
             return 0;
         }
@@ -739,7 +774,9 @@ int ano_res_reader_unregister(ano_res_reader *reader)
 {
     if (reader == NULL || reader->lane >= RES_READER_MAX || reader->cookie == 0)
         return -1;
-    res_reader_lane *lane = &g_readers[reader->lane];
+    res_reader_lane *lane = reader_lane_at(reader->lane);
+    if (lane == NULL)
+        return -1;
     if (atomic_load_explicit(&lane->cookie, memory_order_acquire) != reader->cookie
         || atomic_load_explicit(&lane->epoch, memory_order_acquire) != RES_QUIESCENT)
         return -1;
@@ -755,12 +792,25 @@ int ano_res_read_begin(ano_res_reader *reader, ano_res_read *read)
 {
     if (reader == NULL || read == NULL || reader->lane >= RES_READER_MAX || reader->cookie == 0)
         return -1;
-    res_reader_lane *lane = &g_readers[reader->lane];
+    res_reader_lane *lane = reader_lane_at(reader->lane);
+    if (lane == NULL)
+        return -1;
     if (atomic_load_explicit(&lane->cookie, memory_order_acquire) != reader->cookie
         || atomic_load_explicit(&lane->epoch, memory_order_acquire) != RES_QUIESCENT)
         return -1;
-    uint64_t epoch = atomic_load_explicit(&g_epoch, memory_order_acquire);
-    atomic_store_explicit(&lane->epoch, epoch, memory_order_release);
+    // Publish-then-revalidate under seq_cst. If the owner's retire (epoch bump, then lane
+    // scan) misses this store, the single total order forces the re-load below to see the
+    // bumped counter and the epoch re-publishes before the scope is trusted -- the
+    // store-buffering window where a reader pins an epoch the owner already swept past
+    // cannot happen.
+    uint64_t epoch = atomic_load_explicit(&g_epoch, memory_order_seq_cst);
+    for (;;) {
+        atomic_store_explicit(&lane->epoch, epoch, memory_order_seq_cst);
+        uint64_t now = atomic_load_explicit(&g_epoch, memory_order_seq_cst);
+        if (now == epoch)
+            break;
+        epoch = now;
+    }
     *read = (ano_res_read){ .reader = reader, .epoch = epoch };
     return 0;
 }
@@ -769,8 +819,9 @@ void ano_res_read_end(ano_res_read *read)
 {
     if (read == NULL || read->reader == NULL || read->reader->lane >= RES_READER_MAX)
         return;
-    res_reader_lane *lane = &g_readers[read->reader->lane];
-    if (atomic_load_explicit(&lane->cookie, memory_order_acquire) == read->reader->cookie)
+    res_reader_lane *lane = reader_lane_at(read->reader->lane);
+    if (lane != NULL
+        && atomic_load_explicit(&lane->cookie, memory_order_acquire) == read->reader->cookie)
         atomic_store_explicit(&lane->epoch, RES_QUIESCENT, memory_order_release);
     *read = (ano_res_read){0};
 }
@@ -779,8 +830,9 @@ static bool read_active(const ano_res_read *read)
 {
     if (read == NULL || read->reader == NULL || read->reader->lane >= RES_READER_MAX)
         return false;
-    res_reader_lane *lane = &g_readers[read->reader->lane];
-    return atomic_load_explicit(&lane->cookie, memory_order_acquire) == read->reader->cookie
+    res_reader_lane *lane = reader_lane_at(read->reader->lane);
+    return lane != NULL
+        && atomic_load_explicit(&lane->cookie, memory_order_acquire) == read->reader->cookie
         && atomic_load_explicit(&lane->epoch, memory_order_acquire) == read->epoch;
 }
 
@@ -934,6 +986,10 @@ int ano_res_release(ano_res_lifetime lifetime, anores_t h, void **data, size_t *
         row->generation++;
     else
         row->generation_exhausted = true;
+    if (row->dependency_storage.data != NULL) { // a released row keeps NO dependency claim:
+        block_free_locked(&row->dependency_storage);        // re-adoption must start clean
+        row->dependency_count = 0;
+    }
     mi_free(pub);
     g_reg.stats.descriptors_live--;
     ano_mutex_unlock(&g_reg.mtx);
@@ -1114,15 +1170,15 @@ anores_t res_registry_adopt(const char *logical, res_owned_block *block,
 ano_res_allocator_stats ano_res_stats(void)
 {
     ano_res_allocator_stats s = {0};
-    if (!g_reg.alive)
+    if (!reg_alive())
         return s;
     ano_mutex_lock(&g_reg.mtx);
     s = g_reg.stats;
-    for (uint32_t i = 0; i < RES_DOMAIN_MAX; i++) {
-        res_domain *d = &g_reg.domains[i];
-        if (d->state == RES_DOMAIN_FREE || d->pool == NULL)
-            continue;
-        ano_mem_stats p = ano_mem_multipool_stats(d->pool);
+    // Chunk footprint comes from the placement roots now: under scoped-pool that is one
+    // SMALL multipool per un-winked domain, exactly the per-domain sum this loop always
+    // produced. Dead roots report zeros. Heap arenas stay invisible until D19 lands (M6).
+    for (uint32_t i = 0; i < RES_ROOT_MAX; i++) {
+        ano_mem_stats p = res_place_arena_stats(i, RES_ARENA_SMALL);
         s.chunk_bytes += p.chunk_bytes;
         s.chunk_count += p.chunk_count;
     }
@@ -1146,11 +1202,15 @@ ano_res_allocator_stats ano_res_stats_delta(const ano_res_allocator_stats *befor
     ano_res_allocator_stats d = {0};
     if (before == NULL || after == NULL)
         return d;
-    const size_t *b = (const size_t *)before;
-    const size_t *a = (const size_t *)after;
-    size_t *o = (size_t *)&d;
+    // Through object representation, not pointer arithmetic: struct members are not an
+    // array, and indexing past the first is UB even when every field is a size_t.
+    static_assert(sizeof d % sizeof(size_t) == 0, "the stats struct is whole size_t fields");
+    size_t b[sizeof d / sizeof(size_t)], a[sizeof d / sizeof(size_t)], o[sizeof d / sizeof(size_t)];
+    memcpy(b, before, sizeof d);
+    memcpy(a, after, sizeof d);
     for (size_t i = 0; i < sizeof d / sizeof(size_t); i++)
         o[i] = a[i] >= b[i] ? a[i] - b[i] : 0;
+    memcpy(&d, o, sizeof d);
     d.live_bytes       = after->live_bytes;
     d.live_blocks      = after->live_blocks;
     d.peak_bytes       = after->peak_bytes;
@@ -1177,6 +1237,8 @@ int res_test_set_generation(anores_t h, uint32_t generation)
     if (row == NULL) { ano_mutex_unlock(&g_reg.mtx); return -1; }
     res_pub *old = atomic_load_explicit(&g_directory[h.slot], memory_order_acquire);
     row->generation = generation;
+    if (generation > g_row_gen_high)
+        g_row_gen_high = generation;
     if (old) {
         res_pub *fresh = mi_malloc(sizeof *fresh);
         if (fresh == NULL) { ano_mutex_unlock(&g_reg.mtx); return -1; }
@@ -1205,41 +1267,48 @@ int res_test_set_owner_generation(ano_res_lifetime lifetime, uint32_t generation
 // Invariant: called on the init/owner thread; a pending reader makes shutdown retryable.
 int res_registry_shutdown(void)
 {
-    if (!g_reg.alive)
+    if (!reg_alive())
         return 0;
     if (!owner_thread())
         return -1;
     ano_mutex_lock(&g_reg.mtx);
-    if (!g_reg.shutting_down) {
-        g_reg.shutting_down = true;
-        for (uint32_t i = 0; i < g_reg.row_count; i++) {
-            res_row *row = row_at(i);
-            if (row->payload.data != NULL && retire_locked(i, row) != 0) {
-                ano_mutex_unlock(&g_reg.mtx);
-                return -1;
-            }
+    // The scan is idempotent (retired rows have no payload), so EVERY attempt re-runs it: a
+    // one-shot flag made an OOM-interrupted first pass skip its surviving rows on retry and
+    // destroy their backing roots underneath them.
+    for (uint32_t i = 0; i < g_reg.row_count; i++) {
+        res_row *row = row_at(i);
+        if (row->payload.data != NULL && retire_locked(i, row) != 0) {
+            ano_mutex_unlock(&g_reg.mtx);
+            return -1;
         }
-        for (uint32_t i = 1; i < RES_DOMAIN_MAX; i++)
-            if (g_reg.domains[i].state == RES_DOMAIN_LIVE)
-                g_reg.domains[i].state = RES_DOMAIN_RETIRING;
     }
+    for (uint32_t i = 1; i < RES_DOMAIN_MAX; i++)
+        if (g_reg.domains[i].state == RES_DOMAIN_LIVE)
+            g_reg.domains[i].state = RES_DOMAIN_RETIRING;
     collect_locked();
     if (g_reg.retired != NULL) {
         ano_mutex_unlock(&g_reg.mtx);
         return -1;
     }
-    for (uint32_t i = 0; i < RES_READER_MAX; i++)
-        if (atomic_load_explicit(&g_readers[i].cookie, memory_order_acquire) != 0) {
+    for (uint32_t i = 0; i < RES_READER_MAX; i++) {
+        res_reader_lane *lane = reader_lane_at(i);
+        if (lane != NULL
+            && atomic_load_explicit(&lane->cookie, memory_order_acquire) != 0) {
             ano_mutex_unlock(&g_reg.mtx);
             return -1;
         }
-    res_domain *root = &g_reg.domains[0];
-    ano_mem_multipool_destroy(root->pool);
-    root->pool = NULL;
-    mi_heap_destroy(root->heap);
-    root->heap = NULL;
-    root->state = RES_DOMAIN_FREE;
-    g_reg.alive = false;
+    }
+    for (uint32_t i = 0; i < RES_READER_MAX; i++)
+        atomic_store_explicit(&g_readers[i], NULL, memory_order_release);
+    ano_mem_stripe_destroy(g_reader_stripe);
+    g_reader_stripe = NULL;
+    g_reg.domains[0].state = RES_DOMAIN_FREE;
+    // Placement owns every root heap now: shutdown winks the engine root and any
+    // straggler, then telemetry and the extension roster reset for the next init.
+    res_place_shutdown();
+    res_tel_shutdown();
+    res_ext_reset();
+    atomic_store_explicit(&g_reg.alive, false, memory_order_release);
     ano_mutex_unlock(&g_reg.mtx);
     ano_mutex_destroy(&g_reg.mtx);
     return 0;

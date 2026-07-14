@@ -35,6 +35,53 @@
 #pragma GCC diagnostic pop
 
 // ---------------------------------------------------------------------------------------------
+// The extension descriptor (M2). Graphics owns every kind the old core suffix switch used
+// to classify -- shader, font, encoded image -- plus its own conditioned/derived kinds.
+// classify() is that switch, verbatim, now living with its owner. derive/validate/deps_of/
+// share_policy land with M9/M11; NULL is a declared absence, not a stub lie.
+
+// Suffix classification. Inputs: a validated logical path and its length. Output: the
+// owning fourcc, or 0 when this extension does not claim the path.
+static uint32_t gfx_classify(const char *logical, size_t len)
+{
+    (void)len;
+    const char *dot = strrchr(logical, '.');
+    if (dot == NULL)
+        return 0;
+    if (strcmp(dot, ".spv") == 0 || strcmp(dot, ".vert") == 0 || strcmp(dot, ".frag") == 0)
+        return RES_TAG_SHADER;
+    if (strcmp(dot, ".ttf") == 0 || strcmp(dot, ".otf") == 0)
+        return RES_TAG_FONT;
+    if (strcmp(dot, ".png") == 0 || strcmp(dot, ".jpg") == 0 || strcmp(dot, ".jpeg") == 0)
+        return RES_TAG_IMAGE_ENC;
+    return 0;
+}
+
+static const res_ext_kind GFX_KINDS[] = {
+    { .tag = RES_TAG_GFX_SCENE,   .name = "graphics.scene",   .derived = true,  .bakeable = true  },
+    { .tag = RES_TAG_GFX_BINDING, .name = "graphics.binding", .derived = true,  .bakeable = false },
+    { .tag = RES_TAG_IMAGE_ENC,   .name = "graphics.image",   .derived = false, .bakeable = false },
+    { .tag = RES_TAG_IMAGE_DEC,   .name = "graphics.pixels",  .derived = true,  .bakeable = false },
+    { .tag = RES_TAG_FONT,        .name = "graphics.font",    .derived = false, .bakeable = false },
+    { .tag = RES_TAG_SHADER,      .name = "graphics.shader",  .derived = false, .bakeable = false },
+};
+
+static const res_ext GFX_EXT = {
+    .name = "graphics",
+    .kinds = GFX_KINDS,
+    .kind_count = sizeof GFX_KINDS / sizeof *GFX_KINDS,
+    .classify = gfx_classify,
+};
+
+// Registration hook, called by res_registry_init before res_ext_freeze(). Declared by an
+// extern in the registry rather than a header: every .h under src/resources/ is frozen at
+// W0, and the extension roster call belongs to the W6 graphics split (res_gfx_ext.c).
+void res_gfx_register_ext(void)
+{
+    (void)res_ext_register(&GFX_EXT);
+}
+
+// ---------------------------------------------------------------------------------------------
 // The scene block: header + arrays at 16-aligned offsets, everything relative to the
 // block base. Byte-deterministic (zero-filled before writing) so the future bake can
 // demand byte-identical output.
