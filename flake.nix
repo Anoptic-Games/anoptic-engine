@@ -9,6 +9,9 @@
   #     release-linux-x64-anygpu (alias: .#anygpu)   debug-linux-x64-anygpu   bundled mesa ICDs
   #     (same set with -aarch64 on ARM Linux; -macos-aarch64 on Apple Silicon)
   #     release-windows-x64 (alias: release-wsl)  debug-windows-x64  *-headless-windows-x64
+  #   nix run [.#play]                     launch the engine on this machine's GPU: host ICDs,
+  #                                        store mesa ICDs (additive), nixglhost for host NVIDIA;
+  #                                        WSL refused. Clone-free: nix run github:Anoptic-Games/anoptic-engine
   #   nix run .#nvidia|.#nvidia-debug      pure engine on the host NVIDIA driver (nixglhost)
   #   nix build .#tests-headless           run a CTest suite in the sandbox (fails = red)
   #   nix build .#tests-asan|tests-tsan    sanitized non-GPU suite        (Linux)
@@ -16,7 +19,7 @@
   #   nix flake check                      evaluates every output (suites are packages — build them)
   #
   # Impure side — your working tree, output in ./build/<label>/ like build.sh:
-  #   nix run [-- N]                       dev-env wrapper around ./build.sh N (default 1):
+  #   nix run .#dev [-- N]                 dev-env wrapper around ./build.sh N (default 1):
   #                                        halts if submodule gitlinks disagree with the pins,
   #                                        auto-inits absent submodules, stages assets/ best-effort,
   #                                        then launches the engine for N=1|2 (renderer) or N=3
@@ -26,6 +29,14 @@
   #
   # git flakes see tracked files only: `git add` new files or nix will not.
   description = "Anoptic Engine — C23 game engine (Linux, macOS, Windows via MinGW cross)";
+
+  # CI-filled binary cache (.github/workflows/cachix.yml): prebuilt engine closures, so
+  # nix run downloads instead of compiling. Untrusted users get a one-time accept prompt;
+  # declining just means building locally.
+  nixConfig = {
+    extra-substituters = [ "https://anoptic-games.cachix.org" ];
+    extra-trusted-public-keys = [ "anoptic-games.cachix.org-1:NzC+ISlxMEO0Apg4Nq44AB2NptMUc2NrybDBt6eZqII=" ];
+  };
 
   inputs = {
     # Same rev as the pylon system flake.
@@ -497,7 +508,7 @@
           # nixglhost: harvests the host NVIDIA userspace at runtime (non-NixOS).
           nixglhost = if isLinux then nix-gl-host.packages.${system}.default else null;
 
-          # nix run [-- N]: the impure entry. Fatal pin check, submodule/asset supply,
+          # nix run .#dev [-- N]: the impure entry. Fatal pin check, submodule/asset supply,
           # then ./build.sh N in the dev shell.
           runWrapper = pkgs.writeShellApplication {
             name = "anoptic-build";
@@ -553,7 +564,7 @@
               is_wsl=0
               if [ -r /proc/version ] && grep -qi microsoft /proc/version; then
                 is_wsl=1
-                echo "[anoptic] WSL detected — renderer profiles build but cannot display; 'nix run -- 3' runs the headless engine in-guest, 'nix build .#release-wsl' emits the Windows renderer exe."
+                echo "[anoptic] WSL detected — renderer profiles build but cannot display; 'nix run .#dev -- 3' runs the headless engine in-guest, 'nix build .#release-wsl' emits the Windows renderer exe."
               fi
 
               # Build the requested profile in the dev shell.
@@ -614,6 +625,55 @@
                 nvidia-debug = native."debug-${hostTag}";
               }
           );
+
+          # nix run [.#play]: the endpoint entry — the pure Release engine on whatever GPU this
+          # machine has. Pessimistic: stack every rung and let the loader + device selection pick.
+          # Host ICDs load natively where /run/opengl-driver exists; store mesa ICDs are staged
+          # additively everywhere (VK_ADD_DRIVER_FILES="" opts out); a host NVIDIA kernel module
+          # on a foreign distro takes the exact .#nvidia path (nixglhost harvest). WSL is refused —
+          # no in-guest render target. macOS needs no bridge: the MoltenVK ICD is baked in.
+          # Runs from a writable per-user dir so CWD writes never land in the store.
+          playLauncher =
+            let
+              engine = native."release-${hostTag}";
+            in
+            pkgs.writeShellApplication {
+              name = "anoptic-play";
+              runtimeInputs = [
+                pkgs.coreutils
+                pkgs.gnugrep
+              ];
+              text =
+                (
+                  if isLinux then
+                    ''
+                      if [ -r /proc/version ] && grep -qi microsoft /proc/version; then
+                        echo "[anoptic] WSL has no in-guest render target (dozen/llvmpipe are not supported devices)." >&2
+                        echo "[anoptic] 'nix build .#release-wsl' emits the Windows renderer exe; 'nix run .#dev -- 3' runs the headless engine in-guest." >&2
+                        exit 1
+                      fi
+                      dir="''${XDG_DATA_HOME:-$HOME/.local/share}/anoptic-engine"
+                    ''
+                  else
+                    ''
+                      dir="$HOME/Library/Application Support/anoptic-engine"
+                    ''
+                )
+                + ''
+                  mkdir -p "$dir"
+                  cd "$dir" || exit 1
+                ''
+                + lib.optionalString isLinux ''
+                  export VK_ADD_DRIVER_FILES="''${VK_ADD_DRIVER_FILES-${mesaVkIcdPaths pkgs host}}"
+                  if [ ! -e /run/opengl-driver ] && [ -e /proc/driver/nvidia/version ]; then
+                    echo "[anoptic] NVIDIA kernel module detected — bridging via nixglhost." >&2
+                    exec ${nixglhost}/bin/nixglhost ${lib.getExe engine} "$@"
+                  fi
+                ''
+                + ''
+                  exec ${lib.getExe engine} "$@"
+                '';
+            };
 
           # llvm: llvm-ar/-ranlib keep ThinLTO in-shell. lldb version-matched to clang.
           shellTools =
@@ -721,13 +781,31 @@
           };
         in
         {
-          packages = native // windows // aliases // checks // nvidiaLaunchers;
+          packages =
+            native
+            // windows
+            // aliases
+            // checks
+            // nvidiaLaunchers
+            // {
+              play = playLauncher;
+            };
           inherit checks devShells;
           apps = {
             default = {
               type = "app";
-              program = lib.getExe runWrapper;
+              program = lib.getExe playLauncher;
               meta.description = "Anoptic Engine — C23 game engine for million-entity simulation";
+            };
+            play = {
+              type = "app";
+              program = lib.getExe playLauncher;
+              meta.description = "Anoptic Engine — launch on this machine's GPU";
+            };
+            dev = {
+              type = "app";
+              program = lib.getExe runWrapper;
+              meta.description = "Anoptic Engine — ./build.sh N in the pinned dev shell (needs the work tree)";
             };
           }
           // lib.mapAttrs (name: launcher: {
