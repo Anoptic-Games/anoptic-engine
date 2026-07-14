@@ -21,6 +21,24 @@ case $1 in
     run_tests=0
     ;;
   3)
+    # Headless engine, console/server entry point. No renderer, no GPU; runs in WSL.
+    # TESTS=OFF explicitly: build/Headless held the headless test profile (now 4) until
+    # 2026-07-11, and a stale cache's ANOPTIC_TESTS=ON would otherwise stick.
+    build_type="Release"
+    build_dir="Headless"
+    toolchain_file="clang-linux-x64.cmake"
+    extra_flags="-DANOPTIC_HEADLESS=ON -DANOPTIC_TESTS=OFF"
+    run_tests=0
+    ;;
+  4)
+    # Headless debug engine: core + CTest, no renderer
+    build_type="Debug"
+    build_dir="HeadlessDebug"
+    toolchain_file="debug_clang-linux-x64.cmake"
+    extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON"
+    run_tests=1
+    ;;
+  5)
     # Debug build with CTest enabled
     build_type="Debug"
     build_dir="Tests"
@@ -28,32 +46,24 @@ case $1 in
     extra_flags="-DANOPTIC_TESTS=ON"
     run_tests=1
     ;;
-  4)
+  6)
     build_type="Debug"
     build_dir="Tests-ASan"
     toolchain_file="debug_clang-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=asan"
     run_tests=1
     ;;
-  5)
+  7)
     build_type="Debug"
     build_dir="Tests-TSan"
     toolchain_file="debug_clang-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=tsan"
     run_tests=1
     ;;
-  6)
-    # Headless: core + CTest, no renderer
-    build_type="Debug"
-    build_dir="Headless"
-    toolchain_file="debug_clang-linux-x64.cmake"
-    extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON"
-    run_tests=1
-    ;;
-  7)
+  8)
     # Release (-O3) tests, use for benchmarks
     build_type="Release"
-    build_dir="RelTests"
+    build_dir="O3Tests"
     toolchain_file="clang-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON"
     run_tests=1
@@ -63,11 +73,12 @@ case $1 in
     echo "  where <build_type> is one of:"
     echo "    1 = Release (-O3 full engine build)"
     echo "    2 = Debug"
-    echo "    3 = Tests (Debug -O0, build + run CTest)"
-    echo "    4 = Tests + AddressSanitizer/UBSan"
-    echo "    5 = Tests + ThreadSanitizer"
-    echo "    6 = Headless tests (core + CTest, no renderer)"
-    echo "    7 = Release tests (-O3, build + run CTest)"
+    echo "    3 = Headless engine (Release console mode, no GPU)"
+    echo "    4 = Headless debug engine (core + CTest, no renderer)"
+    echo "    5 = Tests (Debug -O0, build + run CTest)"
+    echo "    6 = Tests + AddressSanitizer/UBSan"
+    echo "    7 = Tests + ThreadSanitizer"
+    echo "    8 = O3 tests (Release, build + run CTest)"
     exit 1
     ;;
 esac
@@ -129,9 +140,9 @@ if [ ${run_tests} -eq 0 ] && [ ! -e "./build/${build_dir}/anopticengine" ]; then
     echo "Error: no anopticengine binary was produced." >&2
     echo "CMake found no Vulkan SDK, so the renderer (and the engine target) was skipped" >&2
     echo "-- see the CMake warning above. Options:" >&2
-    echo "  ./build.sh 6              headless engine + non-GPU tests (no Vulkan needed)" >&2
-    echo "  nix build .#renderer      full renderer package (Linux + GPU driver)" >&2
-    echo "  nix develop .#windows     Debug/Release Windows renderer from WSL/Linux" >&2
+    echo "  ./build.sh 3|4            headless engine / non-GPU tests (no Vulkan needed)" >&2
+    echo "  nix build                 full renderer package (any supported host)" >&2
+    echo "  nix build .#release-wsl   Windows renderer exe from WSL/Linux" >&2
     exit 1
 fi
 

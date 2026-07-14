@@ -22,8 +22,7 @@
 // and pipelines built. Always returns true: failure logs and clears state->textOverlay.
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state);
 
-// createDataBuffer with optional CONCURRENT graphics+compute sharing, for buffers the
-// async lane reads on both families. The UI lane's tables ride the same dispatch.
+// createDataBuffer with optional CONCURRENT graphics+compute sharing.
 bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc);
@@ -61,8 +60,7 @@ void ano_vk_text_set_runs(RendererState* state, anostr_t text, const AnoTextRun*
 void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderTextBlock* blk);
 void ano_vk_text_block_clear(RendererState* state, uint32_t text_id);
 
-// Re-folds the retained logic blocks after state->uiScale changed (window.c's
-// content-scale path). The render-internal OSD stays device-px.
+// Re-folds the retained logic blocks after state->uiScale changed. The OSD stays device-px.
 void ano_vk_text_rescale(RendererState* state);
 
 // Copies pending text into this slot's mapped frame buffer when stale. Call after the

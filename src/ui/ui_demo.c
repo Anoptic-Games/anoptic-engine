@@ -8,7 +8,7 @@
 // every evaluator path: drop shadow, plate fill, border ring, a linear-gradient accent
 // strip, rect clip with visible overflow cut, inner shadow, capsule fill/ring, additive
 // glow, a filled path icon, and a rounded silhouette clip. Both the render-side demo
-// compose and the offline screenshot compare build exactly this; keep it bitwise-stable.
+// compose and the offline screenshot compare build exactly this. Keep it bitwise-stable.
 
 #include "anoptic_ui.h"
 
@@ -82,8 +82,7 @@ void ano_ui_demo_scene(AnoUiBuilder *b, float ox, float oy)
     };
     ano_ui_path_fill(b, tri, 3, icon, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 
-    // Footer wash: a sharp rect clipped by the panel's rounded silhouette, so its
-    // bottom corners follow the plate's curvature.
+    // Footer wash: a sharp rect clipped by the panel's rounded silhouette.
     uint32_t sil = ano_ui_clip(b, BOX(0, 0, 360, 240), BOX(0, 0, 360, 240), r14);
     ano_ui_rrect(b, BOX(0, 208, 360, 240), NULL, wash, 0.0f, ANO_UI_REF_NONE, sil, 0);
 

@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #include <anoptic_memory.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include "vulkan_backend/instance/pipeline.h"
 #include <stdio.h>
 #include <stdlib.h>

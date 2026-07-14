@@ -50,8 +50,7 @@ if(NOT CMAKE_LINKER_TYPE AND NOT APPLE)
     endif()
 endif()
 
-# ANOSTR_SID's unrolled FNV expansion nests brackets past clang's default 256 cap
-# (gcc/MSVC have no such limit); any TU using compile-time string ids needs this.
+# Clang bracket-depth cap raised past ANOSTR_SID's unrolled FNV nesting.
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     add_compile_options(-fbracket-depth=1024)
 endif()
@@ -69,6 +68,13 @@ endif()
 # Static linking on MinGW, only vulkan-1.dll stays dynamic.
 if(WIN32 AND NOT MSVC)
     add_link_options(-static)
+    # PE stack reserve = ANO_THREAD_STACK_SIZE (main thread + every NULL-attr winpthread).
+    add_link_options(-Wl,--stack,8388608)
+endif()
+
+# Frame pointers on every UNIX build (blackbox fp-chain walk).
+if(UNIX)
+    add_compile_options(-fno-omit-frame-pointer)
 endif()
 
 # ano_scrub: delete every object file.
@@ -138,9 +144,9 @@ target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
 # PRIVATE: FreeType types stay out of public headers.
 target_link_libraries(anoptic_core PRIVATE freetype)
 
-# Explicit POSIX feature-test macro for clock_gettime etc.
+# POSIX + misc/XSI feature-test macros, set once globally.
 if(UNIX)
-    target_compile_definitions(anoptic_core PUBLIC _POSIX_C_SOURCE=200809L)
+    target_compile_definitions(anoptic_core PUBLIC _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE _DARWIN_C_SOURCE)
 endif()
 
 target_compile_definitions(anoptic_core PUBLIC
@@ -155,7 +161,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
-add_subdirectory(${CMAKE_SOURCE_DIR}/src/logging)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/log)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/ui)
@@ -176,6 +182,15 @@ if(Vulkan_FOUND)
     add_library(anoptic_render STATIC "")
     target_link_libraries(anoptic_render PUBLIC anoptic_core glfw Vulkan::Vulkan)
 
+    # Nix's clang wrapper makes Vulkan_INCLUDE_DIRS implicit and CMake filters them out of -I,
+    # losing <vulkan/vulkan.h> from compile_commands.json for clangd.
+    # Compile options bypass the implicit-directory filter. Inert where the path is explicit.
+    foreach(vk_dir IN LISTS Vulkan_INCLUDE_DIRS)
+        if(vk_dir IN_LIST CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
+            target_compile_options(anoptic_render PUBLIC "-isystem${vk_dir}")
+        endif()
+    endforeach()
+
     # Renderer module subdirectories
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
@@ -185,9 +200,7 @@ if(Vulkan_FOUND)
     set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
 
     # Shader compiler by build type: Debug embeds SPIR-V debug info, Release strips it.
-    # -gV over -gVS: glslang's embedded source mis-attributes DebugTypeMember line info
-    # across #include boundaries and spirv-val rejects the module (seen on textworld.vert);
-    # -gV keeps the NonSemantic debug info and tools read source from the paths on disk.
+    # -gV: NonSemantic debug info without embedded source, tools read source from disk.
     if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
         set(SHADER_COMPILER ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
         set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gV)

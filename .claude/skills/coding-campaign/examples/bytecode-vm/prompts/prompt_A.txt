@@ -1,0 +1,20 @@
+Implement a single Rust function: an assembler for a stack-machine bytecode.
+
+The instruction type is ALREADY DEFINED elsewhere in the crate as the following enum. Do NOT redefine it, do NOT write `enum Op`, do NOT write any `use` for it — just refer to `Op` and its variants directly:
+
+    enum Op { Push(i64), Pop, Add, Sub, Mul, Div, Mod, Neg, Dup, Swap, Jmp(usize), Jz(usize), Print, Halt }
+
+Define exactly (it MUST be `pub`):
+
+    pub fn assemble(src: &str) -> Result<Vec<Op>, String>
+
+Assembly text format:
+- One instruction per line; tokens are whitespace-separated.
+- `;` begins a comment running to end of line.
+- Blank lines (after comment stripping) are ignored.
+- A line of the form `name:` defines a label bound to the index of the NEXT emitted instruction. Labels emit no Op. Label names match [A-Za-z_][A-Za-z0-9_]*.
+- Mnemonics (lowercase): `push <int>`->Op::Push (decimal integer, may be negative); `pop`->Pop; `add`->Add; `sub`->Sub; `mul`->Mul; `div`->Div; `mod`->Mod; `neg`->Neg; `dup`->Dup; `swap`->Swap; `jmp <label>`->Op::Jmp(target_index); `jz <label>`->Op::Jz(target_index); `print`->Print; `halt`->Halt.
+- `jmp`/`jz` take a label name that must resolve to the target instruction index (use a two-pass approach: collect labels, then emit).
+- On any error (unknown mnemonic, missing/invalid operand, undefined label, trailing tokens) return Err with a short message.
+
+Output ONLY the Rust source for `pub fn assemble` plus any private helper items it needs. No `Op` definition. No `main`. No tests. No external crates (std only). No markdown code fences. No prose before or after.

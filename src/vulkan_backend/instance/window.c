@@ -10,7 +10,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <anoptic_memory.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -63,11 +63,8 @@ static void forward_input(const AnoInputEvent* ie)
 }
 
 // Maps a cursor sample from GLFW window coordinates into framebuffer pixels, in place.
-// The framebuffer/window ratio is the exact map on every backend: the backing scale on
-// macOS Retina, the output scale on Wayland (fractional included), and precisely 1 on
-// Win32 and X11 where the two sizes coincide by definition. Queried per sample so a
-// window migrating between differently-scaled monitors stays correct. Degenerate (zero)
-// window size leaves the sample untouched.
+// Sizes queried per sample (tracks monitor migration). Zero window size leaves the
+// sample untouched.
 static void cursorToFramebuffer(GLFWwindow* window, double* x, double* y)
 {
 	int winW = 0, winH = 0, fbW = 0, fbH = 0;
@@ -79,10 +76,8 @@ static void cursorToFramebuffer(GLFWwindow* window, double* x, double* y)
 	*y *= (double)fbH / (double)winH;
 }
 
-// Overlay surface scale from the platform content scale. The mapping is isotropic by
-// contract (radii, sigma, border widths are scalars); a divergent y scale is taken as
-// x and warned once. Recomposes the retained UI/text blocks so a monitor migration or
-// DPI change re-folds the same logical content — logic never resubmits for scale.
+// Overlay surface scale from the platform content scale, isotropic by contract (a
+// divergent y scale is taken as x, warned once). Recomposes the retained UI/text blocks.
 static void applyContentScale(float xs, float ys)
 {
 	static bool warned = false;
@@ -177,12 +172,18 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 {
 	if (!glfwInit())
 	{
-		ano_log(ANO_FATAL, "Failed to initialize GLFW!");
+		const char* desc = NULL;
+		int code = glfwGetError(&desc);
+		ano_log(ANO_FATAL, "Failed to initialize GLFW! (0x%08X: %s)", code, desc ? desc : "no description");
 		return NULL;
 	}
 
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	
+
+	// ANO_FLOAT keeps the window above normal windows (bench: unoccluded without focus).
+	if (getenv("ANO_FLOAT") != NULL)
+		glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
+
 	// Choose the monitor
 	GLFWmonitor* chosenMonitor = NULL;
 	uint32_t monitorIndex = getChosenMonitor();
@@ -211,7 +212,17 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	}
 	
 	GLFWwindow *window = glfwCreateWindow((int)resolution.width, (int)resolution.height, "Vulkan", chosenMonitor, NULL);
-	
+
+	// ANO_POS=XxY places the window, in screen coordinates. Windowed mode only.
+	const char* posEnv = getenv("ANO_POS");
+	if (posEnv != NULL && chosenMonitor == NULL) {
+		int px = 0, py = 0;
+		if (sscanf(posEnv, "%dx%d", &px, &py) == 2)
+			glfwSetWindowPos(window, px, py);
+		else
+			ano_log(ANO_WARN, "ANO_POS \"%s\" invalid (want XxY); ignoring", posEnv);
+	}
+
 	glfwSetWindowUserPointer(window, &rendererState);
 	glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
 	// Overlay surface scale: seed from the live value, track monitor/DPI changes.

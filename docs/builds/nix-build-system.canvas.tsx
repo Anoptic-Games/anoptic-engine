@@ -193,13 +193,18 @@ const dataSourceNodes: FlowNode[] = [
   {
     id: "nixpkgs",
     label: "nixpkgs @ b5aa0fbd",
-    detail: "clang 21 + lld, cmake, ninja, glslc, MinGW cross, MoltenVK",
+    detail: "clang 22 + lld, cmake, ninja, glslc, lldb, MinGW cross, MoltenVK",
     mono: true,
   },
   {
     id: "subs",
     label: "4 pinned submodule srcs",
     detail: "mimalloc · freetype · glfw · cgltf, revs matching .gitmodules",
+  },
+  {
+    id: "assets",
+    label: "assets-free pack",
+    detail: "public asset input — private repo via --override-input anoptic-assets",
   },
   {
     id: "eval",
@@ -229,9 +234,11 @@ const dataSourceEdges: FlowEdge[] = [
   { from: "flake", to: "self", label: "fetch" },
   { from: "flake", to: "nixpkgs", label: "fetch" },
   { from: "flake", to: "subs", label: "fetch" },
+  { from: "flake", to: "assets", label: "fetch" },
   { from: "self", to: "eval" },
   { from: "nixpkgs", to: "eval" },
   { from: "subs", to: "eval" },
+  { from: "assets", to: "eval" },
   { from: "eval", to: "cache" },
   { from: "cache", to: "build", label: "miss" },
   { from: "build", to: "out" },
@@ -239,32 +246,32 @@ const dataSourceEdges: FlowEdge[] = [
 
 const routingNodes: FlowNode[] = [
   { id: "c-build", label: "nix build", mono: true },
-  { id: "c-renderer", label: "nix build .#renderer", mono: true },
+  { id: "c-wsl", label: "nix build .#release-wsl", mono: true },
+  { id: "c-run", label: "nix run [-- N]", mono: true },
   { id: "c-develop", label: "nix develop", mono: true },
-  { id: "c-windows", label: "nix develop .#windows", mono: true },
   { id: "c-bat", label: "build.bat  (no Nix)", mono: true },
   {
     id: "a-default",
     label: "packages.<system>.default",
-    detail: "headless engine · Release + ThinLTO · Linux and macOS",
+    detail: "Vulkan renderer · Release + ThinLTO · alias of release-<platform>-<arch>",
     mono: true,
   },
   {
-    id: "a-renderer",
-    label: "packages.x86_64-linux.renderer",
-    detail: "Vulkan renderer + compiled shaders",
+    id: "a-wsl",
+    label: "packages.x86_64-linux.release-windows-x64",
+    detail: "MinGW-w64 cross renderer, static exe + shaders",
+    mono: true,
+  },
+  {
+    id: "a-run",
+    label: "apps.<system>.default",
+    detail: "pin gate → submodule/asset supply → ./build.sh N in the dev shell",
     mono: true,
   },
   {
     id: "a-shell",
     label: "devShells.<system>.default",
-    detail: "toolchain env only — nothing is built yet",
-    mono: true,
-  },
-  {
-    id: "a-cross",
-    label: "devShells.x86_64-linux.windows",
-    detail: "MinGW-w64 ucrt64 cross env, $cmakeFlags exported",
+    detail: "toolchain env only — nothing is built yet (.#windows: cross env)",
     mono: true,
   },
   {
@@ -275,28 +282,28 @@ const routingNodes: FlowNode[] = [
   {
     id: "r-default",
     label: "./result/bin/anopticengine",
-    detail: "immutable, headless, no GPU or display needed",
+    detail: "immutable; shaders, fonts, and the asset pack staged beside it",
     mono: true,
     emphasis: true,
   },
   {
-    id: "r-renderer",
-    label: "./result/bin + resources/shaders",
-    detail: "self-contained; stage assets/ beside the exe to run the demo",
+    id: "r-wsl",
+    label: "./result/bin/anopticengine.exe",
+    detail: "runs on the Windows host via interop",
+    mono: true,
+    emphasis: true,
+  },
+  {
+    id: "r-run",
+    label: "build/<label>/anopticengine",
+    detail: "N = 1–7: Release, Debug, CTest, ASan/TSan, headless, benchmarks",
     mono: true,
     emphasis: true,
   },
   {
     id: "r-shell",
     label: "./build.sh 1–7 → build/<label>/",
-    detail: "Debug, CTest, ASan/TSan, release benchmarks",
-    mono: true,
-    emphasis: true,
-  },
-  {
-    id: "r-cross",
-    label: "build/Windows/anopticengine.exe",
-    detail: "cmake $cmakeFlags; runs on the Windows host via interop",
+    detail: "the same profiles, you drive",
     mono: true,
     emphasis: true,
   },
@@ -311,14 +318,14 @@ const routingNodes: FlowNode[] = [
 
 const routingEdges: FlowEdge[] = [
   { from: "c-build", to: "a-default" },
-  { from: "c-renderer", to: "a-renderer" },
+  { from: "c-wsl", to: "a-wsl" },
+  { from: "c-run", to: "a-run" },
   { from: "c-develop", to: "a-shell" },
-  { from: "c-windows", to: "a-cross" },
   { from: "c-bat", to: "a-msys" },
   { from: "a-default", to: "r-default" },
-  { from: "a-renderer", to: "r-renderer" },
+  { from: "a-wsl", to: "r-wsl" },
+  { from: "a-run", to: "r-run" },
   { from: "a-shell", to: "r-shell" },
-  { from: "a-cross", to: "r-cross" },
   { from: "a-msys", to: "r-bat" },
 ];
 
@@ -343,12 +350,12 @@ export default function NixBuildSystemRundown() {
         <H2>1 · Where Nix gets its data</H2>
         <Text tone="secondary">
           Everything a build can see is declared in `flake.nix` and pinned in
-          `flake.lock`. There are exactly three kinds of source: your own git
+          `flake.lock`. There are exactly four kinds of source: your own git
           tree (`self`), the pinned `nixpkgs` snapshot that provides every
-          tool, and four pinned tarballs standing in for the git submodules
-          (which are deliberately absent from `self`). All of it is fetched
-          into the read-only, content-addressed `/nix/store` before any
-          compiler runs.
+          tool, four pinned tarballs standing in for the git submodules
+          (which are deliberately absent from `self`), and the asset pack.
+          All of it is fetched into the read-only, content-addressed
+          `/nix/store` before any compiler runs.
         </Text>
         <FlowDiagram
           markerId="arrow-sources"
@@ -372,11 +379,13 @@ export default function NixBuildSystemRundown() {
           Two independent mechanisms decide this. <Text weight="semibold">
           What</Text>: the attribute path. Each command names an output
           attribute, and Nix fills in <Code>{"<system>"}</Code> from your host (that is the
-          platform detection — `x86_64-linux` and `aarch64-darwin` each carry
-          their own branch of the outputs tree). The one thing deliberately
-          not auto-detected is the <Text italic>target</Text>: a Linux host
-          can build both the Linux engine and the Windows cross build, so the
-          flake makes you name `.#windows` — the flake-idiomatic "argument".
+          platform detection — `x86_64-linux`, `aarch64-linux`, and
+          `aarch64-darwin` each carry their own branch of the outputs tree,
+          with the same attr names resolving to that platform's build). The
+          one thing deliberately not auto-detected is the{" "}
+          <Text italic>target</Text>: a Linux host can build both the Linux
+          engine and the Windows cross build, so the flake makes you name
+          `.#release-wsl` — the flake-idiomatic "argument".
         </Text>
         <Text tone="secondary">
           <Text weight="semibold">Why (or whether)</Text>: the derivation
@@ -411,31 +420,43 @@ export default function NixBuildSystemRundown() {
             [
               <Code>nix build</Code>,
               <Code>{"packages.<system>.default"}</Code>,
-              "Headless engine, ./result/bin/anopticengine",
-              "Any Linux, macOS, or WSL host — the quickstart",
+              "Vulkan renderer, Release, ./result/bin/anopticengine",
+              "Any supported host — the quickstart",
             ],
             [
-              <Code>nix build .#renderer</Code>,
-              <Code>packages.x86_64-linux.renderer</Code>,
-              "Renderer + shaders in ./result",
-              "Linux with a real GPU driver",
+              <Code>{"nix build .#<type>[-headless]-<platform>-<arch>[-backend]"}</Code>,
+              <Code>{"packages.<system>.<attr>"}</Code>,
+              "Any explicit permutation (debug, headless, wayland/x11 diets)",
+              "Manual overrides; short names (debug, headless, …) resolve per host",
+            ],
+            [
+              <Code>nix build .#release-wsl</Code>,
+              <Code>packages.x86_64-linux.release-windows-x64</Code>,
+              "Static anopticengine.exe + shaders in ./result",
+              "Windows renderer from WSL/Linux, no MSYS2 needed",
+            ],
+            [
+              <Code>{"nix build .#tests-*"}</Code>,
+              <Code>{"checks.<system>.tests-*"}</Code>,
+              "CTest suite runs in the sandbox; building it is running it",
+              "tests-headless everywhere; asan/tsan/full on Linux",
+            ],
+            [
+              <Code>nix run [-- N]</Code>,
+              <Code>{"apps.<system>.default"}</Code>,
+              "Pin gate, dep/asset supply, then ./build.sh N → build/<label>/",
+              "The in-tree build without entering a shell",
             ],
             [
               <Code>nix develop</Code>,
               <Code>{"devShells.<system>.default"}</Code>,
-              "Shell: clang+lld, cmake, ninja, glslc (+ MoltenVK on macOS)",
-              "The dev loop; run ./build.sh N inside it",
-            ],
-            [
-              <Code>nix develop .#windows</Code>,
-              <Code>devShells.x86_64-linux.windows</Code>,
-              "MinGW-w64 cross shell, cross setup in $cmakeFlags",
-              "Building a Windows .exe from WSL/Linux",
+              "Shell: clang 22 + lld, cmake, ninja, glslc/glslang, lldb, Vulkan libs",
+              "The dev loop; run ./build.sh N inside it (.#windows: cross shell)",
             ],
             [
               <Code>nix fmt</Code>,
               <Code>{"formatter.<system>"}</Code>,
-              "nixfmt over the flake",
+              "nixfmt-tree over the tree",
               "Housekeeping",
             ],
             [
@@ -462,20 +483,20 @@ export default function NixBuildSystemRundown() {
           rows={[
             [
               "Linux (packages + dev shell)",
-              "clang (nixpkgs LLVM)",
+              "clang 22 (llvmPackages_latest)",
               "lld",
-              "ThinLTO",
-              <Code>clangLldStdenv</Code>,
+              "ThinLTO (llvm-ar provided — the probe fails without it)",
+              <Code>engineStdenv</Code>,
             ],
             [
               "macOS, Apple Silicon",
-              "clang (nixpkgs LLVM — full C23)",
+              "clang 22 (llvmPackages_latest — full C23)",
               "ld64 (Apple policy, no override)",
-              "ThinLTO",
-              "darwin stdenv / dev shell",
+              "ThinLTO (same llvm-ar note)",
+              <Code>llvmPackages_latest.stdenv</Code>,
             ],
             [
-              "Windows cross (.#windows)",
+              "Windows cross (.#release-wsl / the .#windows shell)",
               "MinGW-w64 gcc, ucrt64",
               "GNU ld (mold can't emit PE/COFF; lld can't load gcc's LTO plugin)",
               "fat -flto via gcc-ar",
@@ -497,10 +518,11 @@ export default function NixBuildSystemRundown() {
         <Text tone="secondary">
           The packages answer "give me the artifact"; the scripts answer "let
           me work on it". They are not legacy — they own everything a
-          hermetic package build can't do: Debug configurations, running
-          CTest, sanitizers, and iterating against your working tree
-          (including gitignored `assets/`). What <Text italic>is</Text>{" "}
-          effectively legacy is running `build.sh` outside any Nix shell.
+          hermetic package build can't do: iterating against your working
+          tree, GPU-real test runs, and benchmarks. `nix run -- N` is the
+          same path with the submodule gate and asset staging automated.
+          What <Text italic>is</Text> effectively legacy is running
+          `build.sh` outside any Nix shell.
         </Text>
         <Table
           headers={["Script / context", "Role"]}
@@ -510,8 +532,8 @@ export default function NixBuildSystemRundown() {
               "The dev-loop driver: profiles 1–7 map to Release / Debug / Tests / ASan / TSan / Headless / Release-tests. Runs ano_scrub before every build — the whole-build policy applied to the repo's mutable build/ trees.",
             ],
             [
-              "…inside nix develop",
-              "The intended home. The shell puts the pinned clang+lld, cmake, ninja, glslc on PATH; the script's toolchain files resolve against them. Linux shell: headless/tests/sanitizers (6, 5, 4). macOS shell: the full matrix including the renderer (1).",
+              "…inside nix develop (or via nix run)",
+              "The intended home. The shell puts the pinned clang 22 + lld, cmake, ninja, glslc/glslangValidator, lldb, and the Vulkan stack on PATH; the script's toolchain files resolve against them. Both shells carry the full matrix, renderer included.",
             ],
             [
               "…outside Nix",
@@ -545,9 +567,14 @@ export default function NixBuildSystemRundown() {
           <Stack gap={4}>
             <Text size="small">
               `assets/` is gitignored, so it is absent from `self` — the
-              packaged renderer aborts at the model load unless you stage
-              assets beside the exe. The dev-shell flow reads them from your
-              working tree and is unaffected.
+              packages stage the pinned asset input beside the exe instead
+              (public `assets-free` by default). The dev-shell flow reads
+              your working tree; `nix run` fills an absent `assets/` from
+              the private repo, falling back to the public pack.
+            </Text>
+            <Text size="small">
+              git flakes see tracked files only — a brand-new file is
+              invisible to `nix build` until `git add`.
             </Text>
             <Text size="small">
               Flakes need `experimental-features = nix-command flakes` in

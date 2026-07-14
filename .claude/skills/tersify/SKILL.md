@@ -29,4 +29,4 @@ Naming, in `src/` files:
 - Local variables are camelCase, eg: g_buf_len --> g_bufLen
 - Rename only where comments were doing a good name's work. Conservative, no behavior change. eg: p, m --> head, body
 
-After: `./build.sh 3`, run tests, show `git diff --stat`.
+After: `./build.sh 5`, run tests, show `git diff --stat`.
