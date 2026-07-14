@@ -68,6 +68,8 @@ docs/*.pdf
 docs/references/*.pdf
 docs/artifacts/*
 docs/study/
+docs/.archive/
+docs/.archive/**/
 
 # IDE-specific directories
 .vscode/
