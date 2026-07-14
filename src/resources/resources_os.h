@@ -42,6 +42,30 @@ int64_t rmos_size_hint(rmos_file f);
 // internally. 0 with *got == 0 at EOF; -1 on error.
 int rmos_read_chunk(rmos_file f, void *buf, size_t cap, size_t *got);
 
+// Positional read. *got == 0 is the ONLY EOF signal. 0 < *got < cap is a SHORT READ, not
+// EOF -- 9P and SMB do this routinely -- and the CALLER loops. The loop is never folded
+// into the seam, because its termination rule differs between "read to EOF" and "deliver
+// exactly len".
+//
+// WIN64 CAVEAT, and it goes here so nobody assumes thread-safety and ships a data race:
+// ReadFile with an OVERLAPPED offset on an ordinary synchronous handle is positional and
+// blocking, but per MSDN it ALSO advances the file pointer. One handle is SINGLE-OWNER in
+// Stage A. Stage C opens per-worker handles or flips to FILE_FLAG_OVERLAPPED + event
+// without re-signaturing.
+int rmos_read_at(rmos_file f, uint64_t off, void *buf, size_t cap, size_t *got);
+
+typedef enum rmos_advice {
+    RMOS_ADVICE_SEQUENTIAL = 1, RMOS_ADVICE_RANDOM, RMOS_ADVICE_WILLNEED
+} rmos_advice;
+
+// Advisory; NEVER load-bearing. posix_fadvise / no-op. 0 always (a refused hint is not a
+// failure).
+int rmos_advise(rmos_file f, uint64_t off, uint64_t len, rmos_advice advice);
+
+// ADVISORY ONLY, exactly like rmos_size_hint. mtime LIES on 9P/SMB. Hot reload uses it as a
+// FILTER and confirms with a content hash. 0 and both outputs set, or -1.
+int rmos_stat_hint(const char *abs, uint64_t *mtime, uint64_t *size);
+
 void rmos_read_close(rmos_file f);
 
 // mkdir -p: create dir and any missing parents (each component 0755 / default ACL).
@@ -68,6 +92,10 @@ int rmos_close(rmos_file f);
 // ReplaceFileW / MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) with 5x100ms
 // sharing-violation retries on Windows). 0 / -1.
 int rmos_rename_replace(const char *from, const char *to);
+
+// Rename only when `to` does not exist. 0 moved, 1 destination exists, -1 failure. Used
+// by orphan-save recovery so a valid temp never overwrites another preserved generation.
+int rmos_rename_new(const char *from, const char *to);
 
 // fsync the directory containing a just-renamed entry (POSIX). No-op 0 on Windows.
 int rmos_sync_dir(const char *dir);

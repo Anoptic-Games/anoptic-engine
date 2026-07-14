@@ -3,38 +3,27 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for the lifetime-group placement scaffold (res_group_begin/end/retire), run
- * under explicit global-pool and scoped-pool CTest registrations:
- *   - loads inside an open scope go sentinel after retire; loads outside (group 0)
- *     survive; re-get after retire reloads the same slot at a fresh generation;
- *   - release-then-retire on a direct row: the handed-off block outlives the group
- *     and there is no double free (ASan is the oracle);
- *   - a gamesave loaded DURING an open scope pins to group 0 and survives the retire;
- *   - direct bytes rebalance under both placements; scoped-pool chunks return to the
- *     baseline while the global pool retains high-water chunks;
- *   - retire of group 0 / unopened / junk ids refuses; the group table exhausts at
- *     RES_GROUP_MAX - 1 concurrent scopes and recovers after retire.
- * Neither placement is a complete allocator-contest model. Scratch lives next to the
- * exe; saves use the real user root; both are cleaned on exit. Exit 0 == pass. */
+/* Explicit lifetime-domain coverage: engine/world/save ownership, reader-pinned retirement,
+ * stale handles, same-slot reload, transfer after quiescence, and zero-residue shutdown.
+ * The reader-pinned oracle is that bytes borrowed before retirement remain byte-exact until
+ * read_end, while fresh resolution is already sentinel. Exit 0 == pass. */
 
-#include <stdio.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
-#include "anoptic_resources.h"
 #include "anoptic_log.h"
+#include "anoptic_resources.h"
 #include "templates/scratch.h"
 
-#include "resources_internal.h"     // the module-private group hooks under test
+#define GRP_DIR "resources/anotest_grp"
+#define BIG_BYTES ((1u << 21) + 100u)
 
-static int failures = 0;
+static int failures;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
-
-#define GRP_DIR   "resources/anotest_grp"
-#define BIG_BYTES ((1u << 21) + 100u)           // past the 1 MiB top class: direct
 
 static uint8_t g_big[BIG_BYTES];
 
@@ -51,210 +40,84 @@ static bool stage(void)
 {
     scratch_make_dir("resources");
     scratch_make_dir(GRP_DIR);
-    uint8_t buf[200000];
-    for (size_t i = 0; i < sizeof buf; i++)
-        buf[i] = (uint8_t)(i * 13 + 5);
-    for (size_t i = 0; i < sizeof g_big; i++)
-        g_big[i] = (uint8_t)(i * 31 + 7);
-    return write_file(GRP_DIR "/p1.bin", buf, 3000)
-        && write_file(GRP_DIR "/p2.bin", buf, 40000)
-        && write_file(GRP_DIR "/p3.bin", buf, 200000)
+    uint8_t small[4096];
+    for (size_t i = 0; i < sizeof small; i++) small[i] = (uint8_t)(i * 13 + 5);
+    for (size_t i = 0; i < sizeof g_big; i++) g_big[i] = (uint8_t)(i * 31 + 7);
+    return write_file(GRP_DIR "/engine.bin", small, 1000)
+        && write_file(GRP_DIR "/world.bin", small, sizeof small)
         && write_file(GRP_DIR "/big.bin", g_big, sizeof g_big);
 }
 
 static void unstage(void)
 {
-    remove(GRP_DIR "/p1.bin");
-    remove(GRP_DIR "/p2.bin");
-    remove(GRP_DIR "/p3.bin");
+    remove(GRP_DIR "/engine.bin");
+    remove(GRP_DIR "/world.bin");
     remove(GRP_DIR "/big.bin");
     scratch_remove_dir(GRP_DIR);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Scope semantics: in-scope loads retire, group-0 loads survive, re-get reloads.
-
-static void test_scopes(void)
-{
-    anores_t out = ano_res_get("anotest_grp/p1.bin");
-    CHECK(out.gen != 0, "group-0 load");
-
-    int g = res_group_begin();
-    CHECK(g >= 1, "scope opens");
-    anores_t in = ano_res_get("anotest_grp/p2.bin");
-    CHECK(in.gen != 0, "in-scope load");
-    res_group_end(g);
-
-    // Ended-but-not-retired: payloads stay live.
-    CHECK(anostr_len(ano_res_bytes(in)) == 40000, "ended scope still serves");
-
-    CHECK(res_group_retire(g) == 0, "retire");
-    CHECK(anostr_len(ano_res_bytes(in)) == 0, "in-scope handle went sentinel");
-    CHECK(anostr_len(ano_res_bytes(out)) == 3000, "group-0 handle survives");
-    CHECK(ano_res_unload(in) == -1, "stale unload refuses");
-
-    // Permanent rid binding: the reload lands in the same slot, fresh generation.
-    anores_t re = ano_res_get("anotest_grp/p2.bin");
-    CHECK(re.slot == in.slot && re.rid == in.rid, "reload keeps the slot binding");
-    CHECK(re.gen > in.gen, "reload bumps the generation");
-    CHECK(ano_res_unload(re) == 0, "unload reload");
-    CHECK(ano_res_unload(out) == 0, "unload group-0 handle");
-}
-
-// ---------------------------------------------------------------------------------------------
-// Release-then-retire: a handed-off direct block outlives its group; a pooled release
-// inside a scope leaves nothing for the sweep to double-free (ASan watches).
-
-static void test_release_then_retire(void)
-{
-    int g = res_group_begin();
-    CHECK(g >= 1, "scope opens");
-
-    anores_t hb = ano_res_get("anotest_grp/big.bin");
-    CHECK(hb.gen != 0, "direct load");
-    anostr_t bv = ano_res_bytes(hb);
-    const char *resident = anostr_bytes(&bv);
-    void *blk = NULL; size_t bs = 0;
-    CHECK(ano_res_release(hb, &blk, &bs) == 0, "direct release");
-    CHECK(blk == (void *)resident && bs == BIG_BYTES, "direct release is zero-copy");
-
-    anores_t hp = ano_res_get("anotest_grp/p3.bin");
-    void *pblk = NULL; size_t ps = 0;
-    CHECK(ano_res_release(hp, &pblk, &ps) == 0, "pooled release");
-    CHECK(ps == 200000, "pooled release size");
-
-    res_group_end(g);
-    CHECK(res_group_retire(g) == 0, "retire after releases");
-
-    // The taker's blocks are untouched by the sweep: readable, then freed exactly once.
-    CHECK(memcmp(blk, g_big, BIG_BYTES) == 0, "handed-off block intact after retire");
-    ((uint8_t *)blk)[0] ^= 0xFF;
-    ano_aligned_free(blk);
-    CHECK(((const uint8_t *)pblk)[199999] == (uint8_t)(199999 * 13 + 5),
-          "pooled copy intact after retire");
-    ano_aligned_free(pblk);
-}
-
-// ---------------------------------------------------------------------------------------------
-// Save pinning: a save loaded during an open scope belongs to group 0, structurally.
-
-static void test_save_pinning(void)
-{
-    ano_fspath user = ano_fs_userpath();
-    char path[MAXPATH + 48];
-    for (int i = 1; i <= 200; i++) {
-        snprintf(path, sizeof path, "%s/saves/anogrpslot.%d.anosave", user.str, i);
-        remove(path);
-    }
-
-    uint8_t payload[256];
-    memset(payload, 0xA5, sizeof payload);
-    CHECK(ano_res_save_commit("anogrpslot", 1u, payload, sizeof payload) == 0,
-          "save commit");
-
-    int g = res_group_begin();
-    CHECK(g >= 1, "scope opens");
-    anores_t hs = ano_res_save_load("anogrpslot", NULL, NULL);
-    CHECK(hs.gen != 0, "save loads inside the scope");
-    res_group_end(g);
-    CHECK(res_group_retire(g) == 0, "retire");
-
-    anostr_t v = ano_res_bytes(hs);
-    CHECK(anostr_len(v) == sizeof payload, "save survives the retire (pinned)");
-    CHECK(anostr_len(v) != 0 && memcmp(anostr_bytes(&v), payload, sizeof payload) == 0,
-          "save bytes intact");
-    CHECK(ano_res_unload(hs) == 0, "unload save");
-
-    for (int i = 1; i <= 8; i++) {
-        snprintf(path, sizeof path, "%s/saves/anogrpslot.%d.anosave", user.str, i);
-        remove(path);
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Stats balance around one scope cycle. Direct bytes rebalance under both placements;
-// scoped chunks return whole while the global pool keeps its high-water chunks.
-
-static void test_stats_balance(void)
-{
-    res_reg_stats base = res_registry_stats();
-
-    int g = res_group_begin();
-    CHECK(g >= 1, "scope opens");
-    anores_t h1 = ano_res_get("anotest_grp/p1.bin");
-    anores_t h2 = ano_res_get("anotest_grp/p2.bin");
-    anores_t hb = ano_res_get("anotest_grp/big.bin");
-    CHECK(h1.gen != 0 && h2.gen != 0 && hb.gen != 0, "scope loads");
-
-    res_reg_stats mid = res_registry_stats();
-    CHECK(mid.direct_blocks == base.direct_blocks + 1, "direct block counted");
-    CHECK(mid.direct_bytes > base.direct_bytes, "direct bytes counted");
-    CHECK(mid.pools.live_bytes > base.pools.live_bytes, "pooled bytes live");
-
-    res_group_end(g);
-    CHECK(res_group_retire(g) == 0, "retire");
-
-    res_reg_stats end = res_registry_stats();
-    CHECK(end.direct_bytes == base.direct_bytes, "direct bytes back to baseline");
-    CHECK(end.direct_blocks == base.direct_blocks, "direct blocks back to baseline");
-    CHECK(end.pools.live_bytes == base.pools.live_bytes, "live bytes back to baseline");
-    if (res_placement() == RES_PLACEMENT_SCOPED_POOL)
-        CHECK(end.pools.chunk_bytes == base.pools.chunk_bytes,
-              "scoped pool returns group chunks whole");
-    else
-        CHECK(end.pools.chunk_bytes >= base.pools.chunk_bytes,
-              "global pool keeps high-water chunks");
-}
-
-// ---------------------------------------------------------------------------------------------
-// Totality and table exhaustion.
-
-static void test_totality(void)
-{
-    CHECK(res_group_retire(0) == -1, "group 0 never retires");
-    CHECK(res_group_retire(99) == -1, "junk id refuses");
-    CHECK(res_group_retire(3) == -1, "unopened id refuses");
-    res_group_end(99);                          // hostile end is a no-op
-
-    int ids[16];
-    int n = 0;
-    for (; n < 16; n++) {
-        ids[n] = res_group_begin();
-        if (ids[n] < 0)
-            break;
-    }
-    CHECK(n >= 1, "at least one scope available");
-    CHECK(n < 16, "the table is bounded");
-    for (int i = 0; i < n; i++) {
-        res_group_end(ids[i]);
-        CHECK(res_group_retire(ids[i]) == 0, "exhaustion drain retires");
-    }
-    int again = res_group_begin();
-    CHECK(again >= 1, "table recovers after retire");
-    res_group_end(again);
-    CHECK(res_group_retire(again) == 0, "recovered scope retires");
-}
-
-// ---------------------------------------------------------------------------------------------
-
 int main(void)
 {
     scratch_anchor_to_exe();
-    int logAlive ANO_LOG_SCOPE_ATTR = ano_log_init();
-    (void)logAlive;
-
+    int log_alive ANO_LOG_SCOPE_ATTR = ano_log_init();
+    (void)log_alive;
     CHECK(stage(), "stage fixtures");
-    CHECK(ano_res_init() == 0, "ano_res_init");
-    printf("anotest_resgroups: placement %s\n",
-           res_placement() == RES_PLACEMENT_SCOPED_POOL ? "scoped-pool" : "global-pool");
+    CHECK(ano_res_init() == 0, "resource init");
 
-    test_scopes();
-    test_release_then_retire();
-    test_save_pinning();
-    test_stats_balance();
-    test_totality();
+    ano_res_lifetime engine = ano_res_lifetime_engine();
+    ano_res_lifetime world = {0};
+    CHECK(ano_res_domain_open(ANO_RES_LIFETIME_WORLD_LEVEL, &world) == 0, "world domain open");
 
+    anores_t permanent = ano_res_get(engine, "anotest_grp/engine.bin");
+    anores_t scoped = ano_res_get(world, "anotest_grp/world.bin");
+    CHECK(permanent.gen != 0 && scoped.gen != 0, "explicit loads");
+
+    ano_res_reader reader = { .lane = ANO_RES_READER_NONE };
+    ano_res_read read = {0};
+    CHECK(ano_res_reader_register(&reader) == 0, "reader register");
+    CHECK(ano_res_read_begin(&reader, &read) == 0, "read begin");
+    anostr_t pinned = ano_res_bytes(&read, scoped);
+    CHECK(anostr_len(pinned) == 4096, "world bytes visible");
+
+    CHECK(ano_res_domain_retire(world) == 0, "world retirement accepted");
+    CHECK(anostr_len(ano_res_bytes(&read, scoped)) == 0, "retired publication is sentinel");
+    CHECK(anostr_len(pinned) == 4096 && (uint8_t)anostr_bytes(&pinned)[4095] == (uint8_t)(4095 * 13 + 5),
+          "pre-retire borrowed bytes remain pinned");
+    CHECK(anostr_len(ano_res_bytes(&read, permanent)) == 1000, "engine lifetime survives");
+    ano_res_allocator_stats mid = ano_res_stats();
+    CHECK(mid.retired_pending >= 1 && mid.stalled_readers >= 1, "stalled reader accounted");
+
+    ano_res_read_end(&read);
+    CHECK(ano_res_collect() >= 1, "quiescence reclaims retired payload");
+    CHECK(ano_res_stats().retired_pending == 0, "retirement queue drained");
+
+    ano_res_lifetime world2 = {0};
+    CHECK(ano_res_domain_open(ANO_RES_LIFETIME_WORLD_LEVEL, &world2) == 0, "world domain reopens");
+    anores_t reloaded = ano_res_get(world2, "anotest_grp/world.bin");
+    CHECK(reloaded.slot == scoped.slot && reloaded.gen > scoped.gen, "same slot, fresh generation");
+    CHECK(ano_res_domain_retire(world2) == 0, "second world retires");
+    (void)ano_res_collect();
+
+    ano_res_lifetime streaming = {0};
+    CHECK(ano_res_domain_open(ANO_RES_LIFETIME_STREAMING, &streaming) == 0, "streaming domain");
+    anores_t big = ano_res_get(streaming, "anotest_grp/big.bin");
+    void *taken = NULL;
+    size_t taken_size = 0;
+    CHECK(ano_res_release(streaming, big, &taken, &taken_size) == 0, "transfer after quiescence");
+    CHECK(taken != NULL && taken_size == BIG_BYTES && memcmp(taken, g_big, BIG_BYTES) == 0,
+          "transferred bytes exact");
+    ano_aligned_free(taken);
+    CHECK(ano_res_domain_retire(streaming) == 0, "streaming domain retires");
+
+    CHECK(ano_res_unload(engine, permanent) == 0, "engine resource unload");
+    (void)ano_res_collect();
+    CHECK(ano_res_reader_unregister(&reader) == 0, "reader unregister");
     unstage();
+    CHECK(ano_res_shutdown() == 0, "zero-residue shutdown");
+    ano_res_allocator_stats zero = ano_res_stats();
+    CHECK(zero.live_bytes == 0 && zero.live_blocks == 0 && zero.domains_live == 0,
+          "shutdown reports no residue");
+
     if (failures == 0) { printf("anotest_resgroups: all checks passed\n"); return 0; }
     printf("anotest_resgroups: %d check(s) failed\n", failures);
     return 1;

@@ -32,3 +32,8 @@ This project makes use of the following third-party libraries:
 - **Source**: [mimalloc GitHub Repository](https://github.com/microsoft/mimalloc)
 - **Docs**: [mimalloc Documentation](https://microsoft.github.io/mimalloc/)
 - **License**: [MIT License](https://github.com/microsoft/mimalloc/blob/master/LICENSE)
+
+### LZ4
+- **Description**: Extremely fast lossless compression. Vendored as two files (`external/lz4/lz4.c`, `lz4.h`, v1.10.0); it is the default codec for anopak archive chunks.
+- **Source**: [LZ4 GitHub Repository](https://github.com/lz4/lz4)
+- **License**: [BSD 2-Clause](https://github.com/lz4/lz4/blob/dev/lib/LICENSE) (`external/lz4/LICENSE`)

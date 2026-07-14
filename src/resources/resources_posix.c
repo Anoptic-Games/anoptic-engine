@@ -65,6 +65,46 @@ int rmos_read_chunk(rmos_file f, void *buf, size_t cap, size_t *got)
     }
 }
 
+// Positional. A short read is NOT EOF: only *got == 0 is. The caller loops.
+int rmos_read_at(rmos_file f, uint64_t off, void *buf, size_t cap, size_t *got)
+{
+    *got = 0;
+    for (;;) {
+        ssize_t n = pread((int)f.h, buf, cap, (off_t)off);
+        if (n >= 0) {
+            *got = (size_t)n;
+            return 0;
+        }
+        if (errno != EINTR)
+            return -1;
+    }
+}
+
+// Advisory only. A refused hint is not a failure.
+int rmos_advise(rmos_file f, uint64_t off, uint64_t len, rmos_advice advice)
+{
+#if defined(__linux__)
+    int a = advice == RMOS_ADVICE_SEQUENTIAL ? POSIX_FADV_SEQUENTIAL
+          : advice == RMOS_ADVICE_RANDOM     ? POSIX_FADV_RANDOM
+                                             : POSIX_FADV_WILLNEED;
+    (void)posix_fadvise((int)f.h, (off_t)off, (off_t)len, a);
+#else
+    (void)f; (void)off; (void)len; (void)advice;
+#endif
+    return 0;
+}
+
+// Advisory only: mtime LIES on 9P/SMB. Hot reload filters with it and confirms by content hash.
+int rmos_stat_hint(const char *abs, uint64_t *mtime, uint64_t *size)
+{
+    struct stat st;
+    if (stat(abs, &st) != 0 || !S_ISREG(st.st_mode))
+        return -1;
+    if (mtime) *mtime = (uint64_t)st.st_mtime;
+    if (size)  *size  = (uint64_t)st.st_size;
+    return 0;
+}
+
 void rmos_read_close(rmos_file f)
 {
     close((int)f.h);
@@ -131,6 +171,13 @@ int rmos_close(rmos_file f)
 int rmos_rename_replace(const char *from, const char *to)
 {
     return rename(from, to) == 0 ? 0 : -1;
+}
+
+int rmos_rename_new(const char *from, const char *to)
+{
+    if (link(from, to) == 0)
+        return unlink(from) == 0 ? 0 : -1;
+    return errno == EEXIST ? 1 : -1;
 }
 
 int rmos_sync_dir(const char *dir)

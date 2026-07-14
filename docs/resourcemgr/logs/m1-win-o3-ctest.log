@@ -1,0 +1,528 @@
+TOOLCHAIN_PATH is set to: C:\Users\Pyrus\Code\anoptic-engine\cmake\platforms\release_clang-windows-x64-mingw.cmake
+-- Toolchain file specified: C:\Users\Pyrus\Code\anoptic-engine\cmake\platforms\release_clang-windows-x64-mingw.cmake
+-- System name: Windows
+-- System version: 
+-- System processor: x86_64
+-- C Compiler: C:/msys64/clang64/bin/clang.exe
+-- C++ Compiler: C:/msys64/clang64/bin/clang++.exe
+-- 64-bit compiler detected.
+-- Release link-time optimization: ON
+-- 
+-- Architecture: x64
+-- 
+-- Library name     : mimalloc
+-- Version          : 2.3.2
+-- Build type       : release
+-- C Compiler       : C:/msys64/clang64/bin/clang.exe
+-- Compiler flags   : -Wall;-Wextra;-Wpedantic;-Wno-unknown-pragmas;-fvisibility=hidden;-Wstrict-prototypes;-Wno-static-in-inline;-ftls-model=initial-exec
+-- Compiler defines : MI_CMAKE_BUILD_TYPE=release;MI_BUILD_RELEASE
+-- Link libraries   : psapi;shell32;user32;advapi32;bcrypt
+-- Build targets    : static
+-- 
+-- Including Win32 support
+-- Shader compiler: glslc
+-- Configuring done (2.1s)
+-- Generating done (0.4s)
+-- Build files have been written to: C:/Users/Pyrus/Code/anoptic-engine/build/O3Tests
+[0/2] Re-checking globbed directories...
+[1/2] Scrubbing object files (whole rebuild ahead)
+-- ano_scrub: removed 212 object files from C:/Users/Pyrus/Code/anoptic-engine/build/O3Tests
+[0/2] Re-checking globbed directories...
+[1/298] Building C object CMakeFiles/anoptic_lz4.dir/external/lz4/lz4.c.obj
+[2/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc.c.obj
+[3/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc-aligned.c.obj
+[4/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc-posix.c.obj
+[5/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/arena.c.obj
+[6/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/bitmap.c.obj
+[7/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/heap.c.obj
+[8/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/init.c.obj
+[9/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/libc.c.obj
+[10/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/options.c.obj
+[11/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/os.c.obj
+[12/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/page.c.obj
+[13/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/random.c.obj
+[14/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/segment.c.obj
+[15/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/segment-map.c.obj
+[16/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/stats.c.obj
+[17/298] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/prim/prim.c.obj
+[18/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/autofit/autofit.c.obj
+[19/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbase.c.obj
+[20/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbbox.c.obj
+[21/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbdf.c.obj
+[22/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbitmap.c.obj
+[23/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftcid.c.obj
+[24/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftfstype.c.obj
+[25/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftgasp.c.obj
+[26/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftglyph.c.obj
+[27/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftgxval.c.obj
+[28/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftinit.c.obj
+[29/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftmm.c.obj
+[30/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftotval.c.obj
+[31/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftpatent.c.obj
+[32/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftpfr.c.obj
+[33/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftstroke.c.obj
+[34/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftsynth.c.obj
+[35/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/fttype1.c.obj
+[36/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftwinfnt.c.obj
+[37/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/bdf/bdf.c.obj
+[38/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/bzip2/ftbzip2.c.obj
+[39/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/cache/ftcache.c.obj
+[40/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/cff/cff.c.obj
+[41/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/cid/type1cid.c.obj
+[42/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/gzip/ftgzip.c.obj
+[43/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/lzw/ftlzw.c.obj
+[44/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/pcf/pcf.c.obj
+[45/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/pfr/pfr.c.obj
+[46/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/psaux/psaux.c.obj
+[47/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/pshinter/pshinter.c.obj
+[48/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/psnames/psnames.c.obj
+[49/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/raster/raster.c.obj
+[50/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/sdf/sdf.c.obj
+[51/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/smooth/smooth.c.obj
+[52/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/svg/svg.c.obj
+[53/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/type1/type1.c.obj
+[54/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/type42/type42.c.obj
+[55/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/winfonts/winfnt.c.obj
+[56/298] Building C object external/freetype/CMakeFiles/freetype.dir/builds/windows/ftsystem.c.obj
+[57/298] Building C object external/freetype/CMakeFiles/freetype.dir/builds/windows/ftdebug.c.obj
+[58/298] Building RC object external/freetype/CMakeFiles/freetype.dir/src/base/ftver.rc.obj
+[59/298] Linking C static library libanoptic_lz4.a
+[60/298] Building C object CMakeFiles/anoptic_core.dir/src/memory/memalign_win64.c.obj
+[61/298] Building C object CMakeFiles/anoptic_core.dir/src/memory/memory.c.obj
+[62/298] Building C object CMakeFiles/anoptic_core.dir/src/memory/pools.c.obj
+[63/298] Building C object CMakeFiles/anoptic_core.dir/src/memory/stripe.c.obj
+[64/298] Building C object CMakeFiles/anoptic_core.dir/src/collections/collections.c.obj
+[65/298] Building C object CMakeFiles/anoptic_core.dir/src/threads/threads.c.obj
+[66/298] Building C object CMakeFiles/anoptic_core.dir/src/threads/threads_bridges.c.obj
+[67/298] Building C object CMakeFiles/anoptic_core.dir/src/time/time.c.obj
+[68/298] Building C object CMakeFiles/anoptic_core.dir/src/time/time_win64.c.obj
+[69/298] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings.c.obj
+[70/298] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_ops.c.obj
+[71/298] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_intern.c.obj
+[72/298] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_utf.c.obj
+[73/298] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_collate.c.obj
+[74/298] Building C object CMakeFiles/anoptic_core.dir/src/filesystem/filesystem.c.obj
+[75/298] Building C object CMakeFiles/anoptic_core.dir/src/filesystem/filesystem_win64.c.obj
+[76/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_win64.c.obj
+[77/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_core.c.obj
+[78/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_read.c.obj
+[79/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_registry.c.obj
+[80/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_ident.c.obj
+[81/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_ext.c.obj
+[82/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_place.c.obj
+[83/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_models.c.obj
+[84/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/sfnt/sfnt.c.obj
+[85/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_tel.c.obj
+[86/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_block.c.obj
+[87/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_stream.c.obj
+[88/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_reload.c.obj
+[89/298] Building C object external/freetype/CMakeFiles/freetype.dir/src/truetype/truetype.c.obj
+[90/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/audio/res_audio.c.obj
+[91/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/script/res_script.c.obj
+[92/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/text/res_font.c.obj
+[93/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/world/res_level.c.obj
+[94/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/codec/res_codec.c.obj
+[95/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/pack/res_pack.c.obj
+[96/298] Building C object CMakeFiles/anoptic_core.dir/src/config/config.c.obj
+[97/298] Building C object CMakeFiles/anoptic_core.dir/src/log/log_core.c.obj
+[98/298] Building C object CMakeFiles/anoptic_core.dir/src/log/log_crash.c.obj
+[99/298] Building C object CMakeFiles/anoptic_core.dir/src/log/log_crash_win64.c.obj
+[100/298] Building C object CMakeFiles/anoptic_core.dir/src/mesh/ano_meshoptimizer.c.obj
+[101/298] Building C object CMakeFiles/anoptic_core.dir/src/text/text.c.obj
+[102/298] Building C object CMakeFiles/anoptic_core.dir/src/text/text_bake.c.obj
+[103/298] Building C object CMakeFiles/anoptic_core.dir/src/text/text_gpos.c.obj
+[104/298] Building C object CMakeFiles/anoptic_core.dir/src/text/text_raster_ref.c.obj
+[105/298] Building C object CMakeFiles/anoptic_core.dir/src/text/text_shape.c.obj
+[106/298] Building C object CMakeFiles/anoptic_core.dir/src/audio/audio.c.obj
+[107/298] Building C object CMakeFiles/anoptic_core.dir/src/script/script.c.obj
+[108/298] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_build.c.obj
+[109/298] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_demo.c.obj
+[110/298] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_path.c.obj
+[111/298] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_raster_ref.c.obj
+[112/298] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_tiles.c.obj
+[113/298] Building C object CMakeFiles/anoptic_core.dir/src/render_bridge/ano_render_bridge.c.obj
+[114/298] Linking C static library external\mimalloc\libmimalloc.a
+[115/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/context.c.obj
+[116/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/init.c.obj
+[117/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/monitor.c.obj
+[118/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/platform.c.obj
+[119/298] Linking C static library external\freetype\libfreetype.a
+[120/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/vulkan.c.obj
+[121/298] Building C object CMakeFiles/anoptic_core.dir/src/keybindings/keybindings.c.obj
+[122/298] Staging shaders (and assets, if present) into tests/
+[123/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vulkanMaster.c.obj
+[124/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/profiling.c.obj
+[125/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/update.c.obj
+[126/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/passes.c.obj
+[127/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/hiz.c.obj
+[128/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/record_views.c.obj
+[129/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/record.c.obj
+[130/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/submit.c.obj
+[131/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/slot_upload.c.obj
+[132/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/light_registry.c.obj
+[133/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/input.c.obj
+[134/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_cache.c.obj
+[135/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_casters.c.obj
+[136/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_resources.c.obj
+[137/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_record.c.obj
+[138/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/scene_buffers.c.obj
+[139/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/bridge/apply.c.obj
+[140/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/osmesa_context.c.obj
+[141/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_monitor.c.obj
+[142/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/bridge/producer.c.obj
+[143/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_init.c.obj
+[144/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/window.c.obj
+[145/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/render_api.c.obj
+[146/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_window.c.obj
+[147/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/egl_context.c.obj
+[148/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_joystick.c.obj
+[149/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/components.c.obj
+[150/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/instance.c.obj
+[151/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_module.c.obj
+[152/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/device.c.obj
+[153/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/swapchain.c.obj
+[154/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_time.c.obj
+[155/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/attachments.c.obj
+[156/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/descriptors.c.obj
+[157/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_thread.c.obj
+[158/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_joystick.c.obj
+[159/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_init.c.obj
+[160/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_monitor.c.obj
+[161/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/commands.c.obj
+[162/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/win32_window.c.obj
+[163/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/cleanup.c.obj
+[164/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipeline.c.obj
+[165/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/layouts.c.obj
+[166/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/tonemap.c.obj
+[167/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/shadow_pipe.c.obj
+[168/298] Building C object external/glfw/src/CMakeFiles/glfw.dir/wgl_context.c.obj
+[169/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/compute.c.obj
+[170/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/flat.c.obj
+[171/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/transmission.c.obj
+[172/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/additive.c.obj
+[173/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vulkanConfig.c.obj
+[174/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vertex/vertex.c.obj
+[175/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/texture/texture.c.obj
+[176/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/gpu_alloc.c.obj
+[177/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/geometry.c.obj
+[178/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/render_slots.c.obj
+[179/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/text_raster.c.obj
+[180/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/ui_raster.c.obj
+[181/298] Building C object CMakeFiles/anoptic_render.dir/src/render/gltf/ano_GltfParser.c.obj
+[182/298] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/window.c.obj
+[183/298] Building C object CMakeFiles/anoptic_pack.dir/tools/anopak/anopak.c.obj
+[184/298] Building C object CMakeFiles/anopticengine.dir/src/engine/main.c.obj
+[185/298] Building C object tests/CMakeFiles/anotest_time.dir/anotest_time.c.obj
+[186/298] Building C object tests/CMakeFiles/anotest_filesystem.dir/anotest_filesystem.c.obj
+[187/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/graphics/res_graphics.c.obj
+[188/298] Building C object tests/CMakeFiles/anotest_strings_utf.dir/anotest_strings_utf.c.obj
+[189/298] Building C object tests/CMakeFiles/anotest_strings_sort.dir/anotest_strings_sort.c.obj
+[190/298] Building C object tests/CMakeFiles/anotest_sortbench.dir/anotest_sortbench.c.obj
+[191/298] Building C object tests/CMakeFiles/anotest_stropsbench.dir/anotest_stropsbench.c.obj
+[192/298] Building C object tests/CMakeFiles/anotest_logstrbench.dir/anotest_logstrbench.c.obj
+[193/298] Building C object tests/CMakeFiles/anotest_text.dir/anotest_text.c.obj
+[194/298] Building C object tests/CMakeFiles/anotest_ui.dir/anotest_ui.c.obj
+[195/298] Building C object tests/CMakeFiles/anotest_strbench.dir/anotest_strbench.c.obj
+[196/298] Linking C static library external\glfw\src\libglfw3.a
+[197/298] Building C object tests/CMakeFiles/anotest_meshoptimizer.dir/anotest_meshoptimizer.c.obj
+[198/298] Building C object tests/CMakeFiles/anotest_memory.dir/anotest_memory.c.obj
+[199/298] Building C object tests/CMakeFiles/anotest_resources.dir/anotest_resources.c.obj
+[200/298] Building C object tests/CMakeFiles/anotest_resgfx.dir/anotest_resgfx.c.obj
+[201/298] Building C object tests/CMakeFiles/anotest_resgroups.dir/anotest_resgroups.c.obj
+[202/298] Building C object tests/CMakeFiles/anotest_resownership.dir/anotest_resownership.c.obj
+[203/298] Building C object tests/CMakeFiles/anotest_collections.dir/anotest_collections.c.obj
+[204/298] Building C object tests/CMakeFiles/anotest_resfault.dir/anotest_resfault.c.obj
+[205/298] Building C object tests/CMakeFiles/anotest_resfault.dir/__/src/resources/resources_core.c.obj
+[206/298] Building C object tests/CMakeFiles/anotest_persistence.dir/anotest_persistence.c.obj
+[207/298] Building C object tests/CMakeFiles/anotest_resdurability.dir/anotest_resdurability.c.obj
+[208/298] Building C object tests/CMakeFiles/anotest_resdurability.dir/__/src/resources/resources_core.c.obj
+[209/298] Building C object tests/CMakeFiles/anotest_rescodec.dir/anotest_rescodec.c.obj
+[210/298] Building C object tests/CMakeFiles/anotest_resplace.dir/anotest_resplace.c.obj
+[211/298] Building C object tests/CMakeFiles/anotest_resrange.dir/anotest_resrange.c.obj
+[212/298] Building C object tests/CMakeFiles/anotest_respack.dir/anotest_respack.c.obj
+[213/298] Building C object tests/CMakeFiles/anotest_resbake.dir/anotest_resbake.c.obj
+[214/298] Running utility command for anoptic_test_resources
+[215/298] Building C object tests/CMakeFiles/anotest_reshotreload.dir/anotest_reshotreload.c.obj
+[216/298] Building C object tests/CMakeFiles/anotest_resaudio.dir/anotest_resaudio.c.obj
+[217/298] Building C object tests/CMakeFiles/anotest_resscript.dir/anotest_resscript.c.obj
+[218/298] Building C object tests/CMakeFiles/anotest_reslevel.dir/anotest_reslevel.c.obj
+[219/298] Building C object tests/CMakeFiles/anotest_resremote.dir/anotest_resremote.c.obj
+[220/298] Building C object tests/CMakeFiles/anotest_mempools.dir/anotest_mempools.c.obj
+[221/298] Building C object tests/CMakeFiles/anotest_mempoolbench.dir/anotest_mempoolbench.c.obj
+[222/298] Building C object tests/CMakeFiles/anotest_bridges.dir/anotest_bridges.c.obj
+[223/298] Building C object tests/CMakeFiles/anotest_ringbench.dir/anotest_ringbench.c.obj
+[224/298] Building C object tests/CMakeFiles/anotest_strings.dir/anotest_strings.c.obj
+[225/298] Building C object tests/CMakeFiles/anotest_strings_fuzz.dir/anotest_strings_fuzz.c.obj
+[226/298] Building C object tests/CMakeFiles/anotest_resbench.dir/anotest_resbench.c.obj
+[227/298] Building C object tests/CMakeFiles/anotest_chariots.dir/anotest_chariots.c.obj
+[228/298] Building C object tests/CMakeFiles/anotest_logbench.dir/anotest_logbench.c.obj
+[229/298] Building C object tests/CMakeFiles/anotest_logbench.dir/__/src/log/log_old.c.obj
+[230/298] Building C object tests/CMakeFiles/anotest_logfuzz.dir/anotest_logfuzz.c.obj
+[231/298] Building C object tests/CMakeFiles/anotest_render_bridge.dir/anotest_render_bridge.c.obj
+[232/298] Building C object tests/CMakeFiles/anotest_render_slots.dir/anotest_render_slots.c.obj
+[233/298] Building C object tests/CMakeFiles/anotest_sidbench.dir/anotest_sidbench.c.obj
+[234/298] Building C object CMakeFiles/anoptic_core.dir/src/resources/world/res_world.c.obj
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:172:27: warning: passing 'const char *' to parameter of type 'const uint8_t *' (aka 'const unsigned char *') converts between pointers to integer types where one is of the unique plain 'char' type and the other is not [-Wpointer-sign]
+  172 |         valid = decode_v1(anostr_bytes(&payload), anostr_len(payload), state);
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:82:38: note: passing argument to parameter 'bytes' here
+   82 | static bool decode_v1(const uint8_t *bytes, size_t len, anoresworld_state *state)
+      |                                      ^
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:174:27: warning: passing 'const char *' to parameter of type 'const uint8_t *' (aka 'const unsigned char *') converts between pointers to integer types where one is of the unique plain 'char' type and the other is not [-Wpointer-sign]
+  174 |         valid = decode_v2(anostr_bytes(&payload), anostr_len(payload), state);
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:97:38: note: passing argument to parameter 'bytes' here
+   97 | static bool decode_v2(const uint8_t *bytes, size_t len, anoresworld_state *state)
+      |                                      ^
+2 warnings generated.
+[235/298] Building C object tests/CMakeFiles/anotest_vk_components.dir/anotest_vk_components.c.obj
+[236/298] Building C object tests/CMakeFiles/anotest_vk_lifecycle.dir/anotest_vk_lifecycle.c.obj
+[237/298] Building C object tests/CMakeFiles/anotest_logtail.dir/anotest_logtail.c.obj
+[238/298] Building C object tests/CMakeFiles/anotest_vk_memory.dir/anotest_vk_memory.c.obj
+[239/298] Building C object tests/CMakeFiles/anotest_vk_compliance_layers.dir/anotest_vk_compliance_layers.c.obj
+[240/298] Building C object tests/CMakeFiles/anotest_vk_sync.dir/anotest_vk_sync.c.obj
+[241/298] Building C object tests/CMakeFiles/anotest_logging.dir/anotest_logging.c.obj
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:211:23: warning: format specifies type 'long' but the argument has type 'long long' [-Wformat]
+  211 |     DCHK("D11:[%ld]", 9000000000L);
+      |                ~~~    ^~~~~~~~~~~
+      |                %lld
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:195:43: note: expanded from macro 'DCHK'
+  195 |         snprintf(exp[ne], sizeof exp[ne], __VA_ARGS__); \
+      |                                           ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:211:23: warning: format specifies type 'long' but the argument has type 'long long' [-Wformat]
+  211 |     DCHK("D11:[%ld]", 9000000000L);
+      |                ~~~    ^~~~~~~~~~~
+      |                %lld
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:196:27: note: expanded from macro 'DCHK'
+  196 |         ano_log(ANO_INFO, __VA_ARGS__); \
+      |                           ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/include/anoptic_log.h:86:80: note: expanded from macro 'ano_log'
+   86 | #define ano_log(level, ...)                 ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
+      |                                                                                ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:213:23: warning: format specifies type 'unsigned long' but the argument has type 'unsigned long long' [-Wformat]
+  213 |     DCHK("D13:[%lu]", 18000000000UL);
+      |                ~~~    ^~~~~~~~~~~~~
+      |                %llu
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:195:43: note: expanded from macro 'DCHK'
+  195 |         snprintf(exp[ne], sizeof exp[ne], __VA_ARGS__); \
+      |                                           ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:213:23: warning: format specifies type 'unsigned long' but the argument has type 'unsigned long long' [-Wformat]
+  213 |     DCHK("D13:[%lu]", 18000000000UL);
+      |                ~~~    ^~~~~~~~~~~~~
+      |                %llu
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:196:27: note: expanded from macro 'DCHK'
+  196 |         ano_log(ANO_INFO, __VA_ARGS__); \
+      |                           ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/include/anoptic_log.h:86:80: note: expanded from macro 'ano_log'
+   86 | #define ano_log(level, ...)                 ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
+      |                                                                                ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:238:23: warning: format specifies type 'unsigned long' but the argument has type 'unsigned long long' [-Wformat]
+  238 |     DCHK("D38:[%lx]", 0xfeedfacecafeUL);                  // long hex, hand-rolled
+      |                ~~~    ^~~~~~~~~~~~~~~~
+      |                %llx
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:195:43: note: expanded from macro 'DCHK'
+  195 |         snprintf(exp[ne], sizeof exp[ne], __VA_ARGS__); \
+      |                                           ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:238:23: warning: format specifies type 'unsigned long' but the argument has type 'unsigned long long' [-Wformat]
+  238 |     DCHK("D38:[%lx]", 0xfeedfacecafeUL);                  // long hex, hand-rolled
+      |                ~~~    ^~~~~~~~~~~~~~~~
+      |                %llx
+C:/Users/Pyrus/Code/anoptic-engine/tests/anotest_logging.c:196:27: note: expanded from macro 'DCHK'
+  196 |         ano_log(ANO_INFO, __VA_ARGS__); \
+      |                           ^~~~~~~~~~~
+C:/Users/Pyrus/Code/anoptic-engine/include/anoptic_log.h:86:80: note: expanded from macro 'ano_log'
+   86 | #define ano_log(level, ...)                 ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
+      |                                                                                ^~~~~~~~~~~
+6 warnings generated.
+[242/298] Building C object tests/CMakeFiles/anotest_blackbox.dir/anotest_blackbox.c.obj
+[243/298] Linking C static library libanoptic_core.a
+[244/298] Linking C static library libanoptic_render.a
+[245/298] Linking C executable anoptic_pack.exe
+[246/298] Linking C executable tests\anotest_time.exe
+[247/298] Linking C executable tests\anotest_logging.exe
+[248/298] Linking C executable tests\anotest_filesystem.exe
+[249/298] Linking C executable tests\anotest_strings.exe
+[250/298] Linking C executable tests\anotest_strings_utf.exe
+[251/298] Linking C executable tests\anotest_strings_sort.exe
+[252/298] Linking C executable tests\anotest_strings_fuzz.exe
+[253/298] Linking C executable tests\anotest_sortbench.exe
+[254/298] Linking C executable tests\anotest_stropsbench.exe
+[255/298] Linking C executable tests\anotest_logstrbench.exe
+[256/298] Linking C executable tests\anotest_ui.exe
+[257/298] Linking C executable tests\anotest_strbench.exe
+[258/298] Linking C executable tests\anotest_sidbench.exe
+[259/298] Linking C executable tests\anotest_meshoptimizer.exe
+[260/298] Linking C executable tests\anotest_resources.exe
+[261/298] Linking C executable tests\anotest_resaudio.exe
+[262/298] Linking C executable tests\anotest_reshotreload.exe
+[263/298] Linking C executable tests\anotest_resdurability.exe
+[264/298] Linking C executable tests\anotest_resplace.exe
+[265/298] Linking C executable tests\anotest_respack.exe
+[266/298] Linking C executable tests\anotest_resscript.exe
+[267/298] Linking C executable tests\anotest_reslevel.exe
+[268/298] Linking C executable tests\anotest_resremote.exe
+[269/298] Linking C executable tests\anotest_memory.exe
+[270/298] Linking C executable tests\anotest_resrange.exe
+[271/298] Linking C executable tests\anotest_resbake.exe
+[272/298] Linking C executable tests\anotest_rescodec.exe
+[273/298] Linking C executable tests\anotest_collections.exe
+[274/298] Linking C executable tests\anotest_resownership.exe
+[275/298] Linking C executable tests\anotest_persistence.exe
+[276/298] Linking C executable tests\anotest_resgroups.exe
+[277/298] Linking C executable tests\anotest_resfault.exe
+[278/298] Linking C executable tests\anotest_mempools.exe
+[279/298] Linking C executable tests\anotest_blackbox.exe
+[280/298] Linking C executable tests\anotest_logbench.exe
+[281/298] Linking C executable tests\anotest_ringbench.exe
+[282/298] Linking C executable tests\anotest_bridges.exe
+[283/298] Linking C executable tests\anotest_mempoolbench.exe
+[284/298] Linking C executable tests\anotest_logfuzz.exe
+[285/298] Linking C executable tests\anotest_chariots.exe
+[286/298] Linking C executable tests\anotest_logtail.exe
+[287/298] Linking C executable tests\anotest_render_bridge.exe
+[288/298] Linking C executable tests\anotest_vk_components.exe
+[289/298] Linking C executable tests\anotest_render_slots.exe
+[290/298] Linking C executable tests\anotest_text.exe
+[291/298] Linking C executable tests\anotest_resbench.exe
+[292/298] Linking C executable tests\anotest_resgfx.exe
+[293/298] Linking C executable tests\anotest_vk_compliance_layers.exe
+[294/298] Linking C executable tests\anotest_vk_memory.exe
+[295/298] Linking C executable tests\anotest_vk_lifecycle.exe
+[296/298] Linking C executable tests\anotest_vk_sync.exe
+[297/298] Linking C executable anopticengine.exe
+Internal ctest changing into directory: C:/Users/Pyrus/Code/anoptic-engine/build/O3Tests
+Test project C:/Users/Pyrus/Code/anoptic-engine/build/O3Tests
+      Start  1: anoptic_time
+ 1/51 Test  #1: anoptic_time .....................   Passed    1.48 sec
+      Start  2: anoptic_logging
+ 2/51 Test  #2: anoptic_logging ..................   Passed    0.50 sec
+      Start  3: anoptic_filesystem
+ 3/51 Test  #3: anoptic_filesystem ...............   Passed    0.13 sec
+      Start  4: anoptic_strings
+ 4/51 Test  #4: anoptic_strings ..................   Passed    0.14 sec
+      Start  5: anoptic_strings_utf
+ 5/51 Test  #5: anoptic_strings_utf ..............   Passed    0.15 sec
+      Start  6: anoptic_strings_sort
+ 6/51 Test  #6: anoptic_strings_sort .............   Passed    0.11 sec
+      Start  7: anoptic_strings_fuzz
+ 7/51 Test  #7: anoptic_strings_fuzz .............   Passed    0.05 sec
+      Start  8: anoptic_sortbench
+ 8/51 Test  #8: anoptic_sortbench ................***Not Run (Disabled)   0.00 sec
+      Start  9: anoptic_stropsbench
+ 9/51 Test  #9: anoptic_stropsbench ..............***Not Run (Disabled)   0.00 sec
+      Start 10: anoptic_logstrbench
+10/51 Test #10: anoptic_logstrbench ..............***Not Run (Disabled)   0.00 sec
+      Start 11: anoptic_text
+11/51 Test #11: anoptic_text .....................   Passed    0.31 sec
+      Start 12: anoptic_ui
+12/51 Test #12: anoptic_ui .......................   Passed    0.51 sec
+      Start 13: anoptic_strbench
+13/51 Test #13: anoptic_strbench .................***Not Run (Disabled)   0.00 sec
+      Start 14: anoptic_sidbench
+14/51 Test #14: anoptic_sidbench .................***Not Run (Disabled)   0.00 sec
+      Start 15: anoptic_meshoptimizer
+15/51 Test #15: anoptic_meshoptimizer ............   Passed    0.13 sec
+      Start 16: anoptic_memory
+16/51 Test #16: anoptic_memory ...................   Passed    0.55 sec
+      Start 17: anoptic_resources
+17/51 Test #17: anoptic_resources ................   Passed    0.44 sec
+      Start 18: anoptic_resgfx
+18/51 Test #18: anoptic_resgfx ...................   Passed    0.13 sec
+      Start 19: anoptic_resgroups
+19/51 Test #19: anoptic_resgroups ................   Passed    0.16 sec
+      Start 20: anoptic_resownership
+20/51 Test #20: anoptic_resownership .............   Passed    0.15 sec
+      Start 21: anoptic_collections
+21/51 Test #21: anoptic_collections ..............   Passed    0.49 sec
+      Start 22: anoptic_resfault
+22/51 Test #22: anoptic_resfault .................   Passed    0.10 sec
+      Start 23: anoptic_persistence
+23/51 Test #23: anoptic_persistence ..............   Passed    0.38 sec
+      Start 24: anoptic_resdurability
+24/51 Test #24: anoptic_resdurability ............   Passed    0.33 sec
+      Start 25: anoptic_rescodec
+25/51 Test #25: anoptic_rescodec .................   Passed    0.08 sec
+      Start 26: anoptic_resplace
+26/51 Test #26: anoptic_resplace .................   Passed    0.03 sec
+      Start 27: anoptic_resrange
+27/51 Test #27: anoptic_resrange .................   Passed    0.03 sec
+      Start 28: anoptic_respack
+28/51 Test #28: anoptic_respack ..................   Passed    0.03 sec
+      Start 29: anoptic_resbake
+29/51 Test #29: anoptic_resbake ..................   Passed    0.03 sec
+      Start 30: anoptic_reshotreload
+30/51 Test #30: anoptic_reshotreload .............   Passed    0.03 sec
+      Start 31: anoptic_resaudio
+31/51 Test #31: anoptic_resaudio .................   Passed    0.14 sec
+      Start 32: anoptic_resscript
+32/51 Test #32: anoptic_resscript ................   Passed    0.14 sec
+      Start 33: anoptic_reslevel
+33/51 Test #33: anoptic_reslevel .................   Passed    0.24 sec
+      Start 34: anoptic_resremote
+34/51 Test #34: anoptic_resremote ................   Passed    0.04 sec
+      Start 35: anoptic_mempools
+35/51 Test #35: anoptic_mempools .................   Passed    0.14 sec
+      Start 36: anoptic_mempoolbench
+36/51 Test #36: anoptic_mempoolbench .............***Not Run (Disabled)   0.00 sec
+      Start 37: anoptic_bridges
+37/51 Test #37: anoptic_bridges ..................   Passed    0.13 sec
+      Start 38: anoptic_ringbench
+38/51 Test #38: anoptic_ringbench ................***Not Run (Disabled)   0.00 sec
+      Start 39: anoptic_resbench
+39/51 Test #39: anoptic_resbench .................***Not Run (Disabled)   0.00 sec
+      Start 40: anoptic_chariots
+40/51 Test #40: anoptic_chariots .................***Not Run (Disabled)   0.00 sec
+      Start 41: anoptic_logbench
+41/51 Test #41: anoptic_logbench .................***Not Run (Disabled)   0.00 sec
+      Start 42: anoptic_logtail
+42/51 Test #42: anoptic_logtail ..................***Not Run (Disabled)   0.00 sec
+      Start 43: anoptic_logfuzz
+43/51 Test #43: anoptic_logfuzz ..................   Passed    0.64 sec
+      Start 44: anoptic_blackbox
+44/51 Test #44: anoptic_blackbox .................   Passed    8.38 sec
+      Start 45: anoptic_render_bridge
+45/51 Test #45: anoptic_render_bridge ............   Passed    0.06 sec
+      Start 46: anoptic_render_slots
+46/51 Test #46: anoptic_render_slots .............   Passed    0.13 sec
+      Start 47: anotest_vk_lifecycle
+47/51 Test #47: anotest_vk_lifecycle .............   Passed    3.13 sec
+      Start 48: anotest_vk_components
+48/51 Test #48: anotest_vk_components ............   Passed    0.04 sec
+      Start 49: anotest_vk_compliance_layers
+49/51 Test #49: anotest_vk_compliance_layers .....***Not Run (Disabled)   0.00 sec
+      Start 50: anotest_vk_memory
+50/51 Test #50: anotest_vk_memory ................   Passed    2.38 sec
+      Start 51: anotest_vk_sync
+51/51 Test #51: anotest_vk_sync ..................***Not Run (Disabled)   0.00 sec
+
+100% tests passed, 0 tests failed out of 38
+
+Label Time Summary:
+bench          =   0.00 sec*proc (10 tests)
+concurrency    =  10.76 sec*proc (9 tests)
+easteregg      =   0.00 sec*proc (1 test)
+fuzz           =   0.71 sec*proc (3 tests)
+mem            =   2.68 sec*proc (13 tests)
+mesh           =   0.13 sec*proc (1 test)
+optional       =   0.00 sec*proc (11 tests)
+render         =   0.13 sec*proc (1 test)
+resource       =   2.46 sec*proc (18 tests)
+unit           =  21.34 sec*proc (38 tests)
+vulkan         =   5.55 sec*proc (5 tests)
+
+Total Test time (real) =  22.09 sec
+
+The following tests did not run:
+	  8 - anoptic_sortbench (Disabled)
+	  9 - anoptic_stropsbench (Disabled)
+	 10 - anoptic_logstrbench (Disabled)
+	 13 - anoptic_strbench (Disabled)
+	 14 - anoptic_sidbench (Disabled)
+	 36 - anoptic_mempoolbench (Disabled)
+	 38 - anoptic_ringbench (Disabled)
+	 39 - anoptic_resbench (Disabled)
+	 40 - anoptic_chariots (Disabled)
+	 41 - anoptic_logbench (Disabled)
+	 42 - anoptic_logtail (Disabled)
+	 49 - anotest_vk_compliance_layers (Disabled)
+	 51 - anotest_vk_sync (Disabled)

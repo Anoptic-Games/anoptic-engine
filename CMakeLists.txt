@@ -85,6 +85,10 @@ add_custom_target(ano_scrub
 
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)
 option(ANOPTIC_HEADLESS "Build without the Vulkan renderer" OFF)
+# Pack compression. LZ4 is vendored and always built (two files, BSD-2-Clause). zstd is
+# opt-in: it is a bigger dependency than the ratio buys for a game's asset tree, so the
+# default is OFF and the codec byte simply reports itself unavailable.
+option(ANOPTIC_ZSTD "Vendor zstd for the resource codec" OFF)
 set(ANOPTIC_SANITIZE "" CACHE STRING "Sanitizer for test builds: asan, tsan, or empty")
 
 # Sanitizer flags
@@ -114,6 +118,27 @@ set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
 set(FT_ENABLE_ERROR_STRINGS ON CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/freetype EXCLUDE_FROM_ALL)
+
+# LZ4: two vendored files (external/lz4, BSD-2-Clause). The pack codec's default.
+# -w: upstream code, not ours to lint.
+add_library(anoptic_lz4 STATIC ${CMAKE_SOURCE_DIR}/external/lz4/lz4.c)
+target_include_directories(anoptic_lz4 PUBLIC ${CMAKE_SOURCE_DIR}/external/lz4)
+target_compile_options(anoptic_lz4 PRIVATE -w)
+set_target_properties(anoptic_lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# zstd, opt-in. Vendor it under external/zstd/ before turning this on.
+if(ANOPTIC_ZSTD)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/external/zstd/lib)
+        message(FATAL_ERROR "ANOPTIC_ZSTD=ON but external/zstd/lib is absent: vendor zstd first.")
+    endif()
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/external/zstd/build/cmake EXCLUDE_FROM_ALL)
+    add_library(anoptic_zstd INTERFACE)
+    target_link_libraries(anoptic_zstd INTERFACE libzstd_static)
+    target_compile_definitions(anoptic_zstd INTERFACE ANOPTIC_ZSTD=1)
+endif()
 
 # pthreads everywhere: native on Linux, winpthreads on MinGW
 find_package(Threads REQUIRED)
@@ -163,11 +188,19 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/strings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/filesystem)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/resources)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/config)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/keybindings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/log)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/ui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
+
+# anoptic_pack: the deterministic archive builder. Same input tree -> byte-identical pack.
+# It shares res_pack_build with the engine; there is no second format writer.
+add_executable(anoptic_pack ${CMAKE_SOURCE_DIR}/tools/anopak/anopak.c)
+target_link_libraries(anoptic_pack PRIVATE anoptic_core)
+install(TARGETS anoptic_pack RUNTIME DESTINATION bin)
 
 # Renderer (default on).
 if(NOT ANOPTIC_HEADLESS)
