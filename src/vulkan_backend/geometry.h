@@ -77,39 +77,26 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
 
 #define ANO_MAX_LOD 8u
 
-// Per-mesh GPU buffer capacity (MeshSSBO / MeshBoundsSSBO slots), fixed at buffer creation. The host
-// geometry pool grows its meshes[] array on demand but must never register past this, or
-// updateCullingBuffers would write past the mapped device buffers — the upload paths refuse once the
-// pool would exceed it (returning the fallback mesh 0). The cull-set/graphics-set descriptor RANGES
-// and the createCullingBuffers buffer sizes must all use this value; keep them in lockstep. With 4x
-// LOD chains (ANO_DEFAULT_LOD_COUNT) this covers ~2048 distinct source meshes; ~156 B/slot of VRAM.
+// Per-mesh GPU buffer capacity (MeshSSBO / MeshBoundsSSBO). Host pool must not register past this.
 #define ANO_MAX_MESHES 8192u
 
-// Default LOD levels glTF uploads request. 4 == LOD chains on engine-wide: level 0 full detail plus
-// three decimated levels (ratios 1, 1/2, 1/4, 1/8). Set to 1 for a single full-detail mesh with no
-// decimation; the clamp is ANO_MAX_LOD.
+// Default LOD levels for glTF uploads (1 = no decimation). Clamp: ANO_MAX_LOD.
 #define ANO_DEFAULT_LOD_COUNT 4u
 
-// LOD chain production config (review 4.9 step 2). lodCount levels are emitted as a contiguous run
-// of mesh indices: level 0 is the full mesh, level i is the source decimated to ratios[i] of the
-// source index count under targetError. ratios[0] is conventionally 1.0 (level 0 == full).
+// LOD chain config. Contiguous mesh indices: level 0 full, level i = source * ratios[i].
 typedef struct AnoLodConfig
 {
     uint32_t lodCount;             // levels to emit (>=1, clamped to ANO_MAX_LOD)
-    float    ratios[ANO_MAX_LOD];  // per-level target index fraction of the source (level 0 == 1.0)
-    float    targetError;          // ano_simplify relative error budget (fraction of bbox extent)
-    float    edgeLenFactor;        // in-plane growth cap: max resulting edge in source mean-edge lengths
-                                   // (ano_simplify_ex); 0 disables the guard (A/B baseline)
+    float    ratios[ANO_MAX_LOD];  // per-level target index fraction (level 0 == 1.0)
+    float    targetError;          // ano_simplify relative error (bbox extent fraction)
+    float    edgeLenFactor;        // in-plane edge growth cap (mean-edge lengths); 0 disables
 } AnoLodConfig;
 
-// A sensible default chain: ratios 1, 1/2, 1/4, ... and a 5%-of-extent error budget.
+// Default chain: ratios 1, 1/2, 1/4, ...; 5% extent error.
 AnoLodConfig ano_lod_config_default(uint32_t lodCount);
 
-// Upload a mesh as a contiguous LOD chain. Produces config->lodCount adjacent mesh regions sharing
-// the same vertex data (level i = ano_simplify of the source to ratios[i]); returns the base mesh
-// index and writes the count actually produced to *out_lodCount (the chain truncates if a level's
-// simplify stalls or a pool is exhausted). Bounds are LOD-invariant (full mesh sphere on every
-// level). Returns 0 (fallback) with *out_lodCount == 0 if nothing is produced. out_* may be NULL.
+// Upload contiguous LOD chain. Bounds LOD-invariant (full sphere). Truncates on stall/exhaust.
+// out: base index / *out_lodCount; 0 + *out_lodCount==0 on failure. out_* may be NULL.
 uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                                     uint32_t transferFamily, VkQueue transferQueue,
                                     const Vertex* vertices, uint32_t vertexCount,

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// SlotUpload: per-slot DEVICE_LOCAL GPU buffer fed by a per-frame host-visible delta staging ring, plus slot-indexed entity-buffer growth. Render-thread only. See slot_upload.c.
+// SlotUpload: DEVICE_LOCAL + per-frame delta staging + entity-buffer growth. Render-thread only.
 
 #ifndef ANO_SLOT_UPLOAD_H
 #define ANO_SLOT_UPLOAD_H

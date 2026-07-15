@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Shaper: UTF-8 rune iteration, slot lookup, horizontal
-// advances with pair kerning, newline handling. Pure functions over an immutable
-// AnoFontBake, callable from any thread. Ligatures, marks, and bidi are non-goals.
+// Shaper: UTF-8 iteration, slot lookup, advances + pair kern, newlines. Pure over immutable AnoFontBake, any thread. No ligatures/marks/bidi.
 
 #include "anoptic_text.h"
 #include "anoptic_strings_utf.h"
@@ -48,10 +46,7 @@ float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSl
                                                                 : 0.0f;
 }
 
-// The single pen walk behind shape/measure x plain/runs. Assumes validated args.
-// One pen crosses run boundaries untouched. The pair-kern chain survives a boundary
-// iff the size is unchanged. Returns the total instance count. Optionally reports the
-// pen, the widest line, started-line count, and the last run's line step.
+// Pen walk behind shape/measure x plain/runs. Validated args. Pair-kern chain survives a boundary iff size unchanged. Returns instance count. Optional pen / max line / lines / last run line step.
 static uint32_t shape_core(const AnoFontBake *bake, anostr_t text,
                            const AnoTextRun *runs, uint32_t runCount,
                            const float origin[2], AnoGlyphInstance *out, uint32_t cap,
@@ -65,8 +60,8 @@ static uint32_t shape_core(const AnoFontBake *bake, anostr_t text,
     uint32_t needed = 0, emitted = 0;
     size_t runEnd = runs[0].byteCount;
     uint32_t runIdx = 0;
-    uint32_t prevSlot = UINT32_MAX; // pair-kern chain, broken by newline/gap/size change
-    float prevSize = 0.0f;          // the sizePx that shaped prevSlot
+    uint32_t prevSlot = UINT32_MAX; // pair-kern chain: broken by newline/gap/size change
+    float prevSize = 0.0f;          // sizePx that shaped prevSlot
 
     for (size_t i = 0; i < total;)
     {
@@ -75,7 +70,7 @@ static uint32_t shape_core(const AnoFontBake *bake, anostr_t text,
             runIdx++;
             runEnd += runs[runIdx].byteCount;
         }
-        float sizePx = runs[runIdx].sizePx; // the lead byte's run styles the codepoint
+        float sizePx = runs[runIdx].sizePx; // lead byte's run styles the codepoint
         anorune_t cp = anostr_rune_next(text, &i);
         if (cp == '\r')
             continue;
@@ -132,8 +127,7 @@ static uint32_t shape_core(const AnoFontBake *bake, anostr_t text,
     return needed;
 }
 
-// Rejects NULL runs, an empty run list, any non-positive size, and a byteCount sum
-// that disagrees with the text's byte length.
+// Reject NULL runs, empty list, sizePx <= 0, or byteCount sum != text length.
 static bool runs_valid(const AnoTextRun *runs, uint32_t runCount, anostr_t text)
 {
     if (runs == NULL || runCount == 0)

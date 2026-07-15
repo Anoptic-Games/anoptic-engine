@@ -3,26 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_strings.h -- the 16-byte German-string value, the builder, and the
- * lifetime ceremony:
- *   - canonical form (I2) and zero padding (I3): equal strings are bit-identical inline;
- *   - construction round-trips at every length 0..64, inline and heap-backed;
- *   - eq / compare / hash: lexicographic order, embedded 0x00 bytes, variant independence;
- *   - slice: clamping, copy-on-shrink to inline, borrow (same backing pointer) for long slices;
- *   - keep: identity on inline values, real copy off a scratch heap that is then destroyed;
- *   - builder: append/appendf growth, freeze to both variants, consumed-builder failure,
- *     discard, UINT32_MAX overflow refusal;
- *   - find / concat / join: offsets, absence, empty needles, inline vs heap results,
- *     separator placement (a path join among them);
- *   - split: empty pieces, trailing separator, no separator, empty separator, borrow
- *     semantics for long pieces;
- *   - intern/dedupe: symbol stability across variants and allocations, find-without-insert,
- *     sym_str round-trip, bit-identical dedupe, growth past the initial slot table;
- *   - ANOSTR_SID / ANOSTR_SID32: published FNV-1a vectors as static_asserts, ICE contexts
- *     (case label, enum, static initializer, array size), runtime-twin agreement with
- *     anostr_hash/anostr_hash32 (embedded NUL and the 128-byte cap included);
- *   - a randomized round-trip soak (fixed seed; argv[1] scales iterations).
- * Exit 0 == pass; failures print what broke. */
+/* Coverage for anoptic_strings.h: value, builder, keep/slice ownership, ops, intern, SID.
+ * Exit 0 == pass; failures print what broke. argv[1] scales soak iterations. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +19,7 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-// Contents match, byte for byte, at the exact advertised length.
+// Contents match at the advertised length.
 static bool str_equals_mem(anostr_t s, const void *bytes, size_t len)
 {
     return anostr_len(s) == len && memcmp(anostr_bytes(&s), bytes, len) == 0;
@@ -73,7 +55,7 @@ static void test_construction_roundtrip(mi_heap_t *heap)
 
 static void test_padding_makes_equals_bitwise(mi_heap_t *heap)
 {
-    // I3: the same short string built three different ways must be bit-identical.
+    // I3: same short string three ways must be bit-identical.
     anostr_t a = anostr_lit("tick");
     anostr_t b = anostr_from(heap, "tick", 4);
     anostr_t c = anostr_slice(anostr_lit("[tick]"), 1, 5);
@@ -91,14 +73,13 @@ static void test_eq_compare_hash(mi_heap_t *heap)
     CHECK(anostr_compare(anostr_lit(""), anostr_lit("a")) < 0, "compare: empty sorts first");
     CHECK(anostr_compare(anostr_lit("abc"), anostr_lit("abc")) == 0, "compare: equal is 0");
 
-    // Embedded 0x00: byte-transparent storage must order and compare them like memcmp.
+    // Embedded 0x00: order/compare like memcmp.
     anostr_t n1 = anostr_from(heap, "a\0b", 3);
     anostr_t n2 = anostr_from(heap, "a\0c", 3);
     CHECK(!anostr_eq(n1, n2), "eq sees past an embedded NUL");
     CHECK(anostr_compare(n1, n2) < 0, "compare orders past an embedded NUL");
 
-    // Long strings: equal contents in different allocations must be equal; the last byte
-    // must be reachable by eq/compare (the prefix alone must not declare victory).
+    // Long: equal across allocations; last byte must reach eq/compare.
     const char *base = "shared-prefix-long-string-A";
     const char *diff = "shared-prefix-long-string-B";
     size_t n = strlen(base);
@@ -111,10 +92,10 @@ static void test_eq_compare_hash(mi_heap_t *heap)
     CHECK(anostr_compare(l1, l3) < 0 && anostr_compare(l3, l1) > 0,
           "compare: long strings differing past the prefix");
 
-    // Different lengths can never be equal (canonical form makes cross-variant eq a len test).
+    // Different lengths never equal (I2).
     CHECK(!anostr_eq(anostr_lit("short"), l1), "eq: inline vs long is never equal");
 
-    // Hash: variant- and allocation-independent, and FNV-1a actually mixes.
+    // Hash: variant/allocation-independent.
     CHECK(anostr_hash(l1) == anostr_hash(l2), "hash equal across allocations");
     CHECK(anostr_hash(anostr_lit("tick")) == anostr_hash(anostr_from(heap, "tick", 4)),
           "hash equal across construction paths");
@@ -149,13 +130,12 @@ static void test_slice(mi_heap_t *heap)
 
 static void test_keep(mi_heap_t *persistent)
 {
-    // Inline: keep is identity, no heap touched (NULL heap must be safe).
+    // Inline keep: identity, NULL heap safe.
     anostr_t v = anostr_lit("value");
     anostr_t kept = anostr_keep(NULL, v);
     CHECK(memcmp(&v, &kept, sizeof(anostr_t)) == 0, "keep on inline is identity");
 
-    // Long: build in a scratch heap, keep into the persistent heap, destroy scratch,
-    // then prove the kept copy survived with its own backing.
+    // Long keep: copy into persistent heap, scratch destroyed, own backing survives.
     anostr_t survivor;
     const char *msg = "outlives-the-scratch-heap-it-was-born-in";
     {
@@ -174,7 +154,7 @@ static void test_keep(mi_heap_t *persistent)
 
 static void test_builder(mi_heap_t *heap)
 {
-    // Freeze to inline: short accumulations produce a value owing nothing to the heap.
+    // Freeze to inline: value owes nothing to the heap.
     anostr_builder_t b = anostr_builder_make(heap, 0);
     CHECK(anostr_builder_append_cstr(&b, "tick=") == 0, "append_cstr");
     CHECK(anostr_builder_appendf(&b, "%d", 42) == 0, "appendf");
@@ -184,7 +164,7 @@ static void test_builder(mi_heap_t *heap)
     CHECK(anostr_builder_append_cstr(&b, "x") == -1, "consumed builder refuses appends");
     CHECK(anostr_is_empty(anostr_freeze(&b)), "consumed builder freezes to empty");
 
-    // Freeze to long, growth across many appends, all append flavors.
+    // Freeze to long, growth, all append flavors.
     anostr_builder_t big = anostr_builder_make(heap, 8);    // deliberately small reserve
     for (int i = 0; i < 100; i++)
         CHECK(anostr_builder_appendf(&big, "entity_%03d;", i) == 0, "appendf in a loop");
@@ -197,19 +177,19 @@ static void test_builder(mi_heap_t *heap)
     CHECK(memcmp(anostr_bytes(&longStr) + anostr_len(longStr) - 4, "done", 4) == 0,
           "builder freeze contents (tail)");
 
-    // Raw bytes with an embedded NUL survive the builder byte-transparently.
+    // Embedded NUL survives the builder.
     anostr_builder_t raw = anostr_builder_make(heap, 0);
     CHECK(anostr_builder_append(&raw, "a\0b", 3) == 0, "append raw bytes");
     anostr_t rawStr = anostr_freeze(&raw);
     CHECK(str_equals_mem(rawStr, "a\0b", 3), "embedded NUL survives the builder");
 
-    // Discard frees eagerly and consumes.
+    // Discard frees and consumes.
     anostr_builder_t d = anostr_builder_make(heap, 64);
     CHECK(anostr_builder_append_cstr(&d, "abandoned") == 0, "append before discard");
     anostr_builder_discard(&d);
     CHECK(anostr_builder_append_cstr(&d, "x") == -1, "discarded builder refuses appends");
 
-    // I1 ceiling: an append that would pass UINT32_MAX must refuse and leave len intact.
+    // I1: append past UINT32_MAX refuses, len intact.
     anostr_builder_t of = anostr_builder_make(heap, 0);
     CHECK(anostr_builder_append_cstr(&of, "seed") == 0, "seed append");
     of.len = UINT32_MAX - 2;    // simulate a near-full builder without allocating 4 GiB
@@ -234,7 +214,7 @@ static void test_find_concat_join(mi_heap_t *heap)
     CHECK(anostr_find(s, anostr_lit("dog"), 40) == 40, "find: hit at the very end");
     CHECK(anostr_find(s, anostr_lit("dog"), 41) == ANOSTR_NPOS, "find: from past the last hit");
 
-    // concat: inline + inline staying inline, and crossing into a heap value.
+    // concat: stay inline, and cross into heap.
     anostr_t ab = anostr_concat(NULL, anostr_lit("tick"), anostr_lit("=42"));
     CHECK(str_equals_mem(ab, "tick=42", 7) && anostr_is_inline(ab),
           "concat: short result is inline (no heap needed)");
@@ -242,7 +222,7 @@ static void test_find_concat_join(mi_heap_t *heap)
     CHECK(str_equals_mem(big, "entity/1776/hull", 16) && !anostr_is_inline(big),
           "concat: 13+ bytes goes to the heap");
 
-    // join: separator placement, count 0/1, and a path join.
+    // join: sep placement, count 0/1, path join.
     anostr_t parts[3] = { anostr_lit("assets"), anostr_lit("models"), anostr_lit("hull.gltf") };
     anostr_t path = anostr_join(heap, anostr_lit("/"), parts, 3);
     CHECK(str_equals_mem(path, "assets/models/hull.gltf", 23), "join: path with separators");
@@ -255,7 +235,7 @@ static void test_find_concat_join(mi_heap_t *heap)
 
 static void test_split(mi_heap_t *heap)
 {
-    // Inline source: empty pieces preserved, including after a trailing separator.
+    // Inline source: empty pieces preserved (trailing sep too).
     anostr_t piece;
     anostr_split_t it = anostr_split(anostr_lit("a,,b,"), anostr_lit(","));
     const char *expect[] = { "a", "", "b", "" };
@@ -266,7 +246,7 @@ static void test_split(mi_heap_t *heap)
     CHECK(!anostr_split_next(&it, &piece), "split: exhausted after the last piece");
     CHECK(!anostr_split_next(&it, &piece), "split: stays exhausted");
 
-    // No separator present: the whole string, once. Same for an empty separator.
+    // No/empty sep: whole string, once.
     it = anostr_split(anostr_lit("solo"), anostr_lit(","));
     CHECK(anostr_split_next(&it, &piece) && str_equals_mem(piece, "solo", 4),
           "split: no separator yields the whole string");
@@ -282,7 +262,7 @@ static void test_split(mi_heap_t *heap)
           "split: empty source yields one empty piece");
     CHECK(!anostr_split_next(&it, &piece), "split: empty source then exhausted");
 
-    // Long source: multi-byte separator; long pieces borrow the source's backing (I4).
+    // Long source: multi-byte sep; long pieces borrow backing (I4).
     const char *cfg = "graphics.width::graphics.height::graphics.fullscreen-mode";
     anostr_t s = anostr_from(heap, cfg, strlen(cfg));
     it = anostr_split(s, anostr_lit("::"));
@@ -306,7 +286,7 @@ static void test_intern(mi_heap_t *heap)
         return;
     CHECK(anostr_intern_count(t) == 0, "fresh table is empty");
 
-    // Equal strings map to one symbol regardless of construction path or variant.
+    // Equal strings -> one symbol across paths/variants.
     anostr_sym a = anostr_intern(t, anostr_lit("hull"));
     anostr_sym b = anostr_intern(t, anostr_from(heap, "hull", 4));
     anostr_sym c = anostr_intern(t, anostr_slice(anostr_lit("[hull]"), 1, 5));
@@ -321,20 +301,19 @@ static void test_intern(mi_heap_t *heap)
     CHECK(d == e, "long strings dedupe across backings");
     CHECK(str_equals_mem(anostr_sym_str(t, d), lp, strlen(lp)), "sym_str round-trips");
 
-    // Lookup faces: find never inserts; sym_str is total.
+    // find never inserts; sym_str is total.
     CHECK(anostr_intern_find(t, anostr_lit("hull")) == a, "find sees an interned string");
     CHECK(anostr_intern_find(t, anostr_lit("nope")) == ANOSTR_SYM_NONE, "find never inserts");
     CHECK(anostr_intern_count(t) == 2, "find left the table unchanged");
     CHECK(anostr_is_empty(anostr_sym_str(t, ANOSTR_SYM_NONE)), "sym_str on NONE is empty");
     CHECK(anostr_is_empty(anostr_sym_str(t, 12345)), "sym_str out of range is empty");
 
-    // Dedupe: equal inputs return bit-identical values, so eq never reads the bytes.
+    // Dedupe: equal inputs bit-identical.
     anostr_t d1 = anostr_dedupe(t, anostr_from(heap, lp, strlen(lp)));
     anostr_t d2 = anostr_dedupe(t, anostr_view(lp, strlen(lp)));
     CHECK(memcmp(&d1, &d2, sizeof(anostr_t)) == 0, "deduped values are bit-identical");
 
-    // Growth: enough distinct strings to force slot-table doubling (64 slots, 70% load),
-    // then every earlier symbol must still resolve.
+    // Growth past initial slots; earlier symbols still resolve.
     char nameBuf[32];
     anostr_sym syms[300];
     for (int i = 0; i < 300; i++) {
@@ -353,7 +332,7 @@ static void test_intern(mi_heap_t *heap)
     CHECK(anostr_intern_find(t, anostr_lit("hull")) == a, "early symbol survives growth");
 }
 
-// Published FNV-1a test vectors (Noll's reference set): the hash itself, at compile time.
+// Published FNV-1a vectors as static_asserts.
 static_assert(ANOSTR_SID("") == UINT64_C(0xcbf29ce484222325), "SID: FNV-1a 64 offset basis");
 static_assert(ANOSTR_SID("a") == UINT64_C(0xaf63dc4c8601ec8c), "SID: FNV-1a 64 'a'");
 static_assert(ANOSTR_SID("foobar") == UINT64_C(0x85944171f73967e8), "SID: FNV-1a 64 'foobar'");
@@ -361,7 +340,7 @@ static_assert(ANOSTR_SID32("") == 0x811c9dc5u, "SID32: FNV-1a 32 offset basis");
 static_assert(ANOSTR_SID32("a") == 0xe40c292cu, "SID32: FNV-1a 32 'a'");
 static_assert(ANOSTR_SID32("foobar") == 0xbf9cf968u, "SID32: FNV-1a 32 'foobar'");
 
-// ICE contexts: enum value, array size, case label, static initializer.
+// ICE contexts: enum, array size, case, static init.
 enum {
     SID_ENUM_SPAWN = ANOSTR_SID32("player_spawn"),
     SID_ARRAY_N    = (int)(ANOSTR_SID32("x") & 0xFF) + 1,
@@ -371,7 +350,7 @@ static const anostr_sid sid_static_table[] = {
     ANOSTR_SID("player_spawn"), ANOSTR_SID("player_death"), ANOSTR_SID("level_loaded"),
 };
 
-// A 128-byte literal sits exactly at ANOSTR_SID_MAX; anything longer refuses to compile.
+// 128-byte literal at ANOSTR_SID_MAX; longer fails to compile.
 #define SID_16B "0123456789abcdef"
 #define SID_128B SID_16B SID_16B SID_16B SID_16B SID_16B SID_16B SID_16B SID_16B
 
@@ -387,7 +366,7 @@ static int sid_dispatch(anostr_sid id)
 
 static void test_sid(void)
 {
-    // The whole point: a compile-time id and a runtime-hashed string meet in one key space.
+    // Compile-time id == runtime hash.
     CHECK(ANOSTR_SID("player_spawn") == anostr_hash(anostr_lit("player_spawn")),
           "SID: equals anostr_hash of the same literal");
     CHECK(ANOSTR_SID32("player_spawn") == anostr_hash32(anostr_lit("player_spawn")),
@@ -399,7 +378,7 @@ static void test_sid(void)
     CHECK(ANOSTR_SID("player_spawn") != ANOSTR_SID("player_death"),
           "SID: distinct literals get distinct ids");
 
-    // switch dispatch on compile-time ids, keyed by runtime-computed hashes.
+    // switch on SID, keyed by runtime hashes.
     CHECK(sid_dispatch(anostr_hash(anostr_lit("player_spawn"))) == 1, "SID: case label hit 1");
     CHECK(sid_dispatch(anostr_hash(anostr_lit("player_death"))) == 2, "SID: case label hit 2");
     CHECK(sid_dispatch(anostr_hash(anostr_lit("who?"))) == 0, "SID: default for unknown");
@@ -414,8 +393,7 @@ static void test_sid(void)
           "SID32: usable as an array size");
 }
 
-// Randomized round-trip: build a random string via random-sized appends, freeze, and verify
-// contents, hash consistency, and a random slice against a plain reference buffer.
+// Randomized round-trip soak: appends, freeze, hash, slice vs reference buffer.
 static void soak(mi_heap_t *heap, uint32_t iterations)
 {
     test_rng rng = rng_make(0x517A1276u);
@@ -455,7 +433,7 @@ static void soak(mi_heap_t *heap, uint32_t iterations)
 
 int main(int argc, char **argv)
 {
-    // One scratch heap for the whole run; everything long-lived dies with it at exit.
+    // One scratch heap for the whole run.
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
     if (heap == NULL) { printf("FAIL: mi_heap_new\n"); return 1; }
 

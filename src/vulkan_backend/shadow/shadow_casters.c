@@ -9,7 +9,8 @@
 #include "vulkan_backend/light_registry.h"
 #include "vulkan_backend/shadow/shadow.h"
 
-// --- Runtime shadow-frustum pools (audit 4.7 budget expansion) ------------------------------------
+/* Runtime Shadow-Frustum Pools */
+
 // Alloc a runtime frustum block base for a casting light (point = 6 cube faces, dir/spot = 1).
 // ANO_SHADOW_NONE when the type's pool is exhausted.
 static uint32_t shadow_frustum_alloc(RendererState* st, uint32_t lightType) {
@@ -27,9 +28,7 @@ static void shadow_frustum_free(RendererState* st, uint32_t base) {
     }
 }
 
-// Stage this light's per-light info (castsShadow=1, base, count) + config, record base on registry row.
-// Budget-full stages non-casting info (castsShadow=0) and stays shadowless.
-// lightPalIdx = absolute light-palette row. regRow = relative registry row.
+// Stage light shadow info+config. Budget-full -> castsShadow=0.
 void shadow_caster_attach(RendererState* st, uint32_t lightPalIdx, uint32_t regRow,
                                  uint32_t lightType, uint32_t frameIndex) {
     uint32_t base = shadow_frustum_alloc(st, lightType);
@@ -86,10 +85,7 @@ void cascade_detach_lights(RendererState* state, uint32_t parentRid, uint32_t fr
     } while (n == 64u);
 }
 
-// Register a STATIC-region shadow caster for an already-staged light-palette row.
-// Allocates the type's frustum block in the static region (point = 6 cube faces, dir/spot = 1).
-// Stages each frustum config (active=1) + the light's info (castsShadow=1, base, count) to frameIndex.
-// Past the type's budget or the static region it stays shadowless (castsShadow=0).
+// Register STATIC-region caster for staged light row. Past budget -> shadowless.
 void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t lightType,
                                    uint32_t frameIndex, uint32_t parentSlot, float range) {
     uint32_t budget = lightType == LIGHT_TYPE_DIRECTIONAL ? ANO_SHADOW_DIR_COUNT

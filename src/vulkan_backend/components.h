@@ -9,7 +9,7 @@
 #include <vulkan/vulkan.h>
 #include "gpu_alloc.h"
 
-//====================== Enums
+/* Enums */
 
 typedef enum PipelineType
 {
@@ -44,9 +44,7 @@ extern const PipelineType ano_draw_pipelines[]; // drawing pipeline types, in sl
 uint32_t ano_draw_pipeline_count(void);         // number of drawing types == per-camera-view draw-slot stride
 uint32_t ano_draw_slot_of(PipelineType type);   // enum -> draw slot, ANO_NO_DRAW_SLOT if it never draws
 
-// Total compacted-draw partitions. Camera views get every draw slot (partition = view*drawSlotCount
-// + slot); each shadow frustum gets a solid caster partition and an alpha-tested MASKED one.
-// Single sizing source for the three buffers and their cull map.
+// Compacted-draw partitions: view*drawSlotCount+slot; shadow gets solid + MASKED. Single sizing source.
 uint32_t ano_draw_partition_count(void);
 
 typedef enum PassType
@@ -81,7 +79,7 @@ typedef struct RenderPassDef
     uint32_t                dispatchX, dispatchY, dispatchZ;
 } RenderPassDef;
 
-//====================== Primitive assets
+/* Primitive Assets */
 
 typedef struct TextureData
 {

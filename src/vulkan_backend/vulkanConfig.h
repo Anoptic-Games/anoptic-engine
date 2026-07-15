@@ -11,15 +11,12 @@
 #include "vulkan_backend/structs.h"
 
 
-// Function interfaces
-
-
-//====	Write functions
+/* Write Functions */
 
 // Sets the passed name as the preferred GPU. If a matching device is found during instance initialization, it will be used
 bool requestDevice(char* deviceName);
 
-// Sets the passed value as the preffered frame presentation mode. If a matching index is found during swapchain creation, it will be used
+// Prefer this present mode when available at swapchain create.
 bool requestPresentMode(VkPresentModeKHR presentMode);
 
 // Sets the preferred MSAA sample count (2/4/8). Clamped to device support at init; values
@@ -38,7 +35,7 @@ bool setBorderless(bool borderless);
 // Enables or disables Vulkan debugging functionality !TODO currently must be set before initVulkan is called
 bool setVulkanDebug(bool debug);
 
-//====	Read functions
+/* Read Functions */
 
 // Retrieves the current preferred GPU
 char* getChosenDevice();
@@ -56,7 +53,7 @@ uint32_t getChosenMonitor();
 
 bool getChosenBorderless();
 
-//====	Active functions
+/* Active Functions */
 
 // Updates the window to the currently set configuration
 bool updateWindow(GLFWwindow *window);

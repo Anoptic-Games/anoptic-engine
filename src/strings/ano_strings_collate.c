@@ -3,15 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Human lexicographic order: UCA over the DUCET default table (ano_collate_tables.h),
-// trimmed to the shipped scripts (Latin, Greek, Cyrillic, Runic, kana, punctuation).
-// Runes decompose to NFD, then map to collation elements. Compare runs one level at a
-// time (primary, secondary, tertiary), streaming, no allocation.
+// Human lexicographic order: UCA/DUCET (ano_collate_tables.h), shipped scripts only.
+// Decompose to NFD, map to CEs, compare one level at a time (primary/secondary/tertiary).
 // Unlisted code points get UCA implicit weights.
-//
-// Sort builds a u64 collate-prefix key per string (first four primaries, ASCII via a flat
-// one-CE table), a stable LSD radix sorts the (key, index) records, key-equal runs restream
-// (streaming collate when small, full keys plus memcmp when large). Bytes read once.
+// Sort: u64 collate-prefix keys, stable LSD radix, key-equal runs restream or full-key memcmp.
 
 #include <stdlib.h>
 
@@ -65,8 +60,7 @@ static int ce_push_cp(uint32_t *q, int qn, anorune_t cp)
             return qn;
         }
     }
-    // UCA implicit weights: everything unlisted (Han included) keeps code point order,
-    // sorting after every listed primary.
+    // UCA implicit weights: unlisted (Han included) keep code point order after listed primaries.
     uint32_t hi16 = 0xFBC0u + (cp >> 15);
     uint32_t lo16 = (cp & 0x7FFFu) | 0x8000u;
     q[qn++] = hi16 << 16 | 0x20u << 5 | 0x2u;
@@ -99,7 +93,7 @@ static bool ce_next(ce_iter_t *it, uint32_t *ce)
     return true;
 }
 
-// The next nonzero weight of the given level. False once the string is exhausted.
+// Next nonzero weight of the given level. False once exhausted.
 static bool next_weight(ce_iter_t *it, int level, uint32_t *w)
 {
     uint32_t ce;
@@ -131,7 +125,7 @@ static int collate_level(anostr_t a, anostr_t b, int level)
 int anostr_collate(anostr_t a, anostr_t b)
 {
     if (anostr_eq(a, b))
-        return 0;   // byte-equal is collate-equal, skip the stream
+        return 0;   // byte-equal is collate-equal
     for (int level = 0; level < 3; level++) {
         int c = collate_level(a, b, level);
         if (c != 0)
@@ -140,17 +134,17 @@ int anostr_collate(anostr_t a, anostr_t b)
     return anostr_compare(a, b);    // byte order makes the order total
 }
 
-// Collation prefix keys: first four nonzero primaries, big-endian.
+/* Collation Prefix Keys */
 
-// The next four nonzero primaries after skipping `skip`. skip = 0 is the public prefix key.
-// Tie resolution walks skip = 4, 8, ... over deep prefixes.
+// First four nonzero primaries, big-endian.
+
+// Next four nonzero primaries after skipping `skip`. skip = 0 is the public prefix key.
 static uint64_t collate_prefix_skip(anostr_t s, uint32_t skip)
 {
     uint64_t key = 0;
     int      got = 0;
 
-    // ASCII fast path: one CE per byte, flat load, no decomposition. Ignorables (controls)
-    // have primary 0 and are skipped, like the streaming iterator.
+    // ASCII fast path: one CE per byte. Primary 0 (ignorables) skipped.
     const uint8_t *p = (const uint8_t *)anostr_bytes(&s);
     size_t i = 0;
     while (i < s.len) {
@@ -172,7 +166,7 @@ static uint64_t collate_prefix_skip(anostr_t s, uint32_t skip)
     if (i >= s.len)
         return key;
 
-    // Non-ASCII from byte i: the full streaming pipeline, resuming where the fast path stopped.
+    // Non-ASCII from byte i: full streaming pipeline.
     ce_iter_t it = { .s = s, .i = i };
     uint32_t w;
     while (got < 4 && next_weight(&it, 0, &w)) {
@@ -191,8 +185,9 @@ uint64_t anostr_collate_prefix(anostr_t s)
     return collate_prefix_skip(s, 0);
 }
 
-// Full sort keys. Per level: nonzero weights as u16 big-endian, then a 0x0000 terminator.
-// After three levels, the raw bytes.
+/* Full Sort Keys */
+
+// Per level: nonzero weights as u16 BE, then 0x0000 terminator. Then raw bytes.
 
 typedef struct key_buf_t {
     uint8_t *p;
@@ -224,8 +219,7 @@ static void kb_w16(key_buf_t *kb, uint32_t w)
     kb_bytes(kb, be, 2);
 }
 
-// One CE stream feeds all three levels: primaries to kb, secondaries and tertiaries park
-// in reusable side buffers and append after their terminators.
+// One CE stream feeds all three levels: primaries to kb, L2/L3 park in side buffers.
 static void collate_key_emit(key_buf_t *kb, key_buf_t *l2, key_buf_t *l3, anostr_t s)
 {
     l2->n = l3->n = 0;
@@ -258,7 +252,9 @@ anostr_t anostr_collate_key(mi_heap_t *heap, anostr_t s)
     return out;
 }
 
-// The sort: (key, index) records, stable LSD radix, key-equal runs settled by tie handlers.
+/* Sort */
+
+// (key, index) records, stable LSD radix, key-equal runs settled by tie handlers.
 
 typedef struct sort_rec_t {
     uint64_t key;
@@ -269,7 +265,7 @@ typedef struct sort_rec_t {
 static_assert(sizeof(sort_rec_t) == sizeof(anostr_t),
               "the radix ping-pong buffer doubles as the gather buffer");
 
-// Maps a record index back to its string. Serves plain arrays and symbol lists via ctx.
+// Maps a record index back to its string.
 typedef anostr_t (*rec_str_fn_t)(const void *ctx, uint32_t idx);
 
 static anostr_t rec_str_items_(const void *ctx, uint32_t idx)
@@ -302,8 +298,7 @@ static void sort_recs_insertion(sort_rec_t *a, size_t n)
     }
 }
 
-// LSD radix, 8 passes of 8 bits, all histograms from one read pass. A digit every key
-// shares skips its pass. Scatter is stable.
+// LSD radix, 8 passes of 8 bits. Shared digit skips its pass. Scatter is stable.
 static void sort_recs(sort_rec_t *a, sort_rec_t *tmp, size_t n)
 {
     if (n <= 48) {
@@ -373,8 +368,7 @@ static int tie_view_cmp_(const void *a, const void *b)
     return x->idx < y->idx ? -1 : (x->idx > y->idx);    // identical: input order
 }
 
-// Large key-equal runs: every member's full sort key built once into one buffer, then
-// memcmp settles the run. False on allocation failure.
+// Large key-equal runs: full sort keys into one buffer, memcmp settles. False on alloc fail.
 static bool tie_bulk(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *ctx)
 {
     tie_view_t *views = mi_malloc(n * sizeof *views);
@@ -384,7 +378,7 @@ static bool tie_bulk(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *c
     key_buf_t kb = {0}, l2 = {0}, l3 = {0};
     for (size_t i = 0; i < n; i++) {
         collate_key_emit(&kb, &l2, &l3, str_of(ctx, r[i].idx));
-        views[i].klen = kb.n;   // running end, converted to a length below
+        views[i].klen = kb.n;   // running end -> length below
         views[i].idx = r[i].idx;
     }
     mi_free(l2.p);
@@ -411,9 +405,8 @@ static bool tie_bulk(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *c
     return true;
 }
 
-// Settle a run whose primaries agree through `skip`, MSD-style: refill each key with its
-// NEXT four primaries, sort, recurse. Byte-identical runs (duplicates) keep input order.
-// Exhausted or very deep runs fall back to full keys or streaming.
+// Settle a run whose primaries agree through `skip`, MSD-style: next four primaries, sort, recurse.
+// Exhausted/deep runs fall back to full keys or streaming.
 enum { TIE_MSD_MAX_SKIP = 256 };    // this deep: build full keys instead
 
 static void tie_leaf(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *ctx)
@@ -481,8 +474,7 @@ static void resolve_ties(sort_rec_t *recs, size_t n, rec_str_fn_t str_of, const 
     }
 }
 
-// Already sorted? One pass: keys must be nondecreasing, only equal-key neighbors pay a
-// streaming collate.
+// Already sorted? Keys nondecreasing; equal-key neighbors pay a streaming collate.
 static bool recs_presorted(const sort_rec_t *recs, size_t n, rec_str_fn_t str_of, const void *ctx)
 {
     for (size_t i = 1; i < n; i++) {
@@ -495,7 +487,7 @@ static bool recs_presorted(const sort_rec_t *recs, size_t n, rec_str_fn_t str_of
     return true;
 }
 
-// Fills recs (pre-loaded with keys and indices) into sorted order. True if already sorted.
+// Fills recs into sorted order. True if already sorted.
 static bool collate_sort_core(sort_rec_t *recs, sort_rec_t *tmp, size_t n,
                               rec_str_fn_t str_of, const void *ctx)
 {
@@ -581,8 +573,7 @@ void anostr_sort_idx(const anostr_t *items, size_t count, uint32_t *order)
     mi_free(recs);
 }
 
-// Extends the per-symbol key cache to cover every symbol. Watermark bookkeeping.
-// NULL if it cannot grow.
+// Extends the per-symbol key cache to cover every symbol. NULL if it cannot grow.
 static const uint64_t *sym_key_cache(anostr_intern_t *t)
 {
     if (t->collateKeyed >= t->count)
@@ -593,7 +584,7 @@ static const uint64_t *sym_key_cache(anostr_intern_t *t)
         if (fresh == NULL)
             return NULL;
         t->collateKeys = fresh;
-        t->collateKeyCap = t->arrCap;   // strs cap >= count, grows with it
+        t->collateKeyCap = t->arrCap;   // strs cap >= count
     }
     for (uint32_t sym = t->collateKeyed; sym < t->count; sym++)
         t->collateKeys[sym] = anostr_collate_prefix(t->strs[sym]);

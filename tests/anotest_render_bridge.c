@@ -3,14 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for the render_bridge transport (private src/render_bridge/render_bridge.h;
- * the public command protocol it builds on is include/anoptic_render.h):
- *  - single-threaded SPSC ring: FIFO order, full/empty edges, index wraparound;
- *  - concurrent bidirectional stress (TSan target): a producer thread feeds
- *    commands, a consumer thread drains them and echoes events, the main thread
- *    drains events. Each ring has exactly one producer and one consumer, so this
- *    exercises the real SPSC contract under contention with small (wrapping) rings.
- * Exit 0 == pass. */
+/* render_bridge transport (private render_bridge.h; public protocol in anoptic_render.h):
+ *  - single-threaded SPSC: FIFO, full/empty edges, index wrap;
+ *  - bidirectional stress (TSan): one producer, one consumer, main drains events.
+ * Each ring has exactly one producer and one consumer. Exit 0 == pass. */
 
 #include <stdio.h>
 #include <stddef.h>
@@ -19,12 +15,9 @@
 #include "anoptic_memory.h" // ANO_CACHE_LINE / ANO_THREAD_LINE
 #include "anoptic_threads.h"
 
-// The false-sharing avoidance must be real, not aspirational.
 _Static_assert(offsetof(AnoSpscRing, head) - offsetof(AnoSpscRing, tail) >= ANO_CACHE_LINE,
                "SPSC head/tail must live on separate cache lines");
-// The ring's hot cursors are _Alignas(ANO_THREAD_LINE), which may exceed the
-// coherency line (128 vs 64 on x86-64); the guaranteed alignment floor is the
-// lesser of the two interference constants.
+// Alignas floor: lesser of ANO_CACHE_LINE and ANO_THREAD_LINE.
 #define ANO_MIN_LINE (ANO_CACHE_LINE < ANO_THREAD_LINE ? ANO_CACHE_LINE : ANO_THREAD_LINE)
 _Static_assert(_Alignof(AnoSpscRing) >= ANO_MIN_LINE,
                "SPSC ring must be cache-line aligned");
@@ -36,7 +29,10 @@ static int failures = 0;
 
 #define ITEMS 100000u
 
-// payload encodings, chosen so a misaligned/torn copy is caught
+
+/* Bidirectional Stress */
+
+// payload encodings so a misaligned/torn copy is caught
 static inline uint32_t mesh_of(uint32_t i)     { return i ^ 0xABCDu; }
 static inline uint32_t material_of(uint32_t i) { return i + 7u; }
 
@@ -81,6 +77,9 @@ static void *consumer_fn(void *arg)
     return NULL;
 }
 
+
+/* Single-Threaded SPSC */
+
 static void test_single_threaded(mi_heap_t *heap)
 {
     AnoSpscRing r;
@@ -95,7 +94,7 @@ static void test_single_threaded(mi_heap_t *heap)
     CHECK(ano_spsc_pop(&r, &x) && x == 20u, "pop 2 == 20");
     CHECK(!ano_spsc_pop(&r, &x), "pop 3 rejected (empty)");
 
-    // head/tail are now at 2/2; pushing again forces an index wrap through the mask
+    // head/tail at 2/2; next push wraps through the mask
     x = 40u; CHECK(ano_spsc_push(&r, &x), "push after drain (wraps index)");
     CHECK(ano_spsc_pop(&r, &x) && x == 40u, "pop wrapped == 40");
 
@@ -109,8 +108,7 @@ int main(void)
 
     test_single_threaded(heap);
 
-    // Small rings (capacity 16) force frequent full/empty transitions and
-    // wraparound over ITEMS — the interesting case for the race detector.
+    // Cap 16: frequent full/empty + wrap over ITEMS (TSan-interesting).
     AnoRenderBridge bridge; // stack: _Alignas on the ring propagates -> 64-aligned
     CHECK(ano_render_bridge_init(&bridge, heap, 16, 16), "bridge init");
 

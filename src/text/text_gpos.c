@@ -3,18 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// GPOS PairPos kerning reader (shaper v1). Parses a raw GPOS
-// table of untrusted bytes with every read bounds-checked, malformed input failing
-// soft, accumulating horizontal 'kern' xAdvance adjustments for a slot range into a
-// dense FUnit matrix. FreeType-free: the bake hands in the blob and slot->glyph-id map.
-//
-// Semantics:
-//   - script 'latn', fallback 'DFLT', that script's default LangSys only.
-//   - feature tag 'kern', its lookups apply in LookupList order and accumulate.
-//   - within one lookup, subtables tried in order, first that applies to a pair wins
-//     (format 1 pair listed, format 2 first glyph covered, class 0 applies with its value).
-//   - lookup type 2 (PairPos) direct or wrapped in type 9 (Extension), value read is
-//     ValueRecord1.xAdvance. LookupFlag is ignored.
+// GPOS PairPos kern reader. Raw GPOS bytes, every read bounds-checked. Malformed -> EIO (dense may be partial). Accumulates latn/DFLT 'kern' xAdvance into a dense FUnit matrix. FreeType-free.
+// Semantics: script latn (fallback DFLT), default LangSys feature list only (requiredFeatureIndex ignored). Feature 'kern', lookups deduped then sorted by index, accumulate in that order. Within a lookup, first applying subtable wins (fmt1 listed pair, fmt2 covered first glyph / class 0). Type 2 PairPos or type 9 Extension. Value = ValueRecord1.xAdvance. LookupFlag ignored.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -26,7 +16,7 @@ typedef struct GposCtx {
     uint32_t       len;
 } GposCtx;
 
-// Bounds-checked big-endian reads, poisoning *ok and returning 0 on failure.
+// Bounds-checked big-endian reads. Poison *ok, return 0 on failure.
 static uint32_t g16(const GposCtx *g, uint32_t off, bool *ok)
 {
     if (off + 2u > g->len || off + 2u < off)
@@ -48,7 +38,7 @@ static uint32_t g32(const GposCtx *g, uint32_t off, bool *ok)
          | (uint32_t)g->p[off + 2u] << 8 | g->p[off + 3u];
 }
 
-// Coverage-table index of gid, or -1 when not covered. Unknown formats poison *ok.
+// Coverage index of gid, or -1. Unknown formats poison *ok.
 static int32_t cov_index(const GposCtx *g, uint32_t off, uint32_t gid, bool *ok)
 {
     uint32_t fmt = g16(g, off, ok);
@@ -95,7 +85,7 @@ static int32_t cov_index(const GposCtx *g, uint32_t off, uint32_t gid, bool *ok)
     return -1;
 }
 
-// ClassDef class of gid. Unlisted glyphs are class 0.
+// ClassDef class of gid. Unlisted -> class 0.
 static uint32_t class_of(const GposCtx *g, uint32_t off, uint32_t gid, bool *ok)
 {
     if (off == 0u)
@@ -126,7 +116,7 @@ static uint32_t class_of(const GposCtx *g, uint32_t off, uint32_t gid, bool *ok)
     return 0;
 }
 
-// ValueRecord size in bytes: every set bit of the low byte is one int16 field.
+// ValueRecord size in bytes: each set bit of the low byte is one int16 field.
 static uint32_t vr_size(uint32_t vf)
 {
     uint32_t n = 0;
@@ -135,7 +125,7 @@ static uint32_t vr_size(uint32_t vf)
     return 2u * n;
 }
 
-// ValueRecord1.xAdvance (bit 0x0004), skipping the fields declared before it.
+// ValueRecord1.xAdvance (bit 0x0004), skipping fields before it.
 static int32_t vr_xadvance(const GposCtx *g, uint32_t off, uint32_t vf, bool *ok)
 {
     if ((vf & 0x4u) == 0)
@@ -144,9 +134,7 @@ static int32_t vr_xadvance(const GposCtx *g, uint32_t off, uint32_t vf, bool *ok
     return (int16_t)g16(g, off + skip, ok);
 }
 
-// Tries one PairPos subtable for (gid1, gid2). True = applies, *kernOut holds its
-// xAdvance (possibly 0). False = not covered, try the next subtable. Malformed data
-// poisons *ok.
+// Try one PairPos for (gid1,gid2). True = applies (*kernOut may be 0). False = not covered. Malformed poisons *ok.
 static bool pairpos_apply(const GposCtx *g, uint32_t off, uint32_t gid1, uint32_t gid2,
                           int32_t *kernOut, bool *ok)
 {
@@ -202,7 +190,7 @@ static bool pairpos_apply(const GposCtx *g, uint32_t off, uint32_t gid1, uint32_
     return false;
 }
 
-// The default LangSys of script 'latn' (falling back to 'DFLT'), or 0 when absent.
+// Default LangSys of script 'latn' (fallback 'DFLT'), or 0 if absent.
 static uint32_t find_langsys(const GposCtx *g, uint32_t slOff, bool *ok)
 {
     uint32_t best = 0;
@@ -251,7 +239,7 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
     if (lsOff == 0)
         return 0; // no latn/DFLT default LangSys
 
-    // LangSys feature indices -> 'kern' features -> lookup indices, deduped and sorted ascending.
+    // LangSys feature indices -> 'kern' lookups, deduped, sorted ascending.
     uint32_t kernLookups[GPOS_MAX_LOOKUPS];
     uint32_t kernLookupCount = 0;
     uint32_t featCount = g16(&g, lsOff + 4u, &ok);
@@ -279,7 +267,7 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
     }
     if (!ok)
         return EIO;
-    for (uint32_t a = 1; a < kernLookupCount; a++) // insertion sort: ascending order
+    for (uint32_t a = 1; a < kernLookupCount; a++) // insertion sort ascending
         for (uint32_t b = a; b > 0 && kernLookups[b - 1u] > kernLookups[b]; b--)
         {
             uint32_t t = kernLookups[b];
@@ -295,11 +283,11 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
         if (!ok)
             return EIO;
         if (type != 2u && type != 9u)
-            continue; // not PairPos kerning
+            continue; // not PairPos
         if (subCount > GPOS_MAX_SUBS)
             subCount = GPOS_MAX_SUBS;
 
-        // Resolve subtable offsets up front (unwrapping type 9 Extension wrappers).
+        // Resolve subtable offsets (unwrap type 9 Extension).
         uint32_t subs[GPOS_MAX_SUBS];
         uint32_t nsubs = 0;
         for (uint32_t s = 0; ok && s < subCount; s++)
@@ -320,7 +308,7 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
         if (!ok)
             return EIO;
 
-        // First applying subtable wins per pair, lookups accumulate into the matrix.
+        // First applying subtable wins per pair. Lookups accumulate.
         for (uint32_t s1 = 0; s1 < slotCount; s1++)
         {
             if (slotGids[s1] > 0xFFFFu)

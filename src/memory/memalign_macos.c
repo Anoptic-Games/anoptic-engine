@@ -10,7 +10,7 @@
 
 // macOS ano_aligned_malloc.
 inline void* ano_aligned_malloc(size_t size, size_t alignment) {
-    return mi_malloc_aligned(size, alignment);  // Good
+    return mi_malloc_aligned(size, alignment);
 }
 
 // macOS ano_aligned_free.

@@ -1,0 +1,1 @@
+Return one line: PASS for a correct candidate or FAIL for an intentionally failing candidate.

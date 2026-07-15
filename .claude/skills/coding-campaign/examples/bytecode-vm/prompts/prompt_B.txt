@@ -1,0 +1,24 @@
+Implement a single Rust function: an interpreter for a stack-machine bytecode.
+
+The instruction type is ALREADY DEFINED elsewhere in the crate as the following enum. Do NOT redefine it, do NOT write `enum Op`, do NOT write any `use` for it — just refer to `Op` and its variants directly:
+
+    enum Op { Push(i64), Pop, Add, Sub, Mul, Div, Mod, Neg, Dup, Swap, Jmp(usize), Jz(usize), Print, Halt }
+
+Define exactly (it MUST be `pub`):
+
+    pub fn run(program: &[Op]) -> Result<Vec<i64>, String>
+
+Semantics: maintain a Vec<i64> operand stack and a program counter starting at 0; loop executing program[pc].
+- Push(n): push n; pc+=1.
+- Pop: discard top; pc+=1.
+- Add/Sub/Mul/Div/Mod: pop b then pop a, push (a op b); pc+=1. Use i64 truncating `/` and `%`. Division or modulo by zero returns Err. Prefer wrapping arithmetic so overflow never panics.
+- Neg: pop a, push -a; pc+=1.
+- Dup: push a copy of the current top; pc+=1.
+- Swap: swap the top two; pc+=1.
+- Jmp(t): set pc=t (do not increment).
+- Jz(t): pop a; if a==0 set pc=t else pc+=1.
+- Print: pop a and append it to the output vector; pc+=1.
+- Halt: stop and return Ok(output).
+Any stack underflow, division/modulo by zero, or a program counter that runs past the end of the program (without hitting Halt) returns Err with a short message. Return Ok(outputs) only on Halt.
+
+Output ONLY the Rust source for `pub fn run` plus any private helper items it needs. No `Op` definition. No `main`. No tests. No external crates (std only). No markdown code fences. No prose before or after.
