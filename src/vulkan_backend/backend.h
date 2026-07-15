@@ -11,9 +11,7 @@
 // Single VulkanContext instance, defined in vulkanMaster.c.
 extern VulkanContext ctx;
 
-// Shared slot-indexed GPU buffer capacity constants.
-// INITIAL_ENTITY_CAPACITY is a starting slot count, not a ceiling (see ensureEntityCapacity).
-// PALETTE_CAPACITY sizes the material/light palettes, indexed by distinct material/light.
+// Slot-indexed GPU capacity. INITIAL_ENTITY_CAPACITY starts (grows); PALETTE_CAPACITY = material/light rows.
 #define INITIAL_ENTITY_CAPACITY 10000u
 #define ENTITY_GROWTH_CHUNK      8192u
 #define PALETTE_CAPACITY        10000u

@@ -41,7 +41,7 @@ const RenderPassDef ano_frame_passes[] = {
         .prototype  = PIPELINE_COMPUTE_CULL,
         .dispatchX  = 0,  // runtime entityCount
     },
-    // 3. Clustered-forward light assignment. perView, each view bins lights into its own froxel lists.
+    // 3b. Clustered-forward light assignment. perView, each view bins lights into its own froxel lists.
     {
         .type       = PASS_COMPUTE,
         .prototype  = PIPELINE_COMPUTE_LIGHTCULL,
@@ -120,7 +120,7 @@ const RenderPassDef ano_frame_passes[] = {
         .depthBarrierBefore     = true,                             // wait on the masked lane's depth writes
         .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
     },
-    // 6. Additive glows (order-independent ONE/ONE). Drawn last, depth-tested no write. LAST color pass carries the view's only MSAA->HDR resolve.
+    // 6. Additive glows (ONE/ONE). Last; depth test no write. Carries MSAA->HDR resolve.
     {
         .type                   = PASS_GRAPHICS,
         .prototype              = PIPELINE_ADDITIVE,

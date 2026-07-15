@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Byte-level operations over anostr_t values: find, concat, join, split. 
-// All total (bad or oversized input yields the empty string / ANOSTR_NPOS, never UB), all following the module's
+// Byte-level ops: find, replace, concat, join, split. Total: bad input -> empty / ANOSTR_NPOS.
+
 #include "strings/ano_strings_internal.h"
 
 size_t anostr_find(anostr_t s, anostr_t needle, size_t from)
@@ -20,7 +20,7 @@ size_t anostr_find(anostr_t s, anostr_t needle, size_t from)
     const char *nd  = anostr_bytes(&needle);
     size_t last = s.len - needle.len;       // last viable start index
     for (size_t i = from; i <= last; i++) {
-        // memchr skips to the next candidate first byte; the window above bounds it.
+        // memchr to next candidate first byte.
         const char *hit = memchr(hay + i, nd[0], last - i + 1);
         if (hit == NULL)
             return ANOSTR_NPOS;
@@ -41,16 +41,16 @@ anostr_t anostr_replace_all(mi_heap_t *heap, anostr_t s, anostr_t needle, anostr
     for (size_t at = 0; (at = anostr_find(s, needle, at)) != ANOSTR_NPOS; at += needle.len)
         matches++;
     if (matches == 0)
-        return s;   // untouched, same backing, no alloc
+        return s;   // untouched, same backing
 
-    // Exact in u64: matches <= len/needle.len keeps both products < 2^64.
+    // Exact size in u64.
     uint64_t total = repl.len >= needle.len
         ? (uint64_t)s.len + (uint64_t)(repl.len - needle.len) * matches
         : (uint64_t)s.len - (uint64_t)(needle.len - repl.len) * matches;
     if (total > UINT32_MAX)
         return anostr_empty();
 
-    // Pass two: gap and replacement memcpys into the destination.
+    // Pass two: assemble into destination.
     char inlineBuf[ANOSTR_INLINE_CAP];
     char *dst = inlineBuf;
     if (total > ANOSTR_INLINE_CAP) {
@@ -89,7 +89,7 @@ anostr_t anostr_join(mi_heap_t *heap, anostr_t sep, const anostr_t *parts, size_
     if (total > UINT32_MAX)
         return anostr_empty();
 
-    // Inline result: assemble on the stack, no allocator involved.
+    // Inline result: assemble on the stack.
     if (total <= ANOSTR_INLINE_CAP) {
         char buf[ANOSTR_INLINE_CAP];
         size_t off = 0;
@@ -133,7 +133,7 @@ bool anostr_split_next(anostr_split_t *it, anostr_t *piece)
     if (it->done)
         return false;
 
-    if (it->sep.len == 0) {     // no separator to cut on: the whole string, once
+    if (it->sep.len == 0) {     // empty sep: whole string, once
         *piece = it->src;
         it->done = true;
         return true;
@@ -142,7 +142,7 @@ bool anostr_split_next(anostr_split_t *it, anostr_t *piece)
     size_t idx = anostr_find(it->src, it->sep, it->pos);
     if (idx == ANOSTR_NPOS) {
         *piece = anostr_slice(it->src, it->pos, it->src.len);
-        it->done = true;        // the final piece (possibly empty, e.g. a trailing sep)
+        it->done = true;        // final piece (possibly empty)
         return true;
     }
     *piece = anostr_slice(it->src, it->pos, idx);

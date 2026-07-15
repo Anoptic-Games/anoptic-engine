@@ -15,7 +15,7 @@
 #include <anoptic_math.h>   // mat4 / Vector2 / Vector3 / Vector4
 
 
-// Structs
+/* Structs */
 
 typedef struct Vertex
 {
@@ -59,8 +59,7 @@ typedef struct GlobalUBO
 } GlobalUBO;
 
 
-
-// Functions
+/* Functions */
 
 // Vertex input binding (load rate through the vertices).
 VkVertexInputBindingDescription getBindingDescription(void);

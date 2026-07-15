@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// macOS libpthread has no spinlocks or barriers.
-// Fill the gap with C23 atomics that stay lock-free, no pthread_mutex, per engine rules.
-// Darwin counterpart to the !__APPLE__ sections of threads.c.
+// Darwin spinlock/barrier gap-fill: C23 atomics. No OS locks.
 
 #if defined(__APPLE__)
 

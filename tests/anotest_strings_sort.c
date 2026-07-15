@@ -3,33 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for the collation sort pipeline and the string transforms:
- *   - anostr_collate_prefix: unequal keys always agree with anostr_collate's sign
- *     (property-checked over a multi-script corpus and random pairs), ignorable-only
- *     strings key to zero;
- *   - anostr_collate_key: anostr_compare on keys reproduces anostr_collate exactly,
- *     ties and byte-tiebreak included, over all corpus pairs;
- *   - mixed scripts in one string: the script ladder (punct < digits < Latin < Greek
- *     < Cyrillic < Runic < kana < implicit), first-rune placement of
- *     "あの Bjørn's Agda Gun", mid-string Latin tiebreaks among "あの..." names,
- *     ø grouping with o, cross-script starts_base, and an exact-order mixed list;
- *   - anostr_sort / anostr_sort_idx: output matches the qsort(anostr_collate) oracle
- *     elementwise; order is a valid permutation; equal strings keep input order
- *     (stability, observed through sort_idx); the presorted early-out returns the
- *     same result; a large "Potion of ..." tie family forces the bulk-key tie path;
- *   - anostr_sym_sort: matches the oracle cold (cache build) and warm (pure cached
- *     keys), out-of-range symbols sort first as the empty string;
- *   - anostr_replace_all: grow/shrink/same-size, non-overlapping matches, UTF-8
- *     needles, no-match returns the same backing without allocation, empty-needle
- *     identity, results shrinking to inline, randomized against a naive rebuild;
- *   - anostr_cull: whitespace (NBSP, U+3000), punctuation P*-only (symbols survive),
- *     combining marks, malformed bytes pass through, no-op returns the same backing,
- *     randomized against a naive rune-loop rebuild;
- *   - anostr_rune_sort: ASCII counting path, mixed scripts, malformed -> U+FFFD,
- *     idempotence, rune multiset preserved, the anagram-key one-liner;
- *   - anorune_is_punct: P* yes, S* no, shipped-script punctuation only;
- *   - a randomized multi-script soak (fixed seed; argv[1] scales iterations).
- * Exit 0 == pass; failures print what broke. */
+/* Coverage for collation sort, replace_all, cull, rune_sort.
+ * Exit 0 == pass; failures print what broke. argv[1] scales soak iterations. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +21,7 @@ static int failures = 0;
 
 static int sign(int v) { return v < 0 ? -1 : v > 0; }
 
-// Corpus: every script the collation tables ship, plus fallback and degenerate shapes.
+// Corpus: shipped scripts plus fallback and degenerate shapes.
 
 static const char *corpus_cstr[] = {
     "", "a", "A", "apple", "Apple", "applesauce", "Zebra",
@@ -68,7 +43,7 @@ static const char *corpus_cstr[] = {
     "Potion of Healing", "Potion of Mana", "Potion of Might",
     "  spaced  ", "punct!!!", "\xEF\xBF\xBD",           // genuine U+FFFD
     "\x80" "broken",                                    // malformed lead byte
-    // Mixed scripts inside one string: placed by the FIRST rune, tails break ties.
+    // Mixed scripts: placed by first rune, tails break ties.
     "\xE3\x81\x82\xE3\x81\xAE Bj\xC3\xB8rn's Agda Gun", // あの Bjørn's Agda Gun
     "\xE3\x81\x82\xE3\x81\xAA",                         // あな
     "\xE3\x82\xA2\xE3\x83\x8E",                         // アノ
@@ -87,8 +62,7 @@ static void corpus_init(void)
         corpus[k] = anostr_view(corpus_cstr[k], strlen(corpus_cstr[k]));
 }
 
-// Random rune from a multi-script pool that stresses every code path: ASCII, accents
-// (decomposition), Cyrillic/Greek/kana, Han + SMP (implicit weights), ignorables.
+// Random multi-script rune pool.
 static anorune_t rng_rune(test_rng *rng)
 {
     switch (rng_below(rng, 12)) {
@@ -114,15 +88,14 @@ static anostr_t rng_str(test_rng *rng, mi_heap_t *heap, uint32_t maxRunes)
     return anostr_freeze(&b);
 }
 
-// Oracle: the streaming comparator everyone agrees is correct, looped through qsort.
+// Oracle: qsort(anostr_collate).
 
 static int oracle_cmp(const void *a, const void *b)
 {
     return anostr_collate(*(const anostr_t *)a, *(const anostr_t *)b);
 }
 
-// items sorted two ways must match elementwise. Ties are byte-identical under
-// anostr_collate's total order, so anostr_eq comparison is oracle-stability-proof.
+// Two sort paths must match elementwise; ties are byte-identical.
 static bool check_against_oracle(const anostr_t *items, size_t n, const char *what,
                                  mi_heap_t *heap)
 {
@@ -148,7 +121,7 @@ static bool check_against_oracle(const anostr_t *items, size_t n, const char *wh
         }
     }
 
-    // sort_idx: valid permutation, gathers to the same sequence, stable on ties.
+    // sort_idx: valid permutation, stable on ties.
     anostr_sort_idx(items, n, order);
     uint8_t *seen = mi_heap_zalloc(heap, n);
     for (size_t i = 0; i < n; i++) {
@@ -172,7 +145,7 @@ static bool check_against_oracle(const anostr_t *items, size_t n, const char *wh
         }
     }
 
-    // Presorted early-out returns the identical sequence.
+    // Presorted early-out returns identical sequence.
     anostr_sort(mine, n);
     for (size_t i = 0; i < n; i++) {
         if (!anostr_eq(mine[i], ref[i])) {
@@ -205,7 +178,7 @@ static void test_collate_prefix(void)
     CHECK(anostr_collate_prefix(anostr_empty()) == 0, "empty string keys to zero");
     CHECK(anostr_collate_prefix(anostr_lit("\x01")) == 0, "ignorable-only keys to zero");
     CHECK(anostr_collate_prefix(anostr_lit("a")) != 0, "a letter keys nonzero");
-    // Case and accents are secondary/tertiary: same primaries, same prefix key.
+    // Case/accents secondary/tertiary: same prefix key.
     CHECK(anostr_collate_prefix(anostr_lit("apple")) == anostr_collate_prefix(anostr_lit("Apple")),
           "case does not move the primary prefix");
     CHECK(anostr_collate_prefix(anostr_lit("resume")) ==
@@ -231,12 +204,10 @@ static void test_collate_key(mi_heap_t *heap)
     }
 }
 
-// Multi-script strings: no "dominant alphabet" exists anywhere in the pipeline.
-// Weights stream left to right; the first rune places the string because scripts
-// occupy disjoint DUCET primary ranges, and later runes only break ties.
+// Multi-script: first rune places the string; later runes break ties.
 static void test_mixed_scripts(void)
 {
-    // The script ladder: one representative first rune per band, strictly ascending.
+    // Script ladder: one first-rune per band, ascending.
     static const struct { const char *s; const char *what; } ladder[] = {
         { " ",                 "space" },
         { "!",                 "ASCII punctuation" },
@@ -261,7 +232,7 @@ static void test_mixed_scripts(void)
         }
     }
 
-    // The showcase: あの Bjørn's Agda Gun. First rune あ = kana neighborhood.
+    // Showcase: あの Bjørn's Agda Gun (kana first).
     anostr_t mixed = anostr_lit("\xE3\x81\x82\xE3\x81\xAE Bj\xC3\xB8rn's Agda Gun");
     CHECK(anostr_collate(anostr_lit("Zebra"), mixed) < 0, "after every Latin string");
     CHECK(anostr_collate(anostr_lit("\xCE\xA9\xCE\xBC\xCE\xB5\xCE\xB3\xCE\xB1"), mixed) < 0,
@@ -272,35 +243,34 @@ static void test_mixed_scripts(void)
           "after Runic-decorated names");
     CHECK(anostr_collate(mixed, anostr_lit("\xE6\xBC\xA2")) < 0, "before Han");
 
-    // Within the kana band the second rune decides: な < の < は.
+    // Within kana band: な < の < は.
     CHECK(anostr_collate(anostr_lit("\xE3\x81\x82\xE3\x81\xAA"), mixed) < 0, "ana < ano...");
     CHECK(anostr_collate(mixed, anostr_lit("\xE3\x81\x82\xE3\x81\xAF")) < 0, "ano... < aha");
-    // Katakana アノ is primary-equal to あの and exhausts first: it sorts before.
+    // Katakana アノ primary-equal to あの, sorts before.
     CHECK(anostr_collate(anostr_lit("\xE3\x82\xA2\xE3\x83\x8E"), mixed) < 0,
           "katakana prefix sorts before the longer mixed string");
 
-    // Past the kana prefix, Latin rules resume mid-string among "あの ..." names.
+    // Past kana prefix, Latin rules mid-string.
     CHECK(anostr_collate(anostr_lit("\xE3\x81\x82\xE3\x81\xAE Ansgar"), mixed) < 0,
           "ano Ansgar < ano Bjorn's Agda Gun");
     CHECK(anostr_collate(mixed, anostr_lit("\xE3\x81\x82\xE3\x81\xAE Bj\xC3\xB8rn's Agda Sword")) < 0,
           "the last word still breaks the tie (Gun < Sword)");
 
-    // ø carries a secondary difference from o (no decomposition needed): it GROUPS
-    // with o instead of landing after z the way byte order would put it.
+    // ø groups with o (secondary), not after z.
     CHECK(anostr_collate(anostr_lit("Bjorn"), anostr_lit("Bj\xC3\xB8rn")) < 0,
           "Bjorn < Bjørn at the secondary level");
     CHECK(anostr_collate(anostr_lit("Bj\xC3\xB8rn"), anostr_lit("Bjorna")) < 0,
           "primary (length) outranks the stroke");
     CHECK(anostr_eq_base(anostr_lit("Bj\xC3\xB8rn"), anostr_lit("bjorn")), "Bjørn ==base bjorn");
-    // Search-as-you-type across the script boundary, ASCII keyboard only.
+    // Cross-script starts_base, ASCII keyboard.
     CHECK(anostr_starts_base(anostr_lit("\xE3\x81\x82\xE3\x81\xAE Bj\xC3\xB8rn's Agda Gun"),
                              anostr_lit("\xE3\x81\x82\xE3\x81\xAE bjorn")),
           "starts_base crosses scripts, case- and stroke-blind");
-    // Punctuation mid-word is significant, low primary: Bjørn's < Bjørns.
+    // Mid-word punct significant: Bjørn's < Bjørns.
     CHECK(anostr_collate(anostr_lit("Bj\xC3\xB8rn's"), anostr_lit("Bj\xC3\xB8rns")) < 0,
           "apostrophe sorts before letters");
 
-    // The whole story as one sorted list, exact expected order.
+    // Exact expected mixed-script order.
     anostr_t items[] = {
         anostr_lit("\xE6\xBC\xA2\xE5\xAD\x97"),                             // 漢字
         anostr_lit("\xE3\x81\x82\xE3\x81\xAE Bj\xC3\xB8rn's Agda Gun"),
@@ -335,7 +305,7 @@ static void test_mixed_scripts(void)
 
 static void test_sort_corpus(mi_heap_t *heap)
 {
-    // The corpus itself, plus duplicates to exercise stability.
+    // Corpus plus duplicates for stability.
     anostr_t items[CORPUS_N * 2];
     for (size_t k = 0; k < CORPUS_N; k++) {
         items[k] = corpus[k];
@@ -343,7 +313,7 @@ static void test_sort_corpus(mi_heap_t *heap)
     }
     check_against_oracle(items, CORPUS_N * 2, "corpus sort", heap);
 
-    // Degenerate counts are total no-ops, not crashes.
+    // Degenerate counts are no-ops.
     anostr_sort(NULL, 5);
     anostr_sort(items, 0);
     anostr_sort(items, 1);
@@ -353,8 +323,7 @@ static void test_sort_corpus(mi_heap_t *heap)
     anostr_sort_idx(NULL, 3, (uint32_t[]){ 9, 9, 9 });
 }
 
-// One family sharing its first four primary weights ("Poti...") drives every member
-// into a single key-equal run big enough for the bulk full-key tie path.
+// "Potion of ..." family forces bulk full-key tie path.
 static void test_tie_family(mi_heap_t *heap)
 {
     enum { N = 64 };
@@ -384,7 +353,7 @@ static void test_sym_sort(mi_heap_t *heap)
     if (t == NULL)
         return;
 
-    // Intern the corpus with duplicates, symbol list shuffled.
+    // Intern corpus with duplicates, shuffle symbols.
     enum { N = CORPUS_N * 2 };
     anostr_sym syms[N];
     anostr_t   strs[N];
@@ -395,7 +364,7 @@ static void test_sym_sort(mi_heap_t *heap)
         CHECK(syms[k] != ANOSTR_SYM_NONE, "intern succeeds");
     }
 
-    // Cold sort builds the key cache, warm re-sort must agree.
+    // Cold builds cache; warm must agree.
     for (int round = 0; round < 2; round++) {
         anostr_sym_sort(t, syms, N);
         for (size_t k = 0; k < N; k++)
@@ -407,7 +376,7 @@ static void test_sym_sort(mi_heap_t *heap)
                 return;
             }
         }
-        // Reshuffle (Fisher-Yates on the fixed rng) for the warm round.
+        // Reshuffle for the warm round.
         for (size_t k = N - 1; k > 0; k--) {
             size_t j = rng_below(&rng, (uint32_t)k + 1);
             anostr_sym tmp = syms[k];
@@ -416,7 +385,7 @@ static void test_sym_sort(mi_heap_t *heap)
         }
     }
 
-    // New symbols after the cache exists extend the watermark, not corrupt it.
+    // New symbols extend the cache watermark.
     anostr_sym late = anostr_intern(t, anostr_lit("zzz late entry"));
     anostr_sym mid = anostr_intern(t, anostr_lit("apple"));
     anostr_sym trio[3] = { late, mid, 0x7FFFFFFF };        // an out-of-range symbol
@@ -427,7 +396,7 @@ static void test_sym_sort(mi_heap_t *heap)
 
 static void test_replace_all(mi_heap_t *heap)
 {
-    // Non-overlapping, left to right: "aaa" has ONE "aa" match.
+    // Non-overlapping LTR: "aaa" has one "aa".
     CHECK(anostr_eq(anostr_replace_all(heap, anostr_lit("aaa"), anostr_lit("aa"), anostr_lit("b")),
                     anostr_lit("ba")), "non-overlapping matches");
     // Grow, shrink, same size.
@@ -440,12 +409,12 @@ static void test_replace_all(mi_heap_t *heap)
     CHECK(anostr_is_empty(anostr_replace_all(heap, anostr_lit("xxx"), anostr_lit("x"), anostr_empty())),
           "everything deleted is the empty string");
 
-    // UTF-8 needle: é -> e (byte-level, boundary-safe by self-synchronization).
+    // UTF-8 needle: é -> e.
     CHECK(anostr_eq(anostr_replace_all(heap, anostr_lit("r\xC3\xA9sum\xC3\xA9"),
                                        anostr_lit("\xC3\xA9"), anostr_lit("e")),
                     anostr_lit("resume")), "UTF-8 needle");
 
-    // No match: the SAME value comes back, same backing pointer.
+    // No match: same value, same backing.
     anostr_t big = anostr_lit("a long string with no needle in it");
     anostr_t out = anostr_replace_all(heap, big, anostr_lit("zebra"), anostr_lit("!"));
     CHECK(anostr_eq(out, big) && anostr_bytes(&out) == anostr_bytes(&big),
@@ -454,12 +423,12 @@ static void test_replace_all(mi_heap_t *heap)
     CHECK(anostr_eq(out, big) && anostr_bytes(&out) == anostr_bytes(&big),
           "empty needle is identity");
 
-    // A long source shrinking under the inline cap becomes a fresh inline value.
+    // Long source shrink under inline cap -> fresh inline.
     out = anostr_replace_all(heap, anostr_lit("xxxxxxxxxxxxxxxxxxxxxxab"),
                              anostr_lit("x"), anostr_empty());
     CHECK(anostr_eq(out, anostr_lit("ab")) && anostr_is_inline(out), "shrinks to inline");
 
-    // Randomized: naive rebuild is the oracle.
+    // Randomized vs naive rebuild.
     test_rng rng = rng_make(0x5E91ACEDu);
     for (int it = 0; it < 300; it++) {
         char sb[64], nb[4], rb[6];
@@ -510,26 +479,26 @@ static anostr_t naive_cull(mi_heap_t *heap, anostr_t s, uint32_t classes)
 
 static void test_cull(mi_heap_t *heap)
 {
-    // Whitespace: ASCII, NBSP (C2 A0), ideographic space (E3 80 80).
+    // Whitespace: ASCII, NBSP, U+3000.
     CHECK(anostr_eq(anostr_cull(heap, anostr_lit(" a\tb\nc \xC2\xA0 d \xE3\x80\x80 e "),
                                 ANOSTR_CULL_WHITESPACE),
                     anostr_lit("abcde")), "whitespace cull across widths");
 
-    // Punctuation is P* only: symbols ($ + €) and digits survive, 、 (U+3001) goes.
+    // Punct is P* only; symbols/digits survive.
     CHECK(anostr_eq(anostr_cull(heap, anostr_lit("+5 Sword!, ($10) \xE2\x82\xAC. \xE3\x80\x81"),
                                 ANOSTR_CULL_PUNCT),
                     anostr_lit("+5 Sword $10 \xE2\x82\xAC ")),
           "punct cull keeps symbols");
 
-    // Marks: combining acute culled, precomposed é untouched.
+    // Marks: combining acute culled, precomposed é kept.
     CHECK(anostr_eq(anostr_cull(heap, anostr_lit("e\xCC\x81 \xC3\xA9"), ANOSTR_CULL_MARK),
                     anostr_lit("e \xC3\xA9")), "marks cull, precomposed stays");
 
-    // Combined classes, and total culls landing on empty.
+    // Combined classes; total cull -> empty.
     CHECK(anostr_eq(anostr_cull(heap, anostr_lit(" !.\t,"), ANOSTR_CULL_WHITESPACE | ANOSTR_CULL_PUNCT),
                     anostr_empty()), "combined cull to empty");
 
-    // Nothing culled: SAME value back, no allocation.
+    // Nothing culled: same value, no alloc.
     anostr_t clean = anostr_lit("NothingToCullInThisLongString");
     anostr_t out = anostr_cull(heap, clean, ANOSTR_CULL_WHITESPACE | ANOSTR_CULL_PUNCT);
     CHECK(anostr_eq(out, clean) && anostr_bytes(&out) == anostr_bytes(&clean),
@@ -537,11 +506,11 @@ static void test_cull(mi_heap_t *heap)
     out = anostr_cull(heap, anostr_lit(" x "), 0);
     CHECK(anostr_eq(out, anostr_lit(" x ")), "zero class mask is identity");
 
-    // Malformed bytes are never culled.
+    // Malformed bytes never culled.
     CHECK(anostr_eq(anostr_cull(heap, anostr_lit("\x80 \x80"), ANOSTR_CULL_WHITESPACE),
                     anostr_lit("\x80\x80")), "malformed bytes pass through");
 
-    // Randomized agreement with the naive rune loop, all class combinations.
+    // Randomized vs naive rune loop.
     test_rng rng = rng_make(0xCA11ED00u);
     for (int it = 0; it < 300; it++) {
         anostr_t s = rng_str(&rng, heap, 24);
@@ -570,19 +539,18 @@ static void test_rune_sort(mi_heap_t *heap)
     CHECK(anostr_eq(anostr_rune_sort(heap, anostr_lit("b\xC3\xA9" "a")),
                     anostr_lit("ab\xC3\xA9")), "mixed width sorts by code point");
     CHECK(anostr_eq(anostr_rune_sort(heap, anostr_empty()), anostr_empty()), "empty in, empty out");
-    // Malformed byte becomes U+FFFD: the output is longer than the input and valid.
+    // Malformed -> U+FFFD; output longer and valid.
     anostr_t fixed = anostr_rune_sort(heap, anostr_lit("\x80" "a"));
     CHECK(anostr_eq(fixed, anostr_lit("a\xEF\xBF\xBD")), "malformed sorts as U+FFFD");
 
-    // The anagram key one-liner: same key for "Silent" and "listen" modulo case? No --
-    // code point order is case-sensitive, so compare like with like.
+    // Anagram key: code point order is case-sensitive.
     anostr_t k1 = anostr_rune_sort(heap, anostr_cull(heap, anostr_lit("s i l e n t!"),
                                                      ANOSTR_CULL_WHITESPACE | ANOSTR_CULL_PUNCT));
     anostr_t k2 = anostr_rune_sort(heap, anostr_cull(heap, anostr_lit("l.i.s.t.e.n"),
                                                      ANOSTR_CULL_WHITESPACE | ANOSTR_CULL_PUNCT));
     CHECK(anostr_eq(k1, k2), "anagram keys agree");
 
-    // Randomized: multiset preserved and matches a qsort over the decoded runes.
+    // Randomized: multiset preserved vs qsort of runes.
     test_rng rng = rng_make(0x50F7ED00u);
     for (int it = 0; it < 300; it++) {
         anostr_t s = rng_str(&rng, heap, 32);
@@ -624,7 +592,7 @@ static void test_is_punct(void)
         }
 }
 
-// Random multi-script lists sorted both ways must agree. Scaled by argv[1].
+// Random multi-script lists must agree both ways. argv[1] scales.
 static void soak(mi_heap_t *heap, uint32_t iterations)
 {
     test_rng rng = rng_make(0xC0117A7Eu);
