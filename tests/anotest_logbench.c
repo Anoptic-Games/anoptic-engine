@@ -3,18 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Optional logger benchmark: the lock-free MPSC ring (anoptic_core) vs the preserved mutex baseline
-// (log_old.c, namespaced mtxlog_*). Built so it cannot rot, but DISABLED in CTest like
-// anotest_chariots -- run ./anotest_logbench by hand. It is a benchmark, not a pass/fail test: it
-// always exits 0 and prints a table.
-//
-// Two measurements, each run for both implementations:
-//   1. Single-thread enqueue latency -- bursts sized to fit the buffer (no drain in the timed
-//      region), so it isolates the producer fast path (format + reserve + copy + publish vs
-//      format + lock + memcpy + unlock). Uncontended, so the two look similar by design.
-//   2. Multi-thread throughput -- P producers hammer enqueue while ONE flusher thread drains
-//      concurrently (the real single-consumer deployment). This is where the lock-free ring should
-//      pull ahead: producers never serialize on a shared mutex.
+// Optional benchmark: lock-free MPSC ring vs mutex baseline (log_old.c / mtxlog_*).
+// DISABLED in CTest. Always exits 0, prints a table. Run by hand.
+//   1. Single-thread enqueue latency (bursts fit buffer, no drain in timed region).
+//   2. Multi-thread throughput: P producers + one concurrent flusher.
 
 #include <anoptic_log.h>        // ring logger (ano_log_*)
 #include "log/log_old.h"    // mutex baseline (mtxlog_*)
@@ -50,8 +42,7 @@ static const int TP_THREADS[] = {1, 2, 4, 8, 16};
 #define MIX_SMALL   16          // small-message body for the mixed battery (bytes)
 #define MIX_SEED    0x5E3D17u   // fixed srand seed for the mixed battery
 
-// The two implementations behind one vtable, in the baseline's 5-tier signature so both keep
-// identical call sites.
+// Both impls behind one vtable (baseline 5-tier signature).
 typedef struct {
     const char *name;
     int  (*init)(void);
@@ -61,8 +52,7 @@ typedef struct {
     int  (*output_dir)(const char *);
 } logger_api;
 
-// Adapter to the ring logger's new write surface. DEBUG folds into INFO. The va_list hop costs
-// the same at every measurement point, so ratios are unaffected.
+// Adapter to ring write surface. DEBUG folds into INFO.
 static ano_loglevel_t map_level(log_types_t t)
 {
     switch (t) {
@@ -90,7 +80,9 @@ static const logger_api MUTEX = {
 };
 
 
-/* Single-thread enqueue latency (ns per enqueue, fast path only) */
+/* Latency */
+
+// Single-thread enqueue, ns per enqueue, fast path only.
 
 static double run_latency(const logger_api *api)
 {
@@ -112,7 +104,9 @@ static double run_latency(const logger_api *api)
 }
 
 
-/* Multi-thread throughput (messages/sec, with one concurrent flusher) */
+/* Throughput */
+
+// Multi-thread messages/sec, one concurrent flusher.
 
 static _Atomic bool g_flusher_stop;
 
@@ -127,8 +121,7 @@ static void *producer(void *p)
     return NULL;
 }
 
-// Single consumer: exactly one flusher thread drains on a tight-ish timer while producers run, so
-// neither buffer wedges at full and the measurement reflects the enqueue path, not disk speed.
+// One flusher on a timer while producers run. Measures enqueue, not disk.
 static void *flusher(void *p)
 {
     const logger_api *api = ((flush_arg *)p)->api;
@@ -167,11 +160,11 @@ static double run_throughput(const logger_api *api, int producers)
 }
 
 
-/* Variable-length throughput (random length 8..1024B, random ASCII content)
-   Stresses ring spanning / wrapping / full. Content is built as a NUL-terminated string and logged
-   as ("%s", buf) -- the format is a literal, so no varargs/format mismatch is ever possible.
-   Each producer owns a test_rng seeded from the battery seed + its id, so content streams are
-   reproducible per thread (the old shared rand() never was under concurrency). */
+/* Variable Length */
+
+// Random length 8..1024B, random ASCII. Stresses ring spanning / wrapping / full.
+// Content built as NUL-terminated string, logged as ("%s", buf) -- literal format, no varargs mismatch.
+// Each producer owns a test_rng seeded from battery seed + id (reproducible; shared rand() was not).
 
 static int      g_var_msgs;     // per-thread message count for the active variable-length battery
 static unsigned g_var_seed;     // battery seed, mixed with each producer's id
@@ -193,8 +186,7 @@ static void *var_producer(void *p)
     return NULL;
 }
 
-// Mixed small+large: each message is randomly tiny (MIX_SMALL) or large (MIX_LARGE), 50/50. Forces
-// the ring to interleave records that span very different fractions of the buffer.
+// Mixed small+large 50/50 (MIX_SMALL / MIX_LARGE).
 static void *mix_producer(void *p)
 {
     prod_arg *a = p;
@@ -208,8 +200,7 @@ static void *mix_producer(void *p)
     return NULL;
 }
 
-// Shared runner for the random-content batteries: same one-flusher topology as run_throughput, but
-// drives a caller-supplied producer fn over g_var_msgs messages.
+// Shared runner for random-content batteries (one-flusher topology).
 static double run_var_throughput(const logger_api *api, int producers,
                                  void *(*prod_fn)(void *), unsigned seed)
 {
@@ -298,7 +289,7 @@ int main(void)
                ring.throughput[i] / mutex.throughput[i]);   // >1 = ring faster
     }
 
-    // Variable-length battery: random length VAR_MIN..VAR_MAX, random ASCII, logged as ("%s", buf).
+    // Variable-length: VAR_MIN..VAR_MAX, ("%s", buf).
     printf("\nvariable-length messages -- %d msgs/producer, random %d..%d B, seed 0x%X\n",
            VAR_MSGS, VAR_MIN, VAR_MAX, VAR_SEED);
     printf("-------------------------------------------------------------------------\n");
@@ -311,7 +302,7 @@ int main(void)
                ring.var_throughput[i] / mutex.var_throughput[i]);
     }
 
-    // Mixed battery: 50/50 tiny vs large records interleaved in the same ring.
+    // Mixed 50/50 tiny vs large.
     printf("\nmixed small+large messages -- %d msgs/producer, %dB / %dB 50:50, seed 0x%X\n",
            MIX_MSGS, MIX_SMALL, MIX_LARGE, MIX_SEED);
     printf("-------------------------------------------------------------------------\n");
@@ -327,7 +318,7 @@ int main(void)
     printf("\n(ring/mutex > 1.0 means the ring won. Latency column inverts the ratio so >1 is\n");
     printf(" always \"ring better\". Numbers vary run to run; take the trend, not the digits.)\n");
 
-    // Tidy the throwaway files and directory.
+    // Tidy throwaway files.
     char ringLog[96];
     snprintf(ringLog, sizeof ringLog, "%s/%s_ano.log", BENCH_DIR, ano_fs_session_stamp());
     remove(ringLog);

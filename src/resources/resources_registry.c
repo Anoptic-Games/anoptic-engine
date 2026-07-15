@@ -3,10 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Synchronous Stage A registry. Mutable maps, rows, domains, and accounting remain under
-// one mutex. The read side does not: a fixed permanent slot directory release-publishes
-// immutable descriptors and readers acquire them inside registered epoch scopes. Rows live
-// in non-moving chunks. Owner/domain and row generation wrap refuse rather than alias.
+// Synchronous owner-thread registry. Mutable maps/rows/domains under one mutex.
+// Read side: permanent slot directory release-publishes immutable descriptors. Readers acquire inside registered epoch scopes.
+// Rows live in non-moving chunks. Owner/domain and row generation wrap refuse rather than alias.
 
 #include <anoptic_resources.h>
 
@@ -23,9 +22,7 @@
 #include "resources_place.h"
 #include "resources_tel.h"
 
-// The graphics extension's registration hook (res_graphics.c). An extern here rather than
-// a header: every .h under src/resources/ is frozen at W0, and the roster call moves into
-// the W6 graphics split (res_gfx_ext.c) with the rest of the extension surface.
+// Graphics extension registration hook (res_graphics.c).
 extern void res_gfx_register_ext(void);
 
 #define RES_SLOT_MAX       4096u
@@ -69,8 +66,7 @@ typedef enum res_domain_state {
     RES_DOMAIN_RETIRING,
 } res_domain_state;
 
-// M5: the domain no longer owns a heap or a pool -- memory ownership lives in the
-// placement root keyed by the owner index. The registry keeps identity and teardown state.
+// Domain holds identity and teardown. Memory ownership lives in the placement root keyed by owner index.
 typedef struct res_domain {
     ano_res_lifetime_kind kind;
     uint32_t generation;
@@ -91,12 +87,8 @@ typedef struct res_reader_lane {
     _Atomic uint64_t epoch;
 } res_reader_lane;
 
-// Reader lanes are stripe-backed (ano_mem_stripe's first production consumer): one 16-byte
-// lane per reader thread, each on its own ANO_THREAD_LINE granule. The old
-// `res_reader_lane g_readers[64]` packed four raced lanes per cache line, so every reader's
-// epoch store false-shared with three neighbors across 1.2M+ observations per race run.
-// Pointers publish with release at init and become NULL at shutdown; a stale reader handle
-// observes NULL and refuses instead of touching reclaimed memory.
+// Reader lanes are stripe-backed: one 16-byte lane per reader thread on its own ANO_THREAD_LINE.
+// Pointers publish with release at init and become NULL at shutdown. Stale handle sees NULL and refuses.
 static _Atomic(res_pub *) g_directory[RES_SLOT_MAX];
 static _Atomic(res_reader_lane *) g_readers[RES_READER_MAX];
 static ano_mem_stripe *g_reader_stripe;
@@ -153,10 +145,7 @@ static res_domain *domain_of(ano_res_lifetime lifetime, bool live_only)
     return d;
 }
 
-// The seam (M5). The domain check stays HERE: the placement root table is keyed by owner
-// index alone, so a stale lifetime (dead generation, wrong kind) must be refused by the
-// registry before the route ever sees the key. serving_size() and legacy_site_flags() are
-// DELETED -- the site carries serving/alignment/flags and free() never recomputes them.
+// Domain check stays HERE. Placement root is keyed by owner index alone. Stale lifetime refused before route.
 static int owned_alloc_locked(const res_place_plan *plan, size_t size, res_owned_block *out)
 {
     res_domain *d = domain_of(plan->lifetime, true);
@@ -182,8 +171,7 @@ static int owned_alloc_locked(const res_place_plan *plan, size_t size, res_owned
     return 0;
 }
 
-// Inputs: a live destination plan and requested payload bytes. Output: one unpublished
-// owned block. Invariant: backing heaps and pools are touched only by the init/owner thread.
+// Inputs: live destination plan and requested bytes. Output: one unpublished owned block. Owner thread only.
 int res_owned_alloc(const res_place_plan *plan, size_t size, res_owned_block *out)
 {
     if (plan == NULL || out == NULL || size == SIZE_MAX || !owner_thread())
@@ -194,9 +182,7 @@ int res_owned_alloc(const res_place_plan *plan, size_t size, res_owned_block *ou
     return rc;
 }
 
-// The block's site says where it lives; nobody re-derives the pool from the domain. The
-// pool outlives every block routed into it: a domain stays RETIRING (root un-winked) while
-// pending_blocks > 0, so this free never races the root teardown.
+// Site says where the block lives. Domain stays RETIRING while pending_blocks > 0 so free never races root teardown.
 static void block_free_locked(res_owned_block *block)
 {
     if (block == NULL || block->data == NULL)
@@ -208,9 +194,7 @@ static void block_free_locked(res_owned_block *block)
     *block = (res_owned_block){0};
 }
 
-// mode is honored once sites can be winkable. TODO(W1, M6): RES_FREE_WINK becomes
-// accounting-only on a RES_SITE_WINKABLE site and real work everywhere else -- one code
-// path, five models, no asymmetric bookkeeping charge (D11).
+// mode ignored today: every free is retail.
 void res_owned_free(res_owned_block *block, res_free_mode mode)
 {
     (void)mode;
@@ -221,7 +205,7 @@ void res_owned_free(res_owned_block *block, res_free_mode mode)
     ano_mutex_unlock(&g_reg.mtx);
 }
 
-// The pure half of res_owned_alloc: same domain gate, same route, no allocation.
+// Pure half of res_owned_alloc: same domain gate and route, no allocation.
 int res_owned_plan(const res_place_plan *plan, size_t size, res_site *out)
 {
     if (plan == NULL || out == NULL || size == SIZE_MAX || !owner_thread())
@@ -236,23 +220,22 @@ int res_owned_plan(const res_place_plan *plan, size_t size, res_site *out)
 int res_owned_stage(const res_place_plan *plan, size_t hint, res_owned_block *out)
 {
     (void)plan; (void)hint; (void)out;
-    return -1;                                  // TODO(W2, M10): monotonic staging
+    return -1;                                  // STUB
 }
 
 int res_owned_commit(res_owned_block *staged, const res_place_plan *home, res_owned_block *out)
 {
     (void)staged; (void)home; (void)out;
-    return -1;                                  // TODO(W2, M10): staging -> planned home
+    return -1;                                  // STUB
 }
 
 int res_owned_move(res_owned_block *from, const res_place_plan *to, res_owned_block *out)
 {
     (void)from; (void)to; (void)out;
-    return -1;                                  // TODO(W2, M8): promote / duplicate ride this
+    return -1;                                  // STUB
 }
 
-// M3: the plan is no longer discarded -- the five-axis cube charges the plan's cell
-// alongside the module-wide totals.
+// Five-axis cube charges the plan's cell alongside module-wide totals.
 void res_account_copy(const res_place_plan *plan, size_t bytes)
 {
     if (!reg_alive())
@@ -286,7 +269,7 @@ void res_registry_external_allocation(const res_place_plan *plan, size_t bytes)
     g_reg.stats.transfers++;
     g_reg.stats.transfer_bytes += bytes;
     uint16_t cell = res_tel_intern(plan);
-    res_tel_alloc(cell, bytes, bytes);          // charged and never reversed: the M9 wound
+    res_tel_alloc(cell, bytes, bytes);          // charged and never reversed
     res_tel_transfer(cell, bytes, true);
     ano_mutex_unlock(&g_reg.mtx);
 }
@@ -392,8 +375,7 @@ static int root_block_alloc_locked(res_role role, size_t size, res_owned_block *
     return owned_alloc_locked(&plan, size, out);
 }
 
-// Find or permanently bind one non-moving row. Names live in the root metadata domain so
-// collision diagnostics survive retirement of the payload's lifetime domain.
+// Find or permanently bind one non-moving row. Names live in root metadata so diagnostics survive payload domain retirement.
 static uint32_t row_bind(uint64_t rid, const char *logical, size_t len)
 {
     uint32_t slot = probe_find(rid);
@@ -445,8 +427,7 @@ static res_row *row_live(anores_t h)
     return row;
 }
 
-// The lane for slot i, or NULL outside the init..shutdown window. Acquire pairs with the
-// release publication in res_registry_init.
+// Lane for slot i, or NULL outside init..shutdown. Acquire pairs with release in res_registry_init.
 static inline res_reader_lane *reader_lane_at(uint32_t i)
 {
     return atomic_load_explicit(&g_readers[i], memory_order_acquire);
@@ -589,9 +570,7 @@ static int retire_locked(uint32_t slot, res_row *row)
     return 0;
 }
 
-// Inputs: none. Output: 0 on complete construction. Invariant: the calling thread becomes
-// the synchronous Stage A owner; extensions register and freeze, telemetry and placement
-// come up, and every backing heap is created THROUGH the placement seam.
+// Output: 0 on complete construction. Calling thread becomes the owner. Heaps created THROUGH placement.
 int res_registry_init(void)
 {
     memset(&g_reg, 0, sizeof g_reg);
@@ -615,16 +594,16 @@ int res_registry_init(void)
         atomic_store_explicit(&g_directory[i], NULL, memory_order_relaxed);
     if (g_owner_generations[0] == UINT32_MAX)
         goto fail;
-    // M2: MEANING first. The core owns only RES_TAG_BYTES (dense id 0 by construction);
+    // MEANING first. The core owns only RES_TAG_BYTES (dense id 0 by construction);
     // the extensions register their kinds, then the set freezes -- sorted by fourcc, so
-    // dense ids are a function of the tag set, never of this call order (D17).
+    // dense ids are a function of the tag set, never of this call order.
     res_ext_reset();
     res_gfx_register_ext();
     res_ext_freeze();
     if (res_tel_init() != 0)
         goto fail;
-    // M5: the placement scaffold, chosen once per init (7.1). getenv is read here and
-    // nowhere else; the INFO line is logged by res_place_init.
+    // Placement scaffold, chosen once per init. getenv is read here and nowhere else;
+    // the INFO line is logged by res_place_init.
     if (res_place_init(getenv("ANO_RES_PLACEMENT")) != 0)
         goto fail;
     place_live = true;
@@ -1001,86 +980,75 @@ int ano_res_release_engine(anores_t h, void **data, size_t *size)
     return ano_res_release(ano_res_lifetime_engine(), h, data, size);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The frozen consume / cross-lifetime / disclosure surface. STUBS.
-//
-// TODO(W2, M8): ANO_RES_LIFETIME_SHARED_IMMUTABLE opened beside the engine domain (and the
-// bound check at ano_res_domain_open moved in lockstep); ano_res_get's HIT PATH compares the
-// resident owner to the requested lifetime and REFUSES instead of aliasing -- today it hands
-// level B a handle into level A's mi_heap, and ano_res_domain_retire(A) then calls
-// mi_heap_destroy on it. This must land before any squad opens a real WORLD_LEVEL domain in
-// production.
-//
-// TODO(W2, M9): ano_res_take / parcel / parcel_free / parcel_zero_copy, the
-// outstanding_parcels teardown barrier, ano_res_domain_retire -> -2 while a parcel is in
-// flight, and ano_res_derive as the ONE adoption door. ano_res_release and
-// res_registry_external_allocation are DELETED in the same commit.
+/* Consume / cross-lifetime / disclosure */
+
+// STUBS. shared / typed bytes / take / parcel / derive / share modes / deps / prefetch.
 
 ano_res_lifetime ano_res_lifetime_shared(void)
 {
-    return (ano_res_lifetime){0};               // TODO(W2, M8)
+    return (ano_res_lifetime){0};               // STUB
 }
 
 anostr_t ano_res_bytes_typed(const ano_res_read *read, anores_t h, uint32_t tag)
 {
     (void)tag;
     (void)read; (void)h;
-    return anostr_empty();                      // TODO(W2, M9): compare pub->tag, then serve
+    return anostr_empty();                      // STUB
 }
 
 int ano_res_take(ano_res_lifetime lifetime, anores_t h, ano_res_parcel *out)
 {
     (void)lifetime; (void)h; (void)out;
-    return -1;                                  // TODO(W2, M9)
+    return -1;                                  // STUB
 }
 
 void ano_res_parcel_free(ano_res_parcel *parcel)
 {
-    (void)parcel;                               // TODO(W2, M9)
+    (void)parcel;                               // STUB
 }
 
 bool ano_res_parcel_zero_copy(const ano_res_parcel *parcel)
 {
     (void)parcel;
-    return false;                               // TODO(W2, M9): B.6's public oracle
+    return false;                               // STUB
 }
 
 anores_t ano_res_derive(ano_res_lifetime lifetime, const ano_res_read *read,
                         anores_t src, uint32_t tag)
 {
     (void)lifetime; (void)read; (void)src; (void)tag;
-    return (anores_t){0};                       // TODO(W2, M9)
+    return (anores_t){0};                       // STUB
 }
 
 anores_t ano_res_get_ex(ano_res_lifetime lifetime, const char *logical, ano_res_share share)
 {
     if (share == ANO_RES_SHARE_REFUSE)
         return ano_res_get(lifetime, logical);
-    return (anores_t){0};                       // TODO(W2, M8)
+    return (anores_t){0};                       // STUB non-REFUSE
 }
 
 int ano_res_promote(ano_res_lifetime from, ano_res_lifetime to, anores_t h, anores_t *out)
 {
     (void)from; (void)to; (void)h; (void)out;
-    return -1;                                  // TODO(W2, M8): charges the DESTINATION cell
+    return -1;                                  // STUB
 }
 
 int ano_res_duplicate(ano_res_lifetime from, ano_res_lifetime to, anores_t h, anores_t *out)
 {
     (void)from; (void)to; (void)h; (void)out;
-    return -1;                                  // TODO(W2, M8)
+    return -1;                                  // STUB
 }
 
 size_t ano_res_deps(const ano_res_read *read, anores_t h, ano_res_dep *out, size_t cap)
 {
     (void)read; (void)h; (void)out; (void)cap;
-    return 0;                                   // TODO(W2, M9): COPY-OUT, never a borrowed ptr
+    return 0;                                   // STUB
 }
 
 int ano_res_prefetch(ano_res_lifetime lifetime, const char *logical, ano_res_share share)
 {
     (void)lifetime; (void)logical; (void)share;
-    return -1;                                  // TODO(W2, M9)
+    return -1;                                  // STUB
 }
 
 int res_registry_name(const ano_res_read *read, anores_t h, char *out, size_t cap)
@@ -1174,9 +1142,8 @@ ano_res_allocator_stats ano_res_stats(void)
         return s;
     ano_mutex_lock(&g_reg.mtx);
     s = g_reg.stats;
-    // Chunk footprint comes from the placement roots now: under scoped-pool that is one
-    // SMALL multipool per un-winked domain, exactly the per-domain sum this loop always
-    // produced. Dead roots report zeros. Heap arenas stay invisible until D19 lands (M6).
+    // Chunk footprint from placement SMALL multipools across live roots. Dead roots report zeros.
+    // Heap-backed arenas are not reported here.
     for (uint32_t i = 0; i < RES_ROOT_MAX; i++) {
         ano_mem_stats p = res_place_arena_stats(i, RES_ARENA_SMALL);
         s.chunk_bytes += p.chunk_bytes;
@@ -1186,16 +1153,14 @@ ano_res_allocator_stats ano_res_stats(void)
     return s;
 }
 
-// Per-domain accounting. TODO(W1+W2, M6): the domain's roots, its parent ledger, and its
-// residual footprint after a cycle -- B.5/B.7's decisive metric.
+// Per-domain accounting. STUB.
 int ano_res_domain_stats(ano_res_lifetime lifetime, ano_res_allocator_stats *out)
 {
     (void)lifetime; (void)out;
-    return -1;                                  // TODO(W1+W2, M6)
+    return -1;                                  // STUB
 }
 
-// Field-wise subtraction. Cumulative counters subtract cleanly; live/peak gauges are
-// reported as the AFTER value, because a delta of a gauge is meaningless.
+// Field-wise subtraction. Cumulative counters subtract. Live/peak gauges report AFTER.
 ano_res_allocator_stats ano_res_stats_delta(const ano_res_allocator_stats *before,
                                             const ano_res_allocator_stats *after)
 {
@@ -1263,8 +1228,7 @@ int res_test_set_owner_generation(ano_res_lifetime lifetime, uint32_t generation
     return 0;
 }
 
-// Inputs: none. Output: 0 only after every reader-pinned block and backing heap is gone.
-// Invariant: called on the init/owner thread; a pending reader makes shutdown retryable.
+// Output: 0 only after every reader-pinned block and backing heap is gone. Owner thread. Pending reader makes shutdown retryable.
 int res_registry_shutdown(void)
 {
     if (!reg_alive())
@@ -1314,8 +1278,7 @@ int res_registry_shutdown(void)
     return 0;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Gamesave loading.
+/* Gamesave loading */
 
 typedef struct save_select {
     const char *slot;
@@ -1340,10 +1303,7 @@ static void save_select_cb(const char *name, void *ctx)
     }
 }
 
-// "<slot>.<seq>.anosave.<hex nonce>.tmp": a save generation caught mid-write-protocol.
-// The nonce is the protocol's collision breaker and carries no meaning here, so its width
-// is not load-bearing; the seq is, and out_seq reports it. That seq is the name's CLAIM --
-// the frame inside must echo it, exactly as for a committed generation.
+// "<slot>.<seq>.anosave.<hex nonce>.tmp": mid-write-protocol save. seq is the name's CLAIM. Frame must echo it.
 static bool save_tmp_name(const char *name, const char *slot, size_t slot_len, uint64_t *out_seq)
 {
     size_t nlen = strlen(name);
@@ -1372,9 +1332,7 @@ static bool save_tmp_name(const char *name, const char *slot, size_t slot_len, u
     return true;
 }
 
-// One scan yields one temp: the lexicographically smallest name above the caller's cursor.
-// Bounded memory by construction -- a slot with a thousand stranded temps costs a thousand
-// scans and one name of storage, never a candidate array that can silently fill up.
+// One scan yields one temp: lexicographically smallest name above the cursor. Bounded memory.
 typedef struct temp_select {
     const char *slot;
     size_t slot_len;
@@ -1438,9 +1396,7 @@ typedef enum save_probe_result {
     SAVE_PROBE_IO,
 } save_probe_result;
 
-// Read and validate one frame, committed generation or orphan temp alike. want_seq is the
-// seq the FILENAME claims: a frame that does not echo it is a rename masquerade and is
-// damaged, whatever its checksums say.
+// Read and validate one frame. want_seq is the FILENAME claim. Frame that does not echo it is damaged.
 static save_probe_result save_probe_file(const char *abs, uint64_t want_seq,
                                          save_frame_view *view)
 {
@@ -1544,19 +1500,9 @@ static ano_res_save_status load_normal_generations(ano_res_lifetime lifetime, co
     return saw_candidate ? ANO_RES_SAVE_CORRUPT : ANO_RES_SAVE_NOT_FOUND;
 }
 
-// Finish, or bury, every save the write protocol left mid-flight for this slot. A temp is
-// the protocol's own O_EXCL file: it is fully written and fsynced before the rename, so a
-// temp that VALIDATES is a durable generation that merely lost its directory entry -- we
-// complete the interrupted protocol (rename + dir fsync) rather than discard it. One that
-// does not validate never happened: the crash landed before the fsync, and it is purged so
-// it cannot accumulate against the protocol's own eight-nonce attempt loop.
-//
-// Never over an existing generation: rmos_rename_new reports a taken destination (1) and we
-// leave the temp alone, preserving both frames for a human rather than picking a winner.
-//
-// Runs before the load, unconditionally -- a recovered temp then re-enters the normal
-// generation namespace and is ranked by seq like any other, so an interrupted save is tried
-// last exactly when it is older, not because it arrived through this door.
+// Finish or bury mid-flight saves. Validating temp completes interrupted rename+dirsync. Invalid temp is purged.
+// Never overwrite an existing generation (rmos_rename_new == 1 leaves temp alone).
+// Runs before load. Recovered temp re-enters normal generation ranking by seq.
 static void recover_all_temps(const char *slot, size_t slot_len, const ano_fspath *saves)
 {
     char after[MAXPATH] = {0};

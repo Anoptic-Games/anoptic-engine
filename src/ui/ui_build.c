@@ -3,14 +3,17 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// UI primitive builder: pure packing of AnoUiPrim and side-table entries into
-// caller arrays. No allocation, no state, any thread. docs/ui/ui-render.md §3.2.
+// UI primitive builder: pure packing of AnoUiPrim + side tables into caller arrays.
+// No alloc, no state, any thread. docs/ui/ui-render.md §3.2.
 
 #include "anoptic_ui.h"
 
 #include <math.h>
 
-// In: straight sRGB rgba. Out: premultiplied linear (the ABI's color space).
+
+/* Color */
+
+// In: straight sRGB rgba. Out: premultiplied linear.
 void ano_ui_color_srgb(const float srgba[4], float out[4])
 {
     for (int i = 0; i < 3; i++)
@@ -22,7 +25,10 @@ void ano_ui_color_srgb(const float srgba[4], float out[4])
     out[3] = srgba[3];
 }
 
-// In: b (bound arrays), counts zeroed here. Caller owns all arrays; NULL+cap 0 legal.
+
+/* Builder */
+
+// In: b (bound arrays), counts zeroed here. Caller owns arrays; NULL+cap 0 legal.
 void ano_ui_builder_init(AnoUiBuilder *b,
                          AnoUiPrim *prims, uint32_t primCap,
                          AnoUiClip *clips, uint32_t clipCap,
@@ -36,9 +42,11 @@ void ano_ui_builder_init(AnoUiBuilder *b,
     b->curves = NULL;   b->curveCap = 0;        b->curveCount = 0;
 }
 
-// In: prim, isotropic logical->device surface scale s > 0. Folds the scale in place.
-// Geometry, RRECT border, and SHADOW sigma scale. IMAGE lod shifts by -log2(s).
-// Identity inv stays identity. PATH/GLYPHS payloads fold separately.
+
+/* Surface Fold */
+
+// In: prim, isotropic scale s > 0. Geometry/border/sigma scale. IMAGE lod -= log2(s).
+// PATH/GLYPHS payloads fold separately.
 void ano_ui_prim_scale(AnoUiPrim *p, float s)
 {
     p->origin[0] *= s; p->origin[1] *= s;
@@ -51,8 +59,7 @@ void ano_ui_prim_scale(AnoUiPrim *p, float s)
         p->param[0] = fmaxf(0.0f, p->param[0] - log2f(s));
 }
 
-// In: clip, surface scale s > 0. rect and rounded term scale. The rrHalf[0] < 0
-// sentinel stays negative.
+// In: clip, scale s > 0. rect + rounded term scale. rrHalf[0] < 0 sentinel stays negative.
 void ano_ui_clip_scale(AnoUiClip *c, float s)
 {
     for (int i = 0; i < 4; i++)
@@ -63,15 +70,17 @@ void ano_ui_clip_scale(AnoUiClip *c, float s)
         c->rrRadii[i] *= s;
 }
 
-// In: paint, surface scale s > 0. The 2x3 reads device pixels after the fold: linear
-// columns divide by s, the gradient-space translation column is untouched.
+// In: paint, scale s > 0. Linear columns /= s. Translation column untouched.
 void ano_ui_paint_scale(AnoUiPaint *p, float s)
 {
     p->xform[0] /= s; p->xform[1] /= s;
     p->xform[3] /= s; p->xform[4] /= s;
 }
 
-// In: b, curve scratch buffer + word capacity (NULL/0 detaches). Bakes accumulate here.
+
+/* Primitives */
+
+// In: b, curve scratch + capacity (NULL/0 detaches).
 void ano_ui_builder_curves(AnoUiBuilder *b, uint32_t *curves, uint32_t curveCap)
 {
     b->curves = curves;
@@ -79,9 +88,7 @@ void ano_ui_builder_curves(AnoUiBuilder *b, uint32_t *curves, uint32_t curveCap)
     b->curveCount = 0;
 }
 
-// In: radii[4] (tl,tr,br,bl) any sign, half[2] > 0. Out: radii clamped: each radius
-// <= min(half), then adjacent pairs scaled together so they never overlap a side
-// (the CSS rule).
+// In: radii[4] (tl,tr,br,bl), half[2]. Out: non-neg, <= min(half), CSS adjacent-side clamp.
 static void radii_clamp(float radii[4], const float half[2])
 {
     float cap = fminf(half[0], half[1]);
@@ -102,8 +109,8 @@ static void radii_clamp(float radii[4], const float half[2])
         radii[i] *= f;
 }
 
-// Shared prim tail: identity transform, box geometry from min/max, slot bump.
-// Returns the claimed index, ANO_UI_REF_NONE when the prim array is full.
+// Shared prim tail: identity transform, box from min/max, slot bump.
+// Returns claimed index, ANO_UI_REF_NONE when full.
 static uint32_t prim_push(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                           uint32_t kind, uint32_t flags, uint32_t paintRef, uint32_t clipRef)
 {
@@ -130,8 +137,7 @@ static uint32_t prim_push(AnoUiBuilder *b, const float rectMin[2], const float r
     return idx;
 }
 
-// In: min <= max box, radii (tl,tr,br,bl), premultiplied color, borderWidth >= 0
-// (0 = fill, else ring width inside the boundary). Out: prim index or ANO_UI_REF_NONE.
+// In: min<=max box, radii, color, borderWidth (>=0: 0=fill else ring). Out: index or NONE.
 uint32_t ano_ui_rrect(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                       const float radii[4], const float color[4], float borderWidth,
                       uint32_t paintRef, uint32_t clipRef, uint32_t flags)
@@ -149,8 +155,8 @@ uint32_t ano_ui_rrect(AnoUiBuilder *b, const float rectMin[2], const float rectM
     return idx;
 }
 
-// In: casting rrect box, uniform cornerRadius, sigma (clamped >= 1e-3), premultiplied
-// color. Cull note for later lanes: the shadow's pixel bounds are half + 3*sigma.
+// In: rrect box, uniform cornerRadius, sigma (clamped >= 1e-3), color.
+// Cull pad for later lanes: half + 3*sigma + 1px AA.
 uint32_t ano_ui_shadow(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                        float cornerRadius, float sigma, const float color[4],
                        uint32_t clipRef, uint32_t flags)
@@ -169,8 +175,7 @@ uint32_t ano_ui_shadow(AnoUiBuilder *b, const float rectMin[2], const float rect
     return idx;
 }
 
-// In: box, radii, bindless texture index, explicit lod, premultiplied tint.
-// The full texture maps to the box (uv 0..1).
+// In: box, radii, bindless tex index, lod, tint. Full texture maps to box (uv 0..1).
 uint32_t ano_ui_image(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                       const float radii[4], uint32_t texIndex, float lod,
                       const float tint[4], uint32_t clipRef, uint32_t flags)
@@ -189,8 +194,7 @@ uint32_t ano_ui_image(AnoUiBuilder *b, const float rectMin[2], const float rectM
     return idx;
 }
 
-// In: conservative pixel bbox, curve stream range, premultiplied color. The curve
-// data itself ships in the block's curve blob.
+// In: conservative bbox (logical), curveOffset + monotone-quad count, color.
 uint32_t ano_ui_path(AnoUiBuilder *b, const float bboxMin[2], const float bboxMax[2],
                      uint32_t curveOffset, uint32_t curveCount, const float color[4],
                      uint32_t paintRef, uint32_t clipRef, uint32_t flags)
@@ -206,7 +210,7 @@ uint32_t ano_ui_path(AnoUiBuilder *b, const float bboxMin[2], const float bboxMa
     return idx;
 }
 
-// In: shaped text's conservative pixel bbox, AnoGlyphInstance range, premultiplied tint.
+// In: shaped-text bbox (logical), AnoGlyphInstance range, tint.
 uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bboxMax[2],
                        uint32_t first, uint32_t count, const float tint[4],
                        uint32_t clipRef, uint32_t flags)
@@ -222,9 +226,10 @@ uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bbox
     return idx;
 }
 
-// Shared paint tail: copies stopCount stops into the stop table sorted ascending by t
-// (insertion sort), then writes the paint header. Returns the paintRef,
-// ANO_UI_REF_NONE when either table is full or stopCount is 0.
+
+/* Paints */
+
+// Copy stops sorted ascending by t, write paint header. NONE if full or stopCount 0.
 static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
                            const AnoUiStop *stops, uint32_t stopCount)
 {
@@ -255,8 +260,7 @@ static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
     return idx;
 }
 
-// In: gradient axis endpoints, stops. Out: paintRef. t = dot(p - p0, d)/|d|^2 via the
-// xform's first row. A zero-length axis collapses to t = 0.
+// In: axis endpoints + stops. t = dot(p-p0,d)/|d|^2. Zero-length axis -> t = 0.
 uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[2],
                              const AnoUiStop *stops, uint32_t stopCount)
 {
@@ -267,8 +271,7 @@ uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[
     return paint_push(b, ANO_UI_GRAD_LINEAR, xform, stops, stopCount);
 }
 
-// In: circle center + radius, stops. Out: paintRef. g = (p - center)/radius, t = |g|.
-// A non-positive radius collapses to t = 0 at the center.
+// In: center + radius + stops. g = (p-center)/radius, t = |g|. radius <= 0 -> t = 0.
 uint32_t ano_ui_paint_radial(AnoUiBuilder *b, const float center[2], float radius,
                              const AnoUiStop *stops, uint32_t stopCount)
 {
@@ -277,8 +280,8 @@ uint32_t ano_ui_paint_radial(AnoUiBuilder *b, const float center[2], float radiu
     return paint_push(b, ANO_UI_GRAD_RADIAL, xform, stops, stopCount);
 }
 
-// In: center, start angle (radians), stops. Out: paintRef. xform rotates startAngle
-// onto the g.x axis. The evaluator takes atan2(g.y,g.x)/2pi + 0.5.
+// In: center, startAngle (radians), stops. xform rotates startAngle onto g.x.
+// Evaluator: atan2(g.y,g.x)/2pi + 0.5.
 uint32_t ano_ui_paint_conic(AnoUiBuilder *b, const float center[2], float startAngle,
                             const AnoUiStop *stops, uint32_t stopCount)
 {
@@ -288,8 +291,10 @@ uint32_t ano_ui_paint_conic(AnoUiBuilder *b, const float center[2], float startA
     return paint_push(b, ANO_UI_GRAD_CONIC, xform, stops, stopCount);
 }
 
-// In: clip rect (min <= max); optional rounded term as its own box + radii (rrMin
-// NULL = rect only). Out: clip index for AnoUiPrim.clipRef, ANO_UI_REF_NONE when full.
+
+/* Clips */
+
+// In: clip rect; optional rounded term (rrMin NULL = rect only). Out: clip index or NONE.
 uint32_t ano_ui_clip(AnoUiBuilder *b, const float rectMin[2], const float rectMax[2],
                      const float rrMin[2], const float rrMax[2], const float rrRadii[4])
 {

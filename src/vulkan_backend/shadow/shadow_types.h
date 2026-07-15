@@ -36,8 +36,9 @@ typedef struct ShadowCasterVolume
 } ShadowCasterVolume;
 
 
-// --- Dynamic shadows (audit 4.7 follow-on, on the 4.8 multi-frustum cull) -------------------
-// Shadow frustums reuse CullView (viewProj + 6 planes), one slot-0 cull partition each.
+/* Dynamic Shadows */
+
+// Shadow frustums reuse CullView (viewProj + 6 planes); each gets solid + MASKED cull partitions.
 
 // One per shadow frustum: which light + cube face it renders. std430: 4 x u32 = 16 B.
 typedef struct ShadowFrustumConfig {

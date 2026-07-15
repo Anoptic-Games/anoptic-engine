@@ -3,18 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Identity. A file resource is named by its logical path; a DERIVED or DUPLICATE resource
-// has NO STRING KEY AT ALL -- its rid is seeded from the source's rid over a different
-// basis, so it cannot be resolved from the filesystem and typed views refuse a kind
-// mismatch before dereferencing a byte.
-//
-// That is what lets the public path alphabet stay untouched: nothing is reserved, no '#'
-// and no '@' are banned, and derived-key type confusion is unrepresentable rather than
-// merely discouraged (D8).
-//
-// rid and rid2 are two independent bases over the same bytes: {rid, rid2} is a 128-bit
-// identity, and collision refusal at bind time compares {rid, rid2, name_len} without ever
-// touching a retired domain's name text (M7).
+// Identity. File resources use logical path. DERIVED/DUPLICATE helpers exist; graphics adopt still uses a string key ("#gfx").
+// rid and rid2 are two independent bases. {rid, rid2} is 128-bit identity.
 
 #include <stdint.h>
 #include <string.h>

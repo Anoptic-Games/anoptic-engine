@@ -1,14 +1,12 @@
 # Always compile the common source file
 target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/time.c)
 
-# Conditionally compile platform-specific source files.
-# APPLE before UNIX: both are true on macOS, and we want the Darwin file there.
+# Platform source. APPLE before UNIX (both true on macOS).
 if (WIN32)
     target_sources(anoptic_core PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/time_win64.c
     )
-    # MSVC ships native <stdatomic.h> only from VS2022 17.5 (MSVC_VERSION 1935) under /std:clatest;
-    # older MSVC needs the experimental flag. MinGW/Clang are unaffected.
+    # MSVC < 17.5: /experimental:c11atomics for <stdatomic.h>
     if (MSVC AND MSVC_VERSION LESS 1935)
         target_compile_options(anoptic_core PRIVATE /experimental:c11atomics)
     endif()

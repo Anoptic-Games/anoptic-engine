@@ -3,15 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// FROZEN SEAM (freeze item 10), runtime half. The on-disk format is public
-// (include/anoptic_res_pack.h); this is the mounted-pack runtime.
-//
-// A pack mount is a PREFIX plus an open file plus a TOC in manager memory. res_candidates_ex
-// walks packs in pass 2, AFTER every directory candidate, so loose-shadows-pack is an
-// invariant of the WALK and not of mount order.
-//
-// Nothing here ever hands out a pointer into a mapped file: a pack read lands in a planned
-// destination like every other read.
+// Pack runtime. On-disk format is public (anoptic_res_pack.h).
+// Pack mount is PREFIX + open file + TOC in manager memory. Walk pass 2 not wired yet.
+// Never hands out a pointer into a mapped file.
 
 #ifndef ANOPTIC_RES_PACK_H
 #define ANOPTIC_RES_PACK_H
@@ -39,19 +33,18 @@ void res_pack_unmount_all(void);
 int  res_pack_count(void);
 const res_pack *res_pack_at(int i);
 
-// Locate `logical` inside pack. Output: the TOC entry index, or -1. Refuses on an rid2
-// mismatch (a 128-bit identity collision is a corrupt pack, never a lucky hit).
+// Locate `logical` inside pack. Output: TOC entry index, or -1. rid2 mismatch REFUSED.
 int res_pack_find(const res_pack *pack, const char *logical, size_t len);
 
-// Read entry `entry` whole into the sink, decoding chunk by chunk. 0 / -1.
+// Read entry whole into the sink, decoding chunk by chunk. 0 / -1.
 int res_pack_read_sink(const res_pack *pack, uint32_t entry, const res_sink *sink,
                        size_t *out_size);
 
-// Read [off, off+len) of entry `entry`. 0 / RES_RANGE_EOF / -1. Never a silent partial.
+// Read [off, off+len) of entry. 0 / RES_RANGE_EOF / -1. Never a silent partial.
 int res_pack_read_range(const res_pack *pack, uint32_t entry, uint64_t off, size_t len,
                         void *dst);
 
-// The deterministic builder: same input tree -> byte-identical pack. 0 / -1.
+// Deterministic builder: same input tree -> byte-identical pack. 0 / -1.
 int res_pack_build(const char *src_dir, const char *out_pack, uint8_t codec);
 
 #endif // ANOPTIC_RES_PACK_H

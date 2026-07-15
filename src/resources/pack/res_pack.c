@@ -3,25 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The anopak runtime and the deterministic builder. The 32-byte header and the 48-byte TOC
-// entry are FROZEN (include/anoptic_res_pack.h); everything on disk is little-endian and is
-// read/written through explicit byte helpers, never through struct overlay.
-//
-// File layout (builder-defined, inside the frozen header/TOC contract):
-//   [0, 32)                  header; header_hash = FNV-1a-64 over the first 24 bytes
-//   [toc_off, +48*n)         TOC, sorted STRICTLY ascending by rid (toc_off is 32 here)
-//   [toc_off + 48*n, +8)     toc_hash: FNV-1a-64 over the raw TOC bytes
-//   per entry, 64-aligned    the entry's data region at entry.data_off:
-//     chunk index            16 bytes per chunk: u64 rel_off (from data_off),
-//                            u32 stored_size (bit 31 = chunk stored RAW), u32 hash32
-//                            (folded FNV-1a-64 over the STORED bytes)
-//     stored chunks          contiguous, in chunk order
-//
-// Mounting reads the header + the TOC, never a data byte. A corrupted header, TOC, chunk
-// index, or payload REFUSES (mount -1 or read -1): a pack never serves bytes it cannot
-// prove. dst_cap handed to the codec is always the KNOWN raw length of the chunk, so a
-// hostile chunk header can never overrun its destination. Reads open a FRESH handle per
-// operation (remote-FS floor; also renders the Win64 file-pointer caveat moot).
+// anopak runtime and deterministic builder. Header/TOC frozen LE. No struct overlay.
+// Layout: header[32], TOC[48*n] sorted by rid, toc_hash[8], then per-entry 64-aligned data regions.
+// Mount reads header+TOC only. Corrupted anything REFUSES. Fresh handle per read.
 
 #include "res_pack.h"
 
@@ -40,8 +24,9 @@
 #define PACK_CHUNK_RAW  0x80000000u
 #define PACK_ENTRY_MAX  (1u << 24)              // sanity bound; read truth is the law
 
-// ---------------------------------------------------------------------------------------------
-// Little-endian byte helpers and the folded chunk hash.
+/* Little-endian helpers */
+
+// Byte helpers and the folded chunk hash.
 
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i)); }
@@ -58,9 +43,9 @@ static uint64_t chunk_count_of(uint64_t raw)
     return raw == 0 ? 0 : (raw + RES_CODEC_CHUNK - 1) / RES_CODEC_CHUNK;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Positional exact read: the pack layer always knows how many bytes exist, so a short read
-// loops and an early EOF is corruption, never a soft stop.
+/* Positional exact read */
+
+// Short read loops. Early EOF is corruption.
 
 static int read_exact(rmos_file f, uint64_t off, void *dst, size_t len)
 {
@@ -80,20 +65,17 @@ static int read_exact(rmos_file f, uint64_t off, void *dst, size_t len)
     return 0;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The mount table. Owner-written at mount, read-only afterwards (Stage A owner-thread law).
+/* Mount table */
+
+// Owner-written at mount, read-only after.
 
 static res_pack g_packs[ANO_PACK_MAX];
 static char     g_prefixes[ANO_PACK_MAX][MAXPATH];
 static uint64_t g_toc_hashes[ANO_PACK_MAX];     // the mounted TOC generation, re-checked per read
 static int      g_pack_count;
 
-// Inputs: mount prefix ("" or "seg/.../"), the pack file path. Output: 0 mounted / -1
-// refused. Validates magic, version, SORTED flag, header hash, TOC hash, strict rid order,
-// per-entry codec availability and wrap-free offset arithmetic. File extent is proven by
-// READS (rmos_size_hint is a hint by contract and never refuses a pack). The TOC lands in
-// manager memory through the placement seam (engine lifetime), so the registry must be
-// initialized first.
+// Inputs: mount prefix, pack path. Output: 0 mounted / -1 refused.
+// Validates magic/version/SORTED/hashes/rid order/codec/offsets. TOC lands via placement (engine lifetime).
 int res_pack_mount(const char *prefix, ano_fspath file)
 {
     if (file.length == 0 || g_pack_count >= ANO_PACK_MAX)
@@ -247,9 +229,7 @@ const res_pack *res_pack_at(int i)
     return (i >= 0 && i < g_pack_count) ? &g_packs[i] : NULL;
 }
 
-// Inputs: a mounted pack and a logical path (no prefix stripping here: the caller hands the
-// pack-relative remainder). Output: the TOC entry index, or -1. An rid hit whose rid2
-// disagrees is a corrupt pack (or a 128-bit collision), REFUSED, never served.
+// Inputs: mounted pack and pack-relative logical path. Output: TOC entry index, or -1. rid2 mismatch REFUSED.
 int res_pack_find(const res_pack *pack, const char *logical, size_t len)
 {
     if (pack == NULL || logical == NULL || len == 0 || pack->toc == NULL)
@@ -273,10 +253,9 @@ int res_pack_find(const res_pack *pack, const char *logical, size_t len)
     return (int)lo;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The chunk walker: deliver raw bytes [off, off+len) of one entry. Every chunk it touches is
-// hash-verified over its STORED bytes before decode, and decode must produce EXACTLY the
-// chunk's known uncompressed length -- a lying chunk header cannot overrun the destination.
+/* Chunk walker */
+
+// Deliver raw bytes [off, off+len). Hash-verify STORED bytes before decode. Decode must match known length.
 
 static int pack_read_chunks(const res_pack *pack, const ano_pack_entry *e,
                             uint64_t off, size_t len, uint8_t *dst)
@@ -403,8 +382,7 @@ int res_pack_read_sink(const res_pack *pack, uint32_t entry, const res_sink *sin
     return 0;
 }
 
-// Ranged read: exactly [off, off+len) or a refusal. 0 / RES_RANGE_EOF / -1. Never a silent
-// partial: on any failure the destination's contents are unspecified and the caller was told.
+// Ranged read: exactly [off, off+len) or refusal. 0 / RES_RANGE_EOF / -1. Never a silent partial.
 int res_pack_read_range(const res_pack *pack, uint32_t entry, uint64_t off, size_t len,
                         void *dst)
 {
@@ -419,10 +397,9 @@ int res_pack_read_range(const res_pack *pack, uint32_t entry, uint64_t off, size
     return pack_read_chunks(pack, e, off, len, dst);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The DETERMINISTIC builder. Same input set, any filesystem enumeration order -> the same
-// bytes: entries are sorted by rid, every offset is a pure function of the sorted contents,
-// padding is zeroed, and nothing time- or machine-dependent is ever written.
+/* DETERMINISTIC builder */
+
+// Same input set -> same bytes. Sorted by rid. Offsets pure. Padding zeroed.
 
 typedef struct pak_buf { uint8_t *p; size_t n, cap; } pak_buf;
 
@@ -508,10 +485,7 @@ static void pak_names_free(pak_names *ns)
     *ns = (pak_names){0};
 }
 
-// Recursive tree walk. rel is "" at the root. A name that is neither a regular file nor a
-// scannable directory, or whose logical path fails the path grammar, is SKIPPED with a WARN:
-// it could never be looked up anyway. Enumeration order does not matter -- the rid sort is
-// what the format's determinism rests on.
+// Recursive tree walk. rel is "" at root. Invalid names SKIPPED with WARN. Order does not matter.
 static int pak_walk(pak_tree *t, const char *rel)
 {
     char abs[MAXPATH * 2];
@@ -574,19 +548,14 @@ static int pak_item_cmp(const void *a, const void *b)
     return x->rid < y->rid ? -1 : x->rid > y->rid ? 1 : 0;
 }
 
-// The already-compressed bypass POLICY HOOK: entries whose bytes are already entropy-coded
-// (encoded images today) are stored RAW -- recompressing them costs CPU on both ends for
-// nothing. The per-chunk encoder fallback below catches everything the policy misses.
+// Already-compressed bypass: entropy-coded entries stored RAW.
 static bool pak_codec_bypass(const char *logical, uint32_t tag)
 {
     (void)logical;
     return tag == RES_TAG_IMAGE_ENC;
 }
 
-// Inputs: a source tree, an output path, the default codec (res_codec_id byte; must be
-// available in this build). Output: 0 with a byte-identical-per-input-set pack durably
-// written via the write protocol, or -1. Duplicate rids (a 64-bit path-hash collision inside
-// one pack) are REFUSED, never resolved by order.
+// Inputs: source tree, output path, default codec. Output: 0 durable pack / -1. Duplicate rids REFUSED.
 int res_pack_build(const char *src_dir, const char *out_pack, uint8_t codec)
 {
     if (src_dir == NULL || out_pack == NULL || !res_codec_available((res_codec_id)codec))

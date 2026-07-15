@@ -3,19 +3,12 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_threads_bridges.h: the waiter, the policy bridge, and the
- * specialty channels.
- *   - anores_t is the 16-byte POD the handle channel promises (static assert);
- *   - unit: topology dispatch (send/recv/drain through all three rings), TRYFAIL
- *     reports full truthfully, WAIT rides out a slow consumer and degrades (not
- *     hangs) against a dead one, latest lane overwrite semantics;
- *   - park/wake soak: a consumer that parks on every empty pass against producers
- *     pushing at randomized intervals -- including the adversarial
- *     publish-just-before-park window; oracles: nothing lost, and wall time is
- *     bounded (a lost wakeup costs at most the park cap, never a hang);
- *   - handle channel: N fake loader threads send deterministic anores_t values, one
- *     pump collects; exactly-once oracle by checksum conservation.
- * Concurrency label: every op runs under the TSan net (build.sh 7). Exit 0 == pass. */
+/* anoptic_threads_bridges.h: waiter, policy bridge, specialty channels.
+ *   - anores_t is the 16-byte POD the handle channel promises;
+ *   - unit: topology dispatch, TRYFAIL full truth, WAIT degrade vs dead consumer, latest overwrite;
+ *   - park/wake soak: consumer parks on empty, producers push with gaps; nothing lost, no hang;
+ *   - handle channel: N loaders, one pump; exactly-once by checksum.
+ * Runs under TSan (build.sh 7). Exit 0 == pass. */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -34,9 +27,10 @@ static int failures = 0;
 
 static_assert(sizeof(anores_t) == 16, "the handle channel's slot promise");
 
-// ---------------------------------------------------------------------------------------------
-// Unit: dispatch and policy.
 
+/* Unit */
+
+// Dispatch and policy.
 static void test_bridge_unit(void)
 {
     // TRYFAIL over each topology: send/recv round trip, truthful full.
@@ -60,7 +54,7 @@ static void test_bridge_unit(void)
         ano_bridge_destroy(&b);
     }
 
-    // WAIT against a DEAD consumer: degrades to false after the stall cap, no hang.
+    // WAIT vs dead consumer: degrades to false after stall cap, no hang.
     anobridge dead;
     CHECK(ano_bridge_init(&dead, ano_mem_parent_default(), ANO_BRIDGE_MPSC,
                           ANO_BRIDGE_WAIT, 2, 8, NULL), "init");
@@ -84,10 +78,10 @@ static void test_bridge_unit(void)
     ano_bridge_latest_destroy(&l);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Park/wake soak. One consumer parks on every empty pass; producers push in bursts
-// with gaps longer than the park window, hammering the publish-vs-park race.
 
+/* Park/Wake Soak */
+
+// Consumer parks on empty; producers burst with gaps > park window.
 #define PW_PRODUCERS 4u
 #define PW_PER_PROD  20000u
 #define PW_TOTAL     (PW_PRODUCERS * PW_PER_PROD)
@@ -115,7 +109,7 @@ static void *pw_producer(void *arg)
 static bool pw_nonempty(void *ctx)
 {
     (void)ctx;
-    // The consumer-private probe: anything committed at head?
+    // Consumer-private probe: anything committed at head?
     anoring_mpsc *r = &pw_bridge.ring.mpsc;
     uint64_t pos = atomic_load_explicit(&r->head, memory_order_relaxed);
     uint64_t s   = atomic_load_explicit(&r->seq[pos & r->mask], memory_order_acquire);
@@ -164,18 +158,17 @@ static void test_park_wake_soak(void)
     for (uint32_t i = 0; i < PW_PRODUCERS; i++)
         ano_thread_join(prod[i], NULL);
     ano_thread_join(cons, NULL);
-    // Joining at all IS the liveness oracle: a lost wakeup costs one park cap, a
-    // hang would trip the ctest TIMEOUT.
+    // Join is the liveness oracle: lost wakeup <= one park cap; hang trips ctest TIMEOUT.
     CHECK(atomic_load(&pw_got) == PW_TOTAL, "park/wake: nothing lost");
     CHECK(atomic_load(&pw_sum_out) == sum_in, "park/wake: sum conserved");
     ano_bridge_destroy(&pw_bridge);
     ano_bridge_waiter_destroy(&pw_waiter);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The handle channel: fake loaders publish anores_t values, one pump collects.
-// Exactly-once by rid-sum conservation; payloads never cross, only handles.
 
+/* Handle Channel */
+
+// Fake loaders publish anores_t, one pump collects. Exactly-once by rid-sum.
 #define HC_LOADERS 4u
 #define HC_PER     25000u
 #define HC_TOTAL   (HC_LOADERS * HC_PER)
@@ -243,7 +236,6 @@ static void test_handle_channel(void)
     ano_bridge_handles_destroy(&hc);
 }
 
-// ---------------------------------------------------------------------------------------------
 
 int main(void)
 {

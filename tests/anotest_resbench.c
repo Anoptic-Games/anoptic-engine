@@ -162,10 +162,10 @@ static void unstage(void)
     scratch_remove_dir(RB_DIR);
 }
 
-// ---------------------------------------------------------------------------------------------
-// (a) Steady-state churn. One warm pass loads every file once (page cache + rows
-// bound), then RB_OPS toggle ops with per-op latency split into load/unload series,
-// then RB_HITS pure cache-hit gets. Runs twice: group 0, then inside an open scope.
+/* (a) Steady-state churn */
+
+// Warm pass binds rows, then RB_OPS toggle ops, then RB_HITS cache gets.
+// Runs twice: group 0, then inside an open scope.
 
 static void run_churn(const char *tag, bool in_scope)
 {
@@ -255,8 +255,9 @@ static void run_churn(const char *tag, bool in_scope)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// (b) Level cycles over the real assets. The set is built once from what exists.
+/* (b) Level cycles */
+
+// Over the real assets. The set is built once from what exists.
 
 static const char *ASSET_GLTFS[] = {
     "assets_real/viking_room.gltf",
@@ -331,8 +332,9 @@ static void run_cycles(bool have_assets)
           "retired domains return chunk bytes to baseline");
 }
 
-// ---------------------------------------------------------------------------------------------
-// (c) Direct-class hand-off: zero-copy release, every rep, pointer-proven.
+/* (c) Direct-class hand-off */
+
+// Zero-copy release, every rep, pointer-proven.
 
 static void run_handoff(bool have_assets)
 {
@@ -402,8 +404,6 @@ static void run_handoff(bool have_assets)
         }
     }
 }
-
-// ---------------------------------------------------------------------------------------------
 
 int main(void)
 {

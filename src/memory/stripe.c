@@ -3,21 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The fourth allocator, plus the two measurement seams the other three were missing.
-//
-// ano_mem_stripe: per-lane chunk chains. Each lane owns its own chunks and its own bump
-// cursor, so lane isolation falls out of ownership: every chunk is acquired at grain
-// alignment, its header is rounded up to a whole number of granules, and its total size is
-// a multiple of the grain -- a grain-sized region therefore lies entirely inside one lane's
-// chunk (or entirely outside the stripe) and can never hold bytes of two different lanes.
-// ano_mem_stripe_planes carves N parallel SoA arrays from ONE parent acquisition with every
-// base on the grain; plane chunks are born full and live on a side list until reset splices
-// them back in as plain lane-0 capacity (the monotonic dedicated-slab idiom).
-//
-// ano_mem_parent_counting: an interposing parent that counts every byte crossing the parent
-// seam into a caller-owned ledger (D19). The interposer's context and a per-block size
-// header live in memory acquired from the INNER parent, so wink-out reclaims them with
-// everything else; over a release-less inner parent the counting parent is release-less too.
+// Stripe + counting parent.
+// Stripe: per-lane chunk chains; chunks grain-aligned, header/size multiples of grain -> lanes never share a grain region.
+// Planes: N SoA arrays from one parent acquisition; born full, side-listed until reset splices into lane 0.
+// Counting parent: interposer ledger at the parent seam. Ctx + size headers from the inner parent.
 
 #include <anoptic_memory_pools.h>
 
@@ -41,18 +30,14 @@ static inline void st_prelease(const ano_mem_parent *p, void *block)
         p->release(p->ctx, block);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The parent ledger.
+/* Parent ledger */
 
 typedef struct cnt_ctx {
     ano_mem_parent inner;
     ano_mem_parent_ledger *ledger;
 } cnt_ctx;
 
-// Per-block layout: [pad ... size_t hdr][size_t total][payload]. The lead-in is a multiple
-// of the requested alignment (floor 16, so both words always fit) and the payload keeps the
-// alignment the child allocator asked for. total counts bytes_back at release; hdr recovers
-// the true base for the inner release.
+// Per-block: [pad ... hdr][total][payload]. Lead-in multiple of align (floor 16); total for bytes_back; hdr recovers base.
 static inline size_t cnt_hdr(size_t align)
 {
     return align < 16 ? 16 : align;
@@ -67,8 +52,7 @@ static void *cnt_acquire(void *ctx, size_t size, size_t align)
     if (size > SIZE_MAX - hdr)
         return NULL;
     size_t total = hdr + size;
-    // Acquire at hdr, not align: the two size_t words before the payload need alignment
-    // even when the child asked for 1, and hdr >= 16 keeps the payload on the child's align.
+    // Acquire at hdr (>= 16): size_t words before payload stay aligned; payload keeps child's align.
     char *base = st_pacquire(&c->inner, total, hdr);
     if (base == NULL)
         return NULL;
@@ -106,35 +90,33 @@ ano_mem_parent ano_mem_parent_counting(ano_mem_parent inner, ano_mem_parent_ledg
         return dead;
     c->inner  = inner;
     c->ledger = ledger;
-    *ledger   = (ano_mem_parent_ledger){0};     // birth is the zero point; the caller owns
-                                                // the storage, not its initialization
+    *ledger   = (ano_mem_parent_ledger){0};     // birth zero; caller owns storage
     ano_mem_parent p = { c, cnt_acquire, inner.release ? cnt_release : NULL };
     return p;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Stripe.
+/* Stripe */
 
 typedef struct stripe_chunk {
     struct stripe_chunk *next;
-    size_t cap;                 // total bytes, header included; a multiple of the grain
+    size_t cap;                 // total bytes incl. header; multiple of grain
 } stripe_chunk;
 
 typedef struct stripe_lane {
-    char *at;                   // next free byte in the current chunk
-    char *end;                  // one past the current chunk
+    char *at;                   // next free byte in current chunk
+    char *end;                  // one past current chunk
     stripe_chunk *head, *tail;
-    stripe_chunk *cur;          // the chunk [at, end) points into
+    stripe_chunk *cur;          // chunk [at, end) points into
 } stripe_lane;
 
 struct ano_mem_stripe {
     ano_mem_parent parent;
     size_t nlanes;
     size_t grain;
-    size_t hdr;                 // per-chunk header, rounded to a whole number of granules
-    size_t chunk_hint;          // acquisition granularity, a multiple of the grain
+    size_t hdr;                 // per-chunk header, rounded to whole granules
+    size_t chunk_hint;          // acquisition granularity, multiple of grain
     stripe_chunk *planes;       // this epoch's plane-set chunks (born full)
-    ano_mem_stats st;           // peaks folded at reset/stats: live only grows in an epoch
+    ano_mem_stats st;           // peaks folded at reset/stats
     stripe_lane lane[];
 };
 
@@ -144,7 +126,7 @@ static inline void stripe_fold_peaks(ano_mem_stats *st)
     if (st->live_blocks > st->peak_blocks) st->peak_blocks = st->live_blocks;
 }
 
-// One chunk of total bytes from the parent, grain-aligned, counted. NULL on exhaustion.
+// One grain-aligned chunk from parent. NULL on exhaustion.
 static stripe_chunk *stripe_chunk_acquire(ano_mem_stripe *s, size_t bytes)
 {
     size_t align = s->grain < 16 ? 16 : s->grain;
@@ -200,7 +182,7 @@ static inline void stripe_point_at(stripe_lane *ln, stripe_chunk *c, size_t hdr)
     ln->end = (char *)c + c->cap;
 }
 
-// The out-of-line half: advance through untouched chunks kept by reset, else grow the lane.
+// Slow path: walk unused chunks, else grow the lane.
 static void *stripe_alloc_slow(ano_mem_stripe *s, stripe_lane *ln, size_t size, size_t align)
 {
     if (ln->cur != NULL) {
@@ -231,7 +213,7 @@ static void *stripe_alloc_slow(ano_mem_stripe *s, stripe_lane *ln, size_t size, 
     ln->tail = c;
     stripe_point_at(ln, c, s->hdr);
     uintptr_t p = ((uintptr_t)ln->at + (align - 1)) & ~(uintptr_t)(align - 1);
-    ln->at = (char *)(p + size);            // cannot overflow: sized to fit
+    ln->at = (char *)(p + size);            // sized to fit
     s->st.live_bytes      += size;
     s->st.requested_bytes += size;
     s->st.live_blocks     += 1;
@@ -247,7 +229,7 @@ void *ano_mem_stripe_alloc(ano_mem_stripe *s, size_t lane, size_t size, size_t a
     else if (!st_is_pow2(align) || align > STRIPE_MAX_ALIGN)
         return NULL;
     stripe_lane *ln = &s->lane[lane];
-    // The two-pointer fast path: one align, one compare, one bump.
+    // Fast path: align, compare, bump.
     uintptr_t p = ((uintptr_t)ln->at + (align - 1)) & ~(uintptr_t)(align - 1);
     if (p + size <= (uintptr_t)ln->end) {
         ln->at = (char *)(p + size);
@@ -264,8 +246,7 @@ int ano_mem_stripe_planes(ano_mem_stripe *s, const size_t *count, const size_t *
 {
     if (s == NULL || count == NULL || elem_size == NULL || out_planes == NULL || n_planes == 0)
         return -1;
-    // Pass 1: offsets. Every base lands on a granule boundary, so consecutive planes never
-    // share a grain-sized region either. Offsets park in out_planes until the base exists.
+    // Pass 1: offsets. Every base on a granule; park offsets in out_planes until base exists.
     size_t total = s->hdr;
     size_t sum   = 0;
     for (size_t i = 0; i < n_planes; i++) {
@@ -299,7 +280,7 @@ void ano_mem_stripe_reset(ano_mem_stripe *s)
 {
     if (s == NULL)
         return;
-    // This epoch's plane chunks become plain lane-0 capacity for the next one.
+    // Plane chunks -> plain lane-0 capacity for next epoch.
     stripe_lane *l0 = &s->lane[0];
     while (s->planes != NULL) {
         stripe_chunk *c = s->planes;
@@ -314,7 +295,7 @@ void ano_mem_stripe_reset(ano_mem_stripe *s)
         if (ln->head != NULL)
             stripe_point_at(ln, ln->head, s->hdr);
     }
-    stripe_fold_peaks(&s->st);          // live only grew since the last fold
+    stripe_fold_peaks(&s->st);
     s->st.live_bytes      = 0;
     s->st.requested_bytes = 0;
     s->st.live_blocks     = 0;
@@ -348,6 +329,6 @@ ano_mem_stats ano_mem_stripe_stats(const ano_mem_stripe *s)
     if (s == NULL)
         return out;
     out = s->st;
-    stripe_fold_peaks(&out);            // fold into the copy: live only grows between resets
+    stripe_fold_peaks(&out);
     return out;
 }

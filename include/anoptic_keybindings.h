@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Physical-key to stable action-id bindings persisted through the resource namespace.
+// Physical-key -> action-id bindings via resource namespace.
 
 #ifndef ANOPTICENGINE_ANOPTIC_KEYBINDINGS_H
 #define ANOPTICENGINE_ANOPTIC_KEYBINDINGS_H
@@ -18,7 +18,10 @@
 #define ANO_KEYBINDINGS_PATH "config/keybindings.json"
 #define ANO_KEYBINDING_COUNT 13u
 
-// Platform-neutral key values deliberately match GLFW's stable logical-key values.
+
+/* Keys */
+
+// Platform-neutral keys match GLFW physical-key tokens.
 enum {
     ANO_KEY_SPACE = 32,
     ANO_KEY_APOSTROPHE = 39,
@@ -35,6 +38,9 @@ enum {
     ANO_KEY_LEFT_CONTROL = 341,
 };
 
+
+/* Actions */
+
 #define ANO_ACTION_MOVE_FORWARD      ANOSTR_SID("move.forward")
 #define ANO_ACTION_MOVE_BACKWARD     ANOSTR_SID("move.backward")
 #define ANO_ACTION_MOVE_LEFT         ANOSTR_SID("move.left")
@@ -48,6 +54,9 @@ enum {
 #define ANO_ACTION_SHADOW_LOD_FINER  ANOSTR_SID("render.shadow_lod_finer")
 #define ANO_ACTION_SHADOW_LOD_COARSER ANOSTR_SID("render.shadow_lod_coarser")
 #define ANO_ACTION_HIZ_TOGGLE        ANOSTR_SID("render.hiz_toggle")
+
+
+/* Types */
 
 typedef struct ano_keybinding {
     anostr_sid action;
@@ -67,6 +76,9 @@ typedef enum ano_keybindings_status {
     ANO_KEYBINDINGS_IO_ERROR,
     ANO_KEYBINDINGS_INVALID_ARGUMENT,
 } ano_keybindings_status;
+
+
+/* Persistence and Lookup */
 
 void ano_keybindings_defaults(ano_keybindings *bindings);
 bool ano_keybindings_validate(const ano_keybindings *bindings);

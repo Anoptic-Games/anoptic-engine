@@ -3,13 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// anoptic_memory_pools.h: monotonic, multipool, pool -- local allocators over a parent.
-// Layout rules that make the math below sound:
-//   - every chunk/slab is acquired at >= its blocks' alignment, headers are rounded up to
-//     that alignment, and strides are multiples of it, so block alignment is positional;
-//   - free lists thread through the first word of each free block (no per-block metadata);
-//   - all control state lives in parent memory, so wink-out (destroying the root mi_heap)
-//     reclaims allocator + chunks + payloads with nothing left to touch.
+// Monotonic, multipool, pool over a parent.
+// Layout: chunks acquired at >= block align; headers/strides multiples of it (positional align).
+// Free lists thread the first word of each free block. Control state in parent memory (wink-out reclaim).
 
 #include <anoptic_memory_pools.h>
 
@@ -21,11 +17,11 @@
 #define CHUNK_BYTES_MIN     4096u
 #define CHUNK_BYTES_MAX     (512u * 1024u)
 #define MAX_ALIGN           4096u
-#define OVERSIZE_HDR        4096u   // keeps the payload 4096-aligned behind the tracking header
+#define OVERSIZE_HDR        4096u   // payload 4096-aligned behind tracking header
 
 static inline size_t align_up(size_t v, size_t a)     { return (v + a - 1) & ~(a - 1); }
 static inline bool   is_pow2(size_t v)                { return v != 0 && (v & (v - 1)) == 0; }
-static inline size_t pow2_ceil(size_t v)              // v >= 1; saturates rather than wraps
+static inline size_t pow2_ceil(size_t v)              // v >= 1; saturates, no wrap
 {
     if (v <= 1) return 1;
     if (v > (SIZE_MAX >> 1) + 1) return 0;
@@ -46,8 +42,7 @@ static inline void stats_on_free(ano_mem_stats *st, size_t bytes)
     st->live_blocks -= 1;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Parents.
+/* Parents */
 
 static void *parent_heap_acquire(void *ctx, size_t size, size_t align)
 {
@@ -57,7 +52,7 @@ static void *parent_heap_acquire(void *ctx, size_t size, size_t align)
 static void parent_heap_release(void *ctx, void *block)
 {
     (void)ctx;
-    mi_free(block);     // mimalloc routes any block back to its owning heap
+    mi_free(block);     // routes home to owning heap
 }
 
 ano_mem_parent ano_mem_parent_heap(mi_heap_t *heap)
@@ -101,31 +96,27 @@ static inline void prelease(const ano_mem_parent *p, void *block)
         p->release(p->ctx, block);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Monotonic.
+/* Monotonic */
 
 typedef struct mono_slab {
     struct mono_slab *next;
     size_t cap;     // total slab bytes, header included
 } mono_slab;
 
-#define MONO_HDR 64u    // slab base is 4096-aligned, so data starts 64-aligned
+#define MONO_HDR 64u    // slab base 4096-aligned -> data starts 64-aligned
 
-// The bump cursor is a bare {at, end} pair (the two-pointer arena fast path); slabs keep
-// no used counter. Within an epoch, slabs before cur are abandoned, slabs after cur are
-// untouched capacity from a previous epoch. Dedicated oversize slabs are born full, so
-// they live on a side list for the epoch and splice back in as plain capacity at reset.
+// Bump cursor {at, end}. Slabs before cur abandoned; after cur = unused capacity from prior epoch.
+// Dedicated oversize slabs live on a side list, splice back as capacity at reset.
 struct ano_mem_monotonic {
-    char *at;               // next free byte in the current slab
-    char *end;              // one past the current slab
+    char *at;               // next free byte in current slab
+    char *end;              // one past current slab
     ano_mem_parent parent;
     mono_slab *head;
     mono_slab *tail;
-    mono_slab *cur;         // the slab [at, end) points into
-    mono_slab *dedicated;   // this epoch's oversize slabs (full from birth)
-    size_t     next_slab;   // bytes to request for the next growth slab
-    ano_mem_stats st;       // peaks are folded at reset/destroy/stats: within an epoch
-                            // live only grows, so the hot path skips the max() dance
+    mono_slab *cur;         // slab [at, end) points into
+    mono_slab *dedicated;   // this epoch's oversize slabs (born full)
+    size_t     next_slab;   // next growth slab request size
+    ano_mem_stats st;       // peaks folded at reset/stats (live only grows in-epoch)
 };
 
 static inline void mono_fold_peaks(ano_mem_monotonic *m)
@@ -155,7 +146,7 @@ ano_mem_monotonic *ano_mem_monotonic_make(ano_mem_parent parent, size_t first_sl
     return m;
 }
 
-// A fresh growth slab of total bytes, linked at the tail. NULL if the parent cannot serve.
+// Fresh growth slab linked at tail. NULL if parent cannot serve.
 static mono_slab *mono_grow(ano_mem_monotonic *m, size_t bytes)
 {
     mono_slab *s = pacquire(&m->parent, bytes, MAX_ALIGN);
@@ -180,10 +171,9 @@ static inline void mono_point_at(ano_mem_monotonic *m, mono_slab *s)
     m->end = (char *)s + s->cap;
 }
 
-// The out-of-line half: advance through untouched capacity, else grow or dedicate.
+// Slow path: walk unused capacity, else grow or dedicate.
 static void *mono_alloc_slow(ano_mem_monotonic *m, size_t size, size_t align)
 {
-    // Untouched slabs from a previous epoch may still serve.
     if (m->cur != NULL) {
         for (mono_slab *s = m->cur->next; s != NULL; s = s->next) {
             uintptr_t data = (uintptr_t)s + MONO_HDR;
@@ -199,8 +189,7 @@ static void *mono_alloc_slow(ano_mem_monotonic *m, size_t size, size_t align)
     }
     size_t want = MONO_HDR + size + align;
     if (want > m->next_slab) {
-        // Dedicated slab: born full, parked on the side list so the bump cursor and the
-        // current slab's remaining tail stay exactly where they are.
+        // Dedicated slab: born full, side-listed; bump cursor and current tail stay put.
         mono_slab *s = pacquire(&m->parent, want, MAX_ALIGN);
         if (s == NULL)
             return NULL;
@@ -225,7 +214,7 @@ static void *mono_alloc_slow(ano_mem_monotonic *m, size_t size, size_t align)
         return NULL;
     mono_point_at(m, s);
     uintptr_t p = ((uintptr_t)m->at + (align - 1)) & ~(uintptr_t)(align - 1);
-    m->at = (char *)(p + size);             // cannot overflow: sized to fit
+    m->at = (char *)(p + size);             // sized to fit
     m->st.live_bytes  += size;
     m->st.live_blocks += 1;
     return (void *)p;
@@ -239,7 +228,7 @@ void *ano_mem_monotonic_alloc(ano_mem_monotonic *m, size_t size, size_t align)
         align = _Alignof(max_align_t);
     if (!is_pow2(align) || align > MAX_ALIGN)
         return NULL;
-    // The two-pointer fast path: one align, one compare, one bump.
+    // Fast path: align, compare, bump.
     uintptr_t p = ((uintptr_t)m->at + (align - 1)) & ~(uintptr_t)(align - 1);
     if (p + size <= (uintptr_t)m->end) {
         m->at = (char *)(p + size);
@@ -254,7 +243,7 @@ void ano_mem_monotonic_reset(ano_mem_monotonic *m)
 {
     if (m == NULL)
         return;
-    // This epoch's dedicated slabs become plain capacity for the next one.
+    // Dedicated slabs -> plain capacity for next epoch.
     while (m->dedicated != NULL) {
         mono_slab *s = m->dedicated;
         m->dedicated = s->next;
@@ -265,7 +254,7 @@ void ano_mem_monotonic_reset(ano_mem_monotonic *m)
     }
     if (m->head != NULL)
         mono_point_at(m, m->head);
-    mono_fold_peaks(m);                 // live only grew since the last fold
+    mono_fold_peaks(m);
     m->st.live_bytes  = 0;
     m->st.live_blocks = 0;
 }
@@ -295,28 +284,28 @@ ano_mem_stats ano_mem_monotonic_stats(const ano_mem_monotonic *m)
     ano_mem_stats s = {0};
     if (m == NULL)
         return s;
-    s = m->st;      // fold peaks into the copy: live only grows between resets
+    s = m->st;      // fold peaks into the copy
     if (s.live_bytes  > s.peak_bytes)  s.peak_bytes  = s.live_bytes;
     if (s.live_blocks > s.peak_blocks) s.peak_blocks = s.live_blocks;
-    s.requested_bytes = s.live_bytes;  // bump charges at request size: identical by construction
+    s.requested_bytes = s.live_bytes;  // bump charges at request size
     return s;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Free-list core, shared by multipool classes and the fixed pool.
+/* Free-list core */
 
+// Shared by multipool classes and the fixed pool.
 typedef struct pool_chunk {
     struct pool_chunk *next;
     size_t bytes;
 } pool_chunk;
 
 typedef struct pool_core {
-    void  *free_head;       // LIFO through the first word of each free block
-    size_t stride;          // serving size; a multiple of align
+    void  *free_head;       // LIFO through first word of each free block
+    size_t stride;          // serving size; multiple of align
     size_t align;
     size_t next_blocks;     // geometric refill, in blocks
-    size_t total_blocks;    // ever carved (the pool cap checks against this)
-    size_t hits;            // cumulative allocs served from this class
+    size_t total_blocks;    // ever carved (cap checks this)
+    size_t hits;            // cumulative allocs from this class
     size_t live;            // blocks currently out
 } pool_core;
 
@@ -333,9 +322,7 @@ static void pool_core_init(pool_core *c, size_t stride, size_t align)
     c->live         = 0;
 }
 
-// Carve one chunk of up to c->next_blocks blocks (at least min_blocks, at most max_blocks
-// when max_blocks != 0) and push them onto the free list. Returns blocks carved, 0 on
-// parent exhaustion. Doubles next_blocks up to the byte target.
+// Carve up to next_blocks onto the free list (clamped by max_blocks). Returns blocks carved, 0 on exhaustion.
 static size_t pool_core_refill(pool_core *c, const ano_mem_parent *parent,
                                pool_chunk **chunks, ano_mem_stats *st, size_t max_blocks)
 {
@@ -363,7 +350,7 @@ static size_t pool_core_refill(pool_core *c, const ano_mem_parent *parent,
     st->parent_bytes    += bytes;
 
     char *base = (char *)ck + hdr;
-    for (size_t i = n; i-- > 0; ) {         // push descending so pops walk ascending
+    for (size_t i = n; i-- > 0; ) {         // push descending -> pops walk ascending
         void *b = base + i * c->stride;
         *(void **)b = c->free_head;
         c->free_head = b;
@@ -393,10 +380,9 @@ static inline void pool_core_push(pool_core *c, void *p)
     c->free_head = p;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Multipool.
+/* Multipool */
 
-typedef struct ov_hdr {                     // oversize passthrough tracking, payload at +4096
+typedef struct ov_hdr {                     // oversize passthrough; payload at +4096
     struct ov_hdr *prev, *next;
     size_t bytes;
 } ov_hdr;
@@ -405,7 +391,7 @@ struct ano_mem_multipool {
     ano_mem_parent parent;
     size_t   min_block, max_block;
     uint32_t log2min, nclasses;
-    bool     explicit_cls;      // classes came from cfg.classes, not the geometric ladder
+    bool     explicit_cls;      // cfg.classes, not geometric
     pool_chunk *chunks;
     ov_hdr     *oversize;
     ano_mem_stats st;
@@ -419,8 +405,7 @@ static inline uint32_t mp_class_of(const ano_mem_multipool *mp, size_t size)
     return (uint32_t)(64 - __builtin_clzll((unsigned long long)(size - 1))) - mp->log2min;
 }
 
-// The class serving `size` (caller guarantees size <= max_block): one clz on the geometric
-// ladder, smallest fitting stride on an explicit list (ascending, so a forward scan).
+// Class for size (<= max_block): clz on geometric, smallest fitting stride on explicit list.
 static inline pool_core *mp_class_for(ano_mem_multipool *mp, size_t size)
 {
     if (!mp->explicit_cls)
@@ -431,8 +416,7 @@ static inline pool_core *mp_class_for(ano_mem_multipool *mp, size_t size)
     return &mp->cls[i];
 }
 
-// An explicit list is valid when every class is a multiple of 16 and the list ascends
-// strictly (D20: each a multiple of 16; the last is max_block).
+// Explicit list: each class multiple of 16, strictly ascending; last is max_block.
 static bool mp_classes_valid(const size_t *classes, size_t n)
 {
     if (n == 0 || n > UINT32_MAX)
@@ -482,9 +466,7 @@ ano_mem_multipool *ano_mem_multipool_make(ano_mem_parent parent,
     mp->nclasses     = nclasses;
     mp->explicit_cls = explicit_cls;
     for (uint32_t i = 0; i < nclasses; i++) {
-        // Positional alignment: the largest power of 2 dividing the stride (== the stride
-        // itself on the geometric ladder), capped at 4096. Explicit classes are multiples
-        // of 16, so every block is at least 16-aligned.
+        // Positional align: largest pow2 dividing stride, capped at 4096. Explicit classes >= 16-aligned.
         size_t stride = explicit_cls ? cfg->classes[i] : minb << i;
         size_t align  = stride & (~stride + 1);
         if (align > MAX_ALIGN)
@@ -523,7 +505,7 @@ static void *mp_oversize_alloc(ano_mem_multipool *mp, size_t size)
 
 static void mp_oversize_free(ano_mem_multipool *mp, void *p, size_t size)
 {
-    (void)size;                                 // the header records the truth; the claim can lie
+    (void)size;                                 // header records the truth
     ov_hdr *h = (ov_hdr *)((char *)p - OVERSIZE_HDR);
     size_t rec = h->bytes - OVERSIZE_HDR;
     if (h->prev) h->prev->next = h->next;
@@ -532,7 +514,7 @@ static void mp_oversize_free(ano_mem_multipool *mp, void *p, size_t size)
     mp->st.chunk_bytes     -= h->bytes;
     mp->st.chunk_count     -= 1;
     if (mp->parent.release != NULL)
-        mp->st.parent_releases += 1;            // a releaseless parent keeps the block
+        mp->st.parent_releases += 1;            // releaseless parent keeps the block
     mp->st.requested_bytes -= rec;
     stats_on_free(&mp->st, rec);
     prelease(&mp->parent, h);
@@ -569,8 +551,7 @@ void ano_mem_multipool_free(ano_mem_multipool *mp, void *p, size_t size)
     pool_core *c = mp_class_for(mp, size);
     pool_core_push(c, p);
     c->live -= 1;
-    // requested is LIVE-requested; a legal same-class free at a different size makes it an
-    // approximation, so it saturates rather than wraps -- and resyncs to zero at quiescence.
+    // requested is LIVE; same-class free at a different size saturates (resyncs at quiescence).
     mp->st.requested_bytes -= size < mp->st.requested_bytes ? size : mp->st.requested_bytes;
     stats_on_free(&mp->st, c->stride);
     if (mp->st.live_blocks == 0)
@@ -624,8 +605,7 @@ ano_mem_stats ano_mem_multipool_stats(const ano_mem_multipool *mp)
     return mp ? mp->st : z;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Fixed pool.
+/* Fixed pool */
 
 struct ano_mem_pool {
     ano_mem_parent parent;
@@ -649,7 +629,7 @@ ano_mem_pool *ano_mem_pool_make(ano_mem_parent parent, size_t block_size,
     if (!is_pow2(block_align) || block_align > MAX_ALIGN)
         return NULL;
     if (block_align < alignof(void *))
-        block_align = alignof(void *);          // free-list links live IN the block
+        block_align = alignof(void *);          // free-list links live in the block
 
     size_t stride = block_size < sizeof(void *) ? sizeof(void *) : block_size;
     stride = align_up(stride, block_align);
@@ -727,6 +707,6 @@ ano_mem_stats ano_mem_pool_stats(const ano_mem_pool *p)
     if (p == NULL)
         return z;
     z = p->st;
-    z.requested_bytes = z.live_blocks * p->usable;  // every request is exactly block_size
+    z.requested_bytes = z.live_blocks * p->usable;  // every request is block_size
     return z;
 }

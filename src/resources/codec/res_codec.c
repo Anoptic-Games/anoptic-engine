@@ -3,13 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Block compression over vendored LZ4 (external/lz4, BSD-2-Clause; see ATTRIBUTIONS.md).
-// ZSTD is a build option (ANOPTIC_ZSTD, default OFF) and GDEFLATE's codec byte is RESERVED:
-// a TOC that names an unavailable codec is REFUSED, never guessed.
-//
-// Every entry point is total: hostile bytes yield 0, never UB. LZ4_decompress_safe is the
-// safe decoder by name and by contract -- it never reads past src_len and never writes past
-// dst_cap, which is what lets a packed chunk arrive from an untrusted file at all.
+// Block compression over vendored LZ4. ZSTD is build option. GDEFLATE reserved.
+// Hostile bytes yield 0, never UB. LZ4_decompress_safe never reads past src_len or writes past dst_cap.
 
 #include "res_codec.h"
 
@@ -56,8 +51,7 @@ size_t res_codec_bound(res_codec_id id, size_t src_len)
     }
 }
 
-// Output: bytes written, or 0 when the result would not be SMALLER than the input (the
-// builder then emits RAW -- an incompressible chunk must never cost more on disk).
+// Output: bytes written, or 0 when not smaller than input (builder emits RAW).
 size_t res_codec_encode(res_codec_id id, const void *src, size_t src_len,
                         void *dst, size_t dst_cap)
 {
@@ -88,8 +82,7 @@ size_t res_codec_encode(res_codec_id id, const void *src, size_t src_len,
     }
 }
 
-// dst_cap is the chunk's KNOWN uncompressed length (from the TOC), never a guess.
-// Output: bytes written, or 0 on ANY malformed input.
+// dst_cap is the known uncompressed length. Output: bytes written, or 0 on malformed input.
 size_t res_codec_decode(res_codec_id id, const void *src, size_t src_len,
                         void *dst, size_t dst_cap)
 {

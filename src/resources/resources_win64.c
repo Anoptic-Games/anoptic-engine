@@ -3,12 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Win64 half of resources_os.h. Paths arrive as UTF-8 with '/' separators and are
-// converted to UTF-16 at this edge (fixed stack buffers -- MAXPATH bounds them; the
-// anostr_to_utf16 route is for anostr_t values, not NUL-terminated edge strings).
-// Durability per plan: temp opened share-mode 0; ReplaceFileW when the target exists,
-// else MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH); both retried 5x with 100 ms
-// backoff on sharing violations. Directory fsync does not exist here: no-op success.
+// Win64 half of resources_os.h. UTF-8 '/' paths convert to UTF-16 at this edge (MAXPATH stack buffers).
+// Durability: temp share-mode 0. ReplaceFileW or MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH), 5x100ms on sharing violations.
+// Directory fsync is no-op success.
 
 #ifdef _WIN32
 
@@ -32,7 +29,7 @@ bool rmos_exists(const char *abs)
     wchar_t w[WPATH_CAP];
     if (!to_wide(abs, w, WPATH_CAP))
         return false;
-    // No FILE_FLAG_BACKUP_SEMANTICS: a directory refuses to open, which is what we want.
+    // No FILE_FLAG_BACKUP_SEMANTICS: a directory refuses to open.
     HANDLE h = CreateFileW(w, GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -75,9 +72,8 @@ int rmos_read_chunk(rmos_file f, void *buf, size_t cap, size_t *got)
     return 0;
 }
 
-// Positional. ReadFile with an OVERLAPPED offset on a synchronous handle is positional and
-// blocking, but it ALSO advances the file pointer (MSDN) -- so one handle is SINGLE-OWNER.
-// A short read is NOT EOF: only *got == 0 is. The caller loops.
+// Positional. OVERLAPPED ReadFile also advances the file pointer. One handle is SINGLE-OWNER.
+// Short read is NOT EOF. Only *got == 0 is. Caller loops.
 int rmos_read_at(rmos_file f, uint64_t off, void *buf, size_t cap, size_t *got)
 {
     *got = 0;
@@ -93,8 +89,7 @@ int rmos_read_at(rmos_file f, uint64_t off, void *buf, size_t cap, size_t *got)
     return 0;
 }
 
-// Advisory only. Win32 hints are open-time flags (FILE_FLAG_SEQUENTIAL_SCAN), so there is
-// nothing to say after the fact; a refused hint is not a failure.
+// Advisory only. Win32 hints are open-time flags. Refused hint is not a failure.
 int rmos_advise(rmos_file f, uint64_t off, uint64_t len, rmos_advice advice)
 {
     (void)f; (void)off; (void)len; (void)advice;

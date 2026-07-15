@@ -3,25 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Anoptic Resource Manager -- the graphics extension. Where parsing genuinely lives:
-// glTF understanding (cgltf) and image decode (stb_image) happen INSIDE
-// src/resources/graphics/ and appear nowhere else. Ingest runs through a monotonic
-// parse-staging arena that winks out before return; the conditioned scene lives in
-// manager memory as an owned resource, served through the same anores_t grammar as
-// everything else: handles in, views out, generations retire.
-//
-// What a scene view serves is FILE TRUTH: geometry conditioned to the engine's vertex
-// layout, the node hierarchy, skins and animations, materials with every factor and
-// texture reference the file declares (feature bits below), cameras, punctual lights,
-// and image entries -- as logical paths for URI-addressed images, or as byte ranges
-// INSIDE the scene block for embedded (data: URI and GLB bufferView) images. GPU
-// concerns -- which features the active pipelines support, which images to decode,
-// bindless registration, SSBO baking -- stay in the renderer, applied ON these views.
-//
-// FROZEN (freeze item 11). This header is the final form: the vertex carries every
-// attribute the engine will ever condition, so W6 (ingest) and W7 (renderer) work in
-// parallel without a layout fight. The renderer catches up to the widened vertex at
-// M13 (vertex.h, the VkVertexInputAttributeDescriptions, and every shader).
+// Graphics extension. glTF (cgltf) and image decode (stb_image) live only in src/resources/graphics/.
+// Ingest uses a monotonic parse-staging arena winked before return. Conditioned scene is manager-owned under "<source>#gfx".
+// Scene view is FILE TRUTH for geometry/materials/URI images. GPU pipeline/bindless/SSBO concerns stay in the renderer.
+// Vertex layout fields are fixed. Current ingest fills position/normal/texcoord0 only; other vertex attrs stay zero.
+// Skins/animations/samplers/cameras/lights are typed here but not conditioned or served yet (view leaves them zero).
 
 #ifndef ANOPTICENGINE_ANOPTIC_RES_GRAPHICS_H
 #define ANOPTICENGINE_ANOPTIC_RES_GRAPHICS_H
@@ -29,18 +15,16 @@
 #include <stdint.h>
 
 #include "anoptic_filesystem.h"   // MAXPATH: image entries carry logical paths
-#include "anoptic_math.h"         // mat4, row-major, the engine-wide convention
+#include "anoptic_math.h"         // mat4, row-major
 #include "anoptic_resources.h"
 
-// The scene block's kind tag. Stable on disk, in packs, forever.
+// Scene block kind tag. Stable on disk and in packs.
 #define ANORESGFX_TAG_SCENE   0x58464752u   // 'RGFX'
-#define ANORESGFX_TAG_BINDING 0x444E4247u   // 'GBND' -- the derived GPU binding table (M12)
+#define ANORESGFX_TAG_BINDING 0x444E4247u   // 'GBND' derived GPU binding table
 
-// ---------------------------------------------------------------------------------------------
-// Material feature bits: pure file truth (what the glTF declares), the canonical
-// definition. Values deliberately mirror the renderer's PbrFeatureFlags so the
-// integration masks them straight against pipeline capabilities (static_asserted at
-// the consumer). New bits only ever APPEND: an existing bit never moves.
+/* Material feature bits */
+
+// File truth from glTF. Mirror renderer PbrFeatureFlags. Append only.
 
 enum {
     ANORESGFX_PBR_NONE                       = 0,
@@ -72,25 +56,23 @@ enum {
     ANORESGFX_PBR_UNLIT                      = 1 << 25,  // KHR_materials_unlit
 };
 
-// ---------------------------------------------------------------------------------------------
-// The conditioned scene, all views into one manager-owned block.
+/* Conditioned scene views */
 
-// The engine vertex, final form. 96 bytes. Absent attributes carry their glTF defaults:
-// normal (0,1,0), tangent (1,0,0,1), color (1,1,1,1), uv 0, joints 0, weights (0,0,0,0).
-// The renderer's Vertex becomes exactly this at M13.
+// Views into one manager-owned block.
+
+// Engine vertex, 96 bytes. Ingest fills position, normal (default 0,1,0), texcoord0. Other fields stay zero.
 typedef struct anoresgfx_vertex {
     float    position[3];
     float    normal[3];
     float    tangent[4];    // xyz = tangent, w = bitangent handedness sign (+/-1)
-    float    color[4];      // COLOR_0, promoted to linear float4
+    float    color[4];      // COLOR_0, linear float4
     float    texcoord[2];   // TEXCOORD_0
     float    texcoord1[2];  // TEXCOORD_1
-    uint16_t joints[4];     // JOINTS_0, widened to u16 regardless of the file's component type
-    float    weights[4];    // WEIGHTS_0, normalized to sum 1 (or all-zero when unskinned)
+    uint16_t joints[4];     // JOINTS_0, widened to u16
+    float    weights[4];    // WEIGHTS_0
 } anoresgfx_vertex;
 
-// One drawable primitive: ranges into the scene's shared vertex/index arrays.
-// Primitives without positions or indices are dropped at ingest (with a log line).
+// Drawable primitive: ranges into shared vertex/index arrays. Dropped at ingest if no positions or indices.
 typedef struct anoresgfx_prim {
     uint32_t vertex_first, vertex_count;
     uint32_t index_first,  index_count;     // indices are primitive-local (0-based)
@@ -107,25 +89,22 @@ typedef struct anoresgfx_node {
     int32_t  mesh;                          // into meshes[],     -1 = none
     int32_t  parent;                        // into nodes[],      -1 = root
     uint32_t child_first, child_count;      // into children[] (node indices)
-    int32_t  skin;                          // into skins[],      -1 = none
-    int32_t  camera;                        // into cameras[],    -1 = none
-    int32_t  light;                         // into lights[],     -1 = none
+    int32_t  skin;                          // reserved, ingest leaves 0
+    int32_t  camera;                        // reserved, ingest leaves 0
+    int32_t  light;                         // reserved, ingest leaves 0
     uint32_t _pad;
 } anoresgfx_node;
 
-// ---------------------------------------------------------------------------------------------
-// Skinning.
+/* Skinning (typed, not conditioned yet) */
 
-// A skin: a joint span into joints[] (node indices) and the matching inverse-bind matrices.
 typedef struct anoresgfx_skin {
     char     name[64];
     uint32_t joint_first, joint_count;      // into joints[] and inverse_binds[], parallel
-    int32_t  skeleton;                      // into nodes[], -1 = none (the common root)
+    int32_t  skeleton;                      // into nodes[], -1 = none
     uint32_t _pad;
 } anoresgfx_skin;
 
-// ---------------------------------------------------------------------------------------------
-// Animation. Samplers hold the keyframe data; channels bind a sampler to a node property.
+/* Animation (typed, not conditioned yet) */
 
 typedef enum anoresgfx_interp {
     ANORESGFX_INTERP_LINEAR = 0,
@@ -144,7 +123,7 @@ typedef struct anoresgfx_anim_sampler {
     uint32_t input_first,  input_count;     // into anim_input[]  (keyframe times, seconds)
     uint32_t output_first, output_count;    // into anim_output[] (floats)
     uint32_t interpolation;                 // anoresgfx_interp
-    uint32_t components;                    // floats per key (3, 4, or the morph target count)
+    uint32_t components;                    // floats per key (3, 4, or morph target count)
 } anoresgfx_anim_sampler;
 
 typedef struct anoresgfx_anim_channel {
@@ -157,14 +136,13 @@ typedef struct anoresgfx_anim_channel {
 typedef struct anoresgfx_animation {
     char     name[64];
     uint32_t channel_first, channel_count;  // into anim_channels[]
-    float    duration;                      // seconds; the max input time across its samplers
+    float    duration;                      // seconds, max input time across samplers
     uint32_t _pad;
 } anoresgfx_animation;
 
-// ---------------------------------------------------------------------------------------------
-// Texture references and the sampler table.
+/* Texture references and the sampler table */
 
-// glTF sampler enums, verbatim (0 = "unspecified, pick the engine default").
+// glTF sampler enums, verbatim (0 = unspecified, engine default).
 typedef struct anoresgfx_sampler {
     uint32_t mag_filter, min_filter;        // GL enums as the file declares them
     uint32_t wrap_s, wrap_t;
@@ -174,10 +152,7 @@ enum {
     ANORESGFX_TEXREF_TRANSFORM = 1u << 0,   // KHR_texture_transform present on this slot
 };
 
-// A texture reference: an index into images[], -1 = absent. scale carries the slot's scalar
-// (normal scale, occlusion strength), 1.0 elsewhere. uv_set is the TEXCOORD_n this slot
-// samples (0 or 1; the vertex carries both). The KHR_texture_transform fields are the
-// IDENTITY (offset 0, rotation 0, scale 1) unless ANORESGFX_TEXREF_TRANSFORM is set.
+// Texture ref into images[], -1 = absent. Ingest fills image + scale. sampler/uv/xform stay 0.
 typedef struct anoresgfx_texref {
     int32_t  image;
     float    scale;
@@ -189,30 +164,23 @@ typedef struct anoresgfx_texref {
     float    xform_scale[2];
 } anoresgfx_texref;
 
-// ---------------------------------------------------------------------------------------------
-// Images. A file-referenced image is a LOGICAL path resolved against the glTF's own
-// directory (URI percent-decoding and ./.. collapsing done). An EMBEDDED image (base64
-// data: URI, or a GLB bufferView) has an empty path and its encoded bytes live INSIDE the
-// scene block at [bytes_off, bytes_off + bytes_len) -- fetch them with
-// ano_resgfx_image_bytes. srgb aggregates the slots that sample it as color (a decode hint,
-// exactly today's renderer classification). Exactly one of path[0] and bytes_len is set; an
-// image with neither was dropped at ingest, loudly.
+/* Images */
+
+// URI images carry a logical path. Embedded/data-URI images are skipped at ingest (path empty, bytes_len 0).
 
 typedef struct anoresgfx_image {
     char     path[MAXPATH];
     uint32_t srgb;
     uint32_t mime;                          // FOURCC-ish: 'PNG ', 'JPEG', 'KTX2', 0 = unknown
-    uint64_t bytes_off;                     // offset INTO THE SCENE BLOCK, 0 when URI-addressed
-    uint64_t bytes_len;                     // 0 when URI-addressed
+    uint64_t bytes_off;                     // reserved: offset INTO THE SCENE BLOCK
+    uint64_t bytes_len;                     // reserved: 0 today
 } anoresgfx_image;
 
 #define ANORESGFX_MIME_PNG  0x20474E50u   // 'PNG '
 #define ANORESGFX_MIME_JPEG 0x4745504Au   // 'JPEG'
 #define ANORESGFX_MIME_KTX2 0x3258544Bu   // 'KTX2'
 
-// ---------------------------------------------------------------------------------------------
-// Cameras and punctual lights (KHR_lights_punctual). Both are FILE TRUTH; the renderer
-// decides what to do with them. A node's camera/light index points here.
+/* Cameras and lights (typed, not conditioned yet) */
 
 typedef enum anoresgfx_camera_type {
     ANORESGFX_CAMERA_PERSPECTIVE = 0,
@@ -223,7 +191,7 @@ typedef struct anoresgfx_camera {
     char     name[64];
     uint32_t type;                          // anoresgfx_camera_type
     float    yfov;                          // perspective: vertical fov, radians
-    float    aspect;                        // perspective: 0 = "use the viewport's"
+    float    aspect;                        // perspective: 0 = use viewport
     float    xmag, ymag;                    // orthographic half-extents
     float    znear, zfar;                   // zfar 0 = infinite perspective
 } anoresgfx_camera;
@@ -243,9 +211,10 @@ typedef struct anoresgfx_light {
     uint32_t type;                          // anoresgfx_light_type
 } anoresgfx_light;
 
-// ---------------------------------------------------------------------------------------------
-// Material: every factor and reference the file declares; `features` says which groups carry
-// meaning. Untouched groups hold glTF defaults, texrefs hold image -1.
+/* Material */
+
+// Factors and refs the file declares. `features` marks meaningful groups. Untouched groups hold glTF defaults.
+// TEXTURE_TRANSFORM / UNLIT feature bits are not stamped yet.
 
 typedef struct anoresgfx_material {
     char     name[64];
@@ -297,10 +266,11 @@ typedef struct anoresgfx_material {
     float emissive_strength;
 } anoresgfx_material;
 
-// ---------------------------------------------------------------------------------------------
-// The scene view: counted arrays borrowing manager memory, valid until the scene handle's
-// generation retires. A zeroed struct means the handle was stale, sentinel, or the block
-// failed validation.
+/* Scene view */
+
+// Counted arrays borrowing manager memory until the scene handle's generation retires.
+// Served today: vertices/indices/prims/meshes/nodes/children/materials/images/roots.
+// Skins/anims/samplers/cameras/lights stay zero. Zeroed means stale, sentinel, or failed validation.
 
 typedef struct anoresgfx_scene {
     const anoresgfx_vertex   *vertices;   uint32_t vertex_count;
@@ -328,32 +298,19 @@ typedef struct anoresgfx_scene {
     const anoresgfx_light    *lights;     uint32_t light_count;
 } anoresgfx_scene;
 
+/* Ingest and serve */
 
-// ---------------------------------------------------------------------------------------------
-// Ingest and serve.
-
-// Ingest a glTF resource into a conditioned scene. src is a live handle to the .gltf/.glb
-// bytes (ano_res_get); sibling buffers (.bin), data: URIs, and GLB chunks resolve through
-// the namespace against the source's own logical directory. The scene becomes an owned
-// resource under res_rid_derived(src_rid, 'RGFX') -- single-copy: repeat ingest of the same
-// source returns the same handle, and no string key exists for it. src itself is left
-// loaded (unload it if the raw JSON is no longer wanted). Sentinel on parse failure, one
-// log line. Parse staging is a monotonic arena winked out before return; zero loose
-// malloc/free.
+// Ingest glTF into a conditioned scene adopted as "<source>#gfx". Single-copy. Staging arena winked before return. Sentinel on parse failure.
 anores_t ano_resgfx_model(ano_res_lifetime lifetime, const ano_res_read *read, anores_t src);
 
-// The scene view for a conditioned handle. Its pointers die with read; zeroed on refusal.
+// Scene view for a conditioned handle. Pointers die with read. Zeroed on refusal.
 anoresgfx_scene ano_resgfx_scene(const ano_res_read *read, anores_t scene);
 
-// The encoded bytes of an EMBEDDED image (data: URI or GLB bufferView), borrowed from the
-// scene block. Empty for a URI-addressed image (use ano_res_get on images[i].path), for an
-// out-of-range index, or outside an active read scope.
+// Declared. No definition yet.
 anostr_t ano_resgfx_image_bytes(const ano_res_read *read, anores_t scene, uint32_t image);
 
 // Decoded pixels, tightly packed RGBA8, top-left origin.
-// TODO(W6/W7, M12): pixels become MANAGER-OWNED -- decode into the staging arena, copy once
-// into the planned home, and hand back an anores_t. Until then the block is the CALLER's
-// (free with ano_aligned_free) and the src handle stays loaded.
+// CALLER frees rgba with ano_aligned_free. src must stay loaded for the borrow that fed decode.
 typedef struct anoresgfx_pixels {
     uint8_t *rgba;
     uint32_t width, height;

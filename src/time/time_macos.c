@@ -3,13 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Darwin timing, counterpart of Linux CLOCK_MONOTONIC and Windows QPC.
-// mach_absolute_time() reads the hardware timebase counter (no syscall).
-// Convert to nanoseconds via the mach_timebase_info() numer/denom ratio.
-// Apple Silicon ticks at 24 MHz, so raw ticks are NOT nanoseconds without the ratio applied.
-// The ratio is cached atomically and the conversion is overflow-safe.
-// macOS libc has no clock_nanosleep; ano_sleep waits on mach_wait_until deadlines with a
-// spun tail, since the kernel stretches plain relative sleeps under QoS timer leeway.
+// Darwin: mach_absolute_time() (no syscall). ns via mach_timebase_info numer/denom (AS: 24 MHz, not ns).
+// ano_sleep: mach_wait_until absolute deadlines + spin tail (no clock_nanosleep, QoS leeway stretches relative waits).
 
 #if defined(__APPLE__)
 #include "anoptic_time.h"
@@ -22,8 +17,7 @@
 
 /* Precision Timestamps */
 
-// Cache the timebase frequency in ticks/second, acquired once.
-// ticks/sec = 1e9 * denom / numer.
+// Cache timebase frequency in ticks/s, once. ticks/sec = 1e9 * denom / numer.
 static _Atomic uint64_t cachedTimebaseFreq = 0;
 
 static int initialize_timebase() {
@@ -43,7 +37,7 @@ static int initialize_timebase() {
     return 0;
 }
 
-// Bare timebase counter, no conversion. mach_absolute_time() is a register read, no syscall, no divides.
+// Bare timebase counter, no conversion. mach_absolute_time() is a register read.
 uint64_t ano_timestamp_ticks() {
     return mach_absolute_time();
 }
@@ -165,11 +159,8 @@ static uint64_t ano_ns_to_ticks(uint64_t ns) {
 // Tail window spun instead of slept: kernel timer leeway cannot land closer than this.
 #define ANO_SLEEP_SPIN_NS 500000ULL
 
-// Use OS time facilities for high-res sleep that DOES give up thread execution.
-// The kernel stretches relative waits up to ~1.5x under QoS timer leeway — nanosleep and
-// mach_wait_until measure identically — so wait on an absolute deadline in half-of-remainder
-// steps (immune below 2x stretch), then spin the last ANO_SLEEP_SPIN_NS. The absolute
-// deadline also re-arms early wakeups (KERN_ABORTED) without drift.
+// High-res sleep: absolute mach_wait_until in half-remainder steps, spin last ANO_SLEEP_SPIN_NS.
+// Half-remainder absorbs up to ~2x QoS stretch. Loop ignores early returns; absolute deadline holds.
 int ano_sleep(uint64_t us) {
 
     uint64_t waitTicks = ano_ns_to_ticks(us * 1000ULL);

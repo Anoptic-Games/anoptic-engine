@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// anoptic_threads_bridges.h implementation: the waiter (the log drainer's park/wake
-// packaged), the policy-carrying bridge over the collections rings, and the specialty
-// channel constructors. Platform-free: C23 atomics + the anothread_* layer only.
+// Waiter, policy bridge, specialty constructors. C23 atomics + anothread_* only.
 
 #include <anoptic_threads_bridges.h>
 
@@ -14,17 +12,15 @@
 #include <string.h>
 #include <time.h>
 
-// The WAIT policy's backoff, mirroring the log ring's full-ring discipline: escalate
-// 64 ns doubling to 8192 ns, snap back on progress, degrade to false after the stall
-// cap so a dead consumer cannot block a producer forever.
+// WAIT backoff: 64..8192 ns doubling, false after BRIDGE_STALL_LIMIT.
 #define BRIDGE_BACKOFF_MIN_NS 64u
 #define BRIDGE_BACKOFF_MAX_NS 8192u
 #define BRIDGE_STALL_LIMIT    4096u
 
 #define BRIDGE_PARK_DEFAULT_US 1000u
 
-// ---------------------------------------------------------------------------------------------
-// The waiter.
+
+/* Waiter */
 
 int ano_bridge_waiter_init(anobridge_waiter *w)
 {
@@ -56,9 +52,7 @@ void ano_bridge_park(anobridge_waiter *w, bool (*nonempty)(void *ctx), void *ctx
     if (cap_us == 0)
         cap_us = BRIDGE_PARK_DEFAULT_US;
     ano_mutex_lock(&w->mtx);
-    // Flag first (seq_cst), THEN the recheck: a producer that published before seeing
-    // the flag is caught by the recheck; one that published after sees the flag and
-    // signals. The cap bounds the one remaining sliver.
+    // parked seq_cst first, then recheck. Cap bounds the race window.
     atomic_store_explicit(&w->parked, true, memory_order_seq_cst);
     if (nonempty == NULL || !nonempty(ctx)) {
         struct timespec ts;
@@ -77,14 +71,14 @@ void ano_bridge_wake(anobridge_waiter *w)
     if (w == NULL)
         return;
     if (!atomic_load_explicit(&w->parked, memory_order_seq_cst))
-        return;                                 // awake consumer: one load, no lock
+        return;                                 // awake: one load, no lock
     ano_mutex_lock(&w->mtx);
     ano_thread_cond_signal(&w->cv);
     ano_mutex_unlock(&w->mtx);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The bridge.
+
+/* Bridge */
 
 bool ano_bridge_init(anobridge *b, ano_mem_parent parent, anobridge_topo topo,
                      anobridge_policy policy, uint32_t capacity, uint32_t stride,
@@ -135,7 +129,7 @@ bool ano_bridge_send(anobridge *b, const void *elem)
         return false;
     bool sent = bridge_push(b, elem);
     if (!sent && b->policy == ANO_BRIDGE_WAIT) {
-        // Full: back off while the consumer catches up; escalate, then degrade.
+        // WAIT: escalate backoff, then degrade.
         uint64_t backoff = BRIDGE_BACKOFF_MIN_NS;
         for (uint32_t stall = 0; stall < BRIDGE_STALL_LIMIT; stall++) {
             ano_busywait(backoff);
@@ -181,8 +175,8 @@ uint32_t ano_bridge_drain(anobridge *b, void *out, uint32_t max)
     return n;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Specialty constructors.
+
+/* Specialty Constructors */
 
 bool ano_bridge_handles_init(anobridge_handles *hb, ano_mem_parent parent,
                              anobridge_topo topo, uint32_t capacity,
@@ -190,7 +184,7 @@ bool ano_bridge_handles_init(anobridge_handles *hb, ano_mem_parent parent,
 {
     if (hb == NULL)
         return false;
-    // Sized upstream so full is unreachable by construction; WAIT is belt and braces.
+    // WAIT: capacity sized upstream so full is unreachable.
     return ano_bridge_init(&hb->b, parent, topo, ANO_BRIDGE_WAIT, capacity,
                            (uint32_t)sizeof(anores_t), waiter);
 }

@@ -3,16 +3,12 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* The collections grid vs the mutex baseline: every lock-free flavor against a
- * mutex+array-queue at the same capacity/stride/layout, producers spinning on full,
- * consumers on empty, count conservation checked every run.
- *   grid: spsc 1x1, mpsc 4x1, mpsc 8x1, spmc 1x4, spmc 1x8, mpmc 4x4, mpmc 8x8
- *         x  stride {16, 64}
- *   plus: the FAA ticket dispenser vs a mutex-guarded counter, 8 threads.
- * Metrics: wall Mops/s end to end, plus producer-0 push-latency percentiles (the
- * enqueue cost a game thread actually pays). Merge bar: every lock-free flavor >= the
- * mutex baseline at >= 4 threads on throughput.
- * DISABLED in ctest; run by hand from a -O3 build (build.sh 8 / build.bat 8). */
+/* Lock-free rings vs mutex+array baseline at same capacity/stride.
+ * Grid: spsc 1x1, mpsc 4x1/8x1, spmc 1x4/1x8, mpmc 4x4/8x8 x stride {16,64}.
+ * Plus: FAA ticket vs mutex counter, 8 threads.
+ * Metrics: wall Mops/s, producer-0 push latency percentiles.
+ * Merge bar: every lock-free flavor >= mutex at >= 4 threads.
+ * DISABLED in ctest. Run -O3 by hand (build.sh 8 / build.bat 8). */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -29,8 +25,9 @@
 
 static uint64_t g_sink;
 
-// ---------------------------------------------------------------------------------------------
-// The mutex baseline: same bounded array queue, one lock around everything.
+/* Mutex Baseline */
+
+// Bounded array queue, one lock.
 
 typedef struct mtxq {
     anothread_mutex_t mtx;
@@ -81,7 +78,8 @@ static bool mtxq_pop(mtxq *q, void *out)
     return true;
 }
 
-// ---------------------------------------------------------------------------------------------
+/* Run Config */
+
 // One config, one run. kind: 0 spsc, 1 mpsc, 2 mpmc, 3 mutexq, 4 spmc.
 
 typedef struct runcfg {
@@ -101,8 +99,8 @@ static uint64_t g_lat[RB_SAMPLE];
 typedef struct workctx {
     const runcfg *cfg;
     uint32_t      id;
-    uint32_t      count;      // items this thread produces/consumes
-    bench_lat    *lat;        // producer 0 samples its push
+    uint32_t      count;      // items this thread
+    bench_lat    *lat;        // producer-0 push samples
 } workctx;
 
 static bool push_one(int kind, const void *e)
@@ -225,7 +223,8 @@ static double run_config(const runcfg *cfg, bool report_lat)
     return mops;
 }
 
-// ---------------------------------------------------------------------------------------------
+/* Ticket Bench */
+
 // Ticket vs mutex counter, 8 threads x 500k.
 
 static anoticket_t       tb_ticket;
@@ -275,8 +274,6 @@ static void run_tickets(void)
     printf("ticket 8x500k: FAA %.1f ms (%.1f Mops/s)  vs  mutex %.1f ms (%.1f Mops/s)\n",
            faaMs, 4.0 / (faaMs / 1e3) , mtxMs, 4.0 / (mtxMs / 1e3));
 }
-
-// ---------------------------------------------------------------------------------------------
 
 int main(void)
 {

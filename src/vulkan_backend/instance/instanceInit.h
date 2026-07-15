@@ -14,7 +14,7 @@
 #include "vulkan_backend/texture/texture.h"
 #include "anoptic_time.h"
 
-// Function interfaces
+/* Function Interfaces */
 
 // Initializes a Vulkan instance
 VkResult createInstance(VulkanContext* ctx);
@@ -51,8 +51,6 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state);
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels);
 
 bool createImageViews(VulkanContext* ctx, RendererState* state);
-
-
 
 // Creates a command pool
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
@@ -107,7 +105,7 @@ VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx);
 // Returns true if the given format has a stencil component
 bool hasStencilComponent(VkFormat format);
 
-// Helper function to decrease verbosity of transient command calls, to be used after beginSingleTimeCommands()
+// End + submit transient CB started by beginSingleTimeCommands().
 void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer);
 
 // Copies data from one GPU buffer to another
@@ -125,14 +123,17 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state);
 // Frees up memory allocated for monitor info
 void cleanupMonitors(Monitors* monitors);
 
-// More Function Prototypes
+/* More Function Prototypes */
+
 struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface);
 bool checkValidationLayerSupport(const char* validationLayers[], size_t validationCount);
 const char** getRequiredExtensions(uint32_t* extensionsCount);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* createInfo);
 void setupDebugMessenger(VkInstance* instance, VkDebugUtilsMessengerEXT* debugMessenger);
 
-// Cross-file helpers exposed by the instance/ split
+/* Cross-File Helpers */
+
+// Exposed by the instance/ split.
 struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR *surface);
 void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks* pAllocator);
 

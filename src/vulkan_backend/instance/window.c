@@ -63,9 +63,7 @@ static void forward_input(const AnoInputEvent* ie)
 	(void)ano_render_emit_event(&rendererState.bridge, &ev); // room checked above
 }
 
-// Maps a cursor sample from GLFW window coordinates into framebuffer pixels, in place.
-// Sizes queried per sample (tracks monitor migration). Zero window size leaves the
-// sample untouched.
+// Map cursor from GLFW window coords -> framebuffer px in place. Zero window size = no-op.
 static void cursorToFramebuffer(GLFWwindow* window, double* x, double* y)
 {
 	int winW = 0, winH = 0, fbW = 0, fbH = 0;

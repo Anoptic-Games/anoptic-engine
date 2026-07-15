@@ -73,7 +73,7 @@ int main() {
         return 1;
     }
 
-    // 5. Test the arena allocator: gpu_alloc should hand back a block, which we bind to the buffer.
+    // 5. Arena gpu_alloc + bind
     GpuAllocation testAlloc = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (testAlloc.memory == VK_NULL_HANDLE || testAlloc.size < memRequirements.size) {
         printf("Error: gpu_alloc failed to return a valid allocation!\n");

@@ -3,29 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Benchmark for ANOSTR_SID: what build-time hashing deletes from string-keyed dispatch.
- *
- * Scenario: an event system with 16 known event types dispatching a random event stream.
- * Each event carries its OWN copy of the name bytes (as a parsed message would), so no
- * series gets a pointer-identity shortcut; the sid series never touches bytes at all.
- * Series, per-event latency (batch of 64 per timed sample):
- *   - strcmp chain:        event arrives as a C string, linear strcmp over the 16 names;
- *   - anostr_eq chain:     event arrives as anostr_t, linear anostr_eq (prefix fast path);
- *   - hash64 + switch:     event as anostr_t, anostr_hash then switch on ANOSTR_SID labels
- *                          (the runtime-hashing sibling: FNV paid per event);
- *   - intern_find + sym:   event as anostr_t, anostr_intern_find then dense-sym jump
- *                          (hash + table probe per event);
- *   - sid switch (baked):  the key is already an ANOSTR_SID constant, switch on a u64 --
- *                          no hashing, no string bytes, the compile-time payoff.
- * Oracle: every series dispatches the same stream, so all handler-index sums must agree
- * (mismatch prints and exits 1).
- *
- * Bulk keying: the startup cost SID deletes. 20k distinct identifiers pushed through
- * anostr_intern (insert, then re-key warm), reported as ns/key and total ms; the SID column
- * of that table is zero by construction (ids are baked into .rodata at build).
- *
- * Prints bench.h percentile tables. Built always, DISABLED in ctest; run by hand from a
- * Release (-O3) build (build 7). argv[1] scales the event count. */
+/* Bench: ANOSTR_SID vs strcmp/eq/hash/intern dispatch. Oracle sums must agree.
+ * DISABLED in ctest; run from -O3. argv[1] scales events; argv[2] scales bulk reads. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,10 +20,10 @@
 #define NTYPES 16u
 #define BULK_KEYS 20000u
 
-// A volatile sink so dispatch results cannot be optimized away.
+// Volatile sink against elision.
 static volatile uint64_t g_sink;
 
-// The 16 known event types: mixed lengths, several past the 12-byte inline cap.
+// 16 event types; several past the 12-byte inline cap.
 #define EVENT_LIST(X) \
     X(0,  "tick")             X(1,  "player_spawn")    \
     X(2,  "player_death")     X(3,  "level_loaded")    \
@@ -61,7 +40,7 @@ static const char *const g_names[NTYPES] = { EVENT_LIST(AS_CSTR) };
 #define AS_SID(i, s) ANOSTR_SID(s),
 static const anostr_sid g_sids[NTYPES] = { EVENT_LIST(AS_SID) };
 
-// The consumer side of the SID design: a switch over build-time constants.
+// Switch over build-time SID constants.
 static inline uint32_t dispatch_sid(anostr_sid id)
 {
     switch (id) {
@@ -94,7 +73,7 @@ static inline uint32_t dispatch_intern(const anostr_intern_t *t, anostr_t s)
     return sym == ANOSTR_SYM_NONE ? UINT32_MAX : sym;
 }
 
-// One timed series: body(i) dispatches event i and returns the handler index.
+// Timed series: body(i) dispatches event i.
 #define RUN_SERIES(label, sumVar, body)                                     \
     do {                                                                    \
         bench_lat lat;                                                      \
@@ -115,16 +94,7 @@ static inline uint32_t dispatch_intern(const anostr_intern_t *t, anostr_t s)
         bench_lat_row((label), bench_lat_stats(&lat));                      \
     } while (0)
 
-/* Bulk reads: read latency of resolving a random query stream against 50k distinct records
- * under four lookup strategies. Same conventions as above: one LOCALHEAPATTR heap, all fixtures
- * and maps mi_heap_malloc'd from it, a volatile g_sink, batched bench_lat samples, an oracle
- * that exits 1 on disagreement. Built always, DISABLED in ctest; run from a Release (-O3) build.
- * argv[2] scales the lookup count.
- *   1 intern     -- anostr_intern_find: hash + table probe + anostr_eq confirm (touches bytes);
- *   2 sid map    -- open-addressed u64->u32: integer-only reads, no byte deref (ANOSTR_SID ceiling);
- *   3 hash+eq    -- open-addressed by anostr_hash: hash + anostr_eq confirm (touches bytes);
- *   4 bsearch    -- sorted-sid array: O(log n) integer compares, no hashing, no byte deref.
- * Strategies 2 and 4 read the precomputed q.sid; 1 and 3 read q.str. */
+/* Bulk reads vs 50k records: intern, sid map, hash+eq, bsearch. argv[2] scales lookups. */
 
 #define RECORDS 50000u
 #define LOOKUPS_DEFAULT 2000000u
@@ -133,14 +103,14 @@ static inline uint32_t dispatch_intern(const anostr_intern_t *t, anostr_t s)
 
 typedef struct { const char *name; anostr_t str; anostr_sid sid; uint32_t index; } record;
 
-// sid -> index, open-addressed, linear probe; idx == UINT32_MAX marks empty.
+// sid -> index OA map; UINT32_MAX = empty.
 typedef struct { uint64_t sid; uint32_t idx; } sidslot;
-// {str, hash} -> index, open-addressed, linear probe; idx == UINT32_MAX marks empty.
+// {str, hash} -> index OA map; UINT32_MAX = empty.
 typedef struct { anostr_t str; uint64_t hash; uint32_t idx; } hashslot;
 // sorted-by-sid array element for bsearch.
 typedef struct { uint64_t sid; uint32_t idx; } sidrec;
 
-// Bit-mix for a well-distributed slot from an already-hashed 64-bit sid.
+// Bit-mix slot from a 64-bit sid.
 static inline uint64_t splitmix64(uint64_t x)
 {
     x += UINT64_C(0x9e3779b97f4a7c15);
@@ -149,7 +119,7 @@ static inline uint64_t splitmix64(uint64_t x)
     return x ^ (x >> 31);
 }
 
-// Strategy 2: integer-only probe, no byte deref -- the baked-ANOSTR_SID ceiling.
+// Strategy 2: integer-only probe (SID ceiling).
 static inline uint32_t sidmap_find(const sidslot *m, uint64_t sid)
 {
     uint32_t slot = (uint32_t)(splitmix64(sid) & MAP_MASK);
@@ -160,7 +130,7 @@ static inline uint32_t sidmap_find(const sidslot *m, uint64_t sid)
     }
 }
 
-// Strategy 3: probe by hash, confirm with anostr_eq -- hash is not identity, reads the bytes.
+// Strategy 3: probe by hash, confirm with anostr_eq.
 static inline uint32_t hashmap_find(const hashslot *m, anostr_t q, uint64_t h)
 {
     uint32_t slot = (uint32_t)(h & MAP_MASK);
@@ -177,7 +147,7 @@ static int cmp_sidrec(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-// Strategy 4: bsearch the sorted sid array -- log n integer compares, no hashing.
+// Strategy 4: bsearch sorted sid array.
 static inline uint32_t bsearch_find(const sidrec *arr, size_t n, uint64_t sid)
 {
     sidrec key = { sid, 0 };
@@ -185,8 +155,7 @@ static inline uint32_t bsearch_find(const sidrec *arr, size_t n, uint64_t sid)
     return r ? r->idx : UINT32_MAX;
 }
 
-// One timed read series over the shared stream; batches of BATCH, per-lookup ns into lat,
-// summed batch ticks into tpVar for throughput, resolved indices summed into sumVar for the oracle.
+// Timed read series over shared stream; oracle sum in sumVar.
 #define RUN_READS(label, sumVar, tpVar, body)                               \
     do {                                                                    \
         bench_lat lat;                                                      \
@@ -210,10 +179,10 @@ static inline uint32_t bsearch_find(const sidrec *arr, size_t n, uint64_t sid)
         bench_lat_row((label), bench_lat_stats(&lat));                      \
     } while (0)
 
-// The whole bulk-reads run over the shared heap. Returns 0, or 1 on oracle/build failure.
+// Bulk-reads run. Returns 0, or 1 on oracle/build failure.
 static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
 {
-    // Fixtures: 50k distinct records, names past the 12-byte inline cap (the long-value case).
+    // Fixtures: 50k distinct long names.
     record *records = mi_heap_malloc(heap, RECORDS * sizeof *records);
     sidslot *sidmap = mi_heap_malloc(heap, MAP_CAP * sizeof *sidmap);
     hashslot *hmap  = mi_heap_malloc(heap, MAP_CAP * sizeof *hmap);
@@ -232,20 +201,18 @@ static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
         memcpy(nm, nameBuf, (size_t)n + 1);
         records[i].name  = nm;
         records[i].str   = anostr_from(heap, nameBuf, (size_t)n);  // record owns its arena bytes
-        // Runtime anostr_hash stands in for the compile-time ANOSTR_SID a real call site bakes;
-        // 50k literals are impossible, so the stream's sid is precomputed once, off the timed path:
-        // at a real call site strategies 2 and 4 pay ZERO hashing (the key is already a constant).
+        // Precompute sid off the timed path (stand-in for baked ANOSTR_SID).
         records[i].sid   = anostr_hash(records[i].str);
         records[i].index = i;
     }
 
-    // Strategy 1: one intern table, records inserted in order so sym i == record i.
+    // Strategy 1: intern table, sym i == record i.
     anostr_intern_t *itab = anostr_intern_make(heap);
     if (itab == NULL) { printf("intern table failed\n"); return 1; }
     for (uint32_t i = 0; i < RECORDS; i++)
         if (anostr_intern(itab, records[i].str) != i) { printf("intern order broke\n"); return 1; }
 
-    // Strategy 2: sid -> index map. Duplicate sid means the two sid-keyed strategies would alias.
+    // Strategy 2: sid -> index map.
     for (uint32_t i = 0; i < RECORDS; i++) {
         uint64_t sid = records[i].sid;
         uint32_t slot = (uint32_t)(splitmix64(sid) & MAP_MASK);
@@ -261,7 +228,7 @@ static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
         sidmap[slot].idx = i;
     }
 
-    // Strategy 3: {str, hash} -> index map, slot from anostr_hash.
+    // Strategy 3: {str, hash} -> index map.
     for (uint32_t i = 0; i < RECORDS; i++) {
         uint64_t h = records[i].sid;                 // sid == anostr_hash(str), reuse it
         uint32_t slot = (uint32_t)(h & MAP_MASK);
@@ -272,11 +239,11 @@ static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
         hmap[slot].idx  = i;
     }
 
-    // Strategy 4: sorted-by-sid array for bsearch.
+    // Strategy 4: sorted-by-sid array.
     for (uint32_t i = 0; i < RECORDS; i++) { sorted[i].sid = records[i].sid; sorted[i].idx = i; }
     qsort(sorted, RECORDS, sizeof *sorted, cmp_sidrec);
 
-    // Query stream: record indices, drawn once so RNG cost stays out of the timed section.
+    // Query stream drawn once (RNG off timed path).
     uint32_t *stream = mi_heap_malloc(heap, lookups * sizeof *stream);
     size_t    rcap   = lookups / BATCH + 1;
     uint64_t *rbuf   = mi_heap_malloc(heap, rcap * sizeof *rbuf);
@@ -284,13 +251,12 @@ static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
     for (uint32_t i = 0; i < lookups; i++)
         stream[i] = rng_below(&rng, RECORDS);
 
-    // Reference sum: the drawn indices over the timed range; every strategy must match it.
+    // Reference sum: every strategy must match.
     uint32_t timed = (lookups / BATCH) * BATCH;
     uint64_t refSum = 0;
     for (uint32_t i = 0; i < timed; i++) refSum += stream[i];
 
-    // One untimed warm pass: fault pages, prime caches, and fully verify every resolution against
-    // the drawn index -- an order-sensitive, full-stream oracle (a plain sum can hide a swap).
+    // Untimed warm pass + full-stream oracle vs drawn indices.
     uint64_t warm = 0;
     for (uint32_t i = 0; i < timed; i++) {
         uint32_t k = stream[i];
@@ -352,7 +318,7 @@ int main(int argc, char **argv)
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
     if (heap == NULL) { printf("mi_heap_new failed\n"); return 1; }
 
-    // Shared fixtures: anostr_t names, a pre-populated intern table (sym i == type i).
+    // Shared fixtures: names + intern table (sym i == type i).
     anostr_t names[NTYPES];
     for (uint32_t i = 0; i < NTYPES; i++)
         names[i] = anostr_from_cstr(heap, g_names[i]);
@@ -361,7 +327,7 @@ int main(int argc, char **argv)
     for (uint32_t i = 0; i < NTYPES; i++)
         if (anostr_intern(table, names[i]) != i) { printf("intern order broke\n"); return 1; }
 
-    // One event stream, all representations of it derived from the same indices.
+    // One event stream, all representations from same indices.
     test_rng rng = rng_make(0x51D51D51u);
     const char **asCstr = mi_heap_malloc(heap, events * sizeof *asCstr);
     anostr_t   *asStr  = mi_heap_malloc(heap, events * sizeof *asStr);
@@ -399,7 +365,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Bulk keying: what SID deletes at startup. 20k distinct identifiers, insert then re-key.
+    // Bulk keying: 20k identifiers, insert then re-key.
     char nameBuf[48];
     anostr_t *bulk = mi_heap_malloc(heap, BULK_KEYS * sizeof *bulk);
     if (bulk == NULL) { printf("alloc failed\n"); return 1; }
@@ -431,7 +397,7 @@ int main(int argc, char **argv)
            bench_ops_per_sec(BULK_KEYS, rekeyNs));
     printf("  comptime ANOSTR_SID:          0.00 ms total,    0.0 ns/key (baked at build)\n");
 
-    // Bulk reads: 50k records resolved four ways. argv[2] scales the lookup count.
+    // Bulk reads: 50k records four ways. argv[2] scales.
     uint32_t lookups = LOOKUPS_DEFAULT;
     if (argc > 2) lookups = (uint32_t)strtoul(argv[2], NULL, 10);
     if (bulkreads_run(heap, lookups) != 0) return 1;

@@ -3,19 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Benchmark for anoptic_strings.h: anostr_compare / anostr_eq vs naive strcmp-style memcmp,
- * validating the German-string claim that len + 4-byte prefix answer most compares in-register
- * without dereferencing the heap.
- *
- * Series:
- *   - inline (<= 12B) keys, random: the no-allocation tier;
- *   - long (32B) keys, random: prefixes differ, the in-register fast path;
- *   - long (32B) keys, shared 16B prefix: the adversarial case, forced memcmp tail;
- * each as anostr_compare vs plain memcmp over the same data.
- *
- * Prints a percentile table (bench.h) and exits 0 always: benchmarks assert nothing, they
- * report. Built always, DISABLED in ctest. Run by hand from a Release (-O3) build (build 7).
- * argv[1] scales the number of compare pairs. */
+/* Bench: anostr_compare/eq vs memcmp. Series: inline, long random, long shared-prefix.
+ * DISABLED in ctest; run from -O3. argv[1] scales pairs. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,12 +18,12 @@
 #define PAIRS_DEFAULT 100000u
 #define BATCH 64u   // compares per timed sample
 
-// A volatile sink so the compare results cannot be optimized away.
+// Volatile sink against elision.
 static volatile int g_sink;
 
 typedef struct {
     anostr_t   a, b;
-    const char *rawA, *rawB;    // the same bytes for the memcmp baseline
+    const char *rawA, *rawB;    // memcmp baseline bytes
     uint32_t    lenA, lenB;
 } pair_t;
 
@@ -61,7 +50,7 @@ static pair_t make_pair(mi_heap_t *heap, test_rng *rng, uint32_t len, uint32_t s
     return p;
 }
 
-// memcmp baseline with the same total-order semantics as anostr_compare.
+// memcmp baseline with anostr_compare total-order semantics.
 static inline int baseline_compare(const pair_t *p)
 {
     uint32_t n = p->lenA < p->lenB ? p->lenA : p->lenB;

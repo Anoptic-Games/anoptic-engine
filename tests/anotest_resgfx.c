@@ -48,15 +48,16 @@ static ano_res_read g_read;
 
 #define CHECKF(a, b, msg) CHECK((a) > (b) - 1e-6f && (a) < (b) + 1e-6f, msg)
 
-// ---------------------------------------------------------------------------------------------
-// Ground truth: one triangle, two nodes, one textured material.
+/* Ground truth */
+
+// One triangle, two nodes, one textured material.
 
 static const float TRI_POS[9] = { 0, 0, 0,   1, 0, 0,   0, 1, 0 };
 static const float TRI_NRM[9] = { 0, 0, 1,   0, 0, 1,   0, 0, 1 };
 static const float TRI_UV[6]  = { 0, 0,      1, 0,      0, 1 };
 static const uint16_t TRI_IDX[3] = { 0, 1, 2 };
 
-// bin layout: pos @0 (36), nrm @36 (36), uv @72 (24), idx @96 (6) -- 102 bytes.
+// bin layout: pos @0 (36), nrm @36 (36), uv @72 (24), idx @96 (6). 102 bytes.
 static size_t build_bin(uint8_t *out)
 {
     memcpy(out, TRI_POS, 36);
@@ -120,13 +121,8 @@ static size_t base64(const uint8_t *in, size_t n, char *out)
     return o;
 }
 
-// ---------------------------------------------------------------------------------------------
-
-// Ground truth for one ingested scene. The shape checks below gate only the DEREFERENCES that
-// follow them, and only on THIS scene: keying that gate on the global `failures` (as this did)
-// silently skipped every per-field assertion once any unrelated earlier check had failed, so a
-// single staging typo could hide every wrong vertex in the file. An unusable shape is now a
-// LOUD failure, never a quiet skip.
+// Ground truth for one ingested scene. Shape checks gate only the DEREFERENCES that follow on THIS scene.
+// Unusable shape is a LOUD failure, never a quiet skip.
 static void check_scene(anoresgfx_scene s, const char *variant)
 {
     printf("  checking scene variant: %s\n", variant);
@@ -234,7 +230,7 @@ static void test_model_ingest(void)
     z = ano_resgfx_scene(scene);
     CHECK(z.vertex_count == 0, "stale scene view is zeroed");
 
-    // data: URI variant -- the whole buffer rides base64 through the arena.
+    // data: URI variant. Whole buffer rides base64 through the arena.
     char b64[256];
     base64(bin, binLen, b64);
     char uri[512];
@@ -256,8 +252,7 @@ static void test_model_ingest(void)
 
 static void test_image_decode(void)
 {
-    // An 8x8 RGBA pattern, PNG-encoded by stb_image_write (independent of the decode
-    // path under test), staged, loaded, decoded -- must round-trip byte-exactly.
+    // 8x8 RGBA pattern, PNG-encoded by stb_image_write (independent of decode under test). Must round-trip byte-exactly.
     uint8_t pixels[8 * 8 * 4];
     for (int i = 0; i < 8 * 8; i++) {
         pixels[i * 4 + 0] = (uint8_t)(i * 3);

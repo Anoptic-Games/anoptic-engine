@@ -157,7 +157,7 @@ bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capa
     return true;
 }
 
-// props selects backing memory (live transform = DEVICE_LOCAL, initialTransform = HOST_VISIBLE).
+// props selects backing (live transform / lightRuntime = DEVICE_LOCAL). initialTransform is SlotUpload, not this path.
 bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t maxEntities, VkMemoryPropertyFlags props) {
     buf->capacity = maxEntities;
     buf->count = 0;

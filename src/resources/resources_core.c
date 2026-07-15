@@ -3,10 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The platform-free resource core: namespace and mounts, the logical-path grammar, the
-// durable write protocol, and gamesave commits. The READ side (candidate walk, sinks,
-// source dispatch, ranges) lives in resources_read.c; registry/handles in
-// resources_registry.c; parsing under graphics/. OS calls go through resources_os.h only.
+// Platform-free resource core: namespace/mounts, path grammar, durable write protocol, gamesave commits.
+// Read side in resources_read.c. Registry in resources_registry.c. OS via resources_os.h only.
 
 #include <anoptic_resources.h>
 
@@ -20,10 +18,10 @@
 
 #include "resources_internal.h"
 
-// ---------------------------------------------------------------------------------------------
-// State. Written on the main thread at init/mount, frozen at first read, read-only
-// forever after -- lock-free resolution by construction. The save mutex is the one
-// lock, serializing save commits.
+/* State */
+
+// Written on main thread at init/mount, frozen at first read, read-only after.
+// Save mutex serializes save commits.
 
 typedef struct res_mount {
     ano_fspath root;
@@ -102,8 +100,7 @@ void res_save_end(res_save_guard *guard)
     ano_mutex_unlock(&lane->mutex);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Path grammar.
+/* Path grammar */
 
 static bool byte_ok(unsigned char c)
 {
@@ -208,9 +205,9 @@ ano_fspath res_join(const ano_fspath *root, const char *rel, size_t rel_len)
     return r;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The mount table, for the candidate walk in resources_read.c. Owner-written at mount,
-// frozen at first read, read-only afterwards -- so the walk needs no lock.
+/* Mount table */
+
+// For the candidate walk. Owner-written at mount, frozen at first read, read-only after.
 
 int res_mount_count(void)
 {
@@ -236,23 +233,17 @@ ano_fspath res_base_root(void)
     return res_ready() ? g_res.base : (ano_fspath){0};
 }
 
-// ---------------------------------------------------------------------------------------------
-// Lifecycle.
+/* Lifecycle */
 
-// ---------------------------------------------------------------------------------------------
-// Write-root temp GC. A crash between O_EXCL create and rename strands
-// "<final>.<8 hex>.tmp"; stranded temps accumulate (the nonce counter restarts every
-// boot) until eight consecutive nonces are taken and the protocol's attempt loop
-// starves -- observed live: 15 strays wedged the crash harness. Calm time only,
-// before any protocol can run, so every match is orphaned by definition. saves/ is
-// EXCLUDED: its temps are ano_res_save_load's recovery candidates (a valid one
-// COMPLETES the interrupted rename). Best effort: bounded batch per directory per
-// boot, bounded depth; a flood drains across boots.
+/* Write-root temp GC */
+
+// Crash between O_EXCL and rename strands "<final>.<8 hex>.tmp".
+// Calm time only, before any protocol. saves/ EXCLUDED (recovery candidates). Bounded batch per boot.
 
 #define RES_GC_BATCH 32
 #define RES_GC_DEPTH 3
 
-// "<stem>.<8 lowercase hex>.tmp" -- exactly the protocol's temp shape, nothing else.
+// "<stem>.<8 lowercase hex>.tmp" exactly.
 static bool res_tmp_name(const char *name)
 {
     size_t n = strlen(name);
@@ -289,8 +280,7 @@ static void gc_scan_cb(const char *name, void *ctx)
         memcpy(s->dirs[s->n_dir++], name, n + 1);
 }
 
-// Sweep one directory, recurse into subdirs (a non-dir just fails the scan: no
-// entry-type query needed). Returns the number removed.
+// Sweep one directory, recurse into subdirs. Returns number removed.
 static int res_temp_gc_dir(const ano_fspath *dir, int depth, bool top)
 {
     gc_scan *s = mi_zalloc(sizeof *s);  // ~16 KiB: off the recursion stack
@@ -371,9 +361,7 @@ int ano_res_init(void)
     return 0;
 }
 
-// Inputs: none. Output: 0 after registry readers, domains, namespace metadata, and locks
-// are gone; -1 while registered readers still pin registry reclamation. Invariant: the
-// init thread calls shutdown, matching the owner-thread heap creation contract.
+// Output: 0 after registry readers/domains/namespace/locks gone. -1 while readers pin reclamation. Init thread.
 int ano_res_shutdown(void)
 {
     if (!g_res.init_done)
@@ -428,8 +416,7 @@ int ano_res_mount(const char *prefix, ano_fspath root)
     return 0;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Resolution.
+/* Resolution */
 
 ano_fspath ano_res_resolve(const char *logical)
 {
@@ -493,8 +480,7 @@ bool ano_res_exists(const char *logical)
     return false;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The durable write protocol.
+/* The durable write protocol */
 
 int res_write_protocol(const char *final_abs, const res_iovec *parts, int nparts)
 {
@@ -598,8 +584,7 @@ int ano_res_quarantine(const char *logical)
     return 0;
 }
 
-// ---------------------------------------------------------------------------------------------
-// FNV-1a-64 and the save frame.
+/* FNV-1a-64 and the save frame */
 
 uint64_t res_fnv1a64(const void *data, size_t len)
 {
@@ -680,10 +665,10 @@ int res_save_validate(const uint8_t *bytes, size_t len, uint32_t *out_format_ver
     return 0;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Gamesave commits. Same-slot operations serialize; distinct slots proceed independently.
-// Every generation is a brand-new filename verified through a fresh handle. NOTHING older
-// is ever touched: saves are user data and only the user deletes them.
+/* Gamesave commits */
+
+// Same-slot serializes. Distinct slots independent.
+// Every generation is a new filename via a fresh handle. Older saves untouched. Only the user deletes.
 
 typedef struct save_scan {
     const char *slot;
@@ -824,8 +809,9 @@ int ano_res_save_commit(const char *slot, uint32_t format_version,
     return ano_res_save_commit_ex(slot, format_version, format_version, payload, size);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Save bookkeeping: the engine counts and reports, only the USER deletes.
+/* Save bookkeeping */
+
+// Engine counts and reports. Only the USER deletes.
 
 typedef struct save_stats_scan {
     const char *slot;

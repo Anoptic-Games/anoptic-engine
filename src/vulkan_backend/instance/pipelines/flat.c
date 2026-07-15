@@ -64,9 +64,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	if (masked)
 		proto->supportedFeatures |= PBR_FEATURE_ALPHA_MODE_MASK;
 
-	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
-	// Depth pre-pass variant (index 2) uses the ANO_DEPTH_ONLY compile of the same source.
-	// Logical names; the resource manager resolves and owns the SPIR-V.
+	// Load shaders: mesh or VS fallback. Index 2 = ANO_DEPTH_ONLY. RM owns SPIR-V.
 	char geomShaderPath[64];
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "shaders/%s.spv",
 		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");

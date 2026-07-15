@@ -92,7 +92,7 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
             color[0].clearValue = clearColor;
 
             if (pass->colorAttachmentCount == 2) {
-                // Picking id into the shared MSAA id image, cleared to the no-hit sentinel. Integer formats MUST resolve SAMPLE_ZERO. Only view 0 resolves to a readable target.
+                // Picking id MSAA image (no-hit sentinel). Integer resolve SAMPLE_ZERO. View 0 only.
                 color[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                 color[1].imageView = rendererState.pickIdView[v];
                 color[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -256,11 +256,11 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
     }
 }
 
-// Composite: tonemap each view's HDR target onto the swapchain (view 0 fullscreen, aux views as PiP insets) + the text/UI overlay.
+// Composite: tonemap each view HDR -> swapchain + text/UI overlay.
 void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex)
 {
     // --- Composite: tonemap each view's HDR target onto the swapchain ---
-    // View 0 fills the screen, aux views as PiP insets along the bottom-right. Same ACES tonemap fullscreen triangle per view, scoped by viewport+scissor.
+    // View 0 fullscreen; aux PiP bottom-right. ACES tonemap per view (viewport+scissor).
     {
         VkRenderingAttachmentInfo tmColor = {};
         tmColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;

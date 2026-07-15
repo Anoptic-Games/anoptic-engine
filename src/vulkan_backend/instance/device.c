@@ -43,9 +43,8 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	VkQueueFamilyProperties queueFamilies[queueFamilyCount];
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
-	// Select the first queue family satisfying each capability.
+	// First queue family per capability. Compute prefers dedicated (async Hi-Z), else first compute-capable.
 	//!TODO Implement these as required further into development
-	// Compute is the exception, preferring a DEDICATED compute family for a distinct async-Hi-Z queue, falling back to the first compute-capable family.
 	bool haveDedicatedCompute = false;
 	for (uint32_t i = 0; i < queueFamilyCount; i++)
 	{	//Queue checks go here

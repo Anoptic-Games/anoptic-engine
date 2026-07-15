@@ -3,32 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Anoptic Thread Bridges -- typed interconnects over anoptic_collections.h, the
-// general extension of anoptic_threads.h. A bridge is a named, policy-carrying
-// channel: a declared topology picks the cheapest ring that satisfies it, an explicit
-// backpressure policy says what "full" means, and an optional waiter packages the
-// logger's park/wake discipline so a consumer thread can sleep on an empty channel
-// without losing wakeups.
-//
-// Policies, by channel shape:
-//   TRYFAIL  command/control channels: false-on-full, the caller knows whether a
-//            message is droppable, coalescible, or worth retrying (the render-bridge
-//            contract).
-//   WAIT     work/completion channels: the logger's never-drop stance generalized --
-//            escalating backoff while the consumer catches up, degrading to false
-//            after a stall cap (a generic bridge cannot dump to a side channel the
-//            way the logger does; the caller degrades explicitly, never silently).
-//   Latest-wins lanes have no backpressure by definition: overwrite semantics.
-//
-// The specialty channels: anobridge_handles carries anores_t by value -- the loaded
-// payloads stay in the resource manager's allocator hierarchy, ONLY handles cross
-// threads (sharing is structural); anobridge_latest is the broadcast lane (one
-// writer, any readers, newest wins).
-//
-// Threading contracts are the underlying ring's: SPSC = one thread each side, MPSC =
-// any producers/one consumer, SPMC = one producer/any consumers (the fan-out shape --
-// a loader thread publishing handles to worker pools pays no RMW on send), MPMC =
-// any/any. The waiter serves ONE parked consumer.
+// Named policy-carrying channels over anoptic_collections.h rings.
+// TRYFAIL: false-on-full. WAIT: backoff then false (no silent drop). Latest-wins: overwrite.
+// Handles: anores_t by value. Topology = ring contract. Waiter serves one parked consumer.
 
 #ifndef ANOPTICENGINE_ANOPTIC_THREADS_BRIDGES_H
 #define ANOPTICENGINE_ANOPTIC_THREADS_BRIDGES_H
@@ -38,14 +15,14 @@
 #include <stdint.h>
 
 #include "anoptic_collections.h"
-#include "anoptic_resources.h"      // anores_t: the handle channel's POD
+#include "anoptic_resources.h"      // anores_t: handle channel POD
 #include "anoptic_threads.h"
 
-// ---------------------------------------------------------------------------------------------
-// The waiter: the log drainer's park/wake, packaged. Parked flag goes up seq_cst
-// FIRST, the channel is rechecked under it, then a capped timedwait -- a wakeup lost
-// to the race window costs at most cap_us, never a hang. Producers pay one seq_cst
-// load per send while the consumer is awake.
+
+/* Waiter */
+
+// Parked seq_cst first, recheck, capped timedwait. Lost wake <= cap_us.
+// Producer pays one seq_cst load per wake while the consumer is awake.
 
 typedef struct anobridge_waiter {
     anothread_mutex_t mtx;
@@ -53,20 +30,19 @@ typedef struct anobridge_waiter {
     atomic_bool       parked;
 } anobridge_waiter;
 
-// Output: 0, or -1 if either primitive refused (nothing to destroy on failure).
+// Out: 0, or -1 (nothing to destroy on failure).
 int  ano_bridge_waiter_init(anobridge_waiter *w);
 void ano_bridge_waiter_destroy(anobridge_waiter *w);
 
-// CONSUMER. Park until a wake or cap_us (0 picks the default, 1000 us). nonempty is
-// rechecked under the parked flag: if work raced in, the park is a no-op.
+// CONSUMER. Park until wake or cap_us (0 -> 1000 us). Recheck nonempty under parked.
 void ano_bridge_park(anobridge_waiter *w, bool (*nonempty)(void *ctx), void *ctx,
                      uint32_t cap_us);
 
-// PRODUCER, after publishing: one seq_cst load; signals only a parked consumer.
+// PRODUCER after publish: one seq_cst load, signal only if parked.
 void ano_bridge_wake(anobridge_waiter *w);
 
-// ---------------------------------------------------------------------------------------------
-// The general-purpose bridge.
+
+/* Bridge */
 
 typedef enum {
     ANO_BRIDGE_SPSC = 0,
@@ -79,7 +55,7 @@ typedef enum { ANO_BRIDGE_TRYFAIL = 0, ANO_BRIDGE_WAIT } anobridge_policy;
 typedef struct anobridge {
     anobridge_topo    topo;
     anobridge_policy  policy;
-    anobridge_waiter *waiter;       // optional: wake-on-send when attached
+    anobridge_waiter *waiter;       // optional: wake-on-send
     union {
         anoring_spsc spsc;
         anoring_mpsc mpsc;
@@ -88,31 +64,25 @@ typedef struct anobridge {
     } ring;
 } anobridge;
 
-// capacity/stride/parent per the ring contracts; waiter may be NULL. false on bad
-// args or parent exhaustion.
+// capacity/stride/parent per ring contracts. waiter may be NULL. false on bad args or OOM.
 bool ano_bridge_init(anobridge *b, ano_mem_parent parent, anobridge_topo topo,
                      anobridge_policy policy, uint32_t capacity, uint32_t stride,
                      anobridge_waiter *waiter);
 void ano_bridge_destroy(anobridge *b);
 
-// Send stride bytes. TRYFAIL: one attempt, false-on-full. WAIT: escalating backoff
-// (the log ring's 64 ns doubling to 8 us) while full; after the stall cap it returns
-// false -- never a silent drop, never an unbounded block. Wakes an attached parked
-// consumer on success.
+// Send stride bytes. TRYFAIL: false-on-full. WAIT: 64..8192 ns doubling, false after 4096 stalls. Wake parked consumer on success.
 bool ano_bridge_send(anobridge *b, const void *elem);
 
-// Receive one element; false-on-empty. Topology contract: who may call this is the
-// ring's consumer side.
+// Recv one. false-on-empty. Consumer-side only.
 bool ano_bridge_recv(anobridge *b, void *out);
 
-// Batch receive up to max, stopping at empty/gap. MPMC drains by repeated claim.
+// Batch recv up to max. MPSC: ring drain. Else: repeated recv.
 uint32_t ano_bridge_drain(anobridge *b, void *out, uint32_t max);
 
-// ---------------------------------------------------------------------------------------------
-// Specialty: the resource-handle channel. anores_t rides by VALUE (16-byte POD slots
-// on the SoA payload plane); the bytes those handles name never cross here. Size the
-// capacity >= the outstanding-request cap upstream and full becomes unreachable by
-// construction; WAIT is belt and braces on top.
+
+/* Resource Handles */
+
+// anores_t by value (POD). WAIT policy; size capacity so full is unreachable. Payload bytes stay in the resource allocator.
 
 typedef struct anobridge_handles {
     anobridge b;
@@ -133,9 +103,10 @@ static inline bool ano_bridge_handles_recv(anobridge_handles *hb, anores_t *out)
     return ano_bridge_recv(&hb->b, out);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Specialty: the broadcast / latest-wins lane. One writer, any readers, newest wins,
-// never torn (anoseqpub underneath). No backpressure by definition.
+
+/* Latest-Wins */
+
+// One writer, any readers, never torn (anoseqpub). No backpressure.
 
 typedef struct anobridge_latest {
     anoseqpub pub;

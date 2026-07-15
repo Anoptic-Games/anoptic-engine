@@ -22,9 +22,8 @@ static inline bool lightTypeShadowMapped(uint32_t lightType, uint32_t mode)
 // Shadow render + separable prefilter region of the record path.
 void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSlotCount)
 {
-    // === Layered Power CDF shadow render + separable prefilter ===
-    // Three phases. Render each frustum's nearest occluder one-hot into its two atlas sublayers, then box blur-X atlas -> temp, blur-Y temp -> atlas.
-    // Synchronization is per phase, not per layer. Four whole-array barriers fence the phase boundaries.
+    // === Layered Power CDF shadow + separable prefilter ===
+    // Phases: occluder -> atlas sublayers, blur-X atlas->temp, blur-Y temp->atlas. Sync per phase (4 whole-array barriers).
     if (entityCount > 0) {
         ShadowResources* sh = &rendererState.frames[rendererState.frameIndex].shadow;
         bool useMeshS = ctx.deviceCapabilities.meshShader;
@@ -41,7 +40,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
         VkClearValue clearDepth = {}; clearDepth.depthStencil.depth = 1.0f;
         VkClearValue clearMRT[2] = { clearStats, clearStats }; // both sublayers
 
-        // Render a frustum this frame when it is active, shadow-mapped under the lighting mode, and dirty. Clean frustums skip depth render + blur and ride the content-preserving transitions.
+        // Render when active + shadow-mapped + dirty. Clean frustums skip render/blur (content-preserving).
         // maxSub bounds the layered blur's layerCount to the rendered prefix.
         bool epochDirty = rendererState.shadowCacheMode == 1u
                        || (rendererState.shadowCacheMode == 0u
@@ -53,7 +52,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
             for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) rendererState.shadowLayerValid[s] = false;
         rendererState.shadowGlobalDirty = false;
 
-        // Pass 1 — classify. Matrix-dirty renders unconditionally. Content-dirty with a stable matrix is deferrable and budget-eligible. Force/freeze bypass the budget.
+        // Pass 1 classify: matrix-dirty always; content-dirty budget-eligible; force/freeze bypass budget.
         bool renderS[ANO_SHADOW_FRUSTUM_COUNT];
         bool candidate[ANO_SHADOW_FRUSTUM_COUNT];
         uint32_t renderCount = 0u, maxSub = 0u, candCount = 0u;
@@ -71,7 +70,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
             if (matrixDirty)       renderS[s] = true;
             else if (contentDirty) { candidate[s] = true; candCount++; }
         }
-        // Pass 2 — admit content-dirty candidates oldest-first up to the budget (0 = unlimited). Equal stamps round-robin naturally.
+        // Pass 2: admit content-dirty oldest-first up to budget (0=unlimited).
         uint32_t budget = rendererState.shadowRenderBudget;
         uint32_t admit = (budget == 0u || budget > candCount) ? candCount : budget;
         for (uint32_t k = 0; k < admit; k++) {
@@ -89,7 +88,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
         g_shadowRenderAccum += renderCount;
         g_shadowRenderFrames++;
 
-        // Phase barrier 1. atlas SHADER_READ -> COLOR (content preserved), temp -> COLOR, depth -> DEPTH_ATTACHMENT. FRAGMENT source scope orders prior in-flight frames' reads.
+        // Phase barrier 1: atlas SHADER_READ->COLOR (preserve), temp->COLOR, depth->DEPTH_ATTACHMENT. FRAGMENT src stage orders prior in-flight frames' reads.
         if (renderCount > 0u) {
             VkImageMemoryBarrier pre[3];
             pre[0] = (VkImageMemoryBarrier){ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -120,7 +119,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
             vkCmdSetViewport(cmd, 0, 1, &shVp);
             vkCmdSetScissor(cmd, 0, 1, &shSc);
 
-            // Shadow pipeline reuses the FLAT layout. Set 0 = view 0 global, set 1 = bindless (unused, bound for compat), set 2 = shadow viewProjs.
+            // Shadow pipe reuses FLAT layout. Sets: 0=view0 global, 1=bindless (compat), 2=shadow viewProjs.
             VkPipelineLayout flatLayout = rendererState.prototypes[PIPELINE_FLAT].layout;
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flatLayout, 0, 1,
                 &rendererState.frames[rendererState.frameIndex].views[0].globalSet, 0, NULL);
@@ -153,7 +152,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
                     .layerCount = 1, .colorAttachmentCount = ANO_SHADOW_ATLAS_SUBLAYERS, .pColorAttachments = colorAtt, .pDepthAttachment = &depthAtt };
                 vkCmdBeginRendering(cmd, &ri);
 
-                // Two caster partitions per frustum, solid and alpha-tested MASKED, drawn back-to-back into the same rendering instance (shared depth slice).
+                // Two caster partitions/frustum: solid + MASKED, shared depth slice.
                 uint32_t shadowBase = ANO_VIEW_COUNT * drawSlotCount;
                 uint32_t partitions[2] = { shadowBase + s, shadowBase + ANO_SHADOW_FRUSTUM_COUNT + s };
                 for (uint32_t m = 0; m < 2u; m++) {
@@ -182,7 +181,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
             }
         }
 
-        // Phase barrier 2. atlas COLOR -> SHADER_READ for the blur-X sample. Clean/inactive layers ride along, content preserved.
+        // Phase barrier 2: atlas COLOR->SHADER_READ (blur-X). Content preserved.
         if (renderCount > 0u) {
             VkImageMemoryBarrier toRead = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -195,7 +194,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
         }
 
         // --- Phases 2 & 3: separable box blur (atlas -> temp -> atlas) over active sublayers ---
-        // Separable box blur, two 1D passes. One layered render pass per direction with vertex-stage gl_Layer, else one single-layer pass per sublayer. Barrier-free within a direction.
+        // Separable box blur (2x 1D). Layered pass + gl_Layer when available; else per-sublayer. Barrier-free within a direction.
         bool layeredBlur = ctx.deviceCapabilities.shaderOutputLayer;
         struct { float dir[2]; int32_t layer; int32_t pad; } bpc = {0};
         float invDim = 1.0f / (float)ANO_SHADOW_DIM;
@@ -258,7 +257,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
             }
 
             if (pass == 0) {
-                // Phase barrier 3. temp COLOR -> SHADER_READ (blur-Y source) and atlas SHADER_READ -> COLOR (blur-Y target). One call, both images.
+                // Phase barrier 3: temp COLOR->SHADER_READ, atlas SHADER_READ->COLOR.
                 VkImageMemoryBarrier xy[2];
                 xy[0] = (VkImageMemoryBarrier){ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,

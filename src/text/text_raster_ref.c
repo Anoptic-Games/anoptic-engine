@@ -3,10 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// CPU reference rasterizer for the Scanline Sweeper coverage math, the scalar mirror
-// the GLSL compute shader is written against. All per-pixel
-// arithmetic is float32 to predict shader precision. Consumes the baked stream verbatim
-// (grammar in anoptic_text.h). No gamma, output is linear coverage like FT_Render_Glyph's.
+// CPU ref rasterizer for Scanline Sweeper coverage: scalar float32 mirror of the GLSL compute shader. Baked stream grammar in text_internal.h. No gamma, linear coverage like FT_Render_Glyph.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -19,8 +16,7 @@ static inline float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Single root of a monotone quadratic component hitting `target`, clamped to [0,1],
-// via the citardauq form 2c/(-b - sign(span)*sqrt(d)). Caller guarantees c0 != c2.
+// Root of monotone quadratic component at target, clamped [0,1], citardauq 2c/(-b - sign(span)*sqrt(d)). Caller: c0 != c2.
 static float solve_mono(float c0, float c1, float c2, float target)
 {
     float span = c2 - c0;
@@ -29,31 +25,27 @@ static float solve_mono(float c0, float c1, float c2, float target)
     float c = c0 - target;
     float d = fmaxf(b * b - 4.0f * a * c, 0.0f);
     float den = -b - copysignf(sqrtf(d), span);
-    if (den == 0.0f) // b == 0 && d == 0: the t=0 extremum endpoint sits on target
+    if (den == 0.0f) // b == 0 && d == 0: t=0 extremum on target
         return 0.0f;
     return clampf(2.0f * c / den, 0.0f, 1.0f);
 }
 
-// Signed area swept between one monotone quad and the window's right edge, clipped to
-// the window ([0,w] x [0,h] window-local). The parameter range is restricted to the
-// y-band, split at the x-boundary crossings (monotonicity: at most one each), each piece
-// contributing its chord's trapezoid against the right edge with endpoints clamped into
-// the window. Pieces outside collapse to zero or a full-width rectangle.
+// Signed area of one monotone quad vs window right edge, clipped to ([0,w] x [0,h]). y-band param range, split at x-boundary crossings (at most one each), chord trapezoids with endpoints clamped. Outside pieces -> 0 or full-width rect.
 static float curve_area(float x0, float y0, float x1, float y1, float x2, float y2,
                         float w, float h)
 {
     if (y0 == y2)
         return 0.0f; // horizontal: sweeps nothing
     if (fmaxf(y0, y2) <= 0.0f || fminf(y0, y2) >= h || fminf(x0, x2) >= w)
-        return 0.0f; // below, above, or right of the window
+        return 0.0f; // below, above, or right of window
 
-    if (x0 == x2) // vertical fast path: the whole curve sits at x0
+    if (x0 == x2) // vertical: whole curve at x0
     {
         float b = fminf(w, w - x0);
         return (clampf(y2, 0.0f, h) - clampf(y0, 0.0f, h)) * b;
     }
 
-    // Curve-parameter interval inside the y-band, direction-normalized ends.
+    // Curve-param interval inside y-band, direction-normalized.
     float t0 = solve_mono(y0, y1, y2, 0.0f);
     float t1 = solve_mono(y0, y1, y2, h);
     if (t0 > t1)
@@ -62,7 +54,7 @@ static float curve_area(float x0, float y0, float x1, float y1, float x2, float 
         t0 = t1;
         t1 = tmp;
     }
-    // x-boundary crossings, folded into the band.
+    // x-boundary crossings folded into the band.
     float ta = clampf(solve_mono(x0, x1, x2, 0.0f), t0, t1);
     float tb = clampf(solve_mono(x0, x1, x2, w), t0, t1);
     if (ta > tb)
@@ -93,8 +85,7 @@ static float curve_area(float x0, float y0, float x1, float y1, float x2, float 
 static inline float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 0xFFFFu)); }
 static inline float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
 
-// Unclamped coverage sum for one em-space window: walks the glyph's stream once,
-// accumulating every curve's signed swept area, normalized by the window area.
+// Unclamped coverage sum for one em-space window: walk stream, signed swept area / window area.
 float ano_text_window_sum(const uint32_t *pts, const AnoGlyphEntry *g, float wx, float wy,
                           float w, float h)
 {
@@ -139,7 +130,7 @@ void ano_text_raster_ref(const uint32_t *points, const AnoGlyphEntry *glyph,
                 float wx = (float)(left + c) * invS;
                 float sum = ano_text_window_sum(points, glyph, wx, wy, invS, invS);
                 maxSum = fmaxf(maxSum, sum);
-                // Per-glyph clamp. No gamma here.
+                // Per-glyph clamp. No gamma.
                 out[r * width + c] = (uint8_t)(clampf(sum, 0.0f, 1.0f) * 255.0f + 0.5f);
             }
         }

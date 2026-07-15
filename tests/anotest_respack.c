@@ -37,9 +37,9 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-// ---------------------------------------------------------------------------------------------
-// Little helpers: an independent FNV-1a-64 oracle, and plain-stdio file IO for staging and
-// for the corruption battery (deliberately not the code under test).
+/* Little helpers */
+
+// Independent FNV-1a-64 oracle and plain-stdio IO for staging/corruption battery.
 
 static uint64_t fnv_oracle(const uint8_t *p, size_t n)
 {
@@ -74,9 +74,9 @@ static uint8_t *load_file(const char *path, size_t *out)
     return b;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The staged corpus. Content is a pure function of the logical path, so both the builder and
-// the verifier can regenerate it independently.
+/* Staged corpus */
+
+// Content is a pure function of the logical path.
 
 typedef struct { const char *logical; size_t len; } corpus_ent;
 static const corpus_ent CORPUS[] = {
@@ -97,9 +97,7 @@ static void gen_content(const char *logical, size_t len, uint8_t *out)
     }
 }
 
-// Stage the corpus under `root`, creating parent dirs. `reverse` flips the write order (the
-// filesystem enumeration the builder sees is its own business; determinism must not depend on
-// the order in which we created the files).
+// Stage corpus under `root`. `reverse` flips write order. Determinism must not depend on create order.
 static void stage_corpus(const char *root, int reverse)
 {
     char path[512];
@@ -143,8 +141,6 @@ static ano_fspath fspath(const char *p)
     fp.length = (w > 0 && w < (int)sizeof fp.str) ? (uint16_t)w : 0;
     return fp;
 }
-
-// ---------------------------------------------------------------------------------------------
 
 static void verify_entries(const res_pack *pack)
 {
@@ -212,8 +208,6 @@ static void verify_entries(const res_pack *pack)
     CHECK(res_pack_find(pack, "not/here.bin", 12) == -1, "absent path is -1");
 }
 
-// ---------------------------------------------------------------------------------------------
-
 int main(void)
 {
     scratch_anchor_to_exe();
@@ -245,8 +239,8 @@ int main(void)
         free(a); free(a2); free(b);
     }
 
-    // Self-exclusion: building INTO the source tree must not embed the previous archive --
-    // the same command twice stays byte-identical, and both match the out-of-tree build.
+    // Self-exclusion: building INTO the source tree must not embed the previous archive.
+    // Same command twice stays byte-identical. Both match the out-of-tree build.
     CHECK(res_pack_build("respack_src", "respack_src/self.anopak", RES_CODEC_LZ4) == 0,
           "build into the source tree");
     CHECK(res_pack_build("respack_src", "respack_src/self.anopak", RES_CODEC_LZ4) == 0,
@@ -271,9 +265,9 @@ int main(void)
     res_pack_unmount_all();
     CHECK(res_pack_count() == 0, "unmounted");
 
-    // ------------------------------------------------------------------------------------
-    // Corruption battery. Load the good pack, flip a single bit in each region, and confirm
-    // the refusal. Failed mounts do not increment the mount count, so they need no unmount.
+    /* Corruption battery */
+
+    // Load the good pack, flip a single bit in each region, and confirm the refusal. Failed mounts do not increment the mount count, so they need no unmount.
     size_t n = 0;
     uint8_t *base = load_file("respack_a.anopak", &n);
     CHECK(base != NULL && n > 48, "load pack for corruption");

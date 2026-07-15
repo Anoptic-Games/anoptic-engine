@@ -3,10 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// UI overlay lane (docs/ui/ui-render.md): per-frame table buffers on raster-set
-// bindings 4-10, the logic-block registry with its compose (layer-sorted, block-local
-// refs rebased), and the per-slot refresh. The prim math lives in src/ui, its GLSL
-// twin in uicoverage.glsl, the dispatch is the text raster's.
+// UI overlay lane: table buffers bindings 4-10, block registry + compose, per-slot refresh.
 
 #include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
@@ -60,10 +57,7 @@ static void ui_pending_bounds(RendererState* state)
     state->uiPendingBounds[2] = b2; state->uiPendingBounds[3] = b3;
 }
 
-// Recomposes the pending tables from the live blocks: ascending layer (creation
-// order breaks ties), block-local refs rebased, scroll folded in, then the surface
-// fold (logical -> device px, ui-render.md §3.11). A block that would overflow a
-// table budget is skipped WHOLE. Bumps uiVersion.
+// Recompose pending tables: layer order, rebase refs, scroll, logical->px. Overflow skips whole block.
 static void ui_compose(RendererState* state)
 {
     if (state->uiPendingPrims == NULL || state->uiPinned)
@@ -158,9 +152,7 @@ static void ui_compose(RendererState* state)
     state->uiVersion++;
 }
 
-// Composes the standing demo scene into the pending tables and PINS composition.
-// The live variant adds one IMAGE prim (bindless index 0), the self-test stays
-// inside the reference evaluator's reach.
+// Compose demo scene into pending tables and pin. Live adds IMAGE prim (bindless 0).
 static void ui_compose_demo(RendererState* state, bool selftest)
 {
     AnoUiBuilder b;
@@ -310,10 +302,7 @@ void ano_vk_ui_block_clear(RendererState* state, uint32_t ui_id)
     }
 }
 
-// Flushes a deferred compose (a burst of bridge commands recomposes once), copies
-// pending tables into this slot's mapped buffers when stale, and publishes the
-// slot-current counts/bounds. Glyph labels land in the text frame buffer's UI region
-// [ANO_UI_GLYPH_FIRST, +ANO_UI_MAX_GLYPHS).
+// Flush compose + copy pending tables when stale. Glyphs -> text FB UI region.
 void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
 {
     if (!state->uiOverlay || state->uiPendingPrims == NULL)
@@ -350,11 +339,7 @@ void ano_vk_ui_frame_refresh(RendererState* state, uint32_t frameIndex)
         state->uiBounds[k] = state->uiPendingBounds[k];
 }
 
-// Builds this slot's per-tile prim lists into heap scratch (the mapped regions may
-// be write-combined), then memcpys the finished offsets/entries into the slot's
-// mapped tile regions. The grid derives from the UI bounds alone, origin snapped to
-// tiles, clamped to the canvas. Cached on (version, grid). The built grid lands in
-// fr->uiTile* for the push block.
+// Build per-tile prim lists in scratch, memcpy into mapped tile regions. Grid from UI bounds.
 bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex)
 {
     if (!state->uiTilesEnabled || !state->uiOverlay || state->uiPendingPrims == NULL
@@ -407,9 +392,7 @@ bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex)
     return true;
 }
 
-// Writes bindings 4-10 of every slot's shared raster set. When a slot's table buffer
-// is absent, the bindings fall back to the slot's text frame buffer (kept legal,
-// never read under pinned-zero counts).
+// Write bindings 4-10 per slot. Missing table buffer -> fall back to text FB.
 void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)

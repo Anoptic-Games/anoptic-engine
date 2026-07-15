@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.29)
 project(anopticengine LANGUAGES C CXX)
 
-# Debugging the Build System
+# Build system diagnostics
 message(STATUS "Toolchain file specified: ${CMAKE_TOOLCHAIN_FILE}")
 message(STATUS "System name: ${CMAKE_SYSTEM_NAME}")
 message(STATUS "System version: ${CMAKE_SYSTEM_VERSION}")
@@ -9,30 +9,26 @@ message(STATUS "System processor: ${CMAKE_SYSTEM_PROCESSOR}")
 message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
 message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER}")
 
-# Anoptic Engine Only Supports 64-bit Compilation
+# 64-bit only
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(STATUS "64-bit compiler detected.")
 else()
     message(FATAL_ERROR "64-bit compiler REQUIRED.")
 endif()
 
-# Default to Release when no build type is given.
+# Defaults: Release when unset, C23+gnu, compile_commands for clangd
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "No CMAKE_BUILD_TYPE given; defaulting to Release.")
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Enable C23 standard with GNU extensions (gnu23).
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
-# Emit compile_commands.json for clangd.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Build policy: whole builds, ThinLTO Release, modern linkers, static linking.
-
-# Keep diagnostics colored under Ninja.
+# Build policy: whole builds, ThinLTO Release, modern linkers, static linking
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
 # Linker selection: clang -> lld, gcc on ELF -> mold, MinGW gcc -> GNU ld, Apple -> ld64.
@@ -83,11 +79,10 @@ add_custom_target(ano_scrub
     COMMENT "Scrubbing object files (whole rebuild ahead)"
     VERBATIM)
 
+# Options
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)
 option(ANOPTIC_HEADLESS "Build without the Vulkan renderer" OFF)
-# Pack compression. LZ4 is vendored and always built (two files, BSD-2-Clause). zstd is
-# opt-in: it is a bigger dependency than the ratio buys for a game's asset tree, so the
-# default is OFF and the codec byte simply reports itself unavailable.
+# Pack compression: LZ4 always, zstd opt-in (OFF = codec unavailable).
 option(ANOPTIC_ZSTD "Vendor zstd for the resource codec" OFF)
 set(ANOPTIC_SANITIZE "" CACHE STRING "Sanitizer for test builds: asan, tsan, or empty")
 
@@ -102,7 +97,8 @@ elseif(NOT ANOPTIC_SANITIZE STREQUAL "")
     message(FATAL_ERROR "ANOPTIC_SANITIZE must be 'asan', 'tsan', or empty (got '${ANOPTIC_SANITIZE}')")
 endif()
 
-# Mimalloc submodule directory and definitions.
+# Dependencies
+# mimalloc (static, no override).
 set(MI_BUILD_OBJECT OFF)
 set(MI_BUILD_SHARED OFF)
 set(MI_BUILD_STATIC ON)
@@ -110,7 +106,7 @@ set(MI_OVERRIDE OFF)
 set(MI_BUILD_TESTS OFF)
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/mimalloc EXCLUDE_FROM_ALL)
 
-# FreeType submodule with optional codecs and HarfBuzz disabled.
+# FreeType (codecs/HarfBuzz off).
 set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
 set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
@@ -119,8 +115,7 @@ set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
 set(FT_ENABLE_ERROR_STRINGS ON CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/freetype EXCLUDE_FROM_ALL)
 
-# LZ4: two vendored files (external/lz4, BSD-2-Clause). The pack codec's default.
-# -w: upstream code, not ours to lint.
+# LZ4 (vendored, pack default). -w: upstream
 add_library(anoptic_lz4 STATIC ${CMAKE_SOURCE_DIR}/external/lz4/lz4.c)
 target_include_directories(anoptic_lz4 PUBLIC ${CMAKE_SOURCE_DIR}/external/lz4)
 target_compile_options(anoptic_lz4 PRIVATE -w)
@@ -180,7 +175,7 @@ target_compile_definitions(anoptic_core PUBLIC
         "$<$<BOOL:${ANOPTIC_HEADLESS}>:HEADLESS_BUILD>"
 )
 
-# Core module subdirectories
+# Core modules
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/collections)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
@@ -196,13 +191,12 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/ui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 
-# anoptic_pack: the deterministic archive builder. Same input tree -> byte-identical pack.
-# It shares res_pack_build with the engine; there is no second format writer.
+# anoptic_pack: deterministic archive builder (shares res_pack_build with engine).
 add_executable(anoptic_pack ${CMAKE_SOURCE_DIR}/tools/anopak/anopak.c)
 target_link_libraries(anoptic_pack PRIVATE anoptic_core)
 install(TARGETS anoptic_pack RUNTIME DESTINATION bin)
 
-# Renderer (default on).
+# Renderer (default on)
 if(NOT ANOPTIC_HEADLESS)
     find_package(Vulkan)
 endif()
@@ -213,29 +207,27 @@ if(Vulkan_FOUND)
     set(GLFW_BUILD_DOCS OFF)
     add_subdirectory(${CMAKE_SOURCE_DIR}/external/glfw EXCLUDE_FROM_ALL)
 
-    # anoptic_render library
+    # anoptic_render
     add_library(anoptic_render STATIC "")
     target_link_libraries(anoptic_render PUBLIC anoptic_core glfw Vulkan::Vulkan)
 
-    # Nix's clang wrapper makes Vulkan_INCLUDE_DIRS implicit and CMake filters them out of -I,
-    # losing <vulkan/vulkan.h> from compile_commands.json for clangd.
-    # Compile options bypass the implicit-directory filter. Inert where the path is explicit.
+    # Vulkan includes filtered from -I under Nix clang: re-add via -isystem for clangd.
     foreach(vk_dir IN LISTS Vulkan_INCLUDE_DIRS)
         if(vk_dir IN_LIST CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
             target_compile_options(anoptic_render PUBLIC "-isystem${vk_dir}")
         endif()
     endforeach()
 
-    # Renderer module subdirectories
+    # Renderer modules
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/vulkan_backend)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/render)
 
-    # Shaders compile to SPIR-V in the build tree, committed .spv are the no-compiler fallback.
+    # Shaders: SPIR-V in the build tree, committed .spv are the no-compiler fallback.
     set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/resources/shaders)
     set(SHADER_BIN_DIR ${CMAKE_BINARY_DIR}/resources/shaders)
 
-    # Shader compiler by build type: Debug embeds SPIR-V debug info, Release strips it.
-    # -gV: NonSemantic debug info without embedded source, tools read source from disk.
+    # Shader compiler: Debug embeds SPIR-V debug info, Release strips.
+    # -gV: NonSemantic debug info, source on disk.
     if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
         set(SHADER_COMPILER ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE})
         set(SHADER_COMPILE_ARGS -V --target-env vulkan1.2 -gV)
@@ -292,9 +284,9 @@ if(Vulkan_FOUND)
     # Task-launched mesh variants, used when RendererState.taskCull.
     ano_add_shader(flat_task.mesh flat.mesh -DANO_TASK_CULL)
     ano_add_shader(flat_depth_task.mesh flat.mesh -DANO_TASK_CULL -DANO_DEPTH_ONLY)
-    # Hi-Z variant reading MAX-resolved depth, used when the device supports it.
+    # Hi-Z MAX-resolved depth variant.
     ano_add_shader(hiz_resolve.comp hiz.comp -DRESOLVED_DEPTH)
-    # fp16 CDF-reconstruct variants of the lighting frags, used when the device has shaderFloat16.
+    # fp16 CDF lighting frags (shaderFloat16).
     ano_add_shader(flat_fp16.frag flat.frag -DANO_CDF_FP16=1)
     ano_add_shader(transmission_fp16.frag transmission.frag -DANO_CDF_FP16=1)
     # Alpha-tested cutout lane (glTF alphaMode MASK).
@@ -339,8 +331,7 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
         target_link_libraries(anopticengine PRIVATE anoptic_core)
     endif()
 
-    # Install: bin/anopticengine plus the full bin/resources tree (the installed base
-    # mount: shaders, fonts, textures, models).
+    # Install: bin/anopticengine + bin/resources/ (shaders, fonts, textures, models).
     install(TARGETS anopticengine RUNTIME DESTINATION bin)
     if(Vulkan_FOUND)
         install(DIRECTORY ${SHADER_BIN_DIR} DESTINATION bin/resources)
@@ -354,7 +345,7 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
     endif()
 endif()
 
-# CTest integration
+# CTest
 if(ANOPTIC_TESTS)
     enable_testing()
     add_subdirectory(${CMAKE_SOURCE_DIR}/tests)

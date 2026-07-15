@@ -3,17 +3,13 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// GENERATED FILE -- do not edit. Produced by tools/gen_unicode_tables.c from the
-// DUCET (allkeys.txt) and UnicodeData.txt canonical decompositions, version 17.0.0.
-// Trimmed to the collate_keep script list (Latin, Greek, Cyrillic, Runic, kana,
-// punctuation) and BMP-bound; everything else falls back to implicit weights
-// = code point order (the runtime guards cp >= 0x10000).
-//
-// A collation element packs primary(16).secondary(11).tertiary(5) into one u32.
-// ano_ce_stage2[(size_t)ano_ce_stage1[cp >> 8] * 256 + (cp & 0xFF)] indexes
-// ano_ce_spans (u16, offset << 4 | len into ano_ce_pool). Span 0 = unlisted: the
-// runtime computes UCA implicit weights. Decompositions are fully expanded NFD:
-// bsearch ano_decomp_cp, u16 spans (offset << 3 | len) into ano_decomp_pool.
+// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from DUCET + UnicodeData 17.0.0.
+// Trimmed to collate_keep scripts (Latin, Greek, Cyrillic, Runic, kana, punct), BMP-bound.
+// Unlisted -> UCA implicit weights (cp >= 0x10000 guarded at runtime).
+
+// CE packs primary(16).secondary(11).tertiary(5) into one u32.
+// ano_ce_stage2[ano_ce_stage1[cp>>8]*256+(cp&0xFF)] -> ano_ce_spans (offset<<4|len into ano_ce_pool).
+// Span 0 = unlisted. Decomps: bsearch ano_decomp_cp, spans (offset<<3|len) into ano_decomp_pool.
 
 #ifndef ANOPTIC_SRC_STRINGS_ANO_COLLATE_TABLES_H
 #define ANOPTIC_SRC_STRINGS_ANO_COLLATE_TABLES_H

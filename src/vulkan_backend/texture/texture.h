@@ -14,17 +14,9 @@
 
 #include "vulkan_backend/instance/instanceInit.h"
 
-// Structs
+/* Functions */
 
-// Functions
-
-// Reads an image from storage and returns Vulkan-compatible 8-bit binary texture data
-
-// Loads binary texture data into a Vulkan image. srgb -> R8G8B8A8_SRGB, false -> UNORM
-
-// Upload tightly-packed RGBA8 pixels: sRGB or UNORM per `srgb`, full mip chain when
-// `genMips` (blit-generated inside `cmd`). The one texture-upload routine: decode
-// happens in the resource manager, files never open here.
+// Upload packed RGBA8 (sRGB/UNORM). genMips => blit chain in cmd. Decode is RM's job.
 bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height, bool srgb, bool genMips, VkBuffer* outStagingBuffer);
 
 // Creates an image view for an entity with an existing texture
@@ -36,7 +28,7 @@ bool createTextureSampler(VulkanContext* ctx, RendererState* state);
 
 uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta, VkImageView view, VkSampler sampler);
 
-// Helper functions
+/* Helper Functions */
 
 // Generic function for parametrized image creation
 bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,

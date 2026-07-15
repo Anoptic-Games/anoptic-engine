@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Production world/game-save schema and migration over framed resource generations.
+// World/game-save schema and migration over framed resource generations.
+// Level open/close/view are STUB. Schema types below are the declared surface.
 
 #ifndef ANOPTICENGINE_ANOPTIC_RES_WORLD_H
 #define ANOPTICENGINE_ANOPTIC_RES_WORLD_H
@@ -50,16 +51,7 @@ anoresworld_save_status ano_resworld_save_load(ano_res_lifetime lifetime, const 
                                                anoresworld_state *state,
                                                anoresworld_save_info *info);
 
-// ---------------------------------------------------------------------------------------------
-// The level schema. FROZEN (freeze item 12).
-//
-// An `anoptic.level` file (jsmn; no new dependency) conditions into a plane-set block whose
-// `assets` array IS the disclosed dependency set -- the level does not merely mention its
-// assets, it declares them, and the manager prefetches exactly that set.
-//
-// A level owns a WORLD_LEVEL domain. Its on_load script parameterizes what actually renders
-// and its ambient audio actually feeds the sink; a level whose scripts and audio do nothing
-// is scaffolding wearing a domain's name.
+/* Level schema */
 
 #define ANO_RESLEVEL_TAG      0x304C564Cu   // 'LVL0'
 #define ANO_RESLEVEL_VERSION  1u
@@ -71,21 +63,20 @@ typedef enum anoreslevel_asset_kind {
     ANO_RESLEVEL_ASSET_SCRIPT,
 } anoreslevel_asset_kind;
 
-// One declared asset: a logical path plus the kind the level expects it to be. A mismatch
-// at load is a refusal, not a cast.
+// Declared asset: logical path plus expected kind.
 typedef struct anoreslevel_asset {
     char     logical[MAXPATH];
     uint32_t kind;                      // anoreslevel_asset_kind
-    uint32_t tag;                       // the FOURCC it must condition to (0 = raw bytes)
+    uint32_t tag;                       // FOURCC it must condition to (0 = raw bytes)
 } anoreslevel_asset;
 
-// One placed entity. `asset` indexes assets[]; -1 is a pure light or a pure script host.
+// Placed entity. `asset` indexes assets[]. -1 is a pure light or script host.
 typedef struct anoreslevel_entity {
     char     name[64];
     mat4     transform;
     int32_t  asset;                     // into assets[], -1 = none
     int32_t  light;                     // into lights[], -1 = none
-    int32_t  script;                    // into assets[] (an ANO_RESLEVEL_ASSET_SCRIPT), -1 = none
+    int32_t  script;                    // into assets[] (ANO_RESLEVEL_ASSET_SCRIPT), -1 = none
     uint32_t flags;
 } anoreslevel_entity;
 
@@ -99,12 +90,11 @@ typedef struct anoreslevel_light {
     uint32_t _pad[3];
 } anoreslevel_light;
 
-// The level view: counted arrays borrowing manager memory, valid until the handle's
-// generation retires. A zeroed struct means stale, sentinel, or failed validation.
+// Level view schema. open/view STUB today: always refuse / zeroed.
 typedef struct anoreslevel {
     char name[64];
 
-    const anoreslevel_asset  *assets;   uint32_t asset_count;   // == the DISCLOSED dep set
+    const anoreslevel_asset  *assets;   uint32_t asset_count;
     const anoreslevel_entity *entities; uint32_t entity_count;
     const anoreslevel_light  *lights;   uint32_t light_count;
 
@@ -115,15 +105,11 @@ typedef struct anoreslevel {
     uint64_t world_seed;
 } anoreslevel;
 
-// Open a level into its OWN WORLD_LEVEL domain: condition the block, prefetch every declared
-// asset into that domain, compile the on_load script, ingest the ambient clip. Output: 0 and
-// a live domain + handle, or -1 (the domain is retired on any failure -- a half-open level
-// is not a level). close() retires the domain, which is where its residual footprint is
-// measured.
+// STUB. Always -1.
 int ano_reslevel_open (const char *logical, ano_res_lifetime *out_domain, anores_t *out_level);
-int ano_reslevel_close(ano_res_lifetime domain);
+int ano_reslevel_close(ano_res_lifetime domain);   // STUB -1
 
-// The level view for an open handle. Its pointers die with read; zeroed on refusal.
+// STUB. Always zeroed.
 anoreslevel ano_reslevel_view(const ano_res_read *read, anores_t level);
 
 #endif // ANOPTICENGINE_ANOPTIC_RES_WORLD_H

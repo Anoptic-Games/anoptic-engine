@@ -13,9 +13,7 @@
 
 #include <vulkan/vulkan.h>
 
-// Fullscreen tonemap pass: encodes the HDR resolve target to the swapchain.
-// in:  ctx, state (imageFormat = swapchain target format must be set)
-// out: true on success; populates state->tonemap{SetLayout,Layout,Cache,Pipeline}
+// Fullscreen tonemap: HDR resolve -> swapchain.
 bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 {
 	// One combined image sampler, fragment-only.

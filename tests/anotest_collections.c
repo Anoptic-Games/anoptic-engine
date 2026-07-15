@@ -3,21 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_collections.h: the promoted SPSC, the Vyukov MPSC/MPMC rings,
- * seqpub, and the ticket dispenser.
- *   - compile-time: the cursor false-sharing separation is real, not aspirational
- *     (offsetof distances >= ANO_THREAD_LINE, struct alignment inherited);
- *   - unit: FIFO order, false-on-full exactly at capacity, false-on-empty, >= 4 laps
- *     of wrap, SPSC cursor wrap across UINT32_MAX (transparent structs let the test
- *     preload cursors -- a test-only seam), init totality (NULL/0/oversize refuse,
- *     destroy of a zeroed ring is a no-op), seqpub torn-read protocol;
- *   - stress: 8P x 8C MPMC and 8P x 1C MPSC(drain) with count + sum + xor
- *     conservation (no loss, no dup, no tear) and per-producer FIFO at every
- *     consumer; 1P x 8C SPMC with the stronger oracle one producer permits (every
- *     consumer sees a strictly increasing slice of ONE global sequence); 1P x 1C
- *     SPSC mirror; 8-thread ticket uniqueness via a bitmap.
- * The stress battery is the TSan gate's food: this test carries the concurrency
- * label and every ring op runs under build.sh 7. Exit 0 == pass. */
+/* Coverage: SPSC, MPSC/SPMC/MPMC, seqpub, ticket.
+ * Layout asserts, unit FIFO/full/empty/wrap/init totality, stress conservation under TSan (build.sh 7).
+ * Exit 0 == pass. */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -35,8 +23,9 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-// ---------------------------------------------------------------------------------------------
-// The separation the header promises must hold in the layout the compiler actually built.
+/* Layout */
+
+// Cursor false-sharing separation in the compiled layout.
 
 static_assert(offsetof(anoring_spsc, head) - offsetof(anoring_spsc, tail)
               >= ANO_THREAD_LINE, "spsc cursor separation");
@@ -52,8 +41,9 @@ static_assert(_Alignof(anoring_spmc) >= ANO_THREAD_LINE, "spmc struct alignment"
 static_assert(_Alignof(anoring_mpmc) >= ANO_THREAD_LINE, "mpmc struct alignment");
 static_assert(_Alignof(anoticket_t)  >= ANO_THREAD_LINE, "ticket alignment");
 
-// ---------------------------------------------------------------------------------------------
-// Unit: single-threaded semantics, every flavor.
+/* Unit */
+
+// Single-threaded semantics.
 
 static void test_ticket_unit(void)
 {
@@ -87,14 +77,14 @@ static void test_spsc_unit(void)
     }
     CHECK(!ano_ring_spsc_pop(&r, &v), "false-on-empty");
 
-    // Four laps of wrap through a small ring.
+    // Four wrap laps.
     for (uint64_t i = 0; i < 16; i++) {
         v = i;
         CHECK(ano_ring_spsc_push(&r, &v), "lap push");
         CHECK(ano_ring_spsc_pop(&r, &v) && v == i, "lap pop FIFO");
     }
 
-    // Cursor wrap across UINT32_MAX: transparent struct, test-only preload.
+    // Cursor wrap across UINT32_MAX. Transparent struct preload.
     atomic_store_explicit(&r.tail, UINT32_MAX - 1, memory_order_relaxed);
     atomic_store_explicit(&r.head, UINT32_MAX - 1, memory_order_relaxed);
     for (uint64_t i = 0; i < 8; i++) {
@@ -104,7 +94,7 @@ static void test_spsc_unit(void)
     }
     ano_ring_spsc_destroy(&r);
     CHECK(r.buf == NULL, "destroy zeroes");
-    ano_ring_spsc_destroy(&r);              // double destroy: no-op, ASan watches
+    ano_ring_spsc_destroy(&r);              // double destroy: no-op
 }
 
 static void test_mpsc_unit(void)
@@ -125,7 +115,7 @@ static void test_mpsc_unit(void)
     CHECK(ano_ring_mpsc_drain(&r, batch, 8) == 5, "drain stops at empty");
     CHECK(batch[4] == 7, "drain tail FIFO");
     CHECK(!ano_ring_mpsc_pop(&r, &v), "false-on-empty");
-    for (uint32_t i = 0; i < 40; i++) {     // five laps: sequence-word reuse
+    for (uint32_t i = 0; i < 40; i++) {     // five laps
         v = 1000 + i;
         CHECK(ano_ring_mpsc_push(&r, &v), "lap push");
         CHECK(ano_ring_mpsc_pop(&r, &v) && v == 1000 + i, "lap pop");
@@ -151,7 +141,7 @@ static void test_spmc_unit(void)
         CHECK(v == 200 + i, "FIFO order");
     }
     CHECK(!ano_ring_spmc_pop(&r, &v), "false-on-empty");
-    for (uint64_t i = 0; i < 20; i++) {     // five laps: sequence-word reuse
+    for (uint64_t i = 0; i < 20; i++) {     // five laps
         v = 3000 + i;
         CHECK(ano_ring_spmc_push(&r, &v), "lap push");
         CHECK(ano_ring_spmc_pop(&r, &v) && v == 3000 + i, "lap pop");
@@ -202,9 +192,9 @@ static void test_seqpub_unit(void)
     ano_seqpub_destroy(&p);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Stress: conservation oracles across real threads. An item carries its producer id,
-// a per-producer sequence, and a checksum; the sums prove no loss, no dup, no tear.
+/* Stress */
+
+// Conservation oracles. Item = producer id + per-prod seq + checksum.
 
 #define ST_PRODUCERS 8u
 #define ST_CONSUMERS 8u
@@ -215,7 +205,7 @@ static void test_seqpub_unit(void)
 typedef struct st_item {
     uint32_t producer;
     uint32_t seq;
-    uint64_t check;                         // f(producer, seq): the tear detector
+    uint64_t check;                         // tear detector
 } st_item;
 
 static uint64_t st_check(uint32_t p, uint32_t s)
@@ -241,7 +231,7 @@ static void *st_producer(void *arg)
         it.seq   = s;
         it.check = st_check(c->id, s);
         if (c->mpmc)
-            while (!ano_ring_mpmc_push(&st_mpmc, &it)) { /* spin: consumer lags */ }
+            while (!ano_ring_mpmc_push(&st_mpmc, &it)) { /* spin */ }
         else
             while (!ano_ring_mpsc_push(&st_mpsc, &it)) { /* spin */ }
     }
@@ -253,7 +243,7 @@ static void *st_mpmc_consumer(void *arg)
     (void)arg;
     uint32_t last[ST_PRODUCERS];
     for (uint32_t i = 0; i < ST_PRODUCERS; i++)
-        last[i] = UINT32_MAX;               // "nothing seen": seq 0 must pass
+        last[i] = UINT32_MAX;               // sentinel: seq 0 ok
     st_item it;
     uint64_t sum = 0, xr = 0;
     for (;;) {
@@ -373,9 +363,7 @@ static void test_mpsc_stress(void)
     ano_ring_mpsc_destroy(&st_mpsc);
 }
 
-// SPMC fan-out: one producer, eight consumers. One producer means ONE global
-// sequence, so the oracle strengthens: every consumer's slice must be strictly
-// increasing, on top of count + sum + xor conservation.
+// SPMC fan-out 1P x 8C. Oracle: each consumer slice strictly increasing + conservation.
 
 static anoring_spmc st_spmc;
 
@@ -386,7 +374,7 @@ static void *st_spmc_producer(void *arg)
     for (uint32_t s = 0; s < ST_TOTAL; s++) {
         it.seq   = s;
         it.check = st_check(0, s);
-        while (!ano_ring_spmc_push(&st_spmc, &it)) { /* spin: consumers lag */ }
+        while (!ano_ring_spmc_push(&st_spmc, &it)) { /* spin */ }
     }
     return NULL;
 }
@@ -394,7 +382,7 @@ static void *st_spmc_producer(void *arg)
 static void *st_spmc_consumer(void *arg)
 {
     (void)arg;
-    uint32_t last = UINT32_MAX;                 // "nothing seen": seq 0 must pass
+    uint32_t last = UINT32_MAX;                 // sentinel: seq 0 ok
     st_item it;
     uint64_t sum = 0, xr = 0;
     for (;;) {
@@ -447,7 +435,7 @@ static void test_spmc_stress(void)
     ano_ring_spmc_destroy(&st_spmc);
 }
 
-// SPSC mirror: one producer, one consumer, a million checksummed items.
+// SPSC 1P x 1C, one million checksummed items.
 #define SP_TOTAL 1000000u
 static anoring_spsc sp_ring;
 
@@ -477,7 +465,7 @@ static void test_spsc_stress(void)
             continue;
         CHECK(it.seq == next, "spsc: strict FIFO");
         if (it.seq != next)
-            break;                          // one line of noise, not a million
+            break;                          // abort on fail
         xr ^= it.check;
         expect ^= st_check(0, next);
         next++;
@@ -487,7 +475,7 @@ static void test_spsc_stress(void)
     ano_ring_spsc_destroy(&sp_ring);
 }
 
-// Ticket uniqueness: 8 threads, 100k each, every ticket lands one bitmap bit.
+// Ticket uniqueness: 8 threads x 100k, bitmap.
 #define TK_THREADS 8u
 #define TK_PER     100000u
 static anoticket_t      tk;
@@ -528,8 +516,6 @@ static void test_ticket_stress(void)
             holes++;
     CHECK(holes == 0, "ticket range is dense (no skips)");
 }
-
-// ---------------------------------------------------------------------------------------------
 
 int main(void)
 {

@@ -20,12 +20,12 @@ typedef struct TransformBuffer
 {
     VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
-    mat4*           mapped[MAX_FRAMES_IN_FLIGHT];  // persistently mapped
-    uint32_t        capacity;   // max entities
-    uint32_t        count;      // current entity count
+    mat4*           mapped[MAX_FRAMES_IN_FLIGHT];  // host ptr when HOST_VISIBLE; else NULL
+    uint32_t        capacity;   // element ceiling
+    uint32_t        count;      // live element count (transforms: mirrored from slotHighWater)
 } TransformBuffer;
 
-// Per-slot GPU motion descriptors consumed by update.comp. Persistent, slot-indexed, copy-forward.
+// Unused host-mapped FIF shape. Live motion descriptors: SlotUpload (update.comp).
 typedef struct MotionBuffer
 {
     VkBuffer             buffer[MAX_FRAMES_IN_FLIGHT];
@@ -35,7 +35,7 @@ typedef struct MotionBuffer
     uint32_t             count;
 } MotionBuffer;
 
-// Persistent, slot-indexed, copy-forward-on-grow. Per-entity instance channel read by the fragment stage.
+// Unused host-mapped FIF shape. Live instance channel: SlotUpload (fragment stage).
 typedef struct InstanceDataBuffer
 {
     VkBuffer         buffer[MAX_FRAMES_IN_FLIGHT];
@@ -48,9 +48,8 @@ typedef struct InstanceDataBuffer
 // Sentinel slot for a streamed entry whose render_id failed to resolve; scatter.comp skips it.
 #define STREAM_SLOT_SKIP 0xFFFFFFFFu
 
-// Streamed-transform lane (Path B v2, zero-copy mapped ring). Producer writes render_ids + transforms
-// into a free ring slice and publishes {seq,count}; scatter reads it in place via dynamic offset.
-// Lock-free SPSC handshake; render side re-resolves render_id -> slot when resolveGen bumps.
+// Streamed-transform lane: SPSC mapped ring. Producer publishes {seq,count}; scatter reads via dyn offset.
+// Re-resolve render_id -> slot when resolveGen bumps.
 typedef struct TransformStreamBuffer
 {
     // Resolved target slots, render-written per frame (scatter binding 0). Unresolved -> STREAM_SLOT_SKIP.
@@ -85,9 +84,7 @@ typedef struct TransformStreamBuffer
     uint32_t      stagedGen[MAX_FRAMES_IN_FLIGHT];
 } TransformStreamBuffer;
 
-// Per-slot GPU data with one DEVICE_LOCAL authoritative buffer, fed by a per-frame host-visible delta
-// staging ring. render_apply_commands packs frame f's changes into staging[f]; recordCommandBuffer
-// uploads staging[f] -> device with one barrier-ordered vkCmdCopyBuffer. Growth copies device-side under idle.
+// Per-slot DEVICE_LOCAL buffer + per-frame host-visible delta staging. Apply packs; record uploads staging[f]->device under barrier. Growth copies device-side under idle.
 typedef struct SlotUpload
 {
     VkBuffer        device;                            // ×1 DEVICE_LOCAL authoritative (GPU reads this)
@@ -125,22 +122,16 @@ typedef struct CullUBO
     uint32_t drawSlotOf[16];
     // Special draw slots (ano_draw_slot_of): [0] additive, [1] transmission, [2] masked. std140 uvec4.
     uint32_t specialSlots[4];
-    // Per-view screen-area cull knobs. One vec4 per view, tightly packed to mirror GLSL vec4[]. Per view:
-    //   [v][0] screenAreaScale  = |proj[1][1]| * 0.5 * screenHeight; rpx = worldRadius * scale / dist.
-    //   [v][1] pixelThresholdSq = (min drawn pixel radius)^2; drop iff rpx^2 < this. 0 disables.
-    //   [v][2] lodThresholdPx   = rpx at which LOD level 1 begins. 0 disables LOD selection.
-    //   [v][3] lodBias          = signed LOD-level bias, stored as float; + coarser.
+    // viewCullParams[v]: [0] screenAreaScale, [1] pixelThresholdSq (0=off), [2] lodThresholdPx (0=off), [3] lodBias.
     float    viewCullParams[ANO_VIEW_COUNT][4];
-    // Shadow LOD offset: extra RELATIVE bias for shadow casters vs view 0 LOD (0 = exact match, + = coarser).
+    // Shadow LOD relative bias vs view 0 (+ = coarser).
     int32_t  shadowLodBias;
-    int32_t  _hizPad[3];   // std140: align 16-aligned arrays below to offset 464
-    // Hi-Z occlusion (single-phase). prevViewProj reprojects bounds into last frame's screen.
-    // hizParams = {baseW, baseH, mipCount, pad}; mipCount==0 disables. hizProj = {proj00, proj11, proj22, proj32}.
+    int32_t  _hizPad[3];   // std140 pad to offset 464
+    // Hi-Z: prevViewProj for reprojection; hizParams={baseW,baseH,mipCount,pad} (0=off); hizProj={p00,p11,p22,p32}.
     mat4     prevViewProj[ANO_VIEW_COUNT];
     float    hizParams[ANO_VIEW_COUNT][4];
     float    hizProj[ANO_VIEW_COUNT][4];
-    // Task-shader meshlet cull: [0] != 0 sizes mesh-path indirect commands as ceil(meshletCount/32) TASK
-    // workgroups. Mirrors RendererState.taskCull. std140 uvec4; [1..3] reserved.
+    // taskParams[0]!=0 -> mesh-path indirect = ceil(meshletCount/32) TASK WGs. std140 uvec4.
     uint32_t taskParams[4];
 } CullUBO;
 
@@ -188,22 +179,22 @@ typedef struct CullingBuffers {
     // Per-slot mesh/material; ×1 device-local + delta staging.
     SlotUpload              entity;
 
-    // Mesh draw parameters (firstIndex, indexCount, vertexOffset per mesh)
+    // MeshSSBO: 9 u32/mesh (meshlets + classic fallback + lodCount); host-visible, rewritten each frame
     VkBuffer                meshDataBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           meshDataAllocs[MAX_FRAMES_IN_FLIGHT];
     void*                   meshDataMapped[MAX_FRAMES_IN_FLIGHT];
 
-    // Bounding volumes for frustum testing
+    // MeshBoundsSSBO: vec4 sphere (xyz + radius) per mesh; host-visible, rewritten each frame
     VkBuffer                meshBoundsBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           meshBoundsAllocs[MAX_FRAMES_IN_FLIGHT];
     void*                   meshBoundsMapped[MAX_FRAMES_IN_FLIGHT];
 
-    // GPU-written draw count (atomic counter output from cull shader)
+    // GPU-written per-partition draw counts (DEVICE_LOCAL; cull atomics)
     VkBuffer                drawCountBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           drawCountAllocs[MAX_FRAMES_IN_FLIGHT];
     uint32_t*               drawCountMapped[MAX_FRAMES_IN_FLIGHT];
 
-    // GPU-written compacted entity indices (1-to-1 mapping for visible elements)
+    // GPU-written compacted entity indices per partition (DEVICE_LOCAL)
     VkBuffer                compactedEntityIndicesBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           compactedEntityIndicesAllocs[MAX_FRAMES_IN_FLIGHT];
     uint32_t*               compactedEntityIndicesMapped[MAX_FRAMES_IN_FLIGHT];
@@ -214,7 +205,6 @@ typedef struct CullingBuffers {
 
     // Descriptor infrastructure
     VkDescriptorSetLayout   setLayout;
-
 
     // Capacity tracking
     uint32_t                maxEntities;

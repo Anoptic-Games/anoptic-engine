@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Text overlay plumbing. CPU: FreeType init + font bake. GPU: static glyph buffers,
-// per-frame frame-data buffers and overlay images, the PIPELINE_COMPUTE_TEXTRASTER
-// prototype, and a composite blend pipeline sharing the tonemap set/pipeline layout.
+// Text overlay: FreeType bake, glyph buffers, per-frame overlay, TEXTRASTER + composite.
 
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/ui_raster.h"
@@ -134,10 +132,7 @@ static void text_pending_bounds(RendererState* state)
     state->textBounds[3] = hi[1];
 }
 
-// Recomposes the pending canonical after any source changed. OSD region
-// [0, textOsdCount) stays device-px, logic blocks append in registry order with the
-// logical->px surface fold (origin scales, inv divides), capped. Demo pin keeps the
-// canvas OSD-only.
+// Recompose pending canonical. OSD [0,textOsdCount) device-px; logic blocks fold logical->px.
 static void text_blocks_append(RendererState* state)
 {
     uint32_t cap = ANO_TEXT_WORLD_FIRST;
@@ -198,9 +193,7 @@ void ano_vk_text_set_runs(RendererState* state, anostr_t text, const AnoTextRun*
     text_blocks_append(state);
 }
 
-// Adopts a logic-submitted block (RCMD_TEXT_SET), replacing text_id's contents.
-// Ownership of blk transfers here, freed on replace/clear/teardown or drop.
-// Render thread only.
+// Adopt RCMD_TEXT_SET block (ownership transfers). Render thread only.
 void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderTextBlock* blk)
 {
     if (blk == NULL)
@@ -304,7 +297,7 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                               : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[b].descriptorCount = 1;
-        // World lane reads the three glyph buffers, overlay image + UI tables compute-only.
+        // World lane: glyph buffers; overlay + UI tables compute-only.
         bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
                                | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT : 0u);
     }
@@ -364,7 +357,7 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     return r == VK_SUCCESS;
 }
 
-// Composite blend pipeline: tonemap's twin, premultiplied src-over, overlay.frag samples the overlay image.
+// Composite blend: premultiplied src-over; overlay.frag samples overlay image.
 static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkShaderModule vertModule = ano_pipeline_shader(ctx->device, "shaders/tonemap.vert.spv");
@@ -571,7 +564,7 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
 
     // CPU side: bake blobs live on textHeap. FreeType memory faces retain their source
-    // pointers, so one registered read scope pins the engine-domain font bytes until cleanup.
+    // One registered read scope pins font bytes until cleanup.
     ano_res_lifetime lifetime = ano_res_lifetime_engine();
     state->textResourceReader = (ano_res_reader){ .lane = ANO_RES_READER_NONE };
     if (ano_res_reader_register(&state->textResourceReader) != 0
@@ -597,9 +590,7 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
     }
 
-    // Bake coverage: ASCII, Latin-1, core Cyrillic from Geist, Greek (mono + poly) from
-    // Noto Sans, Runic from Noto Sans Runic. Ranges must stay codepoint-sorted and
-    // disjoint. A missing auxiliary font degrades to the remaining ranges.
+    // Bake ranges: ASCII/Latin-1/Cyrillic (Geist), Greek (Noto), Runic (Noto Runic). Sorted+disjoint.
     AnoFontId runeFont = ano_text_font_load_memory(ano_res_bytes(
         &state->textResourceRead, ano_res_get(lifetime, ANO_TEXT_RUNE_FONT_LOGICAL)));
     if (runeFont == 0)
@@ -629,7 +620,7 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
     }
 
-    // Static glyph data: staged upload to device-local, CONCURRENT-shared with compute when async.
+    // Static glyph data -> device-local; CONCURRENT when async.
     VkDeviceSize curveBytes = (VkDeviceSize)state->textBake.pointCount * sizeof(uint32_t);
     VkDeviceSize glyphBytes = (VkDeviceSize)state->textBake.glyphCount * sizeof(AnoGlyphEntry);
     bool ok = ano_vk_text_create_buffer(ctx, curveBytes,
@@ -793,7 +784,7 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
 {
     if (!state->textOverlay)
         return;
-    // Async lane: CONCURRENT (written on compute, sampled on graphics). Exclusive when in-frame.
+    // Async: CONCURRENT compute+graphics. Exclusive when in-frame.
     uint32_t shareFamilies[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
@@ -917,9 +908,7 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
     ano_vk_ui_write_sets(ctx, state);
 }
 
-// The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
-// sampled read. Graphics final barrier targets FRAGMENT_SHADER, compute-only transitions
-// the layout, textTimeline carries the cross-queue dependency.
+// Raster body: clear, dispatch, hand off to composite sample. Cross-queue via textTimeline.
 static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
                                bool asyncQueue)
 {
@@ -979,7 +968,7 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
             u0 = fminf(u0, state->uiBounds[0]); v0 = fminf(v0, state->uiBounds[1]);
             u1 = fmaxf(u1, state->uiBounds[2]); v1 = fmaxf(v1, state->uiBounds[3]);
         }
-        // 1 px pad for the raster's pixel window, clamp to the canvas, tile-align the origin.
+        // 1px pad, clamp to canvas, tile-align origin.
         int32_t x0 = (int32_t)floorf(u0 - 1.0f);
         int32_t y0 = (int32_t)floorf(v0 - 1.0f);
         int32_t x1 = (int32_t)ceilf(u1 + 1.0f);

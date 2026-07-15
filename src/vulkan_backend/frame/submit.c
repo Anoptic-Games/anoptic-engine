@@ -52,9 +52,9 @@ bool ano_frame_submit(uint64_t ordinal)
 	}
 	else
 	{
-		// Async light-cull split, one atomic two-batch submit + fence.
-		// A prelude CB waits hizTimeline >= ordinal-2 @ COMPUTE, lcTimeline >= ordinal-1 @ TRANSFER, signals preludeTimeline = ordinal.
-		// B main CB waits imageAvailable @ COLOR_OUT, hizTimeline >= ordinal-2 @ EARLY_FRAG, lcTimeline == ordinal @ FRAGMENT, signals renderFinished + gfxTimeline.
+		// Async LC split, one two-batch submit + fence.
+		// A prelude: wait hiz>=ord-2 @COMPUTE, lc>=ord-1 @TRANSFER; signal prelude=ord.
+		// B main: wait imageAvail @COLOR_OUT, hiz>=ord-2 @EARLY_FRAG, lc==ord @FRAGMENT; signal renderFinished+gfx.
 		uint64_t lcPrevValue = ordinal > 1u ? ordinal - 1u : 0u;
 		VkSemaphore aWaitSems[2] = { rendererState.hizTimeline, rendererState.lcTimeline };
 		VkPipelineStageFlags aWaitStages[2] = { VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT };

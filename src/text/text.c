@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Anoptic Text implementation: module lifetime + the FreeType backend it wraps.
-// FT_New_Library with custom FT_Memory hooks routes every parser allocation into the
-// module's mimalloc heap.
+// Text module: lifetime + FreeType backend. FT_New_Library with custom FT_Memory routes parser allocs into the module mimalloc heap.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -37,22 +35,21 @@ static void *text_ft_alloc(FT_Memory memory, long size)
     return mi_heap_malloc(memory->user, (size_t)size);
 }
 
-// FT_Free_Func: mimalloc resolves the owning heap from the block itself.
+// FT_Free_Func: mimalloc resolves the owning heap from the block.
 static void text_ft_free(FT_Memory memory, void *block)
 {
     (void)memory;
     mi_free(block);
 }
 
-// FT_Realloc_Func: mimalloc tracks sizes itself, cur_size is unneeded.
+// FT_Realloc_Func: mimalloc tracks sizes, cur_size unused.
 static void *text_ft_realloc(FT_Memory memory, long cur_size, long new_size, void *block)
 {
     (void)cur_size;
     return mi_heap_realloc(memory->user, block, (size_t)new_size);
 }
 
-// Creates the module heap and a FreeType library routed through it, registers the
-// default font-format modules. Idempotent. Calling thread becomes the module owner.
+// Module heap + FreeType library through it, default font-format modules. Idempotent. Calling thread owns the module.
 int ano_text_init(void)
 {
     if (g_ftLibrary != NULL)
@@ -86,8 +83,7 @@ int ano_text_init(void)
     return 0;
 }
 
-// Destroys faces, the FreeType library, then the module heap wholesale.
-// Must run on the init thread.
+// Destroy faces, FreeType library, then module heap. Init thread.
 void ano_text_shutdown(void)
 {
     for (uint32_t i = 0; i < ANO_TEXT_MAX_FONTS; i++)
@@ -110,7 +106,7 @@ void ano_text_shutdown(void)
     }
 }
 
-// Outputs the linked FreeType version through non-NULL pointers, zeros before init.
+// Linked FreeType version via non-NULL pointers. Zeros before init.
 void ano_text_version(int *major, int *minor, int *patch)
 {
     FT_Int maj = 0, min = 0, pat = 0;
@@ -124,8 +120,7 @@ void ano_text_version(int *major, int *minor, int *patch)
         *patch = pat;
 }
 
-// Opens a scalable face into the first free registry slot. Returns its 1-based
-// handle, 0 on any failure. Must run on the init thread.
+// Open scalable face into first free registry slot. 1-based handle, or 0. Init thread.
 AnoFontId ano_text_font_load(anostr_t path)
 {
     if (g_ftLibrary == NULL || anostr_is_empty(path))
@@ -147,7 +142,7 @@ AnoFontId ano_text_font_load(anostr_t path)
         return 0;
     }
 
-    // FreeType wants a NUL-terminated path. The copy is scratch, freed on every exit.
+    // FreeType wants a NUL-terminated path. Scratch copy, freed on every exit.
     char *cpath = anostr_to_cstr(g_textHeap, path);
     if (cpath == NULL)
         return 0;
@@ -164,7 +159,7 @@ AnoFontId ano_text_font_load(anostr_t path)
     }
     if (!FT_IS_SCALABLE(face))
     {
-        // The bake path consumes outlines only.
+        // Bake path consumes outlines only.
         ano_log(ANO_ERROR, "text: '%s' is not a scalable outline face", cpath);
         FT_Done_Face(face);
         mi_free(cpath);
@@ -178,8 +173,7 @@ AnoFontId ano_text_font_load(anostr_t path)
     return slot + 1u;
 }
 
-// Memory-face sibling: the caller's blob must outlive the face (manager-owned payloads
-// are the intended source; FreeType borrows, never copies). Must run on the init thread.
+// Memory-face sibling: caller blob must outlive face (FreeType borrows). Init thread.
 AnoFontId ano_text_font_load_memory(anostr_t blob)
 {
     if (g_ftLibrary == NULL || anostr_is_empty(blob))
@@ -224,7 +218,7 @@ AnoFontId ano_text_font_load_memory(anostr_t blob)
     return slot + 1u;
 }
 
-// Internal: the FT_Face behind a handle as an opaque pointer, NULL when invalid.
+// FT_Face behind a handle as opaque pointer. NULL if invalid.
 void *ano_text_face(AnoFontId font)
 {
     if (font == 0 || font > ANO_TEXT_MAX_FONTS)
@@ -232,8 +226,7 @@ void *ano_text_face(AnoFontId font)
     return g_faces[font - 1u];
 }
 
-// Internal ground truth for the reference rasterizer: FreeType's own smooth AA render
-// (unhinted) copied tightly into buf. Sets pixel sizes on the face. Module thread.
+// FreeType smooth AA ground truth (unhinted) into buf. Sets pixel sizes on the face. Module thread.
 int ano_text_ref_ft_render(AnoFontId font, uint32_t codepoint, uint32_t pixelsPerEm,
                            uint8_t *buf, uint32_t cap, int *width, int *rows,
                            int *left, int *top)
@@ -253,7 +246,7 @@ int ano_text_ref_ft_render(AnoFontId font, uint32_t codepoint, uint32_t pixelsPe
     uint32_t bw = slot->bitmap.width, br = slot->bitmap.rows;
     if ((uint64_t)bw * br > cap)
         return ENOMEM;
-    // buffer points at the top-left byte, pitch (either sign) steps one row down.
+    // buffer = top-left byte, pitch (either sign) steps one row down.
     for (uint32_t r = 0; r < br; r++)
         memcpy(buf + (size_t)r * bw,
                slot->bitmap.buffer + (ptrdiff_t)r * slot->bitmap.pitch, bw);

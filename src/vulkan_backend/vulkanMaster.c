@@ -27,7 +27,7 @@
 
 #define GLFW_INCLUDE_VULKAN
 
-// Variables
+/* Variables */
 
 // Global, declared extern in backend.h.
 VulkanContext ctx;
@@ -51,7 +51,7 @@ static Monitors monitors =
 };
 
 
-// Assorted utility functions
+/* Assorted Utility Functions */
 
 void unInitVulkan() // A celebration
 {
@@ -149,11 +149,7 @@ void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t fra
     q->count = 0;
 }
 
-// Graphics operations
-
-
-
-
+/* Graphics Operations */
 
 
 
@@ -229,7 +225,7 @@ void drawFrame()
 	uint64_t ordinal = rendererState.timelineOrdinal + 1u;
 	if (rendererState.asyncHiz)
 	{
-		// Host-wait this slot's prior compute signal (MAX_FRAMES_IN_FLIGHT ordinals back) before re-recording.
+		// Host-wait prior compute signal (FIF ordinals back) before re-record.
 		if (ordinal > (uint64_t)MAX_FRAMES_IN_FLIGHT)
 		{
 			uint64_t prior = ordinal - (uint64_t)MAX_FRAMES_IN_FLIGHT;
@@ -292,15 +288,13 @@ void drawFrame()
 
 bool initVulkan() // Initializes Vulkan
 {
-	// Shader/model/font loads below all ride the resource namespace. main() pins it
-	// (plus dev mounts) before we run; standalone hosts (the vk test binaries) reach
-	// this idempotent init as their first touch and get the base roots.
+	// Resource namespace init (idempotent; tests hit this first).
 	if (ano_res_init() != 0) {
 		ano_log(ANO_ERROR, "initVulkan: resource manager unavailable.");
 		return false;
 	}
 
-	// Window initialization. ANO_RES=WxH overrides, in screen coordinates (callers own any DPI math).
+	// Window init. ANO_RES=WxH overrides (screen coords).
 	Dimensions2D initDimensions = {800, 600};
 	const char* resEnv = getenv("ANO_RES");
 	if (resEnv != NULL) {
@@ -608,7 +602,7 @@ bool initVulkan() // Initializes Vulkan
 		return false;
 	}
 
-	// Runtime light registry, static rows [0, ANO_STATIC_LIGHT_COUNT), dynamic remainder to capacity.
+	// Light registry: static [0, ANO_STATIC_LIGHT_COUNT), dynamic to capacity.
 	light_registry_init(&rendererState.lightRegistry, ANO_STATIC_LIGHT_COUNT,
 	                    rendererState.lightBuffer.capacity - ANO_STATIC_LIGHT_COUNT,
 	                    MAX_FRAMES_IN_FLIGHT);

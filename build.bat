@@ -13,7 +13,7 @@ where clang >nul 2>&1 || (echo ERROR: clang not found. Install MSYS2 clang64 or 
 where cmake >nul 2>&1 || (echo ERROR: cmake not found. Install CMake or set CMAKE_BIN. & exit /b 1)
 where ninja >nul 2>&1 || (echo ERROR: ninja not found. Install it with: pacman -S mingw-w64-clang-x86_64-ninja & exit /b 1)
 
-:: Parse the build type.
+:: Build profile
 if "%1"=="1" (
     set BUILD_LABEL=Release
     set CMAKE_CONFIG=Release
@@ -27,9 +27,7 @@ if "%1"=="1" (
     set EXTRA_FLAGS=
     set RUN_TESTS=0
 ) else if "%1"=="3" (
-    rem Headless engine, console/server entry point. No renderer, no GPU.
-    rem TESTS=OFF explicitly: build\Headless held the headless test profile (now 4) until
-    rem 2026-07-11, and a stale cache's ANOPTIC_TESTS=ON would otherwise stick.
+    rem Headless engine (no GPU). TESTS=OFF: stale build\Headless cache must not keep ANOPTIC_TESTS=ON.
     set BUILD_LABEL=Headless
     set CMAKE_CONFIG=Release
     set TOOLCHAIN_FILE=release_clang-windows-x64-mingw.cmake
@@ -77,7 +75,7 @@ if "%1"=="1" (
     exit /b 1
 )
 
-:: Absolute path to the toolchain file
+:: Paths
 set TOOLCHAIN_PATH=%~dp0cmake\platforms\%TOOLCHAIN_FILE%
 echo TOOLCHAIN_PATH is set to: %TOOLCHAIN_PATH%
 
@@ -92,10 +90,8 @@ if exist build\%BUILD_LABEL%\CMakeCache.txt (
     findstr /i /c:"CMAKE_HOME_DIRECTORY:INTERNAL=%ANO_SRC%" build\%BUILD_LABEL%\CMakeCache.txt >nul || rmdir /s /q build\%BUILD_LABEL%
 )
 
-:: Create build directory if not exist
+:: Configure
 if not exist build\%BUILD_LABEL% mkdir build\%BUILD_LABEL%
-
-:: Configure with the Ninja generator.
 cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE="%TOOLCHAIN_PATH%" -DCMAKE_BUILD_TYPE=%CMAKE_CONFIG% %EXTRA_FLAGS% -S . -B ./build/%BUILD_LABEL%
 if errorlevel 1 exit /b 1
 
@@ -103,7 +99,7 @@ if errorlevel 1 exit /b 1
 cmake --build ./build/%BUILD_LABEL% --target ano_scrub
 if errorlevel 1 exit /b 1
 
-:: Build the project.
+:: Build
 cmake --build ./build/%BUILD_LABEL% --parallel
 if errorlevel 1 exit /b 1
 
@@ -116,7 +112,7 @@ if "%RUN_TESTS%"=="0" if not exist build\%BUILD_LABEL%\anopticengine.exe (
     exit /b 1
 )
 
-:: Run the test suite
+:: Tests
 if "%RUN_TESTS%"=="1" ctest --test-dir ./build/%BUILD_LABEL% --output-on-failure
 if errorlevel 1 exit /b 1
 

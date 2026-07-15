@@ -3,10 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The read side: the candidate walk, the destination-aware sink, source dispatch, and
-// ranges. Split out of resources_core.c so the write protocol and the read path stop
-// sharing a file (and a workstream). Mount state stays in resources_core.c; this file
-// reads it through the frozen accessors.
+// Read side: candidate walk, destination-aware sink, source dispatch, ranges.
+// Mount state stays in resources_core.c. Read via frozen accessors.
 
 #include <anoptic_resources.h>
 
@@ -18,13 +16,9 @@
 #include "codec/res_codec.h"
 #include "pack/res_pack.h"
 
-// ---------------------------------------------------------------------------------------------
-// The namespace walk. Write root, then mounts newest-first, then the base mount.
-//
-// TODO(W4, M14): res_candidates_ex makes this TWO passes -- every DIR candidate, THEN every
-// PACK candidate -- so loose-shadows-pack becomes an invariant of the WALK. Today's single
-// pass is write-root > mounts-newest-first > base, and a pack mounted as a mount would
-// SHADOW the loose base: the exact inverse of the requirement.
+/* Namespace walk */
+
+// Write root, then mounts newest-first, then base. DIR candidates only.
 
 static bool prefix_applies(anostr_t prefix, const char *logical, size_t len,
                            const char **rem, size_t *rem_len)
@@ -68,8 +62,7 @@ int res_candidates(const char *logical, size_t len, ano_fspath *out, int cap)
     return n;
 }
 
-// Pass 1 emits every DIR candidate; pass 2 every PACK candidate. STUB: pass 2 is empty
-// until packs mount, so this is res_candidates wearing the source type.
+// Pass 1 emits every DIR candidate. Pass 2 (PACK) empty today.
 int res_candidates_ex(const char *logical, size_t len, res_source *out, int cap)
 {
     if (out == NULL || cap <= 0)
@@ -79,17 +72,12 @@ int res_candidates_ex(const char *logical, size_t len, res_source *out, int cap)
     int k = 0;
     for (int i = 0; i < n && k < cap; i++)
         out[k++] = (res_source){ .kind = RES_SRC_DIR, .path = dirs[i] };
-    // TODO(W4, M14): pass 2 -- every mounted pack that claims this prefix, in mount order.
     return k;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The gulp primitive and the unowned read.
-//
-// TODO(W4/W2, M10): res_read_all becomes a res_read_sink wrapper and ano_res_get reads into
-// its planned HOME with a charged spill path. Direct landing is only sound WITH a spill,
-// because rmos_size_hint is a hint by deliberate design and a multipool class block cannot
-// grow in place. EOF-truth is preserved verbatim through that change.
+/* Gulp primitive */
+
+// Unowned read. EOF is truth.
 
 int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
 {
@@ -188,32 +176,27 @@ anostr_t ano_res_slurp(mi_heap_t *heap, const char *logical)
     return anostr_empty();
 }
 
-// ---------------------------------------------------------------------------------------------
-// The destination-aware read. STUB.
-//
-// TODO(W4, M10): reserve() may hand back the resource's planned HOME block, so an IO read
-// lands where the resource will live; grow() is the CHARGED spill when the size hint lied
-// (hint_mismatch_copies counts exactly that). gfx_slurp and save_probe_file migrate onto it.
+/* Destination-aware read */
+
+// STUB.
 
 int res_read_sink(const res_sink *sink, const char *abs, size_t *out_size)
 {
     (void)sink; (void)abs; (void)out_size;
-    return -1;                                  // TODO(W4, M10)
+    return -1;                                  // STUB
 }
 
 int res_source_read_sink(const res_source *src, const res_sink *sink, size_t *out_size)
 {
     (void)src; (void)sink; (void)out_size;
-    return -1;                                  // TODO(W4, M10)
+    return -1;                                  // STUB
 }
 
-// ---------------------------------------------------------------------------------------------
-// Ranges and hashes.
-//
-// 0 / RES_RANGE_EOF / -1 / -2 -- never a silent partial. res_hash_file is what hot reload
-// CONFIRMS with, because mtime lies on 9P and SMB.
+/* Ranges and hashes */
 
-// Streaming FNV-1a-64: fold `len` bytes into a running hash seeded with res_fnv1a64's basis.
+// 0 / RES_RANGE_EOF / -1 / -2. Never a silent partial. res_hash_file confirms hot reload (mtime lies).
+
+// Streaming FNV-1a-64: fold `len` bytes into a running hash.
 static uint64_t fnv1a64_acc(uint64_t h, const void *data, size_t len)
 {
     const uint8_t *p = data;
@@ -224,8 +207,7 @@ static uint64_t fnv1a64_acc(uint64_t h, const void *data, size_t len)
     return h;
 }
 
-// Deliver exactly len bytes of a DIR source at off. The seam reports short reads; the loop
-// here owns termination: only *got == 0 (true EOF) ends it early, and early is RES_RANGE_EOF.
+// Deliver exactly len bytes of a DIR source at off. Only *got == 0 ends early as RES_RANGE_EOF.
 static int dir_read_range(const char *abs, uint64_t off, size_t len, void *dst)
 {
     rmos_file f;
@@ -252,9 +234,7 @@ static int dir_read_range(const char *abs, uint64_t off, size_t len, void *dst)
     return 0;
 }
 
-// Inputs: a source, an absolute range, a destination of at least len bytes. Output: 0 with
-// exactly len bytes delivered / RES_RANGE_EOF when the range exceeds the file / -1 IO error /
-// -2 invalid arguments. len == 0 is trivially delivered without IO.
+// Inputs: source, absolute range, dst of at least len. Output: 0 / RES_RANGE_EOF / -1 / -2. len == 0 is trivial.
 int res_read_range(const res_source *src, uint64_t off, size_t len, void *dst)
 {
     if (src == NULL || (dst == NULL && len > 0))
@@ -275,9 +255,7 @@ int res_read_range(const res_source *src, uint64_t off, size_t len, void *dst)
     }
 }
 
-// FNV-1a-64 over the WHOLE source in bounded chunks, plus its total size. For a PACK source
-// the hash covers the DECODED bytes -- the same bytes a loose file would deliver -- so hot
-// reload's confirm step compares like with like. 0 / -1.
+// FNV-1a-64 over the WHOLE source in bounded chunks, plus total size. PACK hashes DECODED bytes. 0 / -1.
 int res_hash_file(const res_source *src, uint64_t *hash, uint64_t *size)
 {
     if (src == NULL)
@@ -333,8 +311,7 @@ int res_hash_file(const res_source *src, uint64_t *hash, uint64_t *size)
     return 0;
 }
 
-// Public boundary: 0 / -1 / ANO_RES_RANGE_EOF -- invalid arguments fold into -1 out here.
-// The first PRESENT candidate decides; a mid-file failure is loud, never a silent fallback.
+// Public boundary: 0 / -1 / ANO_RES_RANGE_EOF. First PRESENT candidate decides. Mid-file failure is loud.
 int ano_res_read_range(const char *logical, uint64_t off, size_t len, void *dst)
 {
     size_t llen;
@@ -358,5 +335,5 @@ anores_t ano_res_get_range(ano_res_lifetime lifetime, const char *logical,
                            uint64_t off, size_t len)
 {
     (void)lifetime; (void)logical; (void)off; (void)len;
-    return (anores_t){0};                       // TODO(W4, M14)
+    return (anores_t){0};                       // STUB
 }
