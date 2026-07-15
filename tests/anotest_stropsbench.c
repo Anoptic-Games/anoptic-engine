@@ -3,20 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* String-ops benchmark: anostr_find and anostr_replace_all across the shapes that
- * matter, plus the UTF transforms (cull, rune_sort) for completeness.
- *   find over a 4 MiB mixed-UTF-8 document: hit at the far end, clean miss (the
- *     full-scan worst case), common vs rare needle first byte (memchr's best and
- *     worst weather), long needle;
- *   replace_all over a 1 MiB document: same-size sparse and dense, grow, shrink,
- *     delete-all-spaces, UTF-8 needle (é -> e), and the no-match identity (count
- *     pass only, zero allocation);
- *   cull whitespace+punct and the no-op clean-document case (scan only, no copy);
- *   rune_sort on a 4 KiB single string and per-item on short names.
- * Every timed result is sanity-checked (lengths, spot bytes), so the table cannot
- * quietly benchmark wrong behavior; a broken check exits nonzero.
- * Deterministic (fixed seeds). argv[1] scales reps. Built so it cannot rot, DISABLED
- * in ctest -- run ./anotest_stropsbench by hand from a -O3 build (build.bat 8). */
+/* Bench: find/replace_all shapes + cull/rune_sort. Sanity-checked; exits nonzero if wrong.
+ * DISABLED in ctest; run from -O3. argv[1] scales reps. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +22,7 @@ static int g_wrong = 0;
 
 #define WRONG(msg) do { printf("WRONG RESULT: %s\n", (msg)); g_wrong++; } while (0)
 
-// A document of varied sentences (so memchr candidates are realistic), UTF-8 mixed in.
+// Mixed-UTF-8 document of varied sentences.
 static anostr_t make_doc(mi_heap_t *heap, size_t bytes, test_rng *rng)
 {
     static const char *frags[] = {
@@ -50,7 +38,7 @@ static anostr_t make_doc(mi_heap_t *heap, size_t bytes, test_rng *rng)
     return anostr_freeze(&b);
 }
 
-// One timed series: op() runs g_reps times, row printed, p50-derived GB/s returned.
+// Timed series: op() x g_reps, print row, return p50 GB/s.
 typedef size_t (*op_fn_t)(mi_heap_t *scratch, const void *ctx);
 
 static double run_series(const char *label, size_t bytesPerOp, op_fn_t op, const void *ctx,
@@ -72,7 +60,7 @@ static double run_series(const char *label, size_t bytesPerOp, op_fn_t op, const
     return s.p50_ns ? (double)bytesPerOp / (double)s.p50_ns : 0.0;
 }
 
-/* find shapes. ctx = the document; needles are baked per function. */
+/* find shapes. ctx = document; needles baked per function. */
 
 static anostr_t g_docFind, g_docRepl;
 
@@ -212,7 +200,7 @@ int main(int argc, char **argv)
 
     test_rng rng = rng_make(0x0B5E55EDu);
 
-    // 4 MiB find haystack with the unique needle planted in the last fragment.
+    // 4 MiB find haystack; unique needle in last fragment.
     {
         anostr_builder_t b = anostr_builder_make(heap, DOC_FIND + 128);
         anostr_t body = make_doc(heap, DOC_FIND, &rng);
@@ -222,7 +210,7 @@ int main(int argc, char **argv)
     }
     g_docRepl = make_doc(heap, DOC_REPL, &rng);
 
-    // Clean document (letters only) and a 4 KiB mixed page for rune_sort.
+    // Clean doc + 4 KiB mixed page for rune_sort.
     {
         anostr_builder_t b = anostr_builder_make(heap, DOC_REPL + 64);
         while (b.len < DOC_REPL)

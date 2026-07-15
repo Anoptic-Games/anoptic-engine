@@ -336,9 +336,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 
     vkDestroyShaderModule(ctx->device, tpsortShaderModule, NULL);
 
-    // Compute Light-cull Pipeline (clustered-forward froxel light assignment).
-    // 0: GlobalUBO (in)  1: TransformSSBO (in, light world pos)  2: LightSSBO (in)
-    // 3: clusterLightCount (out)  4: clusterLightIndices (out)
+    // Light-cull compute (froxel assign). 0 GlobalUBO 1 lightRuntime 2 Light 3 count 4 indices.
     VkDescriptorSetLayoutBinding lightcullBindings[5] = {};
     for (uint32_t b = 0; b < 5; ++b) {
         lightcullBindings[b].binding = b;

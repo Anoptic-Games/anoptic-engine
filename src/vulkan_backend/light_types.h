@@ -15,13 +15,10 @@
 #include "vulkan_backend/gpu_alloc.h"
 
 
-// ---------------------------------------------------------------------------
-// Lighting
-//
-// Punctual lights following glTF KHR_lights_punctual. World position and direction
-// derive in-shader from transforms[transformIndex], only photometric params stored here.
-// LightData is 5 x vec4 (80 bytes) std430, C layout matches byte-for-byte.
-// ---------------------------------------------------------------------------
+/* Lighting */
+
+// glTF KHR_lights_punctual. Pose from transforms[transformIndex]; photometric params here.
+// LightData = 5x vec4 (80B) std430.
 typedef enum LightType
 {
     LIGHT_TYPE_DIRECTIONAL = 0, // direction only
@@ -55,9 +52,7 @@ typedef struct LightData
 } LightData; // 80 bytes
 _Static_assert(sizeof(LightData) == 80, "LightData must be 80B (5x vec4) to match the GLSL std430 mirrors");
 
-// Runtime light lifecycle. Render-side authority over dynamic palette rows [base, base+capacity).
-// Maps light_id -> row, records parent render_id for the destroy cascade, quarantines detached rows before reuse.
-// Cull light count = base + highWater. Render-thread only, no synchronization.
+// Runtime light lifecycle over dynamic palette [base, base+capacity). Cull count = base+highWater. Render-thread only.
 enum { LIGHT_ROW_FREE = 0u, LIGHT_ROW_LIVE = 1u, LIGHT_ROW_QUARANTINED = 2u };
 
 typedef struct LightRowQuarantine { uint32_t row; uint64_t safeFrame; } LightRowQuarantine;
@@ -88,13 +83,14 @@ typedef struct LightRegistry
 } LightRegistry;
 
 
+// Unused host-mapped FIF shape. Live light palette: SlotUpload (RendererState.lightBuffer).
 typedef struct LightBuffer
 {
     VkBuffer        buffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation   allocs[MAX_FRAMES_IN_FLIGHT];
-    LightData*      mapped[MAX_FRAMES_IN_FLIGHT];  // persistently mapped
-    uint32_t        capacity;   // max lights
-    uint32_t        count;      // current light count
+    LightData*      mapped[MAX_FRAMES_IN_FLIGHT];
+    uint32_t        capacity;
+    uint32_t        count;
 } LightBuffer;
 
 #endif // ANO_LIGHT_TYPES_H

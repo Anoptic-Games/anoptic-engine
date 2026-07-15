@@ -3,15 +3,13 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* The Lakos grid for anoptic_memory_pools.h, vs the raw mi_heap baseline.
- * Three shapes, each timed as per-op latency percentiles plus wall ops/sec:
- *   churn    steady-state alloc/free with a bounded working set and varied sizes --
- *            the multipool's home turf (AS7-AS10);
- *   batch    allocate a storm, tear it all down at once -- monotonic + wink-out vs
- *            per-object free vs heap wink-out (AS1-AS6);
- *   compose  the same churn through Multipool<Monotonic> (AS11-AS14).
- * Merge bar (plan step 0): multipool >= mi_heap on churn shapes; monotonic+wink >= both
- * on batch shapes. Run by hand from a -O3 build (build.sh 8); DISABLED in ctest. */
+/* Lakos grid for anoptic_memory_pools.h vs raw mi_heap.
+ * Shapes (per-op latency percentiles + wall ops/sec):
+ *   churn    steady alloc/free, bounded working set, varied sizes;
+ *   batch    allocate storm, tear down at once (monotonic/wink vs per-object free);
+ *   compose  same churn through Multipool<Monotonic>.
+ * Merge bar: multipool >= mi_heap on churn; monotonic+wink >= both on batch.
+ * Run by hand from -O3 (build.sh 8); DISABLED in ctest. */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -26,11 +24,11 @@
 #define BATCH_N     200000u
 #define BATCH_REPS  8u
 
-static uint64_t g_sink;     // defeat dead-code elimination
+static uint64_t g_sink;     // defeat DCE
 
-// ---------------------------------------------------------------------------------------------
-// Churn: mixed sizes, bounded working set. One sample per op (alloc or free).
+/* Churn */
 
+// Mixed sizes, bounded working set. One sample per op.
 typedef void *(*alloc_fn)(void *ctx, size_t size);
 typedef void  (*free_fn)(void *ctx, void *p, size_t size);
 
@@ -80,13 +78,13 @@ static void run_churn(const char *label, void *ctx, alloc_fn af, free_fn ff,
            bench_ops_per_sec(CHURN_OPS, ano_ticks_to_ns(wall)) / 1e6);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Batch-and-wink: N allocations, then one teardown. Wall time only (teardown included).
+/* Batch-and-wink */
 
+// N allocs, then one teardown. Wall time only.
 static void run_batch(const char *label, uint32_t maxSize, int mode)
 {
     // mode 0: mi_heap per-object free; 1: mi_heap wink-out; 2: monotonic + destroy;
-    //      3: monotonic reset-reuse (amortized slabs, the per-ingest staging shape).
+    //      3: monotonic reset-reuse (warm slabs).
     static void *ptrs[BATCH_N];
     double bestMs = 1e30;
     ano_mem_monotonic *keepArena = NULL;
@@ -140,7 +138,7 @@ static void run_batch(const char *label, uint32_t maxSize, int mode)
            label, BATCH_REPS, bestMs, (double)BATCH_N / bestMs / 1e3);
 }
 
-// ---------------------------------------------------------------------------------------------
+/* Driver */
 
 int main(void)
 {

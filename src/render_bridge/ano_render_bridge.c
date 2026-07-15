@@ -3,11 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Logic<->render bridge: ring storage alloc/teardown, plus the producer
- * endpoint (ano_render_submit). The hot-path push/pop and the in-src endpoints
- * stay inlined in the private render_bridge.h, while only the cold init/destroy and
- * the public (non-inline) submit live here. Platform-agnostic and GPU-free,
- * part of anoptic_core. Public contract: include/anoptic_render.h. */
+/* Logic<->render bridge: ring alloc/teardown + non-inline logic endpoints.
+ * Hot-path push/pop and render-master endpoints stay inlined in render_bridge.h.
+ * Public contract: include/anoptic_render.h. */
 
 #include "render_bridge.h"
 
@@ -16,7 +14,10 @@
 
 #include <anoptic_log.h>
 
-// Guard the events-ring element size (copied per push/pop, sized capacity * this). Held at 32 B.
+
+/* SPSC */
+
+// Events-ring element size (copied per push/pop). Cap at 32 B.
 _Static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
 
 // Smallest power of two >= v, floor of 2. Returns 0 on overflow (v > 2^31).
@@ -60,6 +61,9 @@ void ano_spsc_destroy(AnoSpscRing *ring)
     atomic_store_explicit(&ring->tail, 0u, memory_order_relaxed);
 }
 
+
+/* Bridge Lifecycle */
+
 bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
                             uint32_t cmd_capacity_pow2, uint32_t evt_capacity_pow2)
 {
@@ -70,8 +74,7 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
         ano_spsc_destroy(&bridge->commands);
         return false;
     }
-    // Published latest-wins lanes start unpublished (version 0): until logic publishes a pose the
-    // renderer uses its built-in camera, and until render publishes a frame logic's acquire fails.
+    // Latest-wins lanes unpublished (version 0) until first publish.
     memset(&bridge->snapshot, 0, sizeof bridge->snapshot);
     memset(&bridge->viewState, 0, sizeof bridge->viewState);
     atomic_init(&bridge->snapshotVersion, 0u);
@@ -86,15 +89,16 @@ void ano_render_bridge_destroy(AnoRenderBridge *bridge)
     ano_spsc_destroy(&bridge->events);
 }
 
-// Public producer endpoint (anoptic_render.h). Non-inline, reached through the opaque handle.
-// The in-src consumer/event endpoints stay inlined in render_bridge.h.
+
+/* Logic Master Endpoints */
+
+// Public producer endpoint (anoptic_render.h). Non-inline via opaque handle.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd)
 {
     return ano_spsc_push(&bridge->commands, cmd);
 }
 
-// Runtime light endpoints. Build a POD RenderCommand and push it through the SPSC command ring.
-// Backpressure contract is ano_render_submit's (false == ring full, retry).
+// Runtime light endpoints. POD RenderCommand -> command ring. false == full, retry.
 bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_t parent_render_id,
                              const RenderLightParams *params, float ox, float oy, float oz)
 {
@@ -126,9 +130,11 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
-// Screen-text endpoints (v0 bridge). `set` packs the block header and the instance copy
-// into one render-owned allocation, freed render-side on replace/clear/shutdown. count 0 == clear.
-// Backpressure contract is ano_render_submit's.
+
+/* Screen Text */
+
+// `set` packs header + instances into one render-owned block. count 0 == clear.
+// false == alloc fail or ring full; retry.
 bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
                          const AnoGlyphInstance *instances, uint32_t count)
 {
@@ -161,10 +167,10 @@ bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
-// Replays the evaluators' curve-stream walk for one PATH prim (aux0 = first word,
-// aux1 = monotone-quad count): a start word, then per quad an optional
-// SENTINEL + restart word ahead of the control + end words. Bounds every read the
-// walk will make. The builder's own bakes always pass.
+
+/* UI */
+
+// Bounds one PATH prim curve walk (aux0 = curve stream offset, aux1 = monotone-quad count).
 static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
                                uint32_t off, uint32_t quads)
 {
@@ -187,8 +193,7 @@ static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
     return true;
 }
 
-// Block-local reference validation for one UI prim. Invalid blocks drop producer-side
-// (returning true).
+// Block-local ref check for one UI prim. false == invalid (caller drops with return true).
 static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, uint32_t glyphs,
                           const uint32_t *curves, uint32_t curveCount)
 {
@@ -203,8 +208,8 @@ static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, u
     return true;
 }
 
-// UI endpoints (v0 bridge). `set` packs the builder's tables + glyph labels into one
-// render-owned allocation, freed render-side on replace/clear/shutdown. Empty == clear.
+// `set` packs tables + glyphs into one render-owned block. Empty == clear.
+// false == alloc fail or ring full; retry. Dropped invalids return true.
 bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
                        const AnoUiBuilder *ui,
                        const AnoGlyphInstance *glyphs, uint32_t glyphCount)
@@ -277,8 +282,10 @@ bool ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id)
     return ano_spsc_push(&bridge->commands, &c);
 }
 
-// Back-channel logic-master endpoints (anoptic_render.h). Non-inline, reached through the opaque handle.
-// The matching render-side producer/consumer halves are the inline helpers in render_bridge.h.
+
+/* Back-Channel */
+
+// Logic-master endpoints (anoptic_render.h). Non-inline via opaque handle.
 bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out)
 {
     return ano_spsc_pop(&bridge->events, out);

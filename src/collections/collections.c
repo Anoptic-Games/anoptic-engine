@@ -3,13 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Allocation and teardown for anoptic_collections.h. The hot paths are static inline
-// in the public header; this TU owns the plane lifecycles. Platform-free.
+// Plane lifecycle for anoptic_collections.h. Hot paths are inline in the header.
 
 #include <anoptic_collections.h>
 
-// Round up to a power of two, floor 2, ceiling 2^31 (0 = out of range). The u32
-// SPSC cursors and the i64 sequence arithmetic both need capacity <= 2^31.
+// Round up to pow2, floor 2, ceiling 2^31 (0 = out of range). Cap <= 2^31 for u32 SPSC diffs and i64 seq arithmetic.
 static uint32_t pow2_cap(uint32_t capacity)
 {
     if (capacity > (1u << 31))
@@ -28,10 +26,10 @@ static void *plane_acquire(ano_mem_parent p, size_t size)
 static void plane_release(ano_mem_parent p, void *block)
 {
     if (p.release != NULL && block != NULL)
-        p.release(p.ctx, block);                // NULL release: wink-out semantics
+        p.release(p.ctx, block);                // NULL release: wink-out
 }
 
-// ---------------------------------------------------------------------------------------------
+/* SPSC */
 
 bool ano_ring_spsc_init(anoring_spsc *r, ano_mem_parent parent,
                         uint32_t capacity, uint32_t stride)
@@ -62,8 +60,9 @@ void ano_ring_spsc_destroy(anoring_spsc *r)
     memset(r, 0, sizeof *r);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The two Vyukov rings share plane construction; only the pop contract differs.
+/* Vyukov Planes */
+
+// Shared Vyukov plane construction.
 
 static bool vy_planes(ano_mem_parent parent, uint32_t capacity, uint32_t stride,
                       uint64_t *out_mask, _Atomic uint64_t **out_seq, uint8_t **out_data)
@@ -80,7 +79,7 @@ static bool vy_planes(ano_mem_parent parent, uint32_t capacity, uint32_t stride,
         plane_release(parent, data);
         return false;
     }
-    for (uint32_t i = 0; i < cap; i++)          // lap 0: every slot free at its index
+    for (uint32_t i = 0; i < cap; i++)          // lap 0: free at index
         atomic_init(&seq[i], i);
     *out_mask = cap - 1;
     *out_seq  = seq;
@@ -178,7 +177,7 @@ void ano_ring_mpmc_destroy(anoring_mpmc *r)
     memset(r, 0, sizeof *r);
 }
 
-// ---------------------------------------------------------------------------------------------
+/* Seqpub */
 
 bool ano_seqpub_init(anoseqpub *p, ano_mem_parent parent, uint32_t stride)
 {

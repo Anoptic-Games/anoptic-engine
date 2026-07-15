@@ -148,8 +148,7 @@ static void test_tel(void)
     }
     CHECK(res_tel_overflow_hits() == 0, "no overflow in this run");
 
-    // An axis outside its field width must land in the overflow bucket, counted -- masked,
-    // it would charge someone else's cell and the cube would lie without a tell.
+    // Axis outside field width lands in overflow bucket, counted. Masked would charge someone else's cell.
     res_place_plan hostile = pl(1, RES_ROLE_PAYLOAD, RES_OP_LOAD, RES_DEST_VARIABLE_PAYLOAD, 64);
     hostile.lifetime.kind = (ano_res_lifetime_kind)9;
     CHECK(res_tel_intern(&hostile) == 0, "out-of-range lifetime kind lands in cell 0");

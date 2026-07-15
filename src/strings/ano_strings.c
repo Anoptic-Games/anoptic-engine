@@ -3,8 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Anoptic Strings implementation: value type, slicing, keep, builder.
-// Allocation policy: nothing owns memory. Bytes live in a caller-supplied mi_heap_t, freed at heap teardown.
+// anostr_t value type, hash, slicing, keep, builder. Long bytes live in backing (caller heap or external borrow).
 
 #include "strings/ano_strings_internal.h"
 
@@ -42,8 +41,9 @@ anostr_t anostr_view(const char *bytes, size_t len)
     return anostr_make_long_(bytes, len);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Hash: FNV-1a over the bytes, both widths. Runtime twins of ANOSTR_SID/ANOSTR_SID32.
+/* Hash */
+
+// FNV-1a, both widths. Runtime twins of ANOSTR_SID/ANOSTR_SID32.
 
 uint64_t anostr_hash(anostr_t s)
 {
@@ -67,8 +67,7 @@ uint32_t anostr_hash32(anostr_t s)
     return h;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Slicing and promotion.
+/* Slicing and Promotion */
 
 anostr_t anostr_slice(anostr_t s, size_t start, size_t end)
 {
@@ -79,14 +78,14 @@ anostr_t anostr_slice(anostr_t s, size_t start, size_t end)
     size_t n = end - start;
     if (n <= ANOSTR_INLINE_CAP)
         return anostr_make_inline_(anostr_bytes(&s) + start, n);
-    // n > 12 means s was long: borrow its backing bytes (lifetime I4).
+    // n > 12: s was long, borrow its backing (I4).
     return anostr_make_long_(s.ptr + start, n);
 }
 
 anostr_t anostr_keep(mi_heap_t *heap, anostr_t s)
 {
     if (s.len <= ANOSTR_INLINE_CAP)
-        return s;   // values own nothing, identity
+        return s;   // inline: identity
     return anostr_from(heap, s.ptr, s.len);
 }
 
@@ -102,8 +101,7 @@ char *anostr_to_cstr(mi_heap_t *heap, anostr_t s)
     return out;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The builder.
+/* Builder */
 
 anostr_builder_t anostr_builder_make(mi_heap_t *heap, uint32_t reserve)
 {
@@ -116,8 +114,7 @@ anostr_builder_t anostr_builder_make(mi_heap_t *heap, uint32_t reserve)
     return b;
 }
 
-// Grow so cap >= need. Geometric doubling from 16, clamped to UINT32_MAX.
-// On failure the builder is untouched and the caller reports -1.
+// Grow so cap >= need. Geometric doubling from 16, clamped to UINT32_MAX. Untouched on fail.
 static int builder_reserve(anostr_builder_t *b, uint64_t need)
 {
     if (need <= b->cap)
@@ -176,7 +173,7 @@ int anostr_builder_appendf(anostr_builder_t *b, const char *fmt, ...)
         return -1;
     }
 
-    // +1: vsnprintf writes a terminating NUL into spare capacity, never counted in len.
+    // +1: vsnprintf writes a NUL into spare capacity, not counted in len.
     uint64_t total = (uint64_t)b->len + (uint64_t)need + 1;
     if (total > UINT32_MAX || builder_reserve(b, total) != 0) {
         va_end(args);
@@ -196,9 +193,9 @@ anostr_t anostr_freeze(anostr_builder_t *b)
     anostr_t s;
     if (b->len <= ANOSTR_INLINE_CAP) {
         s = anostr_make_inline_(b->ptr != NULL ? b->ptr : "", b->len);
-        mi_free(b->ptr);    // inline value owes nothing to the buffer
+        mi_free(b->ptr);    // inline owes nothing to the buffer
     } else {
-        // Shrink to exactly len and hand the buffer to the value. A failed shrink keeps the original block.
+        // Shrink to len and hand buffer to the value. Failed shrink keeps the original block.
         char *exact = mi_heap_realloc(b->heap, b->ptr, b->len);
         s = anostr_make_long_(exact != NULL ? exact : b->ptr, b->len);
     }

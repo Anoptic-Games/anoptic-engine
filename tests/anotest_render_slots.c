@@ -3,10 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for the render-side slot authority (render_slots.h): stable slot
- * assignment, logical->slot resolution, contiguous bulk ranges, capacity limits,
- * and the frame-gated quarantine -> recycle -> retirement-report path. Pure
- * logic, no Vulkan device required. Exit 0 == pass. */
+/* render_slots.h coverage: alloc, resolve, bulk ranges, capacity, quarantine -> recycle. No Vulkan. Exit 0 == pass. */
 
 #include <stdio.h>
 #include <mimalloc.h>
@@ -45,7 +42,7 @@ static void test_lifecycle(mi_heap_t *heap)
     CHECK(render_slots_resolve(&t, 11) == 1, "resolve 11 -> 1");
     CHECK(render_slots_resolve(&t, 99) == ANO_RENDER_SLOT_UNMAPPED, "resolve unknown -> UNMAPPED");
 
-    // --- retire + frame-gated quarantine ---
+    // Retire + frame-gated quarantine.
     render_slots_retire(&t, 11, /*currentFrame*/ 5);
     CHECK(render_slots_resolve(&t, 11) == ANO_RENDER_SLOT_UNMAPPED, "retired id unmapped immediately");
 
@@ -55,7 +52,7 @@ static void test_lifecycle(mi_heap_t *heap)
     uint32_t n = render_slots_collect_retired(&t, 7, freed, 4); // safeFrame = 5 + 2 = 7
     CHECK(n == 1 && freed[0] == 11, "slot retired at safeFrame, reports render_id 11");
 
-    // --- freed slot recycles before extending the high-water mark ---
+    // Freed slot recycles before extending the high-water mark.
     CHECK(render_slots_alloc(&t, 20) == 1, "alloc 20 reuses freed slot 1");
     CHECK(render_slots_alloc(&t, 21) == 3, "alloc 21 -> slot 3 (high-water)");
     CHECK(t.slotHighWater == 4, "high-water reached capacity");
@@ -63,7 +60,7 @@ static void test_lifecycle(mi_heap_t *heap)
     uint32_t one[1] = { 30 };
     CHECK(render_slots_alloc_range(&t, one, 1) == ANO_RENDER_SLOT_UNMAPPED, "range at capacity -> UNMAPPED");
 
-    // --- collect honors `max`: ready entries beyond the cap stay quarantined ---
+    // Collect honors `max`: ready entries beyond the cap stay quarantined.
     render_slots_retire(&t, 20, 10); // slot 1, safeFrame 12
     render_slots_retire(&t, 21, 10); // slot 3, safeFrame 12
     CHECK(render_slots_collect_retired(&t, 12, freed, 1) == 1, "collect caps at max=1");
@@ -73,8 +70,7 @@ static void test_lifecycle(mi_heap_t *heap)
     render_slots_destroy(&t);
 }
 
-// render_slots_set_capacity lifts the alloc/alloc_range ceiling (the GPU buffers
-// are grown to match by the renderer before this is called); it never shrinks.
+// set_capacity lifts alloc ceiling (never shrinks). Renderer grows GPU buffers first.
 static void test_set_capacity(mi_heap_t *heap)
 {
     RenderSlotTable t;
@@ -84,7 +80,7 @@ static void test_set_capacity(mi_heap_t *heap)
     CHECK(render_slots_alloc(&t, 1) == 1, "alloc 1 -> slot 1");
     CHECK(render_slots_alloc(&t, 2) == ANO_RENDER_SLOT_UNMAPPED, "at capacity -> UNMAPPED");
 
-    // Raise the ceiling; the high-water alloc resumes from where it stalled.
+    // Raise ceiling; high-water alloc resumes.
     render_slots_set_capacity(&t, 4);
     CHECK(t.slotCapacity == 4, "capacity raised to 4");
     CHECK(render_slots_alloc(&t, 2) == 2, "alloc 2 -> slot 2 after growth");

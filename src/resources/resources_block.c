@@ -3,22 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The one block framing (blueprint 2.4, M11).
-//
-// res_plane_layout is PURE: the bake, the pack, and the hostile validator all depend on
-// exactly this function. res_block_seal enforces the SAME structural rules res_block_open
-// admits, so a sealed header is by construction an openable header: anything the sealer
-// refuses to stamp, the gate refuses to admit.
-//
-// res_block_open is the single most fuzz-worthy function in the module. It validates in an
-// order that never reads a byte it has not bounded: the size floor runs before any header
-// field is trusted; the header is examined through a bounded local COPY (no alignment or
-// aliasing assumptions on hostile bytes); plane offsets are bounded against len and required
-// grain-aligned, at/past the header, and monotone; plane counts are bounded at the elem >= 1
-// floor (len[] holds ELEMENT counts whose element sizes the validator cannot know, so a
-// plane of N elements needs at least N bytes, bounding N by the span to the next plane / end
-// of block, which simultaneously forbids overlap); the FNV-1a-64 block_hash is verified last
-// over exactly the bytes presented. Zero reads past len under ANY input.
+// One block framing.
+// res_plane_layout is PURE. Seal enforces the same rules open admits.
+// res_block_open validates in order that never reads an unbounded byte. Zero reads past len under ANY input.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -29,14 +16,10 @@
 #define BLK_FNV_BASIS UINT64_C(0xcbf29ce484222325)
 #define BLK_FNV_PRIME UINT64_C(0x00000100000001b3)
 
-// PURE. Deterministic function of its arguments ONLY -- no state, no allocation, no I/O.
-// In:  hdr_bytes, per-plane element counts and element sizes, plane count.
-// Out: total block size; out_off[i] receives plane i's RES_PLANE_GRAIN-aligned base offset.
-// Each plane reserves count[i]*elem_size[i] rounded up to the grain. Returns 0 on
-// n_planes > RES_BLOCK_PLANES_MAX, a NULL array with n_planes > 0, or ANY intermediate
-// overflow (count*elem, a grain round-up, or the running total) -- every overflow is
-// checked BEFORE it can wrap. A zero-count plane occupies zero bytes and shares the next
-// plane's offset.
+// PURE. Deterministic from arguments only.
+// In: hdr_bytes, per-plane counts and elem sizes, plane count.
+// Out: total block size. out_off[i] gets grain-aligned base. 0 on overflow or n_planes > max.
+// Zero-count plane occupies zero bytes and shares the next plane's offset.
 size_t res_plane_layout(size_t hdr_bytes, const size_t *count, const size_t *elem_size,
                         size_t n_planes, uint64_t *out_off)
 {
@@ -75,14 +58,8 @@ size_t res_plane_layout(size_t hdr_bytes, const size_t *count, const size_t *ele
     return total;
 }
 
-// Stamp magic/version/layout_id/plane table into base, zero _pad and every unused table
-// entry (a bake emits canonical, byte-deterministic headers), then block_hash = FNV-1a-64
-// over the WHOLE [base, base+size) with the hash field zeroed. The plane table is validated
-// against the SAME rules res_block_open enforces first, so a sealed block always opens.
-// In:  base storage of size bytes; identity; plane count and per-plane offsets/element
-//      counts. Out: 0 on success, -1 on NULL base, size below the header, n_planes over
-//      RES_BLOCK_PLANES_MAX, NULL off/len with n_planes > 0, or a plane table the gate
-//      would reject.
+// Stamp magic/version/layout_id/plane table, zero pad/unused, then block_hash over [base,base+size) with hash field zeroed.
+// Plane table validated against open's rules first. 0 / -1.
 int res_block_seal(void *base, size_t size, uint32_t magic, uint32_t version,
                    uint64_t layout_id, size_t n_planes,
                    const uint64_t *off, const uint64_t *len)
@@ -131,10 +108,8 @@ int res_block_seal(void *base, size_t size, uint32_t magic, uint32_t version,
     return 0;
 }
 
-// THE ONE hostile-input gate. In: len bytes of UNTRUSTED storage, the expected identity, an
-// out view. Validates in an order that never reads unvalidated bytes and never reads outside
-// [bytes, bytes+len) for ANY input. Out: 0 and a filled view, or -1 and a ZEROED view. A
-// NULL out is a caller error and refuses.
+// THE ONE hostile-input gate. In: untrusted bytes, expected identity, out view.
+// Never reads outside [bytes, bytes+len). Out: 0 and filled view, or -1 and ZEROED view.
 int res_block_open(const void *bytes, size_t len, uint32_t magic, uint32_t version,
                    uint64_t layout_id, res_block_view *out)
 {

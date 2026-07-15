@@ -8,18 +8,17 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#include <anoptic_render.h> // AnoRenderableDesc (model_flatten's public output type)
+#include <anoptic_render.h> // AnoRenderableDesc
 #include "vulkan_backend/structs.h"
 #include "vulkan_backend/vertex/vertex.h"
 #include "vulkan_backend/instance/instanceInit.h"
 
-// ---------------------------------------------------------
-// Blueprint Assets
-// ---------------------------------------------------------
+
+/* Blueprint Assets */
 
 typedef struct ModelPrimitive {
     uint32_t geometryPoolIndex;
-    uint32_t materialIndex; // Index into the model's bindless texture handles, etc.
+    uint32_t materialIndex; // material palette index
 } ModelPrimitive;
 
 typedef struct ModelMesh {
@@ -36,7 +35,7 @@ typedef struct ModelNode {
     uint32_t* childIndices;
 } ModelNode;
 
-// Represents a loaded glTF file resting in GPU memory but NOT spawned in the world
+// CPU blueprint (GPU mesh/material indices); not spawned.
 typedef struct ModelAsset {
     char name[64];
     
@@ -50,20 +49,13 @@ typedef struct ModelAsset {
     uint32_t* rootNodes;
 } ModelAsset;
 
-// ---------------------------------------------------------
-// Functions
-// ---------------------------------------------------------
 
-// Ingest a glTF by LOGICAL resource path ("models/x.gltf") through the resource
-// manager's graphics extension, loading geometry/textures/materials into GPU memory
-// and returning a ModelAsset blueprint.
+/* Functions */
+
+// Ingest logical path via resource manager (anoresgfx scene) into ModelAsset blueprint. Caller owns return; NULL on failure.
 ModelAsset* parseGltf(VulkanContext* ctx, const char* logical);
 
-// Flattens a parsed asset, at `rootTransform`, into renderable primitive descriptors (one per mesh
-// primitive: its geometry-pool mesh index, material index, and world transform). Pure CPU, no GPU
-// state touched — the render side exposes this so the LOGIC master composes scene instances and
-// emits the creates itself (audit: logic owns the scene). Returns the TOTAL primitive count; fills
-// out[0..min(count,cap)). Call once with cap 0 (or out NULL) to size, then again to fill.
+// Flatten asset at `rootTransform` into AnoRenderableDesc per mesh prim (CPU only). Returns TOTAL count; fills out[0..min(count,cap)). Cap 0 / out NULL sizes.
 uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRenderableDesc* out, uint32_t cap);
 
 #endif

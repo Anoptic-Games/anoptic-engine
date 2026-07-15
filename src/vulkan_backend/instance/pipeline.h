@@ -13,18 +13,11 @@
 #include <anoptic_memory.h>
 #include "vulkan_backend/vertex/vertex.h"
 
-// Shader module from a logical resource ("shaders/x.spv") through the resource
-// manager. The SPIR-V stays owned by the manager (single-copy: swapchain-recreate
-// pipeline rebuilds re-request it for free); the module is the caller's to destroy.
-// VK_NULL_HANDLE + one log line on a missing/short blob.
+// Shader module from logical resource via resource manager. Caller destroys module. NULL on miss.
 VkShaderModule ano_pipeline_shader(VkDevice device, const char* logical);
 
-// Task meshlet-cull stage shared by mesh-drawing pipeline builders.
-// Caller-provided storage must outlive pipeline creation.
-// Caller destroys *outModule after vkCreateGraphicsPipelines.
-// Call only when state->taskCull.
-// in:  shadowPass/coneCull = flat.task constant_id 0/1 for this pipeline's lane
-// out: *stage ready to prepend to pStages, false on shader-load failure
+// Task meshlet-cull stage. Call only when taskCull. store outlives create; caller destroys *outModule.
+// in: shadowPass/coneCull = flat.task constant_id 0/1; out: *stage or false
 typedef struct TaskStageStorage
 {
     VkSpecializationMapEntry entries[2];

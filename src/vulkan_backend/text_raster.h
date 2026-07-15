@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Text overlay plumbing: glyph-curve GPU buffers, per-frame
-// overlay raster targets, the PIPELINE_COMPUTE_TEXTRASTER pass, and the composite
-// blend draw. Gated on rendererState.textOverlay.
+// Text overlay: glyph GPU buffers, per-frame overlay targets, TEXTRASTER + composite. Gate: textOverlay.
 
 #ifndef ANO_TEXT_RASTER_H
 #define ANO_TEXT_RASTER_H
@@ -18,8 +16,7 @@
 #define ANO_TEXT_RASTER_NODITHER 0x4u // skip the 1-LSB store dither (exact self-test compare)
 #define ANO_TEXT_RASTER_TILED    0x8u // UI prims come from per-tile lists, not the brute scan
 
-// One-time init on the render thread: FreeType up, fonts loaded + baked, GPU buffers
-// and pipelines built. Always returns true: failure logs and clears state->textOverlay.
+// Render-thread init. Always true: failure logs and clears textOverlay.
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state);
 
 // createDataBuffer with optional CONCURRENT graphics+compute sharing.
@@ -27,8 +24,7 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc);
 
-// Size-dependent overlay images (one per frame in flight, swapchain extent). Called
-// from createColorResources.
+// Overlay images (one per frame, swapchain extent). From createColorResources.
 void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state);
 
 // Destroys the overlay images/views (handle-guarded).
@@ -54,9 +50,7 @@ void ano_vk_text_set(RendererState* state, anostr_t text, float sizePx,
 void ano_vk_text_set_runs(RendererState* state, anostr_t text, const AnoTextRun* runs,
                           uint32_t runCount, const float origin[2]);
 
-// Logic text blocks (the v0 bridge path). block_set ADOPTS blk, replacing text_id's
-// contents. block_clear is idempotent. Both recompose the pending canonical and bump
-// textVersion.
+// Logic text blocks. block_set ADOPTS blk. Clear idempotent. Recompose + bump textVersion.
 void ano_vk_text_block_set(RendererState* state, uint32_t text_id, const RenderTextBlock* blk);
 void ano_vk_text_block_clear(RendererState* state, uint32_t text_id);
 
@@ -71,9 +65,7 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex);
 // to the fragment stage. No-op when asyncText.
 void ano_vk_text_record(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex);
 
-// Async lane (step 7): records this frame's raster CB and submits it to the compute
-// queue with no waits, signaling textTimeline == ordinal. A failed submit host-signals
-// the ordinal. No-op unless asyncText.
+// Async raster CB on compute queue, signals textTimeline == ordinal. No-op unless asyncText.
 void ano_vk_text_submit_async(VulkanContext* ctx, RendererState* state, uint32_t frameIndex,
                               uint64_t ordinal);
 
@@ -86,9 +78,7 @@ void ano_vk_text_record_composite(RendererState* state, VkCommandBuffer cmd, uin
 void ano_vk_text_record_world(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
                               uint32_t view);
 
-// Frame-independent teardown: frame-data + curve/directory buffers, the CPU bake heap,
-// and the FreeType backend. Pipelines die in ano_vk_cleanup_pipelines, the overlay
-// images with the swapchain.
+// Teardown: frame-data + curve buffers + bake heap + FreeType. Pipelines/overlay cleaned elsewhere.
 void ano_vk_text_destroy(VulkanContext* ctx, RendererState* state);
 
 #endif

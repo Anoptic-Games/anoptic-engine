@@ -32,9 +32,7 @@
 #include "templates/scratch.h"
 #include "templates/rng.h"
 
-// The temp-litter oracle needs a directory scan on BOTH platforms; this target does not carry
-// src/resources on its include path (W0 owns tests/CMakeLists.txt), so the module-private
-// header is reached by relative path.
+// Temp-litter oracle needs a directory scan on both platforms. Module-private header via relative path.
 #include "../src/resources/resources_os.h"
 
 static int failures = 0;
@@ -53,8 +51,7 @@ static ano_res_read g_read;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-// ---------------------------------------------------------------------------------------------
-// Helpers.
+/* Helpers */
 
 static ano_fspath fspath_of(const char *fmtdir)   // absolute path under the exe dir
 {
@@ -118,8 +115,6 @@ static uint32_t oracle_le32(const uint8_t *p)
     for (int i = 3; i >= 0; i--) v = v << 8 | p[i];
     return v;
 }
-
-// ---------------------------------------------------------------------------------------------
 
 static void test_before_init(void)
 {
@@ -331,9 +326,8 @@ static void test_write_and_quarantine(mi_heap_t *heap)
     CHECK(file_exists_stdio(broken), ".broken evidence exists");
     CHECK(ano_res_quarantine("anotest_res/cfg.bin") == -1, "re-quarantine refuses (absent)");
 
-    // No temp litter in the write directory. rmos_scan_dir, not a #ifndef _WIN32 dirent block:
-    // this oracle used to be compiled out on Windows -- the one platform whose ReplaceFileW
-    // path is likeliest to strand a temp, i.e. exactly where it needed to run.
+// No temp litter in the write directory. rmos_scan_dir (not a Windows-skipped dirent block).
+// Exactly the platform whose ReplaceFileW path is likeliest to strand a temp.
     char wdir[MAXPATH + 16];
     snprintf(wdir, sizeof wdir, "%s/anotest_res", user.str);
     int tmps = 0;
@@ -417,8 +411,7 @@ static void test_saves(void)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Phase B: handles.
+/* Phase B: handles */
 
 static void test_handles(mi_heap_t *heap)
 {
@@ -476,7 +469,7 @@ static void test_handles(mi_heap_t *heap)
     CHECK(anostr_len(ano_res_bytes(h3)) == 0, "release retires views");
     CHECK(ano_res_release(h3, &blk, &bs) == -1, "double release refuses");
 
-    // Direct release: > pool top class, zero-copy -- the handed block IS the view's.
+    // Direct release: > pool top class, zero-copy. Handed block IS the view's.
     anores_t hb = ano_res_get("anotest_res/big.bin");
     CHECK(hb.gen != 0, "big get");
     anostr_t bv = ano_res_bytes(hb);
@@ -494,8 +487,9 @@ static void test_handles(mi_heap_t *heap)
     CHECK(ha.rid == 0 && ha.slot == 0 && ha.gen == 0, "absent get is the sentinel");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Phase B: gamesave loading -- the corruption battery.
+/* Phase B: gamesave loading */
+
+// The corruption battery.
 
 static bool flip_byte(const char *path, long off)
 {
@@ -661,8 +655,6 @@ static void test_save_load(void)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-
 static void cleanup(void)
 {
     // Exe-side scratch.
@@ -696,9 +688,7 @@ static void cleanup(void)
     snprintf(p, sizeof p, "%s/anotest_res", user.str);                   scratch_remove_dir(p);
 }
 
-// The init-time write-root temp GC, in isolation: orphans planted BEFORE init must be
-// swept (root and nested), while legit files, non-protocol .tmp names, and anything
-// under saves/ (save_load's recovery territory) survive untouched.
+// Init-time write-root temp GC: orphans planted BEFORE init are swept. Legit files, non-protocol .tmp, and saves/ survive.
 static void gc_plant(void)
 {
     ano_fspath user = ano_fs_userpath();

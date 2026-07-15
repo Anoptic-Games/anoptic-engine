@@ -14,10 +14,7 @@
 
 #include <vulkan/vulkan.h>
 
-// Dynamic shadow depth pipeline: depth-only FLAT geometry variant + shadowPass spec constant.
-// Run after ano_vk_init_pipelines.
-// in:  ctx, state (prototypes[PIPELINE_FLAT].layout must exist)
-// out: true on success; populates state->shadow{Pipeline,Cache,Sampler}
+// Shadow depth pipe: FLAT depth-only + shadowPass. After ano_vk_init_pipelines.
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 {
 	// Linear/clamp sampler for the moment atlas.

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Typed engine settings persisted through the resource namespace.
+// Typed engine settings persisted via the resource namespace.
 
 #ifndef ANOPTICENGINE_ANOPTIC_CONFIG_H
 #define ANOPTICENGINE_ANOPTIC_CONFIG_H
@@ -15,6 +15,9 @@
 
 #define ANO_CONFIG_VERSION 2u
 #define ANO_CONFIG_PATH "config/settings.json"
+
+
+/* Types */
 
 typedef struct ano_config {
     float camera_move_speed;
@@ -29,6 +32,9 @@ typedef enum ano_config_status {
     ANO_CONFIG_IO_ERROR,
     ANO_CONFIG_INVALID_ARGUMENT,
 } ano_config_status;
+
+
+/* Persistence */
 
 void ano_config_defaults(ano_config *config);
 bool ano_config_validate(const ano_config *config);

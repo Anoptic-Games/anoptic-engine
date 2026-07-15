@@ -4,7 +4,7 @@ set -e
 # Move to the script's directory
 cd "$(dirname "$0")"
 
-# Parse the command line argument
+# Build profile
 case $1 in
   1)
     build_type="Release"
@@ -21,9 +21,7 @@ case $1 in
     run_tests=0
     ;;
   3)
-    # Headless engine, console/server entry point. No renderer, no GPU; runs in WSL.
-    # TESTS=OFF explicitly: build/Headless held the headless test profile (now 4) until
-    # 2026-07-11, and a stale cache's ANOPTIC_TESTS=ON would otherwise stick.
+    # Headless engine (no GPU). TESTS=OFF: stale build/Headless cache must not keep ANOPTIC_TESTS=ON.
     build_type="Release"
     build_dir="Headless"
     toolchain_file="clang-linux-x64.cmake"
@@ -83,13 +81,11 @@ case $1 in
     ;;
 esac
 
-# Path to the directory containing this script
+# Paths
 script_dir=$(dirname "$0")
-
-# Path to the toolchain file
 toolchain_path="$script_dir/cmake/platforms/${toolchain_file}"
 
-# macOS: Nix shell clang when present, else Homebrew LLVM. Other platforms use toolchain files.
+# Platform: macOS uses Nix shell clang when present, else Homebrew LLVM. Other platforms use toolchain files.
 if [ "$(uname -s)" = "Darwin" ]; then
     if [ -n "$IN_NIX_SHELL" ] && command -v clang >/dev/null 2>&1; then
         platform_args="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
@@ -107,7 +103,7 @@ else
     platform_args="-DCMAKE_TOOLCHAIN_FILE=${toolchain_path}"
 fi
 
-# Configure with Ninja when available.
+# Generator: Ninja when available
 generator_args=""
 if command -v ninja >/dev/null 2>&1; then
     generator_args="-G Ninja"
@@ -125,14 +121,14 @@ else
          "Install it: brew install ninja / apt install ninja-build / pacman -S ninja"
 fi
 
-# Create build directory if not exist
+# Configure
 mkdir -p ./build/${build_dir}
 cmake ${generator_args} -DCMAKE_BUILD_TYPE=${build_type} ${extra_flags} ${platform_args} -S . -B ./build/${build_dir}
 
 # Scrub all object files.
 cmake --build ./build/${build_dir} --target ano_scrub
 
-# Build the project.
+# Build
 cmake --build ./build/${build_dir} --parallel
 
 # Engine-only profiles must produce a binary, fail loudly if Vulkan was missing.
@@ -146,7 +142,7 @@ if [ ${run_tests} -eq 0 ] && [ ! -e "./build/${build_dir}/anopticengine" ]; then
     exit 1
 fi
 
-# Run the test suite
+# Tests
 if [ ${run_tests} -eq 1 ]; then
     ctest --test-dir ./build/${build_dir} --output-on-failure
 fi

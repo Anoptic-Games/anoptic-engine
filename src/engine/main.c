@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Core includes (compiled in both graphical and headless builds)
 #include <anoptic_memory.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +20,7 @@
 #include "anoptic_log_crash.h"   // anoptic_log.h + crash blackbox
 
 #ifndef HEADLESS_BUILD
-// Renderer contract + GLFW, graphical engine only.
+// Graphical: renderer + GLFW
 #include <anoptic_render.h>
 #include <anoptic_text.h> // logic-side shaping over anoRenderTextBake()
 #include <vulkan/vulkan.h>
@@ -32,7 +31,8 @@
 #endif
 #endif // !HEADLESS_BUILD
 
-// Variables
+
+/* Variables */
 
 static ano_config g_engineConfig;
 static anoresworld_state g_worldState = {
@@ -42,27 +42,23 @@ static anoresworld_state g_worldState = {
 };
 
 #ifndef HEADLESS_BUILD
-// Logic/ECS master: the sole render-command producer.
-// Runs on its own thread while the render world owns the main thread.
-// main() sets g_logicShouldStop on window close, then joins the producer
-// before unInitVulkan() destroys the bridge.
+// Logic/ECS master: sole render-command producer (own thread).
+// main() sets g_logicShouldStop on close, joins before unInitVulkan().
 static atomic_bool g_logicShouldStop = false;
 
-// ---------------------------------------------------------------------------
-// Scene composition (logic owns the scene)
-// ---------------------------------------------------------------------------
-// The render world loaded the glTF assets + fallback cube and assigned GPU mesh/material indices.
-// The logic master composes the scene and emits creates through the bridge.
 
-// Backpressure-safe submit: retry until it fits the command ring.
+/* Scene Composition. Logic owns the scene. */
+
+// Logic composes scene + emits creates. Render world owns GPU assets.
+
+// Retry until the command ring accepts.
 static void submit_blocking(AnoRenderBridge* bridge, const RenderCommand* c) {
 	while (!ano_render_submit(bridge, c)) ano_sleep(1000);
 }
 
-// Spawn one renderable per primitive of asset `asset_id` at `root`, sharing `motion` (+ speed for spin/orbit).
-// Returns the first primitive's render_id. Advances *nextId.
-// Cap on primitives spawned per asset in one call.
-#define SPAWN_ASSET_MAX_PRIMS 256u
+// One renderable per primitive of asset_id at root. Shares motion (+ speed for spin/orbit).
+// Returns first render_id. Advances *nextId.
+#define SPAWN_ASSET_MAX_PRIMS 256u // max primitives per call
 static uint32_t spawn_asset(AnoRenderBridge* bridge, uint32_t* nextId, uint32_t asset_id,
                             const mat4 root, AnoMotionType motion, float speed) {
 	AnoRenderableDesc descs[SPAWN_ASSET_MAX_PRIMS];
@@ -82,8 +78,7 @@ static uint32_t spawn_asset(AnoRenderBridge* bridge, uint32_t* nextId, uint32_t 
 	return first;
 }
 
-// Spawn a static procedural box renderable (fallback cube + default material) with a full world transform.
-// Advances *nextId. Returns its render_id.
+// Static fallback-cube box at transform. Advances *nextId. Returns render_id.
 static uint32_t spawn_box(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 transform) {
 	uint32_t id = (*nextId)++;
 	RenderCommand c = { .kind = RCMD_CREATE, .render_id = id,
@@ -95,9 +90,8 @@ static uint32_t spawn_box(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 
 	return id;
 }
 
-// Spawn a mesh-less scene light-entity: its transform drives the light (position = column 3, forward = -column 2 for dir/spot).
-// light_index is a static-region palette row. Casting lights take a static shadow frustum.
-// `motion` animates the slot. Advances *nextId. Returns its render_id.
+// Mesh-less light-entity: pos = col3, forward = -col2 (dir/spot; localDir default -Z). light_index = static palette row.
+// Casting takes static-region shadow frustums (dir/spot 1, point 6). Advances *nextId. Returns render_id.
 static uint32_t spawn_light_entity(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 transform,
                                    uint32_t light_index, const RenderLightParams* params,
                                    AnoMotionType motion, float speed) {
@@ -112,40 +106,35 @@ static uint32_t spawn_light_entity(AnoRenderBridge* bridge, uint32_t* nextId, co
 	return id;
 }
 
-// Compose the whole scene once: geometry, scene lights, candle lights. render_id and static light_index
-// are the logic master's namespaces to assign.
+// Compose scene once. render_id + static light_index are the logic master's namespaces.
 static void spawn_scene(AnoRenderBridge* bridge) {
 	uint32_t nextId = 0u;
 
-	// Viking room: glTF is Z-up, rotate -90 deg about X to the engine's Y-up. Spins about +Y at 1 rad/s.
+	// Viking room: Z-up glTF -> Y-up (-90 X). Spins +Y at 1 rad/s.
 	mat4 vikingRoot = {{1,0,0,0},{0,0,-1,0},{0,1,0,0},{0,0,0,1}};
 	spawn_asset(bridge, &nextId, 0u, vikingRoot, ANO_MOTION_SPIN, 1.0f);
 
-	// Two transmissive candle holders orbiting +Y at 0.5 rad/s at radii 2.0 / 2.2.
-	// The first candle anchors the decorative candle lights below.
+	// Candle holders orbit +Y at 0.5 rad/s (r=2.0 / 2.2). First anchors decorative lights.
 	mat4 candle1 = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{2.0f,0,0,1}};
 	mat4 candle2 = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{2.2f,0,0,1}};
 	uint32_t candleSlot = spawn_asset(bridge, &nextId, 1u, candle1, ANO_MOTION_ORBIT, 0.5f);
 	spawn_asset(bridge, &nextId, 1u, candle2, ANO_MOTION_ORBIT, 0.5f);
 
-	// Sponza (asset_id 2): the scene environment. Y-up with its 0.008 scale baked into the node transform, dropped in at identity, static.
-	// Its 103 primitives spawn as individual renderables and supply the floor/walls the directional + point/spot shadows fall on.
-	// A no-op if Sponza failed to load (asset_id 2 unregistered). The viking room + candles sit as props on its floor.
+	// Sponza (asset_id 2): environment, Y-up, static at identity. No-op if unregistered.
 	mat4 sponzaRoot = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
 	spawn_asset(bridge, &nextId, 2u, sponzaRoot, ANO_MOTION_STATIC, 0.0f);
 
-	// Small sun-marker cube at the directional light's source (static).
+	// Sun-marker cube (static), decorative pose near overhead light aim.
 	mat4 sunMarker = {{0.2f,0,0,0},{0,0.2f,0,0},{0,0,0.2f,0},{2.59f,5.18f,1.55f,1}};
 	spawn_box(bridge, &nextId, sunMarker);
 
-	// Scene lights as mesh-less light-entities (static palette rows 0..5, casting: 1 dir + 4 point +
-	// 1 spot = the 26-frustum static shadow atlas). Dir/spot direction is the transform's -column2.
+	// Scene lights: palette rows 0..5 (1 dir + 4 point + 1 spot = 26 static shadow frustums). Dir/spot aim via -col2.
 	uint32_t li = 0u;
     { mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}};
-      x[2][0]=0.2f; x[2][1]=1.0f; x[2][2]=0.0f; // Shines directly overhead (straight down)
+      x[2][0]=0.2f; x[2][1]=1.0f; x[2][2]=0.0f; // mostly down, slight +X in col2
       RenderLightParams p = { .color={1.0f,0.96f,0.9f}, .intensity=2.5f, .range=0.0f, .type=RENDER_LIGHT_DIRECTIONAL, .castsShadow=1u };
       spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
-	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,1.5f,1.2f,1}}; // warm point ORBITS +Y (exercises the anim path)
+	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,1.5f,1.2f,1}}; // warm point, orbits +Y
 	  RenderLightParams p = { .color={1.0f,0.95f,0.8f}, .intensity=5.0f, .range=10.0f, .type=RENDER_LIGHT_POINT, .castsShadow=1u };
 	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_ORBIT, 0.5f); }
 	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{-2.0f,2.0f,-1.0f,1}};
@@ -158,13 +147,12 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 	  RenderLightParams p = { .color={0.3f,1.0f,0.8f}, .intensity=2.0f, .range=10.0f, .type=RENDER_LIGHT_POINT, .castsShadow=1u };
 	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
 	{ mat4 x = {{1,0,0,0},{0,1,0,0},{0,0,1,0},{0.0f,4.0f,0.0f,1}};
-	  x[2][0]=0.0f; x[2][1]=1.0f; x[2][2]=0.0f; // forward = -column2 = (0,-1,0): aim straight down
+	  x[2][0]=0.0f; x[2][1]=1.0f; x[2][2]=0.0f; // forward = -col2 = (0,-1,0)
 	  RenderLightParams p = { .color={1.0f,1.0f,1.0f}, .intensity=20.0f, .range=12.0f,
 	      .innerConeCos=0.966f, .outerConeCos=0.906f, .type=RENDER_LIGHT_SPOT, .castsShadow=1u };
 	  spawn_light_entity(bridge, &nextId, x, li++, &p, ANO_MOTION_STATIC, 0.0f); }
 
-	// Decorative candle lights: ride the first candle's slot at model-space offsets via the runtime
-	// attach API, non-casting (the static shadow atlas is full). light_id is the producer's namespace.
+	// Decorative candle lights: attach to first candle slot (non-casting). light_id = producer namespace.
 	uint32_t lid = 100u;
 	struct { float col[3], in, rng, inner, outer; uint32_t type; float dir[3], ox, oy, oz; } cl[5] = {
 		{{1.0f,0.5f,0.15f}, 6.0f, 4.0f, 0,0, RENDER_LIGHT_POINT, {0,0,0},  0.6f,0.3f,0.0f},
@@ -173,20 +161,20 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 		{{0.5f,1.0f,0.6f}, 12.0f, 6.0f, 0.95f,0.85f, RENDER_LIGHT_SPOT, { 0.7f,-0.7f,0.0f}, 0.0f,1.2f,0.0f},
 		{{1.0f,0.7f,0.3f}, 12.0f, 6.0f, 0.95f,0.85f, RENDER_LIGHT_SPOT, {-0.7f,-0.7f,0.0f}, 0.0f,1.2f,0.0f},
 	};
-	if (candleSlot != UINT32_MAX) // skip if the candle asset spawned no primitive to anchor them
+	if (candleSlot != UINT32_MAX) // first candle primitive anchors attaches
 	for (int i = 0; i < 5; i++) {
 		RenderLightParams p = { .color={cl[i].col[0],cl[i].col[1],cl[i].col[2]}, .intensity=cl[i].in,
 			.range=cl[i].rng, .innerConeCos=cl[i].inner, .outerConeCos=cl[i].outer, .type=cl[i].type,
 			.localDir={cl[i].dir[0],cl[i].dir[1],cl[i].dir[2]} };
 		while (!ano_render_light_attach(bridge, lid++, candleSlot, &p, cl[i].ox, cl[i].oy, cl[i].oz))
-			ano_sleep(1000); // backpressure: retry until it fits
+			ano_sleep(1000); // ring full: retry
 	}
 }
 
-// Logic-side text (v0 bridge): shape UTF-8 against the renderer's bake on THIS thread
-// and ship the instances as named blocks. text_id is the producer's namespace. The demo drives all
-// verbs: a persistent title (SET), a transient notice (CLEAR), a per-second camera readout (REPLACE),
-// and a persistent unicode sampler.
+
+/* HUD Text */
+
+// Logic-side text (v0): shape on this thread, ship named blocks. text_id = producer namespace.
 #define HUD_TEXT_TITLE   1u
 #define HUD_TEXT_NOTICE  2u
 #define HUD_TEXT_CAM     3u
@@ -194,20 +182,23 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 #define HUD_TEXT_HOMER   5u
 #define HUD_TEXT_CAP     128u
 
-// Shape + submit one block, clamping the reported need to what the buffer holds.
+// Shape + submit one block. Clamp to HUD_TEXT_CAP.
 static bool hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
                             AnoGlyphInstance* inst, uint32_t shaped) {
 	if (shaped > HUD_TEXT_CAP) shaped = HUD_TEXT_CAP;
 	return ano_render_text_set(bridge, text_id, inst, shaped);
 }
 
-// Logic-side UI (v0 bridge): layout, styling, and hit-testing. The renderer only receives prim blocks.
-// Two blocks: a persistent status bar and an M-toggled menu, resubmitted on change only.
+
+/* HUD UI */
+
+// Logic-side UI (v0): layout/style/hit-test. Renderer gets prim blocks only.
+// Blocks: status bar + M-toggled menu (resubmit on change).
 #define HUD_UI_BAR   1u
 #define HUD_UI_MENU  2u
 #define HUD_UI_GCAP  96u
 
-// Menu geometry in overlay logical units, shared by rendering and hit-testing.
+// Menu geometry in overlay logical units (render + hit-test).
 typedef struct MenuLayout {
 	float panel[4];      // minX minY maxX maxY
 	float button[3][4];
@@ -235,8 +226,7 @@ static int menu_hit(const MenuLayout* m, float cx, float cy)
 	return -1;
 }
 
-// Shapes one centered label into the glyph array and emits its UI_GLYPHS prim (aux block-local).
-// Baseline: optical centering (~0.7 em caps).
+// Centered label -> glyph array + UI_GLYPHS prim. Baseline ~0.7 em optical center.
 static void ui_label(AnoUiBuilder* b, const AnoFontBake* bake, anostr_t text, float sizePx,
                      const float rect[4], const float color[4],
                      AnoGlyphInstance* glyphs, uint32_t* gcount)
@@ -282,7 +272,7 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	ano_ui_color_srgb((float[4]){ 0.92f, 0.94f, 0.97f, 1.0f }, label);
 	ano_ui_color_srgb((float[4]){ 1.00f, 0.80f, 0.35f, 1.0f }, title);
 	ano_ui_color_srgb((float[4]){ 0.25f, 0.45f, 0.85f, 0.0f }, glow); // ADD: rgb only
-	// Vertical plate gradient (lighter top -> darker bottom).
+	// Plate gradient: light top -> dark bottom.
 	AnoUiStop plateStops[2];
 	ano_ui_color_srgb((float[4]){ 0.17f, 0.18f, 0.22f, 0.97f }, plateStops[0].color);
 	plateStops[0].t = 0.0f;
@@ -319,7 +309,7 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 			ui_label(&b, bake, anostr_view(text, (size_t)len), 20.0f, m->button[i],
 			         label, glyphs, &gcount);
 	}
-	// Filled play-triangle on RESUME, baked to monotone quads, sent over the bridge curve transport.
+	// RESUME play-triangle via curve transport.
 	float rb0 = m->button[0][0], rcy = 0.5f * (m->button[0][1] + m->button[0][3]);
 	AnoUiPathSeg play[3] = {
 		{ ANO_UI_SEG_MOVE, { rb0 + 22.0f, rcy - 9.0f, 0.0f, 0.0f } },
@@ -330,7 +320,7 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 	return ano_render_ui_set(bridge, HUD_UI_MENU, 128, &b, glyphs, gcount);
 }
 
-// Persistent status bar, bottom-left. Resubmitted when the logical viewport changes.
+// Status bar, bottom-left. Resubmit on logical viewport change.
 static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float vpH)
 {
 	AnoUiPrim prims[8];
@@ -354,15 +344,18 @@ static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float v
 	return ano_render_ui_set(bridge, HUD_UI_BAR, 16, &b, glyphs, gcount);
 }
 
+
+/* Logic Thread */
+
 void* anoLogicThreadMain(void* arg)
 {
 	(void)arg;
 	AnoRenderBridge* bridge = anoRenderBridge();
 
-	// Compose the scene (logic owns it now): geometry + scene lights + candle lights, emitted through the bridge.
+	// Compose scene through the bridge.
 	spawn_scene(bridge);
 
-	// One-time HUD blocks (below the renderer's own profiling OSD), backpressure-retried.
+	// One-time HUD text blocks (below OSD), ring-retried.
 	const AnoFontBake* bake = anoRenderTextBake();
 	AnoGlyphInstance hud[HUD_TEXT_CAP];
 	if (bake != NULL) {
@@ -386,8 +379,7 @@ void* anoLogicThreadMain(void* arg)
 		                       20.0f, noticeOrg, grey, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_NOTICE, hud, n)) ano_sleep(1000);
 
-		// Unicode sampler: the Gallehus horn inscription in Elder Futhark ("ek hlewagastiz holtijaz
-		// horna tawido", I Hlewagastiz of Holt made the horn), plus Latin-1 and Cyrillic, one UTF-8 value.
+		// Unicode sampler: Elder Futhark + Latin-1 + Cyrillic.
 		const float samplerOrg[2] = { 24.0f, 240.0f };
 		const float gold[4] = { 1.0f, 0.85f, 0.45f, 1.0f };
 		n = ano_text_shape_lit(bake,
@@ -395,8 +387,7 @@ void* anoLogicThreadMain(void* arg)
 		                       22.0f, samplerOrg, gold, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_UNICODE, hud, n)) ano_sleep(1000);
 
-		// Homer, Odyssey 1.1 in polytonic Greek: "Andra moi ennepe, Mousa, polytropon" (Tell me, Muse,
-		// of the man of many turns). Greek + Greek Extended bake ranges.
+		// Homer Odyssey 1.1 (polytonic Greek).
 		const float homerOrg[2] = { 24.0f, 270.0f };
 		const float aegean[4] = { 0.55f, 0.80f, 1.0f, 1.0f };
 		n = ano_text_shape_lit(bake,
@@ -404,12 +395,10 @@ void* anoLogicThreadMain(void* arg)
 		                       22.0f, homerOrg, aegean, hud, HUD_TEXT_CAP, NULL);
 		while (!hud_text_submit(bridge, HUD_TEXT_HOMER, hud, n)) ano_sleep(1000);
 	}
-	uint64_t noticeDeadline = 0; // armed 15 s after frames start flowing
+	uint64_t noticeDeadline = 0; // armed 15s after first frame
 	bool     noticeCleared = false;
 
-	// Free-fly camera owned by logic (audit 4.11): drain forwarded input, integrate a WASD + right-drag
-	// look camera, publish its pose. Starts at the renderer's old fallback pose, with the forward derived
-	// (pitch ~ -0.21 rad) so there is no jump on the first publish.
+	// Free-fly camera (logic): WASD + right-drag look. Pose from g_worldState (default or autosave).
 	float    camEye[3] = { g_worldState.camera_position[0], g_worldState.camera_position[1],
 	                       g_worldState.camera_position[2] };
 	float    camYaw = g_worldState.camera_yaw, camPitch = g_worldState.camera_pitch;
@@ -420,19 +409,19 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t camSeq = 0;
 	uint64_t lastSnapLog = ano_timestamp_us();
 
-	// UI demo state: blocks resubmit on change only. ANO_MENU opens the menu at boot (bench drivers that cannot inject keys).
+	// UI demo: resubmit on change. menu_at_start or ANO_MENU opens menu at boot.
 	bool     menuVisible = g_engineConfig.menu_at_start || getenv("ANO_MENU") != NULL;
 	bool     menuDirty = menuVisible, barSubmitted = false;
 	int      menuHovered = -1;
 	uint32_t optionsCount = 0;
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
-	float    barVpH = 0.0f;          // logical height the bar was last laid out for
+	float    barVpH = 0.0f;          // bar layout height
 
 	while (!atomic_load(&g_logicShouldStop))
 	{
 		uint64_t now = ano_timestamp_us();
 
-		// Drain the render -> logic back-channel: input, picking, slot retirement (audit 4.11).
+		// Drain render->logic: input, picking, slot retirement.
 		RenderEvent ev;
 		while (ano_render_poll_event(bridge, &ev)) {
 			switch (ev.kind) {
@@ -463,7 +452,7 @@ void* anoLogicThreadMain(void* arg)
 					else if (ie->u.button.button == GLFW_MOUSE_BUTTON_LEFT
 					         && ie->u.button.action == GLFW_PRESS
 					         && menuVisible && vpW > 0.0f) {
-						// Click resolves against the rendered layout.
+						// Hit-test against rendered layout.
 						MenuLayout ml;
 						menu_layout(vpW, vpH, &ml);
 						switch (menu_hit(&ml, prevCx, prevCy)) {
@@ -482,7 +471,7 @@ void* anoLogicThreadMain(void* arg)
 					if (looking && haveCursor) {
 						camYaw   += (cx - prevCx) * g_engineConfig.camera_look_sensitivity;
 						camPitch -= (cy - prevCy) * g_engineConfig.camera_look_sensitivity;
-						if (camPitch >  1.5f) camPitch =  1.5f;   // avoid gimbal at the poles
+						if (camPitch >  1.5f) camPitch =  1.5f;   // pitch clamp
 						if (camPitch < -1.5f) camPitch = -1.5f;
 					}
 					prevCx = cx; prevCy = cy; haveCursor = true;
@@ -493,8 +482,8 @@ void* anoLogicThreadMain(void* arg)
 				if (ev.u.pick_render_id != ANO_RENDER_NO_PICK)
 					ano_debug_log(ANO_INFO, "Pick: cursor over render_id %u", ev.u.pick_render_id);
 				break;
-			case REVENT_SLOT_RETIRED:   break; // ECS id recycling lands with the real producer
-			case REVENT_BATCH_CONSUMED: break; // borrowed-batch ack, unused by this stand-in
+			case REVENT_SLOT_RETIRED:   break; // render_id free to recycle (ignored)
+			case REVENT_BATCH_CONSUMED: break; // batch ack (ignored)
 			case REVENT_CAPACITY:
 				ano_log(ANO_WARN, "Producer: back-channel saturated; some input samples were dropped.");
 				break;
@@ -504,7 +493,7 @@ void* anoLogicThreadMain(void* arg)
 		// Integrate + publish the camera once per tick.
 		{
 			float dt = (now - lastCam) / 1000000.0f; lastCam = now;
-			if (dt > 0.1f) dt = 0.1f; // clamp a long stall so a hitch is not a teleport
+			if (dt > 0.1f) dt = 0.1f; // clamp hitch
 			float cp = cosf(camPitch), sp = sinf(camPitch), sy = sinf(camYaw), cy = cosf(camYaw);
 			float fwd[3]   = { cp * sy, sp, -cp * cy }; // RH, looks down -Z at yaw 0
 			float right[3] = { cy, 0.0f, sy };          // normalize(cross(fwd, worldUp))
@@ -526,13 +515,11 @@ void* anoLogicThreadMain(void* arg)
 			ano_render_publish_view(bridge, &view);
 		}
 
-		// One-shot: retire the transient notice (RCMD_TEXT_CLEAR). A full ring returns false and this
-		// retries next tick.
+		// Clear transient notice once. Ring full -> retry next tick.
 		if (bake != NULL && !noticeCleared && noticeDeadline != 0 && now > noticeDeadline)
 			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE);
 
-		// Menu hover tracks the cursor. Any change resubmits the block (full replace).
-		// A full ring keeps it dirty for the next tick.
+		// Menu hover -> dirty resubmit. Ring full keeps dirty.
 		if (menuVisible && vpW > 0.0f) {
 			MenuLayout ml;
 			menu_layout(vpW, vpH, &ml);
@@ -549,20 +536,19 @@ void* anoLogicThreadMain(void* arg)
 				menuDirty = false;
 		}
 
-		// Snapshot path: log the renderer's published frame id ~once/sec, and refresh the camera
-		// readout block on the same cadence (REPLACE semantics).
+		// Snapshot: log frameId ~1/s, refresh cam readout.
 		{
 			RenderSnapshot snap;
 			if (noticeDeadline == 0 && ano_render_acquire_snapshot(bridge, &snap))
 				noticeDeadline = now + 15000000ull; // first published frame: arm the notice
 			if (ano_render_acquire_snapshot(bridge, &snap)) {
-				// Re-center the menu on viewport change.
+				// Viewport change -> recenter menu.
 				if (menuVisible && (vpW != snap.uiWidth || vpH != snap.uiHeight))
 					menuDirty = true;
 				vpW = snap.uiWidth;
 				vpH = snap.uiHeight;
 			}
-			// Status bar: resubmitted when the logical viewport height moves, retried per tick.
+			// Status bar: resubmit on vpH change.
 			if ((!barSubmitted || barVpH != vpH) && vpH > 0.0f) {
 				barSubmitted = submit_bar(bridge, bake, vpH);
 				if (barSubmitted)
@@ -596,7 +582,9 @@ void* anoLogicThreadMain(void* arg)
 }
 #endif // !HEADLESS_BUILD
 
-// Main function
+
+/* Main */
+
 int main()
 {
     mi_version();
@@ -610,30 +598,25 @@ int main()
 
     #endif
 
-    // Singleton logger for the whole of main (device selection, renderer init, the frame loop).
-    // Cleans itself on scope exit.
+    // Process-wide logger. Cleans on scope exit.
     int logAlive ANO_LOG_SCOPE_ATTR = ano_log_init();
     if (logAlive != 0) {
         ano_log(ANO_FATAL, "Logger initialization failed; something is very wrong.");
         return EXIT_FAILURE;
     }
 
-    // Blackbox arms right after the logger: a fatal signal writes the CRASH log, then hail-mary flushes.
+    // Blackbox: fatal signal -> CRASH log + flush.
     if (ano_log_crash_init() != 0)
         ano_log(ANO_WARN, "Blackbox failed to arm; a crash will leave no CRASH log.");
 
-    // The resource namespace: pinned roots (write root + <exe>/resources), then the
-    // dev-tree mount. Everything the engine loads resolves through it -- the CWD is
-    // irrelevant from here on (the old chdir shim is gone).
+    // Resource namespace: pinned roots + mount. CWD unused after this.
     if (ano_res_init() != 0) {
         ano_log(ANO_FATAL, "Resource manager initialization failed.");
         return EXIT_FAILURE;
     }
 #ifdef ANO_DEV_RESOURCES
     {
-        // Dev builds shadow the staged tree with the SOURCE resources/ so font/texture
-        // edits go live without re-staging (compiled shaders still come from the base
-        // mount: the source tree has no .spv files to collide).
+        // Dev: shadow staged tree with SOURCE resources/ (shaders still from base mount).
         ano_fspath devRes = {0};
         int devLen = snprintf(devRes.str, sizeof devRes.str, "%s", ANO_DEV_RESOURCES);
         if (devLen > 0 && devLen < (int)sizeof devRes.str) {
@@ -667,7 +650,7 @@ int main()
         ano_log(ANO_WARN, "Autosave load refused with status %d; source generations preserved.",
                 (int)saveStatus);
 
-    // Warn when the initial thread's stack budget (the environment's) is under ANO_THREAD_STACK_SIZE.
+    // Warn if main stack < ANO_THREAD_STACK_SIZE.
     size_t mainStack = ano_thread_main_stack();
     if (mainStack != 0 && mainStack < ANO_THREAD_STACK_SIZE)
         ano_log(ANO_WARN, "Main-thread stack budget is %zu KiB, under the engine's %zu KiB: "
@@ -675,10 +658,7 @@ int main()
                 mainStack >> 10, (size_t)ANO_THREAD_STACK_SIZE >> 10);
 
 #ifndef HEADLESS_BUILD
-    // GLFW pins window + event handling to the main thread (mandatory on macOS).
-    // The render world (all Vulkan + GLFW) runs HERE on the main thread.
-    // initVulkan creates the bridge synchronously before the producer starts
-    // with no readiness handshake.
+    // GLFW pins window/events to the main thread (mandatory on macOS). Vulkan + GLFW run here. initVulkan creates the bridge before the producer starts, with no readiness handshake.
     if (!initVulkan())
     {
         ano_log(ANO_FATAL, "Vulkan initialization failed.");
@@ -687,7 +667,7 @@ int main()
         return -1;
     }
 
-    // Logic/ECS master spun onto its own thread as the sole render-command producer.
+    // Logic/ECS master: sole render-command producer.
     anothread_t logicThread;
     if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
     {
@@ -698,16 +678,14 @@ int main()
         return -1;
     }
 
-    // Render loop (main thread): pump window events, then draw.
-    // The logic thread feeds discrete ECS->render transitions concurrently.
+    // Render loop (main): poll + draw. Logic feeds ECS->render concurrently.
     while (!anoShouldClose())
     {
         glfwPollEvents();
         drawFrame();
     }
 
-    // Window closed: stop the producer FIRST and join it.
-    // No submit can then race the bridge destruction in unInitVulkan().
+    // Stop producer first, then join. No submit races unInitVulkan().
     atomic_store(&g_logicShouldStop, true);
     ano_thread_join(logicThread, NULL);
 
@@ -718,13 +696,12 @@ int main()
     if (ano_res_shutdown() != 0)
         ano_log(ANO_ERROR, "Resource manager shutdown remained reader-pinned.");
 #else
-    // Headless engine: no renderer. Console / server entry point.
+    // Headless engine: no renderer. Idle console loop.
     ano_rlog(ANO_INFO, ANO_TERM, "Anoptic Engine — headless console mode.");
     while (true) {
         ano_rlog(ANO_INFO, ANO_TERM, "Waiting...");
         ano_sleep(3 * 1000000);
     };
-    // TODO: simulation / server loop goes here.
 #endif
 
     return 0;

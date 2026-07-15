@@ -49,8 +49,7 @@ static void roundtrip(res_codec_id id, const uint8_t *src, size_t len, const cha
     CHECK(m == len && memcmp(dec, src, len) == 0, "decode round-trips byte-exact");
 }
 
-// Fill a buffer with a mixed pattern: long runs (compressible) spliced with xorshift noise,
-// so LZ4 both compresses parts and hits the incompressible per-chunk RAW fallback on others.
+// Fill buffer with mixed pattern: long runs spliced with xorshift noise.
 static void fill_mixed(uint8_t *p, size_t n, uint64_t seed)
 {
     uint64_t s = seed | 1;
@@ -64,8 +63,7 @@ static void fill_mixed(uint8_t *p, size_t n, uint64_t seed)
     }
 }
 
-// One exact-size single-chunk round-trip on the heap, for the boundary sizes the codec's
-// per-chunk contract lives or dies on: 1, 495 KiB, and exactly RES_CODEC_CHUNK (496 KiB).
+// Exact-size single-chunk round-trip: 1, 495 KiB, and exactly RES_CODEC_CHUNK.
 static void roundtrip_exact(res_codec_id id, size_t len, const char *what)
 {
     size_t bound = res_codec_bound(id, len);
@@ -89,9 +87,7 @@ static void roundtrip_exact(res_codec_id id, size_t len, const char *what)
     free(src); free(enc); free(dec);
 }
 
-// A 5 MiB payload driven through the codec chunk by chunk, exactly as the pack builder and
-// reader do: encode each RES_CODEC_CHUNK slice (RAW-fallback when it does not shrink), then
-// decode each back into place with the KNOWN chunk length. Byte-exact end to end.
+// 5 MiB payload chunk by chunk: encode each RES_CODEC_CHUNK slice (RAW fallback when needed), decode with known length.
 static void roundtrip_chunked(res_codec_id id, size_t total, const char *what)
 {
     uint8_t *src = malloc(total);
@@ -172,10 +168,9 @@ int main(void)
     CHECK(res_codec_encode(RES_CODEC_LZ4, compressible, RES_CODEC_CHUNK + 1, enc, sizeof enc) == 0,
           "a chunk larger than RES_CODEC_CHUNK is refused");
 
-    // ------------------------------------------------------------------------------------
-    // Size matrix: 0, 1, 495 KiB, 496 KiB (== RES_CODEC_CHUNK), 497 KiB (refused), and a
-    // 5 MiB multi-chunk drive. The codec is a single-chunk primitive: the last is exercised
-    // exactly as the pack layers it.
+    /* Size matrix */
+
+    // 0, 1, 495 KiB, 496 KiB (== RES_CODEC_CHUNK), 497 KiB (refused), and a 5 MiB multi-chunk drive. The codec is a single-chunk primitive: the last is exercised exactly as the pack layers it.
     const size_t K = 1024;
     CHECK(res_codec_encode(RES_CODEC_RAW, compressible, 0, enc, sizeof enc) == 0, "encode of 0 bytes is refused");
     CHECK(res_codec_encode(RES_CODEC_LZ4, compressible, 0, enc, sizeof enc) == 0, "lz4 encode of 0 bytes is refused");
@@ -198,10 +193,9 @@ int main(void)
     roundtrip_chunked(RES_CODEC_RAW, 5u * 1024 * 1024, "raw/5MiB chunked");
     roundtrip_chunked(RES_CODEC_LZ4, 5u * 1024 * 1024, "lz4/5MiB chunked");
 
-    // ------------------------------------------------------------------------------------
-    // Decode bound enforcement: dst_cap is the TOC-KNOWN uncompressed length. A decode that
-    // would land fewer or more bytes than dst_cap is a lie and yields 0, and it never writes
-    // past the destination (a guard byte just past dst_cap must survive).
+    /* Decode bound enforcement */
+
+    // dst_cap is the TOC-KNOWN uncompressed length. A decode that would land fewer or more bytes than dst_cap is a lie and yields 0, and it never writes past the destination (a guard byte just past dst_cap must survive).
     static uint8_t guarded[N + 1];
     size_t gn = res_codec_encode(RES_CODEC_LZ4, compressible, N, enc, sizeof enc);
     CHECK(gn > 0, "guard: compressible encodes");

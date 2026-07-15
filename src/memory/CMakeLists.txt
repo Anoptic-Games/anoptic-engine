@@ -1,5 +1,5 @@
 # Conditionally compile platform-specific source files.
-# APPLE before UNIX: both are true on macOS, and we want the Darwin file there.
+# APPLE before UNIX: both true on macOS.
 if (WIN32)
     target_sources(anoptic_core PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/memalign_win64.c
@@ -14,7 +14,7 @@ elseif (UNIX)
     )
 endif()
 
-# Universally compiled source files
+# Common sources
 target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/memory.c
         ${CMAKE_CURRENT_SOURCE_DIR}/pools.c

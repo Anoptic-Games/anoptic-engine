@@ -3,18 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// FROZEN SEAM (blueprint 2.4). ONE framing for every conditioned resource in the engine:
-// graphics scene, decoded pixels, GPU binding table, audio PCM (one f32 plane per channel),
-// script bytecode, level, font bake, pack TOC. One framing, one validator, one bake path,
-// one pack entry type, one hostile-input battery.
-//
-// res_block_open is the single most fuzz-worthy function in the module and is treated as
-// such: concentrated blast radius, chosen deliberately over six validators that are each
-// "probably fine" for the sharpest hole in the ledger.
-//
-// Aliasing, settled: the block is allocated storage with no declared type, so typed access
-// through anoresgfx_vertex * is legal under C23 6.5p7, and RES_PLANE_GRAIN-aligned plane
-// bases over a cache-line-aligned block base satisfy alignment.
+// ONE framing for every conditioned resource.
+// res_block_open is the single hostile-input gate.
+// Block is allocated storage with no declared type. Typed access is legal under C23 6.5p7.
 
 #ifndef ANOPTIC_RESOURCES_BLOCK_H
 #define ANOPTIC_RESOURCES_BLOCK_H
@@ -37,16 +28,13 @@ typedef struct res_block_hdr {
     uint64_t len[RES_BLOCK_PLANES_MAX];   // element counts
 } res_block_hdr;
 
-// PURE. A deterministic function of its arguments ONLY. The bake, the pack, and the
-// hostile validator all depend on exactly this function.
-// Inputs: header bytes, per-plane element counts and element sizes, plane count.
-// Output: the total block size; out_off[i] receives each plane's grain-aligned base offset.
-// 0 on overflow or n_planes > RES_BLOCK_PLANES_MAX.
+// PURE. Deterministic from arguments only.
+// Inputs: header bytes, per-plane counts and elem sizes, plane count.
+// Output: total block size. out_off[i] gets each plane's grain-aligned base. 0 on overflow or n_planes > max.
 size_t res_plane_layout(size_t hdr_bytes, const size_t *count, const size_t *elem_size,
                         size_t n_planes, uint64_t *out_off);
 
-// Stamp magic/version/layout_id/plane table into base, then the block_hash over the whole
-// block with that field zeroed. 0 / -1.
+// Stamp magic/version/layout_id/plane table, then block_hash over the whole block with that field zeroed. 0 / -1.
 int res_block_seal(void *base, size_t size, uint32_t magic, uint32_t version,
                    uint64_t layout_id, size_t n_planes,
                    const uint64_t *off, const uint64_t *len);
@@ -58,9 +46,7 @@ typedef struct res_block_view {
     size_t      size;
 } res_block_view;
 
-// THE ONE hostile-input gate: magic / version / layout_id / block_hash / plane extents /
-// grain alignment / count*elem overflow. Extensions add ONE cross-reference pass on top,
-// at LOAD/ADOPT time, never per-view. 0 / -1 (out is zeroed on refusal).
+// THE ONE hostile-input gate: magic / version / layout_id / block_hash / plane extents / grain / overflow. 0 / -1 (out zeroed on refusal).
 int res_block_open(const void *bytes, size_t len, uint32_t magic, uint32_t version,
                    uint64_t layout_id, res_block_view *out);
 

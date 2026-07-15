@@ -3,12 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Baseline + adversarial suite for the mutex logger. The first block round-trips normal usage
-// through the output file. The rest abuses the public interface on the assumption it WILL be called
-// wrong: pathological inputs, bogus config, rejected output-file switches, lifecycle misuse (calls
-// before init / after cleanup), and three contention tests (flush-vs-write, an ABA tripwire,
-// config/output-file thrash). Every case drains explicitly via ano_log_flush() before reading back, so
-// its file contents are deterministic. The final case leaves a human-readable log for inspection.
+// Baseline + adversarial suite. Round-trip normal usage, then abuse the public API.
+// Every case drains via ano_log_flush before readback. Final case leaves a human-readable log.
 
 #include <anoptic_log.h>
 #include <anoptic_strings.h>
@@ -35,8 +31,7 @@ static void  remove_dir(const char *p) { rmdir(p); }
 static char *cwd_str(char *b, size_t n) { return getcwd(b, n); }
 #endif
 
-// Scratch paths are relative to the CWD, which main() anchors to this executable's own directory
-// (build/<cfg>/tests) via ano_fs_chdir_gamepath() -- cross-platform, unlike a baked build path.
+// Scratch paths relative to CWD (main anchors via ano_fs_chdir_gamepath).
 #ifndef ANO_TEST_OUTDIR
 #define ANO_TEST_OUTDIR "."
 #endif
@@ -44,7 +39,7 @@ static char *cwd_str(char *b, size_t n) { return getcwd(b, n); }
 #define LOG_DIR_ALT  ANO_TEST_OUTDIR "/anolog_test_alt"
 #define VIS_DIR      ANO_TEST_OUTDIR "/anolog_visible"
 
-// Session-stamped log paths (<dir>/<stamp>_ano.log), resolved once in main().
+// Session-stamped paths (<dir>/<stamp>_ano.log), resolved in main().
 static char LOG_PATH[96], LOG_PATH_ALT[96], VIS_PATH[96];
 
 static void resolve_log_paths(void)
@@ -57,7 +52,7 @@ static void resolve_log_paths(void)
 #define THREAD_COUNT    4
 #define MSGS_PER_THREAD 50
 
-// Per-case failure flag set by CHECK; each test returns it (0 = pass).
+// Per-case fail flag (CHECK). 0 = pass.
 static int g_fail;
 #define CHECK(cond, msg) do { if (!(cond)) { fprintf(stderr, "  FAIL: %s\n", (msg)); g_fail = 1; } } while (0)
 
@@ -67,15 +62,8 @@ static _Atomic bool g_stop;
 
 /* Helpers */
 
-// Read the whole file into a NUL-terminated heap buffer. Caller frees. NULL if unreadable.
-//
-// Reads in a grow-until-EOF loop rather than sizing the file with fseek(END)/ftell first. On a
-// remote or attribute-caching filesystem (NFS, SMB/CIFS, sshfs, or a WSL2 9P share reached from a
-// Windows exe over interop) a freshly opened read handle can see a STALE, short size for a file that
-// another handle just wrote and closed -- close-to-open coherence is a single-kernel/one-page-cache
-// guarantee, and those layers break it. A size-then-read would then silently truncate. Consuming
-// bytes until fread stops returning any reads whatever is actually delivered, independent of what
-// the cached metadata claims, and behaves identically on every local filesystem.
+// Slurp whole file into NUL-terminated heap buffer. Caller frees. NULL if unreadable.
+// Grow-until-EOF (not size-then-read): avoids stale short size on attribute-caching FS.
 static char *slurp(const char *path, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
@@ -86,7 +74,7 @@ static char *slurp(const char *path, size_t *out_len)
     if (buf == NULL) { fclose(f); if (out_len) *out_len = 0; return NULL; }
 
     for (;;) {
-        if (len + 1 >= cap) {   // always keep one byte in reserve for the trailing NUL
+        if (len + 1 >= cap) {
             size_t ncap = cap * 2;
             char *nbuf = realloc(buf, ncap);
             if (nbuf == NULL) { free(buf); fclose(f); if (out_len) *out_len = 0; return NULL; }
@@ -95,7 +83,7 @@ static char *slurp(const char *path, size_t *out_len)
         }
         size_t got = fread(buf + len, 1, cap - len - 1, f);
         len += got;
-        if (got == 0) break;    // EOF or read error
+        if (got == 0) break;
     }
 
     if (ferror(f)) { free(buf); fclose(f); if (out_len) *out_len = 0; return NULL; }
@@ -113,7 +101,7 @@ static int count_lines(const char *s)
     return n;
 }
 
-// Longest line length (bytes between newlines). Used to verify truncation clamping.
+// Longest line length (bytes between newlines).
 static size_t longest_line(const char *s)
 {
     size_t best = 0, cur = 0;
@@ -125,7 +113,7 @@ static size_t longest_line(const char *s)
     return best;
 }
 
-// Fresh output file for the next case: drop the old one, then (re)point the logger at LOG_DIR.
+// Fresh output file: drop old, (re)point logger at LOG_DIR.
 static void reset_output(void)
 {
     remove(LOG_PATH);
@@ -180,10 +168,8 @@ static int test_formatting(void)
     return g_fail;
 }
 
-// Screen the deferred-formatting path against snprintf across the full conversion matrix: width,
-// precision, flags, length mods, floats, hex/octal, and '*' width/precision from args. Each case logs
-// fmt+args, and the message must appear in the file byte-identical to snprintf of the same call. The
-// unique "Dnn:" prefix bounds each expected substring so matches can't collide.
+// Deferred path vs snprintf across the conversion matrix. Message must match snprintf byte-identical.
+// Unique "Dnn:" prefix bounds each expected substring.
 static int test_deferred_formatting(void)
 {
     g_fail = 0;
@@ -256,8 +242,7 @@ static int test_deferred_formatting(void)
     DCHK("D56:[%-*.*s]", 10, 3, "abcdef");                 // width + precision on string
     DCHK("D57:[%*d]", 0, 42);                              // '*' width 0 = no width
 
-    // anostr_t values through %.*s + anostr_fmt (anoptic_strings.h): the capture must read
-    // exactly len bytes -- the inline variant's bytes are NOT NUL-terminated at len.
+    // anostr_t via %.*s + anostr_fmt: capture reads exactly len bytes (inline not NUL-terminated).
     anostr_t sInl = anostr_lit("inline-val!!");                 // 12 B, inline, no NUL after
     anostr_t sLng = anostr_lit("a-string-longer-than-twelve");  // 27 B, long variant
     DCHK("D58:[%.*s]", anostr_fmt(sInl));
@@ -324,11 +309,8 @@ static int test_level_gate(void)
     return g_fail;
 }
 
-// Flood far past ring capacity from several producers at once, with no intervening flush. The owned
-// consumer can't drain as fast as many producers enqueue, so the ring fills and producers take the full
-// path (wait for the consumer to free room, returning 1). Nothing is lost. The flood is concurrent
-// because one producer cannot overflow a continuously-drained ring -- the consumer keeps it empty. The
-// total overruns the ring at any ANO_LOG_RING_BYTES in the experiment range (a 2 MiB ring is 16384 lines).
+// Concurrent flood past ring capacity. Producers take full path (return 1). Nothing lost.
+// One producer cannot overflow a continuously-drained ring.
 #define FULL_THREADS 6
 #define FULL_PER     12000
 #define FULL_FLOOD   (FULL_THREADS * FULL_PER)
@@ -357,9 +339,7 @@ static int test_full_ring(void)
         ano_thread_join(t[i], NULL);
     ano_log_flush();
 
-    // Whether the ring actually saturated depends on producer-vs-consumer speed (the owned consumer may
-    // keep up, especially instrumented under TSan), so it is an observation, not an assertion. The
-    // invariant under test is no loss: every record survives, full path or not.
+    // Saturation is observation (TSan may keep up). Invariant: no loss.
     if (atomic_load(&g_full_flushed) == 0)
         printf("  NOTE: flood did not saturate the ring this run (consumer kept pace)\n");
     char *c = slurp(LOG_PATH, NULL);
@@ -392,8 +372,7 @@ static int test_immediate_order(void)
     return g_fail;
 }
 
-// Per-call routing. TERM-only stays out of the file, FILE and BOTH land, bare NOW inherits FILE.
-// Terminal bytes aren't captured here, so the file is the observable. Also flips INFO's default.
+// Per-call routing. TERM-only stays out of file. File is the observable. Also flips INFO default.
 static int test_routing(void)
 {
     g_fail = 0;
@@ -415,7 +394,7 @@ static int test_routing(void)
         free(c);
     }
 
-    // Rebind INFO to TERM-only, log, restore. The file must not grow.
+    // Rebind INFO to TERM-only, log, restore. File must not grow.
     ano_log_set_route(ANO_INFO, ANO_TERM);
     ano_log(ANO_INFO, "rerouted info line");
     ano_log_flush();
@@ -496,7 +475,9 @@ static int test_concurrent(void)
 }
 
 
-/* Contention 1 — flush while writing, write while flushing */
+/* Contention 1 */
+
+// Flush while writing, write while flushing.
 
 #define C1_PRODUCERS 4
 #define C1_PER       250
@@ -539,7 +520,7 @@ static int test_contention_1_flush_vs_write(void)
         ano_thread_join(flush[i], NULL);
     ano_log_flush();
 
-    // IMMEDIATE policy never drops, so every record must survive regardless of flush interleaving.
+    // IMMEDIATE never drops: every record survives flush interleaving.
     char *c = slurp(LOG_PATH, NULL);
     CHECK(c != NULL, "contention1: file readable");
     if (c) {
@@ -550,12 +531,11 @@ static int test_contention_1_flush_vs_write(void)
 }
 
 
-/* Contention 2 — ABA tripwire */
+/* Contention 2 */
 
-// Each worker cycles the buffer empty -> partial -> empty repeatedly (enqueue a batch, then flush
-// to drain), so the internal length keeps returning to the same value while a peer concurrently
-// does the same. The mutex logger is ABA-immune by construction; this case exists so the future
-// lock-free ring -- which recycles head/tail counters and CAN suffer ABA -- must also pass it.
+// ABA tripwire.
+
+// Workers cycle empty -> partial -> empty concurrently. ABA tripwire for the lock-free ring.
 #define C2_THREADS 4
 #define C2_CYCLES  40
 #define C2_BATCH   10
@@ -594,7 +574,9 @@ static int test_contention_2_aba_bait(void)
 }
 
 
-/* Contention 3 — config and output-file thrash under load */
+/* Contention 3 */
+
+// Config and output-file thrash under load.
 
 #define C3_PRODUCERS 3
 #define C3_OPS       600
@@ -607,9 +589,7 @@ static void *c3_producer(void *arg)
     return NULL;
 }
 
-// Cycles every config knob and flips the output file between two directories while producers hammer the
-// log. Counting is impossible (gated levels, drops, two files), so the assertion is survival: no
-// crash, no deadlock, TSan-clean, and the logger is still functional afterward.
+// Thrash every config knob + output dir under load. Assert survival (no crash/deadlock), then function.
 static void *c3_thrasher(void *arg)
 {
     (void)arg;
@@ -635,7 +615,7 @@ static int test_contention_3_config_thrash(void)
         ano_thread_join(prod[i], NULL);
     ano_thread_join(thr, NULL);
 
-    // Restore sane config and confirm the logger still works end to end.
+    // Restore config, confirm end-to-end.
     ano_log_set_level(ANO_INFO);
     ano_log_output_dir(LOG_DIR);
     ano_log(ANO_INFO, "c3 survived: %s", "yes");
@@ -649,14 +629,16 @@ static int test_contention_3_config_thrash(void)
 }
 
 
-/* Abuse — pathological-but-legal inputs */
+/* Abuse */
+
+// Pathological-but-legal inputs.
 
 static int test_abuse_inputs(void)
 {
     g_fail = 0;
     reset_output();
 
-    // C-string-scannable content first (no embedded NUL yet to stop strstr/longest_line).
+    // C-string-scannable first (no embedded NUL).
     ano_log(ANO_INFO, "multi\nline\nmessage");              // newlines inside one record
     ano_log(ANO_INFO, "%9000d", 7);                         // width far past the cap: must clamp, not overflow
     ano_log(ANO_INFO, "%d %s %x %o %c %u %ld 100%%",        // every common conversion at once
@@ -674,8 +656,7 @@ static int test_abuse_inputs(void)
         free(c);
     }
 
-    // Embedded NUL last: stored byte-for-byte (length-based, that's the point), but it blocks
-    // C-string scans, so only assert the file grew by the record.
+    // Embedded NUL last: stored byte-for-byte; only assert file grew.
     ano_log(ANO_INFO, "a%cb", 0);
     ano_log_flush();
     size_t len2 = 0;
@@ -690,7 +671,7 @@ static int test_abuse_config(void)
     g_fail = 0;
     reset_output();
 
-    // Absurd-high level gates everything.
+    // Absurd-high level gates all.
     ano_log_set_level((ano_loglevel_t)999);
     ano_log(ANO_INFO, "gated by absurd level");
     ano_log_flush();
@@ -698,7 +679,7 @@ static int test_abuse_config(void)
     CHECK(c == NULL || strstr(c, "absurd level") == NULL, "abuse-config: absurd-high level gates all");
     free(c);
 
-    // Absurd-low level passes everything.
+    // Absurd-low level passes all.
     ano_log_set_level((ano_loglevel_t)-1000);
     ano_log(ANO_INFO, "passes with absurd-low level");
     ano_log_flush();
@@ -725,7 +706,7 @@ static int test_abuse_output_dir(void)
     longp[sizeof longp - 1] = '\0';
     CHECK(ano_log_output_dir(longp) == -1, "abuse-dir: overlong path rejected");
 
-    // Every rejected switch must have left the working output file intact.
+    // Rejected switches leave working output intact.
     ano_log(ANO_INFO, "after bad output_dir");
     ano_log_flush();
     char *c = slurp(LOG_PATH, NULL);
@@ -735,7 +716,7 @@ static int test_abuse_output_dir(void)
     return g_fail;
 }
 
-// Every entry point must be a safe no-op when the logger is not live (before init / after cleanup).
+// Entry points are safe no-ops when not live.
 static int test_lifecycle_guard(const char *when)
 {
     g_fail = 0;
@@ -750,7 +731,9 @@ static int test_lifecycle_guard(const char *when)
 }
 
 
-/* Visible — a human-readable log left on disk for inspection (NOT removed at the end) */
+/* Visible */
+
+// Human-readable log left on disk (not removed).
 
 static int test_visible_output(void)
 {
@@ -781,10 +764,11 @@ static int test_visible_output(void)
 }
 
 
-/* Edge cases — boundaries, seams, alternation, churn */
+/* Edge Cases */
 
-// A message whose body is exactly at the 4096-byte cap: build a body of known length and confirm it
-// survives as one line clamped to the cap. Deterministic single record.
+// Boundaries, seams, alternation, churn.
+
+// Body exactly at 4096-byte cap: one line clamped to cap.
 static int test_edge_cap_boundary(void)
 {
     g_fail = 0;
@@ -805,7 +789,7 @@ static int test_edge_cap_boundary(void)
     return g_fail;
 }
 
-// Many tiny back-to-back records (one byte of body each). Exact count, no loss.
+// Many 1-byte-body records. Exact count, no loss.
 #define TINY_COUNT 2000
 static int test_edge_tiny_records(void)
 {
@@ -824,8 +808,7 @@ static int test_edge_tiny_records(void)
     return g_fail;
 }
 
-// Drive the ring through several wraps with mid-stream flushes so the producer crosses the buffer seam
-// repeatedly. Each record carries a unique index; assert exact total and that first/last are ordered.
+// Several wraps with mid-stream flushes. Unique indices, exact total, first/last ordered.
 #define SEAM_BATCHES 8
 #define SEAM_PER     900
 static int test_edge_ring_seam(void)
@@ -853,8 +836,7 @@ static int test_edge_ring_seam(void)
     return g_fail;
 }
 
-// Alternate buffered enqueue and synchronous immediate. Both paths feed one file; assert exact total
-// and that ordering holds within the pairs (buffered before the immediate that follows it).
+// Alternate buffered + immediate. Exact total, buffered before following immediate.
 #define ALT_PAIRS 200
 static int test_edge_alternating_immediate(void)
 {
@@ -878,8 +860,7 @@ static int test_edge_alternating_immediate(void)
     return g_fail;
 }
 
-// Rapidly switch the output between two valid dirs, logging into each. Content written before a switch
-// must survive in the file it landed in. Deterministic: known marker per target, exact line counts.
+// Switch output between two dirs. Pre-switch content survives in its file.
 static int test_edge_output_dir_switch(void)
 {
     g_fail = 0;
@@ -910,9 +891,7 @@ static int test_edge_output_dir_switch(void)
     return g_fail;
 }
 
-// Churn the level threshold between every record while alternating severities. Only records at or above
-// the level live at enqueue time survive; arrange a deterministic pattern and assert the exact survivor
-// count. Pattern: for each i, set level then log INFO and ERROR. INFO survives iff level <= ANO_INFO.
+// Churn level between records. INFO survives iff level <= ANO_INFO. Exact survivor count.
 static int test_edge_level_churn(void)
 {
     g_fail = 0;
@@ -939,7 +918,9 @@ static int test_edge_level_churn(void)
 }
 
 
-/* Contention — heavy producers vs flushers, sustained soak */
+/* Contention */
+
+// Heavy producers vs flushers, sustained soak.
 
 #define HEAVY_PRODUCERS 12
 #define HEAVY_PER       1500
@@ -964,8 +945,7 @@ static void *heavy_flusher(void *arg)
     return NULL;
 }
 
-// 12 producers at mixed severities hammer while 2 flushers drain. Level stays at DEBUG so nothing gates;
-// the no-loss invariant gives an exact total.
+// 12 producers + 2 flushers. Level DEBUG, no-loss exact total.
 static int test_contention_heavy_mixed(void)
 {
     g_fail = 0;
@@ -994,8 +974,7 @@ static int test_contention_heavy_mixed(void)
     return g_fail;
 }
 
-// Sustained soak: 16 producers run a long fixed workload while one flusher drains continuously. Final
-// exact line-count assertion proves zero loss across the whole soak.
+// Soak: 16 producers + 1 flusher. Exact line count = zero loss.
 #define SOAK_PRODUCERS 16
 #define SOAK_PER       2000
 
@@ -1033,7 +1012,9 @@ static int test_contention_soak(void)
 }
 
 
-/* Premature thread-join — producers finish/exit before any flush */
+/* Premature Join */
+
+// Producers finish/exit before any flush.
 
 #define PJ_PRODUCERS 8
 #define PJ_PER       300
@@ -1046,9 +1027,7 @@ static void *pj_producer(void *arg)
     return NULL;
 }
 
-// Spawn producers, JOIN them all (they finish and exit) BEFORE any flush, then flush on main. Because
-// records live in the SHARED ring, every enqueued record must still appear -- the producer threads
-// ending changes nothing. Exact total asserts zero loss.
+// Join all producers before any flush, then flush on main. Shared ring keeps records. Exact total.
 static int test_premature_join_all(void)
 {
     g_fail = 0;
@@ -1067,7 +1046,7 @@ static int test_premature_join_all(void)
     if (c) {
         CHECK(count_lines(c) == PJ_PRODUCERS * PJ_PER,
               "pj-all: shared ring loses nothing when producers exit before draining");
-        // Spot-check a record from the very first and very last producer survived.
+        // Spot-check first and last producer records.
         char b0[32], bN[32];
         snprintf(b0, sizeof b0, "pj p0 %d", PJ_PER - 1);
         snprintf(bN, sizeof bN, "pj p%d %d", PJ_PRODUCERS - 1, PJ_PER - 1);
@@ -1077,9 +1056,7 @@ static int test_premature_join_all(void)
     return g_fail;
 }
 
-// Half the producers are joined early (they exit) while the other half keep running; then the rest are
-// joined and a single flush on main drains everything. Exact total across both waves proves no record
-// from the early-exited threads was lost.
+// Join half early, rest later, one flush. Exact total across both waves.
 static int test_premature_join_half(void)
 {
     g_fail = 0;
@@ -1112,14 +1089,14 @@ int main(void)
 {
     int failures = 0;
 
-    // Anchor scratch output to this executable's directory, before any file I/O.
+    // Anchor scratch to exe dir before I/O.
     if (!ano_fs_chdir_gamepath()) {
         fprintf(stderr, "chdir to gamepath failed\n");
         return 1;
     }
     resolve_log_paths();    // latch the session stamp
 
-    // Pre-init abuse: every entry point must be safe before ano_log_init.
+    // Pre-init abuse.
     {
         int rc = test_lifecycle_guard("pre-init");
         printf("  [%s] %s\n", rc == 0 ? "PASS" : "FAIL", "lifecycle_preinit");
@@ -1171,7 +1148,7 @@ int main(void)
 
     ano_log_cleanup();
 
-    // Post-cleanup abuse: every entry point must be safe after ano_log_cleanup.
+    // Post-cleanup abuse.
     {
         int rc = test_lifecycle_guard("post-cleanup");
         printf("  [%s] %s\n", rc == 0 ? "PASS" : "FAIL", "lifecycle_postcleanup");
@@ -1184,7 +1161,7 @@ int main(void)
     else
         printf("  Showcase log written and verified: ./%s\n", VIS_PATH);
 
-    // Remove every file and directory this test created, so a manual run leaves nothing behind.
+    // Remove everything this test created.
     remove(LOG_PATH);
     remove(LOG_PATH_ALT);
     remove(VIS_PATH);

@@ -70,15 +70,10 @@ static void sweep_cb(const char *name, void *ctx)
     s->left++;
 }
 
-// .tmp entries in dir that survive the walk; purge asks for removal first. -1 if dir won't scan.
-// rmos_scan_dir, not a #ifndef _WIN32 dirent block: this ran on nothing at all on Windows, the
-// one platform whose ReplaceFileW path is likeliest to strand a temp.
-//
-// A temp CANNOT be removed here when a crash step longjmped out of ano_res_write with its
-// handle still open: Win64 rmos_open_excl takes share mode 0, so the name is locked until the
-// process exits, while POSIX unlink never cares. That is a property of THIS harness (a real
-// crash closes the handle and leaves a deletable orphan), not of the write protocol -- so the
-// clean-write oracle below is a DELTA, not an absolute zero.
+// .tmp entries in dir that survive the walk. purge asks for removal first. -1 if dir won't scan.
+// Uses rmos_scan_dir (not a Windows-skipped dirent block).
+// After crash longjmp with handle still open, Win64 share-mode 0 locks the name until process exit.
+// Clean-write oracle is a DELTA, not absolute zero.
 static int scan_temps(const char *dir, bool purge)
 {
     temp_sweep s = { .dir = dir, .purge = purge, .left = 0 };

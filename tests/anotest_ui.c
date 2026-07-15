@@ -3,25 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_ui.h: the UI prim ABI, builder, and reference evaluator
- * (docs/ui/ui-render.md §7 step 2, the pre-GPU validation gate):
- *   - ABI: runtime echo of the static_assert'd std430 layout (96/48/48/32 B)
- *   - builder: field packing goldens, radii clamp, sigma floor, full-array refusal
- *     (ANO_UI_REF_NONE, no mutation), clip rect/rounded sentinel
- *   - rrect SDF: d == t on edge/corner rays, sign agreement with a double-precision
- *     inside predicate over a jittered grid
- *   - rrect/border/clip coverage vs a 64x64-supersampled double oracle per pixel
- *     window: straight-edge windows exact, corner-zone windows inside bounds pinned
- *     from the first measured run
- *   - shadow: Wallace closed form vs a 4x-supersampled rrect mask convolved with a
- *     separable discrete Gaussian (double), rect and rounded, inside the pinned envelope
- *   - blend semantics: painter's order, ADD accumulates rgb without occluding,
- *     PATH/GLYPHS kinds contribute zero in this lane, evaluation purity
- *   - surface fold: per-kind field goldens for ano_ui_*_scale, gradient t invariance
- *     at the scaled pixel, a folded path stream re-evaluated end to end, sentinel
- *     and s = 1 bit-stability of the curve-word fold
- * Oracles in double, the evaluator mirrors future GLSL in float.
- * Deterministic (fixed seed), argv[1] scales the jittered-probe soak. Exit 0 = pass. */
+// Coverage for anoptic_ui.h: ABI, builder, reference evaluator (ui-render.md §7 step 2).
+// ABI sizes/offsets, builder goldens, SDF rays + sign sweep, coverage vs 64x64 SS oracle,
+// Wallace shadow vs discrete Gaussian, blend/ADD/purity, surface fold goldens.
+// Oracles in double, evaluator in float. argv[1] = soak. Exit 0 = pass.
 
 #include <math.h>
 #include <stdio.h>
@@ -36,10 +21,12 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-// ---------------------------------------------------------------------------------------------
+
+/* Geometry Oracles */
+
 // Double-precision geometry oracles.
 
-// Point-in-rounded-rect, coordinates relative to center, per-corner radii (tl,tr,br,bl).
+// Point-in-rrect relative to center, radii (tl,tr,br,bl).
 static bool inside_rrect(double x, double y, double hx, double hy, const double r[4])
 {
     if (fabs(x) > hx || fabs(y) > hy)
@@ -55,7 +42,7 @@ static bool inside_rrect(double x, double y, double hx, double hy, const double 
     return dx * dx + dy * dy <= rr * rr;
 }
 
-// Ring predicate: inside the rrect but not its w-erosion (half-w extents, max(r-w, 0) radii).
+// Ring: inside rrect but not its w-erosion.
 static bool inside_ring(double x, double y, double hx, double hy, const double r[4], double w)
 {
     if (!inside_rrect(x, y, hx, hy, r))
@@ -66,8 +53,7 @@ static bool inside_ring(double x, double y, double hx, double hy, const double r
     return !inside_rrect(x, y, hx - w, hy - w, ri);
 }
 
-// 64x64-supersampled coverage of a predicate over the unit window [px,px+1)x[py,py+1),
-// coordinates relative to the shape center at (cx,cy).
+// 64x64-SS coverage over [px,px+1)x[py,py+1), relative to shape center (cx,cy).
 #define SS 64
 typedef bool (*inside_fn)(double x, double y, void *u);
 
@@ -93,8 +79,8 @@ static bool pred_ring(double x, double y, void *u)
     return inside_ring(x, y, s->hx, s->hy, s->r, s->w);
 }
 
-// ---------------------------------------------------------------------------------------------
-// ABI echo.
+
+/* ABI */
 
 static void test_abi(void)
 {
@@ -111,8 +97,8 @@ static void test_abi(void)
           "ABI clip offsets");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Builder goldens.
+
+/* Builder */
 
 static void test_builder(void)
 {
@@ -122,7 +108,7 @@ static void test_builder(void)
     ano_ui_builder_init(&b, prims, 4, clips, 2, NULL, 0, NULL, 0);
     CHECK(b.primCount == 0 && b.clipCount == 0 && b.paintCap == 0, "builder init zeroes");
 
-    // Packing + radii clamp: negatives to 0, over-cap to min(half) (=20 here).
+    // Packing + radii clamp (neg->0, over-cap->min(half)=20).
     float rad[4] = { -5.0f, 50.0f, 10.0f, 3.0f };
     float red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
     uint32_t i0 = ano_ui_rrect(&b, (float[2]){ 10, 20 }, (float[2]){ 50, 60 }, rad, red,
@@ -139,14 +125,14 @@ static void test_builder(void)
     CHECK(prims[0].param[0] == 0.0f, "negative border width clamps to fill");
     CHECK(prims[0].kind == ANO_UI_RRECT && prims[0].paintRef == ANO_UI_REF_NONE, "kind + refs");
 
-    // Shadow: sigma floor, uniform corner capped at min(half) (=10 on a 60x20 box).
+    // Shadow: sigma floor, uniform corner capped at min(half)=10.
     uint32_t i1 = ano_ui_shadow(&b, (float[2]){ 0, 0 }, (float[2]){ 60, 20 }, 999.0f, 0.0f,
                                 red, ANO_UI_REF_NONE, 0);
     CHECK(i1 == 1 && prims[1].kind == ANO_UI_SHADOW, "shadow claims slot 1");
     CHECK(prims[1].radii[0] == 10.0f && prims[1].radii[3] == 10.0f, "shadow corner capped, uniform");
     CHECK(prims[1].param[0] == 1e-3f, "sigma floor");
 
-    // Image + glyphs aux packing.
+    // Image + glyphs aux.
     uint32_t i2 = ano_ui_image(&b, (float[2]){ 0, 0 }, (float[2]){ 32, 32 }, NULL, 7, -1.0f,
                                red, ANO_UI_REF_NONE, 0);
     CHECK(i2 == 2 && prims[2].aux0 == 7 && prims[2].param[0] == 0.0f, "image tex index + lod clamp");
@@ -154,14 +140,14 @@ static void test_builder(void)
                                 ANO_UI_REF_NONE, 0);
     CHECK(i3 == 3 && prims[3].aux0 == 40 && prims[3].aux1 == 12, "glyphs range packing");
 
-    // Full prim array refuses without mutation.
+    // Full prim array: refuse, no mutation.
     AnoUiPrim before = prims[3];
     uint32_t iFull = ano_ui_path(&b, (float[2]){ 0, 0 }, (float[2]){ 1, 1 }, 0, 0, red,
                                  ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
     CHECK(iFull == ANO_UI_REF_NONE && b.primCount == 4, "full prim array refused");
     CHECK(memcmp(&before, &prims[3], sizeof before) == 0, "refusal mutates nothing");
 
-    // Clips: rect-only sentinel, rounded term packs + clamps.
+    // Clips: rect-only sentinel, rounded packs + clamps.
     uint32_t c0 = ano_ui_clip(&b, (float[2]){ 5, 5 }, (float[2]){ 95, 45 }, NULL, NULL, NULL);
     CHECK(c0 == 0 && clips[0].rrHalf[0] < 0.0f, "rect-only clip sentinel");
     float crad[4] = { 4, 4, 4, 4 };
@@ -177,8 +163,10 @@ static void test_builder(void)
     CHECK(s.primCount == 4 && s.clipCount == 2, "scene view counts");
 }
 
-// ---------------------------------------------------------------------------------------------
-// SDF exactness: rays hit d == t, sign agrees with the predicate everywhere off-boundary.
+
+/* SDF */
+
+// Rays hit d == t, sign agrees with predicate off-boundary.
 
 static void test_sdf(uint32_t soak)
 {
@@ -186,7 +174,6 @@ static void test_sdf(uint32_t soak)
     const float radii[4] = { 0.0f, 5.0f, 12.0f, 20.0f };
     const double dradii[4] = { 0.0, 5.0, 12.0, 20.0 };
 
-    // Straight-edge rays.
     for (int k = 0; k < 4; k++) {
         float t = (float[]){ -5.0f, 0.0f, 3.0f, 17.0f }[k];
         float d = ano_ui_ref_sd_rrect((float[2]){ 30.0f + t, 0.0f }, half, radii);
@@ -194,7 +181,7 @@ static void test_sdf(uint32_t soak)
         d = ano_ui_ref_sd_rrect((float[2]){ 0.0f, -20.0f - t }, half, radii);
         CHECK(fabsf(d - t) < 1e-4f, "top-edge ray d == t");
     }
-    // Corner-arc ray through the br corner (r = 12), circle center (18, 8).
+    // br corner-arc ray (r=12), circle center (18, 8).
     for (int k = 0; k < 5; k++) {
         float t = (float[]){ -6.0f, -2.0f, 0.0f, 4.0f, 15.0f }[k];
         float s = 0.70710678f;
@@ -202,12 +189,12 @@ static void test_sdf(uint32_t soak)
         float d = ano_ui_ref_sd_rrect(p, half, radii);
         CHECK(fabsf(d - t) < 1e-3f, "br corner-arc ray d == t");
     }
-    // Sharp tl corner (r = 0): outside diagonal distance is Euclidean to the point.
+    // Sharp tl corner (r=0): Euclidean distance to the point.
     {
         float d = ano_ui_ref_sd_rrect((float[2]){ -33.0f, -24.0f }, half, radii);
         CHECK(fabsf(d - 5.0f) < 1e-4f, "sharp-corner point distance");
     }
-    // Jittered sign sweep vs the predicate.
+    // Jittered sign sweep vs predicate.
     test_rng rng = rng_make(0x0517AB1Eu);
     uint64_t probes = 0, skipped = 0;
     for (uint32_t it = 0; it < soak; it++) {
@@ -234,16 +221,17 @@ static void test_sdf(uint32_t soak)
            (unsigned long long)probes, (unsigned long long)skipped);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Coverage vs supersampled oracle. Windows classify as corner-zone or edge-class.
-// Edge-class must be exact.
+
+/* Coverage */
+
+// Coverage vs SS oracle. Edge-class exact, corner-zone bounded.
 
 typedef struct {
     double edgeMax, cornerMax, rms;
     uint64_t n;
 } CovStats;
 
-// Truth source per window: supersampled predicate, or a closed form where one exists.
+// Truth: SS predicate, or closed form where one exists.
 typedef double (*truth_fn)(void *u, int px, int py);
 
 typedef struct { inside_fn f; void *u; double cx, cy; } SsTruth;
@@ -262,7 +250,7 @@ static double truth_rect(void *u, int px, int py)
     return ox * oy;
 }
 
-// Corner zone: window center within (corner radius + border + 3.5) px of a box corner point.
+// Corner zone: window center within (r + border + 3.5) of a box corner.
 static void cov_canvas(const AnoUiScene *s, truth_fn truth, void *u, double cx, double cy,
                        const double half[2], const double radii[4], double border,
                        int x0, int y0, int x1, int y1, CovStats *st)
@@ -310,7 +298,7 @@ static void test_coverage(void)
         bool analytic; // exact rect truth, else 1/64-aligned SS truth
         double edgeGate, cornerGate;
     } cases[] = {
-        // Gates pinned from the measured run of 2026-07-07 (printed below each time).
+        // Gates pinned from measured run 2026-07-07.
         { "rect r=0 frac", { 10.3f, 10.7f }, { 50.6f, 40.2f }, { 0, 0, 0, 0 }, 0.0f, true,
           2e-3, 0.15 },
         { "rrect r=8", { 10.0f, 10.0f }, { 70.0f, 50.0f }, { 8, 8, 8, 8 }, 0.0f, false,
@@ -345,7 +333,7 @@ static void test_coverage(void)
     }
 }
 
-// Clip: a rect clip through a fill's interior stays exact away from the clip's own corners.
+// Clip: rect clip through fill interior exact away from clip corners.
 static void test_clip(void)
 {
     AnoUiPrim prims[1];
@@ -358,7 +346,7 @@ static void test_clip(void)
     ano_ui_rrect(&b, (float[2]){ 10, 10 }, (float[2]){ 70, 50 }, NULL, white, 0.0f,
                  ANO_UI_REF_NONE, clip, 0);
     AnoUiScene s = ano_ui_scene(&b);
-    // Rows crossing the clip edges away from clip corners: truth = exact window/clip overlap.
+    // Rows on clip edges away from corners: truth = window/clip overlap.
     RectTruth rt = { 20.4, 15.6, 60.7, 45.3 };
     double worst = 0.0;
     for (int py = 25; py < 35; py++)
@@ -371,9 +359,10 @@ static void test_clip(void)
     CHECK(worst <= 2e-3, "rect clip exact through prim interior");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Gradient paints: a solid rrect filled by each gradient kind, checked deep-interior
-// (coverage 1) against an independent analytic t plus a two-stop clamp-and-lerp.
+
+/* Gradient Paints */
+
+// rrect fill vs analytic t + two-stop lerp (deep interior, cov=1).
 
 static void grad2_truth(const float c0[4], const float c1[4], double t, float out[4])
 {
@@ -382,10 +371,10 @@ static void grad2_truth(const float c0[4], const float c1[4], double t, float ou
         out[k] = (float)(c0[k] + (c1[k] - c0[k]) * u);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Surface fold (ano_ui_*_scale): the logical->device mapping the renderer applies once
-// at compose (ui-render.md §3.11). Field goldens per kind, a scaled paint reading the
-// authored t at the scaled pixel, and a folded path re-evaluated end to end.
+
+/* Surface Fold */
+
+// ano_ui_*_scale: field goldens, paint t invariance, folded path e2e.
 
 static void test_scale(void)
 {
@@ -399,7 +388,7 @@ static void test_scale(void)
     float white[4] = { 1, 1, 1, 1 };
     float r4[4] = { 4, 4, 4, 4 };
 
-    // RRECT: geometry and border width are lengths.
+    // RRECT: geometry + border are lengths.
     uint32_t pi = ano_ui_rrect(&b, (float[2]){ 10, 20 }, (float[2]){ 50, 40 }, r4, white,
                                3.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
     AnoUiPrim p = prims[pi];
@@ -409,7 +398,7 @@ static void test_scale(void)
     CHECK(p.radii[0] == 4.0f * s && p.radii[3] == 4.0f * s, "prim fold: radii");
     CHECK(p.param[0] == 3.0f * s, "prim fold: border width");
 
-    // SHADOW: sigma is a length. IMAGE: lod shifts by -log2(s), clamped at 0.
+    // SHADOW: sigma scales. IMAGE: lod -= log2(s), clamped at 0.
     uint32_t sh = ano_ui_shadow(&b, (float[2]){ 0, 0 }, (float[2]){ 20, 20 }, 5.0f, 6.0f,
                                 white, ANO_UI_REF_NONE, 0);
     p = prims[sh];
@@ -423,7 +412,7 @@ static void test_scale(void)
     ano_ui_prim_scale(&p, 4.0f);
     CHECK(p.param[0] == 0.0f, "prim fold: image lod clamps at 0");
 
-    // Clip: rect and rounded term scale, the rect-only sentinel stays negative.
+    // Clip: rect + rounded scale, rect-only sentinel stays negative.
     uint32_t cr = ano_ui_clip(&b, (float[2]){ 8, 8 }, (float[2]){ 40, 24 },
                               (float[2]){ 8, 8 }, (float[2]){ 40, 24 }, r4);
     AnoUiClip c = clips[cr];
@@ -436,7 +425,7 @@ static void test_scale(void)
     ano_ui_clip_scale(&c, s);
     CHECK(c.rrHalf[0] < 0.0f, "clip fold: rect-only sentinel survives");
 
-    // Paint: after the fold the gradient reads the authored t at the scaled pixel.
+    // Paint: folded gradient reads authored t at scaled pixel.
     for (int k = 0; k < 4; k++) { in[0].color[k] = 0.0f; in[1].color[k] = 1.0f; }
     in[0].color[3] = 1.0f; in[1].color[3] = 1.0f;
     in[0].t = 0.0f; in[1].t = 1.0f;
@@ -449,8 +438,7 @@ static void test_scale(void)
     for (int k = 0; k < 4; k++)
         CHECK(fabsf(atL[k] - atD[k]) < 1e-6f, "paint fold: t invariant at the scaled pixel");
 
-    // PATH: bake at logical coords, fold prim + stream, evaluate at device pixels.
-    // Integer coords and s = 2 keep binary16 exact.
+    // PATH: bake logical, fold prim+stream, eval at device. Integer coords + s=2 keep f16 exact.
     {
         AnoUiPrim pp[1];
         uint32_t words[128], scaled[128], same[128];
@@ -483,7 +471,7 @@ static void test_scale(void)
               "path fold: straight edges land exactly on device px");
     }
 
-    // The contour sentinel survives any scale.
+    // Contour sentinel survives any scale.
     uint32_t sw = 0x7C007C00u, swOut = 0;
     ano_ui_curves_scale(&sw, &swOut, 1, s);
     CHECK(swOut == 0x7C007C00u, "curve fold: contour sentinel survives");
@@ -546,7 +534,7 @@ static void test_gradient(void)
         CHECK(worst <= 1e-5, "gradient fill matches analytic");
     }
 
-    // Base modulation: a tint on the fill prim scales the resolved paint component-wise.
+    // Base modulation: tint scales resolved paint component-wise.
     ano_ui_builder_init(&b, prims, 1, NULL, 0, paints, 1, stops, 2);
     uint32_t g = ano_ui_paint_linear(&b, (float[2]){ 30, 0 }, (float[2]){ 110, 0 }, in, 2);
     float tint[4] = { 0.5f, 0.5f, 0.5f, 0.5f };
@@ -564,18 +552,17 @@ static void test_gradient(void)
     printf("  gradient modulate  worst %.7f\n", mworst);
     CHECK(mworst <= 1e-5, "base tint modulates the gradient fill");
 
-    // Fail-closed: a paintRef past the table reads transparent. The builder never emits
-    // this, forced by hand to mirror the shader's bound check.
+    // Fail-closed: paintRef past the table -> transparent.
     prims[0].paintRef = 7u; // paintCount is 1
     float out[4];
     ano_ui_ref_eval(&s, 70.0f, 60.0f, out);
     CHECK(out[0] == 0.0f && out[3] == 0.0f, "out-of-range paint fails closed");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Path fill: an axis-aligned rectangle baked as a 4-line path must reproduce the exact
-// box coverage. A reversed winding must still fill. An oppositely wound inner contour
-// must punch a hole.
+
+/* Path Fill */
+
+// Axis-aligned 4-line rect = exact box cov. Reverse winding fills. Opposite hole.
 
 static void test_path(void)
 {
@@ -583,10 +570,10 @@ static void test_path(void)
     uint32_t curves[512];
     AnoUiBuilder b;
     float white[4] = { 1, 1, 1, 1 };
-    // Integer, small coords keep binary16 effectively exact.
+    // Integer coords keep binary16 exact.
     RectTruth rt = { 20, 20, 100, 80 };
 
-    // Clockwise-on-screen rectangle (4 lines, auto-closed).
+    // CW-on-screen rectangle (4 lines, auto-closed).
     AnoUiPathSeg cw[] = {
         { ANO_UI_SEG_MOVE, { 20, 20, 0, 0 } },
         { ANO_UI_SEG_LINE, { 100, 20, 0, 0 } },
@@ -605,7 +592,7 @@ static void test_path(void)
             ano_ui_ref_eval(&s, (float)px, (float)py, out);
             iworst = fmax(iworst, fabs(out[3] - 1.0));
         }
-    // Edge windows away from the corners: exact box coverage.
+    // Edge windows away from corners: exact box coverage.
     for (int px = 30; px < 90; px++) {
         float top[4], bot[4];
         ano_ui_ref_eval(&s, (float)px, 19.0f, top); // straddles y=20
@@ -633,7 +620,7 @@ static void test_path(void)
     ano_ui_ref_eval(&s2, 60.0f, 50.0f, c);
     CHECK(fabs(c[3] - 1.0) <= 2e-3, "reversed winding still fills");
 
-    // Hole: outer CW + inner oppositely wound -> covered between, empty inside the inner.
+    // Hole: outer CW + opposite inner -> covered between, empty inside.
     AnoUiPathSeg holed[] = {
         { ANO_UI_SEG_MOVE, { 20, 20, 0, 0 } },
         { ANO_UI_SEG_LINE, { 100, 20, 0, 0 } },
@@ -656,9 +643,10 @@ static void test_path(void)
     CHECK(inside[3] <= 2e-3, "inner contour punches a hole");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Shadow vs blurred-mask ground truth: 4x supersampled rrect mask, separable discrete
-// Gaussian (radius 4 sigma, double), box-downsampled. Evaluator sampled at pixel centers.
+
+/* Shadow */
+
+// Shadow vs blurred-mask GT: 4x SS rrect * separable Gaussian (4 sigma), box-downsampled.
 
 static void shadow_case(const char *name, double hw, double hh, double corner, double sigma,
                         double maxGate, double rmsGate)
@@ -675,7 +663,7 @@ static void shadow_case(const char *name, double hw, double hh, double corner, d
         for (int x = 0; x < sw; x++)
             mask[(size_t)y * sw + x] =
                 inside_rrect((x + 0.5) / ss - cx, (y + 0.5) / ss - cy, hw, hh, r4) ? 1.0 : 0.0;
-    // Separable Gaussian at supersample resolution, kernel normalized over its support.
+    // Separable Gaussian at SS resolution, kernel normalized.
     double sigss = sigma * ss;
     int kr = (int)ceil(4.0 * sigss);
     double *kern = malloc((size_t)(2 * kr + 1) * sizeof(double));
@@ -734,12 +722,12 @@ static void shadow_case(const char *name, double hw, double hh, double corner, d
 
 static void test_shadow(void)
 {
-    // Gates pinned from the measured run of 2026-07-07 (printed below each time).
+    // Gates pinned from measured run 2026-07-07.
     shadow_case("rect s=2", 30.0, 20.0, 0.0, 2.0, 0.020, 0.005);
     shadow_case("rect s=8", 30.0, 20.0, 0.0, 8.0, 0.020, 0.005);
     shadow_case("rrect r=8 s=4", 30.0, 20.0, 8.0, 4.0, 0.025, 0.005);
 
-    // Inner-shadow sanity: zero outside the shape, zero deep inside, positive at the rim.
+    // Inner shadow: zero outside, ~zero deep inside, positive at rim.
     AnoUiPrim prims[1];
     AnoUiBuilder b;
     float ink[4] = { 0, 0, 0, 1 };
@@ -756,7 +744,9 @@ static void test_shadow(void)
     CHECK(out[3] > 0.2f, "inner shadow positive at the rim");
 }
 
-// ---------------------------------------------------------------------------------------------
+
+/* Blend */
+
 // Blend semantics + kind skips + purity.
 
 static void test_blend(void)
@@ -776,7 +766,7 @@ static void test_blend(void)
     ano_ui_ref_eval(&s, 10.0f, 10.0f, out); // only the first
     CHECK(out[0] == 1.0f && out[1] == 0.0f, "painter's order: base visible outside overlap");
 
-    // ADD lights rgb without occluding. PATH/GLYPHS contribute zero in this lane.
+    // ADD lights rgb without occluding. PATH/GLYPHS contribute zero here.
     ano_ui_shadow(&b, (float[2]){ 10, 10 }, (float[2]){ 50, 50 }, 4.0f, 3.0f, glow,
                   ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
     ano_ui_glyphs(&b, (float[2]){ 0, 0 }, (float[2]){ 60, 60 }, 0, 8, red, ANO_UI_REF_NONE, 0);
@@ -786,21 +776,21 @@ static void test_blend(void)
     CHECK(lit[0] > base[0] + 0.3f && lit[1] > base[1] + 0.15f && lit[3] == base[3],
           "ADD accumulates rgb, alpha untouched, GLYPHS skipped");
 
-    // Purity: identical inputs, identical bits.
+    // Purity: identical inputs -> identical bits.
     float again[4];
     ano_ui_ref_eval(&s, 30.0f, 30.0f, again);
     CHECK(memcmp(lit, again, sizeof lit) == 0, "evaluation purity");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Per-tile lists: the tiled walk must be BIT-IDENTICAL to the brute painter's-order
-// evaluation.
+
+/* Tile Lists */
+
+// Per-tile lists: tiled walk BIT-IDENTICAL to brute painter's-order eval.
 
 static void demo_build(AnoUiPrim *prims, AnoUiClip *clips, AnoUiPaint *paints,
                        AnoUiStop *stops, uint32_t *curves, AnoUiBuilder *b);
 
-// Tile-grid a scene from its prim-influence union, then compare tiled vs brute at every
-// pixel the grid covers (plus a margin, where both must read empty). Returns worst delta.
+// Tile-grid from prim-influence union, compare tiled vs brute over grid + margin. Worst delta.
 static double tiles_check(const AnoUiScene *s, const char *name)
 {
     float lo[2] = { 1e30f, 1e30f }, hi[2] = { -1e30f, -1e30f };
@@ -842,7 +832,7 @@ static double tiles_check(const AnoUiScene *s, const char *name)
 
 static void test_tiles(uint32_t soak)
 {
-    // Demo scene: every prim kind, a clip, a gradient, a path.
+    // Demo scene: every prim kind, clip, gradient, path.
     AnoUiPrim prims[32];
     AnoUiClip clips[4];
     AnoUiPaint paints[8];
@@ -851,12 +841,10 @@ static void test_tiles(uint32_t soak)
     AnoUiBuilder b;
     demo_build(prims, clips, paints, stops, curves, &b);
     AnoUiScene s = ano_ui_scene(&b);
-    // The tiled path clips shadows at their 3-sigma AABB, the brute reference keeps the
-    // whole Gaussian tail.
+    // Tiled path clips shadows at 3-sigma AABB; brute keeps the Gaussian tail.
     CHECK(tiles_check(&s, "demo") <= 2e-3, "demo tiled matches brute within the shadow-cull tail");
 
-    // Shadow-free random rrects (fills, rings, blends) on fractional tile-straddling
-    // positions must be EXACTLY equal.
+    // Shadow-free random rrects on fractional tile-straddling positions: bit-identical.
     test_rng rng = rng_make(0x7113ED00u);
     for (uint32_t it = 0; it < 1u + soak; it++) {
         AnoUiPrim rp[24];
@@ -881,10 +869,11 @@ static void test_tiles(uint32_t soak)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Standing demo scene: determinism golden + the GPU screenshot harness. The reference
-// mimics the GPU path's (ANO_UI_OPAQUE) quantizers over opaque black: UNORM8 linear
-// overlay, then the sRGB encode.
+
+/* Demo Scene */
+
+// Determinism golden + GPU screenshot harness.
+// Ref path: eval -> UNORM8 overlay quantize -> sRGB encode over opaque black.
 
 #define DEMO_ORIGIN_X 48.0f
 #define DEMO_ORIGIN_Y 120.0f
@@ -926,8 +915,7 @@ static void test_demo(void)
            b1.primCount, b1.clipCount, b1.paintCount, b1.curveCount);
 }
 
-// One swapchain byte triple for the demo scene over opaque black at pixel (px,py):
-// eval -> clamp -> UNORM8 overlay quantize -> sRGB encode -> byte.
+// Demo pixel over opaque black: eval -> clamp -> UNORM8 -> sRGB -> byte.
 static void demo_pixel(const AnoUiScene *s, int px, int py, uint8_t out[3])
 {
     float acc[4];

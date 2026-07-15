@@ -3,23 +3,21 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// UTF-8 iteration, encoding, and Unicode case/classification for anostr_t.
-// Decoding is strict and total: malformed input yields U+FFFD advancing one byte.
-// Case and classification are two-stage table lookups (ano_unicode_tables.h).
+// UTF-8 iteration, encoding, case/class, cull, rune-sort, and UTF-16/32 bridges for anostr_t.
+// Malformed -> U+FFFD advancing one byte. Case/class: two-stage table (ano_unicode_tables.h).
 
 #include "anoptic_strings_utf.h"
 
 #include "strings/ano_unicode_tables.h"
 
-// Decode core.
+/* Decode */
 
 static inline bool rune_is_surrogate(anorune_t r)
 {
     return r >= 0xD800u && r <= 0xDFFFu;
 }
 
-// Strict decode at p[0], n >= 1 bytes available.
-// Returns bytes consumed (1..4) with the rune in *out, or 0 on malformed input.
+// Strict decode at p[0], n >= 1. Returns bytes consumed (1..4) with rune in *out, or 0 if malformed.
 static int utf8_decode(const uint8_t *p, size_t n, anorune_t *out)
 {
     uint8_t b0 = p[0];
@@ -79,8 +77,7 @@ anorune_t anostr_rune_prev(anostr_t s, size_t *i)
     }
 
     // Back over at most 3 continuation bytes to a candidate lead, then decode forward.
-    // The candidate counts only if its sequence ends exactly at `at`.
-    // Anything else means the byte at `at - 1` is malformed on its own.
+    // Candidate counts only if its sequence ends exactly at `at`.
     size_t start = at - 1;
     while (start > 0 && at - start < 4 && (p[start] & 0xC0u) == 0x80u)
         start--;
@@ -118,7 +115,7 @@ bool anostr_utf8_valid(anostr_t s)
     return true;
 }
 
-// Encode.
+/* Encode */
 
 int anorune_encode(char buf[4], anorune_t r)
 {
@@ -153,8 +150,9 @@ int anostr_builder_append_rune(anostr_builder_t *b, anorune_t r)
     return anostr_builder_append(b, buf, (size_t)n);
 }
 
-// Case and classification. Record 0 is the identity record.
-// Unassigned, unlisted, and beyond-BMP runes fall through to it with no special casing here.
+/* Case and Classification */
+
+// Record 0 is the identity record.
 
 static inline const ano_uc_record_t *uc_record(anorune_t r)
 {
@@ -199,8 +197,9 @@ bool anorune_is_punct(anorune_t r)
     return (uc_record(r)->flags & ANO_UC_PUNCT) != 0;
 }
 
-// Rune-class culling. One pass, survivors copied in runs. ASCII rides an 8-byte high-bit
-// test and a bitset, only non-ASCII decodes.
+/* Rune-class Culling */
+
+// One pass, survivors copied in runs. ASCII: 8-byte high-bit test + bitset.
 
 static uint8_t cull_uc_mask(uint32_t classes)
 {
@@ -211,7 +210,7 @@ static uint8_t cull_uc_mask(uint32_t classes)
     return m;
 }
 
-// Byte offset of the first rune to cull, or len if none. Same walk as the copy loop.
+// Byte offset of the first rune to cull, or len if none.
 static size_t cull_find_first(anostr_t s, uint8_t ucMask, const uint64_t asciiSet[2])
 {
     const uint8_t *p = (const uint8_t *)anostr_bytes(&s);
@@ -255,7 +254,7 @@ anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes)
     if (ucMask == 0 || s.len == 0)
         return s;
 
-    // ASCII membership bitset for these classes, from the tables.
+    // ASCII membership bitset for these classes.
     uint64_t asciiSet[2] = {0};
     for (uint32_t c = 0; c < 128; c++)
         if ((uc_record(c)->flags & ucMask) != 0)
@@ -263,7 +262,7 @@ anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes)
 
     size_t first = cull_find_first(s, ucMask, asciiSet);
     if (first == s.len)
-        return s;   // nothing to cull, same backing, no alloc
+        return s;   // nothing to cull, same backing
 
     const uint8_t *p = (const uint8_t *)anostr_bytes(&s);
     anostr_builder_t b = anostr_builder_make(heap, s.len);
@@ -299,8 +298,9 @@ anostr_t anostr_cull(mi_heap_t *heap, anostr_t s, uint32_t classes)
     return anostr_freeze(&b);
 }
 
-// Sort a string's runes ascending by code point (UTF-8 byte order IS code point order).
-// Pure ASCII: counting sort, no decode. Otherwise decode to runes, sort, re-encode.
+/* Rune Sort */
+
+// Pure ASCII: counting sort. Else decode, sort, re-encode.
 
 static int rune_cmp_(const void *a, const void *b)
 {
@@ -340,7 +340,7 @@ anostr_t anostr_rune_sort(mi_heap_t *heap, anostr_t s)
         return anostr_freeze(&b);
     }
 
-    // At most len runes. Malformed bytes decode to U+FFFD.
+    // At most len runes. Malformed -> U+FFFD.
     anorune_t *runes = mi_malloc((size_t)s.len * sizeof *runes);
     if (runes == NULL)
         return anostr_empty();
@@ -354,11 +354,11 @@ anostr_t anostr_rune_sort(mi_heap_t *heap, anostr_t s)
     return out;
 }
 
-// Encoding conversion. In: decode foreign units to runes, append through the builder
-// (which sanitizes to U+FFFD and canonicalizes inline/long on freeze).
-// Out: worst-case allocation, one pass, shrink to exact.
+/* Encoding Conversion */
 
-// Decode the code unit(s) at src[*i], advancing *i. Unpaired surrogates -> U+FFFD.
+// In: decode foreign units -> runes via builder. Out: worst-case alloc, shrink to exact.
+
+// Decode code unit(s) at src[*i], advancing *i. Unpaired surrogates -> U+FFFD.
 static anorune_t utf16_next(const char16_t *src, size_t count, size_t *i)
 {
     uint32_t hi = src[(*i)++];
@@ -378,7 +378,7 @@ anostr_t anostr_from_utf16(mi_heap_t *heap, const char16_t *src, size_t count)
 {
     if (src == NULL)
         return anostr_empty();
-    // Worst case 3 UTF-8 bytes per unit (a pair is 2 units -> 4 bytes, still under).
+    // Worst case 3 UTF-8 bytes per unit.
     uint64_t worst = (uint64_t)count * 3;
     anostr_builder_t b = anostr_builder_make(heap, worst > UINT32_MAX ? 0 : (uint32_t)worst);
     for (size_t i = 0; i < count; ) {
@@ -406,7 +406,7 @@ char16_t *anostr_to_utf16(mi_heap_t *heap, anostr_t s, size_t *count)
         *count = 0;
     if (heap == NULL)
         return NULL;
-    // Worst case one unit per byte (4-byte runes are 2 units, still under), plus NUL.
+    // Worst case one unit per byte, plus NUL.
     char16_t *out = mi_heap_malloc(heap, ((size_t)s.len + 1) * sizeof(char16_t));
     if (out == NULL)
         return NULL;
@@ -424,7 +424,7 @@ char16_t *anostr_to_utf16(mi_heap_t *heap, anostr_t s, size_t *count)
     out[n] = 0;
     if (count != NULL)
         *count = n;
-    // A failed shrink keeps the original block.
+    // Failed shrink keeps the original block.
     char16_t *exact = mi_heap_realloc(heap, out, (n + 1) * sizeof(char16_t));
     return exact != NULL ? exact : out;
 }

@@ -33,8 +33,7 @@ static int failures = 0;
 
 #define DIRNAME "range_scratch"
 
-// The independent oracle: FNV-1a-64 over a byte span, computed without touching the code
-// under test.
+// Independent oracle: FNV-1a-64 over a byte span, without the code under test.
 static uint64_t fnv_oracle(const uint8_t *p, size_t n)
 {
     uint64_t h = UINT64_C(0xcbf29ce484222325);

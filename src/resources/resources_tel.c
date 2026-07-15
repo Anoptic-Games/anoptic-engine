@@ -3,19 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Five-axis attribution cells (blueprint 2.5, M3). The 19-bit packed key -- kind:5,
-// lifetime:3, role:3, op:4, dest:4 -- is interned ONCE at route time and cached in
-// res_site.cell; every charge afterwards is a plain non-atomic store at a known index,
-// owner-thread-only by construction.
-//
-// Cell 0 is the overflow bucket: a full table lands every homeless key there, COUNTS the
-// hit, and fires a Debug assert (D5). No contest number may be quoted from a run whose
-// overflow count is nonzero.
-//
-// STORAGE DEVIATION, said out loud: the blueprint homes this table in RES_ARENA_PLANE over
-// ano_mem_stripe. Stripe is M4 (W3) and is a stub in this tree, so the cells are static
-// storage (128 KiB) until it lands; the charge calls and the copy-out snapshot are the
-// frozen seam and do not change when the storage moves.
+// Five-axis attribution cells. 19-bit key interned ONCE at route time, cached in res_site.cell.
+// Charges are plain non-atomic stores, owner-thread-only.
+// Cell 0 is overflow: counted and Debug-asserted. Overflow != 0 voids the run.
+// STORAGE: static 128 KiB table.
 
 #include "resources_tel.h"
 
@@ -42,15 +33,13 @@ void res_tel_shutdown(void)
     memset(&g_tel, 0, sizeof g_tel);
 }
 
-// Inputs: a routing plan. Output: the plan's cell index; 0 when the table is full (counted,
-// Debug-asserted). Invariant: open addressing over cells 1..1023, so a key's cell is stable
-// for the life of the run.
+// Inputs: routing plan. Output: cell index, or 0 when full (counted, Debug-asserted). Open addressing over 1..1023. Key stable for the run.
 uint16_t res_tel_intern(const res_place_plan *p)
 {
     if (p == NULL)
         return 0;
     // An axis outside its field width would MASK onto a valid key and charge someone
-    // else's cell. Unattributable plans land in the overflow bucket, counted: D5 voids
+    // else's cell. Unattributable plans land in the overflow bucket, counted: overflow voids
     // the run's numbers rather than quietly lying.
     if (p->lifetime.kind > ANO_RES_LIFETIME_SHARED_IMMUTABLE
         || p->role >= RES_ROLE_COUNT
@@ -137,8 +126,7 @@ void res_tel_promote(uint16_t dst_cell, size_t bytes, bool copied)
     }
 }
 
-// Copy-out: a reader never touches a live cell. Returns the number of populated cells;
-// fills out[0..min(returned, cap)).
+// Copy-out: reader never touches a live cell. Returns populated count. Fills out[0..min(returned,cap)).
 size_t res_tel_snapshot(res_tel_cell *out, size_t cap)
 {
     size_t n = 0;
@@ -157,8 +145,7 @@ size_t res_tel_overflow_hits(void)
     return g_tel.overflow_hits;
 }
 
-// The public cube. res_tel_cell_public mirrors res_tel_cell field for field, so the copy-out
-// is one memcpy per cell -- and a reader never touches a live cell.
+// Public cube. res_tel_cell_public mirrors res_tel_cell field for field. One memcpy per cell.
 size_t ano_res_stats_cells(res_tel_cell_public *out, size_t cap)
 {
     static_assert(sizeof(res_tel_cell_public) == sizeof(res_tel_cell),

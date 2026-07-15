@@ -4,8 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #if defined(_WIN32)
-// Pin the API level before any Windows header so CreateWaitableTimerExW / FlsAlloc prototypes are
-// visible on every toolchain, not just those defaulting to a modern target.
+// Pin API level before Windows headers so CreateWaitableTimerExW / FlsAlloc are visible.
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00   // Win10: hi-res waitable timers
 #define WINVER       0x0A00
@@ -18,7 +17,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-// rdtsc is x86 only; on ARM64 Windows this whole timebase falls back to QPC.
+// rdtsc is x86 only; ARM64 Windows falls back to QPC.
 #if defined(__x86_64__) || defined(_M_X64)
 #define ANO_TSC_ARCH 1
 #include <intrin.h>   // __rdtsc, __cpuid, _mm_lfence
@@ -27,15 +26,9 @@
 
 /* Precision Timestamps */
 
-// Two monotonic timebases on Windows. QPC is portable but coarse: on many hosts it ticks at 10 MHz, a
-// 100 ns step, so records stamped inside the same 100 ns window can't be ordered -- coarser than
-// Linux/macOS. On x86-64 with an invariant TSC (constant rate across P-states, idle, and cores) rdtsc
-// is a sub-nanosecond register read, giving the logger fine cross-thread ordering. We use rdtsc when
-// available and fall back to QPC otherwise (no invariant TSC, or a non-x86 Windows build). The choice
-// is resolved once and frozen, so ano_timestamp_ticks and ano_ticks_to_ns always share one timebase.
+// Timebase: invariant TSC (rdtsc) when available, else QPC. Chosen once, shared by ticks and ticks_to_ns.
 
-// QPC frequency (counts/second), cached once. The QPC path uses it directly; the TSC path uses it as
-// the calibration reference.
+// QPC frequency (counts/s), cached once. TSC calibration reference too.
 static _Atomic uint64_t cachedPerfFreq = 0;
 
 static uint64_t query_perf_freq(void) {
@@ -52,14 +45,13 @@ static uint64_t query_perf_freq(void) {
 
 #ifdef ANO_TSC_ARCH
 
-// Resolved timebase, decided once by resolve_clock and never changed.
+// Resolved timebase, frozen after resolve_clock.
 enum { CLOCK_UNSET = 0, CLOCK_TSC = 1, CLOCK_QPC = 2 };
 static _Atomic int      g_clockMode  = CLOCK_UNSET;
 static _Atomic int      g_clockElect = 0;    // one-time election guard for resolve_clock
 static _Atomic uint64_t cachedTscHz  = 0;    // calibrated invariant-TSC frequency (TSC mode only)
 
-// Invariant TSC: CPUID leaf 0x80000007, EDX bit 8. Only then does rdtsc advance at a constant rate
-// independent of frequency scaling and idle, i.e. is usable as a clock.
+// Invariant TSC: CPUID 0x80000007 EDX[8]. Required for rdtsc-as-clock.
 static bool have_invariant_tsc(void) {
     int r[4];
     __cpuid(r, 0x80000000);              // max extended leaf in EAX
@@ -69,9 +61,7 @@ static bool have_invariant_tsc(void) {
     return (r[3] & (1 << 8)) != 0;       // EDX[8] = Invariant TSC
 }
 
-// rdtsc bracketed by lfence so the read can't drift past neighbouring instructions during
-// calibration. The hot path (ano_timestamp_ticks) uses a plain rdtsc: a few instructions of skew
-// there is far below the ordering grain we care about, and the fences aren't free.
+// Fenced rdtsc for calibration. Hot path uses plain __rdtsc.
 static inline uint64_t rdtsc_fenced(void) {
     _mm_lfence();
     uint64_t t = __rdtsc();
@@ -79,11 +69,9 @@ static inline uint64_t rdtsc_fenced(void) {
     return t;
 }
 
-#define ANO_TSC_CAL_MS 4u   // per-sample window; the ratio is measured against ACTUAL elapsed QPC, so
-                            // Sleep jitter and mid-window preemption don't bias it (both clocks advance
-                            // in real time regardless)
+#define ANO_TSC_CAL_MS 4u   // per-sample window vs actual QPC elapsed
 
-// One TSC-frequency measurement: elapsed TSC over elapsed QPC, scaled by the QPC frequency.
+// TSC Hz from elapsed TSC / elapsed QPC.
 static uint64_t sample_tsc_hz(uint64_t qf) {
     LARGE_INTEGER q0, q1;
     QueryPerformanceCounter(&q0);
@@ -96,11 +84,11 @@ static uint64_t sample_tsc_hz(uint64_t qf) {
     uint64_t dt = t1 - t0;
     if (dq == 0 || dt == 0)
         return 0;
-    // tscHz = dt / (dq / qf) = dt * qf / dq. 128-bit product so a fast CPU or wide window can't overflow.
+    // tscHz = dt * qf / dq. 128-bit product avoids overflow.
     return (uint64_t)(((unsigned __int128)dt * qf) / dq);
 }
 
-// Calibrate the TSC frequency: median of three samples rejects a one-off preemption outlier.
+// Median of three TSC Hz samples.
 static uint64_t calibrate_tsc_hz(void) {
     uint64_t qf = query_perf_freq();
     if (qf == 0)
@@ -114,8 +102,7 @@ static uint64_t calibrate_tsc_hz(void) {
     return s[1];
 }
 
-// Decide the timebase once. One thread wins the election and resolves; concurrent callers wait for
-// the published mode. Calibration costs ~12 ms of Sleep, paid once at the first timestamp.
+// Elect once. Losers wait. Calibration ~12 ms Sleep, once.
 static void resolve_clock(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong(&g_clockElect, &expected, 1)) {
@@ -131,7 +118,7 @@ static void resolve_clock(void) {
             mode = CLOCK_TSC;
         }
     }
-    query_perf_freq();   // ensure the QPC frequency is cached for the fallback path
+    query_perf_freq();   // ensure QPC frequency cached for fallback
 
     #ifdef DEBUG_BUILD
     printf("\nTimebase: %s", mode == CLOCK_TSC ? "invariant TSC" : "QPC");
@@ -154,8 +141,7 @@ static inline int clock_mode(void) {
 
 #endif // ANO_TSC_ARCH
 
-// Bare monotonic counter, no conversion. rdtsc (a register read) when the TSC is usable, else the raw
-// QPC count. The frequency divide is deferred to ano_ticks_to_ns.
+// Raw counter: rdtsc or QPC. Divide deferred to ano_ticks_to_ns.
 uint64_t ano_timestamp_ticks() {
 #ifdef ANO_TSC_ARCH
     if (clock_mode() == CLOCK_TSC)
@@ -268,9 +254,7 @@ int ano_busywait(uint64_t ns) {
     return 0; // success
 }
 
-// CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is Win10 1803+ (2018); define it if the SDK headers predate
-// it so the source still compiles. We target 1803+, so the hi-res timer is always available and needs
-// no timeBeginPeriod floor.
+// Win10 1803+ hi-res timer flag. Define if SDK headers predate it.
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -278,12 +262,10 @@ int ano_busywait(uint64_t ns) {
 // Spin the last 1ms on ano_busywait; waitable-timer wakeups slop ~0.5-1ms.
 #define ANO_SLEEP_SPIN_TAIL_NS 1000000ULL
 
-// Per-thread cached waitable timer, created lazily and reused for the thread's life. Thread-local so
-// no locks. NULL = not yet attempted, INVALID_HANDLE_VALUE = attempted and unsupported.
+// Per-thread waitable timer. NULL = unset, INVALID_HANDLE_VALUE = unsupported.
 static _Thread_local HANDLE tlSleepTimer = NULL;
 
-// FLS slot whose per-thread destructor closes the cached timer at thread exit, so a churn of
-// transient threads doesn't leak one kernel timer each. Allocated once via CAS.
+// FLS slot: closes timer at thread exit. Allocated once via CAS.
 static DWORD       gSleepTimerFls = FLS_OUT_OF_INDEXES;
 static _Atomic int gFlsInit = 0;
 
@@ -292,8 +274,7 @@ static void NTAPI ano_sleep_timer_free(PVOID p) {
         CloseHandle((HANDLE)p);
 }
 
-// This thread's hi-res waitable timer, created lazily. Returns NULL on hard failure (caller degrades
-// to a coarse Sleep).
+// Lazy hi-res waitable timer. NULL -> caller uses coarse Sleep.
 static HANDLE ano_sleep_timer(void) {
     if (tlSleepTimer == INVALID_HANDLE_VALUE)
         return NULL;             // previously determined unsupported
@@ -308,7 +289,7 @@ static HANDLE ano_sleep_timer(void) {
     }
     tlSleepTimer = h;
 
-    // Register a thread-exit destructor so the handle is closed when this thread dies.
+    // Register thread-exit destructor to close the handle.
     int expected = 0;
     if (atomic_compare_exchange_strong(&gFlsInit, &expected, 1))
         gSleepTimerFls = FlsAlloc(ano_sleep_timer_free);
@@ -317,9 +298,7 @@ static HANDLE ano_sleep_timer(void) {
     return h;
 }
 
-// Use OS time facilities for a high-res sleep that DOES give up thread execution. (clock_nanosleep on
-// Unix, waitable timer + busywait tail on Windows.) The timer yields the CPU for the bulk of the wait,
-// then a sub-millisecond busywait tail recovers the accuracy the scheduler slops away.
+// High-res sleep: waitable timer + busywait tail. Yields the CPU.
 //   in:  us (uint64_t) microseconds to sleep
 //   out: int, 0 on success, positive errno-ish on failure (Unix-backend parity)
 int ano_sleep(uint64_t us) {
@@ -338,9 +317,7 @@ int ano_sleep(uint64_t us) {
         HANDLE timer = ano_sleep_timer();
         bool yielded = false;
         if (timer != NULL) {
-            // Relative due time in 100ns units, negative per the Win32 ABI. Clamp the magnitude to
-            // INT64_MAX so the negation can't overflow into an absolute (positive) due time on a
-            // pathologically long sleep; floor to 1 so a real wait never rounds to "signal now".
+            // Relative due time in 100ns units, negative per Win32 ABI. Clamp to INT64_MAX, floor to 1.
             uint64_t units = coarse_ns / 100ULL;
             if (units == 0) units = 1;
             if (units > (uint64_t)INT64_MAX) units = (uint64_t)INT64_MAX;
@@ -353,14 +330,12 @@ int ano_sleep(uint64_t us) {
                 yielded = true;
             }
         }
-        // No timer, or SetWaitableTimer failed: yield coarsely via Sleep rather than spinning the
-        // whole interval on a core. The spin tail below still recovers the sub-ms accuracy.
+        // No timer or SetWaitableTimer failed: coarse Sleep, then spin tail.
         if (!yielded)
             Sleep((DWORD)(coarse_ns / 1000000ULL));
     }
 
-    // Spin stage: busy-wait whatever remains, in <=MAX_BUSYWAIT_NS chunks so a long oversleep (or a
-    // missing coarse stage) can't trip ano_busywait's 1e9ns cap.
+    // Spin stage: remaining time in <=MAX_BUSYWAIT_NS chunks.
     for (;;) {
         uint64_t now = ano_timestamp_raw();
         if (now == 0 || now == UINT64_MAX)

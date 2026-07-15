@@ -1,10 +1,9 @@
-# Platform-agnostic common TU (session stamp, log directory).
+# Common TU (session stamp, log directory).
 target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/filesystem.c
 )
 
-# Conditionally compile platform-specific source files.
-# APPLE before UNIX: both are true on macOS, and macOS needs the Mach-O lookup.
+# Platform TU. APPLE before UNIX: both true on macOS.
 if (WIN32)
     target_sources(anoptic_core PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/filesystem_win64.c

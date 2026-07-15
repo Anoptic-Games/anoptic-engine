@@ -9,9 +9,7 @@
 #include "vulkan_backend/structs.h"
 #include "vulkan_backend/light_registry.h"
 
-// ---------------------------------------------------------------------------
 // Runtime light registry. Render-thread only, no locks. Owns dynamic light palette [base, base+capacity).
-// ---------------------------------------------------------------------------
 
 void light_registry_init(LightRegistry* r, uint32_t base, uint32_t capacity, uint32_t framesInFlight) {
     memset(r, 0, sizeof(*r));

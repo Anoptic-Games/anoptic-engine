@@ -16,11 +16,9 @@
 #include <sys/resource.h>
 #endif
 
-
 /* Thread Management */
 
-// Spawn shim: arms each thread's crash stack before user code runs.
-// The cleanup handler disarms on any exit path (return, pthread_exit, ano_thread_exit).
+// Crash-stack arm shim. Cleanup disarms on every exit path.
 typedef struct {
     void *(*func)(void *);
     void   *arg;
@@ -46,8 +44,7 @@ static void *thread_trampoline(void *p)
 
 int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(* func)(void *), void *arg) {
 
-    // NULL attr gets ANO_THREAD_STACK_SIZE, lazily committed. Explicit attrs pass through untouched.
-    // Skipped on win64: the PE header reserve (--stack, root CMakeLists) sizes NULL-attr threads.
+    // NULL attr -> ANO_THREAD_STACK_SIZE. Explicit attrs untouched. Win64: PE --stack instead.
 #if !defined(_WIN32)
     pthread_attr_t engineAttr;
     bool engineOwned = attr == NULL && pthread_attr_init(&engineAttr) == 0;
@@ -105,8 +102,8 @@ int ano_thread_equal(anothread_t a, anothread_t b) {
 }
 
 // Inputs: none.
-// Output: the initial thread's stack budget in bytes, 0 when the query fails.
-// POSIX: RLIMIT_STACK soft (SIZE_MAX when unlimited). Win64: the PE-header reserve.
+// Output: initial-thread stack bytes, 0 on query failure.
+// POSIX: soft RLIMIT_STACK (SIZE_MAX if unlimited). Win64: PE reserve.
 size_t ano_thread_main_stack(void) {
 
 #if defined(_WIN32)
@@ -146,6 +143,7 @@ int ano_mutex_destroy(anothread_mutex_t *mutex) {
 
 
 /* Condition Variables */
+
 int ano_thread_cond_init(anothread_cond_t *conditionVariable, const anothread_condattr_t *attr) {
 
     return pthread_cond_init(conditionVariable, attr);
@@ -179,6 +177,7 @@ int ano_thread_cond_destroy(anothread_cond_t *conditionVariable) {
 
 
 /* Spinlocks */
+
 #if !defined(__APPLE__)   // macOS: provided by threads_macos.c
 int ano_thread_spin_init(anothread_spinlock_t *lock, int pshared) {
 
@@ -287,6 +286,7 @@ void* ano_thread_getspecific(anothread_key_t key) {
 
 
 /* Synchronization Barriers */
+
 #if !defined(__APPLE__)   // macOS: provided by threads_macos.c
 
 int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrierattr_t *attr, unsigned int count) {

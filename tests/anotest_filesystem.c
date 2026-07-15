@@ -3,17 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_filesystem.h -- the ano_fspath value type and the append-only file API:
- *   - ano_fs_gamepath: resolved, NUL-terminated at length, no trailing separator, and usable
- *     (ano_fs_chdir_gamepath succeeds against it);
- *   - ano_fs_userpath: resolved to <user-data root>/ANO_GAME_NAME (Factorio convention), the
- *     directory exists after the call, and a file can be created inside it (removed after);
- *   - ano_file: open-append/write/sync/close round-trip in the test's scratch dir, with
- *     scratch_count_lines as the oracle (N writes in, N lines out) and append-not-truncate
- *     verified across a close/reopen.
- * The userpath check touches the real per-user directory (the one the engine itself uses);
- * it only adds and removes one probe file there and never deletes the directory.
- * Exit 0 == pass; failures print what broke. */
+// Coverage: ano_fspath shape, gamepath/userpath contracts, ano_file append/trunc round-trip.
+// userpath touches the real per-user dir with one probe file only.
+// Exit 0 == pass.
 
 #include <stdio.h>
 #include <string.h>
@@ -26,7 +18,10 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-// Shape every resolved ano_fspath must have: length matches the bytes, NUL where promised.
+
+/* Helpers */
+
+// Resolved ano_fspath shape: length matches bytes, NUL at length.
 static void check_path_shape(ano_fspath p, const char *label)
 {
     printf("%s: \"%s\" (length %u)\n", label, p.str, p.length);
@@ -38,13 +33,16 @@ static void check_path_shape(ano_fspath p, const char *label)
           "no trailing separator");
 }
 
+
+/* Cases */
+
 static void test_gamepath(void)
 {
     ano_fspath game = ano_fs_gamepath();
     check_path_shape(game, "gamepath");
     CHECK(ano_fs_chdir_gamepath(), "chdir to gamepath succeeds");
 
-    // Value semantics: two calls resolve independently to the same path.
+    // Two calls resolve to the same path.
     ano_fspath again = ano_fs_gamepath();
     CHECK(game.length == again.length && strcmp(game.str, again.str) == 0,
           "gamepath is stable across calls");
@@ -55,15 +53,15 @@ static void test_userpath(void)
     ano_fspath user = ano_fs_userpath();
     check_path_shape(user, "userpath");
     if (user.length == 0)
-        return; // shape check already failed loudly; nothing usable to probe
+        return; // shape check already failed
 
-    // Ends with the game name: <root><sep>[.]ANO_GAME_NAME (dot for the Linux convention).
+    // Ends with [.]ANO_GAME_NAME.
     size_t nameLen = strlen(ANO_GAME_NAME);
     CHECK(user.length > nameLen, "path is longer than the game name");
     CHECK(strcmp(user.str + user.length - nameLen, ANO_GAME_NAME) == 0,
           "path ends with ANO_GAME_NAME");
 
-    // The contract: a non-empty result is ready to write into. Prove it with one probe file.
+    // Non-empty result is ready to write: one probe file.
     char probe[MAXPATH + 32];
     snprintf(probe, sizeof probe, "%s%canotest_userpath_probe.tmp", user.str,
 #if defined(_WIN32)
@@ -83,8 +81,7 @@ static void test_userpath(void)
 
 static void test_append_file_api(void)
 {
-    // Absolute scratch dir resolved from the executable's own location at runtime (not a baked
-    // build-machine path), so it holds even before test_gamepath() chdirs -- see main()'s note.
+    // Scratch dir from gamepath (absolute), valid before chdir.
     ano_fspath base = ano_fs_gamepath();
     char dir[512];
     snprintf(dir, sizeof dir, "%s/anotest_filesystem_scratch", base.str);
@@ -112,7 +109,7 @@ static void test_append_file_api(void)
     }
     CHECK(scratch_count_lines(path) == 6, "reopen appended, did not truncate");
 
-    // Trunc: reopen must clear the file, then behave as append.
+    // Trunc: clear then append.
     f = ano_fs_open_trunc(path);
     CHECK(f != NULL, "open_trunc reopens the file");
     if (f != NULL) {
@@ -133,9 +130,7 @@ static void test_append_file_api(void)
 
 int main(void)
 {
-    // Scratch IO first: test_gamepath chdirs away from the launch CWD. test_append_file_api
-    // resolves its scratch dir from ano_fs_gamepath() (absolute), so it stays anchored even
-    // before that chdir -- run in this order to prove that too.
+    // Append test before gamepath: gamepath chdirs away from launch CWD.
     test_append_file_api();
     test_userpath();
     test_gamepath();

@@ -3,15 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for anoptic_text.h: module lifecycle, white-box bake math (binary16,
- * monotone quad splitting, cubic->quad), the Geist ASCII bake against an independent
- * stream-grammar decoder and the audit oracles, the CPU reference
- * rasterizer against FreeType ground truth (including the unclamped-peak oracle and
- * the ghost-pixel sweep), the shaper's golden layout and penOut continuation, the
- * multi-face Runic range bake, color/style runs, and the GPOS PairPos reader (a
- * synthetic table plus the Geist kern oracle).
- * Requires the fonts staged next to the binary (tests/CMakeLists.txt).
- * Exit 0 == pass. Failures print what broke. */
+/* Coverage: lifecycle, bake math (binary16/monotone/cubic), Geist ASCII bake vs stream decoder + audit oracles, CPU ref raster vs FT (peak oracle, ghost sweep), shaper golden + penOut, multi-face Runic bake, style runs, GPOS PairPos (synthetic + Geist kern oracle).
+ * Fonts staged next to binary (tests/CMakeLists.txt). Exit 0 == pass. */
 
 #include <errno.h>
 #include <math.h>
@@ -31,7 +24,8 @@ static int failures = 0;
 #define FONT_PATH      "resources/fonts/Geist/static/Geist-Regular.ttf"
 #define RUNE_FONT_PATH "resources/fonts/NotoSansRunic/NotoSansRunic-Regular.ttf"
 
-// Lifecycle.
+
+/* Lifecycle */
 
 static void expect_version_zero(const char *when)
 {
@@ -52,11 +46,11 @@ static void test_lifecycle(void)
     printf("after init: FreeType %d.%d.%d\n", maj, min, pat);
     CHECK(maj == 2, "FreeType major version is 2");
     CHECK(min >= 13, "FreeType minor version is >= 13 (vendored submodule generation)");
-    ano_text_version(NULL, NULL, NULL); // NULL outputs are a documented no-op
+    ano_text_version(NULL, NULL, NULL); // NULL outs are a no-op
 
     ano_text_shutdown();
     expect_version_zero("after shutdown");
-    ano_text_shutdown(); // double shutdown must be harmless
+    ano_text_shutdown(); // double shutdown harmless
 
     CHECK(ano_text_init() == 0, "re-init after shutdown succeeds");
     ano_text_version(&maj, &min, &pat);
@@ -64,21 +58,21 @@ static void test_lifecycle(void)
     ano_text_shutdown();
 }
 
-// White-box: binary16 conversion.
+/* White-box: binary16 */
 
 static void test_half(void)
 {
-    // Exactly representable values round-trip bit-perfectly.
+    // Representable values round-trip bit-perfect.
     const float exact[] = { 0.0f, 0.5f, 1.0f, -0.25f, 1.5f, -2.0f, 0.109375f, 65504.0f };
     for (size_t i = 0; i < sizeof exact / sizeof *exact; i++)
         CHECK(ano_half_unpack(ano_half_pack(exact[i])) == exact[i],
               "representable value round-trips exactly");
 
-    // Coordinate-range values: relative error within one half ulp, order preserved.
+    // Em envelope: relative error within half ulp, order preserved.
     float prev = -10.0f;
     for (int k = 0; k <= 2000; k++)
     {
-        float v  = (float)(k - 1000) / 333.0f; // [-3, 3], the em coordinate envelope
+        float v  = (float)(k - 1000) / 333.0f; // [-3, 3]
         float rt = ano_half_unpack(ano_half_pack(v));
         CHECK(fabsf(rt - v) <= fabsf(v) / 1024.0f + 1e-7f, "round-trip within half precision");
         CHECK(rt >= prev, "quantization is monotone");
@@ -88,12 +82,12 @@ static void test_half(void)
     CHECK(ano_half_pack(1e9f) == 0x7C00u, "overflow clamps to +inf");
     CHECK(ano_half_pack(-1e9f) == 0xFC00u, "overflow clamps to -inf");
     CHECK(ano_half_unpack(0x7C00u) > 3.0e38f, "+inf unpacks huge (sentinel is unmistakable)");
-    // Subnormal half territory survives the round trip too (never hit by coordinates).
+    // Subnormal round-trip (coords never hit this).
     float tiny = 3.0e-6f;
     CHECK(fabsf(ano_half_unpack(ano_half_pack(tiny)) - tiny) < 1e-7f, "subnormal path sane");
 }
 
-// White-box: monotone splitting and cubic conversion.
+/* White-box: monotone / cubic */
 
 static void check_monotone_quad(const AnoQuad *q, const char *msg)
 {
@@ -114,15 +108,15 @@ static void test_quad_split(void)
 {
     AnoQuad out[3];
 
-    // Already monotone: passes through whole.
+    // Already monotone: pass through whole.
     AnoQuad mono = { .x = { 0.0, 0.2, 1.0 }, .y = { 0.0, 0.5, 1.0 } };
     CHECK(ano_quad_split_monotone(&mono, out) == 1, "monotone quad stays whole");
 
-    // Line-as-quad (exact midpoint control): both axes' quadratic term is exactly zero.
+    // Line-as-quad (midpoint control): quadratic term zero on both axes.
     AnoQuad line = { .x = { 0.0, 1.0, 2.0 }, .y = { 0.25, 0.5, 0.75 } };
     CHECK(ano_quad_split_monotone(&line, out) == 1, "degenerate line quad never splits");
 
-    // One y-extremum at t=0.5: two pieces sharing B(0.5) = (1,1).
+    // One y-extremum at t=0.5: two pieces share B(0.5)=(1,1).
     AnoQuad arch = { .x = { 0.0, 1.0, 2.0 }, .y = { 0.0, 2.0, 0.0 } };
     int n = ano_quad_split_monotone(&arch, out);
     CHECK(n == 2, "single-extremum quad splits in two");
@@ -149,7 +143,7 @@ static void test_quad_split(void)
 
 static void test_cubic(void)
 {
-    // Kappa cubic approximating a unit quarter circle.
+    // Kappa cubic: unit quarter circle.
     const double k = 0.5522847498307936;
     double px[4] = { 1.0, 1.0, k, 0.0 };
     double py[4] = { 0.0, k, 1.0, 1.0 };
@@ -172,11 +166,13 @@ static void test_cubic(void)
     CHECK(ano_cubic_to_quads(px, py, 1e-3, q, 0) == -1, "maxOut < 1 is rejected");
 }
 
-// Bake validation: an independent decoder of the documented stream grammar.
+/* Bake validation */
+
+// Independent stream-grammar decoder.
 
 typedef struct DecodedGlyph {
     float    minX, minY, maxX, maxY;
-    double   shoelace[8];  // chord shoelace per contour (CCW positive)
+    double   shoelace[8];  // chord shoelace per contour (CCW +)
     uint32_t contourCount;
     uint32_t curves;
 } DecodedGlyph;
@@ -184,8 +180,7 @@ typedef struct DecodedGlyph {
 static float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 0xFFFFu)); }
 static float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
 
-// Walks one glyph's stream range, checking grammar, closure, and the monotone sandwich.
-// Returns the stream index just past the glyph (== the next glyph's offset).
+// Walk one glyph stream: grammar, closure, monotone sandwich. Returns index past glyph.
 static uint32_t decode_glyph(const uint32_t *pts, const AnoGlyphEntry *e, DecodedGlyph *d)
 {
     memset(d, 0, sizeof *d);
@@ -224,7 +219,7 @@ static uint32_t decode_glyph(const uint32_t *pts, const AnoGlyphEntry *e, Decode
         float p1x = half_lo(u1), p1y = half_hi(u1);
         float p2x = half_lo(u2), p2y = half_hi(u2);
 
-        // Post-quantization monotone sandwich must hold EXACTLY (the bake clamps).
+        // Post-quant monotone sandwich exact (bake clamps).
         CHECK(p1x >= fminf(p0x, p2x) && p1x <= fmaxf(p0x, p2x), "control inside endpoints (x)");
         CHECK(p1y >= fminf(p0y, p2y) && p1y <= fmaxf(p0y, p2y), "control inside endpoints (y)");
 
@@ -287,8 +282,7 @@ static void validate_bake(const AnoFontBake *b)
         total += e->curveCount;
     }
 
-    // Audit oracle: counts measured on this exact font
-    // file by an independent fontTools implementation, composite glyphs decomposed.
+    // Audit oracle (fontTools, composites decomposed): 1654 monotone curves.
     printf("bake: %u monotone curves across ASCII (audit oracle 1654), %u stream points\n",
            total, b->pointCount);
     CHECK(total == 1654, "total monotone curve count matches the fontTools audit");
@@ -299,7 +293,7 @@ static void validate_bake(const AnoFontBake *b)
     CHECK(b->glyphs[' ' - 32].curveCount == 0, "space is blank");
     CHECK(b->glyphs['@' - 32].curveCount == 63, "'@' matches the audit worst case");
 
-    // Winding convention: fill-right => clockwise outers => negative chord shoelace.
+    // Fill-right: clockwise outers => negative chord shoelace.
     DecodedGlyph H, O;
     decode_glyph(b->points, &b->glyphs['H' - 32], &H);
     CHECK(H.contourCount == 1, "'H' is a single contour");
@@ -314,16 +308,14 @@ static void validate_bake(const AnoFontBake *b)
     }
 }
 
-// Reference rasterizer vs FreeType ground truth.
+/* Reference rasterizer */
 
-#define REF_SCALE 64u      // px per em: big enough that curve detail matters
-#define REF_DIM   160      // per-glyph buffer side, above any 64px glyph
+// vs FreeType ground truth.
 
-// The unclamped-peak oracle, measured on this font. Coverage exceeding 1 comes in TWO
-// forms, both neutralized by the per-glyph clamp: separate same-winding contours
-// overlapping ('# $ + f t') and single contours that SELF-overlap with winding-2
-// pockets ('H 8 @'). '%' was a bbox-proxy false positive, its ink never overlaps.
-// Clean glyphs must also REACH unity (solid interiors).
+#define REF_SCALE 64u      // px per em
+#define REF_DIM   160      // buffer side, above any 64px glyph
+
+// Unclamped-peak oracle: contour overlap (#$+ft), self-overlap (H8@), clean (~1.0).
 static const struct {
     char  g;
     float lo, hi;
@@ -377,9 +369,7 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
         if (maxd > worstMax)
             worstMax = maxd;
 
-        // Coverage agreement with FreeType. Observed worst on this font: rms 2.71,
-        // max 53, on winding-2 pocket boundaries where clamped coverage and the
-        // nonzero fill rule diverge. Thresholds leave margin for platform variance.
+        // FT coverage agreement. Thresholds leave platform margin (worst ~rms 2.71 / max 53).
         CHECK(rms <= 4.0, "coverage RMS within threshold of FreeType");
         CHECK(maxd <= 64, "per-pixel coverage deviation bounded");
 
@@ -390,18 +380,14 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
            sizeof peakOracle / sizeof *peakOracle);
 }
 
-// Ghost-pixel sweep: coverage leaking outside the ink.
+/* Ghost-pixel sweep */
 
-// Regression net for the step-6 band artifact: solve_mono's former chord fallback
-// mis-crossed shallow quads, leaving faint bands outside the ink ('v w ( 2') that RMS
-// thresholds absorbed. This sweep renders EVERY baked glyph on a padded grid and flags
-// any pixel with coverage >= GHOST_MIN whose 3x3 FreeType neighborhood is all zero.
-// Honest AA partials always touch ink, phantom coverage doesn't. Two scales because
-// the crossing error is a fixed em quantity while the window shrinks with 1/S.
+// Coverage outside ink.
+// Every baked glyph on padded grid: flag coverage >= GHOST_MIN with zero FT 3x3 neighborhood. Two scales.
 
-#define GHOST_MIN 3   // flag isolated coverage at or above this (post-fix residual is 0)
-#define GHOST_PAD 8   // grid margin past the FT bitmap
-#define GHOST_DIM 320 // per-glyph buffer side, fits any 200px glyph plus padding
+#define GHOST_MIN 3   // isolated coverage floor (post-fix residual is 0)
+#define GHOST_PAD 8   // grid margin past FT bitmap
+#define GHOST_DIM 320 // buffer side: any 200px glyph + pad
 
 static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
 {
@@ -437,7 +423,7 @@ static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
                     int v = ours[r * ow + c];
                     if (v < GHOST_MIN)
                         continue;
-                    // FT coordinates of this pixel, any ink in the 3x3 absolves it.
+                    // FT coords: any ink in 3x3 absolves.
                     int fy = r - GHOST_PAD, fx = c - GHOST_PAD;
                     int ink = 0;
                     for (int dy = -1; dy <= 1 && !ink; dy++)
@@ -471,10 +457,11 @@ static void test_ghost_pixels(AnoFontId font, const AnoFontBake *b)
     }
 }
 
-// GPOS PairPos parser (shaper v1), white-box against a hand-assembled synthetic table.
+/* GPOS PairPos */
 
-// Byte cursor for big-endian table assembly. Every section boundary is asserted so a
-// layout mistake fails here, not as a confusing parser result.
+// White-box synthetic table.
+
+// Big-endian table assembly. Section boundaries asserted.
 static uint32_t put16(uint8_t *b, uint32_t off, uint32_t v)
 {
     b[off] = (uint8_t)(v >> 8);
@@ -488,12 +475,11 @@ static uint32_t put32(uint8_t *b, uint32_t off, uint32_t v)
     return put16(b, off, v & 0xFFFFu);
 }
 
-// Layout under test: 'latn' script, 'kern' feature with three lookups.
-//   L0: fmt1 (pair 5,7 = -50) then fmt2 fallback (classes (5|6, 7|8) = -30, covered
-//       first glyph with class-0 second = -70), first applying subtable wins.
+// Layout: 'latn' + 'kern', three lookups.
+//   L0: fmt1 (5,7=-50) then fmt2 fallback ((5|6,7|8)=-30, class-0 second=-70); first subtable wins.
 //   L1: fmt2 (+10 for (5,7)), lookups accumulate.
-//   L2: type-9 Extension wrapping fmt1 (pair 9,5 = -25).
-// Coverage fmt1+fmt2 and ClassDef fmt1+fmt2 all appear at least once.
+//   L2: type-9 Extension wrapping fmt1 (9,5=-25).
+// Coverage fmt1+fmt2 and ClassDef fmt1+fmt2 each appear once.
 static void test_gpos_synthetic(void)
 {
     enum { SL = 10, FL = 30, LL = 48, TOTAL = 238 };
@@ -519,7 +505,7 @@ static void test_gpos_synthetic(void)
 
     o = put16(t, o, 3);                                 // LookupList: 3 lookups
     o = put16(t, o, 8); o = put16(t, o, 96); o = put16(t, o, 150);
-    // L0 @ LL+8: type 2, 2 subtables at +10 (fmt1) and +34 (fmt2).
+    // L0 @ LL+8: type 2, subtables +10 (fmt1) and +34 (fmt2).
     o = put16(t, o, 2); o = put16(t, o, 0); o = put16(t, o, 2);
     o = put16(t, o, 10); o = put16(t, o, 34);
     o = put16(t, o, 1); o = put16(t, o, 12);            // S0a: fmt1, cov @ +12
@@ -540,7 +526,7 @@ static void test_gpos_synthetic(void)
     o = put16(t, o, 2); o = put16(t, o, 1);             // cd2 fmt2: 1 range
     o = put16(t, o, 7); o = put16(t, o, 8); o = put16(t, o, 1);
     CHECK(o == LL + 96, "synthetic lookup 0 lays out");
-    // L1 @ LL+96: type 2, 1 subtable (fmt2, +10 for class pair (1,1)).
+    // L1 @ LL+96: type 2, one fmt2 subtable (+10 for class pair (1,1)).
     o = put16(t, o, 2); o = put16(t, o, 0); o = put16(t, o, 1);
     o = put16(t, o, 8);
     o = put16(t, o, 2); o = put16(t, o, 24);            // S1: fmt2, cov @ +24
@@ -553,7 +539,7 @@ static void test_gpos_synthetic(void)
     o = put16(t, o, 1); o = put16(t, o, 5); o = put16(t, o, 1); o = put16(t, o, 1);
     o = put16(t, o, 1); o = put16(t, o, 7); o = put16(t, o, 1); o = put16(t, o, 1);
     CHECK(o == LL + 150, "synthetic lookup 1 lays out");
-    // L2 @ LL+150: type 9 Extension -> fmt1 (pair 9,5 = -25) at +8.
+    // L2 @ LL+150: type 9 Extension -> fmt1 (9,5=-25) at +8.
     o = put16(t, o, 9); o = put16(t, o, 0); o = put16(t, o, 1);
     o = put16(t, o, 8);
     o = put16(t, o, 1); o = put16(t, o, 2); o = put32(t, o, 8); // ext: type 2 @ +8
@@ -567,7 +553,7 @@ static void test_gpos_synthetic(void)
     uint32_t slotGids[10];
     for (uint32_t i = 0; i < 10; i++)
         slotGids[i] = i;
-    slotGids[3] = 0xFFFFFFFFu; // absent slot: must never touch the matrix
+    slotGids[3] = 0xFFFFFFFFu; // absent slot: never touches matrix
     int32_t dense[100] = { 0 };
     CHECK(ano_gpos_extract_kerns(t, TOTAL, slotGids, 10, dense) == 0,
           "synthetic table parses");
@@ -598,8 +584,9 @@ static void test_gpos_synthetic(void)
     CHECK(any == 0, "non-kern features contribute no pairs");
 }
 
-// The Geist kern oracle (fontTools audit of GPOS 'kern' for latn, ASCII x ASCII):
-// 2891 nonzero pairs summing to -63296 font units, spot-checked on classic pairs.
+/* Geist kern oracle */
+
+// fontTools GPOS 'kern' latn, ASCII x ASCII: 2891 pairs, sum -63296 FU.
 static void test_kern_oracle(const AnoFontBake *b)
 {
     CHECK(b->kernCount == 2891, "ASCII kern pair count matches the fontTools audit");
@@ -614,7 +601,7 @@ static void test_kern_oracle(const AnoFontBake *b)
     CHECK(sum == -63296, "kern value sum matches the fontTools audit");
     CHECK(sorted, "pair table is strictly key-sorted (binary-search precondition)");
 
-    double invUpem = 1.0 / (double)b->upem; // mirrors the bake's conversion exactly
+    double invUpem = 1.0 / (double)b->upem; // mirrors bake conversion
     static const struct { char l, r; int32_t funits; } spot[] = {
         { 'A', 'V', -106 }, { 'V', 'A', -106 }, { 'T', 'o', -80 }, { 'L', 'T', -140 },
         { 'Y', 'o', -70 },  { 'r', '.', -60 },  { 'F', '.', -80 }, { 'A', 'v', -60 },
@@ -631,6 +618,9 @@ static void test_kern_oracle(const AnoFontBake *b)
     CHECK(ano_text_kern(NULL, 0, 0) == 0.0f, "NULL bake kerns zero");
 }
 
+
+/* Shaper */
+
 static void test_shaper(const AnoFontBake *b)
 {
     const float S = 32.0f;
@@ -643,8 +633,8 @@ static void test_shaper(const AnoFontBake *b)
     uint32_t n = ano_text_shape_lit(b, "AV", S, org, col, inst, 8, NULL);
     CHECK(n == 2, "AV emits two instances");
     CHECK(inst[0].origin[0] == org[0] && inst[0].origin[1] == org[1], "first glyph at the origin");
-    float expX = org[0] + b->glyphs['A' - 32].advance * S; // mirrors the shaper's op order
-    expX += ano_text_kern(b, 'A' - 32, 'V' - 32) * S;      // ...including the pair kern
+    float expX = org[0] + b->glyphs['A' - 32].advance * S; // shaper op order
+    expX += ano_text_kern(b, 'A' - 32, 'V' - 32) * S;      // including pair kern
     CHECK(inst[1].origin[0] == expX && inst[1].origin[1] == org[1], "kerned advance is exact");
     CHECK(inst[1].origin[0] < org[0] + b->glyphs['A' - 32].advance * S,
           "AV actually kerns tighter than the bare advance");
@@ -657,7 +647,7 @@ static void test_shaper(const AnoFontBake *b)
     n = ano_text_shape_lit(b, "A B", S, org, col, inst, 8, NULL);
     CHECK(n == 2, "space emits nothing");
     expX = org[0] + b->glyphs['A' - 32].advance * S;
-    expX += ano_text_kern(b, 'A' - 32, 0) * S;  // blanks join the pair chain (zero here)
+    expX += ano_text_kern(b, 'A' - 32, 0) * S;  // blanks join pair chain (zero here)
     expX += b->glyphs[0].advance * S;           // slot 0 = space
     expX += ano_text_kern(b, 0, 'B' - 32) * S;
     CHECK(inst[1].origin[0] == expX, "space still advances the pen");
@@ -670,8 +660,7 @@ static void test_shaper(const AnoFontBake *b)
     CHECK(pen[0] == org[0] + b->glyphs['B' - 32].advance * S && pen[1] == inst[1].origin[1],
           "penOut lands after the last glyph");
 
-    // Splitting a run and continuing from penOut is bitwise identical when the split
-    // point doesn't kern. Geist kerns 'A '/' B' zero, pinned by the kern oracle.
+    // penOut continuation bit-identical when split point doesn't kern (Geist 'A '/' B' = 0).
     AnoGlyphInstance whole[2], second[1];
     ano_text_shape_lit(b, "A B", S, org, col, whole, 2, NULL);
     ano_text_shape_lit(b, "A ", S, org, col, inst, 8, pen);
@@ -691,13 +680,16 @@ static void test_shaper(const AnoFontBake *b)
     float w = -1.0f, h = -1.0f;
     ano_text_measure_lit(b, "AB\nA", S, &w, &h);
     float lineAB = b->glyphs['A' - 32].advance * S;
-    lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // mirrors measure's op order
+    lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // measure op order
     lineAB += b->glyphs['B' - 32].advance * S;
     CHECK(w == lineAB, "measure width is the widest line (kerned)");
     CHECK(h == (2.0f * b->lineHeight) * S, "measure height covers both lines");
     ano_text_measure(b, anostr_empty(), S, &w, &h);
     CHECK(w == 0.0f && h == 0.0f, "empty text measures zero");
 }
+
+
+/* Style runs */
 
 static void test_shaper_runs(const AnoFontBake *b)
 {
@@ -707,8 +699,7 @@ static void test_shaper_runs(const AnoFontBake *b)
     AnoGlyphInstance plain[8], styled[8];
     float penA[2], penB[2];
 
-    // Same-size color splits landing INSIDE kerning pairs: positions/slots/penOut are
-    // bit-identical to the unsplit shape while each glyph wears its run's color.
+    // Same-size color splits inside kern pairs: positions/slots/penOut bit-identical, colors per run.
     uint32_t n = ano_text_shape_lit(b, "AV LT", S, org, red, plain, 8, penA);
     const AnoTextRun split[3] = {
         { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } }, // "A
@@ -727,8 +718,7 @@ static void test_shaper_runs(const AnoFontBake *b)
               && styled[3].color[1] == 1.0f,
           "each glyph wears its run's color");
 
-    // An empty run, even at another size, can't break the bridge. The chain compares
-    // against the size that SHAPED the previous glyph, not the previous run.
+    // Empty run (any size) invisible to pair chain. Chain compares size that SHAPED prev glyph.
     const AnoTextRun hollow[3] = {
         { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },
         { 0, 2.0f * S, { 1.0f, 1.0f, 1.0f, 1.0f } },
@@ -738,8 +728,7 @@ static void test_shaper_runs(const AnoFontBake *b)
               && styled[1].origin[0] == plain[1].origin[0],
           "an empty run is invisible to the pair chain");
 
-    // A SIZE boundary resets the chain: the right glyph lands at the bare advance and
-    // both instances carry their own run's scale in the inverse.
+    // SIZE boundary resets chain: right glyph at bare advance, each inv carries its run scale.
     const AnoTextRun sized[2] = {
         { 1, S, { 1.0f, 0.0f, 0.0f, 1.0f } },
         { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },
@@ -752,7 +741,7 @@ static void test_shaper_runs(const AnoFontBake *b)
               && styled[1].inv[3] == -1.0f / (2.0f * S),
           "per-run size lands in the instance inverse");
 
-    // '\n' steps by the lineHeight of the run holding the newline itself.
+    // '\n' steps by lineHeight of the run holding the newline.
     const AnoTextRun nlFirst[2] = {
         { 2, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A\n"
         { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "B"
@@ -768,11 +757,10 @@ static void test_shaper_runs(const AnoFontBake *b)
               && styled[1].origin[1] == org[1] + b->lineHeight * (2.0f * S),
           "a newline owned by the second run steps at ITS size");
 
-    // A boundary inside a multi-byte sequence: the lead byte's run styles the whole
-    // codepoint (here an unbaked e-acute's gap advance), the next run picks up after.
+    // Multi-byte straddle: lead byte's run styles whole codepoint; next run picks up after.
     const AnoTextRun straddle[2] = {
-        { 2, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A" + the C3 lead byte
-        { 2, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // the A9 tail + "B"
+        { 2, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "A" + C3 lead
+        { 2, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // A9 tail + "B"
     };
     CHECK(ano_text_shape_runs_lit(b, "A\xC3\xA9" "B", straddle, 2, org, styled, 8, NULL) == 2,
           "a straddled codepoint never splits");
@@ -781,7 +769,7 @@ static void test_shaper_runs(const AnoFontBake *b)
     CHECK(styled[1].color[2] == 1.0f && styled[1].inv[0] == 1.0f / (2.0f * S),
           "the next codepoint takes the next run's style");
 
-    // Sizing call, cap truncation, and validation mirror ano_text_shape.
+    // Count/cap/validation mirror ano_text_shape.
     CHECK(ano_text_shape_runs_lit(b, "AV LT", split, 3, org, NULL, 0, NULL) == n,
           "count mode needs no buffer");
     CHECK(ano_text_shape_runs_lit(b, "AV LT", split, 3, org, styled, 1, NULL) == n,
@@ -793,8 +781,7 @@ static void test_shaper_runs(const AnoFontBake *b)
               && ano_text_shape_runs_lit(b, "AV", split, 3, org, styled, 8, NULL) == 0,
           "zero size, NULL runs, zero count, run-sum/length mismatch all reject");
 
-    // measure_runs: widest kerned line, height as the sum of per-line steps.
-    // Uniform-run width matches ano_text_measure.
+    // measure_runs: max kerned line width; height = sum of per-line steps. Uniform == ano_text_measure.
     const AnoTextRun mixed[2] = {
         { 3, S, { 1.0f, 0.0f, 0.0f, 1.0f } },          // "AB\n"
         { 1, 2.0f * S, { 0.0f, 0.0f, 1.0f, 1.0f } },   // "A"
@@ -802,7 +789,7 @@ static void test_shaper_runs(const AnoFontBake *b)
     float w = -1.0f, h = -1.0f;
     ano_text_measure_runs_lit(b, "AB\nA", mixed, 2, &w, &h);
     float lineAB = b->glyphs['A' - 32].advance * S;
-    lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // mirrors the core's op order
+    lineAB += ano_text_kern(b, 'A' - 32, 'B' - 32) * S; // core op order
     lineAB += b->glyphs['B' - 32].advance * S;
     CHECK(w == fmaxf(lineAB, b->glyphs['A' - 32].advance * (2.0f * S)),
           "runs width is the widest line across sizes");
@@ -818,10 +805,9 @@ static void test_shaper_runs(const AnoFontBake *b)
     CHECK(w == 0.0f && h == 0.0f, "empty runs measure zero");
 }
 
-// Multi-range multi-face bake: Geist ASCII + Noto Sans Runic in one directory.
-// Slot bases chain in range order, kerning never crosses faces, and the argument
-// contract rejects unsorted/overlapping range lists.
+/* Multi-face bake */
 
+// Geist ASCII + Noto Runic. Slot bases chain in range order. Kern never crosses faces. Unsorted/overlapping ranges reject.
 static void test_runic_bake(AnoFontId geist, AnoFontId runic, mi_heap_t *heap)
 {
     const AnoBakeRange ranges[2] = {
@@ -840,7 +826,7 @@ static void test_runic_bake(AnoFontId geist, AnoFontId runic, mi_heap_t *heap)
               && ano_text_bake_slot(&b, 0x16F9) == ANO_TEXT_SLOT_NONE,
           "the inter-range gap and the tail miss");
 
-    // Every Elder Futhark rune bakes with real ink from the Noto face.
+    // Every Elder Futhark rune has ink from Noto.
     uint32_t inked = 0;
     for (uint32_t cp = 0x16A0; cp <= 0x16F8; cp++)
     {
@@ -851,8 +837,7 @@ static void test_runic_bake(AnoFontId geist, AnoFontId runic, mi_heap_t *heap)
     printf("runic bake: %u of 89 runes carry ink\n", inked);
     CHECK(inked == 89, "Noto Sans Runic covers the whole Runic block");
 
-    // Cross-script shaping: "A" + fehu + "V" emits three instances.
-    // The A|V pair kern must NOT apply across the rune.
+    // Cross-script: "A" + fehu + "V". A|V kern must not apply across the rune.
     const float S = 32.0f;
     const float org[2] = { 0.0f, 0.0f };
     const float col[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -864,7 +849,7 @@ static void test_runic_bake(AnoFontId geist, AnoFontId runic, mi_heap_t *heap)
     CHECK(inst[2].origin[0] == b.glyphs['A' - 32].advance * S + fehuAdv,
           "advances accumulate across faces with no phantom cross-face kern");
 
-    // The contract: unsorted or overlapping range lists reject.
+    // Unsorted or overlapping ranges reject.
     const AnoBakeRange unsorted[2] = {
         { .font = runic, .first = 0x16A0, .last = 0x16F8 },
         { .font = geist, .first = 0x0020, .last = 0x007E },
@@ -918,7 +903,7 @@ int main(void)
     test_shaper_runs(&bake);
     test_runic_bake(geist, runic, heapA);
 
-    // Determinism: a second bake is bit-identical (double math, fixed iteration order).
+    // Determinism: second bake bit-identical.
     AnoFontBake again = { 0 };
     CHECK(ano_text_font_bake(geist, 32, 126, heapB, &again) == 0, "second bake succeeds");
     CHECK(again.pointCount == bake.pointCount && again.glyphCount == bake.glyphCount

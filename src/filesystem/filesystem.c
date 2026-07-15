@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Platform-agnostic half of the filesystem module: session stamp and log directory.
+// Common TU: session stamp and log directory.
 
 #include "anoptic_filesystem.h"
 #include "filesystem/filesystem_internal.h"
@@ -14,7 +14,10 @@
 #include <stdio.h>
 #include <string.h>
 
-// One stamp per process, latched by the first caller. A racing loser spins on the winner.
+
+/* Session Stamp */
+
+// One stamp per process, latched by first caller. Racing loser spins on winner.
 // Output: "YYYY-MM-DD_XXXXXX", static storage.
 const char *ano_fs_session_stamp(void)
 {
@@ -25,7 +28,7 @@ const char *ano_fs_session_stamp(void)
         if (atomic_compare_exchange_strong_explicit(&state, &expect, 1,
                 memory_order_acquire, memory_order_acquire)) {
             ano_datetime d = ano_localtime(ano_timestamp_unix());
-            unsigned ctr = (unsigned)(ano_timestamp_ticks() % 1000000u);  // low 6 digits of the raw counter
+            unsigned ctr = (unsigned)(ano_timestamp_ticks() % 1000000u);  // low 6 digits
             snprintf(stamp, sizeof stamp, "%04d-%02d-%02d_%06u", d.year, d.month, d.day, ctr);
             atomic_store_explicit(&state, 2, memory_order_release);
         } else {
@@ -36,13 +39,16 @@ const char *ano_fs_session_stamp(void)
     return stamp;
 }
 
-// "<gamepath>/logs", created if absent. Contract in the public header.
+
+/* Log Path */
+
+// "<gamepath>/logs", created if absent.
 ano_fspath ano_fs_logpath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
     if (dir.length == 0 || dir.length + 5 >= MAXPATH)
         return (ano_fspath){0};
-    memcpy(dir.str + dir.length, "/logs", 6);   // the 6 includes the NUL
+    memcpy(dir.str + dir.length, "/logs", 6);   // 6 includes NUL
     dir.length += 5;
     if (fs_mkdir(dir.str) != 0)
         return (ano_fspath){0};

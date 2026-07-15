@@ -12,7 +12,7 @@
   #   nix build .#tests-asan|tests-tsan    sanitized non-GPU suite        (Linux)
   #   nix build .#tests-full               full suite incl. Vulkan on lavapipe (Linux, experimental)
   #   nix flake check                      all of the host's suites at once
-  #
+
   # Impure side — your working tree, output in ./build/<label>/ like build.sh:
   #   nix run [-- N]                       dev-env wrapper around ./build.sh N (default 1):
   #                                        halts if submodule gitlinks disagree with the pins,
@@ -20,7 +20,7 @@
   #                                        then launches the engine for N=1|2 (renderer) or N=3
   #                                        (headless console, runs in WSL too); test profiles run ctest
   #   nix develop [.#windows]              the same env, you drive
-  #
+
   # git flakes see tracked files only: `git add` new files or nix will not.
   description = "Anoptic Engine — C23 game engine (Linux, macOS, Windows via MinGW cross)";
 
@@ -84,8 +84,7 @@
         else
           null;
 
-      # libdecor without its GTK plugin: the cairo plugin draws the decorations and GTK3's
-      # ~290 MiB closure stays out of the engine's runtime.
+      # libdecor without GTK plugin.
       libdecorSlim =
         pkgs:
         pkgs.libdecor.overrideAttrs (o: {
@@ -121,14 +120,12 @@
         fi
       '';
 
-      # One engine derivation for every permutation.
-      # pkgs/stdenv: host package set + compiler (native clang+lld, or MinGW cross).
-      # variant: qualified attr name, becomes the pname suffix.
-      # buildType: Release | Debug. headless: no renderer, no GLFW/Vulkan.
-      # wayland/x11: Linux renderer backends (both on = runtime-selected).
-      # tests: ANOPTIC_TESTS + ctest in checkPhase. sanitize: asan | tsan | "".
-      # softwareVulkan: point the loader at mesa's lavapipe ICD (sandboxed GPU tests).
-      # Invariant: install ships bin/anopticengine + bin/resources/shaders.
+      # mkEngine
+      # One derivation per permutation.
+      # pkgs/stdenv: host package set + compiler. variant: pname suffix. buildType: Release|Debug.
+      # headless: no renderer/GLFW/Vulkan. wayland/x11: Linux backends (both on = runtime-selected).
+      # tests: ANOPTIC_TESTS + ctest in checkPhase. sanitize: asan|tsan|"". softwareVulkan: lavapipe ICD.
+      # Install ships bin/anopticengine + bin/resources/shaders.
       mkEngine =
         {
           pkgs,
@@ -161,12 +158,9 @@
               ":"
               "${vvl}/share/vulkan/explicit_layer.d"
             ];
-          # Render libs on Linux: GLFW 3.4 links none of them — every one is dlopen()ed at
-          # runtime (see postFixup). Doubling as buildInputs supplies headers plus the dev-shell
-          # RUNPATH, and libGL covers glfw3.h's <GL/gl.h>. Xext/Xrender/Xxf86vm and libdecor are
-          # GLFW-optional; absent they cost shaped windows, transparency, gamma, and Wayland
-          # decorations, so ship them.
-          # No `with pkgs`: the wayland parameter shadows pkgs.wayland.
+          # Linux render libs: GLFW 3.4 dlopen()s them (never DT_NEEDED). buildInputs = headers + dev-shell RUNPATH; libGL for glfw3.h.
+          # Ship optional Xext/Xrender/Xxf86vm/libdecor (shaped windows, transparency, gamma, Wayland decorations).
+          # No `with pkgs`: wayland param shadows pkgs.wayland.
           linuxRenderLibs = lib.optionals (renderer && host.isLinux) (
             [ pkgs.libGL ]
             ++ lib.optionals x11 (
@@ -238,8 +232,7 @@
           hardeningDisable = lib.optionals isDebug fortifyOff;
 
           doCheck = tests;
-          # ano_fs_userpath() needs a HOME (plus the macOS Application Support parents).
-          # until-pass:2 absorbs sleep-precision flakes.
+          # HOME for ano_fs_userpath. until-pass:2 for sleep flakes.
           checkPhase = ''
             runHook preCheck
             export HOME="$TMPDIR/anoptic-home"
@@ -272,11 +265,9 @@
             ''
           );
 
-          # GLFW 3.4 dlopen()s libX11/libwayland/libxkbcommon at runtime, so they never enter
-          # DT_NEEDED and fixupPhase's --shrink-rpath prunes their store paths — glfwInit() then
-          # fails on the pure artifact. Re-add them post-shrink: the RUNPATH a dev-shell build.sh
-          # binary keeps unshrunk. patchelf ships in the Linux stdenv; run it before wrapProgram
-          # so the ELF, not its shell wrapper, is patched.
+          # postFixup
+          # GLFW dlopen libs never enter DT_NEEDED; shrink-rpath would break glfwInit. Re-add RUNPATH. patchelf before wrapProgram (patch ELF, not wrapper).
+          # wrapArgs: VK_ICD_FILENAMES (MoltenVK) / VK_LAYER_PATH (Debug). Binary self-locates resources via /proc/self/exe.
           postFixup =
             lib.optionalString (linuxRenderLibs != [ ]) ''
               patchelf --add-rpath "${lib.makeLibraryPath linuxRenderLibs}" "$out/bin/anopticengine"
@@ -390,7 +381,7 @@
             w // { release-wsl = w.release-windows-x64; }
           );
 
-          # Host-resolved short names.
+          # Aliases (host-resolved short names)
           aliases = {
             default = native."release-${hostTag}";
             release = native."release-${hostTag}";
@@ -400,9 +391,9 @@
             headless = native."release-headless-${hostTag}";
           };
 
-          # Sandbox test suites. Building one runs it. Sanitized suites run headless.
-          # GPU-real sanitizer runs are `nix run -- 6|7`.
-          # tests-full (experimental): full suite incl. Vulkan device tests on lavapipe.
+          # Checks
+          # Sandbox test suites (build = run). Sanitized = headless. GPU sanitizers: `nix run -- 6|7`.
+          # tests-full: lavapipe Vulkan (experimental).
           checks = mkVariants mkHost (
             {
               tests-headless = {
@@ -432,8 +423,7 @@
             }
           );
 
-          # nix run [-- N]: the impure entry. Fatal pin check, submodule/asset supply,
-          # then ./build.sh N in the dev shell.
+          # nix run [-- N]: impure entry. Fatal pin check, submodule/asset supply, then ./build.sh N.
           runWrapper = pkgs.writeShellApplication {
             name = "anoptic-build";
             runtimeInputs = [
@@ -494,13 +484,8 @@
               # Build the requested profile in the dev shell.
               nix develop "$root" --command ./build.sh "$mode"
 
-              # Launch the freshly built engine for the plain build profiles: renderer (1|2) and
-              # headless console (3). Profiles 4-8 already ran their suite inside build.sh, so
-              # there is nothing to launch. build_dir mirrors build.sh's mode->dir mapping; the
-              # binary self-locates its resources via /proc/self/exe, and the dev shell supplies
-              # VK_ICD_FILENAMES (MoltenVK) and VK_LAYER_PATH (Debug validation). Renderer builds
-              # have no display target inside WSL, so 1|2 stop after building there; the headless
-              # engine needs neither display nor GPU and launches anywhere.
+              # Launch modes 1|2|3 after build (4-8 already ran ctest). Resources via /proc/self/exe. Dev shell supplies VK_ICD_FILENAMES (MoltenVK) / VK_LAYER_PATH (Debug).
+              # WSL has no display: 1|2 stop after build; headless (3) launches anywhere.
               case "$mode" in
                 1) build_dir="Release" ;;
                 2) build_dir="Debug" ;;

@@ -7,17 +7,14 @@
 #include "vulkan_backend/vulkanConfig.h"
 
 
-// Static parameters
-																// "Nothing selected" value
-// preferredMsaa: 4x default (review finding 5) — the visual sweet spot; the old behavior
-// (unconditional device max, 8x on desktop) taxed every raster pass with ~2x the sample work.
+// Static parameters. preferredMode all-bits = "nothing selected". preferredMsaa default 4x.
 static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = 0b111111111, .preferredMsaa = 4};
 
 static WindowParameters windowParameters = {.width = 800, .height = 600, .monitorIndex = -1, .borderless = false};
 
 /* If an API function isn't here, it's probably implemented in vulkanMaster.c */
 
-// Write functions
+/* Write Functions */
 
 bool requestDevice(char* deviceName)
 {
@@ -56,7 +53,7 @@ bool setBorderless(bool borderless)
 	return true;
 }
 
-// Read functions
+/* Read Functions */
 
 char* getChosenDevice()
 {
@@ -89,7 +86,7 @@ bool getChosenBorderless()
 	return windowParameters.borderless;
 }
 
-// Active functions
+/* Active Functions */
 
 bool updateWindow(GLFWwindow *window)
 {

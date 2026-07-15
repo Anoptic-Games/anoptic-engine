@@ -3,12 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The graphics ingest: cgltf and stb_image live HERE and nowhere else. All file bytes
-// arrive through the resource namespace (cgltf's file callback routes through the
-// mount walk); every parse-time allocation lands in a monotonic staging arena over a
-// scoped heap, winked out when ingest returns. The conditioned scene is one
-// self-contained offset-based block (load-in-place shaped, for the step-7 bake)
-// adopted into the registry under "<source>#gfx".
+// Graphics ingest: cgltf and stb_image live HERE only. Bytes arrive through the namespace.
+// Parse allocs land in a monotonic staging arena over a scoped heap, winked on return.
+// Conditioned scene is one offset-based block adopted under "<source>#gfx".
 
 #include <anoptic_res_graphics.h>
 
@@ -34,14 +31,12 @@
 #include <stb_image.h>
 #pragma GCC diagnostic pop
 
-// ---------------------------------------------------------------------------------------------
-// The extension descriptor (M2). Graphics owns every kind the old core suffix switch used
-// to classify -- shader, font, encoded image -- plus its own conditioned/derived kinds.
-// classify() is that switch, verbatim, now living with its owner. derive/validate/deps_of/
-// share_policy land with M9/M11; NULL is a declared absence, not a stub lie.
+/* Extension descriptor */
 
-// Suffix classification. Inputs: a validated logical path and its length. Output: the
-// owning fourcc, or 0 when this extension does not claim the path.
+// Graphics owns shader/font/encoded-image classify plus conditioned kinds.
+// derive/validate/deps_of/share_policy are NULL (declared absence).
+
+// Suffix classification. Inputs: validated logical path and length. Output: owning fourcc, or 0.
 static uint32_t gfx_classify(const char *logical, size_t len)
 {
     (void)len;
@@ -73,18 +68,15 @@ static const res_ext GFX_EXT = {
     .classify = gfx_classify,
 };
 
-// Registration hook, called by res_registry_init before res_ext_freeze(). Declared by an
-// extern in the registry rather than a header: every .h under src/resources/ is frozen at
-// W0, and the extension roster call belongs to the W6 graphics split (res_gfx_ext.c).
+// Registration hook, called by res_registry_init before res_ext_freeze().
 void res_gfx_register_ext(void)
 {
     (void)res_ext_register(&GFX_EXT);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The scene block: header + arrays at 16-aligned offsets, everything relative to the
-// block base. Byte-deterministic (zero-filled before writing) so the future bake can
-// demand byte-identical output.
+/* Scene block */
+
+// Header + arrays at 16-aligned offsets, relative to block base. Byte-deterministic.
 
 #define SCENE_MAGIC   0x58464752u   // "RGFX"
 #define SCENE_VERSION 1u
@@ -100,8 +92,9 @@ typedef struct scene_hdr {
 
 static inline uint64_t align16(uint64_t v) { return (v + 15u) & ~UINT64_C(15); }
 
-// ---------------------------------------------------------------------------------------------
-// Path plumbing: the glTF's own logical directory is the base for every URI.
+/* Path plumbing */
+
+// The glTF's own logical directory is the base for every URI.
 
 // "models/a/b.gltf" -> "models/a/" (empty for a root-level file). out holds MAXPATH.
 static size_t dir_of(const char *logical, char *out)
@@ -117,8 +110,7 @@ static size_t dir_of(const char *logical, char *out)
     return n;
 }
 
-// Collapse "./" and "seg/../" segments in place. Returns the new length, or 0 when the
-// path escapes its root ("../" underflow) or ends empty.
+// Collapse "./" and "seg/../" in place. Returns new length, or 0 on root escape or empty.
 static size_t path_collapse(char *p)
 {
     size_t len = strlen(p);
@@ -172,9 +164,9 @@ static int gfx_slurp(mi_heap_t *heap, const char *logical, void **out, size_t *o
     return -1;
 }
 
-// ---------------------------------------------------------------------------------------------
-// cgltf hooks: allocations bump through the arena (free is a no-op; the arena winks
-// out), file reads run through the namespace into the scoped scratch heap.
+/* cgltf hooks */
+
+// Allocs bump the arena (free is no-op). File reads go through the namespace into scratch.
 
 typedef struct ingest_ctx {
     mi_heap_t         *scratch;
@@ -227,8 +219,9 @@ static void cg_release(const struct cgltf_memory_options *memory_options,
     (void)size;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Material conditioning: pure file truth.
+/* Material conditioning */
+
+// Pure file truth.
 
 static uint32_t material_features(const cgltf_material *m)
 {
@@ -379,8 +372,7 @@ static void mark_srgb(const cgltf_data *data, anoresgfx_image *images)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Ingest.
+/* Ingest */
 
 anores_t ano_resgfx_model(ano_res_lifetime lifetime, const ano_res_read *read, anores_t src)
 {
@@ -642,8 +634,7 @@ anores_t ano_resgfx_model(ano_res_lifetime lifetime, const ano_res_read *read, a
     return adopted;
 }   // scratch heap dies here: cgltf data, buffers, and the arena wink out
 
-// ---------------------------------------------------------------------------------------------
-// Serving.
+/* Serving */
 
 anoresgfx_scene ano_resgfx_scene(const ano_res_read *read, anores_t scene)
 {
@@ -726,10 +717,7 @@ anoresgfx_pixels ano_resgfx_image(ano_res_lifetime lifetime, const ano_res_read 
         .provenance = RES_PROVENANCE_DECODED,
         .alignment = _Alignof(max_align_t),
     };
-    // TODO(W6, M12): manager-owned pixels -- STBI_MALLOC/REALLOC/FREE route into the staging
-    // arena, decode then copy ONCE into the planned home, and res_account_copy charges that
-    // copy honestly. This external-allocation charge is never reversed, which is why
-    // `allocations == frees at shutdown` cannot be an oracle yet.
+    // External alloc charge is never reversed. Caller frees rgba with ano_aligned_free.
     res_registry_external_allocation(&plan, pixel_bytes);
     px.rgba   = rgba;
     px.width  = (uint32_t)w;

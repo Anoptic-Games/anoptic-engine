@@ -24,23 +24,18 @@
 
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
-	// Per-view sets (global, light-cull, tonemap) scale by ANO_VIEW_COUNT, view-independent (cull, update, scatter) are one per frame.
+	// Per-view sets x ANO_VIEW_COUNT; cull/update/scatter one per frame.
 	VkDescriptorPoolSize poolSize[5] = {};
 	poolSize[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	// +1u shadow geom set binding 3 (packed sampling viewProjs read as UBO).
 	poolSize[0].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (2u * ANO_VIEW_COUNT + 4u + 1u);
-	// Shadows (audit 4.7) add per frame: cull binding 9 (1 SSBO) + shadowsetup set (5 SSBO) + shadow geom set (2 SSBO + 1 sampler + 1 UBO) + 2 sets.
-	// Transparency sort adds cull binding 10 (1 SSBO sort-key), the +1 shared term below.
-	// global 12 SSBOs/view (binding 12 = per-light LightRuntime), + lightsetup set (3 SSBO) shared.
-	// Text overlay adds per frame: raster set (3 SSBO + 1 storage image) + overlay sample set (1 sampler), 2 sets.
-	// UI lane adds per frame: raster-set bindings 4-10 (7 SSBO).
+	// SSBO budget: shadow + transparency sort-key + global/lightsetup + text raster + UI bindings 4-10.
 	poolSize[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	poolSize[1].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (16u * ANO_VIEW_COUNT + 16u + 7u + 1u + 3u + 3u + 1u + 7u);
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1 xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	// Per frame: ANO_VIEW_COUNT tonemap + 4 (shadow atlas + blurAtlasSet + blurTempSet + 1 spare).
-	// Hi-Z (review 4.9 step 3) adds 2 sampled bindings (pyramid + depth) per per-mip build set (2*ANO_VIEW_COUNT*ANO_MAX_HIZ_MIPS/frame) + cull binding 11 pyramids (ANO_VIEW_COUNT/frame).
+	// Samplers: tonemap/view + shadow blur + Hi-Z build (pyramid+depth)/mip + cull binding 11.
 	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + ANO_VIEW_COUNT + 1u);
 	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame.
 	// + 1/frame: the text overlay raster destination.
@@ -51,7 +46,7 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = 5;
 	poolInfo.pPoolSizes = poolSize;
-	// maxSets: 2 blur sets/frame + (global+light-cull+tonemap)/view + cull+update+scatter+shadow(2) + ANO_VIEW_COUNT*ANO_MAX_HIZ_MIPS Hi-Z build sets/frame.
+	// maxSets: blur(2) + per-view(3) + cull/update/scatter/shadow + Hi-Z build mips.
 	poolInfo.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * (3u * ANO_VIEW_COUNT + 9u + ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + 2u); // +1 lightsetup, +2 text overlay
 
 	if (vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &(rendererState.globalDescriptorPool)) != VK_SUCCESS)
@@ -271,7 +266,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
                 rendererState.frames[i].views[v].hizSets[m] =
                     hizSetsTemp[(i * ANO_VIEW_COUNT + v) * ANO_MAX_HIZ_MIPS + m];
 
-    // Shadow sets (audit 4.7): one shadowsetup set + one shadow geom/sampling set per frame.
+    // Shadow sets: one shadowsetup + one geom/sampling set per frame.
     VkDescriptorSetLayout setupLayouts[MAX_FRAMES_IN_FLIGHT], geomLayouts[MAX_FRAMES_IN_FLIGHT];
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { setupLayouts[i] = rendererState.shadowSetupSetLayout; geomLayouts[i] = rendererState.shadowGeomSetLayout; }
     VkDescriptorSetAllocateInfo setupAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -284,7 +279,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
     if (vkAllocateDescriptorSets(ctx->device, &geomAlloc, geomTemp) != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to allocate shadow geom sets!"); return false; }
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) { rendererState.frames[i].shadow.setupSet = setupTemp[i]; rendererState.frames[i].shadow.geomSet = geomTemp[i]; }
 
-    // Moment-blur source sets (audit 4.7 MSM): two per frame (blur-X reads atlas, blur-Y reads temp).
+    // Moment-blur sets: two/frame (blur-X atlas, blur-Y temp).
     VkDescriptorSetLayout blurLayouts[2 * MAX_FRAMES_IN_FLIGHT];
     for (int i = 0; i < 2 * MAX_FRAMES_IN_FLIGHT; ++i) blurLayouts[i] = rendererState.shadowBlurSetLayout;
     VkDescriptorSetAllocateInfo blurAlloc = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -299,7 +294,7 @@ bool createDescriptorSets(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
-// Binds clustered-forward froxel buffers: global bindings 10/11 (fragment reads) + light-cull set bindings 0-4 (in UBO/light-runtime/lights, out count/index). Init-only.
+// Bind froxel buffers: global 10/11 + light-cull 0-4. Init-only.
 void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
     // Per view per frame: each view's froxel lists + camera UBO. transforms/lights are shared.
@@ -352,7 +347,7 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
     }
 }
 
-// Binds dynamic shadow sets (audit 4.7), per frame: shadowsetup compute set (config/transforms/lights in, frustums out) + shadow geom/sampling set (frustum viewProjs, depth atlas sampler, per-light info). Init-only.
+// Bind shadow sets/frame: shadowsetup (in->frustums) + geom/sampling (viewProjs, atlas, light info). Init-only.
 void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -381,7 +376,7 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
         w[0].pBufferInfo = &cfgI; w[1].pBufferInfo = &xfI; w[2].pBufferInfo = &ltI; w[3].pBufferInfo = &frI;
         w[4].pBufferInfo = &vpI;
 
-        // shadow geom/sampling set (0 frustum viewProjs, 1 atlas array sampler, 2 per-light info, 3 packed sampling viewProjs as UBO).
+        // Shadow geom set: 0 viewProjs, 1 atlas, 2 light info, 3 sampling UBO.
         w[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[5].dstSet = sh->geomSet; w[5].dstBinding = 0; w[5].descriptorCount = 1;
         w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[5].pBufferInfo = &frI;
@@ -432,9 +427,7 @@ void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state)
     }
 }
 
-// (Re)bind each per-mip Hi-Z build set (review 4.9 step 3), rerun after swapchain resize.
-// Per set: 0 = pyramid all-mip sampled view, 1 = this mip's r32f storage dest, 2 = this view's MSAA depth (reduce source).
-// Only the live hizMipCount mips are written.
+// (Re)bind per-mip Hi-Z build sets after resize. 0=pyramid sample, 1=mip storage, 2=depth reduce source.
 void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -446,7 +439,7 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
             {
                 VkDescriptorImageInfo pyr = { .sampler = state->textureSampler, .imageView = vr->hizSampledView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
                 VkDescriptorImageInfo dst = { .imageView = vr->hizMipViews[m], .imageLayout = VK_IMAGE_LAYOUT_GENERAL };
-                // Binding 2 = reduce depth source: depthMaxResolve binds the single-sample resolve view to every mip, else MSAA depth (sampler2DMS). Layout SHADER_READ.
+                // Binding 2 reduce source: depthResolve or MSAA depth. Layout SHADER_READ.
                 VkImageView depSrc = ctx->deviceCapabilities.depthMaxResolve ? vr->depthResolveView : vr->depthView;
                 VkDescriptorImageInfo dep = { .sampler = state->textureSampler, .imageView = depSrc, .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
@@ -465,7 +458,7 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
         }
     }
 
-    // Cull set binding 11 (review 4.9 step 3): each frame's cull samples the pyramid built `lag` submits earlier (1 in-frame, 2 async). Layout SHADER_READ. Re-run on resize.
+    // Cull binding 11: pyramid from lag submits earlier (1 in-frame, 2 async). SHADER_READ. Re-run on resize.
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         uint32_t lag = state->asyncHiz ? 2u : 1u;
@@ -486,7 +479,7 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
         cw.pImageInfo = hizImg;
         vkUpdateDescriptorSets(ctx->device, 1, &cw, 0, NULL);
 
-        // Global set binding 13 (review priority 10): task meshlet cull samples the same lag slot's pyramid, one per view. Only when the task layout carries the binding.
+        // Global binding 13: task cull samples lag-slot pyramid/view (when layout has binding).
         if (state->taskCull)
         {
             for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
@@ -659,7 +652,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		descriptorWrites[10].descriptorCount = 1;
 		descriptorWrites[10].pBufferInfo = &lightRuntimeInfo;
 
-		// Global set per view (audit 4.8): bindings 1-9 + 12 shared scene SSBOs, binding 0 = each view's camera UBO. Bindings 10/11 written by updateClusterDescriptorSets.
+		// Global/view: 0=camera UBO, 1-9+12 scene SSBOs; 10/11 via updateClusterDescriptorSets.
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
 			bufferInfo.buffer = rendererState.frames[i].views[v].uniformBuffer;
@@ -688,7 +681,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo indirectInfo = {};
         indirectInfo.buffer = rendererState.indirectBuffer.buffer[i];
         indirectInfo.offset = 0;
-        // Range uses the max command stride createIndirectDrawBuffer allocated (VkDrawIndexedIndirectCommand 20B > VkDrawMeshTasksIndirectCommandEXT 12B).
+        // Range = max indirect stride (indexed 20B > mesh-tasks 12B).
         VkDeviceSize indirectCmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
             ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
         indirectInfo.range = indirectCmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count();
@@ -708,7 +701,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         materialCullInfo.offset = 0;
         materialCullInfo.range = sizeof(MaterialData) * rendererState.materialBuffer.capacity;
 
-        // Binding 9: the GPU-built shadow frustums (audit 4.7), per frame.
+        // Binding 9: GPU-built shadow frustums/frame.
         VkDescriptorBufferInfo shadowFrustumCullInfo = {};
         shadowFrustumCullInfo.buffer = rendererState.frames[i].shadow.frustumBuffer;
         shadowFrustumCullInfo.offset = 0;

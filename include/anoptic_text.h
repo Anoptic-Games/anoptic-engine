@@ -3,13 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Anoptic Text API
-//
-// Font loading, glyph-curve baking, and minimal text shaping for the GPU text stack.
+// Anoptic Text API: font load, glyph bake, shape for the GPU text stack.
 // No FreeType type crosses this header.
-//
-// Threading: init, all font loading/baking, and shutdown must run on the SAME thread.
-// Baked blobs and shaped output are plain data, readable from any thread.
+// Threading: init/load/bake/shutdown on ONE thread. Bake/shape data readable any thread.
 
 #ifndef ANOPTICENGINE_ANOPTIC_TEXT_H
 #define ANOPTICENGINE_ANOPTIC_TEXT_H
@@ -20,36 +16,34 @@
 #include "anoptic_memory.h"
 #include "anoptic_strings.h"
 
-// ---------------------------------------------------------------------------------------------
-// Module lifecycle.
 
-// Initializes the text module. Returns 0 or an errno-style code. Idempotent.
+/* Module lifecycle */
+
+// Init. Returns 0 or errno. Idempotent.
 int ano_text_init(void);
 
-// Tears down all module state, including loaded fonts. Safe when never initialized.
+// Teardown including fonts. Safe if never init'd.
 void ano_text_shutdown(void);
 
-// ---------------------------------------------------------------------------------------------
-// Fonts.
 
-// Opaque font handle; 0 is invalid. Faces live until ano_text_shutdown.
+/* Fonts */
+
+// Opaque font handle. 0 invalid. Faces live until shutdown.
 typedef uint32_t AnoFontId;
 
-// Loads a scalable (outline) font face from a file path. Returns the handle, 0 on failure.
+// Load scalable outline face from path. Handle or 0.
 AnoFontId ano_text_font_load(anostr_t path);
 
 // ano_text_font_load over a path literal.
 #define ano_text_font_load_lit(pathlit) ano_text_font_load(anostr_lit(pathlit))
 
-// Opens a scalable face from an in-memory blob (FT_New_Memory_Face). The blob's BYTES
-// must outlive the face: resource-manager-owned payloads (ano_res_bytes of a handle
-// that stays loaded) are the intended source. Same registry and returns as
-// ano_text_font_load; the empty blob fails cleanly with 0.
+// Scalable face from memory blob (FT_New_Memory_Face). Blob bytes must outlive the face; RM-owned ano_res_bytes of a live handle is the intended source. Empty -> 0.
 AnoFontId ano_text_font_load_memory(anostr_t blob);
 
-// ---------------------------------------------------------------------------------------------
-// The baked glyph form consumed by the GPU rasterizer. The renderer uploads the
-// points/glyphs as opaque blobs. Wire format in src/text/text_internal.h.
+
+/* GPU bake */
+
+// Renderer uploads points/glyphs as opaque blobs. Wire format in text_internal.h.
 
 // One directory entry, the per-glyph GPU ABI.
 typedef struct AnoGlyphEntry {
@@ -72,8 +66,7 @@ typedef struct AnoBakeRange {
     uint32_t  last;   // inclusive
 } AnoBakeRange;
 
-// A baked glyph set. Directory slots are assigned range by range in input order.
-// All arrays live in the heap passed to the bake call.
+// Baked glyph set. Slots assigned in range order. Arrays on caller's heap.
 typedef struct AnoFontBake {
     const uint32_t      *points;      // packed half-pair stream (opaque, upload wholesale)
     uint32_t             pointCount;
@@ -89,10 +82,7 @@ typedef struct AnoFontBake {
     uint32_t             upem;        // source face units-per-em (provenance)
 } AnoFontBake;
 
-// Bakes codepoint ranges of loaded faces into GPU-ready blobs on the caller's heap.
-// Ranges must be sorted ascending and disjoint, 4096 slots max. Metrics come from
-// ranges[0]'s face. Missing codepoints bake as blank entries. Kern pairs never
-// bridge faces. Returns 0, EINVAL, ENOMEM, or EIO.
+// Bake ranges -> GPU blobs on heap. Ranges sorted ascending + disjoint, 4096 slots max. Metrics from ranges[0]. Missing -> blank. Kern never bridges faces; skipped entirely above 1024 slots. Returns 0/EINVAL/ENOMEM/EIO.
 int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
                               mi_heap_t *heap, AnoFontBake *out);
 
@@ -100,18 +90,14 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
 int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCodepoint,
                        mi_heap_t *heap, AnoFontBake *out);
 
-// ---------------------------------------------------------------------------------------------
-// Shaping (v0): UTF-8 -> positioned glyph instances, pure functions over a bake.
-// May run on ANY thread, over any bake, concurrently.
-//
-// AnoGlyphInstance is the GPU ABI, one std430 SSBO element per glyph (offsets
-// 0/16/32/40/44, stride 48, GLSL-compatible).
-//   inv     : 2x2 pixel->em inverse as rows, applied to (pixel - origin).
-//             v0 emits (1/size, 0, 0, -1/size).
-//   color   : premultiplied linear RGBA.
-//   origin  : baseline pen position, screen pixels, y-down.
-//   glyphID : directory slot in the bake.
-//   flags   : reserved.
+
+/* Shaping */
+
+// v0: UTF-8 -> glyph instances over a bake. Any thread, concurrent.
+// AnoGlyphInstance: std430 SSBO element (offsets 0/16/32/40/44, stride 48).
+//   inv: 2x2 pixel->em inverse as rows on (pixel - origin). v0: (1/size, 0, 0, -1/size).
+//   color: premultiplied linear RGBA. origin: baseline pen, screen px, y-down.
+//   glyphID: bake directory slot. flags: reserved.
 
 typedef struct AnoGlyphInstance {
     float    inv[4];
@@ -126,50 +112,36 @@ static_assert(offsetof(AnoGlyphInstance, color) == 16 && offsetof(AnoGlyphInstan
                   && offsetof(AnoGlyphInstance, glyphID) == 40,
               "GPU ABI: GLSL-compatible offsets");
 
-// One styled span of a shape_runs/measure_runs call: the next byteCount bytes render
-// at sizePx with this color. Runs are consecutive and their byteCount sum IS the text
-// length. A codepoint takes the style of the run holding its LEAD byte. byteCount 0
-// is a legal no-op.
+// Styled span for shape_runs/measure_runs. byteCounts consecutive and sum to text length. Lead byte's run styles the codepoint. byteCount 0 is a no-op.
 typedef struct AnoTextRun {
     uint32_t byteCount;
     float    sizePx;    // pixels per em, must be > 0
     float    color[4];  // premultiplied linear RGBA
 } AnoTextRun;
 
-// Shapes a UTF-8 string into glyph instances at sizePx, the pen starting at origin
-// (screen pixels, y-down baseline). Writes up to cap instances to out and returns the
-// TOTAL count the text needs (size with out=NULL, cap=0). Blank glyphs advance without
-// emitting. '\n' returns the pen to origin[0] and steps one lineHeight down, '\r' is
-// ignored. Codepoints without a slot advance a fixed half-em gap, as does malformed
-// UTF-8 (decoded as U+FFFD per byte). Adjacent in-range glyphs on one line receive
-// pair kerning. A newline or gap resets the pair chain. penOut (optional, 2 floats)
-// receives the final pen so a later call can continue. Kerning does NOT bridge calls.
+// Shape UTF-8 at sizePx from origin (screen px, y-down baseline). Writes <=cap, returns total need (out=NULL,cap=0 sizes). Blank advances without emit. '\n' resets penX to origin[0], penY += lineHeight*sizePx; '\r' ignored. Out-of-bake codepoints (incl. U+FFFD from bad UTF-8) advance half-em. Adjacent in-range glyphs kern; newline/gap resets chain. penOut optional final pen. Kern does not bridge calls.
 uint32_t ano_text_shape(const AnoFontBake *bake, anostr_t text,
                         float sizePx, const float origin[2], const float color[4],
                         AnoGlyphInstance *out, uint32_t cap, float *penOut);
 
-// Measures without emitting, in pixels. Width = the widest line's pen advance.
-// Height = started line count times line height (a trailing '\n' starts a line).
+// Measure in px. Width = max line pen. Height = started lines * lineHeight * sizePx (trailing '\n' starts a line).
 void ano_text_measure(const AnoFontBake *bake, anostr_t text,
                       float sizePx, float *width, float *height);
 
-// ano_text_shape with per-glyph style runs. One pen walks the whole text: same-size
-// runs yield bit-identical positions to the unsplit shape (kerning bridges the
-// boundary). A SIZE change resets the pair chain, and '\n' steps by the lineHeight of
-// its own run. Rejects (returns 0) any run with sizePx <= 0 or a byteCount sum that
-// mismatches anostr_len(text). Otherwise identical semantics to ano_text_shape.
+// Shape with style runs. One pen: same-size runs bit-identical to unsplit (kern bridges). SIZE change resets chain. '\n' steps by lineHeight * that run's sizePx. Rejects sizePx<=0 or byteCount sum != len. Else same as ano_text_shape.
 uint32_t ano_text_shape_runs(const AnoFontBake *bake, anostr_t text,
                              const AnoTextRun *runs, uint32_t runCount,
                              const float origin[2],
                              AnoGlyphInstance *out, uint32_t cap, float *penOut);
 
-// ano_text_measure over runs. Width = the widest line's pen advance. Height = the sum
-// over started lines of the lineHeight in effect at each line's END.
+// Measure over runs. Width = max line pen. Height = sum of newline steps (lineHeight * that run's sizePx) + final lineHeight * last run's sizePx.
 void ano_text_measure_runs(const AnoFontBake *bake, anostr_t text,
                            const AnoTextRun *runs, uint32_t runCount,
                            float *width, float *height);
 
-// ---------------------------------------------------------------------------------------------
+
+/* Literal macros */
+
 // String-literal face macros wrapping anostr_lit, length folded at compile time.
 
 #define ano_text_shape_lit(bake, textlit, sizePx, origin, color, out, cap, penOut) \

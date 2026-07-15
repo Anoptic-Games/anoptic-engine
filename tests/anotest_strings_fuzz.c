@@ -3,23 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Property-based fuzzer + deterministic smoketest for the whole anostr_t surface.
- *
- * Runs in ctest: fixed seed, fast by default; argv[1] scales the fuzz soak. Two entry
- * points: smoketest() calls every public symbol once with a representative value (a
- * link/signature tripwire); fuzz() runs the randomized property soak on a per-iteration
- * scratch heap so memory stays bounded.
- *
- * Central property: the same logical content across every KIND (inline <=12, long >12,
- * view/borrow, keep/owned, interned, deduped, valid multi-script UTF-8, malformed UTF-8,
- * empty, embedded-NUL) is eq + hash-equal + compare/collate-identical and yields equal
- * results from find/replace/slice/split/sort. Each property names its oracle inline.
- *
- * ANOSTR_SID/SID32 are a COMPILE-TIME hash cross-check on LITERAL inputs only, never an
- * operand of sort/split/etc. There is NO anostr_splice: "splice" here is anostr_slice +
- * anostr_concat checked against a naive byte oracle.
- *
- * Exit 0 == pass; failures print what broke. */
+/* Property fuzzer + smoketest for anostr_t. Cross-kind agreement is the central property.
+ * smoketest: every public symbol once. fuzz: soak on per-iter scratch heap.
+ * SID is compile-time only. "splice" = slice + concat vs naive oracle.
+ * Exit 0 == pass. argv[1] scales soak. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,10 +23,9 @@ static int failures = 0;
 
 static int sign(int v) { return v < 0 ? -1 : v > 0; }
 
-// ---------------------------------------------------------------------------------------------
-// Independent oracles.
+/* Independent oracles. */
 
-// FNV-1a reference over raw bytes: the twin of anostr_hash / anostr_hash32.
+// FNV-1a reference: twin of anostr_hash / anostr_hash32.
 static uint64_t fnv64(const void *p, size_t n)
 {
     uint64_t h = 0xcbf29ce484222325ULL;
@@ -55,7 +41,7 @@ static uint32_t fnv32(const void *p, size_t n)
     return h;
 }
 
-// Naive memmem: first index of needle at/after from, empty needle at min(from,len), else NPOS.
+// Naive memmem: first needle at/after from.
 static size_t naive_find(const char *s, size_t sn, const char *nd, size_t nn, size_t from)
 {
     if (from > sn) from = sn;
@@ -66,7 +52,7 @@ static size_t naive_find(const char *s, size_t sn, const char *nd, size_t nn, si
     return ANOSTR_NPOS;
 }
 
-// Naive left-to-right non-overlapping replace into caller buffer; returns result length.
+// Naive LTR non-overlapping replace; returns result length.
 static size_t naive_replace(const char *s, size_t sn, const char *nd, size_t nn,
                             const char *rp, size_t rn, char *out)
 {
@@ -79,8 +65,7 @@ static size_t naive_replace(const char *s, size_t sn, const char *nd, size_t nn,
     return o;
 }
 
-// Naive splice: remove [a,b) and insert r. There is no anostr_splice; the SUT composes
-// anostr_slice + anostr_concat, checked against these bytes.
+// Naive splice: remove [a,b), insert r. SUT = slice + concat.
 static size_t naive_splice(const char *s, size_t sn, size_t a, size_t b,
                            const char *r, size_t rn, char *out)
 {
@@ -94,8 +79,7 @@ static size_t naive_splice(const char *s, size_t sn, size_t a, size_t b,
     return o;
 }
 
-// Base fold for the accented runes this test constructs: lowercase then strip to base letter.
-// Independent of the library's DUCET decomposition (a hardcoded table over the chosen inputs).
+// Base fold for constructed accented runes (hardcoded, not DUCET).
 static anorune_t base_fold(anorune_t r)
 {
     r = anorune_to_lower(r);
@@ -112,10 +96,9 @@ static anorune_t base_fold(anorune_t r)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Random content generators.
+/* Random content generators. */
 
-// Random rune across every code path: ASCII, accents, Cyrillic/Greek/kana, Han + SMP, ignorables.
+// Random rune: ASCII, accents, Cyrillic/Greek/kana, Han+SMP, ignorables.
 static anorune_t rng_rune(test_rng *rng)
 {
     switch (rng_below(rng, 12)) {
@@ -131,7 +114,7 @@ static anorune_t rng_rune(test_rng *rng)
     }
 }
 
-// Valid UTF-8 string of up to maxRunes runes, frozen from a builder.
+// Valid UTF-8 of up to maxRunes runes.
 static anostr_t rng_str(test_rng *rng, mi_heap_t *heap, uint32_t maxRunes)
 {
     uint32_t n = rng_below(rng, maxRunes + 1);
@@ -141,7 +124,7 @@ static anostr_t rng_str(test_rng *rng, mi_heap_t *heap, uint32_t maxRunes)
     return anostr_freeze(&b);
 }
 
-// Arbitrary bytes (embedded NUL and malformed UTF-8 included) into buf; returns length.
+// Arbitrary bytes (NUL + malformed UTF-8) into buf.
 static size_t rng_bytes(test_rng *rng, char *buf, size_t maxLen)
 {
     size_t n = rng_below(rng, (uint32_t)maxLen + 1);
@@ -149,8 +132,7 @@ static size_t rng_bytes(test_rng *rng, char *buf, size_t maxLen)
     return n;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Sort oracle, reused verbatim from the sort exemplar.
+/* Sort oracle, reused verbatim from the sort exemplar. */
 
 static int rune_cmp(const void *a, const void *b)
 {
@@ -204,10 +186,9 @@ static bool check_against_oracle(const anostr_t *items, size_t n, const char *wh
     return true;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Compile-time SID cross-checks (LITERAL inputs only; never a runtime operand).
+/* Compile-time SID cross-checks (LITERAL inputs only; never a runtime operand). */
 
-// Published FNV-1a vectors, verified at build time against anoptic_strings.h.
+// Published FNV-1a vectors vs anoptic_strings.h.
 static_assert(ANOSTR_SID("") == 0xcbf29ce484222325ULL, "SID FNV64 empty");
 static_assert(ANOSTR_SID("a") == 0xaf63dc4c8601ec8cULL, "SID FNV64 a");
 static_assert(ANOSTR_SID("foobar") == 0x85944171f73967e8ULL, "SID FNV64 foobar");
@@ -217,20 +198,19 @@ static_assert(ANOSTR_SID32("foobar") == 0xbf9cf968u, "SID FNV32 foobar");
 static_assert(ANOSTR_SID("foo") != ANOSTR_SID("bar"), "distinct literals distinct ids");
 static_assert(ANOSTR_SID("a\0b") == 0xe5d29919042666b2ULL, "SID counts the embedded NUL");
 
-// The exactly-128-byte literal compiles; ANOSTR_SID_MAX guard. An OVERLONG literal fails to
-// compile ("array size is negative") -- that is a negative build test, run out of band, not here.
+// 128-byte literal at ANOSTR_SID_MAX. Overlong is a negative build test (out of band).
 #define SID128_LIT \
     "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa" \
     "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa" "aaaaaaaaaaaaaaaa"
 static_assert(sizeof(SID128_LIT) - 1 == 128, "128-byte literal");
 static_assert(ANOSTR_SID(SID128_LIT) != 0, "128-byte SID is an ICE");
 
-// SID as a static initializer and an enum value.
+// SID as static init and enum.
 static const anostr_sid   g_sid_init   = ANOSTR_SID("level_loaded");
 static const anostr_sid32 g_sid32_init = ANOSTR_SID32("level_loaded");
 enum { SID_ENUM = (int)(ANOSTR_SID32("tick") & 0x7FFFu) };
 
-// SID through an enum constant (a clean ICE), then an array size; touched at runtime below.
+// SID as enum ICE and array size.
 enum { SID_ARR_N = (int)(1u + (ANOSTR_SID32("player_spawn") % 13u)) };
 static char g_sid_arr[SID_ARR_N];
 
@@ -245,10 +225,9 @@ static uint32_t dispatch_sid(anostr_sid id)
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Cross-kind agreement: one logical content built through every backing must agree everywhere.
+/* Cross-kind agreement: one logical content built through every backing must agree everywhere. */
 
-// Decode the single rune encoded in buf[0..n) via a value + rune_next.
+// Decode the single rune in buf via rune_next.
 static anorune_t decode1(const char *buf, size_t n)
 {
     anostr_t s = anostr_view(buf, n);
@@ -256,7 +235,7 @@ static anorune_t decode1(const char *buf, size_t n)
     return anostr_rune_next(s, &i);
 }
 
-// nulfree gates the cstr-based backing (from_cstr cannot carry an embedded NUL).
+// nulfree gates from_cstr backing.
 static void check_kinds(mi_heap_t *h, anostr_intern_t *it, const char *buf, size_t n,
                         bool nulfree, const char *what)
 {
@@ -292,13 +271,13 @@ static void check_kinds(mi_heap_t *h, anostr_intern_t *it, const char *buf, size
         CHECK(memcmp(anostr_bytes(&v[i]), buf, n) == 0, what);
         if (n <= ANOSTR_INLINE_CAP)                                        // Regime A: bit-identical
             CHECK(memcmp(&v[i], &v[0], sizeof(anostr_t)) == 0, what);
-        // Result content depends only on source content, not on the construction path.
+        // Result depends on content, not construction path.
         if (n > 0) {
             anostr_t nd = anostr_view(buf, 1);
             anostr_t tail = anostr_lit("|tail");
             CHECK(anostr_find(v[i], nd, 0) == anostr_find(v[0], nd, 0), what);
             CHECK(anostr_eq(anostr_slice(v[i], 1, n), anostr_slice(v[0], 1, n)), what);
-            // split/replace/concat/join RESULTS depend only on content, not the source kind.
+            // split/replace/concat/join depend on content, not kind.
             CHECK(anostr_eq(anostr_concat(h, v[i], tail), anostr_concat(h, v[0], tail)), what);
             CHECK(anostr_eq(anostr_replace_all(h, v[i], nd, anostr_lit("Q")),
                             anostr_replace_all(h, v[0], nd, anostr_lit("Q"))), what);
@@ -312,7 +291,7 @@ static void check_kinds(mi_heap_t *h, anostr_intern_t *it, const char *buf, size
         }
     }
 
-    // The a.ptr==b.ptr short-circuit and the memcmp path agree: deduped twins share backing.
+    // Deduped twins share backing; ptr short-circuit and memcmp agree.
     anostr_t d1 = anostr_dedupe(it, anostr_view(buf, n));
     anostr_t d2 = anostr_dedupe(it, anostr_from(h, buf, n));
     CHECK(anostr_eq(d1, d2), what);
@@ -320,8 +299,7 @@ static void check_kinds(mi_heap_t *h, anostr_intern_t *it, const char *buf, size
         CHECK(anostr_bytes(&d1) == anostr_bytes(&d2), what);               // shared canonical ptr
 }
 
-// ---------------------------------------------------------------------------------------------
-// Smoketest: every public symbol once, deterministic. A link/signature break fails immediately.
+/* Smoketest: every public symbol once. */
 
 static void smoketest(mi_heap_t *h)
 {
@@ -343,7 +321,7 @@ static void smoketest(mi_heap_t *h)
     int fn = snprintf(fbuf, sizeof fbuf, "%.*s", anostr_fmt(lng));
     CHECK(fn == (int)strlen(lit) && memcmp(fbuf, lit, fn) == 0, "fmt feeds %.*s");
 
-    // Totality on bad input: NULL bytes, oversized len, NULL-heap long path -> empty (no UB).
+    // Totality: NULL bytes/oversized/NULL-heap long -> empty.
     CHECK(anostr_is_empty(anostr_from(h, NULL, 5)), "NULL bytes -> empty");
     CHECK(anostr_is_empty(anostr_from(h, lit, (size_t)UINT32_MAX + 1)), "len > UINT32_MAX -> empty");
     CHECK(anostr_is_empty(anostr_from_cstr(h, NULL)), "NULL cstr -> empty");
@@ -364,7 +342,7 @@ static void smoketest(mi_heap_t *h)
     CHECK(sizeof g_sid_arr == (size_t)SID_ARR_N && g_sid_arr[0] == 1, "SID array-size ICE");
     CHECK((int)(ANOSTR_SID32("tick") & 0x7FFFu) == SID_ENUM, "SID enum ICE");
 
-    // Slice + splice (composed; no anostr_splice exists).
+    // Slice + splice (composed).
     CHECK(anostr_eq(anostr_slice(lng, 4, 9), anostr_lit("quick")), "slice substring");
     CHECK(anostr_eq(anostr_slice(lng, 100, 3), empty), "slice clamps to empty");
     anostr_t spliced = anostr_concat(h, anostr_slice(lng, 0, 4),
@@ -429,7 +407,7 @@ static void smoketest(mi_heap_t *h)
     CHECK(anostr_builder_append(&discardable, "x", 1) == -1, "append after discard -> -1");
     CHECK(anostr_is_empty(anostr_freeze(&discardable)), "freeze after discard -> empty");
 
-    // Builder overflow guard I1: spoof len near the ceiling, append fails, builder intact.
+    // Builder I1: spoof len near ceiling, append fails, builder intact.
     anostr_builder_t ov = anostr_builder_make(h, 8);
     anostr_builder_append(&ov, "ab", 2);
     uint32_t saved = ov.len;
@@ -495,7 +473,7 @@ static void smoketest(mi_heap_t *h)
     anorune_t *u32 = anostr_to_utf32(h, uni, &u32n);
     CHECK(u32 != NULL && u32n == 3 && anostr_eq(anostr_from_utf32(h, u32, u32n), uni), "utf32 round-trip");
 
-    // Allocation-failure sentinels via the NULL-heap long path (inline stays alive, no alloc).
+    // Alloc-fail sentinels via NULL-heap long path.
     CHECK(anostr_is_empty(anostr_concat(NULL, lng, lng)), "concat OOM -> empty");
     CHECK(anostr_is_empty(anostr_keep(NULL, lng)), "keep OOM -> empty");
     CHECK(anostr_to_cstr(NULL, lng) == NULL, "to_cstr OOM -> NULL");
@@ -509,8 +487,7 @@ static void smoketest(mi_heap_t *h)
     CHECK(anostr_is_empty(anostr_from_utf32(h, NULL, 4)), "from_utf32 NULL src -> empty");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Curated collation, case, and classification cases (DUCET signs are a curated oracle).
+/* Curated collation, case, and classification cases. */
 
 static void test_collation_cases(mi_heap_t *h)
 {
@@ -534,7 +511,7 @@ static void test_collation_cases(mi_heap_t *h)
         CHECK(anostr_collate(lo, hi) < 0, pairs[k].what);
         CHECK(anostr_collate(hi, lo) > 0, pairs[k].what);       // antisymmetric
         CHECK(anostr_collate(lo, lo) == 0, pairs[k].what);      // reflexive
-        // collate_prefix and collate_key agree in sign wherever the keys differ.
+        // collate_prefix/key agree in sign where keys differ.
         uint64_t pa = anostr_collate_prefix(lo), pb = anostr_collate_prefix(hi);
         if (pa != pb)
             CHECK(sign(pa < pb ? -1 : 1) == sign(anostr_collate(lo, hi)), pairs[k].what);
@@ -550,7 +527,7 @@ static void test_collation_cases(mi_heap_t *h)
     CHECK(anorune_to_upper(0x2665) == 0x2665, "caseless is identity");   // ♥
     CHECK(anorune_to_upper(0x430) == 0x410, "Cyrillic upper");
 
-    // Classification edges: symbols are not punctuation; unlisted-script marks/letters are false.
+    // Classification edges: S* not punct; unlisted marks/letters false.
     CHECK(!anorune_is_punct(0x20AC) && !anorune_is_punct('$'), "currency symbols are not punct");
     CHECK(anorune_is_punct(0x3001), "CJK ideographic comma is punct");
     CHECK(anorune_is_digit(0xFF15) && !anorune_is_digit(0x0660), "fullwidth digit yes, Arabic-Indic no");
@@ -558,23 +535,22 @@ static void test_collation_cases(mi_heap_t *h)
     CHECK(anorune_is_whitespace(0xA0) && !anorune_is_whitespace('a'), "NBSP whitespace, letter not");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Embedded-NUL and malformed-UTF-8 byte transparency (dedicated, not just soaked).
+/* Embedded-NUL and malformed-UTF-8 byte transparency. */
 
 static void test_edges(mi_heap_t *h)
 {
-    // Embedded NUL is a real byte: eq/compare/hash honor the full len; NUL is not a terminator.
+    // Embedded NUL is a real byte; not a terminator.
     char ab[] = { 'a', 0, 'b' }, ac[] = { 'a', 0, 'c' };
     anostr_t nb = anostr_view(ab, 3), nc = anostr_view(ac, 3);
     CHECK(!anostr_eq(nb, nc), "embedded-NUL eq honors full len");
     CHECK(anostr_compare(nb, nc) < 0, "embedded-NUL compare");
     CHECK(anostr_hash(nb) != anostr_hash(nc), "embedded-NUL hash differs");
     CHECK(anostr_hash(nb) == fnv64(ab, 3), "hash counts the NUL");
-    // to_cstr truncates the C view at the NUL by contract; the value keeps all 3 bytes.
+    // to_cstr truncates at NUL; value keeps all 3 bytes.
     char *cs = anostr_to_cstr(h, nb);
     CHECK(cs != NULL && strlen(cs) == 1, "to_cstr truncates at embedded NUL (contract)");
 
-    // Every spelling of empty is bit-identical to anostr_empty() (memcmp of the 16-byte value).
+    // Every empty spelling bit-identical to anostr_empty().
     anostr_builder_t eb = anostr_builder_make(h, 0);
     anostr_t empties[] = {
         anostr_empty(), anostr_view("", 0), anostr_from(h, "x", 0),
@@ -585,7 +561,7 @@ static void test_edges(mi_heap_t *h)
     for (size_t k = 0; k < sizeof empties / sizeof empties[0]; k++)
         CHECK(memcmp(&empties[k], &(anostr_t){0}, sizeof(anostr_t)) == 0, "empty is bit-identical");
 
-    // Malformed bytes: opaque to byte-level ops (eq across kinds), U+FFFD-normalized for rune ops.
+    // Malformed: opaque to byte ops, U+FFFD for rune ops.
     static const char *bad[] = {
         "\x80",             // lone continuation
         "\xC3",             // truncated lead
@@ -596,16 +572,16 @@ static void test_edges(mi_heap_t *h)
     for (size_t k = 0; k < sizeof bad / sizeof bad[0]; k++) {
         anostr_t s = anostr_view(bad[k], strlen(bad[k]));
         CHECK(!anostr_utf8_valid(s), "malformed rejected by utf8_valid");
-        // rune iteration is total: never over-reads, always terminates within len.
+        // rune iteration is total within len.
         size_t i = 0, steps = 0;
         while (i < anostr_len(s)) { anostr_rune_next(s, &i); if (++steps > 64) break; }
         CHECK(i == anostr_len(s), "rune_next consumes malformed to exactly len");
-        // Byte-level op agreement across kinds on malformed input.
+        // Byte-level op agreement across kinds on malformed.
         anostr_t view = s, own = anostr_from(h, bad[k], strlen(bad[k]));
         CHECK(anostr_eq(view, own) && anostr_hash(view) == anostr_hash(own), "malformed eq across kinds");
     }
 
-    // rune_next past end -> U+FFFD with *i clamped to len; rune_prev at 0 -> U+FFFD, stays.
+    // rune_next past end / rune_prev at 0 -> U+FFFD.
     anostr_t small = anostr_lit("hi");
     size_t at = anostr_len(small);
     CHECK(anostr_rune_next(small, &at) == ANORUNE_REPLACEMENT && at == anostr_len(small),
@@ -613,7 +589,7 @@ static void test_edges(mi_heap_t *h)
     size_t zero = 0;
     CHECK(anostr_rune_prev(small, &zero) == ANORUNE_REPLACEMENT && zero == 0, "rune_prev at 0 stays");
 
-    // anorune_encode byte-length boundaries + invalid -> 3-byte U+FFFD.
+    // anorune_encode boundaries + invalid -> U+FFFD.
     static const struct { anorune_t r; int len; } enc[] = {
         { 0x7F, 1 }, { 0x80, 2 }, { 0x7FF, 2 }, { 0x800, 3 }, { 0xFFFF, 3 },
         { 0x10000, 4 }, { 0x10FFFF, 4 },
@@ -627,8 +603,7 @@ static void test_edges(mi_heap_t *h)
     CHECK(anorune_encode(buf, 0x110000) == 3 && decode1(buf, 3) == ANORUNE_REPLACEMENT, ">MAX encodes FFFD");
 }
 
-// ---------------------------------------------------------------------------------------------
-// keep survives the source buffer's teardown (I4 lifetime).
+/* keep survives source buffer teardown (I4). */
 
 static void test_keep_lifetime(mi_heap_t *h)
 {
@@ -645,8 +620,7 @@ static void test_keep_lifetime(mi_heap_t *h)
           "kept value survives source teardown");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Intern rehash stability: force table growth, then re-resolve every earlier symbol.
+/* Intern rehash: force growth, re-resolve earlier symbols. */
 
 static void test_intern_rehash(mi_heap_t *h)
 {
@@ -671,8 +645,7 @@ static void test_intern_rehash(mi_heap_t *h)
     CHECK(anostr_is_empty(anostr_sym_str(t, N)), "out-of-range sym -> empty");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Mixed-kind sort: the same logical strings in different kinds sort to a content-eq sequence.
+/* Mixed-kind sort: content-eq sequence across kinds. */
 
 static void test_mixed_kind_sort(mi_heap_t *h, anostr_intern_t *it)
 {
@@ -696,8 +669,7 @@ static void test_mixed_kind_sort(mi_heap_t *h, anostr_intern_t *it)
         CHECK(anostr_eq(items[k], ref[k]), "mixed-kind sort matches content oracle");
 }
 
-// ---------------------------------------------------------------------------------------------
-// anostr_sym_sort: cold cache-build vs warm cached agreement, out-of-range sorts first as empty.
+/* anostr_sym_sort: cold vs warm cache; out-of-range sorts as empty. */
 
 static void test_sym_sort(mi_heap_t *h)
 {
@@ -729,7 +701,7 @@ static void test_sym_sort(mi_heap_t *h)
           anostr_eq(anostr_sym_str(t, trio[2]), anostr_lit("zzz")), "aaa before zzz");
 }
 
-// A tie family sharing all four primary weights forces the bulk full-key tie-break path.
+// Tie family sharing four primaries forces bulk full-key path.
 static void test_tie_family(mi_heap_t *h)
 {
     enum { N = 64 };
@@ -745,23 +717,23 @@ static void test_tie_family(mi_heap_t *h)
     check_against_oracle(items, N, "tie family", h);
 }
 
-// Directed edges the randomized soak reaches rarely or not at all.
+// Directed edges the soak reaches rarely.
 static void test_directed(mi_heap_t *h)
 {
-    // append_rune on invalid runes encodes U+FFFD and still returns 0.
+    // append_rune on invalid -> U+FFFD, returns 0.
     anostr_builder_t br = anostr_builder_make(h, 0);
     CHECK(anostr_builder_append_rune(&br, 0xD800) == 0, "append_rune surrogate ok");
     CHECK(anostr_builder_append_rune(&br, 0x110000) == 0, "append_rune >MAX ok");
     CHECK(anostr_eq(anostr_freeze(&br), anostr_lit("\xEF\xBF\xBD\xEF\xBF\xBD")), "append_rune invalid -> U+FFFD");
 
-    // appendf: empty format appends nothing; output past the reserve grows to fit; %.*s via anostr_fmt.
+    // appendf: empty fmt, grow past reserve, %.*s via anostr_fmt.
     anostr_builder_t bf = anostr_builder_make(h, 2);
     CHECK(anostr_builder_appendf(&bf, "%s", "") == 0, "appendf empty format");
     CHECK(anostr_builder_appendf(&bf, "%.*s", anostr_fmt(anostr_lit("payload well beyond the reserve"))) == 0,
           "appendf grows past reserve");
     CHECK(anostr_eq(anostr_freeze(&bf), anostr_lit("payload well beyond the reserve")), "appendf accumulates");
 
-    // split: empty sep yields the whole string; a trailing sep yields a trailing empty piece.
+    // split: empty sep -> whole; trailing sep -> trailing empty.
     anostr_t pc;
     anostr_split_t whole = anostr_split(anostr_lit("a,b,c"), anostr_empty());
     CHECK(anostr_split_next(&whole, &pc) && anostr_eq(pc, anostr_lit("a,b,c")), "empty sep -> whole");
@@ -771,25 +743,24 @@ static void test_directed(mi_heap_t *h)
     CHECK(anostr_split_next(&trail, &pc) && anostr_is_empty(pc), "trailing sep -> trailing empty piece");
     CHECK(!anostr_split_next(&trail, &pc), "trailing sep exhausted");
 
-    // slice re-canonicalization: a >12 slice of a long string borrows its backing; <=12 goes inline.
+    // slice: >12 long-slice borrows; <=12 goes inline.
     anostr_t base = anostr_lit("a long backing string well over twelve bytes long");
     anostr_t sl = anostr_slice(base, 2, 34);
     CHECK(!anostr_is_inline(sl) && anostr_bytes(&sl) == anostr_bytes(&base) + 2, "long slice borrows backing");
     CHECK(anostr_is_inline(anostr_slice(base, 0, 5)), "short slice re-canonicalizes inline");
 
-    // replace_all shrinking a long string below the inline cap yields a bit-identical inline value.
+    // replace_all shrink below inline cap -> bit-identical inline.
     anostr_t shr = anostr_replace_all(h, anostr_lit("xxxxxxxxxxxxxxxxxxxxxxab"), anostr_lit("x"), anostr_empty());
     anostr_t ab = anostr_lit("ab");
     CHECK(anostr_is_inline(shr) && memcmp(&shr, &ab, sizeof(anostr_t)) == 0, "shrink-to-inline bit-identical");
 
-    // UTF-16 with a lone (unpaired) surrogate normalizes that unit to U+FFFD.
+    // UTF-16 unpaired surrogate -> U+FFFD.
     char16_t lone[] = { 0xD800, 0x0041 };
     CHECK(anostr_eq(anostr_from_utf16(h, lone, 2), anostr_lit("\xEF\xBF\xBD" "A")),
           "unpaired UTF-16 surrogate -> U+FFFD");
 }
 
-// ---------------------------------------------------------------------------------------------
-// The randomized property soak. Per-iteration scratch heap keeps memory bounded.
+/* Randomized property soak. Per-iter scratch heap. */
 
 static void fuzz(uint32_t iterations)
 {
@@ -800,7 +771,7 @@ static void fuzz(uint32_t iterations)
         anostr_intern_t *tab = anostr_intern_make(scratch);
         if (tab == NULL) { printf("FAIL: fuzz intern table\n"); failures++; return; }
 
-        // Cross-kind agreement over both valid UTF-8 and arbitrary bytes, across the 12/13 boundary.
+        // Cross-kind agreement across 12/13 boundary.
         char vbuf[128];                                  // 24 runes * up to 4 UTF-8 bytes = 96 worst case
         anostr_t vs = rng_str(&rng, scratch, 24);
         size_t vn = anostr_len(vs);
@@ -811,7 +782,7 @@ static void fuzz(uint32_t iterations)
         size_t bn = rng_bytes(&rng, bbuf, 40);           // embedded NUL + malformed included
         check_kinds(scratch, tab, bbuf, bn, false, "kinds: arbitrary bytes");
 
-        // Slice + splice (= slice + concat) vs the naive byte oracle.
+        // Slice + splice vs naive oracle.
         anostr_t src = anostr_view(bbuf, bn);
         size_t a = bn ? rng_below(&rng, (uint32_t)bn + 1) : 0;
         size_t b = bn ? rng_below(&rng, (uint32_t)bn + 1) : 0;
@@ -827,7 +798,7 @@ static void fuzz(uint32_t iterations)
         size_t sn = naive_splice(bbuf, bn, a, b, rb, rn, soracle);
         CHECK(anostr_eq(spl, anostr_view(soracle, sn)), "splice = slice+concat vs naive bytes");
 
-        // Concat: len and bytes vs a naive buffer; empty is identity.
+        // Concat vs naive buffer; empty is identity.
         char cbuf[80]; size_t cn = rng_bytes(&rng, cbuf, 20);
         anostr_t ca = anostr_view(bbuf, bn), cb = anostr_view(cbuf, cn);
         anostr_t cc = anostr_concat(scratch, ca, cb);
@@ -835,7 +806,7 @@ static void fuzz(uint32_t iterations)
         CHECK(anostr_len(cc) == bn + cn && anostr_eq(cc, anostr_view(cor, bn + cn)), "concat bytes");
         CHECK(anostr_eq(anostr_concat(scratch, ca, anostr_empty()), ca), "concat empty identity");
 
-        // Find + replace_all vs naive scans (non-overlapping, empty-needle identity).
+        // Find + replace_all vs naive scans.
         if (bn > 0) {
             char nbuf[4]; size_t nn = 1 + rng_below(&rng, 3);
             for (size_t k = 0; k < nn; k++) nbuf[k] = bbuf[rng_below(&rng, (uint32_t)bn)];
@@ -849,12 +820,11 @@ static void fuzz(uint32_t iterations)
             size_t rlen = naive_replace(bbuf, bn, nbuf, nn, reb, ren, rout);
             CHECK(anostr_eq(got, anostr_view(rout, rlen)), "replace_all vs naive");
         }
-        // Empty needle / no-op replace returns s unchanged: the value is bit-identical (a long
-        // result keeps its backing ptr; an inline result is the same 16-byte value byte-for-byte).
+        // Empty needle / no-op replace -> s bit-identical.
         anostr_t idrep = anostr_replace_all(scratch, src, anostr_empty(), anostr_lit("!"));
         CHECK(anostr_eq(idrep, src) && memcmp(&idrep, &src, sizeof(anostr_t)) == 0, "empty needle identity");
 
-        // Split / join round-trip: pieces rejoined with sep reconstruct src; count == finds+1.
+        // Split/join round-trip; count == finds+1.
         char sepb[2]; size_t sepn = 1 + rng_below(&rng, 2);
         for (size_t k = 0; k < sepn; k++) sepb[k] = bn ? bbuf[rng_below(&rng, (uint32_t)bn)] : ',';
         anostr_t sep = anostr_view(sepb, sepn);
@@ -871,13 +841,13 @@ static void fuzz(uint32_t iterations)
         CHECK(np == expect, "split piece count == find-count + 1");
         CHECK(anostr_eq(anostr_join(scratch, sep, pieces, np), src), "split/join round-trip");
 
-        // Sort a small multi-script list against the collation oracle.
+        // Sort vs collation oracle.
         enum { M = 32 };
         anostr_t list[M];
         for (size_t k = 0; k < M; k++) list[k] = rng_str(&rng, scratch, 12);
         check_against_oracle(list, M, "fuzz sort", scratch);
 
-        // Cull vs the naive rune loop, then rune_sort multiset + idempotence.
+        // Cull vs naive; rune_sort multiset + idempotence.
         uint32_t classes = rng_below(&rng, 8);
         {
             anostr_builder_t nb = anostr_builder_make(scratch, 0);   // naive cull rebuild
@@ -898,7 +868,7 @@ static void fuzz(uint32_t iterations)
         CHECK(gn == an, "rune_sort preserves rune count");
         CHECK(anostr_eq(anostr_rune_sort(scratch, rs), rs), "rune_sort idempotent");
 
-        // UTF round-trips on valid content; to_utf32 matches the rune_next decode sequence.
+        // UTF round-trips; to_utf32 matches rune_next.
         size_t u16n = 0;
         char16_t *u16 = anostr_to_utf16(scratch, vs, &u16n);
         CHECK(u16 != NULL && anostr_eq(anostr_from_utf16(scratch, u16, u16n), vs), "utf16 round-trip");
@@ -906,12 +876,12 @@ static void fuzz(uint32_t iterations)
         size_t di = 0, dk = 0;
         while (di < vn && dk < an) { CHECK(anostr_rune_next(vs, &di) == awant[dk++], "to_utf32 == rune_next"); }
 
-        // rune_sort output is a PERMUTATION of the source runes, not merely ascending (awant now spent).
+        // rune_sort is a permutation of source runes.
         qsort(awant, an, sizeof awant[0], rune_cmp);
         for (size_t i = 0; i < an && i < gn; i++)
             CHECK(awant[i] == agot[i], "rune_sort is a permutation of the source runes");
 
-        // collate_prefix / collate_key agree with collate in sign over a random pair.
+        // collate_prefix/key agree with collate in sign.
         anostr_t p = rng_str(&rng, scratch, 10), q = rng_str(&rng, scratch, 10);
         uint64_t pk = anostr_collate_prefix(p), qk = anostr_collate_prefix(q);
         if (pk != qk)
@@ -919,7 +889,7 @@ static void fuzz(uint32_t iterations)
         anostr_t kp = anostr_collate_key(scratch, p), kq = anostr_collate_key(scratch, q);
         CHECK(sign(anostr_compare(kp, kq)) == sign(anostr_collate(p, q)), "collate_key agrees with collate");
 
-        // Base folds: ASCII case-only fold is a trivially correct oracle for eq_base/find_base.
+        // Base folds: ASCII case-only oracle for eq_base/find_base.
         char lo[24], up[24]; size_t ln = 1 + rng_below(&rng, 10);
         for (size_t k = 0; k < ln; k++) { char c = (char)('a' + rng_below(&rng, 26)); lo[k] = c; up[k] = (char)(c - 32); }
         CHECK(anostr_eq_base(anostr_view(lo, ln), anostr_view(up, ln)), "eq_base case-only");
@@ -947,7 +917,7 @@ int main(int argc, char **argv)
     if (argc > 1) iterations = (uint32_t)strtoul(argv[1], NULL, 10);
     fuzz(iterations);
 
-    // base_fold participates in the accent oracle below (silences unused on trivial builds).
+    // base_fold used by accent oracle below.
     CHECK(base_fold(0xC5) == 'a', "base fold accents to base letter");
 
     if (failures == 0) { printf("anotest_strings_fuzz: all checks passed\n"); return 0; }

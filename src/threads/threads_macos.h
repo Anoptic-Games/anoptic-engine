@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private to threads_macos.c.
-// macOS libpthread declares no spinlock/barrier primitives, so we supply them on Darwin.
-// NOT a public interface — never include from outside src/threads.
+// Private to threads_macos.c. Darwin spinlock/barrier decls. Never include outside src/threads.
 
 #ifndef ANOPTIC_THREADS_MACOS_H
 #define ANOPTIC_THREADS_MACOS_H
@@ -16,11 +14,17 @@
 
 #define PTHREAD_BARRIER_SERIAL_THREAD (-1)
 
+
+/* Spinlocks */
+
 int pthread_spin_init(pthread_spinlock_t *lock, int pshared);
 int pthread_spin_destroy(pthread_spinlock_t *lock);
 int pthread_spin_lock(pthread_spinlock_t *lock);
 int pthread_spin_trylock(pthread_spinlock_t *lock);
 int pthread_spin_unlock(pthread_spinlock_t *lock);
+
+
+/* Synchronization Barriers */
 
 int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count);
 int pthread_barrier_wait(pthread_barrier_t *barrier);

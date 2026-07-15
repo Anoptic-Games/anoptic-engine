@@ -3,15 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// GENERATED FILE -- do not edit. Produced by tools/gen_unicode_tables.c from
-// the Unicode Character Database, version 17.0.0.
-// Trimmed to the shipped scripts (collate_keep + Han) and BMP-bound: the runtime
-// treats cp >= 0x10000 as record 0 (uncased, no flags).
-//
-// Two-stage lookup:
-//     ano_uc_stage2[(size_t)ano_uc_stage1[cp >> 8] * 256 + (cp & 0xFF)]
-// yields an index into ano_uc_records. Record 0 is the identity record
-// (uncased, no flags), shared by unassigned, caseless, and unlisted code points.
+// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from UCD 17.0.0.
+// Trimmed to shipped scripts (collate_keep + Han), BMP-bound. cp >= 0x10000 -> record 0.
+
+// Two-stage: ano_uc_stage2[ano_uc_stage1[cp>>8]*256+(cp&0xFF)] -> ano_uc_records index.
+// Record 0 is the identity record (uncased, no flags).
 
 #ifndef ANOPTIC_SRC_STRINGS_ANO_UNICODE_TABLES_H
 #define ANOPTIC_SRC_STRINGS_ANO_UNICODE_TABLES_H

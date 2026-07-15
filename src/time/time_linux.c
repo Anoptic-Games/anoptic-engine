@@ -13,7 +13,7 @@
 
 /* Precision Timestamps */
 
-// The Linux monotonic clock already reports nanoseconds, so the counter IS the ns value.
+// Linux CLOCK_MONOTONIC is already nanoseconds: counter IS ns.
 uint64_t ano_timestamp_ticks() {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
@@ -28,12 +28,12 @@ uint64_t ano_ticks_to_ns(uint64_t ticks) {
     return ticks;
 }
 
-// High resolution relative timestamps from this local machine.
+// Identity with ticks (already ns).
 uint64_t ano_timestamp_raw() {
     return ano_timestamp_ticks();
 }
 
-// return ano_timestamp_raw, but scaled to microseconds.
+// CLOCK_MONOTONIC in microseconds (direct timespec; not ano_timestamp_raw / 1000).
 uint64_t ano_timestamp_us() {
     struct timespec ts;
 
@@ -44,7 +44,7 @@ uint64_t ano_timestamp_us() {
     return (uint64_t)(ts.tv_sec * 1000000LL) + (ts.tv_nsec / 1000);
 }
 
-// return ano_timestamp_raw, but truncated to ms.
+// CLOCK_MONOTONIC truncated to ms (direct timespec; not ano_timestamp_raw / 1e6).
 uint32_t ano_timestamp_ms() {
     struct timespec ts;
 
@@ -111,7 +111,7 @@ int ano_busywait(uint64_t ns) {
     return 0; // success
 }
 
-// Use OS time facilities for high-res sleep that DOES give up thread execution. (nanosleep on Unix)
+// High-res sleep: relative clock_nanosleep(CLOCK_MONOTONIC); restarts on EINTR.
 int ano_sleep(uint64_t us) {
     struct timespec request = {0};
     struct timespec remaining = {0};

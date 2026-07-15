@@ -3,16 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The anopak archive format. FROZEN (freeze item 10): a 32-byte header and a 48-byte TOC
-// entry, both little-endian, both fixed forever. The format is public because the builder
-// (tools/anopak) and any external inspector must read it without the engine's internals.
-//
-// Identity on disk is {rid, rid2} -- two FNV-1a-64 bases over the logical path -- plus the
-// kind's FOURCC. A DENSE KIND ID NEVER REACHES DISK. The TOC is sorted by rid, so lookup is
-// a bsearch and mounting costs one read of the header + the TOC, never a directory walk.
-//
-// An entry's bytes are stored as independent RES_CODEC_CHUNK-sized chunks, so a ranged read
-// decodes only the chunks it touches.
+// anopak archive format. 32-byte header, 48-byte TOC entry, LE, fixed.
+// Disk identity is {rid, rid2} plus kind FOURCC. Dense kind id never reaches disk. TOC sorted by rid (bsearch).
+// Mount costs header+TOC only. Ranged read decodes only touched chunks.
 
 #ifndef ANOPTICENGINE_ANOPTIC_RES_PACK_H
 #define ANOPTICENGINE_ANOPTIC_RES_PACK_H
@@ -24,21 +17,25 @@
 #define ANO_PACK_VERSION 1u
 #define ANO_PACK_MAX     8             // mounted packs
 
-// Header flags.
+/* Header flags */
+
 enum {
-    ANO_PACK_FLAG_SORTED = 1u << 0,    // the TOC is sorted ascending by rid (always set; refused otherwise)
+    ANO_PACK_FLAG_SORTED = 1u << 0,    // TOC sorted ascending by rid (always set, refused otherwise)
 };
 
-// Entry flags.
+/* Entry flags */
+
 enum {
-    ANO_PACK_ENTRY_BLOCK = 1u << 0,    // the raw bytes are a res_block_hdr plane-set block
+    ANO_PACK_ENTRY_BLOCK = 1u << 0,    // raw bytes are a res_block_hdr plane-set block
 };
+
+/* Header */
 
 // 32 bytes. header_hash is FNV-1a-64 over the first 24 bytes.
 typedef struct ano_pack_header {
     uint32_t magic;          // ANO_PACK_MAGIC
     uint16_t version;        // ANO_PACK_VERSION
-    uint8_t  codec;          // the codec every entry defaults to (res_codec_id)
+    uint8_t  codec;          // default codec for every entry (res_codec_id)
     uint8_t  flags;          // ANO_PACK_FLAG_*
     uint32_t entry_count;
     uint32_t reserved;
@@ -47,10 +44,12 @@ typedef struct ano_pack_header {
 } ano_pack_header;
 static_assert(sizeof(ano_pack_header) == 32, "the anopak header is 32 bytes, forever");
 
+/* TOC entry */
+
 // 48 bytes.
 typedef struct ano_pack_entry {
     uint64_t rid;            // FNV-1a-64 basis A over the logical path
-    uint64_t rid2;           // basis B. {rid, rid2} is the 128-bit identity; a mismatch is REFUSED.
+    uint64_t rid2;           // basis B. {rid, rid2} is 128-bit identity. mismatch is REFUSED.
     uint64_t data_off;       // absolute file offset of the entry's chunk index
     uint64_t raw_size;       // uncompressed bytes
     uint64_t stored_size;    // bytes on disk (chunk index + every stored chunk)

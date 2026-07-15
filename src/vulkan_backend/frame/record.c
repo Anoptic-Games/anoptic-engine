@@ -181,7 +181,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else {
-                // Cull feeds indirect commands + entity/compacted SSBOs for geometry and the tpsort compute pass, so dst reaches DRAW_INDIRECT, geom, and COMPUTE.
+                // Cull dst: DRAW_INDIRECT + geom + COMPUTE (tpsort).
                 VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
                     ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
                     | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);

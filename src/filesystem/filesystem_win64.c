@@ -17,10 +17,12 @@
 #include <libloaderapi.h>
 #include <mimalloc.h>
 
-// GetModuleFileNameA, not the TCHAR macro. The -A form mangles install paths outside the
-// active codepage. Debt: move to GetModuleFileNameW + UTF-8.
-// Output: directory of the running executable, no file name, by value.
-// length == 0 on failure or a path that does not fit MAXPATH - 1.
+
+/* Paths */
+
+// GetModuleFileNameA (not TCHAR). Debt: GetModuleFileNameW + UTF-8.
+// Output: executable directory, no file name, by value.
+// length == 0 on failure or path exceeding MAXPATH - 1.
 ano_fspath ano_fs_gamepath(void) {
 
     ano_fspath result = {0};
@@ -30,10 +32,10 @@ ano_fspath ano_fs_gamepath(void) {
     if (len == 0 || len >= MAX_PATH || len >= MAXPATH)
         return result; // failed or truncated
 
-    // Trim the executable file name, leaving its containing directory.
+    // Trim file name, leave containing directory.
     while (len > 0 && pathBuffer[len - 1] != '\\' && pathBuffer[len - 1] != '/')
         len--;
-    // Drop the trailing separator, but keep it for a drive root ("C:" is drive-relative, "C:\" is the root).
+    // Drop trailing separator, keep for drive root ("C:\" not "C:").
     if (len > 3)
         len--;
 
@@ -43,7 +45,7 @@ ano_fspath ano_fs_gamepath(void) {
     return result;
 }
 
-// %APPDATA%\anoptic, created if absent. %APPDATA% is the roaming user-data root, no shell32 KnownFolder call.
+// %APPDATA%\anoptic, created if absent.
 ano_fspath ano_fs_userpath(void) {
     ano_fspath result = {0};
 
@@ -62,29 +64,29 @@ ano_fspath ano_fs_userpath(void) {
     return result;
 }
 
-// Output: true on success.
-// Sets CWD to ano_fs_gamepath() so relative asset loads resolve.
+// Sets CWD to ano_fs_gamepath(). Output: true on success.
 bool ano_fs_chdir_gamepath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
     return dir.length > 0 && _chdir(dir.str) == 0;
 }
 
-// Output: 0 when `path` exists as a directory afterward, -1 on failure.
+// Output: 0 on success or EEXIST, -1 on failure.
 int fs_mkdir(const char *path)
 {
     return (_mkdir(path) == 0 || errno == EEXIST) ? 0 : -1;
 }
 
 
-/* Append-only file sink (Win32). The opaque handle wraps a single file HANDLE. */
+/* Append-Only File */
 
+// Opaque handle wraps a single Win32 HANDLE.
 struct ano_file {
     HANDLE handle;
 };
 
-// Output: handle opened FILE_APPEND_DATA, or NULL on failure. OPEN_ALWAYS creates if absent.
-// FILE_SHARE_DELETE gives POSIX unlink parity: another process may remove/replace the file while open.
+// Output: FILE_APPEND_DATA handle, or NULL. OPEN_ALWAYS creates if absent.
+// FILE_SHARE_DELETE: another process may remove/replace while open.
 ano_file *ano_fs_open_append(const char *path)
 {
     if (path == NULL)
@@ -105,9 +107,7 @@ ano_file *ano_fs_open_append(const char *path)
     return file;
 }
 
-// Output: append handle on a freshly truncated file, or NULL on failure.
-// CREATE_ALWAYS needs GENERIC_WRITE, and FILE_WRITE_DATA would break EOF-append atomicity,
-// so truncate in a throwaway open and reopen FILE_APPEND_DATA.
+// Truncate via throwaway CREATE_ALWAYS, reopen FILE_APPEND_DATA. NULL on failure.
 ano_file *ano_fs_open_trunc(const char *path)
 {
     if (path == NULL)
@@ -121,6 +121,7 @@ ano_file *ano_fs_open_trunc(const char *path)
     CloseHandle(trunc);
     return ano_fs_open_append(path);
 }
+
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
     if (file == NULL || (data == NULL && length != 0))
@@ -147,7 +148,7 @@ int ano_fs_sync(ano_file *file)
     return FlushFileBuffers(file->handle) ? 0 : -1;
 }
 
-// Output: 0 on success, -1 on error. The handle is freed either way.
+// Output: 0 on success, -1 on error. Handle freed either way.
 int ano_fs_close(ano_file *file)
 {
     if (file == NULL)

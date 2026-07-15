@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Strict typed settings schema, migration, quarantine, and durable replacement.
+// Strict typed settings: schema, migration, quarantine, durable replace.
 
 #include <anoptic_config.h>
 
@@ -22,6 +22,9 @@ typedef struct parsed_config {
     ano_config value;
     uint32_t version;
 } parsed_config;
+
+
+/* Parse */
 
 static bool tok_eq(const char *json, const jsmntok_t *tok, const char *text)
 {
@@ -182,6 +185,9 @@ static bool parse_config(const char *json, size_t len, parsed_config *out)
     out->version = version;
     return true;
 }
+
+
+/* Persistence */
 
 void ano_config_defaults(ano_config *config)
 {

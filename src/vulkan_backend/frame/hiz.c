@@ -10,7 +10,7 @@
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/frame/frame.h"
 
-// Hi-Z pyramid chain for one view: mips -> GENERAL, reduce mip 0 from resolved/MSAA depth, MAX-downsample, return to SHADER_READ for the cull.
+// Hi-Z pyramid/view: mips->GENERAL, reduce mip0 from depth, MAX-downsample, ->SHADER_READ for cull.
 static void record_hiz_pyramid_chain(VkCommandBuffer cmd, ViewResources* vr, VkExtent2D viewExtent)
 {
     // pyramid (all mips) -> GENERAL for the storage writes.
@@ -75,7 +75,7 @@ static void record_hiz_pyramid_chain(VkCommandBuffer cmd, ViewResources* vr, VkE
         0, 0, NULL, 0, NULL, 1, &pyrToRead);
 }
 
-// Async Hi-Z build CB: both views' pyramid chains for this frame slot on ctx.computeQueue.
+// Async Hi-Z CB: both views' pyramids on computeQueue.
 void recordHiZCompute(uint32_t frameIndex)
 {
     VkCommandBuffer cmd = rendererState.frames[frameIndex].computeCommandBuffer;
@@ -89,7 +89,7 @@ void recordHiZCompute(uint32_t frameIndex)
     vkEndCommandBuffer(cmd);
 }
 
-// Async light-cull CB: both views' froxel binning on ctx.computeQueue, recorded every frame even with no entities.
+// Async light-cull CB: both views' froxel binning on computeQueue.
 void recordLightcullCompute(uint32_t frameIndex)
 {
     VkCommandBuffer cmd = rendererState.frames[frameIndex].lightcullCommandBuffer;
@@ -110,14 +110,14 @@ void recordLightcullCompute(uint32_t frameIndex)
     vkEndCommandBuffer(cmd);
 }
 
-// In-frame Hi-Z pyramid build tail: reduce every view's depth into its pyramid, restore the depth layout.
+// In-frame Hi-Z tail: reduce every view's depth, restore depth layout.
 void ano_record_hiz_tail(VkCommandBuffer cmd)
 {
-    // Hi-Z occlusion pyramid build, all views: reduce each view's MSAA depth into mip 0, MAX-downsample the chain.
+    // Hi-Z build all views: reduce depth -> mip0, MAX-downsample chain.
     for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
         ViewResources* vr = &rendererState.frames[rendererState.frameIndex].views[v];
         {
-            // Reduce source setup: depthMaxResolve MAX-resolves MSAA depth to depthResolveImage (sampler2D), else reads MSAA depth as sampler2DMS.
+            // Reduce source: depthMaxResolve -> depthResolveImage, else MSAA sampler2DMS.
             if (ctx.deviceCapabilities.depthMaxResolve) {
                 // (A) order geometry depth writes before the resolve reads MSAA depth.
                 VkImageMemoryBarrier depWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -130,7 +130,7 @@ void ano_record_hiz_tail(VkCommandBuffer cmd)
                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                     0, 0, NULL, 0, NULL, 1, &depWaw);
 
-                // Async build: flip the resolve target SHADER_READ -> DEPTH_ATTACHMENT for this frame's resolve write.
+                // Async: resolve target SHADER_READ -> DEPTH_ATTACHMENT for this frame's write.
                 if (rendererState.asyncHiz) {
                     VkImageMemoryBarrier resPre = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
                     resPre.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -148,7 +148,7 @@ void ano_record_hiz_tail(VkCommandBuffer cmd)
                         0, 0, NULL, 0, NULL, 1, &resPre);
                 }
 
-                // Dedicated depth-resolve pass (no color, no draws) writes depthResolveImage.
+                // Depth-resolve pass writes depthResolveImage.
                 VkRenderingAttachmentInfo rDepth = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
                 rDepth.imageView = vr->depthView;                       // MSAA source
                 rDepth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -198,14 +198,14 @@ void ano_record_hiz_tail(VkCommandBuffer cmd)
             }
 
             if (rendererState.asyncHiz) {
-                // Async build: pyramid chain recorded into the compute CB, resolved depth stays SHADER_READ.
+                // Async: pyramid into compute CB; resolved depth stays SHADER_READ.
             } else {
-                // In-frame build: pre-chain WAR waits in submission order on a prior frame's cull.
+                // In-frame: pre-chain WAR vs prior frame's cull.
                 record_hiz_pyramid_chain(cmd, vr, rendererState.viewExtent[v]);
 
-                // Restore depth to DEPTH_ATTACHMENT for next frame's geometry/resolve pass.
+                // Restore depth -> DEPTH_ATTACHMENT for next frame.
                 if (ctx.deviceCapabilities.depthMaxResolve) {
-                    // Restore resolved depth SHADER_READ -> DEPTH_ATTACHMENT for next frame's resolve.
+                    // Resolved depth SHADER_READ -> DEPTH_ATTACHMENT.
                     VkImageMemoryBarrier resRestore = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
                     resRestore.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     resRestore.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;

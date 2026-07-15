@@ -12,9 +12,7 @@
 #include "vulkan_backend/gpu_alloc.h"
 #include "vulkan_backend/slot_upload.h"
 
-// Recreates each per-frame host-visible buffer at newBytes, preserving leading copyBytes (0 == discard).
-// in:  bufs/allocs [MAX_FRAMES_IN_FLIGHT], usage, newBytes (>0), copyBytes (<= old size)
-// out: true on success; false leaves the set partial
+// Recreate per-frame host-visible buffers at newBytes; preserve leading copyBytes (0=discard).
 static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
                           GpuAllocation allocs[MAX_FRAMES_IN_FLIGHT],
                           VkBufferUsageFlags usage, VkMemoryPropertyFlags props,
@@ -42,10 +40,8 @@ static bool growBufferSet(VkBuffer bufs[MAX_FRAMES_IN_FLIGHT],
     return true;
 }
 
-// ---------------------------------------------------------------------------
 // SlotUpload: x1 DEVICE_LOCAL per-slot buffer fed by a per-frame host-visible
 // delta staging ring. Render-thread only.
-// ---------------------------------------------------------------------------
 
 // Applies gfx+compute CONCURRENT sharing to a buffer the async light-cull touches across queue families.
 // fams must outlive the vkCreateBuffer call.
@@ -58,9 +54,7 @@ void buffer_share_async_compute(VkBufferCreateInfo* bi, uint32_t fams[2])
     bi->pQueueFamilyIndices = fams;
 }
 
-// in:  b, capacity (device elements), stride (bytes/elem), stagingCap (initial delta budget),
-//      computeShared (device buffer read by the async light-cull's compute family)
-// out: device DEVICE_LOCAL buffer + N host-visible staging buffers + region arrays; false on failure
+// Create SlotUpload: DEVICE_LOCAL + per-frame staging. computeShared => CONCURRENT with compute.
 bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride, uint32_t stagingCap, bool computeShared)
 {
     memset(b, 0, sizeof(*b));
@@ -201,12 +195,7 @@ static bool slot_upload_grow_device(SlotUpload* b, uint32_t newCap, uint32_t kee
     return true;
 }
 
-// Ensures the slot-indexed GPU buffers can hold at least `required` slots, growing
-// them (and the slot table's ceiling) if not. No-op when already large enough.
-// Recreates every entity-scaled buffer and re-points all descriptor sets, so a full
-// vkDeviceWaitIdle precedes the work.
-// in:  state, required (slot count needed), frameIndex (frame being recorded)
-// out: true if capacity >= required afterward; false on OOM
+// Grow entity-scaled GPU buffers to >= required slots. Idle + recreate + rebind descriptors.
 bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t frameIndex)
 {
     uint32_t oldCap = state->slots.slotCapacity;

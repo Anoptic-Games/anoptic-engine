@@ -287,7 +287,7 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
     if (vkCreateDescriptorSetLayout(ctx->device, &setupInfo, NULL, &state->shadowSetupSetLayout) != VK_SUCCESS)
         return false;
 
-    // shadow geometry/sampling set (set 2): 0 frustum viewProjs, 1 shadow atlas array, 2 per-light shadow info, 3 packed sampling viewProjs UBO.
+    // Shadow geom set 2: 0 viewProjs, 1 atlas, 2 light info, 3 sampling viewProjs UBO.
     VkShaderStageFlags geomStage = (ctx->deviceCapabilities.meshShader
         ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
         | (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
