@@ -92,6 +92,14 @@ target_link_libraries(anotest_ui PRIVATE anoptic_core m)
 add_test(NAME anoptic_ui COMMAND anotest_ui)
 set_tests_properties(anoptic_ui PROPERTIES TIMEOUT 60 LABELS "unit")
 
+# Path-baker contour guard: a MOVE-only path (> 512 contours) is legal input and must come
+# back ANO_UI_REF_NONE, not spray qn past the 513-entry cstart stack array (docs/BUGS.md,
+# UI / Implementation). Fails (access violation or wedge in the baker) until the cn bound lands.
+add_executable(anotest_uipathguard anotest_uipathguard.c)
+target_link_libraries(anotest_uipathguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_uipathguard COMMAND anotest_uipathguard)
+set_tests_properties(anoptic_uipathguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
 # DISABLED in ctest, run ./anotest_strbench by hand from a -O3 build.
 add_executable(anotest_strbench anotest_strbench.c)
