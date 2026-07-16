@@ -12,7 +12,7 @@
 #include <math.h>
 #include <string.h>
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 #define FX_TAU_F 6.28318530717958647692f
 

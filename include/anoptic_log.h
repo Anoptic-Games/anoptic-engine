@@ -13,8 +13,8 @@
 //
 // The ANO_ prefix is load-bearing. Bare ERROR is a windows.h macro, bare FILE a stdio typedef.
 
-#ifndef ANOPTIC_LOGGING_H
-#define ANOPTIC_LOGGING_H
+#ifndef ANOPTIC_LOG_H
+#define ANOPTIC_LOG_H
 
 #include <stdarg.h>
 
@@ -63,7 +63,8 @@ int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
 
 /* Configuration Functions */
 
-// Open dir/anoptic.log as the output file. Returns 0 on success, -1 keeps the previous file.
+// Open dir/<session-stamp>_ano.log as the output file (the stamp: ano_fs_session_stamp).
+// Returns 0 on success, -1 keeps the previous file.
 int ano_log_output_dir(const char* directoryPath);
 
 // Runtime severity gate.
@@ -99,4 +100,4 @@ void ano_log_flush(void);
 #define ano_debug_rolog(...)((void)0)
 #endif
 
-#endif // ANOPTIC_LOGGING_H
+#endif // ANOPTIC_LOG_H

@@ -1,8 +1,8 @@
 // UI prim evaluator + ABI twins of include/anoptic_ui.h (AnoUiPrim 96 B, AnoUiClip
-// 48 B, AnoUiPaint 48 B, AnoUiStop 32 B — offsets pinned by static_asserts there).
-// The coverage/shadow math mirrors src/ui/ui_raster_ref.c statement for statement;
-// fix bugs THERE first, then re-port. Declares set 0 bindings 4-7 and the set 1
-// bindless texture array. Include AFTER textcoverage.glsl (reuses its em_box); the
+// 48 B, AnoUiPaint 48 B, AnoUiStop 32 B, offsets pinned by static_asserts there).
+// The coverage/shadow math mirrors src/ui/ui_raster_ref.c statement for statement:
+// fix bugs THERE first, then re-port. Declares set 0 bindings 4-10 and the set 1
+// bindless texture array. Include AFTER textcoverage.glsl (reuses its em_box). The
 // including shader needs GL_EXT_nonuniform_qualifier.
 
 // Mirrors AnoUiPrimKind.
@@ -48,7 +48,7 @@ struct UiClip {
     vec4 rrRadii;
 };
 
-// Mirrors AnoUiPaint (48 B) + AnoUiStop (32 B); evaluated from step 6 on.
+// Mirrors AnoUiPaint (48 B) + AnoUiStop (32 B).
 struct UiPaint {
     uint kind;
     uint stopFirst;
@@ -211,9 +211,8 @@ float ui_path_sum(uint off, uint curveCount, vec2 wpos, vec2 wdim)
 }
 
 // Premultiplied contribution of prim idx over the unit window at pxTL. Mirrors
-// ano_ui_ref_shade for RRECT/SHADOW/PATH; IMAGE additionally samples the bindless array
-// (outside the CPU reference's reach — the self-test scene carries no images).
-// GLYPHS lands in its own range walk. paintCount bounds the gradient fail-closed.
+// ano_ui_ref_shade for RRECT/SHADOW/PATH. IMAGE also samples the bindless array,
+// GLYPHS walks its own range. paintCount bounds the gradient fail-closed.
 vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount, uint paintCount)
 {
     UiPrim p = uiPrims[idx];
@@ -257,9 +256,8 @@ vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount, uint paintCount)
     }
     else if (p.kind == UI_GLYPHS)
     {
-        // Glyph labels z-interleaved with the prims: walk the range in register-blend
-        // order (shade_window bbox-rejects cheaply), tint, clip. aux0 was rebased at
-        // compose into the frame buffer's UI glyph region.
+        // Glyph labels z-interleaved with the prims: walk the range in blend order,
+        // tint, clip. aux0 was rebased at compose into the UI glyph region.
         vec4 gacc = vec4(0.0);
         for (uint g = 0u; g < p.aux1; g++)
         {
@@ -279,9 +277,8 @@ vec4 ui_shade(uint idx, vec2 pxTL, uint clipCount, uint paintCount)
     return ui_paint_eval(p.paintRef, paintCount, pxTL + 0.5, p.color) * texel * cov;
 }
 
-// A tile entry the builder proved fully covers this tile: skip the SDF (coverage is 1),
-// take the flat fill through clip and paint. RRECT-only by construction. Mirrors the
-// reference shade_entry solid branch.
+// Solid tile entry (coverage proven 1): skip the SDF, flat fill through clip and
+// paint. RRECT-only. Mirrors the reference shade_entry solid branch.
 vec4 ui_shade_solid(uint idx, vec2 pxTL, uint clipCount, uint paintCount)
 {
     UiPrim p = uiPrims[idx];

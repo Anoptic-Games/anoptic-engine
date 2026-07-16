@@ -1,0 +1,42 @@
+# Build the engine and push its runtime closure to the anoptic-games cachix cache.
+# Push is an explicit `cachix push` of the built outputs only — the action's automatic
+# store-diff push would upload the whole toolchain and eat the 5 GB free tier.
+name: cachix
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  push-to-cachix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64-linux: play launcher (engine + GPU bridges) and the Windows cross exe.
+          - os: ubuntu-latest
+            targets: .#play .#release-wsl
+          # aarch64-darwin: play launcher (engine, MoltenVK baked in).
+          - os: macos-latest
+            targets: .#play
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+      # skipPush: the action still wires the cache as a substituter, so unchanged
+      # store paths are pulled instead of rebuilt.
+      - uses: cachix/cachix-action@v16
+        with:
+          name: anoptic-games
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Build and push runtime closures
+        run: nix build ${{ matrix.targets }} --print-out-paths --no-link | xargs cachix push anoptic-games

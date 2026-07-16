@@ -3,11 +3,11 @@
     "anoptic-assets": {
       "flake": false,
       "locked": {
-        "lastModified": 1783622638,
-        "narHash": "sha256-vesz1jJtU69KmYLok6F2glf2gkyQJzp9RAfsA6/1u7E=",
+        "lastModified": 1783730983,
+        "narHash": "sha256-a8bWLmRaHoFDXiVJTP1a3D4+sOHv1JQn+A0Ep4CK6cU=",
         "owner": "Anoptic-Games",
         "repo": "assets-free",
-        "rev": "87100fa6e01d0cea9a6b364d38e11510728cc3ef",
+        "rev": "a9415d5c0dd340b0016df1edd5eef3350072e585",
         "type": "github"
       },
       "original": {
@@ -84,6 +84,26 @@
         "type": "github"
       }
     },
+    "nix-gl-host": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1732211616,
+        "narHash": "sha256-QZCKJoypcwgS3tDNSWMjlxEBZtOYPW3eXV24rMzKsac=",
+        "owner": "numtide",
+        "repo": "nix-gl-host",
+        "rev": "5269b233f83880a0b433eafe026f0bc0d8f1a4a9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "nix-gl-host",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1782723713,
@@ -107,6 +127,7 @@
         "freetype-src": "freetype-src",
         "glfw-src": "glfw-src",
         "mimalloc-src": "mimalloc-src",
+        "nix-gl-host": "nix-gl-host",
         "nixpkgs": "nixpkgs"
       }
     }

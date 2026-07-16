@@ -5,13 +5,13 @@
 
 // Preserved baseline: the pre-ring mutex logger, namespaced mtxlog_* for the optional benchmark
 // (anotest_logbench). Body unchanged from the commit before the lock-free rewrite. Not in the
-// standard build. See logging_old.h.
+// standard build. See log_old.h.
 
 // Mutex logger. Producers format on their own thread, then append to a shared buffer under one
 // mutex. The caller drains it to the sink via mtxlog_flush() on its own schedule, so the logger
 // owns no thread. FATAL and _now write straight through. Stop all producers before mtxlog_cleanup.
 
-#include "logging/logging_old.h"
+#include "log/log_old.h"
 
 #include <anoptic_threads.h>
 #include <anoptic_filesystem.h>

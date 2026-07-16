@@ -62,7 +62,15 @@ typedef pthread_key_t anothread_key_t;
 
 /* Thread Management */
 
+// Stack reserve for every engine thread. ano_thread_create pins it on any NULL attr.
+// On win64 the PE header carries it instead (root CMakeLists --stack), sizing the main thread too.
+#define ANO_THREAD_STACK_SIZE ((size_t)8 << 20)
+
 int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(* func)(void *), void *arg);
+
+// Stack budget of the process's initial thread.
+// RLIMIT_STACK soft on POSIX (SIZE_MAX when unlimited), the PE-header reserve on win64, 0 when unknown.
+size_t ano_thread_main_stack(void);
 
 int ano_thread_join(anothread_t thread, void **res);
 

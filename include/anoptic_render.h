@@ -313,12 +313,11 @@ typedef struct RenderDestroyBatch
 // One screen-text block (RCMD_TEXT_SET): shaped glyph instances, addressed by a
 // producer-owned text_id (its namespace to assign and recycle, like light_id). SET
 // REPLACES the block's previous contents (creating it if new); CLEAR removes it. The
-// producer shapes with ano_text_shape/_runs against anoRenderTextBake() — origins and
-// sizes in LOGICAL UNITS of the overlay surface (the space RenderSnapshot.uiWidth/
-// uiHeight describes); the renderer folds the surface scale at compose, so glyph
-// curves rasterize at full device resolution. Composited over the frame after the
-// render-internal overlay text. Submit via ano_render_text_set, which copies the
-// array into one render-owned block — the caller's array need only live until that
+// producer shapes with ano_text_shape/_runs against anoRenderTextBake(). Origins and
+// sizes are LOGICAL UNITS of the overlay surface (RenderSnapshot.uiWidth/uiHeight).
+// The renderer folds the surface scale at compose. Composited over the frame after
+// the render-internal overlay text. Submit via ano_render_text_set, which copies the
+// array into one render-owned block. The caller's array need only live until that
 // call returns.
 typedef struct RenderTextBlock
 {
@@ -326,9 +325,9 @@ typedef struct RenderTextBlock
     const AnoGlyphInstance *instances;  // [count] shaped glyphs (48-byte GPU ABI)
 } RenderTextBlock;
 
-// Per-block caps for RCMD_UI_SET (the composed union across blocks additionally caps at
-// the render-side table sizes; a block that would overflow the union is skipped whole,
-// never truncated — truncation would corrupt clip/paint/glyph references).
+// Per-block caps for RCMD_UI_SET. The composed union across blocks also caps at the
+// render-side table sizes. A block that would overflow the union is skipped whole,
+// never truncated.
 #define ANO_RENDER_UI_MAX_PRIMS  1024u
 #define ANO_RENDER_UI_MAX_CLIPS  64u
 #define ANO_RENDER_UI_MAX_PAINTS 64u
@@ -337,23 +336,19 @@ typedef struct RenderTextBlock
 #define ANO_RENDER_UI_MAX_GLYPHS 2048u
 
 // The surface a UI block is placed on. Block coordinates are logical units OF THAT
-// SURFACE; the surface owns the logical->device mapping and the renderer folds it
-// exactly once, at compose (docs/ui/ui-render.md §3.11). v0 defines one surface: the
-// screen overlay, scaled by the platform content scale, logical extent published as
-// RenderSnapshot.uiWidth/uiHeight. Future surface kinds (offscreen texture panels at
-// a chosen texel density, world-placed 3D panels through a world transform) extend
-// this id; block content and the builder verbs stay unchanged.
+// SURFACE. The surface owns the logical->device mapping, folded exactly once at
+// compose (docs/ui/ui-render.md §3.11). v0 defines one surface: the screen overlay,
+// scaled by the platform content scale, logical extent RenderSnapshot.uiWidth/uiHeight.
 #define ANO_UI_SURFACE_OVERLAY 0u
 
 // One UI block (RCMD_UI_SET): a z-ordered prim stream with its side tables and shaped
 // glyph labels, addressed by a producer-owned ui_id (its namespace, like text_id). SET
-// is a full replace; CLEAR removes the block. Blocks compose ascending by (layer,
-// creation order); within a block, prim index IS paint order. References are BLOCK-
-// LOCAL (prim clipRef/paintRef into this block's tables, UI_GLYPHS aux0 into glyphs[])
-// and are rebased render-side at compose. Positions and scroll are logical units of
-// `surface`; scroll adds to every position at compose, before the surface fold
-// (reserved for a future scroll verb, 0 today). Submit via ano_render_ui_set, which
-// packs everything into one render-owned allocation.
+// is a full replace. CLEAR removes the block. Blocks compose ascending by (layer,
+// creation order). Within a block, prim index IS paint order. References are BLOCK-
+// LOCAL (prim clipRef/paintRef into this block's tables, UI_GLYPHS aux0 into glyphs[]),
+// rebased render-side at compose. Positions and scroll are logical units of `surface`.
+// scroll adds to every position at compose, before the surface fold (0 today). Submit
+// via ano_render_ui_set, which packs everything into one render-owned allocation.
 typedef struct RenderUiBlock
 {
     uint32_t layer;
@@ -485,15 +480,14 @@ bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
                          const AnoGlyphInstance *instances, uint32_t count);
 bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
 
-// UI blocks (the v0 logic->render UI path; docs/ui/ui-render.md §3.9). `set` packs the
+// UI blocks (the v0 logic->render UI path, docs/ui/ui-render.md §3.9). `set` packs the
 // builder's tables plus the shaped glyph labels into one render-owned block and REPLACES
-// block ui_id's contents; caller arrays need only live until the call returns. Text
+// block ui_id's contents. Caller arrays need only live until the call returns. Text
 // semantics carry over: `clear` is idempotent, count-0 (empty builder) clears, false ==
-// ring full (retry), a dropped SET is merely stale. An INVALID block — per-block caps
-// exceeded, out-of-range clip/paint/glyph references, or a UI_PATH whose curve walk
-// (ANO_UI_CURVE_SENTINEL grammar) would read past the stream — is dropped with a warning
-// and returns true, so backpressure retry loops never spin on bad input. UI_GLYPHS prims
-// index glyphs[] block-locally.
+// ring full (retry), a dropped SET is merely stale. An INVALID block (per-block caps
+// exceeded, out-of-range clip/paint/glyph refs, or a UI_PATH curve walk past the stream
+// end) is dropped with a warning and returns true. UI_GLYPHS prims index glyphs[]
+// block-locally.
 bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
                        const AnoUiBuilder *ui,
                        const AnoGlyphInstance *glyphs, uint32_t glyphCount);
@@ -528,7 +522,7 @@ typedef enum AnoInputKind
     ANO_INPUT_CURSOR_POS,         // absolute cursor position (overlay logical units, origin top-left)
     ANO_INPUT_SCROLL,             // scroll wheel delta
     ANO_INPUT_FOCUS,              // window focus gained/lost
-    ANO_INPUT_FRAMEBUFFER_RESIZE, // framebuffer size changed, device px (UI layout tracks the snapshot's logical extent instead)
+    ANO_INPUT_FRAMEBUFFER_RESIZE, // framebuffer size changed, device px
     ANO_INPUT_CHAR,               // text input codepoint (for typed UI)
 } AnoInputKind;
 
@@ -539,7 +533,7 @@ typedef struct AnoInputEvent
     union {
         struct { int32_t key, scancode, action, mods; } key;     // largest arm (16 B)
         struct { int32_t button, action, mods; }        button;
-        struct { float   x, y; }                        cursor;  // overlay logical units (the UI layout space)
+        struct { float   x, y; }                        cursor;  // overlay logical units
         struct { float   dx, dy; }                      scroll;
         struct { int32_t focused; }                     focus;   // 1 = gained, 0 = lost
         struct { uint32_t width, height; }              resize;
@@ -582,10 +576,9 @@ typedef struct RenderSnapshot
     Vector4  frustum[6];   // view-0 frustum planes (same packing as the cull pass)
     uint32_t vpWidth;      // framebuffer extent the matrices were built for
     uint32_t vpHeight;
-    // The overlay surface in logical units: uiWidth/uiHeight = framebuffer / uiScale,
-    // uiScale = the platform content scale (2.0 on Retina, fractional on Wayland, 1.0
-    // where window and framebuffer coincide). UI layout and hit-testing live in this
-    // space; cursor events arrive in it. Fractional scales make the extent non-integer.
+    // Overlay surface in logical units: uiWidth/uiHeight = framebuffer / uiScale,
+    // uiScale = the platform content scale. UI layout, hit-testing, and cursor
+    // events live in this space. Fractional scales make the extent non-integer.
     float    uiWidth;
     float    uiHeight;
     float    uiScale;

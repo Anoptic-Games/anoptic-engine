@@ -32,7 +32,7 @@ src/
 ├── threads/        # Thread / mutex / condvar / atomics abstraction over pthreads + Win32
 ├── time/           # High-resolution monotonic timing and OS-scheduled sleeps
 ├── strings/        # Owned string type experiments and scoped-heap tests
-├── logging/        # Async queue-based logger
+├── log/            # Async queue-based logger + crash blackbox: fatal-signal/SEH hooks, session CRASH-log record, hail-mary log flush
 └── filesystem/     # Path and file I/O abstraction (per-platform)
 ```
 
@@ -87,15 +87,24 @@ src/
   integration that backs the engine's arenas and thread-local heaps.
 
 - `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition
-  variables, spinlocks, barriers, and TLS over pthreads / Win32.
+  variables, spinlocks, barriers, and TLS over pthreads / Win32. The spawn shim arms
+  each new thread's crash stack via `ano_log_crash_thread_arm` (see `log/`).
 
 - `time/` (`anoptic_time.h`): Emulator-grade monotonic timestamps and precise
   sleep/busy-wait.
 
 - `strings/` (`anoptic_strings.h`): Owned-string-type work and scoped-heap experiments.
 
-- `logging/` (`anoptic_logging.h`): Asynchronous, queue-based logger (hot-path enqueue,
-  cold-path flush).
+- `log/` (`anoptic_log.h`, `anoptic_log_crash.h`): Asynchronous, queue-based
+  logger (hot-path enqueue, cold-path flush)
+
+- `anoptic_log_crash.h` Crash handling. The blackbox hooks fatal signals
+  (POSIX) and unhandled SEH exceptions + SIGABRT (Windows), writes an async-signal-safe
+  record (signal, fault address, backtrace) to the session's `logs/<stamp>_CRASH.log` (path
+  pre-resolved at init, stamp shared with the logger), then gives the logger one last flush
+  before re-raising. A deadman guarantees the process exits instead of hanging. Per-thread
+  crash stacks (sigaltstack / SetThreadStackGuarantee) arm via `ano_log_crash_thread_arm`,
+  called automatically by `ano_thread_create`, so a blown stack reports on any engine thread.
 
 - `filesystem/` (`anoptic_filesystem.h`): Path handling and file I/O, per platform.
 

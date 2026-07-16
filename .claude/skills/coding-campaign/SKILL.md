@@ -1,6 +1,6 @@
 ---
 name: coding-campaign
-description: WIP DO NOT USE EVER UNLESS THIS TEXT IS STRIKED OUT BY USER An experimental hierarchical GAN coder campaign. Run only when user mentions using Sol/Luna, claudex fleets, competing implementations, or architecture contests. The CMDR derives checkpointed operational phases from the ingested mission and advances them through fresh blind Opus supervisors; every code-bearing artifact is produced by claudex Sol/Luna Individual Units; supervisors only commission, judge, select, gate, and report.
+description: A hierarchical GAN coder campaign. Run only when user mentions using Sol/Luna, claudex fleets, competing implementations, or architecture contests. The CMDR derives checkpointed operational phases from the ingested mission and advances them through fresh blind Opus supervisors; every code-bearing artifact is produced by claudex Sol/Luna Individual Units; supervisors only commission, judge, select, gate, and report.
 disable-model-invocation: true
 ---
 
@@ -14,21 +14,21 @@ The CMDR first derives the campaign's operational phases from the user's prompt,
 
 ## Campaign law
 
-- Squad Leaders are Opus only. Never use Fable as an SL. Fable may be used directly outside this skill under ultracode for one bounded implementation task.
-- Individual Units are claudex instances using `gpt-5.6-sol` or `gpt-5.6-luna`. No other model writes campaign code.
+- Squad Leaders are Opus only. Never use Fable as an SL. Fable may be used as superivsing CMDR only.
+- Individual Units (IUs) are claudex instances using `gpt-5.6-sol` or `gpt-5.6-luna`. No other model writes campaign code.
 - The runner hard-fires the standard fleet: 4 Sol/high + 6 Luna/xhigh, ten IUs total. Fleet composition is not configurable.
-- Run no more than three Opus SLs concurrently. Queue additional squads and start them as active squads report or finish; quota safety outranks wall-clock spectacle.
-- Squads are blind. An SL receives its lineage and owned scope, never another squad's prompt, candidates, worktree, findings, or intermediate state.
-- Every IU in one squad workgroup receives the exact same frozen prompt, byte for byte. Never specialize prompts by Sol/Luna role, index, candidate path, anticipated approach, or any other per-unit detail. Supply isolated paths and deadline-warning paths through runner-owned environment variables. A later round may use a new prompt, but that prompt is again identical for every IU in that invocation.
-- There is no preset phase count, alphabet, naming scheme, or reusable phase template. The CMDR derives semantically named phases from the ingested mission. Each phase must have explicit dependencies, a bounded objective, a freezeable output, and an objective completion gate. Historical labels such as A/B/C are examples only and must never be projected onto unrelated work.
+- Run no more than four Opus SLs concurrently. Queue additional squads and start them as active squads report or finish; quota safety outranks wall-clock spectacle.
+- Squads are blind to the actions of another. An SL receives its lineage and owned scope, never another squad's prompt, candidates, worktree, findings, or intermediate state. All signals follow chain of command.
+- In a given coding round, every IU in one squad workgroup receives the exact same frozen prompt, byte for byte. Never specialize prompts by Sol/Luna role, index, candidate path, anticipated approach, or any other per-unit detail. Supply isolated paths and deadline-warning paths through runner-owned environment variables. A later round may use a new prompt, but that prompt is again identical for every IU in that invocation.
+- There is no preset phase count, alphabet, naming scheme, or reusable phase template. The CMDR derives semantically named phases from the ingested mission. Each phase must have explicit dependencies, a bounded objective, a freezeable output, and an objective completion gate.
 - The campaign advances through CMDR-controlled global phase barriers. Run one operational phase across every competing lineage, collect every phase-local winner, consolidate and freeze the phase winner, prove its gate, create its Git checkpoint commit, terminate that supervisor wave, and only then start the next phase. No phase overlap and no persistent SL context spanning phases.
-- An SL is a temporary supervisory role, not a required dynamic-workflow primitive. Prefer fresh phase-scoped Opus subagents: one lineage, one operational phase, one report, then terminate. A phase may have more than three competing supervisors, but only three are active concurrently; queued supervisors belong to the same phase barrier and must finish or be explicitly culled before CMDR consolidation.
+- An SL is a temporary supervisory role, not a required dynamic-workflow primitive. Prefer fresh phase-scoped Opus subagents: one lineage, one operational phase, one report, then terminate. A phase may have more than four competing supervisors, but only four are active concurrently; queued supervisors belong to the same phase barrier and must finish or be explicitly culled before CMDR consolidation.
 - No result exists without a reproducible artifact and a run that proves it. A summary, intention, partial transcript, or unranked candidate directory is not a result.
 - Obtain explicit authorization to create checkpoint commits and optional GOLD tags before launching a campaign that requires phase advancement. Push authorization is separate. Without commit authorization, the CMDR may select a winner but must label it `selected, pending checkpoint`; it may not call the state checkpointed or GOLD and may not release dependent phases.
 
 ## Git checkpoint law
 
-- A checkpoint is exactly a Git commit containing the consolidated, working code after the declared phase-wide gate passes. A selection, worktree, report, transcript, results table, uncommitted diff, failing commit, or partial implementation is not a checkpoint.
+- A checkpoint is a Git commit containing the consolidated, working code after the declared phase-wide gate passes. A selection, worktree, report, transcript, results table, uncommitted diff, failing commit, or partial implementation is not a checkpoint.
 - The CMDR may mark that exact commit with `GOLD/<semantic-phase-id>`. A GOLD tag means its required gate passed. Never move or reuse a GOLD tag; a repair receives a new commit and a new semantic tag.
 - Do not create `phase_<P>/checkpoint`, checkpoint manifests, marker files, checkpoint directories, or duplicate evidence. Git history, existing worktrees, prompts, candidates, `results.tsv`, champions, and logs already hold the evidence.
 - Every dependent phase starts from the exact checkpoint commit, identified by its commit hash or GOLD tag. It never starts from a mutable worktree tip or a merely selected candidate.
@@ -36,7 +36,7 @@ The CMDR first derives the campaign's operational phases from the user's prompt,
 
 ## Absolute SL no-code rule
 
-An SL is a read-mostly control-plane judge. An SL MUST NOT author, rewrite, edit, synthesize, complete, or repair any code-bearing artifact. There are no emergency, deadline, convenience, triviality, integration, or "surgical fix" exceptions.
+An SL is a read-mostly control-plane judge. An SL MUST NOT author, rewrite, edit, synthesize, complete, or repair any code-bearing artifact. There are no emergency, deadline, convenience, triviality, or "surgical fix" exceptions.
 
 Code-bearing artifacts include:
 
@@ -62,7 +62,6 @@ The following are violations:
 - Manually merging candidates, retyping a candidate, or making a champion "house style" compliant.
 - Writing the fitness harness because it is small.
 - Fixing a compile error, test failure, merge conflict, or review finding directly.
-- Treating predecessor salvage as a current fleet winner.
 
 If an SL can describe a needed code change, it commissions an IU to make that change. If no IU-produced artifact exists, the component remains incomplete and must be reported as such.
 
@@ -70,7 +69,15 @@ If an SL can describe a needed code change, it commissions an IU to make that ch
 
 ### Commander
 
-The CMDR ingests the user's prompt and governing specifications, inspects the repository and dependency boundaries, and turns the actual mission into a dependency-ordered phase plan with distinct competing lineages. It does not begin with a fixed number or kind of phases. Before launch it obtains the Git commit and optional tag authorization required by the planned barriers. For each derived phase it freezes the declared input commit, supplies bounded context packets, starts fresh phase-scoped supervisors with at most three active concurrently, collects every local winner, independently re-tests the finalists, chooses or commissions consolidation of the phase winner, proves the phase-wide gate, commits that exact working integration state, optionally tags it GOLD, and only then permits the next dependent phase to exist. Before spawning a supervisor, the CMDR verifies its worktree path, exact base commit, branch or detached state, clean owned files, required submodules, shared assets, toolchain, and baseline gate. A mismatch is fixed before the supervisor starts, never discovered on its context budget. The CMDR calculates the worst-case phase schedule from the fleet size and hard deadlines; work that cannot finish inside the safe campaign window is split at a real dependency or verification boundary. During execution the CMDR watches live token/time budgets, runner deadlines, checkpoint commits, and stalled squads; it culls or finalizes them instead of waiting only for final structured output. After a checkpoint commit it may revise only the unstarted remainder of the phase plan in response to evidence; it never silently redefines a completed phase, amends the checkpoint, moves its GOLD tag, or mutates frozen substrate. The CMDR never asks an SL to rescue code by hand. Cross-lineage integration, final merging, or repair is mechanical application of unchanged winners or another claudex round owned by the CMDR; the CMDR judges and gates but does not author campaign code.
+The CMDR ingests the user's prompt and governing specifications, inspects the repository and dependency boundaries, and turns the actual mission into a dependency-ordered phase plan with distinct competing lineages. It does not begin with a fixed number or kind of phases. Before launch it obtains the Git commit and optional tag authorization required by the planned barriers. 
+
+For each derived phase it freezes the declared input commit, supplies bounded context packets, starts fresh phase-scoped supervisors with at most four active concurrently, collects every local winner, independently re-tests the finalists, chooses or commissions consolidation of the phase winner, proves the phase-wide gate, commits that exact working integration state, optionally tags it GOLD, and only then permits the next dependent phase to exist. 
+
+Before spawning a supervisor, the CMDR verifies its worktree path, exact base commit, branch or detached state, clean owned files, required submodules, shared assets, toolchain, and baseline gate. A mismatch is fixed before the supervisor starts, never discovered on its context budget. The CMDR calculates the worst-case phase schedule from the fleet size and hard deadlines; work that cannot finish inside the safe campaign window is split at a real dependency or verification boundary.
+
+During execution the CMDR watches live token/time budgets, runner deadlines, checkpoint commits, and stalled squads; it culls or finalizes them instead of waiting only for final structured output. After a checkpoint commit it may revise only the unstarted remainder of the phase plan in response to evidence; it never silently redefines a completed phase, amends the checkpoint, moves its GOLD tag, or mutates frozen substrate. The CMDR never asks an SL to rescue code by hand. 
+
+The CMDR may only write code directly when it is first spinning up the worktree for SL's to copy, to smooth over any bumps between phases, and at the very end when combining the work of every phase and winning SL into a cohesive whole. Never in-flight and never while SL's are working.
 
 ### Squad Leader
 
@@ -78,7 +85,11 @@ An SL controls one architectural lineage for exactly one operational phase. It r
 
 ### Individual Unit
 
-An IU performs one bounded task under 200k tokens through claudex. IU tasks include reconnaissance, fitness-harness creation, implementation, tests, comments and documentation tone, tersification, synthesis, integration, repair, and adversarial review. Sol/high is the default implementation and critical-reasoning unit; Luna/xhigh supplies breadth, alternative implementations, and refutation. Every IU owns its artifact through the required targeted tests: it must implement, run the supplied tests in its isolated environment, repair its own work, and reach green inside its deadline before returning the complete artifact. Reasoning that tests ought to pass is not testing. Partial code, "the SL can fix this," untested output, a non-green tally, or a late artifact is failure. The runner independently reruns fitness, records the exact tally, and only `pass=X/X` candidates are eligible to win.
+An IU performs one bounded task under 200k tokens through claudex. 200k tokens is treated as a hard max: if the task exceeds it, let the IU finish and re-consider the scope to be subdivided into more digestible chunks. IU tasks include reconnaissance, fitness-harness creation, implementation, tests, comments and documentation tone, tersification, synthesis, integration, repair, and adversarial review. 
+
+Sol/high is the default implementation and critical-reasoning unit; Luna/xhigh supplies breadth, alternative implementations, and refutation. 
+
+Every IU owns its artifact through the required targeted tests: it must implement, run the supplied tests in its isolated environment, repair its own work, and reach green inside its deadline before returning the complete artifact. Reasoning that tests ought to pass is not testing. Partial code, "the SL can fix this," untested output, a non-green tally, or a late artifact is failure. The runner independently reruns fitness, records the exact tally, and only `pass=X/X` candidates are eligible to win.
 
 ## Required CMDR phase barriers
 
@@ -86,23 +97,23 @@ Before launching any supervisor, derive and record the mission-specific phase pl
 
 Example (illustrative only):
 
-```text
+```h
 CMDR READS USER PROMPT AND SPEC, THEN DETERMINES HOW THE WORK SHOULD BE DIVIDED INTO STAGES A, B, AND C
 CMDR START STAGE A
 SL SL SL SL SL
-(each SL runs ~12 claudex instances with the identical Stage A prompt)
+(each SL runs ~10 claudex instances with the identical Stage A prompt)
 SL SL SL SL SL (they pick their winners and tell CMDR)
 CMDR CONSOLIDATE
 CMDR STAGE A DONE
 CMDR START STAGE B
 SL SL SL SL SL
-(each SL runs ~12 claudex instances with the identical Stage B prompt)
+(each SL runs ~10 claudex instances with the identical Stage B prompt)
 SL SL SL SL SL (they pick their winners and tell CMDR)
 CMDR CONSOLIDATE
 CMDR STAGE B DONE
 CMDR START STAGE C
 SL SL SL SL SL
-(each SL runs ~12 claudex instances with the identical Stage C prompt)
+(each SL runs ~10 claudex instances with the identical Stage C prompt)
 SL SL SL SL SL (they pick their winners and tell CMDR)
 CMDR CONSOLIDATE
 CMDR STAGE C DONE
@@ -114,14 +125,19 @@ REPORT FOR THE USER AND FINISHED WORKING CODE
 For every derived operational phase `P`:
 
 1. Freeze input: Check out the exact declared input commit for `P` and record its hash. For a root phase this is the user-authorized campaign base; for a dependent phase it is the predecessor's checkpoint commit. Freeze interfaces and acceptance criteria and prove the shared baseline gate. Every supervisor in `P` starts from this identical commit.
-2. Launch one wave: Spawn fresh Opus supervisors for the competing lineages of phase `P`, with no more than three active concurrently. A supervisor is a disposable phase worker, not a persistent campaign process.
+2. Launch one wave: Spawn fresh Opus supervisors for the competing lineages of phase `P`, with no more than four active concurrently. A supervisor is a disposable phase worker, not a persistent campaign process.
 3. Run local contests: Each supervisor commissions its own standard fleet using one byte-identical prompt, independently scores the returned artifacts, selects one local winner, runs its local gate, and emits a compact phase report. Supervisors remain blind to other lineages.
 4. Close the wave: Wait for every queued supervisor in `P` to report, fail, or be explicitly culled. Do not start any supervisor for the next declared phase while `P` has unresolved work.
-5. Consolidate at CMDR: Independently re-run the trusted gate against every eligible local winner. The CMDR compares only compact results and the smallest necessary finalist set, then selects one winner or commissions a claudex integration/refutation workgroup when synthesis or repair is required. Opus does not write the consolidation code.
+5. Consolidate at CMDR: Independently re-run the trusted gate against every eligible local winner. The CMDR compares only compact results and the smallest necessary finalist set, then selects one winner or commissions a claudex integration/refutation workgroup when synthesis or repair is required.
+5.5 Optionally commission an adverserial review via Special Advisors (detailed below).
 6. Freeze the phase winner: Mechanically install the unchanged winning artifact or IU-produced integration patch into the integration worktree, run the phase-wide gate, and reject the result unless the declared gate is green.
 7. Checkpoint and release: Commit the exact green integration worktree. That commit is the checkpoint. Optionally create `GOLD/<semantic-phase-id>` on that exact commit. Report the commit hash, gate tally, and locations of the already-existing prompts, results, candidates, champions, and logs; create no checkpoint file, manifest, directory, or duplicated evidence. Base every downstream worktree on that exact commit. If commit or requested tag authorization is absent, stop at `selected, pending checkpoint` and do not advance. Terminate the phase's supervisor contexts before launching the next wave.
 
-After the last phase derived from the mission, the CMDR owns a separate finalization barrier: assemble the frozen phase outputs mechanically or through a claudex integration workgroup, commission final adversarial review and repairs through IUs, run the full project gate itself, create the final checkpoint commit and optional GOLD tag, report their exact hashes with the user report, and stop. A final report without working integrated code and a passing required gate is not completion.
+After the last phase derived from the mission, the CMDR owns a separate finalization barrier: assemble the frozen phase outputs mechanically or through a claudex integration workgroup, commission final adversarial review (directly through the claudex command, a workgroup of 2 Sol xhigh's) and repairs through IUs, run the full project gate itself, create the final checkpoint commit and optional GOLD tag, report their exact hashes with the user report, and stop. A final report without working integrated code and a passing required gate is not completion.
+
+## Adverserial Review
+
+For Adverserial reviews at the end of a phase or at the very final stage of completion, CMDR may commission claudex instances directly as Special Advisors. These Special Advisors are a pair of Sol xhigh instances reporting directly to CMDR with the adverserial report.
 
 ## Required phase-supervisor state machine
 
@@ -139,6 +155,8 @@ After the last phase derived from the mission, the CMDR owns a separate finaliza
 12. Report: Run the required phase-local gate and emit the supervisor report with the selected IU-produced artifact or patch. A supervisor without the required refutation and local gate is incomplete, never successful; only the CMDR may consolidate the wave and advance the campaign.
 
 ## Shell
+
+[[CRITICAL INFORMATION FOLLOWS]]
 
 The canonical runners are `reference/run_fleet.sh` and `reference/run_fleet.ps1`. If claudex or the runner does not work, the skill is invalidated for that squad: report the infrastructure failure and stop. Never replace missing IUs with Opus or Fable coding.
 
@@ -165,7 +183,7 @@ MSYS_NO_PATHCONV=1 wsl -d Debian -- env \
 
 - The CMDR prepares bounded context packets; do not make every SL reread the whole repository, complete specifications, or raw predecessor diffs.
 - Delegate reconnaissance and summarization to claudex. Feed the SL conclusions and exact source locations, then let it inspect only what is needed to judge.
-- Keep an SL below 80k total context. At 60k tokens or 40 minutes, whichever comes first, stop commissioning new work, finish or terminate the current round, report its selected or partial state and remaining scope, and release the context. Only the CMDR may create a checkpoint commit after consolidation and a green phase-wide gate.
+- Keep an SL below 300k total context. At 250k tokens or 40 minutes, whichever comes first, stop commissioning new work, finish or terminate the current round, report its selected or partial state and remaining scope, and release the context. Only the CMDR may create a checkpoint commit after consolidation and a green phase-wide gate.
 - Never poll a fleet in a model loop. Use a monitor or completion notification, yield, and wake when the external process changes state.
 - The CMDR, runner, or external monitor owns timers. The SL receives completion and cull events; it does not spend context counting candidates or tailing unchanged logs.
 - Never load every candidate into the SL context. Fitness ranks first; claudex reviewers inspect the top set; the SL reads compact comparisons and only the minimum source needed for the final decision.

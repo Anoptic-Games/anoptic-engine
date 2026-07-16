@@ -8,7 +8,8 @@
 // Convert to nanoseconds via the mach_timebase_info() numer/denom ratio.
 // Apple Silicon ticks at 24 MHz, so raw ticks are NOT nanoseconds without the ratio applied.
 // The ratio is cached atomically and the conversion is overflow-safe.
-// macOS libc has no clock_nanosleep, so ano_sleep uses nanosleep.
+// macOS libc has no clock_nanosleep; ano_sleep waits on mach_wait_until deadlines with a
+// spun tail, since the kernel stretches plain relative sleeps under QoS timer leeway.
 
 #if defined(__APPLE__)
 #include "anoptic_time.h"
@@ -16,7 +17,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
-#include <errno.h>
 #include <stdatomic.h>
 
 
@@ -145,28 +145,57 @@ int ano_busywait(uint64_t ns) {
     return 0; // success
 }
 
+// Convert nanoseconds to raw mach ticks, overflow-safe via the cached timebase.
+// Returns UINT64_MAX if the timebase is unavailable.
+static uint64_t ano_ns_to_ticks(uint64_t ns) {
+
+    // Cache the timebase frequency on first run.
+    if (cachedTimebaseFreq == 0) {
+        if (initialize_timebase() != 0)
+            return UINT64_MAX;
+    }
+
+    // Split into seconds and sub-seconds to scale without overflow.
+    uint64_t largePart = ns / 1000000000LL;     // Seconds
+    uint64_t smallPart = ns % 1000000000LL;     // Sub-seconds
+
+    return largePart * cachedTimebaseFreq + smallPart * cachedTimebaseFreq / 1000000000LL;
+}
+
+// Tail window spun instead of slept: kernel timer leeway cannot land closer than this.
+#define ANO_SLEEP_SPIN_NS 500000ULL
+
 // Use OS time facilities for high-res sleep that DOES give up thread execution.
-// macOS has no clock_nanosleep so nanosleep sleeps a relative interval.
-// On interruption it returns -1/EINTR with the unslept remainder in `remaining`.
+// The kernel stretches relative waits up to ~1.5x under QoS timer leeway — nanosleep and
+// mach_wait_until measure identically — so wait on an absolute deadline in half-of-remainder
+// steps (immune below 2x stretch), then spin the last ANO_SLEEP_SPIN_NS. The absolute
+// deadline also re-arms early wakeups (KERN_ABORTED) without drift.
 int ano_sleep(uint64_t us) {
 
-    struct timespec request = {0};
-    struct timespec remaining = {0};
+    uint64_t waitTicks = ano_ns_to_ticks(us * 1000ULL);
+    if (waitTicks == UINT64_MAX)
+        return -1;
 
-    // Convert the sleep time from microseconds to seconds and nanoseconds
-    request.tv_sec = us / 1000000LL;
-    request.tv_nsec = (us % (uint64_t)1000000LL) * 1000;
+    uint64_t deadline = mach_absolute_time() + waitTicks;
+    uint64_t spinTicks = ano_ns_to_ticks(ANO_SLEEP_SPIN_NS);
 
-    // Sleep for the relative time
-    while (nanosleep(&request, &remaining) != 0) {
-        if (errno == EINTR) {
-            request = remaining;
-            printf("Interrupted by signal handler\n");
-        } else {
-            perror("nanosleep");
-            return errno;
-        }
+    // Whole wait inside the spin window: a single kernel wait keeps the yield contract.
+    if (us * 1000ULL <= ANO_SLEEP_SPIN_NS) {
+        while (mach_absolute_time() < deadline)
+            mach_wait_until(deadline);
+        return 0;
     }
+
+    // Kernel-wait toward the spin window, halving the remainder each pass.
+    uint64_t now;
+    while ((now = mach_absolute_time()) + spinTicks < deadline) {
+        uint64_t half = (deadline - spinTicks - now) / 2;
+        mach_wait_until(now + (half > 0 ? half : 1));
+    }
+
+    // Spin out the tail.
+    while (mach_absolute_time() < deadline)
+        ;
 
     return 0; // success
 }

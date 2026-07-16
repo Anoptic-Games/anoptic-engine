@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/backend.h"
@@ -11,16 +11,15 @@
 #include "vulkan_backend/frame/frame.h"
 #include "vulkan_backend/render_api.h"
 
-// Loaded-asset registry (anoptic_render.h). asset_id is a fixed slot, not a load counter:
-// a failed parse leaves its slot NULL and the scene composes without it.
-// g_defaultMaterial is the first asset's first material, or the built-in row when there is none.
+// Loaded-asset registry (anoptic_render.h). asset_id is a fixed slot: a failed parse
+// leaves it NULL and the scene composes without it.
+// g_defaultMaterial: the first asset's first material, or the built-in row.
 #define ANO_MAX_LOADED_ASSETS 16u
 static ModelAsset* g_assets[ANO_MAX_LOADED_ASSETS];
 static uint32_t    g_assetCount;
 static uint32_t    g_defaultMaterial;
 
-// Material SSBO row 0, claimed before any glTF parse so procedural renderables and
-// asset-less runs always index a valid material.
+// Material SSBO row 0, claimed before any glTF parse.
 #define ANO_DEFAULT_MATERIAL_INDEX 0u
 
 uint32_t anoRenderAssetCount(void) { return g_assetCount; }
@@ -114,14 +113,12 @@ bool ano_render_get_view_hiz_enable(uint32_t view) {
     return rendererState.hizEnable[view] != 0u;
 }
 
-// Claim material SSBO row 0 with the stock white PBR row, replicated across every
-// frame-in-flight copy. No-op once a parse has taken row 0, or before the buffer exists.
-// Invariant: called before the first parseGltf, which allocates its rows from count upward.
+// Claim material SSBO row 0 with the stock white PBR row in every frame-in-flight copy.
+// No-op if the buffer is absent or row 0 is already taken.
+// Invariant: runs before the first parseGltf, which allocates rows from count upward.
 //
-/// TODO: this is fucked up. Hand-writing a material row straight into a mapped SSBO from
-/// the asset-load path, and handing assets positional array slots, is not a design — it is a
-/// shim so that one missing glTF stops killing the renderer. Pending a serious refactor/rewrite
-/// when we do the asset manager.
+/// TODO: this is fucked up. Hand-writing a material row into a mapped SSBO from the
+/// asset-load path, with positional asset slots, is a shim. Redo with the asset manager.
 static void register_default_material(void)
 {
 	if (rendererState.materialBuffer.capacity == 0u || rendererState.materialBuffer.count != 0u)
@@ -135,15 +132,14 @@ static void register_default_material(void)
 }
 
 // Parse the scene's glTF assets into the loaded-asset registry.
-// An unparsable asset leaves its slot NULL; the scene composes without it. Always returns true.
+// An unparsable asset leaves its slot NULL. Always returns true.
 bool ano_render_load_scene_assets(void)
 {
-	// Row 0 before any parse; glTF materials then allocate from row 1 up.
+	// Row 0 before any parse. glTF materials allocate from row 1 up.
 	register_default_material();
 	g_defaultMaterial = ANO_DEFAULT_MATERIAL_INDEX;
 
 	// Load the scene's glTF assets into GPU memory. Load order is the asset_id namespace.
-	// Both asset packs ship these two, so a failure here is a real error rather than an absence.
 	g_assets[0] = parseGltf(&ctx, "viking_room.gltf");
 	if (!g_assets[0])
 		ano_log(ANO_ERROR, "viking_room unavailable; continuing without it.");
@@ -152,8 +148,7 @@ bool ano_render_load_scene_assets(void)
 	if (!g_assets[1])
 		ano_log(ANO_ERROR, "GlassHurricaneCandleHolder unavailable; continuing without it.");
 
-	// Sponza: a large multi-material interior parsed under one node as the scene environment.
-	// Non-fatal: a missing/failed Sponza leaves asset_id 2 unregistered.
+	// Sponza: the scene environment, parsed under one node.
 	g_assets[2] = parseGltf(&ctx, "sponza/2.0/Sponza/glTF/Sponza.gltf");
 	if (!g_assets[2])
 		ano_log(ANO_WARN, "Warning: failed to parse Sponza glTF; continuing without it.");

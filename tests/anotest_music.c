@@ -112,10 +112,18 @@ int main(void)
     }
 
     // --- gauss (cached pair) ---
+    // V[1] is the sin() leg of the pair, and libm sin is not correctly rounded: ucrt
+    // lands 2 ULP under glibc at this argument. CPython carries the same skew, so the
+    // parity gate stays EXACT per platform — two libms, two pinned vectors.
     ano_music_rng_seed(&r, 99);
     {
+#ifdef _WIN32
+        static const double V[4] = { -0.5502226977406026, 0.3791183269784833,
+                                     0.3269272865950446, 0.6813984972950928 };
+#else
         static const double V[4] = { -0.5502226977406026, 0.3791183269784834,
                                      0.3269272865950446, 0.6813984972950928 };
+#endif
         for (int i = 0; i < 4; ++i)
             CHECK(feq(ano_music_gauss(&r, 0.0, 1.0), V[i]), "gauss(0,1)");
     }

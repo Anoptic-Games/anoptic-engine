@@ -5,14 +5,13 @@
 
 // UI path baker: arbitrary contours (lines + quadratic Beziers) -> directed monotone
 // quadratic Beziers in the shared sweeper stream, exactly the text bake's output
-// grammar (p0 (p1 p2)+ per contour, ANO_UI_CURVE_SENTINEL between contours). Points are
-// packed binary16 in prim-LOCAL space (origin at the path's bbox center), so the
-// evaluator walks them with the same curve_area the glyph lane uses. binary16 gives
-// ~sub-pixel precision up to a few hundred px of half-extent; larger art loses a little.
+// grammar (p0 (p1 p2)+ per contour, ANO_UI_CURVE_SENTINEL between contours). Points
+// are packed binary16 in prim-LOCAL space (origin at the path's bbox center).
+// binary16 holds ~sub-pixel precision to a few hundred px of half-extent.
 //
-// Fill is nonzero-winding and caller-winding-independent: the total signed area picks a
-// global orientation, so an outer contour of either winding fills, and oppositely wound
-// inner contours punch holes.
+// Fill is nonzero-winding and caller-winding-independent: the total signed area picks
+// a global orientation, an outer contour of either winding fills, and oppositely
+// wound inner contours punch holes.
 
 #include <stddef.h>
 
@@ -22,7 +21,7 @@
 static_assert(sizeof(AnoQuad) == 48 && offsetof(AnoQuad, y) == 24,
               "AnoQuad ABI must match src/text/text_internal.h");
 
-// Pre-split quad budget per fill; a rounded panel or a glyph-like icon fits easily.
+// Pre-split quad budget per fill.
 #define UI_PATH_MAX_QUADS 512
 
 // One center-local point -> stream word (binary16 x in low half, y in high, the
@@ -33,8 +32,7 @@ static uint32_t pack_pt(double x, double y)
 }
 
 // In: count packed point words (in == out is legal), isotropic surface scale s > 0.
-// Out: each binary16 pair scaled. The contour sentinel's +inf halves scale to +inf,
-// so separators survive untouched.
+// Out: each binary16 pair scaled. Contour sentinels (+inf halves) survive untouched.
 void ano_ui_curves_scale(const uint32_t *in, uint32_t *out, uint32_t count, float s)
 {
     for (uint32_t i = 0; i < count; i++)
@@ -124,7 +122,7 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
             q[qn++] = (AnoQuad){ { cx, ctrlx, nx }, { cy, ctrly, ny } };
             cx = nx; cy = ny;
         }
-        // bbox over endpoints and controls (conservative — the curve stays in their hull).
+        // bbox over endpoints and controls (conservative hull bound).
         for (uint32_t k = (i == 0 ? 0 : qn - 1); k < qn; k++)
             for (int j = 0; j < 3; j++)
             {
@@ -152,7 +150,7 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
     if (qn == 0 || maxx <= minx || maxy <= miny)
         return ANO_UI_REF_NONE;
 
-    // Shift to prim-local (bbox center); accumulate the endpoint shoelace for orientation.
+    // Shift to prim-local (bbox center), accumulate the endpoint shoelace for orientation.
     double ccx = 0.5 * (minx + maxx), ccy = 0.5 * (miny + maxy);
     double area = 0.0;
     for (uint32_t k = 0; k < qn; k++)
@@ -162,7 +160,7 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
     }
     // curve_area integrates fill as positive when the outer contour has NON-POSITIVE
     // endpoint shoelace in this y-down local frame (pinned by anotest_ui's filled-square
-    // oracle). Reverse everything if the caller wound it the other way; holes stay opposite.
+    // oracle). Reverse everything if the caller wound it the other way. Holes stay opposite.
     bool reverse = area > 0.0;
 
     // Pass C: emit into the builder's curve scratch from curveCount; commit only on success.
