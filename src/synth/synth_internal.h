@@ -197,10 +197,14 @@ struct AnoSynth
     AnoAudioCommand cmdQueue[ANO_SYNTH_CMD_QUEUE];
     uint32_t        cmdHead, cmdTail;
 
-    _Atomic uint64_t startFrame;     // IDLE = generator touches nothing
+    // Transport handshake, logic -> mixer: its own ANO_THREAD_LINE region, apart
+    // from the mixer-owned runtime fields on either side.
+    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t startFrame; // IDLE = generator touches nothing
     _Atomic uint64_t transportEpoch; // logic bumps per transport_start; staged-reset ticket
-    uint64_t         epochSeen;      // mixer-side: last epoch whose reset has run
 
+    // Mixer-owned from here; epochSeen opens the line so hook-time writes never
+    // touch the logic-written pair above.
+    _Alignas(ANO_THREAD_LINE) uint64_t epochSeen; // last epoch whose reset has run
     uint32_t noteCursor, barCursor;
     uint32_t dropped;
     AnoSynthVoice *voices;
