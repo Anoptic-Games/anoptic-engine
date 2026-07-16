@@ -171,10 +171,20 @@ int main(void)
         AnoMusicRng m;
         ano_music_stream(&m, "42:mixgate:7");
         static const double w[5] = { 1.0, 0.25, 3.5, 0.01, 2.2 };
+        // Two Box-Muller draws land one ULP apart between glibc and Apple arm64
+        // libm (log/sin/cos are not correctly rounded). Same stream, same music;
+        // the golden differs per libm. CI forensics 2026-07-16, run 29516748280.
+#if defined(__APPLE__) && defined(__aarch64__)
+        #define ANO_MIXGATE_G2 -0.16764828566624146
+        #define ANO_MIXGATE_G3 1.6986907334101897
+#else
+        #define ANO_MIXGATE_G2 -0.16764828566624135
+        #define ANO_MIXGATE_G3 1.6986907334101895
+#endif
         static const double F[12] = {
             0.822429202845883, 0.5316778711285739, 0.6460546262643676,
-            0.09639279084209407, 0.4743202896567267, -0.16764828566624135,
-            0.8137117332096354, 1.6986907334101895, 0.16437814307286114,
+            0.09639279084209407, 0.4743202896567267, ANO_MIXGATE_G2,
+            0.8137117332096354, ANO_MIXGATE_G3, 0.16437814307286114,
             1.0615717307064352, 0.5146717787518651, -2.8842809783387984,
         };
         static const int64_t I[18] = { 10, 2, 2, -1, 6, 2, 3, 5, 0,

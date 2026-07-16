@@ -135,3 +135,11 @@ TSan costs 5-15x; GitHub runners have 2 cores; ctest runs suites in parallel aga
 3. `tests/anotest_music.c`: `feq` prints `got %a want %a` on mismatch. If Apple libm ULP-diverges from the CPython/glibc goldens in `gauss` after the contract fix, the CI log now names the exact bit patterns; the fallback then is per-platform golden gating via the platformization conventions.
 
 Remaining risk: the gauss/libm question is only answerable by the next macOS CI run. Everything else is closed with local evidence.
+
+## Final round: the gauss residual, named and gated (run 29516748280)
+
+The contract fix collapsed macOS from 16 failures to exactly 2, both `mixgate gauss`, both 1 ULP, byte-identical across retries: `got -0x1.5757fc0155f5cp-3 want -0x1.5757fc0155f58p-3` and `got 0x1.b2dd655a03d85p+0 want 0x1.b2dd655a03d84p+0`. Apple's arm64 libm rounds two of the six Box-Muller draws (through `log`/`sin`/`cos`, none correctly rounded) one ULP away from glibc. Everything else on the run: tsan GREEN (timeout scaling held; race fix CI-confirmed), asan/full/headless-linux/flake-check green.
+
+Fix: the two golden constants (`F[5]`, `F[7]` in the mixgate block) are gated `#if defined(__APPLE__) && defined(__aarch64__)` with Apple's values — per-platform goldens via the platformization conventions, scoped to exactly the two divergent draws. The exact-equality doctrine stands per platform. Caveat recorded: Apple libm values are OS-supplied and could shift on a future runner OS bump; `feq` forensics will name any drift.
+
+Once this greens on CI, the remaining housekeeping is removing the TEMP module-audio trigger from cachix.yml before merge, and folding this file into the module docs per its own header.
