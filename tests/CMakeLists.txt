@@ -206,6 +206,15 @@ target_link_libraries(anotest_logflood PRIVATE anoptic_core)
 add_test(NAME anoptic_logflood COMMAND anotest_logflood)
 set_tests_properties(anoptic_logflood PROPERTIES TIMEOUT 120 LABELS "unit;concurrency;mem")
 
+# Score-event field-range guard: velocity and pitch above their documented AnoNoteEvent
+# ranges (1..127 / 0..127) must be rejected like velocity 0 already is, not staged to render
+# at ~2x the amplitude ceiling or alias pitch & 0x7F tie chains (docs/BUGS.md, Synth /
+# Implementation). Fails until the upper bounds land.
+add_executable(anotest_synthguard anotest_synthguard.c)
+target_link_libraries(anotest_synthguard PRIVATE anoptic_core)
+add_test(NAME anoptic_synthguard COMMAND anotest_synthguard)
+set_tests_properties(anoptic_synthguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
 # cascades to null); by hand on a desktop it is the audible Phase 1 check.
 add_executable(anotest_audiotone anotest_audiotone.c)
