@@ -5,10 +5,10 @@
 
 // The pre-ring mutex logger, the benchmark baseline for anotest_logbench. NOT part of anoptic_core,
 // never in the standard build, compiled only into the optional benchmark. The API mirrors
-// anoptic_logging.h, namespaced mtxlog_*.
+// anoptic_log.h, namespaced mtxlog_*.
 
-#ifndef ANOPTICENGINE_LOGGING_OLD_H
-#define ANOPTICENGINE_LOGGING_OLD_H
+#ifndef ANOPTICENGINE_LOG_OLD_H
+#define ANOPTICENGINE_LOG_OLD_H
 
 #include <stdint.h>
 
@@ -44,4 +44,4 @@ void mtxlog_set_full_policy(mtxlog_full_policy_t policy);
 void mtxlog_flush(void);
 uint64_t mtxlog_dropped(void);
 
-#endif // ANOPTICENGINE_LOGGING_OLD_H
+#endif // ANOPTICENGINE_LOG_OLD_H

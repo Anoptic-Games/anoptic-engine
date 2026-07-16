@@ -5,7 +5,7 @@
 #include "vulkan_backend/geometry.h"
 #include <string.h>
 #include <stdio.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily)
 {

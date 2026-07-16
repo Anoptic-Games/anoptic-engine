@@ -1,7 +1,7 @@
 #include "gpu_alloc.h"
 #include <stdlib.h>
 #include <stdio.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 #define DEFAULT_BLOCK_SIZE (256 * 1024 * 1024) // 256 MiB
 

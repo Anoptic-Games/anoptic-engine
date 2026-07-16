@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private tuning constants for the lock-free ring logger (logging_core.c).
+// Private tuning constants for the lock-free ring logger (log_core.c).
 
-#ifndef ANOPTICENGINE_LOGGING_CORE_H
-#define ANOPTICENGINE_LOGGING_CORE_H
+#ifndef ANOPTICENGINE_LOG_CORE_H
+#define ANOPTICENGINE_LOG_CORE_H
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_memory.h>   // ANO_CACHE_LINE
 
 // A stored line plus the wall-clock prefix total 4096 bytes. ANO_LOG_MSG_MAX is the stored cap.
@@ -31,6 +31,7 @@
 _Static_assert((ANO_LOG_RING_BYTES & (ANO_LOG_RING_BYTES - 1)) == 0, "ring bytes must be a power of two");
 _Static_assert(ANO_LOG_RING_LINES >= 64, "ring must hold at least one max-size entry (64 lines)");
 
-#define ANO_LOG_FILENAME "anoptic.log"
+// One log file per session: "<stamp>" ANO_LOG_FILESUFFIX, the stamp from ano_fs_session_stamp().
+#define ANO_LOG_FILESUFFIX "_ano.log"
 
-#endif //ANOPTICENGINE_LOGGING_CORE_H
+#endif //ANOPTICENGINE_LOG_CORE_H

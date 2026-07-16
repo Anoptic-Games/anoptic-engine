@@ -4,7 +4,7 @@
 #include "ano_GltfParser.h"
 #include <string.h>
 #include <anoptic_memory.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>

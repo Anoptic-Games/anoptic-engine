@@ -8,7 +8,7 @@
 #include <math.h>
 #include <vulkan/vulkan.h>
 #include <anoptic_memory.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_time.h>
 
 #include "vulkan_backend/vulkanMaster.h"
@@ -40,6 +40,11 @@ GpuAllocator swapchainAllocator;
 GpuAllocator textureAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
+
+// Set when initVulkan() fails at physical-device selection: no present device can run
+// the renderer (e.g. lavapipe lacks multisampled integer color). Test harnesses read
+// this to SKIP device tests instead of failing them.
+bool g_AnoVkNoSuitableGpu = false;
 
 static GLFWwindow* window;
 
@@ -285,15 +290,27 @@ void drawFrame()
 	}
 	rendererState.globalFrame += 1; // Gates slot-quarantine retirement
 
-	ano_frame_mark(); // Wall-clock fps/frametime, counted only on the presented-frame path.
+	ano_frame_mark(); // Wall-clock fps/frametime, presented frames only.
 }
 
 
 bool initVulkan() // Initializes Vulkan
 {
 
-	// Window initialization
+	// Window initialization. ANO_RES=WxH overrides, in screen coordinates (callers own any DPI math).
 	Dimensions2D initDimensions = {800, 600};
+	const char* resEnv = getenv("ANO_RES");
+	if (resEnv != NULL) {
+		unsigned w = 0, h = 0;
+		if (sscanf(resEnv, "%ux%u", &w, &h) == 2 && w >= 64 && h >= 64 && w <= 16384 && h <= 16384) {
+			initDimensions.width = w;
+			initDimensions.height = h;
+			ano_log(ANO_INFO, "Window size: %ux%u (ANO_RES)", w, h);
+		} else {
+			ano_log(ANO_WARN, "ANO_RES \"%s\" invalid (want WxH, 64..16384); keeping %ux%u",
+			        resEnv, initDimensions.width, initDimensions.height);
+		}
+	}
 	setResolution(initDimensions);
 	setMonitor(-1);
 	setBorderless(0);
@@ -340,6 +357,7 @@ bool initVulkan() // Initializes Vulkan
 	char* preferredDevice = getChosenDevice();
 	if (!pickPhysicalDevice(&ctx, &capabilities, &(ctx.queueFamilyIndices), preferredDevice))
 	{
+		g_AnoVkNoSuitableGpu = true;
 		ano_log(ANO_FATAL, "Quitting init: physical device failure!");
 		unInitVulkan();
 		return false;
@@ -385,8 +403,8 @@ bool initVulkan() // Initializes Vulkan
 	                       && !getenv("ANO_FORCE_NO_ASYNC_TEXT");
 	ano_log(ANO_INFO, "Async text raster: %s", rendererState.asyncText ? "on (lag-0 compute lane)" : "off (in-frame)");
 
-	// UI overlay lane gate rides the text lane (shared overlay image + raster dispatch).
-	// ANO_FORCE_NO_UI pins compose off; the table buffers stay resident under textOverlay.
+	// UI overlay gate rides the text lane. ANO_FORCE_NO_UI pins compose off, the table
+	// buffers stay resident under textOverlay.
 	rendererState.uiOverlay = rendererState.textOverlay && !getenv("ANO_FORCE_NO_UI");
 	ano_log(ANO_INFO, "UI overlay: %s", rendererState.uiOverlay ? "enabled" : "off");
 

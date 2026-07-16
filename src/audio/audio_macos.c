@@ -25,7 +25,7 @@
 #include "audio_internal.h"
 #include "audio_pull.h"
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 typedef struct AnoCoreAudioState
 {

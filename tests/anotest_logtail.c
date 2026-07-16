@@ -11,7 +11,7 @@
 // anotest_logbench: built so it cannot rot, DISABLED in CTest, run ./anotest_logtail by hand.
 // Always exits 0 and prints a table. argv[1] overrides messages-per-producer for a longer run.
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
@@ -147,7 +147,9 @@ int main(int argc, char **argv)
 
     ano_log_cleanup();
     free(buf);
-    remove(TAIL_DIR "/anoptic.log");
+    char tailLog[96];
+    snprintf(tailLog, sizeof tailLog, "%s/%s_ano.log", TAIL_DIR, ano_fs_session_stamp());
+    remove(tailLog);
     scratch_remove_dir(TAIL_DIR);
 
     printf("\n(Full-ring waits are part of the tail by design: the producer self-throttles to the\n"

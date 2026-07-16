@@ -10,7 +10,7 @@
 // config/output-file thrash). Every case drains explicitly via ano_log_flush() before reading back, so
 // its file contents are deterministic. The final case leaves a human-readable log for inspection.
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_strings.h>
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
@@ -41,11 +41,18 @@ static char *cwd_str(char *b, size_t n) { return getcwd(b, n); }
 #define ANO_TEST_OUTDIR "."
 #endif
 #define LOG_DIR      ANO_TEST_OUTDIR "/anolog_test"
-#define LOG_PATH     ANO_TEST_OUTDIR "/anolog_test/anoptic.log"
 #define LOG_DIR_ALT  ANO_TEST_OUTDIR "/anolog_test_alt"
-#define LOG_PATH_ALT ANO_TEST_OUTDIR "/anolog_test_alt/anoptic.log"
 #define VIS_DIR      ANO_TEST_OUTDIR "/anolog_visible"
-#define VIS_PATH     ANO_TEST_OUTDIR "/anolog_visible/anoptic.log"
+
+// Session-stamped log paths (<dir>/<stamp>_ano.log), resolved once in main().
+static char LOG_PATH[96], LOG_PATH_ALT[96], VIS_PATH[96];
+
+static void resolve_log_paths(void)
+{
+    snprintf(LOG_PATH,     sizeof LOG_PATH,     "%s/%s_ano.log", LOG_DIR,     ano_fs_session_stamp());
+    snprintf(LOG_PATH_ALT, sizeof LOG_PATH_ALT, "%s/%s_ano.log", LOG_DIR_ALT, ano_fs_session_stamp());
+    snprintf(VIS_PATH,     sizeof VIS_PATH,     "%s/%s_ano.log", VIS_DIR,     ano_fs_session_stamp());
+}
 
 #define THREAD_COUNT    4
 #define MSGS_PER_THREAD 50
@@ -1110,6 +1117,7 @@ int main(void)
         fprintf(stderr, "chdir to gamepath failed\n");
         return 1;
     }
+    resolve_log_paths();    // latch the session stamp
 
     // Pre-init abuse: every entry point must be safe before ano_log_init.
     {

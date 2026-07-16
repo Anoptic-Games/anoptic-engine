@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 
 // Guard the ring element sizes (copied per push/pop, sized capacity * these).
 // The command budget went 160 -> 192 for the ACMD_MUSIC_* name field: a motif

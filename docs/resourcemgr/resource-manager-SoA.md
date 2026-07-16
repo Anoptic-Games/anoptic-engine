@@ -54,7 +54,7 @@ semaphore-and-callback in every slot. The mapping is mechanical:
 
 | Logger mechanism (in-tree, proven) | Resource manager equivalent |
 |---|---|
-| variable-length cache-line MPSC ring, reserve by bumping `tail`, publish with one release store (`logging_ring.h`) | request ring: variable payloads `{rid, range, dest, band, ticket}` from any thread |
+| variable-length cache-line MPSC ring, reserve by bumping `tail`, publish with one release store (`log_ring.h`) | request ring: variable payloads `{rid, range, dest, band, ticket}` from any thread |
 | owned consumer thread; parks on empty pass, timedwait cap bounds lost wakeups; producers wake on empty→nonempty | the IO thread, identically; submit is the wake |
 | lap-counter (`cycle`) reclaim, no zeroing | same — slots reused by lap check |
 | full-ring: escalating backoff + stall fallback | submit returns false-on-full (the render bridge convention); caller retries next frame |
@@ -64,7 +64,7 @@ semaphore-and-callback in every slot. The mapping is mechanical:
 
 Completions return on **SPSC rings drained by a per-frame pump** on the consuming thread
 — polled, never callbacks from the IO thread (house rule; also where Gregory's model,
-Bevy, and sokol_fetch all converge). The ring code itself ports out of `src/logging/`
+Bevy, and sokol_fetch all converge). The ring code itself ports out of `src/log/`
 into `anoptic_collections.h` as the planned generic variable-length MPSC — the port that
 header has been waiting for.
 
@@ -222,6 +222,6 @@ percentiles, fuzz the oracle.
   channels × lanes decode/read overlap in fixed memory. Unreal IoStore/Zen — hashed-id
   containers, no runtime path strings. ripgrep — buffered reads over mmap for many-file
   workloads.
-- In-tree: `src/logging/logging_ring.h` + `logging_core.c` (the transport, the park/wake
+- In-tree: `src/log/log_ring.h` + `log_core.c` (the transport, the park/wake
   discipline, the validation culture), `docs/text/logger.md`, the render bridge's
   ownership-transfer and false-on-full conventions, `tests/templates/bench.h`.

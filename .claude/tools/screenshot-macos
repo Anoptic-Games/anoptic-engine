@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # screenshot-macos: capture one on-screen macOS app window to a PNG. macOS-only.
-# screencapture + a CGWindowList helper. Never osascript (Accessibility is denied).
+# screencapture + a CGWindowList helper. Never osascript.
 # Run from a plain shell. Never inside `nix develop`.
 #
 # Usage: screenshot-macos <app-owner-substring> <outfile.png>

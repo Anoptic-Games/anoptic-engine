@@ -112,6 +112,16 @@ static void test_append_file_api(void)
     }
     CHECK(scratch_count_lines(path) == 6, "reopen appended, did not truncate");
 
+    // Trunc: reopen must clear the file, then behave as append.
+    f = ano_fs_open_trunc(path);
+    CHECK(f != NULL, "open_trunc reopens the file");
+    if (f != NULL) {
+        CHECK(ano_fs_write(f, "line\n", 5) == 0, "write after trunc");
+        CHECK(ano_fs_close(f) == 0, "close after trunc");
+    }
+    CHECK(scratch_count_lines(path) == 1, "trunc cleared the 6 prior lines");
+    CHECK(ano_fs_open_trunc(NULL) == NULL, "NULL path refused (trunc)");
+
     CHECK(ano_fs_open_append(NULL) == NULL, "NULL path refused");
     CHECK(ano_fs_write(NULL, "x", 1) == -1, "write on NULL handle refused");
     CHECK(ano_fs_sync(NULL) == -1, "sync on NULL handle refused");

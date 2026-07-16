@@ -46,7 +46,7 @@
 *.pdb
 *.save
 *.py
-# ...except the checked-in perf harness drivers (see tools/perf/README.md).
+# ...except the checked-in perf harness drivers (see tools/perf/bench_fps.md).
 !tools/perf/bench_fps_*.py
 
 # macOS metadata
@@ -68,6 +68,8 @@ docs/*.pdf
 docs/references/*.pdf
 docs/artifacts/*
 docs/study/
+docs/.archive/
+docs/.archive/**/
 
 # IDE-specific directories
 .vscode/
@@ -123,7 +125,7 @@ result-*
 CMakeFiles
 CMakeFiles/
 CMakeCache.txt
-xs
+
 # Test assets
 assets/*
 
@@ -142,3 +144,5 @@ tools/ucd/
 !.claude/hooks/**
 !.claude/tools/
 !.claude/tools/**
+build.stale-preclean/
+build*/

@@ -32,7 +32,7 @@
 #include "audio_pull.h"
 #include "dsp/noise.h" // TPDF dither at the final 16-bit quantization (DSound s16 path)
 
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include <anoptic_time.h>
 
 // ---------------------------------------------------------------------------

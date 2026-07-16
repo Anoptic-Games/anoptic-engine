@@ -5,7 +5,7 @@
 
 #include <anoptic_memory.h>
 #include <anoptic_filesystem.h>
-#include <anoptic_logging.h>
+#include <anoptic_log.h>
 #include "pipeline.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
