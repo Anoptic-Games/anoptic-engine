@@ -197,6 +197,15 @@ target_link_libraries(anotest_wavguard PRIVATE anoptic_core)
 add_test(NAME anoptic_wavguard COMMAND anotest_wavguard)
 set_tests_properties(anoptic_wavguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Drain-batch sizing guard: deferred records render at their format width, not their stored
+# size, so a wide "%*d" burst must survive a drain pass with nothing lost and full-width
+# fields (docs/BUGS.md, Log / Implementation). Fails (crashes in the drain pass) until the
+# batch bound lands.
+add_executable(anotest_logflood anotest_logflood.c)
+target_link_libraries(anotest_logflood PRIVATE anoptic_core)
+add_test(NAME anoptic_logflood COMMAND anotest_logflood)
+set_tests_properties(anoptic_logflood PROPERTIES TIMEOUT 120 LABELS "unit;concurrency;mem")
+
 # Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
 # cascades to null); by hand on a desktop it is the audible Phase 1 check.
 add_executable(anotest_audiotone anotest_audiotone.c)
