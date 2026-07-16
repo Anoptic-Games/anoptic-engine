@@ -35,7 +35,8 @@
 //   I1  len <= UINT32_MAX; longer input -> empty.
 //   I2  len <= 12 <=> inline (canonical form).
 //   I3  Bytes past len are 0x00 (bit-identical eq; truthful bswapped-prefix order).
-//   I4  Long bytes live as long as their backing (heap or external borrow); inline forever; anostr_bytes(&inline) points into *s.
+//   I4  Long bytes live as long as their backing (heap or external borrow). Inline forever.
+//       anostr_bytes(&inline) points into *s -- valid only while that object lives at that address.
 //   I5  Frozen values are immutable.
 
 #define ANOSTR_INLINE_CAP 12u
@@ -85,7 +86,8 @@ static inline size_t anostr_len(anostr_t s)       { return s.len; }
 static inline bool   anostr_is_empty(anostr_t s)  { return s.len == 0; }
 static inline bool   anostr_is_inline(anostr_t s) { return s.len <= ANOSTR_INLINE_CAP; }
 
-// Bytes, NOT NUL-terminated; read exactly anostr_len(*s). Inline: into *s. Long: into backing (heap or borrow).
+// Bytes, NOT NUL-terminated; read exactly anostr_len(*s).
+// Inline: into *s (valid while *s lives at this address). Long: into backing (heap or borrow).
 static inline const char *anostr_bytes(const anostr_t *s)
 {
     return s->len <= ANOSTR_INLINE_CAP ? s->prefix : s->ptr;
@@ -151,7 +153,7 @@ uint32_t anostr_hash32(anostr_t s);
 
 /* Slicing and Promotion */
 
-// Sub-string [start, end) -- clamped, total, allocation-free. <= 12: fresh inline; longer borrows s's backing.
+// Sub-string [start, end) -- clamped, total, allocation-free. <= 12: fresh inline; longer borrows s's backing (same lifetime as s).
 anostr_t anostr_slice(anostr_t s, size_t start, size_t end);
 
 // Promote s to live as long as heap. Inline: identity. Long: copy into heap. heap is calling-thread owned (mimalloc single-writer). Empty on alloc fail.

@@ -11,7 +11,7 @@ Covering those matters regarding the C language's fabled `include` directive. La
 
 At some higher level, a large program that actually works can be split up into modules. Different parts that are, in theory, independent from one another except for where they interact. The Anoptic Engine uses the abstract concept of modules internally, as well as in its interactions with external libraries. This enables effective platformatization (currently supporting x64 Windows, x64 Linux, and aarch64 MacOS on Apple Silicon), the updating of library dependencies, the possibility of several people working on 'their' part of the engine asynchronously, and the upgrading of certain parts of a program without affecting everything else.
 
-Yes, as you might be thinking, the boundaries of a module is entirely arbitrary. It's up to a library author to use their common sense and group thigns up in a way that makes everyone's lives easier.
+Yes, as you might be thinking, the boundaries of a module are entirely arbitrary. It's up to a library author to use their common sense and group things up in a way that makes everyone's lives easier.
 
 A module itself, then, can be split into two components: its surface, and its internals. In software, we call the surface another piece of code interacts with an interface. The internals are called an implementation, which can vary depending on the situation, while the interface remains consistent because other programs rely on it to keep functioning themselves.
 
@@ -42,11 +42,11 @@ A module might need other .h files *inside* of itself, that aren't called by oth
 External libraries, ie software we didn't write ourselves, follows the calling conventions of whoever wrote them. Read their docs. External libraries include the operating system's handles, standard library implementations, pthread, glibc, Vulkan and so on.
 
 > CONVENTION: When an external library is used all over different modules, it might be a good idea to wrap it inside of an `include/anoptic_module.h` !
-> CONVENTION: When a library is platform-dependant and broadly used inside of many modulesm, it always be wrapped inside of an `include/anoptic_module.h` (SEE: anoptic_threads.h and its implementation).
+> CONVENTION: When a library is platform-dependant and broadly used inside of many modules, it should always be wrapped inside of an `include/anoptic_module.h` (SEE: anoptic_threads.h and its implementation).
 
 ## Debugging
 
-Debuging is important, and for its purposes we include a DEBUG BUILD separately from a RELEASE BUILD.
+Debugging is important, and for its purposes we include a DEBUG BUILD separately from a RELEASE BUILD.
 
 Aside from toggling between debug-symbols and optimization, a DEBUG BUILD might include additional code that never gets compiled into RELEASE, wrapped inside of an ifdef, for instance more verbose error messages.
 

@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Win64: crashes arrive as SEH exceptions. SetUnhandledExceptionFilter is the hook, with CRT signal() hooks alongside for abort() and raise(SIGSEGV/SIGILL/SIGFPE). The CRT translator hands some hardware faults to those hooks ahead of the filter, parking EXCEPTION_POINTERS in the per-thread _pxcptinfoptrs slot: non-NULL = translated hardware fault (full SEH decode, die with the true NTSTATUS), NULL = genuine raise() (record the signal, CRT default exit). The deadman is a watchdog thread parked on an event since init.
+// Win64: SEH via SetUnhandledExceptionFilter + CRT signal() for abort/raise.
+// CRT translator may hand hardware faults to signal hooks first: _pxcptinfoptrs non-NULL = SEH decode + NTSTATUS exit, NULL = genuine raise().
+// Deadman: watchdog thread parked on an event since init.
 
 #include <anoptic_log.h>
 #include "log/log_crash_internal.h"
@@ -17,10 +19,10 @@
 #include <stdio.h>
 #include <time.h>
 
-// Once the event signals, the process has BB_DEADMAN_MS to finish dying.
+// After event signal, BB_DEADMAN_MS to finish dying.
 #define BB_DEADMAN_MS 5000u
 
-// Stack the kernel guarantees an EXCEPTION_STACK_OVERFLOW filter on an armed thread: enough for the record write and the hail mary's locks.
+// Stack guarantee for EXCEPTION_STACK_OVERFLOW filter: record write + hail-mary locks.
 #define BB_STACK_GUARANTEE (64u * 1024u)
 
 static atomic_int bb_entered;
@@ -31,11 +33,11 @@ static DWORD WINAPI bb_watchdog(LPVOID arg)
     (void)arg;
     WaitForSingleObject(bb_deadmanEvent, INFINITE);
     Sleep(BB_DEADMAN_MS);
-    TerminateProcess(GetCurrentProcess(), 3);   // 3: abort()'s exit code
+    TerminateProcess(GetCurrentProcess(), 3);
     return 0;
 }
 
-// WriteFile until done or dead. Ignores failure.
+// WriteFile until done or dead.
 static void bb_write_all(HANDLE h, const char *buf, size_t len)
 {
     while (len > 0) {
@@ -51,7 +53,7 @@ static void bb_puts(HANDLE h, const char *s) { bb_write_all(h, s, strlen(s)); }
 static void bb_dec(HANDLE h, unsigned long long v) { char b[20]; bb_write_all(h, b, bb_fmt_dec(b, v)); }
 static void bb_hex(HANDLE h, unsigned long long v) { char b[18]; bb_write_all(h, b, bb_fmt_hex(b, v)); }
 
-// Exception code -> name, the usual suspects only.
+// Exception code -> name.
 static const char *bb_code_name(DWORD code)
 {
     switch (code) {
@@ -69,7 +71,7 @@ static const char *bb_code_name(DWORD code)
     }
 }
 
-// One frame as "module+0xoffset [0xaddress]", the form WinDbg and addr2line want. GetModuleHandleExA/GetModuleFileNameA allocate nothing.
+// One frame "module+0xoffset [0xaddress]". GetModuleHandleExA/GetModuleFileNameA allocate nothing.
 static void bb_frame(HANDLE h, void *addr)
 {
     bb_puts(h, "  ");
@@ -79,7 +81,7 @@ static void bb_frame(HANDLE h, void *addr)
         && mod != NULL) {
         char path[MAX_PATH];
         DWORD n = GetModuleFileNameA(mod, path, sizeof path);
-        const char *base = path;    // basename only
+        const char *base = path;
         for (DWORD i = 0; i < n; i++)
             if (path[i] == '\\' || path[i] == '/') base = path + i + 1;
         bb_puts(h, n > 0 ? base : "?");
@@ -93,12 +95,12 @@ static void bb_frame(HANDLE h, void *addr)
     bb_puts(h, "]\n");
 }
 
-// Stage 2 then Stage 3, shared by the SEH filter and the CRT signal hooks. xp == NULL means a CRT signal, signame says which.
+// Stage 2 then 3. Shared by SEH filter and CRT signal hooks. xp == NULL => CRT signal (signame).
 static void bb_record_and_flush(const EXCEPTION_POINTERS *xp, const char *signame)
 {
     SetEvent(bb_deadmanEvent);
 
-    // Stage 2: the flight record. FILE_APPEND_DATA: never destroys a previous record.
+    // Stage 2: flight record. FILE_APPEND_DATA (never truncates).
     HANDLE h = CreateFileA(bb_crashPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     bool haveFile = h != INVALID_HANDLE_VALUE;
@@ -129,7 +131,7 @@ static void bb_record_and_flush(const EXCEPTION_POINTERS *xp, const char *signam
         bb_puts(h, signame);
         bb_puts(h, "\n");
     }
-    // Innermost frames are the blackbox and the exception dispatcher, the crash site sits a few below.
+    // Innermost frames are blackbox + dispatcher; crash site a few below.
     void *frames[64];
     USHORT n = CaptureStackBackTrace(0, 64, frames, NULL);
     bb_puts(h, "backtrace:\n");
@@ -145,20 +147,20 @@ static void bb_record_and_flush(const EXCEPTION_POINTERS *xp, const char *signam
         bb_puts(err, "\n");
     }
 
-    // Stage 3: the hail mary.
+    // Stage 3: hail mary.
     ano_log_flush();
 }
 
-// The last stop before WER. CONTINUE_SEARCH after the record: debugger, WER, and exit code stay intact.
+// Last stop before WER. CONTINUE_SEARCH keeps debugger/WER/exit intact.
 static LONG WINAPI bb_filter(EXCEPTION_POINTERS *xp)
 {
     if (atomic_exchange(&bb_entered, 1) != 0)
-        for (;;) Sleep(INFINITE);   // a second crashing thread parks, the first owns the record
+        for (;;) Sleep(INFINITE);   // second crasher parks
     bb_record_and_flush(xp, NULL);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-// The CRT-signal set: abort() and CRT-raised faults. A real fault takes SEH, never this table.
+// CRT-signal set: abort() and CRT-raised faults. Real faults take SEH.
 static const struct { int sig; const char *name; } bb_crtHooked[] = {
     { SIGABRT, "SIGABRT (abort)" },
     { SIGSEGV, "SIGSEGV (CRT raise)" },
@@ -167,22 +169,20 @@ static const struct { int sig; const char *name; } bb_crtHooked[] = {
 };
 #define BB_NCRT (sizeof bb_crtHooked / sizeof bb_crtHooked[0])
 
-// UCRT's per-thread exception-pointers slot, set by the CRT translator before it dispatches a
-// hardware fault to a signal() handler. MinGW's <signal.h> does not surface it.
+// UCRT per-thread exception-pointers slot (CRT translator). MinGW <signal.h> omits it.
 #ifndef _pxcptinfoptrs
 void **__cdecl __pxcptinfoptrs(void);
 #define _pxcptinfoptrs (*__pxcptinfoptrs())
 #endif
 
-// Everything the CRT signal machinery delivers: genuine raise()/abort(), and the hardware faults the
-// CRT translator claims ahead of the SEH filter (see the file banner).
+// CRT signal delivery: raise()/abort(), and hardware faults claimed ahead of SEH (see banner).
 static void bb_on_signal(int sig)
 {
     if (atomic_exchange(&bb_entered, 1) != 0)
         for (;;) Sleep(INFINITE);
     const EXCEPTION_POINTERS *xp = (const EXCEPTION_POINTERS *)_pxcptinfoptrs;
     if (xp != NULL && xp->ExceptionRecord != NULL) {
-        // Translated hardware fault: use the full SEH record, exit with the true NTSTATUS.
+        // Translated hardware fault: full SEH + NTSTATUS exit.
         bb_record_and_flush(xp, NULL);
         TerminateProcess(GetCurrentProcess(), xp->ExceptionRecord->ExceptionCode);
     }
@@ -191,11 +191,10 @@ static void bb_on_signal(int sig)
         if (bb_crtHooked[i].sig == sig) { name = bb_crtHooked[i].name; break; }
     bb_record_and_flush(NULL, name);
     signal(sig, SIG_DFL);
-    raise(sig);     // default disposition: the CRT's own exit for this signal
+    raise(sig);
 }
 
-// Stage 4 scan, calm time only. The suffix recheck guards against 8.3 short-name pattern hits.
-// Contract in log_crash_internal.h.
+// Stage 4 scan, calm time. Suffix recheck guards 8.3 short-name hits.
 int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
 {
     char pat[MAXPATH + 8];
@@ -222,7 +221,7 @@ int bb_scan_suffix(const char *dir, const char *suffix, char *newest)
     return count;
 }
 
-// Contract in log_crash_internal.h. Pass 1 collects the top-keep newest by mtime, pass 2 removes the rest.
+// Pass 1: top-keep by mtime. Pass 2: remove the rest.
 int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *skip)
 {
     if (keep > 8) keep = 8;
@@ -259,7 +258,7 @@ int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *s
             || nl < sl || nl >= MAXPATH || strcmp(fd.cFileName + nl - sl, suffix) != 0)
             continue;
         if (kl > 0 && strncmp(fd.cFileName, skip, kl) == 0)
-            continue;   // never touch the live session's files
+            continue;   // live session
         bool kept = false;
         for (int i = 0; i < nTop && !kept; i++)
             kept = strcmp(fd.cFileName, top[i].name) == 0;
@@ -274,7 +273,7 @@ int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *s
     return removed;
 }
 
-// Inputs: none. Output: 0 when the deadman and every hook armed, -1 otherwise.
+// 0 when deadman + every hook armed, -1 otherwise.
 int bb_install(void)
 {
     bb_deadmanEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
@@ -284,7 +283,7 @@ int bb_install(void)
     if (wd == NULL)
         return -1;
     CloseHandle(wd);
-    (void)bb_thread_arm();  // main's stack-overflow guarantee, refusal doesn't fail install
+    (void)bb_thread_arm();  // main stack-overflow guarantee
     SetUnhandledExceptionFilter(bb_filter);
     int rc = 0;
     for (size_t i = 0; i < BB_NCRT; i++)
@@ -293,7 +292,7 @@ int bb_install(void)
     return rc;
 }
 
-// Per-thread kernel state, set at spawn (ano_thread_create routes here), dies with the thread. Idempotent.
+// Per-thread stack guarantee at spawn. Idempotent.
 int bb_thread_arm(void)
 {
     ULONG g = BB_STACK_GUARANTEE;

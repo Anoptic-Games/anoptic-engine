@@ -3,13 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// UI reference evaluator: scalar mirror of the GPU prim math (uicoverage.glsl ports
-// from THIS file statement for statement, the text_raster_ref.c discipline).
-// Coverage model: continuous-domain, one value per unit pixel window. Straight rrect
-// edges are exact box-filter coverage. Corner arcs carry the documented curvature
-// approximation. Shadows are the Wallace closed form: erf along x, 4-sample Gaussian
-// quadrature along y (CC0, madebyevan.com/shaders/fast-rounded-rectangle-shadows).
-// docs/ui/ui-render.md §3.3-3.6.
+// UI reference evaluator: scalar mirror of the GPU prim math (uicoverage.glsl ports from here).
+// Continuous-domain coverage per unit pixel window. Straight edges: exact box-filter.
+// Shadows: Wallace closed form (erf x, 4-sample Gaussian quadrature y). docs/ui/ui-render.md §3.3-3.6.
 
 #include "anoptic_ui.h"
 #include "ui_path.h"
@@ -26,7 +22,9 @@ static float clampf(float v, float lo, float hi)
     return fminf(fmaxf(v, lo), hi);
 }
 
-// ---------------------------------------------------------------------------------------------
+
+/* Path Fill */
+
 // Path fill: the same monotone-quad sweep the glyph lane uses (mirrors curve_area in
 // textcoverage.glsl / text_raster_ref.c), walked over the scene's shared curve stream.
 
@@ -44,8 +42,8 @@ static float solve_mono(float c0, float c1, float c2, float target)
     return clampf(2.0f * c / den, 0.0f, 1.0f);
 }
 
-// Signed area between one monotone quad and the window's right edge, clipped to
-// [0,w]x[0,h]. Coordinates arrive window-local. Mirrors curve_area().
+// Signed area between one monotone quad and the window's right edge, clipped to [0,w]x[0,h];
+// coordinates arrive window-local. Mirrors curve_area().
 static float curve_area(float x0, float y0, float x1, float y1, float x2, float y2,
                         float w, float h)
 {
@@ -85,9 +83,9 @@ static float curve_area(float x0, float y0, float x1, float y1, float x2, float 
 static float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 0xFFFFu)); }
 static float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
 
-// Coverage of one path over the window at (wx,wy) size (ww,wh), prim-local space: one
-// stream walk from word `off` over curveCount monotone quads (SENTINEL restarts a
-// contour), normalized by window area. Mirrors ui_path_sum in uicoverage.glsl.
+// Path coverage over window at (wx,wy) size (ww,wh), prim-local: walk curveCount monotone
+// quads from word `off` (SENTINEL restarts contour), / window area.
+// Mirrors ui_path_sum in uicoverage.glsl.
 static float ui_path_sum(const AnoUiScene *s, uint32_t off, uint32_t curveCount,
                          float wx, float wy, float ww, float wh)
 {
@@ -115,8 +113,10 @@ static float ui_path_sum(const AnoUiScene *s, uint32_t off, uint32_t curveCount,
     return area / (ww * wh);
 }
 
-// In: p relative to box center (prim space, y-down), half extents, per-corner radii
-// (tl,tr,br,bl) pre-clamped by the builder. Out: exact Euclidean signed distance.
+
+/* SDF + Shadow */
+
+// In: p relative to box center (y-down), half, radii (tl,tr,br,bl). Out: signed distance.
 float ano_ui_ref_sd_rrect(const float p[2], const float half[2], const float radii[4])
 {
     // y-down quadrant: x<0,y<0 tl; x>=0,y<0 tr; x>=0,y>=0 br; x<0,y>=0 bl.
@@ -128,8 +128,7 @@ float ano_ui_ref_sd_rrect(const float p[2], const float half[2], const float rad
     return fminf(fmaxf(qx, qy), 0.0f) + sqrtf(mx * mx + my * my) - r;
 }
 
-// Abramowitz-Stegun-style rational erf (Wallace's constants, a3 dropped): max error
-// well under 1/255 across the range shadows sample.
+// Rational erf (Wallace constants). Max error << 1/255 over shadow sample range.
 static float ui_erf(float x)
 {
     float s = x >= 0.0f ? 1.0f : -1.0f, a = fabsf(x);
@@ -144,7 +143,6 @@ static float ui_gaussian(float x, float sigma)
 }
 
 // Closed-form blur of the rounded box along x for the row at offset y from center.
-// Only called with rows inside the box's y extent (the quadrature clamp guarantees it).
 static float shadow_x(float x, float y, float sigma, float corner, const float half[2])
 {
     float delta = fminf(half[1] - corner - fabsf(y), 0.0f);
@@ -153,13 +151,10 @@ static float shadow_x(float x, float y, float sigma, float corner, const float h
     return 0.5f * (ui_erf((x + curved) * k) - ui_erf((x - curved) * k));
 }
 
-// In: p relative to box center, half extents, uniform corner radius, sigma >= 1e-3
-// (builder contract). Out: blurred-box intensity in [0,1] at the point. The blur IS
-// the anti-aliasing.
+// In: p relative to center, half, uniform corner, sigma >= 1e-3. Out: intensity [0,1].
 float ano_ui_ref_shadow(const float p[2], const float half[2], float corner, float sigma)
 {
-    // 4-sample Gaussian quadrature over the y offsets whose rows intersect the box,
-    // truncated at 3 sigma. Empty range degenerates to step 0 -> value 0.
+    // 4-sample Gaussian quadrature over y offsets intersecting the box, truncated at 3 sigma.
     float low = p[1] - half[1], high = p[1] + half[1];
     float start = fminf(fmaxf(-3.0f * sigma, low), high);
     float end = fminf(fmaxf(3.0f * sigma, low), high);
@@ -173,8 +168,7 @@ float ano_ui_ref_shadow(const float p[2], const float half[2], float corner, flo
     return value;
 }
 
-// Window coverage of one clip entry in overlay space: exact rect overlap times the
-// rounded term's ramp. Invalid non-NONE refs fail CLOSED (0).
+// Clip window coverage: exact rect overlap * rounded-term ramp. Invalid non-NONE -> 0.
 static float clip_cov(const AnoUiScene *s, uint32_t ref, float px, float py)
 {
     if (ref >= s->clipCount)
@@ -190,8 +184,10 @@ static float clip_cov(const AnoUiScene *s, uint32_t ref, float px, float py)
     return cov;
 }
 
-// Interpolated stop color at parameter t, premultiplied linear, clamped to the end
-// stops (CSS pad). Stops are sorted ascending by t.
+
+/* Paint */
+
+// Interpolated stop color at t, premultiplied linear, CSS-pad clamp. Stops ascending by t.
 static void ui_stop_color(const AnoUiScene *s, uint32_t first, uint32_t count, float t,
                           float out[4])
 {
@@ -217,9 +213,7 @@ static void ui_stop_color(const AnoUiScene *s, uint32_t first, uint32_t count, f
     for (int k = 0; k < 4; k++) out[k] = st[last].color[k];
 }
 
-// In: scene, paintRef, overlay pixel (px,py), base tint. Out: resolved fill,
-// premultiplied linear, modulated by base. NONE returns base. An out-of-range paint or
-// stop range fails CLOSED (transparent), matching clip_cov. Mirrors ui_paint_eval.
+// In: scene, paintRef, pixel, base tint. Out: fill * base. NONE -> base. OOR -> transparent.
 void ano_ui_ref_paint(const AnoUiScene *s, uint32_t paintRef, float px, float py,
                       const float base[4], float out[4])
 {
@@ -251,16 +245,18 @@ void ano_ui_ref_paint(const AnoUiScene *s, uint32_t paintRef, float px, float py
         out[k] = col[k] * base[k];
 }
 
-// In: scene, prim index, window origin (px,py). Out: the prim's premultiplied
-// contribution over [px,px+1)x[py,py+1), clip and paint applied. IMAGE/PATH/GLYPHS
-// evaluate to zero here (validated in their own lanes).
+
+/* Shade + Eval */
+
+// In: scene, prim, window origin. Out: premultiplied contribution over the unit window.
+// IMAGE/GLYPHS -> zero here.
 void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, float out[4])
 {
     out[0] = out[1] = out[2] = out[3] = 0.0f;
     if (prim >= s->primCount)
         return;
     const AnoUiPrim *p = &s->prims[prim];
-    // Window center through the prim transform (rows, the glyph-inv convention).
+    // Window center through prim transform (rows).
     float dx = px + 0.5f - p->origin[0], dy = py + 0.5f - p->origin[1];
     float l[2] = { p->inv[0] * dx + p->inv[1] * dy, p->inv[2] * dx + p->inv[3] * dy };
     float cov;
@@ -277,14 +273,13 @@ void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, fl
         float a = ano_ui_ref_shadow(l, p->half, p->radii[0], p->param[0]);
         if (p->flags & ANO_UI_FLAG_INNER) {
             float d = ano_ui_ref_sd_rrect(l, p->half, p->radii);
-            a = (1.0f - a) * clamp01(0.5f - d); // blur of the complement, masked inside
+            a = (1.0f - a) * clamp01(0.5f - d); // blur of complement, masked inside
         }
         cov = a;
         break;
     }
     case ANO_UI_PATH: {
-        // Window box in prim-local space (identity inv in v0). Walk the shared curve
-        // stream over it.
+        // Window box in prim-local space (v0 paths use identity inv); walk the shared curve stream.
         if (s->curves == NULL || p->aux0 >= s->curveCount)
             return;
         cov = clamp01(ui_path_sum(s, p->aux0, p->aux1, l[0] - 0.5f, l[1] - 0.5f, 1.0f, 1.0f));
@@ -295,17 +290,14 @@ void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, fl
     }
     if (p->clipRef != ANO_UI_REF_NONE)
         cov *= clip_cov(s, p->clipRef, px, py);
-    // Fill = paint (gradient) or the prim's own color, sampled at the window center
-    // in overlay space.
     float fill[4];
     ano_ui_ref_paint(s, p->paintRef, px + 0.5f, py + 0.5f, p->color, fill);
     for (int i = 0; i < 4; i++)
         out[i] = fill[i] * cov;
 }
 
-// Painter's-order register blend at one pixel: ascending index, src over acc (later
-// prims on top, the textraster.comp loop). ADD accumulates rgb only. Result is
-// UNCLAMPED premultiplied linear. Quantizers clamp.
+// Painter's-order register blend: ascending index, src-over. ADD accumulates rgb only.
+// Result UNCLAMPED premultiplied linear.
 void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4])
 {
     float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -325,8 +317,11 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4])
         out[k] = acc[k];
 }
 
-// Contribution of one tile entry: normal shade, or (solid bit) the flat fill through
-// clip and paint at coverage 1, SDF skipped. Mirrors the GPU tiled branch.
+
+/* Tiled Eval */
+
+// One tile entry: normal shade, or (solid bit) coverage forced to 1 with the SDF skipped —
+// flat fill through clip and paint. Mirrors the GPU tiled branch.
 static void shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t py, float src[4])
 {
     uint32_t idx = entry & ANO_UI_ENTRY_INDEX_MASK;
@@ -344,9 +339,9 @@ static void shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t
         src[k] = fill[k] * cov;
 }
 
-// Painter's-order blend at one pixel through the tile grid: the same loop as
-// ano_ui_ref_eval but over pixel (px,py)'s tile list only. Bit-identical to the brute
-// evaluation when the grid covers every prim. The GPU tiled path mirrors THIS.
+// Painter's-order blend through the tile grid for pixel (px,py). Same loop as
+// ano_ui_ref_eval over the tile list only; the GPU tiled path mirrors THIS.
+// Glyphs not included.
 void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
                            const uint32_t *entries, int32_t px, int32_t py, float out[4])

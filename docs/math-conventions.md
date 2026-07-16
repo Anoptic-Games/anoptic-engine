@@ -1,14 +1,8 @@
 # Renderer math and geometry conventions
 
-The single source of truth for coordinate, matrix, depth, winding, and frustum conventions across
-the renderer (CPU `vertex.c` math + every GLSL shader + `shadowsetup.comp`). Sign and storage
-ambiguities here have already cost real bugs (a transposed shadow frustum, a ground plane lit on the
-wrong face); when you add math, conform to this or change this doc with it.
+The single source of truth for coordinate, matrix, depth, winding, and frustum conventions across the renderer (CPU `vertex.c` math + every GLSL shader + `shadowsetup.comp`). Sign and storage ambiguities here have already cost real bugs (a transposed shadow frustum, a ground plane lit on the wrong face); when you add math, conform to this or change this doc with it.
 
-Status: descriptive — it documents what the code does *today*. Two former inconsistencies (the
-camera using OpenGL `[-1,1]` depth, and normals using `mat3(model)` instead of the inverse-transpose)
-have been corrected; the historical notes below record what changed so the next person doesn't
-reinstate them.
+Status: descriptive — it documents what the code does *today*. Two former inconsistencies (the camera using OpenGL `[-1,1]` depth, and normals using `mat3(model)` instead of the inverse-transpose) have been corrected; the historical notes below record what changed so the next person doesn't reinstate them.
 
 ## Matrices
 
@@ -111,7 +105,7 @@ reinstate them.
 - The fallback cube carries a constant `(1,1,1)` vertex normal on all 8 corners (no per-face normals).
   Under the inverse-transpose, a thin box scales that toward its thinnest axis, so the ground reads
   ~`+Y` — convenient, but a non-thin fallback cube shades with a single diagonal normal. Real per-face
-  normals (24 verts) would be the robust fix if the fallback ever needs to look right at any scale.
+  normals (24 verts) would fix it properly if the fallback ever needs to look right at any scale.
 
 ## Vertex format
 
@@ -135,8 +129,4 @@ reinstate them.
 
 ## Standing recommendation
 
-The recurring failure mode is the same: a convention re-implemented in a second place (GLSL vs CPU,
-shadow vs camera) with a silent sign/transpose/range difference. The durable fix is **shared, tested
-helpers** — one `lookAt`/`ortho`/`perspective`/`extractPlanes` each, used by both the CPU and any
-shader codegen, with a unit test asserting CPU and GPU agree on a known frustum. Until that exists,
-this doc is the contract; cite it in review when math is added.
+The recurring failure mode is the same: a convention re-implemented in a second place (GLSL vs CPU, shadow vs camera) with a silent sign/transpose/range difference. The durable fix is **shared, tested helpers** — one `lookAt`/`ortho`/`perspective`/`extractPlanes` each, used by both the CPU and any shader codegen, with a unit test asserting CPU and GPU agree on a known frustum. Until that exists, this doc is the contract; cite it in review when math is added.

@@ -71,11 +71,12 @@ size_t ano_simplify(uint32_t* destination, const uint32_t* indices, size_t index
 // Default edge_len_factor: max resulting edge = this * mean source edge length.
 #define ANO_SIMPLIFY_EDGE_FACTOR_DEFAULT 8.0f
 
-// ano_simplify plus growth guards. Caps edge stretch at
-// edge_len_factor * mean source edge (unit-extent space). <=0 disables guards
-// (byte-identical to ano_simplify). Default 8.0. Also: abs bbox backstop,
-// ~75deg fold, collinear drop, link/tetra exclusion, feature-slide (dihedral>45),
-// max 60deg cumulative normal drift. Other params match ano_simplify.
+// ano_simplify plus growth guards. QEM is ~0 on coplanar flats; caps edge stretch
+// at edge_len_factor * mean source edge (unit-extent) so collapses cannot bridge a
+// floor/wall. <=0 disables guards (byte-identical to ano_simplify). Default 8.0.
+// Also: abs bbox backstop, ~75deg fold, collinear drop, link/tetra exclusion,
+// feature-slide (dihedral>45), max 60deg cumulative normal drift.
+// Other params match ano_simplify.
 size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t index_count,
                        const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride,
                        size_t target_index_count, float target_error, float edge_len_factor,

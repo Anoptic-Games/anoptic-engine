@@ -3,9 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* The console effect set (TECH_SPEC §12.2/§12.4). Defaults are the
- * prototype's console values and ship as tuning. Runs only on the mixer
- * thread (or the offline caller); no allocation, no locks after init. */
+// Insert-effect set. Mixer thread (or offline caller). No alloc/locks after init.
 
 #include "audio_fx.h"
 
@@ -16,7 +14,6 @@
 
 #define FX_TAU_F 6.28318530717958647692f
 
-// The public filter modes map straight onto the SVF's.
 _Static_assert(ANO_AUDIO_FILTER_OFF == ANO_DSP_SVF_BYPASS
                    && ANO_AUDIO_FILTER_LOWPASS == ANO_DSP_SVF_LOWPASS
                    && ANO_AUDIO_FILTER_HIGHPASS == ANO_DSP_SVF_HIGHPASS
@@ -34,9 +31,7 @@ static void fx_smooth_init(AnoAudioSmooth *s, float v, float coef)
     s->coef = coef;
 }
 
-// ---------------------------------------------------------------------------
-// init
-// ---------------------------------------------------------------------------
+/* init */
 
 bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
                        uint32_t sampleRate, float coefBlock)
@@ -71,8 +66,7 @@ bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
     }
 
     case ANO_AUDIO_FX_DCBLOCK: {
-        // pole for ~5 Hz corner
-        fx->u.dc.R = 1.0f - FX_TAU_F * 5.0f / fs;
+        fx->u.dc.R = 1.0f - FX_TAU_F * 5.0f / fs; // ~5 Hz
         return true;
     }
 
@@ -125,8 +119,8 @@ bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
         fx_smooth_init(&r->predelayMs, 20.0f, coefBlock);
         fx_smooth_init(&r->t60, 2.2f, coefBlock);
         fx_smooth_init(&r->dampHz, 4200.0f, coefBlock);
-        fx_smooth_init(&r->mix, 1.0f, coefBlock); // return-bus usage: pure wet
-        static const float lineMs[4] = { 33.7f, 45.3f, 57.7f, 68.9f }; // inharmonic (tuning)
+        fx_smooth_init(&r->mix, 1.0f, coefBlock); // pure wet
+        static const float lineMs[4] = { 33.7f, 45.3f, 57.7f, 68.9f }; // inharmonic
         if (!ano_dsp_delay_init(&r->pre, heap, (uint32_t)(fs * 0.200f)))
             return false;
         if (!ano_dsp_allpass_init(&r->ap[0], heap, (uint32_t)(fs * 0.0059f), 0.70f)
@@ -146,7 +140,7 @@ bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
         AnoAudioFxPingpong *p = &fx->u.pp;
         fx_smooth_init(&p->timeMs, 300.0f, coefBlock);
         fx_smooth_init(&p->feedback, 0.42f, coefBlock);
-        fx_smooth_init(&p->mix, 1.0f, coefBlock); // return-bus usage: pure wet
+        fx_smooth_init(&p->mix, 1.0f, coefBlock); // pure wet
         uint32_t maxDelay = (uint32_t)(fs * 1.2f);
         if (!ano_dsp_delay_init(&p->dl[0], heap, maxDelay)
             || !ano_dsp_delay_init(&p->dl[1], heap, maxDelay))
@@ -166,9 +160,7 @@ bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
     }
 }
 
-// ---------------------------------------------------------------------------
-// parameter dispatch (loud range handling lives here — finding 7)
-// ---------------------------------------------------------------------------
+/* parameter dispatch */
 
 void ano_audio_fx_set(AnoAudioFx *fx, uint32_t paramId, float value)
 {
@@ -186,7 +178,7 @@ void ano_audio_fx_set(AnoAudioFx *fx, uint32_t paramId, float value)
             if (mode > ANO_AUDIO_FILTER_BANDPASS)
                 mode = ANO_AUDIO_FILTER_OFF;
             if (f->mode == ANO_AUDIO_FILTER_OFF && mode != ANO_AUDIO_FILTER_OFF) {
-                // entering: start at the target, from rest — no sweep from stale state
+                // enter from rest at target
                 ano_audio_smooth_snap(&f->cutoff, f->cutoff.target);
                 ano_audio_smooth_snap(&f->q, f->q.target);
                 memset(f->s, 0, sizeof f->s);
@@ -297,9 +289,7 @@ void ano_audio_fx_set(AnoAudioFx *fx, uint32_t paramId, float value)
                   paramId, fx->kind);
 }
 
-// ---------------------------------------------------------------------------
-// processing
-// ---------------------------------------------------------------------------
+/* processing */
 
 static void fx_filter(AnoAudioFxFilter *f, float *m, uint32_t frames, float fs)
 {
@@ -368,8 +358,7 @@ static void fx_comp(AnoAudioFxComp *c, float *m, uint32_t frames)
     float invRatio = 1.0f / ano_audio_smooth_step(&c->ratio);
     float mk       = ano_audio_smooth_step(&c->makeup);
     for (uint32_t i = 0; i < frames; ++i) {
-        // feedback topology: last sample's gain shapes this sample; the
-        // detector listens to the OUTPUT
+        // feedback: last sample's gain shapes this sample; detector listens to OUTPUT
         float g = c->gain * mk;
         float l = m[2u * i] * g;
         float r = m[2u * i + 1u] * g;
@@ -396,7 +385,7 @@ static void fx_limiter(AnoAudioFxLim *l, float *m, uint32_t frames)
         float mx = ano_dsp_winmax_push(&l->wm, a);
         float target = mx > ceil ? ceil / mx : 1.0f;
         if (target < l->gain)
-            l->gain = target; // instant attack: the lookahead already absorbed it
+            l->gain = target; // instant attack
         else
             l->gain += l->releaseCoef * (target - l->gain);
         float dl = ano_dsp_delay_read_int(&l->dl[0], l->lookahead);
@@ -411,7 +400,7 @@ static void fx_limiter(AnoAudioFxLim *l, float *m, uint32_t frames)
 static void fx_chorus(AnoAudioFxChorus *c, float *m, uint32_t frames, float fs)
 {
     float rate  = ano_audio_smooth_step(&c->rate);
-    float depth = ano_audio_smooth_step(&c->depth) * 0.001f * fs; // samples
+    float depth = ano_audio_smooth_step(&c->depth) * 0.001f * fs;
     float mix   = ano_audio_smooth_step(&c->mix);
     float center = 0.015f * fs;
     double step  = (double)rate / (double)fs;
@@ -445,7 +434,7 @@ static void fx_reverb(AnoAudioFxReverb *r, float *m, uint32_t frames, float fs)
     }
     for (uint32_t i = 0; i < frames; ++i) {
         float dryL = m[2u * i], dryR = m[2u * i + 1u];
-        // tank input: mono sum -> predelay -> two diffusers
+        // mono -> predelay -> diffusers
         ano_dsp_delay_write(&r->pre, 0.5f * (dryL + dryR));
         float v = ano_dsp_delay_read_frac(&r->pre, pre < 1.0f ? 1.0f : pre);
         v = ano_dsp_allpass_step(&r->ap[0], v);
@@ -461,7 +450,6 @@ static void fx_reverb(AnoAudioFxReverb *r, float *m, uint32_t frames, float fs)
         float half = 0.5f * sum;
         for (int k = 0; k < 4; ++k)
             ano_dsp_delay_write(&r->line[k], v + r->lineGain[k] * (o[k] - half));
-        // decorrelated stereo taps -> output shelf
         float wl = 0.7f * (o[0] - o[2]);
         float wr = 0.7f * (o[1] - o[3]);
         wl = ano_dsp_biquad_step(&r->shelfC, &r->shelfS[0], wl);
@@ -482,7 +470,7 @@ static void fx_pingpong(AnoAudioFxPingpong *p, float *m, uint32_t frames, float 
         float dryL = m[2u * i], dryR = m[2u * i + 1u];
         float outL = ano_dsp_delay_read_frac(&p->dl[0], time);
         float outR = ano_dsp_delay_read_frac(&p->dl[1], time);
-        // the cross-feedback IS the ping-pong
+        // cross-feedback is the ping-pong
         ano_dsp_delay_write(&p->dl[0], dryL + fb * outR);
         ano_dsp_delay_write(&p->dl[1], dryR + fb * outL);
         m[2u * i]      = dryL + (outL - dryL) * mix;

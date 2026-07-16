@@ -2,16 +2,9 @@
 
 ### Region-Based Memory, Wait-Free Concurrency, and Type Theory as the Foundations of Anoptic
 
-> **Thesis.** Systems programming has long been told it must choose between two
-> safety regimes: a tracing garbage collector (safe, ergonomic, non-deterministic)
-> or a borrow checker (safe, deterministic, hostile to mutable aliasing). Anoptic
-> rejects the dichotomy. A million-entity simulation needs *unrestricted* mutation
-> of shared state at speed. It can have it, with correctness, by deriving
-> safety from **architectural geometry**. The geometry has three axes: memory bound to scope, concurrency bound
-> to hardware, and structure bound to types. This document synthesizes the research
-> behind each axis and maps it onto the engine as it exists today.
+> **Thesis.** Systems programming gets told it must pick one safety regime: a tracing GC (safe, ergonomic, non-deterministic) or a borrow checker (safe, deterministic, hostile to mutable aliasing). Anoptic rejects the dichotomy. A million-entity simulation needs *unrestricted* mutation of shared state at speed. It can have that, with correctness, by deriving safety from **architectural geometry**. Three axes: memory bound to scope, concurrency bound to hardware, structure bound to types. This document maps the research behind each onto the engine as it exists today.
 
-This is the manifesto: *all allocations through arenas or thread-local heaps; no mutexes outside the Vulkan backend; C23, no heavyweight deps.* Each is the direct operational consequence of a well-developed line of computer-science research. The hard theory was done decades ago and the C23 toolchain finally makes it ergonomic.
+This is the manifesto: *all allocations through arenas or thread-local heaps; no mutexes outside the Vulkan backend; C23, no heavyweight deps.* Each is the direct operational consequence of a well-developed line of computer-science research. The hard theory was done decades ago; the C23 toolchain finally makes it ergonomic.
 
 ---
 
@@ -65,8 +58,7 @@ This is the pillar behind *"no mutexes outside the Vulkan backend."* A mutex ser
 
 **Michael & Scott** showed (the canonical MS-queue) that rich data structures can be made non-blocking with CAS/FAA. But removing locks creates a second problem: if thread A unlinks and frees a node while thread B holds a stale pointer into it, B faults. GC languages dodge this implicitly (and pay non-deterministic latency). Lock-free C must solve it explicitly with **Safe Memory Reclamation (SMR)**: *a node is reclaimed only once no thread can still reach it.*
 
-**Interval-Based Reclamation** (Wen, Izraelevitz, Cai, Beadle & Scott, PPoPP
-2018) is the modern answer. Each operation runs inside an interval (`start_op` / `end_op`). Retired nodes are stamped with the current epoch and parked on a thread-local list. A node is freed only once its stamp precedes the oldest interval any thread could still be inside. IBR keeps the bounded overhead of hazard pointers.
+**Interval-Based Reclamation** (Wen, Izraelevitz, Cai, Beadle & Scott, PPoPP 2018) is the modern answer. Each operation runs inside an interval (`start_op` / `end_op`). Retired nodes are stamped with the current epoch and parked on a thread-local list. A node is freed only once its stamp precedes the oldest interval any thread could still be inside. IBR keeps the bounded overhead of hazard pointers.
 
 A worthwhile optimization is to source the interval clock from a **hardware timestamp counter**, removing the cache-line contention of a global counter. The research calls this "TSC-IBR". Treat that as *a technique* (hardware-clock interval source). **The counter is platform-specific, so it goes through `anoptic_time`:** x86-64 has `rdtsc` (wrapped by `clock_gettime` on Linux, `QueryPerformanceCounter` on Windows). arm64/Apple Silicon has `CNTVCT_EL0`, most portably reached via `mach_absolute_time()`. One `ano_*` interface, three lowerings.
 
@@ -81,18 +73,11 @@ A worthwhile optimization is to source the interval clock from a **hardware time
 
 Cores keep caches coherent with the **MESI** protocol at **cache-line granularity**. Two threads writing *different* variables that happen to share one line force the line to ping-pong between cores. This *false sharing* silently erases the benefit of going lock-free. The fix is to pad hot, independently-written fields to their own line with `alignas`, so ownership transfers cleanly at line boundaries via release/acquire stores. Done right, MESI becomes the synchronization mechanism: a single release-store publishes a fully-written, cache-aligned slot.
 
-> **A constant the platform layer must own.** The research assumes 64-byte cache
-> lines throughout. That holds on x86-64 (Linux and Windows), but **Apple Silicon
-> uses 128-byte lines** (`sysctl hw.cachelinesize` → `128` on this M1). A hardcoded
-> `alignas(64)` would pad to *half* a line on macOS and still false-share. So
-> define one engine-wide `ANO_CACHELINE` (64 on
-> x86-64, 128 on `__aarch64__`/Apple), resolve it in the abstraction layer, and
-> align every hot lock-free slot to it. C has no standard
-> `hardware_destructive_interference_size`, so this abstraction is on us.
+> **A constant the platform layer must own.** The research assumes 64-byte cache lines throughout. That holds on x86-64 (Linux and Windows), but **Apple Silicon uses 128-byte lines** (`sysctl hw.cachelinesize` → `128` on this M1). A hardcoded `alignas(64)` would pad to *half* a line on macOS and still false-share. So define one engine-wide `ANO_CACHELINE` (64 on x86-64, 128 on `__aarch64__`/Apple), resolve it in the abstraction layer, and align every hot lock-free slot to it. C has no standard `hardware_destructive_interference_size`, so this abstraction is on us.
 
 ### What Anoptic already does
 
-The logger is the first lock-free citizen. `src/log/log_core.c` already keeps an `_Atomic int tail_index` over a shared buffer with an `enqueue_log_string` producer path, the seed of a many-producer / single- consumer log bus. The maturation path is textbook: reserve a slot with one atomic `fetch_add`, write into an `ANO_CACHELINE`-aligned slot, then publish with an `atomic_store(…, memory_order_release)` on a commit header so the consumer (`memory_order_acquire`) flushes only fully-written, contiguous runs. No syscall, no lock, no gap-problem ambiguity.
+The logger is the first lock-free citizen. `src/log/log_core.c` already keeps an `_Atomic int tail_index` over a shared buffer with an `enqueue_log_string` producer path, the seed of a many-producer / single-consumer log bus. The maturation path is textbook: reserve a slot with one atomic `fetch_add`, write into an `ANO_CACHELINE`-aligned slot, then publish with an `atomic_store(…, memory_order_release)` on a commit header so the consumer (`memory_order_acquire`) flushes only fully-written, contiguous runs. No syscall, no lock, no gap-problem ambiguity.
 
 And the hardware cooperates on every target, because the atomics *interface* hides the lowering: on Apple Silicon the M1 reports `FEAT_LSE`, so `_Atomic` CAS and add become **single instructions** (`CAS`, `LDADD`, `SWP`). On x86-64 they lower to `lock`-prefixed ops. We write C11 `<stdatomic.h>` once and each platform's compiler emits the right thing. Lock-free is cheap on all three.
 
@@ -112,7 +97,7 @@ To orchestrate raw memory and atomics without a C++ type lattice or a borrow che
 
 ## Pillar IV — C23 as the Ergonomic Substrate
 
-The optimism is warranted because the toolchain finally meets the theory, and it meets it on every target: gcc or clang on Linux, clang on macOS (Homebrew LLVM clang 22, since Apple clang 15 is too old for C23) and on Windows, all speaking the same C23.
+The toolchain finally meets the theory on every target: gcc or clang on Linux, clang on macOS (Homebrew LLVM clang 22, since Apple clang 15 is too old for C23) and on Windows, all speaking the same C23.
 
 - **`[[unsequenced]]` and `[[reproducible]]`** (genuinely new in C23). The former marks effectless, stateless, idempotent functions (≈ GNU `const`). The latter effectless-but-may-read functions (≈ GNU `pure`). On our math core (transforms, orbital integration, hashing) they license the compiler to hoist, CSE, and reorder with confidence. Standardized purity annotations.
 
@@ -122,7 +107,7 @@ The optimism is warranted because the toolchain finally meets the theory, and it
 
 ## The Hardware Is Not Abstract — So the Platform Layer Is
 
-The research's performance section is implicitly x86-64/Linux: `rdtsc`, `PDPE1GB` 1 GiB hugepages, 64-byte lines, 4 KiB pages. But Anoptic ships on **three platforms at once**, Linux/x86-64 (SSA's box), Windows/x86-64, and macOS/arm64 (Apple Silicon), so those numbers are *one column of a matrix*. This is exactly why the engine splits `include/` (the platform-agnostic interface, every `ano_*` call) from `src/*_linux.c` / `*_win64.c` / `*_macos.c` (the per-platform implementation). The *principles* below transfer perfectly to all three. The *constants and instructions* differ, so every one of them is a value the platform layer resolves.
+The research's performance section is implicitly x86-64/Linux: `rdtsc`, `PDPE1GB` 1 GiB hugepages, 64-byte lines, 4 KiB pages. But Anoptic ships on **three platforms at once**, Linux/x86-64 (SSA's box), Windows/x86-64, and macOS/arm64 (Apple Silicon), so those numbers are *one column of a matrix*. This is exactly why the engine splits `include/` (the platform-agnostic interface, every `ano_*` call) from `src/*_linux.c` / `*_win64.c` / `*_macos.c` (the per-platform implementation). The *principles* below transfer to all three. The *constants and instructions* differ, so every one of them is a value the platform layer resolves.
 
 | Concern           | x86-64 (Linux / Windows)                              | arm64 (macOS, Apple Silicon)                    | Abstracted through |
 |-------------------|------------------------------------------------------|-------------------------------------------------|--------------------|
@@ -133,19 +118,19 @@ The research's performance section is implicitly x86-64/Linux: `rdtsc`, `PDPE1GB
 | Atomic lowering   | `lock`-prefixed ops, `cmpxchg`                       | **LSE** (`CAS` / `LDADD` / `SWP`, single-instr) | `<stdatomic.h>` `_Atomic` |
 | Thread primitives | full POSIX (Linux) / Win32 (Windows)                 | POSIX **minus** spinlock & barrier              | `anoptic_threads` (+ Darwin compat shim) |
 
-The optimistic reading: the platform layer turns this fragmentation into *leverage*. The same lock-free, arena-based core compiles optimally on all three, and each target brings a gift. Apple Silicon's 16 KiB pages quadruple TLB reach for free and its LSE atomics make CAS/FAA single instructions. x86-64's 64-byte line means tighter padding. Linux gives SSA the richest hugepage and NUMA control. The job is to keep every constant flowing through the `anoptic_*` headers so no platform is a second-class citizen. That last table row is the concrete work this branch is doing right now: macOS libpthread ships no `pthread_spinlock_t` or `pthread_barrier_t`, so the Darwin implementation supplies them in a compat shim while `include/anoptic_threads.h` stays byte-identical across all three. Get the non-GPU core green on macOS without touching the Linux or Windows paths. That is the headless port.
+The platform layer turns this fragmentation into leverage. The same lock-free, arena-based core compiles optimally on all three, and each target brings a gift. Apple Silicon's 16 KiB pages quadruple TLB reach for free and its LSE atomics make CAS/FAA single instructions. x86-64's 64-byte line means tighter padding. Linux gives SSA the richest hugepage and NUMA control. Keep every constant flowing through the `anoptic_*` headers so no platform is a second-class citizen. That last table row is the concrete work this branch is doing right now: macOS libpthread ships no `pthread_spinlock_t` or `pthread_barrier_t`, so the Darwin implementation supplies them in a compat shim while `include/anoptic_threads.h` stays byte-identical across all three. Get the non-GPU core green on macOS without touching the Linux or Windows paths. That is the headless port.
 
 ---
 
 ## Synthesis: One Architecture, Three Axes
 
-They are three orthogonal axes of a single discipline, and Anoptic already sits at their intersection:
+Three orthogonal axes of one discipline, and Anoptic already sits at their intersection:
 
 1. **Memory is bound to scope.** Arenas + `cleanup` give Tofte–Talpin region safety in plain C. Allocation is O(1), reclamation is O(1), and lifetime is a property of the source's shape. No GC, no tracing, no per-object `free`.
 2. **Concurrency is bound to hardware.** CAS/FAA + interval-based reclamation + cache-line-aligned ownership give wait-free progress. The MESI protocol, respected at the cache line (`ANO_CACHELINE`, 64 B on x86-64, 128 B on Apple Silicon), becomes the publish/subscribe mechanism. No mutexes outside Vulkan, by construction.
 3. **Structure is bound to types.** SoA layout, legal C union punning, `_Generic` dispatch, and C23 purity attributes give polymorphism and safety as *layout and compile-time* facts.
 
-You need memory whose lifetime is visible in the code's geometry, concurrency whose ordering is visible in the hardware's geometry, and structure whose meaning is visible in the type's geometry. Decades of theory (Tofte & Talpin, Walker–Crary–Morrisett, Cyclone, Michael & Scott, the IBR line, Reynolds, Pierce) converge on it, and C23 plus modern clang/gcc, across Linux, Windows, and macOS, finally make it both legal and fast on every machine the team runs. Anoptic is the engine that takes the convergence literally.
+You need memory whose lifetime is visible in the code's geometry, concurrency whose ordering is visible in the hardware's geometry, and structure whose meaning is visible in the type's geometry. Decades of theory (Tofte & Talpin, Walker–Crary–Morrisett, Cyclone, Michael & Scott, the IBR line, Reynolds, Pierce) converge on it, and C23 plus modern clang/gcc — across Linux, Windows, and macOS — finally make it both legal and fast on every machine the team runs. Anoptic takes that convergence literally.
 
 ---
 

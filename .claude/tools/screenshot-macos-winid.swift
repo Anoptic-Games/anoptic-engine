@@ -1,6 +1,5 @@
-// Print the id of the largest on-screen window whose owner name contains argv[1],
-// case-insensitive. No match prints nothing. CGWindowList only, no Accessibility.
-// Built on demand by the screenshot-macos wrapper.
+// Largest on-screen window whose owner contains argv[1] (case-insensitive). No match: quiet.
+// CGWindowList only, no Accessibility. Built on demand by screenshot-macos.
 import CoreGraphics
 import Foundation
 

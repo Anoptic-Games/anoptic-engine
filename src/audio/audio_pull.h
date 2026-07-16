@@ -3,16 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * audio_pull.h (private to src/audio/)
- * Shared cooked-block ring consumer with partial-block carry, used by every
- * device backend. A device quantum rarely equals the mixer block, so the
- * consumer carries a partially-drained block across calls (in
- * mx->deviceScratch — one backend runs at a time). An empty ring fills
- * silence; underruns count only after the first block has arrived (startup is
- * not an underrun). Lock-free: safe on OS callback threads (PipeWire RT,
- * CoreAudio render, WASAPI event loop).
- */
+// Cooked-block ring consumer with partial-block carry (private to src/audio/).
+// Device quantum rarely equals mixer block; carry lives in mx->deviceScratch (one backend at a time).
+// Empty ring -> silence. Underruns count only after first block. Lock-free (OS callback threads).
 
 #ifndef ANO_AUDIO_PULL_H
 #define ANO_AUDIO_PULL_H
@@ -23,8 +16,8 @@
 
 typedef struct AnoAudioPull
 {
-    uint32_t offset;  // frames consumed from the carried block
-    uint32_t frames;  // frames in the carried block; 0 = none carried
+    uint32_t offset;  // frames consumed from carried block
+    uint32_t frames;  // carried frames. 0 = none
     bool     started; // first block seen
 } AnoAudioPull;
 

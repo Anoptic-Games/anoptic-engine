@@ -3,30 +3,12 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Standalone fuzzer for the lock-free MPSC logger. Many producer threads hammer ano_log_write with
-// randomized but ALWAYS well-typed input while a flusher thread drains on short random intervals.
-// Two streams of input share one harness:
-//   1) variable-length CONTENT logged safely as ano_log_write(level, route, file, line, "%s", randstr),
-//      lengths spanning a few bytes up to past one ring entry (exercises spanning, wrap, full-ring
-//      wait). Random level, occasional NOW route, occasional ano_log_output_dir between two
-//      valid dirs. Routes stay FILE-bound so the line-count oracle holds.
-//   2) the deferred FORMATTER, fuzzed by a fixed table of literal format strings each paired with
-//      correctly-typed randomized args. A random fmt is NEVER paired with random args -- only fixed
-//      (literal-fmt, typed-arg) templates, chosen at random per call.
-//
-// The one invariant: the logger drops nothing. Every record each producer enqueues becomes exactly
-// one output line (random content forbids '\n' and '\0', so one record == one line). After stopping
-// all producers and a final flush, the summed line count across both output files must equal the
-// total enqueued. Mismatch -> non-zero exit with a clear message.
-//
-// Deterministic by default: fixed per-thread seeds (templates/rng.h), fixed thread count, a few
-// thousand iterations each, a few seconds wall. argv[1] overrides the per-thread iteration count
-// for a longer soak.
-// The harness's own cross-thread state is all atomic. The output-dir swap closes the old file handle
-// (mi_free) on a producer thread; TSan sees that cross-thread free race with mimalloc's thread-local
-// heap teardown when another producer exits. That race lives inside mimalloc's abandoned-page protocol,
-// safe by its design but opaque to TSan, not in the logger or this harness, so the teardown frames are
-// suppressed below.
+// Fuzzer for lock-free MPSC logger. Producers hammer well-typed ano_log_write; flusher drains randomly.
+//   1) CONTENT: "%s" + randstr (span/wrap/full-ring). Random level, occasional NOW, output-dir swap.
+//      Routes FILE-bound for line-count oracle.
+//   2) FORMATTER: fixed (literal-fmt, typed-arg) templates only. Never random fmt + random args.
+// Invariant: drop nothing. One record == one line. Final line count == enqueued.
+// Deterministic. argv[1] = per-thread iters. TSan suppressions: mimalloc abandon/teardown only.
 
 #include <anoptic_log.h>
 #include <anoptic_threads.h>
@@ -41,8 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Suppress only mimalloc's thread-teardown frames (see the file banner). Matching either side of a race
-// suppresses the report, and the logger's own logic never goes through these, so its races stay visible.
+// Suppress mimalloc teardown frames only (logger races stay visible).
 #if defined(__has_feature)
 #  if __has_feature(thread_sanitizer)
 const char *__tsan_default_suppressions(void);
@@ -57,25 +38,23 @@ const char *__tsan_default_suppressions(void)
 #  endif
 #endif
 
-// CMake points ANO_TEST_OUTDIR at this test's build tree (fallback "." in templates/scratch.h).
+// ANO_TEST_OUTDIR = test build tree (fallback "." in scratch.h).
 #define DIR_A      ANO_TEST_OUTDIR "/anolog_fuzz"
 #define DIR_B      ANO_TEST_OUTDIR "/anolog_fuzz_alt"
-// Session-stamped file paths (<dir>/<stamp>_ano.log), resolved once at the top of main().
+// Session-stamped paths, resolved in main().
 static char PATH_A[96], PATH_B[96];
 
 #define PRODUCERS      6
-#define DEFAULT_ITERS  4000     // per producer, overflows the ring repeatedly
-#define MAX_CONTENT    600      // > one ring entry (64/128B line) to force spanning/wrap, < message cap
+#define DEFAULT_ITERS  4000     // per producer
+#define MAX_CONTENT    600      // > one ring entry, < message cap
 
-// Total records actually enqueued, summed across all producers. The drop-nothing oracle.
+// Drop-nothing oracle: total enqueued.
 static _Atomic uint64_t g_enqueued;
 static _Atomic int      g_worker_fail;
 static _Atomic bool     g_stop;
 static int              g_iters = DEFAULT_ITERS;
 
-// One enqueue through the deferred formatter, via a FIXED literal fmt + correctly-typed randomized
-// args. Each case pairs a literal with args of exactly the right type -- never a random fmt. Returns
-// nothing; the caller counts it. Pick is chosen at random per call.
+// One deferred-formatter enqueue via fixed (literal-fmt, typed-arg) template.
 static void formatter_case(test_rng *s)
 {
     int      i  = (int)rng_next(s) - (int)0x40000000; // full signed range
@@ -196,12 +175,12 @@ int main(int argc, char **argv)
     for (int i = 0; i < PRODUCERS; i++)
         ano_thread_join(prod[i], NULL);
 
-    // All producers stopped: stop the flusher, then a final synchronous drain before reading back.
+    // Producers stopped: stop flusher, final drain, then read back.
     atomic_store(&g_stop, true);
     ano_thread_join(flush, NULL);
     ano_log_flush();
 
-    // Point the output away from both files so cleanup's final drain (empty here) touches neither.
+    // Point output away so cleanup's final drain touches neither file.
     uint64_t enq = atomic_load(&g_enqueued);
     int wfail = atomic_load(&g_worker_fail);
 

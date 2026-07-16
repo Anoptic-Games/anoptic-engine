@@ -3,21 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Phase 7 gate for the engine's PUBLIC face (anoptic_music.h): the opaque
- * handle, the curated config, the control calls, and snapshot/restore.
- *
- * The config is a curation, not a copy — tiers 1 and 2 (what to play, and the
- * mapper/dramaturg that give it personality) are public; the generators' own
- * tuning stays private on its defaults. So the thing to prove is that curating
- * it loses NOTHING: a piece generated through the public API must be the same
- * music, note for note, as the same config driven through the private engine.
- * Anything the expansion drops or reorders (the layer bitmask losing gate
- * order, a flag not carried through) shows up as a different note.
- *
- * Then snapshot/restore, which is what seek and save are built from: the engine
- * is pointer-free, so its bytes ARE its state — restoring must reproduce the
- * future exactly, and a snapshot taken at bar N must equal one taken by
- * fast-forwarding a fresh engine to bar N. Exit 0 == pass. */
+// Public music API: curated config == private engine note-for-note; snapshot/restore/seek.
+// Exit 0 == pass.
 
 #include <stddef.h>
 #include <stdio.h>
@@ -45,8 +32,7 @@ static bool ev_eq(const AnoNoteEvent *a, const AnoNoteEvent *b)
            && a->velocity == b->velocity && a->layer == b->layer && a->tie == b->tie;
 }
 
-// The everything-on shape, spelled once in each vocabulary. If the public
-// config can express it, the two must agree bar for bar.
+// Everything-on config in both vocabularies.
 static void public_config(AnoMusicConfig *c)
 {
     *c = ano_music_config_default();
@@ -91,7 +77,7 @@ int main(void)
     static AnoBarResult pr;
     static AnoMusicBar pb;
 
-    // --- the curation loses nothing: public == private, note for note --------
+    // --- public config == private, note for note ---
     for (int rich = 0; rich < 2; ++rich) {
         AnoMusicConfig pubCfg;
         AnoEngineConfig privCfg;
@@ -127,7 +113,7 @@ int main(void)
         ano_music_destroy(pub);
     }
 
-    // --- the bar's MEANING is populated (the AEVT_MUSIC_BAR payload) ---------
+    // --- bar MEANING populated (AEVT_MUSIC_BAR payload) ---
     {
         AnoMusicConfig cfg;
         public_config(&cfg);
@@ -148,7 +134,7 @@ int main(void)
         ano_music_destroy(e);
     }
 
-    // --- overrides are by name, and a typo is REFUSED ------------------------
+    // --- overrides by name; typo refused ---
     {
         AnoMusicConfig cfg;
         public_config(&cfg);
@@ -163,7 +149,7 @@ int main(void)
         ano_music_destroy(e);
     }
 
-    // --- snapshot/restore: the engine's bytes ARE its future -----------------
+    // --- snapshot/restore: engine bytes are the future ---
     {
         AnoMusicConfig cfg;
         public_config(&cfg);
@@ -177,12 +163,12 @@ int main(void)
             ano_music_advance_bar(e, &pb);
         CHECK(ano_music_snapshot(e, snap, sz), "snapshot at bar 20");
 
-        // the future, recorded
+        // Record future.
         static AnoMusicBar future[12];
         for (uint32_t b = 0; b < 12u; ++b)
             ano_music_advance_bar(e, &future[b]);
 
-        // restore, and re-run it: the same future, exactly
+        // Restore and re-run: same future.
         CHECK(ano_music_restore(e, snap, sz), "restore");
         bool same = true;
         for (uint32_t b = 0; b < 12u && same; ++b) {
@@ -193,8 +179,7 @@ int main(void)
         }
         CHECK(same, "restore reproduces the future exactly");
 
-        // SEEK: a fresh engine fast-forwarded to bar 20 IS the snapshot. This is
-        // deterministic reconstruction — the whole basis of seek and save.
+        // Seek: fresh engine fast-forwarded to bar 20 == snapshot.
         AnoMusicEngine *fresh = ano_music_create(&cfg, 42);
         for (uint32_t b = 0; b < 20u; ++b)
             ano_music_advance_bar(fresh, &pb);
@@ -204,10 +189,7 @@ int main(void)
             size_t first = sz, n = 0;
             for (size_t i = 0; i < sz; ++i)
                 if (x[i] != y[i]) { if (first == sz) first = i; n++; }
-            // Padding is the usual culprit: C leaves it indeterminate under an
-            // initializer, so a config default that is not memset (or `static
-            // const`, whose padding IS zeroed) smuggles stack garbage into the
-            // engine and the snapshot stops being a function of the state.
+            // Indeterminate padding in config defaults is the usual culprit.
             printf("  %zu of %zu bytes differ, first at offset %zu "
                    "(config spans 0..%zu) — indeterminate padding?\n",
                    n, sz, first, sizeof(AnoEngineConfig));
@@ -215,7 +197,7 @@ int main(void)
         CHECK(memcmp(snap, snapB, sz) == 0,
               "a rebuilt engine is byte-identical to the snapshot");
 
-        // and a snapshot from a DIFFERENT bar must not be
+        // Different bar -> different snapshot.
         for (uint32_t b = 0; b < 2u; ++b)
             ano_music_advance_bar(fresh, &pb);
         ano_music_snapshot(fresh, snapB, sz);

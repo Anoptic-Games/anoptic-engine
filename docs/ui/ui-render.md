@@ -1,8 +1,8 @@
-# ui-render.md — vector UI layer: scouting report
+# ui-render.md — vector UI layer
 
-Scouting pass for the general UI rendering layer (panels, buttons, menus, layering, images,
-shadows/glow), tested against the current renderer and against the 2024-2026 state of the art
-in GPU vector graphics. Verdict up front: the text lane should not merely inspire the UI lane —
+How the general UI rendering layer (panels, buttons, menus, layering, images,
+shadows/glow) fits this renderer and the 2024-2026 state of the art
+in GPU vector graphics. Short version: the text lane should not merely inspire the UI lane —
 it should become it. The Scanline Sweeper's coverage engine (`textcoverage.glsl`) is already a
 general fill rasterizer over monotone quadratic outlines; nothing in `curve_area`/`window_sum`
 is glyph-specific, holes and annular borders fall out of the signed-area sum natively (glyph
@@ -20,12 +20,12 @@ GPU-fine — the division of labor this renderer already has.
 
 From the stated intent: layout, dimensions, positioning, styling computed CPU-side on the game
 logic thread; element specs + layering order submitted to the render thread; pushed to GPU
-buffers; rendered on-device. Vector-based draws for crisp AA and flawless scaling; provisions
-for transparency, texturing, shadows, glow. No hard constraints beyond the engine's standing
+buffers; rendered on-device. Vector draws for crisp AA at any scale; provisions
+for transparency, texturing, shadows, glow. No hard constraints beyond the engine's usual
 ones: C23 + GLSL in-house, no heavyweight deps, feature-gated fallbacks, analytic math over
 brute force where it wins.
 
-Givens worth pinning because they shape everything (all anchors verified this pass):
+Givens that shape everything (all anchors verified this pass):
 
 - The overlay lane exists and is UI-shaped already: full-res premultiplied `R8G8B8A8_UNORM`
   overlay ×3 (`text_raster.c:771`), async compute CB submitted first with no waits
@@ -53,7 +53,7 @@ Givens worth pinning because they shape everything (all anchors verified this pa
 
 ## 2. The design space
 
-Six schools, each with a verdict against this renderer. Sources in §9.
+Six schools, each scored against this renderer. Sources in §9.
 
 ### 2.1 CPU tessellation (Dear ImGui, NanoVG, Qt Quick)
 
@@ -63,8 +63,8 @@ whole model is "1 draw cmd ≈ 1 draw call"; Qt batches opaque front-to-back + a
 back-to-front and wants <10 batches. Strengths: trivially debuggable, predictable, the floor
 every engine can reach. Weaknesses for us: AA quality is fringe-approximate and breaks under
 scale (re-tessellation), vectors are faked, shadows are 9-patch textures, and the CPU re-emits
-geometry every frame — the exact opposite of the bridge's retained-block economy. Verdict:
-reject as the architecture, keep as the mental floor; our block registry + compose already
+geometry every frame — the exact opposite of the bridge's retained-block economy.
+Reject as the architecture, keep as the mental floor; our block registry + compose already
 beats its data flow.
 
 ### 2.2 Analytic primitive instancing, fragment school (GPUI/Zed, vger)
@@ -78,7 +78,7 @@ tiny CPU cost, crisp analytic AA at any scale, hardware blending gives painter's
 free, ~2 pipelines. Weaknesses: no vector paths (icons become textures), overdraw is real
 fill-rate (each translucent quad reads/writes the target), fragment-lane only, and it would
 live beside our compute text lane as a second, differently-flavored system with its own
-z-interleaving problem against text. Verdict: the primitive taxonomy and the shadow math are
+z-interleaving problem against text. The primitive taxonomy and the shadow math are
 exactly right — steal both — but implement them inside the compute lane we already have rather
 than as a parallel fragment system.
 
@@ -92,7 +92,7 @@ established the key invariants: per-cell self-contained winding (RAVG), GPU-buil
 processing (Li 2016). Costs, from the authors themselves: unpredictable intermediate memory
 (the tile/segment allocation problem, retry machinery), a long compute pipeline of a dozen
 dispatches, conflation artifacts from coverage AA (still on their future-work list in 2026),
-and complexity far past what a UI workload needs. Verdict: do not build a general scene
+and complexity far past what a UI workload needs. Do not build a general scene
 compiler. Steal three ideas: per-tile command lists, per-tile backdrop/solid classification
 (the interior fast path), and front-to-back early-out. Our workload (hundreds-to-thousands of
 prims, mostly axis-aligned) lets the CPU build the tile lists at UI-change cadence, skipping
@@ -104,7 +104,7 @@ Linebender's own pivot, motivated by classic Vello's memory unpredictability and
 exclusion: CPU does flatten/stroke/tile/sort/coarse into height-4 "sparse strips" (u8 coverage
 columns for boundaries + implicit winding-derived spans for interiors); GPU is plain
 vertex/fragment draws consuming strips. vello_cpu beats Skia/Cairo at scale; vello_hybrid is
-beta as of 2026 Q1. Verdict: this is the strongest external validation of the recommended
+beta as of 2026 Q1. This is the strongest external validation of the recommended
 shape. Our renderer already holds the two ends (CPU logic thread doing layout; GPU per-pixel
 analytic coverage); the strip/coarse stage maps onto "CPU composes per-tile prim lists at
 UI-change cadence". We keep one advantage over sparse strips: our fine stage evaluates
@@ -115,7 +115,7 @@ re-rasterize nothing on scroll/scale of the same block content.
 
 Pixel-local storage / rasterization-order attachment access / fragment interlock / atomics —
 five modes plus vendor workarounds — to get order-correct src-over of thousands of overlapping
-animated paths in one pass with no offscreens. Verdict: solves a problem we do not have. A
+animated paths in one pass with no offscreens. Solves a problem we do not have. A
 z-sorted UI prim list blended in registers inside one compute thread has perfect ordering by
 construction, zero extensions, zero modes. Revisit only if Lottie-class vector animation
 becomes UI content. Their 2025 "feathering" is worth remembering: Gaussian-integral coverage
@@ -129,7 +129,7 @@ this in 2024 and its real lesson is elsewhere: a fixed, build-time-enumerated pi
 (<50 shaders) and full per-frame redraw ship 60-120 Hz UI on phones; runtime shader growth is
 how UI renderers die (Skia's jank decade). Graphite's lessons likewise: painter's-index-as-
 depth for opaque reordering, and clip-as-data so pipeline state never depends on the clip
-stack. Verdict: reject the raster technique (serial per path, MSAA memory against our ×1
+stack. Reject the raster technique (serial per path, MSAA memory against our ×1
 overlay, no analytic AA), adopt the two architectural rules. The Slug patent (US 10,373,352,
 banded winding-number glyph eval) was disclaimed into the public domain 2026-03-17, so that
 whole family is now legally open — noted for completeness; our signed-area lineage
@@ -218,17 +218,17 @@ error as a fraction of r, derived this pass): 1 segment 6.07%, 2 segments 0.31%,
 0.056%, 4 segments 0.025%. Two segments keeps the error under 0.1 px up to r≈32 px, three up
 to r≈180 px. An rrect outline is then 4 lines + 8-12 quads ≈ one average glyph (17.4 segments)
 per pixel — fine for boundary tiles, ruinous for interior pixels, which is why §3.7's interior
-classification is load-bearing if this path is taken. Default: closed-form rrect; outline
+classification is required if this path is taken. Default: closed-form rrect; outline
 lowering as a quality escape hatch.
 
-A property worth stating because it is unusual: two shapes sharing an exact edge produce
+An unusual property worth stating: two shapes sharing an exact edge produce
 coverage that sums to exactly 1 in every window (signed areas are additive), so same-color
 abutting panels are seamless by construction. Differing colors still show the standard
 conflation seam (§5.3).
 
 ### 3.4 Shadows and glow, closed form
 
-The centerpiece of "mathematical elegance meets art direction", and the field agrees on the
+The part where the math and the art direction actually meet, and the field agrees on the
 math (GPUI ships exactly this; CC0 source):
 
 - 1D: the Gaussian-blurred box edge is an erf difference. Wallace's shader form:
@@ -289,7 +289,7 @@ pixels of outline-evaluated shapes. The ladder, each step gated on measurement:
 1. v0 (build sequence steps 1-5): today's machinery unchanged — union-bbox bounded dispatch
    (`text_raster.c:919-947`), CHUNK-64 shared-memory cull, brute per-tile scan. Correct at
    demo scale; the text lane proved the cost class.
-2. Per-tile prim lists, CPU-built at compose cadence (the load-bearing step): when a block
+2. Per-tile prim lists, CPU-built at compose cadence (the scaling step that actually matters): when a block
    changes, the compose walks prims, appends (kind,index) handles to the 8×8-tile grid
    (54,720 tiles at 2560×1368; axis-aligned prims rasterize to tile ranges in closed form,
    paths via segment-bbox conservative rasterization). Because composition happens only on
@@ -358,7 +358,7 @@ This contract is what lets future consumers slot in without ABI motion. An offsc
 
 ## 4. Reuse inventory
 
-What the UI lane inherits without modification (anchors current as of this pass):
+What the UI lane inherits without modification (anchors current):
 
 - Async lane skeleton: submit-first-no-waits CB + timeline + FRAGMENT wait + host-signal
   failure fallback + in-frame fallback recording site (`text_raster.c:890-1005`,
@@ -494,14 +494,14 @@ async, self-test gates at every step.
    COMPUTE-only stages), TextRasterPush 24→32 B carrying uiPrimCount/uiClipCount (zero until
    step 5; the shader still declares the 24 B prefix), pool sizing +4 SSBO/frame,
    ano_vk_ui_write_sets hooked onto ano_vk_text_update_sets so resize rebinds ride free.
-   Robustness choices: tables are created whenever textOverlay is up — ANO_FORCE_NO_UI pins
+   Robust choices: tables are created whenever textOverlay is up — ANO_FORCE_NO_UI pins
    the counts to 0 instead of leaving bindings unwritten, so the step-4 shader's static use
    of bindings 4-7 can never dangle; a failed table creation clears uiOverlay and falls the
    bindings back to the slot's textFrameBuffer (valid SSBO, never read at count 0).
    Hardware-verified on the desktop: debug run validation-clean (0 hits) with the text lane
    fully live, "tables resident (440 KiB x3 slots)" boot line, suite 19/19, release+debug
    builds clean. Frame totals are unchanged by construction (zero new commands recorded;
-   cross-session ms vary with desktop load per the standing A/B-within-session rule). Live
+   cross-session ms vary with desktop load per the usual A/B-within-session rule). Live
    window-resize recheck deferred to the step-4 on-screen pass, where an actual consumer
    makes it observable.)
 4. Prim raster in-frame: extend the raster shader with the prim loop (before the glyph loop),
@@ -514,7 +514,7 @@ async, self-test gates at every step.
    uniform through the shared-mask loop, nonuniformEXT-wrapped anyway) and ui_box_hits tile
    culling (shadow prims pad by 3 sigma). textraster.comp runs the prim chunk-cull loop
    before the glyph loop — same sHit pattern, per-prim ADD/OVER register blend — and the
-   dispatch bounds are the union of text and UI AABBs. Standing demo scene
+   dispatch bounds are the union of text and UI AABBs. Demo scene
    (src/ui/ui_demo.c, ANO_UI_DEMO, 13 prims + 2 clips + a live-only image prim composed
    once into all three slots): drop shadow, plate, ring, rect-clipped overflow bar, inner
    shadow, capsules, additive button glow, footer wash clipped by the panel's rounded
@@ -576,7 +576,7 @@ async, self-test gates at every step.
    64 KiB/slot), compose copies + rebases PATH aux0, bridge packs a 6th array +
    validates PATH aux range. Reference gates: path rect reproduces exact box coverage
    (interior/edge error 0.0 at integer coords), hole + reversed-winding oracles pass.
-   The standing self-test scene gained a gradient strip + a play-triangle path (both
+   The self-test scene gained a gradient strip + a play-triangle path (both
    reference-evaluable), so the GPU --compare now validates gradient + path on-device:
    RMS 0.111/255, max 13/255 = the same sRGB dark-slope envelope as before, zero
    validation. Bridge curve/paint transport exercised end to end by the main.c menu
@@ -681,6 +681,6 @@ premultiplication (realtimerendering.com/blog/gpus-prefer-premultiplication), ga
 Slug patent disclaimer (2026-03-17, US 10,373,352 into public domain): terathon.com/blog/
 decade-slug.html; sluglibrary.com; hackaday.com 2026-03-20 coverage.
 
-Engine-internal: docs/text/font-render.md (design of record for the lane being generalized),
+Engine-internal: docs/text/font-render.md (design doc for the lane being generalized),
 docs/references/scanline_sweep.md (the coverage technique), and the integration anchors
 verified this pass throughout §1/§4.

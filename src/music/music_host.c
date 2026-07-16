@@ -3,18 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_host.c
- * The engine's public face (anoptic_music.h): the opaque handle, the curated
- * config, the four control calls, and the bar pull. Everything here is a thin
- * shell over the conductor — it owns no music logic, it just decides what the
- * outside world is allowed to say and to see.
- *
- * The config split is the point. AnoMusicConfig carries what a game AUTHORS —
- * what to play, how it answers affect, which motifs mean something — and the
- * conductor's own tuning (approach-tone weights, voicing costs) stays on its
- * defaults, because that is implementation and not content.
- */
+// Public face over the conductor. AnoMusicConfig = authored content; generator tuning stays default.
 
 #include <anoptic_memory.h>
 #include <anoptic_music.h>
@@ -60,8 +49,7 @@ AnoMusicConfig ano_music_config_default(void)
     return c;
 }
 
-// The public config expanded into the conductor's. Tier-3 (the generators' own
-// tuning) is taken from the engine defaults and never surfaces.
+// Public config -> conductor config. Generator tuning stays on defaults.
 static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
 {
     *e = ano_engine_config_default();
@@ -125,8 +113,7 @@ static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
     e->performChains = c->performChains;
 }
 
-// One allocation, and no heap handle stored inside it: the engine must stay
-// POINTER-FREE, which is the whole reason a snapshot can be its bytes.
+// One allocation; engine stays pointer-free (snapshot = bytes).
 AnoMusicEngine *ano_music_create(const AnoMusicConfig *cfg, uint64_t seed)
 {
     AnoMusicEngine *e = mi_malloc(sizeof *e);
@@ -148,9 +135,7 @@ void ano_music_destroy(AnoMusicEngine *e)
     mi_free(e);
 }
 
-// ---------------------------------------------------------------------------
-// Control
-// ---------------------------------------------------------------------------
+/* Control */
 
 void ano_music_set_affect(AnoMusicEngine *e, float valence, float energy,
                           float tension, bool urgent)
@@ -168,9 +153,7 @@ void ano_music_request_motif(AnoMusicEngine *e, const char *tag)
     ano_engine_request_motif(e, tag);
 }
 
-// The pinnable Tier-2 parameters, by the name the protocol spells them with.
-// A name that is not here is refused rather than silently ignored — a typo in a
-// game's override string would otherwise be a parameter that never took effect.
+// Pinnable Tier-2 names. Unknown name refused.
 typedef enum OverrideId
 {
     OV_TEMPO, OV_VELOCITY, OV_ARTICULATION, OV_DENSITY, OV_ROUGHNESS,
@@ -235,9 +218,7 @@ void ano_music_clear_override(AnoMusicEngine *e, const char *param)
         override_apply(&e->overrides, id, false, 0.0);
 }
 
-// ---------------------------------------------------------------------------
-// Generation
-// ---------------------------------------------------------------------------
+/* Generation */
 
 void ano_music_advance_bar(AnoMusicEngine *e, AnoMusicBar *out)
 {
@@ -284,9 +265,7 @@ int ano_music_next_bar(const AnoMusicEngine *e)
     return e->st.bar;
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot / restore (the mechanism seek and save are built from)
-// ---------------------------------------------------------------------------
+/* Snapshot / restore */
 
 size_t ano_music_snapshot_size(void)
 {

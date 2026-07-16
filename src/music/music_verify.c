@@ -3,19 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_verify.c
- * The theory linter (musicgen/verify.py). Structural port: every rule keeps
- * the prototype's predicate, its tolerance (1e-9 on beat comparisons) and its
- * exemption list. Two shapes the prototype gets for free need care here:
- *   - Python's `sorted` is stable, so every ordering below is an insertion
- *     sort on the events in their emitted order (a qsort would diverge on
- *     equal keys, which the pad's simultaneity grouping relies on);
- *   - `ctx_by_bar` / `params_by_bar` are dicts; here contexts carry their own
- *     bar and params is the parallel array the conductor already emits.
- * Violation ORDER is not a contract (the prototype's own order follows dict
- * insertion); the rule/bar multiset is.
- */
+// Theory linter. Stable insertion sorts (equal keys keep emission order; not qsort).
+// Contract: rule/bar multiset, not violation order.
 
 #include "music_verify.h"
 
@@ -32,20 +21,13 @@
 #define LINT_MAX_PAT   64   // percussion hits / arp onsets in one bar
 #define LINT_MAX_BARS  1024
 
-// ---------------------------------------------------------------------------
-// Roles
-// ---------------------------------------------------------------------------
+/* Roles */
 
-// Roles that license a pitch outside the bar's scale. "echo" covers modifier
-// repeats bleeding into the next bar's harmony; "motif" and "imitation" are
-// statements licensed as a whole (their identity is checked by
-// recognizability instead); "doubling" tracks the melody in the chord's
-// melodic scale and is held to the tighter whitelist in lint_doubling.
+// Scale-outside licenses: echo, motif, imitation, doubling (tighter whitelist).
 static const char *const CHROMATIC_ROLES[] = {
     "approach", "borrowed", "chromatic", "echo", "motif", "doubling", "imitation",
 };
-// Roles that additionally license a non-chord tone. The obligation-bearing
-// ones (pedal, suspension) also have to discharge — see lint_obligations.
+// Non-chord licenses. pedal/suspension must also discharge (lint_obligations).
 static const char *const EXTRA_NONCHORD[] = {
     "passing", "neighbor", "pedal", "appoggiatura", "suspension",
 };
@@ -73,9 +55,7 @@ static bool is_licensed_nonchord(const char *r)
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// Report
-// ---------------------------------------------------------------------------
+/* Report */
 
 AnoLintLimits ano_lint_limits_default(void)
 {
@@ -128,27 +108,16 @@ static void vio(AnoLintReport *r, const char *rule, int bar, const char *fmt, ..
     va_end(ap);
 }
 
-// ---------------------------------------------------------------------------
-// Lookups
-// ---------------------------------------------------------------------------
+/* Lookups */
 
-// Is this bar the lint's SUBJECT, or only a lookahead resolution target? A
-// context at or beyond the horizon exists so an obligation planted inside the
-// window can discharge past its edge; it hosts no events, so every
-// event-shaped rule would misread it. horizon < 0 judges everything.
+// Subject bar vs lookahead (horizon+). horizon < 0 judges everything.
 static bool judged(int bar, int horizon)
 {
     return horizon < 0 || bar < horizon;
 }
 
-// The bar and in-bar offset a note is HARMONICALLY at. A modifier displaces an
-// onset by a fraction of a grid step — a strum's stagger, humanize's jitter,
-// swing — which can carry it backwards across a barline, or across a split
-// bar's mid-bar chord change. The note still belongs to the harmony it was
-// written against, so the harmonic rules resolve its position from the grid
-// slot it was displaced FROM, not from where the jitter left it. Exact as long
-// as no modifier moves a note by half a grid step (0.125 beats), which none
-// does; on pre-modifier IR it is the identity (the "grid" rule enforces that).
+// Harmonic position from the grid slot displaced FROM (not post-jitter start).
+// Holds while modifiers move < half grid (0.125 beats); none do.
 static int grid_pos(double start, AnoMeter meter, double *offset)
 {
     double slot = nearbyint(start / ANO_MUSIC_GRID) * ANO_MUSIC_GRID;
@@ -158,8 +127,7 @@ static int grid_pos(double start, AnoMeter meter, double *offset)
     return bar;
 }
 
-// The prototype's {c.bar: c for c in contexts}: last entry for a bar wins.
-// Always the FULL list — the lookup is what reaches into the lookahead.
+// Last context for a bar wins. Full list (reaches lookahead).
 static const AnoHarmonicContext *ctx_of(const AnoHarmonicContext *cx, uint32_t n, int bar)
 {
     const AnoHarmonicContext *hit = NULL;
@@ -205,8 +173,7 @@ static const char *csym(const AnoHarmonicContext *c)
     return c->chordSym[0] ? c->chordSym : "the chord";
 }
 
-// The chord in force at an event's start: the D3 timeline segment if the bar
-// carries one, else the bar's downbeat chord.
+// Chord at event start: D3 timeline segment or downbeat.
 static uint32_t pcs_at(const AnoHarmonicContext *c, double offset, uint8_t out[5])
 {
     if (c->chordSpanCount) {
@@ -218,9 +185,7 @@ static uint32_t pcs_at(const AnoHarmonicContext *c, double offset, uint8_t out[5
     return c->chordPcCount;
 }
 
-// ---------------------------------------------------------------------------
-// Stable sorts (Python's sorted(); equal keys keep emission order)
-// ---------------------------------------------------------------------------
+/* Stable sorts */
 
 typedef bool (*EvLess)(const AnoMusicEvent *a, const AnoMusicEvent *b);
 
@@ -273,8 +238,7 @@ static uint32_t collect(const AnoMusicEvent *ev, uint32_t n, int layer,
     return m;
 }
 
-// The event of a sorted-by-start list sounding at t (the last one that started
-// at or before t and has not ended). NULL when the line rests.
+// Event sounding at t (last started <= t, not ended). NULL if rest.
 static const AnoMusicEvent *sounding(const AnoMusicEvent **evs, uint32_t n, double t)
 {
     const AnoMusicEvent *cur = NULL;
@@ -287,9 +251,7 @@ static const AnoMusicEvent *sounding(const AnoMusicEvent **evs, uint32_t n, doub
     return cur;
 }
 
-// ---------------------------------------------------------------------------
-// M0: grid, scale membership, annotation consistency
-// ---------------------------------------------------------------------------
+/* M0: grid, scale, annotations */
 
 static void lint_events(const AnoMusicEvent *ev, uint32_t n,
                         const AnoHarmonicContext *cx, uint32_t ncx,
@@ -342,9 +304,7 @@ static void lint_events(const AnoMusicEvent *ev, uint32_t n,
     }
 }
 
-// ---------------------------------------------------------------------------
-// M1: pad voicing, bass
-// ---------------------------------------------------------------------------
+/* M1: pad voicing, bass */
 
 static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
                      const AnoHarmonicContext *cx, uint32_t ncx, AnoMeter meter,
@@ -466,16 +426,14 @@ static void lint_bass(const AnoMusicEvent *ev, uint32_t n,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Melodic line (judged on logical notes: a tie chain is one note)
-// ---------------------------------------------------------------------------
+/* Melodic line (tie chain = one note) */
 
 static void lint_melody(const AnoMusicEvent *ev, uint32_t n,
                         const AnoHarmonicContext *cx, uint32_t ncx, AnoMeter meter,
                         const AnoLintLimits *L, AnoLintReport *out)
 {
     // merge_ties over the melody alone: chains never cross layers, so this is
-    // the melody projection of the prototype's whole-stream merge
+    // melody projection of whole-stream merge
     AnoMusicEvent line[LINT_MAX_LINE];
     uint32_t nl = 0;
     for (uint32_t i = 0; i < n && nl < LINT_MAX_LINE; ++i)
@@ -502,10 +460,7 @@ static void lint_melody(const AnoMusicEvent *ev, uint32_t n,
                 pname(L->melodyLo, b), pname(L->melodyHi, (char[8]){ 0 }));
     }
 
-    // A completed signature statement is exempt from the constraint-first
-    // melodic heuristics: its intervals are the identity, licensed as a whole.
-    // Doubling is a shadow of the surface, not part of the line — sampling it
-    // would interleave fake leaps into the surface's triples.
+    // motif/doubling excluded from surface-line heuristics.
     const AnoMusicEvent *tune[LINT_MAX_LINE];
     uint32_t nt = 0;
     for (uint32_t i = 0; i < nl; ++i)
@@ -556,14 +511,9 @@ static void lint_melody(const AnoMusicEvent *ev, uint32_t n,
             resolved, leaps, (double)resolved / leaps, L->leapResolutionRatio);
 }
 
-// ---------------------------------------------------------------------------
-// D1 tie coherence
-// ---------------------------------------------------------------------------
+/* D1 tie coherence */
 
-// An "in"/"both" event must continue a same-layer same-pitch event that ends
-// exactly at its start and ties out. An orphan "out" is legal (a tie into a
-// rest dissolves into a plain note); an orphan "in" claims a continuation that
-// never sounded.
+// in/both must continue same-layer same-pitch out. Orphan out legal; orphan in illegal.
 static void lint_ties(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
                       AnoLintReport *out)
 {
@@ -589,13 +539,9 @@ static void lint_ties(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
     }
 }
 
-// ---------------------------------------------------------------------------
-// C1 doubling contract
-// ---------------------------------------------------------------------------
+/* C1 doubling */
 
-// Every role-"doubling" note is simultaneous with a melody surface note a 3rd
-// or 6th (or compound) above it, and is a chord member on strong slots / a
-// melodic-scale member on weak ones — the whitelist the generator obeys.
+// doubling: simultaneous melody 3rd/6th above; chord on strong / scale on weak.
 static void lint_doubling(const AnoMusicEvent *ev, uint32_t n,
                           const AnoHarmonicContext *cx, uint32_t ncx, AnoMeter meter,
                           AnoLintReport *out)
@@ -650,14 +596,9 @@ static void lint_doubling(const AnoMusicEvent *ev, uint32_t n,
     }
 }
 
-// ---------------------------------------------------------------------------
-// C5 species set
-// ---------------------------------------------------------------------------
+/* C5 species */
 
-// The countermelody stays in the tenor gap and never above the sounding
-// melody; its strong beats are chord members and mostly consonant with the
-// melody; no consecutive/direct perfects against melody OR bass; and its
-// onsets live in the melody's holes (downbeats exempt).
+// Counter in tenor gap, never above melody; strong = chord + consonant; no perfects.
 static void lint_counter(const AnoMusicEvent *ev, uint32_t n,
                          const AnoHarmonicContext *cx, uint32_t ncx, AnoMeter meter,
                          const AnoLintLimits *L, AnoLintReport *out)
@@ -772,9 +713,7 @@ static void lint_counter(const AnoMusicEvent *ev, uint32_t n,
             overlap, weak, (double)overlap / weak, L->counterOverlapRatio);
 }
 
-// ---------------------------------------------------------------------------
-// Drum map, cadences
-// ---------------------------------------------------------------------------
+/* Drum map, cadences */
 
 static void lint_perc(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
                       const AnoLintLimits *L, AnoLintReport *out)
@@ -825,9 +764,7 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, int horizo
     }
 }
 
-// ---------------------------------------------------------------------------
-// M14 obligations: a planted structural dissonance must discharge
-// ---------------------------------------------------------------------------
+/* M14 obligations */
 
 static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
                              const AnoHarmonicContext *cx, uint32_t ncx, int horizon,
@@ -972,12 +909,9 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
     }
 }
 
-// ---------------------------------------------------------------------------
-// lint()
-// ---------------------------------------------------------------------------
+/* lint() */
 
-// A layer holding more events than the line buffers take would be truncated,
-// and a truncated lint reads as a clean one. Say so instead.
+// Over capacity -> "capacity" violation (truncated lint must not pass clean).
 static void lint_capacity(const AnoMusicEvent *ev, uint32_t n, AnoLintReport *out)
 {
     uint32_t per[ANO_MUSIC_LAYER_COUNT] = { 0 };
@@ -1016,9 +950,7 @@ void ano_lint(const AnoMusicEvent *events, uint32_t n,
     lint_cadences(contexts, nctx, horizon, out);
 }
 
-// ---------------------------------------------------------------------------
-// A2 groove persistence
-// ---------------------------------------------------------------------------
+/* A2 groove */
 
 typedef struct PercHit
 {
@@ -1034,8 +966,7 @@ static bool hit_less(PercHit a, PercHit b)
     return a.vel < b.vel;
 }
 
-// The bar's non-fill percussion pattern, sorted. The phrase-open crash is the
-// licensed variation and does not count.
+// Non-fill perc pattern, sorted. Phrase-open crash excluded.
 static uint32_t perc_pattern(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
                              int bar, PercHit *out)
 {
@@ -1061,9 +992,7 @@ static uint32_t perc_pattern(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter
     return m;
 }
 
-// The bar's arp onset mask (a set of slots, sorted). A C3 entry overlays the
-// arp's register without re-rolling its pattern — the contract judges the
-// figuration itself.
+// Arp onset slots, sorted. C3 overlay does not re-roll the pattern.
 static uint32_t arp_pattern(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
                             int bar, int *out)
 {
@@ -1162,9 +1091,7 @@ void ano_lint_groove(const AnoMusicEvent *events, uint32_t n,
     }
 }
 
-// ---------------------------------------------------------------------------
-// A3 outer-voice frame
-// ---------------------------------------------------------------------------
+/* A3 outer-voice */
 
 void ano_lint_outer(const AnoMusicEvent *events, uint32_t n,
                     const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
@@ -1232,8 +1159,7 @@ void ano_lint_outer(const AnoMusicEvent *events, uint32_t n,
         if (c->phrasePos == 0)
             continue; // an elided cadence (D2) is crashed into, not settled into
         double barStart = c->bar * barq;
-        // the approach mixes yardsticks deliberately: the melody is the SURFACE
-        // line, the bass is the ROOT motion downbeat-to-downbeat
+        // Melody = surface line; bass = root motion downbeat-to-downbeat.
         const AnoMusicEvent *before = NULL, *after = NULL;
         for (uint32_t k = 0; k < nm; ++k) {
             double s = mel[k]->core.start;
@@ -1257,9 +1183,7 @@ void ano_lint_outer(const AnoMusicEvent *events, uint32_t n,
             good, total, (double)good / total, contraryMin);
 }
 
-// ---------------------------------------------------------------------------
-// B2 period contract
-// ---------------------------------------------------------------------------
+/* B2 periods */
 
 void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
                       const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,
@@ -1316,9 +1240,7 @@ void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Phrase ranks (elastic-segment-safe: rank by phrase start bar, not bar/len)
-// ---------------------------------------------------------------------------
+/* Phrase ranks (by phrase start bar) */
 
 static uint32_t phrase_ranks(const AnoHarmonicContext *cx, uint32_t ncx, int horizon,
                              int *starts)
@@ -1343,9 +1265,7 @@ static int rank_of(const int *starts, uint32_t ns, int start)
     return -1;
 }
 
-// ---------------------------------------------------------------------------
-// C4 texture claims
-// ---------------------------------------------------------------------------
+/* C4 texture */
 
 void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
                       const AnoHarmonicContext *contexts, const AnoGenParams *params,
@@ -1469,9 +1389,7 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
     }
 }
 
-// ---------------------------------------------------------------------------
-// C3 imitation contract
-// ---------------------------------------------------------------------------
+/* C3 imitation */
 
 void ano_lint_imitation(const AnoMusicEvent *events, uint32_t n,
                         const AnoHarmonicContext *contexts, uint32_t nctx, int horizon,

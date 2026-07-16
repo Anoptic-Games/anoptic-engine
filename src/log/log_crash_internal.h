@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private module header: state shared between the common TU and the per-platform hooks, plus the async-signal-safe formatters.
+// Private: state shared by common TU and platform hooks, plus async-signal-safe formatters.
 
 #ifndef LOG_CRASH_INTERNAL_H
 #define LOG_CRASH_INTERNAL_H
@@ -13,25 +13,25 @@
 #include <stddef.h>
 #include <string.h>
 
-// "<gamedir>/logs/<session-stamp>_CRASH.log", NUL-terminated. Resolved once by ano_log_crash_init, never inside a handler. Fallbacks: <gamedir>, then a CWD-relative name.
+// "<gamedir>/logs/<session-stamp>_CRASH.log". Resolved once by ano_log_crash_init, never in a handler.
 extern char bb_crashPath[];
 
-// Stage 1, per-platform: install the fatal hooks. Output: 0 on success, -1 if any failed.
+// Stage 1, per-platform: install fatal hooks. 0 ok, -1 if any failed.
 int bb_install(void);
 
-// Stage 4 helper, per-platform: count `dir` entries ending in `suffix`, copying the lexicographically last into newest[MAXPATH]. Calm time only (init, tests). Output: the count, 0 when none or no dir.
+// Stage 4 helper: count `dir` entries ending in `suffix`, copy lex-last into newest[MAXPATH]. Calm time. Count or 0.
 int bb_scan_suffix(const char *dir, const char *suffix, char *newest);
 
-// Retention cap applied at boot: newest BB_KEEP_LOGS files of each log type survive.
+// Retention cap at boot: newest BB_KEEP_LOGS of each log type survive.
 #define BB_KEEP_LOGS 4
 
-// Boot housekeeping, per-platform: delete `dir` entries ending in `suffix`, keeping the `keep` newest (capped at 8) by last-write time, name as tiebreaker, plus any name starting with `skip` (the live session stamp, NULL to skip none). Oldest die first. Calm time only. Output: files removed.
+// Boot prune: delete `suffix` entries keeping `keep` newest (cap 8) by mtime, skip names starting with `skip`. Calm time. Files removed.
 int bb_prune_suffix(const char *dir, const char *suffix, int keep, const char *skip);
 
-// One prune candidate: last-write time (platform units, bigger = newer) + name.
+// One prune candidate: mtime (bigger = newer) + name.
 typedef struct { unsigned long long mtime; char name[MAXPATH]; } bb_prune_t;
 
-// Insert a candidate into the descending top-`cap` array for bb_prune_suffix. *n is the live count.
+// Insert into descending top-`cap` for bb_prune_suffix. *n = live count.
 static inline void bb_top_insert(bb_prune_t top[], int cap, int *n, unsigned long long mtime, const char *name)
 {
     int i = *n;
@@ -45,11 +45,11 @@ static inline void bb_top_insert(bb_prune_t top[], int cap, int *n, unsigned lon
     if (*n < cap) (*n)++;
 }
 
-// Per-thread Stage 1, per-platform: arm/release the calling thread's crash stack (see ano_log_crash_thread_arm). Output: 0 on success, -1 if the OS refused.
+// Per-thread Stage 1: arm/release calling thread's crash stack. 0 ok, -1 if OS refused.
 int  bb_thread_arm(void);
 void bb_thread_disarm(void);
 
-// Decimal of v into out, returns length. Async-signal-safe, no printf machinery.
+// Decimal of v into out, returns length. Async-signal-safe.
 static inline size_t bb_fmt_dec(char *out, unsigned long long v)
 {
     char tmp[20];
@@ -59,7 +59,7 @@ static inline size_t bb_fmt_dec(char *out, unsigned long long v)
     return i;
 }
 
-// "0x" + 16 hex digits of v into out, returns length (18). Fixed width.
+// "0x" + 16 hex digits of v into out, returns 18. Fixed width.
 static inline size_t bb_fmt_hex(char *out, unsigned long long v)
 {
     static const char dig[] = "0123456789abcdef";

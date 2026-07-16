@@ -3,15 +3,13 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Lock-free MPSC logger, one per program, owned by main. Producers format on their own threads
-// into a shared ring. An owned consumer thread drains it continuously.
-//
-// Four macros over one function. Severity says how bad. Route says where and when.
-//   ano_log(ANO_WARN, "fmt %d", x);                        the level's default route
+// Lock-free MPSC logger: producers capture/format off-ring, publish into a shared ring, one owned consumer drains.
+// ano_log_flush drains inline on the caller. NOW drains then write-through (+ fsync when a file is open).
+// Four macros over ano_log_write. Severity = how bad, route = where/when.
+//   ano_log(ANO_WARN, "fmt %d", x);                        level's default route
 //   ano_rlog(ANO_ERROR, ANO_TERM | ANO_NOW, "fmt %d", x);  explicit route
-//   ano_debug_log(...) / ano_debug_rlog(...)               same, Debug builds only
-//
-// The ANO_ prefix is load-bearing. Bare ERROR is a windows.h macro, bare FILE a stdio typedef.
+//   ano_debug_log(...) / ano_debug_rlog(...)               Debug builds only
+// ANO_ prefix is load-bearing (windows.h ERROR, stdio FILE).
 
 #ifndef ANOPTIC_LOG_H
 #define ANOPTIC_LOG_H
@@ -21,7 +19,7 @@
 
 /* Types */
 
-// Severity in ascending order.
+// Severity ascending.
 typedef enum {
     ANO_INFO = 0,
     ANO_WARN,
@@ -31,31 +29,31 @@ typedef enum {
 
 // Route: when-where a record lands.
 typedef enum {
-    ANO_FILE = 1 << 0,              // the output file (terminal when none is open)
-    ANO_TERM = 1 << 1,              // the terminal: stdout, ERROR+ to stderr, ANSI-colored on a tty
+    ANO_FILE = 1 << 0,              // output file (terminal when none open)
+    ANO_TERM = 1 << 1,              // stdout, ERROR+ to stderr, ANSI on tty
     ANO_BOTH = ANO_FILE | ANO_TERM,
-    ANO_NOW  = 1 << 2,              // synchronous: drain, write, fsync on this thread
+    ANO_NOW  = 1 << 2,              // sync: drain, write-through, fsync if file open
 } ano_logroute_t;
 
 
 /* Lifecycle Functions */
 
-// Startup and Shutdown. Both return 0 on success.
+// Startup / shutdown. 0 on success.
 int ano_log_init(void);
 int ano_log_cleanup(void);
 
 // Scope-bound teardown, LOCALHEAPATTR-style (anoptic_memory.h).
 void ano_log_scope_release(const int *initStatus);
-#define ANO_LOG_SCOPE_ATTR __attribute__((__cleanup__(ano_log_scope_release))) 
+#define ANO_LOG_SCOPE_ATTR __attribute__((__cleanup__(ano_log_scope_release)))
 
 /* Entry Points */
 
 int ano_log_write(ano_loglevel_t level, ano_logroute_t route,
-                  const char* sourceFile, int lineNumber,   
+                  const char* sourceFile, int lineNumber,
                   /* printFormat MUST be a string literal. */
                   const char* printFormat, ...) __attribute__((format(printf, 5, 6)));
 
-// va_list variant, for wrappers forwarding their own variadic args.
+// va_list variant for wrappers.
 int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
                    const char* sourceFile, int lineNumber,
                    const char* printFormat, va_list args) __attribute__((format(printf, 5, 0)));
@@ -63,26 +61,25 @@ int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
 
 /* Configuration Functions */
 
-// Open dir/<session-stamp>_ano.log as the output file (the stamp: ano_fs_session_stamp).
-// Returns 0 on success, -1 keeps the previous file.
+// Open dir/<session-stamp>_ano.log (stamp: ano_fs_session_stamp). 0 ok, -1 keeps previous.
 int ano_log_output_dir(const char* directoryPath);
 
 // Runtime severity gate.
 void ano_log_set_level(ano_loglevel_t min);
 
-// Replace a level's default route. Must name a sink. Out-of-range levels are ignored.
+// Replace a level's default route. Must name a sink. Out-of-range ignored.
 void ano_log_set_route(ano_loglevel_t level, ano_logroute_t route);
 
-// Drain all buffered records synchronously on the calling thread.
+// Drain all buffered records on the calling thread.
 void ano_log_flush(void);
 
 
 /* Call-site Macros */
 
-// _log  : normal log, specify level.
-// _rlog : routed log, specify level and route.
-// _olog : origin log, specify level, adds callsite file and line.
-// _rolog: routed origin log, specify level and route, adds callsite file and line.
+// _log  : level
+// _rlog : level + route
+// _olog : level + callsite file/line
+// _rolog: level + route + callsite
 #define ano_log(level, ...)                 ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
 #define ano_rlog(level, route, ...)         ano_log_write((level), (route), NULL, 0, __VA_ARGS__)
 #define ano_olog(level, ...)                ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)

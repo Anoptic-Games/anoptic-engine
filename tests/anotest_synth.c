@@ -3,18 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Phase 4 offline gate for the synthesizer. Covers: the BeatClock oracle
- * (piecewise tempo map against hand-computed times); tie-chain rendering — a
- * chain flagged out->both->in renders BIT-IDENTICALLY to the single merged
- * note (one voice, one envelope) and provably differently from three struck
- * notes, and an orphan `out` dissolves into a plain note; a patch showcase
- * (wavetable morph pad, bell sampler, chimes, glass FM, every drum recipe)
- * asserting finite, audible, cleanly-decaying output with zero voice drops;
- * and the journey-demo IR fixture (80 bars exported from the Python
- * prototype): the first 16 bars render byte-identically on a deliberately
- * churned heap (the determinism CI gate), then the full piece renders once to
- * a listenable WAV artifact. argv[1] scales the churned re-render count.
- * Exit 0 == pass. */
+// Offline synth gate: BeatClock oracle, tie-chain == merged note, patch showcase, journey fixture determinism + WAV.
+// argv[1] scales churned re-render count. Exit 0 == pass.
 
 #include <math.h>
 #include <stdio.h>
@@ -41,7 +31,7 @@ static int failures = 0;
 #define ANO_TEST_OUTDIR "."
 #endif
 
-// -- shared render driver: console layout + setup + automation + generator --
+/* Render driver */
 
 static float *render_synth(AnoSynth *syn, uint64_t frames)
 {
@@ -85,7 +75,7 @@ static bool buf_finite(const float *b, uint64_t samples)
     return true;
 }
 
-// -- tiny score builder for the probe cases --
+/* Probe scores */
 
 typedef struct ProbeNote { double start, dur; uint8_t pitch, vel, layer, tie; } ProbeNote;
 
@@ -112,7 +102,7 @@ static bool load_probe(AnoSynth *syn, uint32_t bars, double bpm,
     return ano_synth_score_end(syn);
 }
 
-// -- heap churn between renders (the determinism gauntlet) --
+/* Heap churn */
 
 static void churn(test_rng *rng, uint32_t iters)
 {
@@ -221,11 +211,7 @@ int main(int argc, char **argv)
         AnoMusicalParams p = { .tempoBpm = 100.0, .filterCutoff = 3200.0f,
                                .reverbSend = 0.25f, .delaySend = 0.1f,
                                .drive = 0.15f, .stereoWidth = 0.9f };
-        // The composer names a timbre; this synth decides which voice plays it.
-        // Two id spaces, one table — and a row keyed to the wrong voice is
-        // SILENT: the music plays on, in the wrong instrument. (It did. The bass
-        // patch played the melody for a while, and only an ear caught it.) So the
-        // seam is checked by name, which is the thing both sides actually agree on.
+        // Composer patch name == synth voice name for that id.
         for (uint32_t i = 0; i < ANO_PATCH_COUNT; ++i)
             CHECK(strcmp(ano_music_patch_name(i),
                          ano_synth_patch_name(ano_synth_patch_of(i))) == 0,
@@ -239,7 +225,7 @@ int main(int argc, char **argv)
             if (b == 2) p.instruments[ANO_MUSIC_ARP] = ANO_PATCH_GLASS;
             ano_synth_score_bar(syn, b, &p, &a);
         }
-        // one long morphing pad, a bell phrase, chime/glass arps
+        // Morph pad, bell phrase, chime/glass arps.
         AnoNoteEvent ev = { 0.0, 8.0, 48, 72, ANO_MUSIC_PAD, 0 };
         ano_synth_score_event(syn, &ev);
         for (int i = 0; i < 4; ++i) {
@@ -248,13 +234,13 @@ int main(int argc, char **argv)
             ev = (AnoNoteEvent){ 0.5 + i * 3.5, 0.5, (uint8_t)(76 + i), 70, ANO_MUSIC_ARP, 0 };
             ano_synth_score_event(syn, &ev);
         }
-        // every drum recipe once (kick also exercises the duck lane)
+        // Every drum recipe once (kick ducks).
         static const uint8_t drums[10] = { 36, 37, 38, 42, 46, 45, 47, 50, 49, 70 };
         for (int i = 0; i < 10; ++i) {
             ev = (AnoNoteEvent){ 8.0 + i * 0.75, 0.25, drums[i], 90, ANO_MUSIC_PERC, 0 };
             ano_synth_score_event(syn, &ev);
         }
-        // a driven bass + hard lead bar rides the same score
+        // Driven bass + hard lead on the same score.
         ev = (AnoNoteEvent){ 12.0, 2.0, 36, 84, ANO_MUSIC_BASS, 0 };
         ano_synth_score_event(syn, &ev);
         CHECK(ano_synth_score_end(syn), "showcase end");
@@ -273,11 +259,11 @@ int main(int argc, char **argv)
         free(out);
     }
 
-    // --- the journey fixture: churned-heap determinism, then the full WAV ---
+    // --- journey fixture: churned-heap determinism, then full WAV ---
     {
         CHECK(synthfix_load(syn, ANO_FIXTURE_DIR "/journey_s42.anofix"), "journey fixture loads");
 
-        // first 16 bars, rendered `soak` times on a churned heap, byte-identical
+        // First 16 bars x soak on churned heap: byte-identical.
         uint64_t gate = (uint64_t)(ano_synth_time_at(syn, 16.0 * 4.0) * RATE);
         float *ref = render_synth(syn, gate);
         CHECK(ref != NULL, "journey gate render");
@@ -293,7 +279,7 @@ int main(int argc, char **argv)
         }
         free(ref);
 
-        // the exit criterion: the whole piece to a listenable WAV
+        // Full piece -> listenable WAV.
         uint64_t frames = ano_synth_score_frames(syn, 2.5f);
         float *out = render_synth(syn, frames);
         CHECK(out != NULL, "journey full render");

@@ -1,27 +1,14 @@
 # TECH_SPEC — The Anoptic Engine Music System
 
-This is the technical specification for porting the musicgen prototype into the
-Anoptic engine: data structures, APIs, scheduling, state, determinism, the
-audio-library requirements, and the conformance strategy. It is the companion
-to THEORY_SPEC.md, which defines the musical rules this system implements —
-where this document says *what a field means musically*, THEORY_SPEC is the
-authority. The prototype froze over a finished IR and rule set (REFINEMENT_PLAN
-A1–D3 complete, PLANS.md M27); everything specified here as **contract** was
-settled by building and listening, not by prediction.
+Technical spec for porting the musicgen prototype into the Anoptic engine: data structures, APIs, scheduling, state, determinism, audio-library requirements, and conformance. Goes with THEORY_SPEC.md, which owns the musical rules — when this doc says *what a field means musically*, THEORY_SPEC wins. The prototype landed on a finished IR and rule set (REFINEMENT_PLAN A1–D3 complete, PLANS.md M27); everything marked **contract** here was settled by building and listening, not by guessing.
 
-**How to read it.** Statements come in three strengths:
+**How to read it.** Three strengths:
 
-- **Contract** — the port must reproduce this. Contracts are conformance-testable
-  (§14) and changing one means re-validating against the acceptance suite.
-- **Guidance** — porting advice: recommended layouts, decompositions,
-  allocation strategies. Deviate freely if the contracts still hold.
-- **Tuning** — a constant that ships as data (the mapping table, config
-  defaults, console values). Tunings are quoted at their prototype values and
-  are expected to keep evolving; they must live in data, not in code.
+- **Contract** — the port must reproduce this. Conformance-testable (§14); change one and you re-validate against the acceptance suite.
+- **Guidance** — porting advice: layouts, decompositions, allocation. Deviate if the contracts still hold.
+- **Tuning** — a constant that ships as data (mapping table, config defaults, console values). Quoted at prototype values; expected to keep evolving; live in data, not code.
 
-The overriding porting principle, from the plan: *"Everything else ports as
-tuning, not architecture."* The architecture chapters (§2–§11, §14) are the
-part that must survive translation intact.
+From the plan: *"Everything else ports as tuning, not architecture."* Chapters §2–§11 and §14 are the architecture that has to survive the port.
 
 ---
 
@@ -29,18 +16,9 @@ part that must survive translation intact.
 
 The prototype (`musicgen/`, Python ≥ 3.12) has exactly one hard dependency —
 `mido`, confined to MIDI file I/O. **Everything above MIDI output — IR, theory
-kernel, generators, conductor, linter — is dependency-free**, which is why the
-whole generation core ports to C directly. The synthesis stack (signalflow) is
-not ported; it exists as the *requirements probe* for the engine's in-house C
-audio library (§12), and SYNTHESIS.md records what it proved the hard way.
+kernel, generators, conductor, linter — is dependency-free**, so the generation core ports to C directly. The synthesis stack (signalflow) is not ported; it was the shopping list for the engine's in-house C audio library (§12). SYNTHESIS.md records what it actually needed.
 
-Eight results are exported (PLANS.md §13), and they structure this document:
-the two-tier lever architecture and mapping table (§9), the pull-based
-`advance_bar()` API with per-bar seeding (§5, §8), the theory linter as the
-acceptance suite (§14), the IR schema (§4), the boundary-quantization rules
-(§9.3), the identified integration seam (§9.1), the live-control protocol with
-its live-vs-rebuild split (§10), and the dramaturg's tension-debt ledger
-(state-modeled in §7, musically specified in THEORY_SPEC §8).
+Eight exports from PLANS.md §13 structure this document: the two-tier lever architecture and mapping table (§9), the pull-based `advance_bar()` API with per-bar seeding (§5, §8), the theory linter as the acceptance suite (§14), the IR schema (§4), the boundary-quantization rules (§9.3), the game integration surface (§9.1), the live-control protocol with its live-vs-rebuild split (§10), and the dramaturg's tension-debt ledger (state in §7, musical rules in THEORY_SPEC §8).
 
 ---
 
@@ -68,12 +46,9 @@ consumers              MIDI writer · text dump · decision trace · theory lint
                        · synth/audio scheduler
 ```
 
-The core is **pull-based**: `advance_bar()` produces exactly one bar on demand
-and is the piece intended to port into the engine proper. Drivers are thin —
-offline loops `advance_bar()` and writes files; live does the same one bar
-ahead of the playhead. *Same core, no divergence.*
+The core is **pull-based**: `advance_bar()` produces exactly one bar on demand — that is what ports into the engine. Drivers stay thin: offline loops `advance_bar()` and writes files; live does the same one bar ahead of the playhead. *Same core, no divergence.*
 
-### 2.2 Module layering (contract for the seams, guidance for the files)
+### 2.2 Module layering (contract for module boundaries, guidance for the files)
 
 ```
 L0  THEORY KERNEL   pure functions, no state, no randomness beyond caller rng:
@@ -89,18 +64,11 @@ L3  ORCHESTRATION   the conductor: owns the Seeder, owns ALL state, calls the
     CONSUMERS       IR, never called during generation
 ```
 
-The only near-cycle (melody ↔ motif) is a Python artifact; in C the shared
-`Motif` struct lives in a common header and the cycle vanishes.
+The only near-cycle (melody ↔ motif) is a Python artifact; in C the shared `Motif` struct lives in a common header and the cycle goes away.
 
 ### 2.3 Thread model (contract)
 
-The music engine is **single-threaded by design**. There is no locking, no
-async, no concurrency assumption anywhere in generation. All control calls
-(`set_*`, `request_*`) and `advance_bar()` must be serialized by the caller —
-in practice, a command queue drained at bar edges on the generation thread
-(§10.1, §11.3). The audio side has its own, stricter rule: the audio thread
-owns the DSP graph (§12.6). Generation is microseconds per bar; it never needs
-its own thread pool.
+The music engine is **single-threaded by design**. No locking, no async, no concurrency assumption in generation. All control calls (`set_*`, `request_*`) and `advance_bar()` must be serialized by the caller — in practice, a command queue drained at bar edges on the generation thread (§10.1, §11.3). Audio has a harder rule: the audio thread owns the DSP graph (§12.6). Generation is microseconds per bar; it never needs its own thread pool.
 
 ---
 
@@ -135,7 +103,7 @@ Metric weights per slot: downbeat 4.0, mid-bar pulse 3.5 (even pulse counts
 only), other pulses 3.0, 8ths 2.0, 16ths 1.0. Strong slots = weight ≥ 3.0.
 `bar_of` floors; `slot_of` rounds.
 
-### 3.3 Numeric conventions (contract — these bite)
+### 3.3 Numeric conventions (contract — get these wrong and things drift)
 
 - **Rounding is banker's** (round-half-to-even), as in Python 3, everywhere
   `round()` appears: slot computation, tempo emission (`round(x, 2)`),
@@ -179,8 +147,7 @@ format; the annotations enable engine-side debugging, not just prototype-side.
 annotations (`degree, chord, role`) are inspection/lint-only with zero acoustic
 effect: carry them in an optional sidecar (parallel array or debug-build
 field), intern `role`/`chord` as enums/string-table ids, and compile the
-sidecar out of shipping builds while keeping it in dev builds — the greppable
-answer (§13) is a doctrine, not a luxury.
+sidecar out of shipping builds while keeping it in dev builds — "why did it play that?" (§13) is a requirement, not a nice-to-have.
 
 ### 4.2 Tie chains and `merge_ties` (contract)
 
@@ -233,7 +200,7 @@ The per-bar packet every generator receives:
 `off ≤ offset + 1e-9`, else `chord`. Two orderings coexist by design and must
 both survive the port: `chord_pcs` is **bass-first** (the bass and the lints
 key off it); voicing construction wants **root-first** (`Chord.pitch_classes`)
-for its doubling preferences. The decision record behind the timeline field is
+for its doubling preferences. The decision behind the timeline field is
 D3 (THEORY_SPEC §5.5): one chord per bar stays primary; the timeline is
 consumed by voice-led harmonic layers and the linter only.
 
@@ -289,7 +256,7 @@ result = engine.advance_bar()               // the one generation call
 never take effect immediately: they mutate intent, and the next
 `advance_bar()` samples it at the proper boundary (§9.3). `request_key` with
 the current tonic is a no-op; a later request replaces a pending one.
-`request_motif` persists until honored; unknown tags are no-ops.
+`request_motif` persists until served; unknown tags are no-ops.
 
 ### 5.2 BarResult (contract)
 
@@ -304,9 +271,7 @@ the current tonic is a no-op; a later request replaces a pending one.
 | `tempo_points` | `(absolute_beat, bpm)` changes emitted this bar (often empty) |
 | `trace` | the decision log, one string per decision (§13.3) |
 
-The `events` / `raw_events` split is load-bearing: players consume `events`;
-the acceptance suite consumes `raw_events` (plus `events` for post-stage
-bounds). Both must be exposed.
+The `events` / `raw_events` split matters: players consume `events`; the acceptance suite consumes `raw_events` (plus `events` for post-stage bounds). Both must be exposed.
 
 ### 5.3 Lookahead skew (contract)
 
@@ -322,8 +287,7 @@ skew.
 
 ### 5.4 The bar procedure (contract for the order)
 
-The per-bar decision order is load-bearing and specified musically in
-THEORY_SPEC §16. Structurally: clock extension → dramaturg → codetta/elision →
+The per-bar decision order is fixed and specified musically in THEORY_SPEC §16. Structurally: clock extension → dramaturg → codetta/elision →
 wander → period commitment → instrument swap → mode pick → params (mapped or
 static, plus rit) → directive application + hypermeter → texture → lifecycle →
 apex → chord-queue top-up and pop (assert queue sync) → context assembly →
@@ -364,11 +328,7 @@ perc's a bare fill flag; melody takes two auxiliary rng streams (`pickup`,
 
 ## 6. The configuration schema
 
-The full `EngineConfig` tree, all values tuning unless noted. Every feature
-flag is **contract-bound to the byte-identical-off covenant**: with a flag
-off, output is byte-for-byte the pre-feature baseline. This is the permanent
-regression anchor and must survive the port (it is what makes features
-provably inert).
+The full `EngineConfig` tree, all values tuning unless noted. Every feature flag is **tied to the byte-identical-off rule**: with a flag off, output is byte-for-byte the pre-feature baseline. That is the regression anchor; keep it through the port (features stay inert when off).
 
 | Config | Fields (defaults) |
 |---|---|
@@ -421,7 +381,7 @@ affect). Classification (contract):
   `active_layers`, `current_instruments`, `last_emitted_tempo`,
   `tempo_restore`.
 
-### 7.2 Re-derivable caches (memoization, not authority)
+### 7.2 Re-derivable caches (memoization, not source of truth)
 
 Per-phrase dictionaries: `motifs`, `grooves`, `arp_skips`, `apexes`,
 `phrase_textures`, `imitation_cells`, `split_phrases`, `phrase_policies`.
@@ -452,23 +412,11 @@ latter is smaller and doubles as a replay.
 
 ## 8. The determinism contract
 
-### 8.1 The doctrine (contract)
+### 8.1 The rule (contract)
 
-Bar N's material depends only on (master seed, declared musical state at N) —
-never on how many random draws other subsystems or earlier bars consumed. Two
-renders with the same seed and different lever curves stay note-identical
-until the levers actually diverge. Mechanism: a **fresh RNG per (subsystem,
-bar-or-phrase) key**, derived from the master seed by hashing.
+Bar N's material depends only on (master seed, declared musical state at N) — never on how many random draws other subsystems or earlier bars consumed. Two renders with the same seed and different lever curves stay note-identical until the levers actually diverge. Mechanism: a **fresh RNG per (subsystem, bar-or-phrase) key**, derived from the master seed by hashing.
 
-Prototype mechanics, exactly: tag = `"{master}:{key1}:{key2}…"` (decimal ints,
-strings verbatim, `:`-joined) → BLAKE2b, digest_size 8 → 8 bytes big-endian →
-64-bit seed → CPython `random.Random` (MT19937). Two consequences the code
-relies on: (a) every `stream(...)` call returns a **fresh** generator — asking
-for the same key twice in one bar yields the same first draw (the clock key is
-deliberately read this way by both the extension and elision checks); (b)
-generators **draw to stay aligned** even when a value goes unused (Humanize
-draws for tied notes it won't move; the arp advances through rests) so that a
-skipped note cannot shift later draws.
+Prototype mechanics, exactly: tag = `"{master}:{key1}:{key2}…"` (decimal ints, strings as-is, `:`-joined) → BLAKE2b, digest_size 8 → 8 bytes big-endian → 64-bit seed → CPython `random.Random` (MT19937). Two consequences the code relies on: (a) every `stream(...)` call returns a **fresh** generator — asking for the same key twice in one bar yields the same first draw (the clock key is read this way on purpose by both the extension and elision checks); (b) generators **draw to stay aligned** even when a value goes unused (Humanize draws for tied notes it won't move; the arp advances through rests) so that a skipped note cannot shift later draws.
 
 ### 8.2 The stream-key registry (contract)
 
@@ -494,36 +442,18 @@ seeding from the 64-bit integer.
 
 Two-phase:
 
-1. **Bit-compatible generation core.** Reproduce BLAKE2b-8 tagging, CPython
-   MT19937 seeding, `random/randint/choice/choices`, banker's rounding, and
-   the epsilons. Validate by **byte-diffing `raw_events`** against Python
-   goldens across the acceptance matrix (§14.4). Note `raw_events` is
-   pre-modifier: `gauss` is *not needed* for this level — the hard part of
-   CPython parity is confined to the post-modifier surface, and modifiers can
-   be diffed separately or validated by bounds-lints only.
-2. **After parity is proven**, the engine may swap the PRNG (keep the
-   tag→hash→fresh-stream architecture; that part is the contract) and
-   re-baseline its own goldens. From then on the lint suite, the property
-   tests (byte-identical-off, determinism double-render, monotone payoff),
-   and the frozen goldens carry conformance.
+1. **Bit-compatible generation core.** Reproduce BLAKE2b-8 tagging, CPython MT19937 seeding, `random/randint/choice/choices`, banker's rounding, and the epsilons. Validate by **byte-diffing `raw_events`** against Python goldens across the acceptance matrix (§14.4). Note `raw_events` is pre-modifier: `gauss` is *not needed* for this level — the hard part of CPython parity is confined to the post-modifier surface, and modifiers can be diffed separately or validated by bounds-lints only.
+2. **After parity is proven**, the engine may swap the PRNG (keep the tag→hash→fresh-stream architecture; that part is the contract) and re-baseline its own goldens. From then on the lint suite, the property tests (byte-identical-off, determinism double-render, monotone payoff), and the pinned goldens carry conformance.
 
-Either way, the CI gates are: render twice → bit-identical; every toggle off →
-bit-identical to baseline; and (for audio, §12.7) render twice on a
-deliberately churned heap → bit-identical.
+Either way, the CI checks are: render twice → bit-identical; every toggle off → bit-identical to baseline; and (for audio, §12.7) render twice on a scrambled heap → bit-identical.
 
 ---
 
 ## 9. The control plane
 
-### 9.1 The integration seam (contract)
+### 9.1 The game integration surface (contract)
 
-The engine's game-facing contract is the affect API: three clamped floats
-(valence −1…+1, energy 0…1, tension 0…1) plus the request/override calls.
-**Game state → affect is deliberately out of scope** — it is a separate,
-game-specific model (the plan cites MarioAI-style linear metric weighting).
-The engine must not grow game-semantic inputs; everything arrives as affect,
-overrides, and the two requests (key, motif) — plus, later, `foreshadow()`
-(§16).
+The engine's game-facing contract is the affect API: three clamped floats (valence −1…+1, energy 0…1, tension 0…1) plus the request/override calls. **Game state → affect is out of scope** — that is a separate, game-specific model (the plan cites MarioAI-style linear metric weighting). The engine must not grow game-semantic inputs; everything arrives as affect, overrides, and the two requests (key, motif) — plus, later, `foreshadow()` (§16).
 
 ### 9.2 Affect and overrides (contract)
 
@@ -593,7 +523,7 @@ the replay-log format for saves.
 
 ## 10. The runtime control protocol
 
-The playground is the working draft of the native runtime control API. Its
+The playground is the draft of the native runtime control API. Its
 architecture — a UI as a pure control-and-visualization surface over a
 persistent local player, all state in one server-side mirror, all control as
 typed commands applied at bar edges — is the shape to keep.
@@ -605,13 +535,13 @@ typed commands applied at bar edges — is the shape to keep.
 
 - affect (with urgent), overrides set/clear, key request;
 - the entire MappingTable, swapped atomically (live heuristic A/B at one seed
-  is the headline experiment this enables);
+  is the point of this);
 - the DramaturgConfig (knobs swap; **the ledger persists** — state lives in
   ConductorState, not config);
 - every feature flag: the 21 "perform keys" (shaping + cadence_rit +
   phrase_groove + plan_apex + counterpoint + the five form flags + the five
   texture flags + the three tie flags + the three clock flags) rebuild their
-  frozen config sub-objects in place — read per bar, so the swap is atomic
+  config sub-objects in place — read per bar, so the swap is atomic
   and per-phrase caches survive;
 - the automation curve.
 
@@ -691,10 +621,7 @@ same contract with the roles renamed.
 
 ## 12. The audio library
 
-The synthesis stack was built as the requirements probe for the engine's
-in-house C audio library: *"Everything below was needed to make ~3 minutes of
-lever-driven music sound intentional; nothing is speculative."* This section
-is that inventory plus the nine findings, restated as requirements.
+The synthesis stack was built as the shopping list for the engine's in-house C audio library: *"Everything below was needed to make ~3 minutes of lever-driven music sound intentional; nothing is speculative."* This section is that inventory plus the nine findings, restated as requirements.
 
 ### 12.1 The findings, as requirements (contract)
 
@@ -720,11 +647,11 @@ is that inventory plus the nine findings, restated as requirements.
    declares clamp-or-wrap, enforced in the node, loud in debug builds. (A
    musical parameter segfaulted the process through an unguarded interpolated
    read.)
-8. **Determinism gauntlet**: every stochastic primitive takes an explicit seed
+8. **Determinism checks**: every stochastic primitive takes an explicit seed
    (no global entropy); all DSP state initialized (an uninitialized feedback
    phase read stale heap); never use heap-object identity as a scheduling
-   tiebreaker (stable sequence counters); CI gate: *render twice on a
-   deliberately churned heap, diff bit-exactly*.
+   tiebreaker (stable sequence counters); CI check: *render twice on a
+   scrambled heap, diff bit-exactly*.
 9. **The audio thread owns the graph.** Structural changes — voice
    alloc/free, send rerouting — are enqueued and applied by that thread at
    block boundaries, never by mutating live nodes or references from
@@ -788,11 +715,7 @@ large upward retargets (≥ 1.6×), summing, immutable once born.
 
 ### 12.5 The two smoothing tiers (contract)
 
-Deliberately two: the **mapper slews musically** (per bar/beat,
-boundary-quantized — the conductor port provides this), and the **console
-glides at audio rate** (one-pole, ~20–45 ms) so retargets never zipper. The C
-audio library needs only the second tier. Do not merge them: the first tier is
-musical semantics, the second is anti-zipper hygiene.
+Exactly two: the **mapper slews musically** (per bar/beat, boundary-quantized — the conductor port provides this), and the **console glides at audio rate** (one-pole, ~20–45 ms) so retargets never zipper. The C audio library needs only the second tier. Do not merge them: the first tier is musical semantics, the second is anti-zipper hygiene.
 
 ### 12.6 Threading (contract)
 
@@ -804,20 +727,13 @@ realtime player is the degenerate (and proven) case of this rule.
 
 ### 12.7 Audio determinism (contract)
 
-Same gauntlet as §8.4's CI gates, extended to DSP state: seeded stochastic
-nodes, initialized delay/feedback phases, stable scheduling tiebreakers, and
-the churned-heap double-render bit-diff as a CI gate. The meter/follower is
-excluded from offline graphs by default so metering can never perturb a
-render.
+Same checks as §8.4's CI checks, extended to DSP state: seeded stochastic nodes, initialized delay/feedback phases, stable scheduling tiebreakers, and the scrambled-heap double-render bit-diff as a CI check. The meter/follower is excluded from offline graphs by default so metering can never perturb a render.
 
 ---
 
 ## 13. Output and inspection
 
-Inspectability is a design bias, not tooling: *"'Why did it play that?' must
-always have a greppable answer."* Every render emits `.mid` + `.txt` (dump) +
-`.trace.txt`, and optionally `.wav`. Engine builds must preserve the ability
-to emit all three in development configurations.
+Inspectability is a design bias, not tooling: *"'Why did it play that?' must always have a searchable answer."* Every render emits `.mid` + `.txt` (dump) + `.trace.txt`, and optionally `.wav`. Dev builds must keep the ability to emit all three.
 
 ### 13.1 The MIDI contract (contract)
 
@@ -899,7 +815,7 @@ oracle).
 - **Byte-identity**: every feature flag off ⇒ output byte-identical to
   baseline; plus the *surgical* form — feature on changes only its own layers.
   (Enabled by per-key streams: a changed subsystem cannot reshuffle others.)
-- **Determinism**: render twice, assert equality; for audio, the churned-heap
+- **Determinism**: render twice, assert equality; for audio, the scrambled-heap
   variant.
 - **Property tests**: payoff magnitude monotone in accrued debt (the
   dramaturg's automated A/B); round-trip cleanliness on tie-bearing IR.
@@ -984,7 +900,7 @@ Two planned milestones must not be precluded by the port:
 
 ## 17. The porting map: architecture vs tuning
 
-**Architecture — port intact, conformance-tested:**
+**Architecture — port as-is, conformance-tested:**
 the IR (events, ties + merge semantics, context with the optional intra-bar
 timeline, params, six layers); the pull-based `advance_bar()` with its
 internal decision order and same-bar dependency graph; the one-bar lookahead
@@ -993,10 +909,10 @@ stream registry; stateless-except-declared-state and the state classification;
 byte-identical-off feature gating; the boundary-quantization classes and the
 urgent lifecycle; the cadence-precedence chain and the obligation system (as
 specified in THEORY_SPEC); the PhraseClock; the dramaturg ledger with monotone
-payoff; the MIDI/dump/trace output contracts; the lint covenant with the
+payoff; the MIDI/dump/trace output contracts; the lint suite with the
 Python linter as oracle; the audio-thread-owns-graph rule, the voice-pool and
 preset-at-allocation model, the two smoothing tiers, and the determinism
-gauntlets.
+checks.
 
 **Tuning — ship as data, keep evolving:**
 every MappingTable constant; every config default in §6; the harmonic walk's
@@ -1004,4 +920,4 @@ weights and the dissonance tiers; the performance layer's amounts; the patch
 library and console values; velocities, registers, probabilities throughout.
 The prototype remains the tuning bench: constants can keep evolving there
 after the port, because everything that would make retuning unsafe — the rule
-set and its verification — is frozen above.
+set and its verification — is locked above.

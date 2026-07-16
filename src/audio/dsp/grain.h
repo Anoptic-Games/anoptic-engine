@@ -3,16 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * dsp/grain.h (private to src/audio/)
- * Granular engine over a live history ring (TECH_SPEC §12.2): a mono input
- * feeds a rolling window; a seeded stochastic grain clock (Bernoulli per
- * sample at density/rate — the prototype's RandomImpulse) spawns Hann-windowed
- * grains that read the history at a random delay and their own playback rate,
- * each panned constant-power to a random bearing. Read cursors are clamped
- * into the valid window (finding 7). Everything is caller-allocated and
- * init-zeroed; the ring capacity is a power of two.
- */
+// Granular engine over a live history ring. Seeded Bernoulli spawn clock.
+// Hann grains, random delay/rate/pan. Read cursors clamped. Caller owns ring (pow2).
 
 #ifndef ANO_DSP_GRAIN_H
 #define ANO_DSP_GRAIN_H
@@ -27,22 +19,22 @@
 typedef struct AnoDspGrain
 {
     bool     active;
-    double   src;   // absolute fractional frame in ring timeline
-    double   rate;  // cursor advance per output frame (2.0 = octave up)
-    uint32_t age;   // frames rendered
-    uint32_t dur;   // grain length in frames
-    float    gl, gr; // constant-power pan gains
+    double   src;   // fractional frame in ring timeline
+    double   rate;  // cursor advance per output frame
+    uint32_t age;
+    uint32_t dur;
+    float    gl, gr; // constant-power pan
 } AnoDspGrain;
 
 typedef struct AnoDspGrainEngine
 {
-    float   *ring;    // capacity floats, caller-allocated, zeroed
-    uint32_t mask;    // capacity - 1 (capacity pow2)
-    uint64_t write;   // absolute frames written
-    float    minDelayS, maxDelayS; // grain start delay behind the write head
-    float    grainS;  // grain duration seconds
-    float    rate;    // grain playback rate
-    float    density; // mean grains per second (clock probability density/fs)
+    float   *ring;
+    uint32_t mask;    // capacity - 1
+    uint64_t write;
+    float    minDelayS, maxDelayS;
+    float    grainS;
+    float    rate;
+    float    density; // mean grains/sec
     AnoDspRng rng;
     AnoDspGrain g[ANO_DSP_GRAIN_SLOTS];
 } AnoDspGrainEngine;
@@ -64,15 +56,13 @@ static inline void ano_dsp_grain_init(AnoDspGrainEngine *e, float *ring, uint32_
         e->g[i] = (AnoDspGrain){0};
 }
 
-// One sample: write `in` into the history, maybe spawn a grain, sum the live
-// grains into *l/*r (accumulated, caller zeroes). fs = sample rate.
+// Write in. Maybe spawn. Accumulate live grains into *l/*r (caller zeroes).
 static inline void ano_dsp_grain_step(AnoDspGrainEngine *e, float in, float fs,
                                       float *l, float *r)
 {
     e->ring[e->write & e->mask] = in;
     e->write++;
 
-    // seeded grain clock: expectation density grains/second
     if (e->density > 0.0f && ano_dsp_noise(&e->rng) * 0.5f + 0.5f < e->density / fs) {
         for (uint32_t i = 0; i < ANO_DSP_GRAIN_SLOTS; ++i) {
             AnoDspGrain *g = &e->g[i];
@@ -90,7 +80,7 @@ static inline void ano_dsp_grain_step(AnoDspGrainEngine *e, float in, float fs,
             if (g->dur == 0u) g->dur = 1u;
             g->gl = cosf(th);
             g->gr = sinf(th);
-            break; // all slots busy = grain dropped, deterministically
+            break; // full slots: drop grain
         }
     }
 
@@ -98,7 +88,7 @@ static inline void ano_dsp_grain_step(AnoDspGrainEngine *e, float in, float fs,
         AnoDspGrain *g = &e->g[i];
         if (!g->active)
             continue;
-        // clamp the cursor into the valid window [write - capacity + 2, write - 1]
+        // clamp into [write - capacity + 2, write - 1]
         double lo = (double)e->write - (double)e->mask;
         if (lo < 0.0) lo = 0.0;
         double hi = (double)(e->write - 1u);

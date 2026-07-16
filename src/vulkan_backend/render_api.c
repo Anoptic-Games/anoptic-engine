@@ -11,9 +11,7 @@
 #include "vulkan_backend/frame/frame.h"
 #include "vulkan_backend/render_api.h"
 
-// Loaded-asset registry (anoptic_render.h). asset_id is a fixed slot: a failed parse
-// leaves it NULL and the scene composes without it.
-// g_defaultMaterial: the first asset's first material, or the built-in row.
+// Loaded-asset registry. Failed parse leaves slot NULL. g_defaultMaterial = first asset mat or builtin.
 #define ANO_MAX_LOADED_ASSETS 16u
 static ModelAsset* g_assets[ANO_MAX_LOADED_ASSETS];
 static uint32_t    g_assetCount;
@@ -113,12 +111,8 @@ bool ano_render_get_view_hiz_enable(uint32_t view) {
     return rendererState.hizEnable[view] != 0u;
 }
 
-// Claim material SSBO row 0 with the stock white PBR row in every frame-in-flight copy.
-// No-op if the buffer is absent or row 0 is already taken.
-// Invariant: runs before the first parseGltf, which allocates rows from count upward.
-//
-/// TODO: this is fucked up. Hand-writing a material row into a mapped SSBO from the
-/// asset-load path, with positional asset slots, is a shim. Redo with the asset manager.
+// Claim material SSBO row 0 with stock white PBR (all FIF). No-op if absent or row 0 taken. Before first parseGltf.
+/// TODO: shim — redo with asset manager.
 static void register_default_material(void)
 {
 	if (rendererState.materialBuffer.capacity == 0u || rendererState.materialBuffer.count != 0u)

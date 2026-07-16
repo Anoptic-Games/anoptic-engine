@@ -1,3 +1,7 @@
+<!--
+Transcript: Claude Code session verifying that tools/perf FPS numbers are real uncapped throughput, not a measurement bug. Keep the chain of evidence intact.
+-->
+
  ▐▛███▜▌   Claude Code v2.1.207
 ▝▜█████▛▘  Opus 4.8 · Claude Max
   ▘▘ ▝▝    ~\Code\anoptic-engine

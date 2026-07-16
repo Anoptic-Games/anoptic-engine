@@ -3,11 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Generates src/strings/ano_unicode_tables.h and src/strings/ano_collate_tables.h
-// from the Unicode Character Database. Standalone offline tool, not part of the
-// engine build. Output is committed, regenerated per Unicode version.
+// Generates src/strings/ano_unicode_tables.h and ano_collate_tables.h from UCD.
+// Offline tool. Output committed, regenerated per Unicode version.
 //
-// Usage (from the repository root):
+// Usage (repo root):
 //     curl -o tools/ucd/ReadMe.txt      https://www.unicode.org/Public/UCD/latest/ucd/ReadMe.txt
 //     curl -o tools/ucd/UnicodeData.txt https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt
 //     curl -o tools/ucd/PropList.txt    https://www.unicode.org/Public/UCD/latest/ucd/PropList.txt
@@ -15,24 +14,19 @@
 //     gcc -O2 -o gen_unicode_tables tools/gen_unicode_tables.c
 //     ./gen_unicode_tables
 //
-// Both tables are two-stage lookups covering every code point 0..0x10FFFF:
-//     stage1[cp >> 8] -> block index -> stage2[block*256 + (cp & 0xFF)] -> record
-// with identical records and identical 256-entry blocks deduplicated.
-//
-// ano_unicode_tables.h: simple case-mapping deltas (0 = uncased/identity) and flags
-// (letter = category L*, digit = Nd, mark = M*, whitespace = the White_Space property).
-//
-// ano_collate_tables.h: DUCET collation elements packed primary(16).secondary(11).tertiary(5)
-// per u32, plus fully-expanded canonical decompositions. Contractions are skipped and
-// per-script @implicitweights are folded into one uniform runtime formula.
+// Two-stage 0..0x10FFFF: stage1[cp >> 8] -> block index -> stage2[block*256 + (cp & 0xFF)] -> record.
+// Identical records and 256-entry blocks deduplicated.
+// unicode: case deltas (0 = identity) + flags (L*, Nd, M*, White_Space).
+// collate: DUCET CEs as primary(16).secondary(11).tertiary(5) per u32 + expanded NFD.
+// Contractions skipped. @implicitweights -> one runtime formula.
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_CP   0x110000   // parsed range (UCD data mentions the SMP and beyond)
-#define TABLE_CP 0x10000    // emitted range: the keep-lists are BMP-only, runtime guards
+#define MAX_CP   0x110000   // parse range (UCD mentions SMP and beyond)
+#define TABLE_CP 0x10000    // emit range: keep-lists are BMP-only, runtime guards
 
 #define FLAG_LETTER     1u
 #define FLAG_DIGIT      2u
@@ -44,7 +38,7 @@ static uint8_t flags[MAX_CP];
 static int32_t upper_delta[MAX_CP];
 static int32_t lower_delta[MAX_CP];
 
-// int32 deltas: rare pairs span blocks (U+019B uppercases into Latin Extended-D).
+// int32 deltas (cross-block pairs).
 typedef struct record_t {
     int32_t upper_delta;
     int32_t lower_delta;
@@ -57,10 +51,10 @@ static uint16_t record_of_cp[MAX_CP];
 
 #define BLOCK_COUNT (TABLE_CP / 256)
 static uint16_t stage1[BLOCK_COUNT];
-static uint16_t stage2[BLOCK_COUNT * 256];   // worst case: every block unique
+static uint16_t stage2[BLOCK_COUNT * 256];   // every block unique
 static size_t   block_count;
 
-// Collation: packed CEs, one span per listed code point. Record 0 = unlisted (implicit).
+// Packed CEs: one span per listed cp. Span 0 = unlisted (implicit).
 #define CE_MAX_PER_CP 20
 typedef struct ce_span_t { uint32_t offset; uint8_t len; } ce_span_t;
 static uint32_t  ce_pool[262144];
@@ -69,7 +63,7 @@ static ce_span_t ce_spans[49152];
 static size_t    ce_span_count;
 static uint16_t  ce_span_of_cp[MAX_CP];
 
-// Canonical decompositions, fully expanded (recursive), in code point order.
+// Canonical decompositions, fully expanded, cp order.
 typedef struct decomp_t { uint32_t cp; uint16_t offset; uint8_t len; } decomp_t;
 #define DECOMP_MAX_LEN 8
 static uint32_t decomp_pool[32768];
@@ -87,7 +81,7 @@ static FILE *open_or_die(const char *path, const char *mode)
     return f;
 }
 
-// Split line on ';' in place. Preserves empty fields (unlike strtok). Returns field count.
+// Split on ';' in place. Empty fields kept. Returns field count.
 static int split_fields(char *line, char *fields[], int max_fields)
 {
     int n = 0;
@@ -107,13 +101,13 @@ static int is_letter_category(const char *cat)
                              cat[1] == 'm' || cat[1] == 'o');
 }
 
-// Combining marks: Mn nonspacing, Mc spacing, Me enclosing.
+// Mn / Mc / Me.
 static int is_mark_category(const char *cat)
 {
     return cat[0] == 'M' && (cat[1] == 'n' || cat[1] == 'c' || cat[1] == 'e');
 }
 
-// Punctuation: P* only. Symbols (S*) are not punctuation.
+// P* only.
 static int is_punct_category(const char *cat)
 {
     return cat[0] == 'P' && (cat[1] == 'c' || cat[1] == 'd' || cat[1] == 's' ||
@@ -146,7 +140,7 @@ static void parse_unicode_data(void)
         const char *name = fields[1];
         const char *cat = fields[2];
 
-        // <CJK Ideograph, First> / <..., Last> pairs describe whole ranges.
+        // <..., First> / <..., Last> ranges.
         size_t namelen = strlen(name);
         if (namelen > 8 && strcmp(name + namelen - 8, ", First>") == 0) {
             range_start = cp;
@@ -167,7 +161,7 @@ static void parse_unicode_data(void)
         if (fields[13][0] != '\0')
             lower_delta[cp] = (int32_t)(strtol(fields[13], NULL, 16) - cp);
 
-        // Field 5: canonical decomposition ("<...>"-tagged ones are compatibility, skipped).
+        // Field 5: canonical decomp (skip <compatibility> tags).
         if (fields[5][0] != '\0' && fields[5][0] != '<') {
             decomp_t d = { (uint32_t)cp, (uint16_t)decomp_pool_count, 0 };
             char *p = fields[5];
@@ -187,8 +181,7 @@ static void parse_unicode_data(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// Decomposition expansion: UnicodeData's one-level decompositions expanded to full NFD.
-// Input is in cp order, bsearched.
+// Decomposition expansion: one-level -> full NFD. Input cp-ordered, bsearched.
 
 static const decomp_t *find_decomp(uint32_t cp)
 {
@@ -217,7 +210,7 @@ static int expand_cp(uint32_t cp, uint32_t *out, int cap)
 
 static int collate_kept(uint32_t cp);
 
-// Expand recursively, keeping only entries in the collation keep-list.
+// Expand recursively. Keep collate_keep entries only.
 static void expand_decompositions(void)
 {
     static uint32_t pool2[sizeof decomp_pool / sizeof decomp_pool[0]];
@@ -239,26 +232,24 @@ static void expand_decompositions(void)
 }
 
 // ---------------------------------------------------------------------------------------------
-// DUCET. Single code points only: contractions skipped, @implicitweights ranges fall
-// through to the runtime's uniform implicit formula.
+// DUCET. Single cps only. Contractions skipped. @implicitweights -> runtime formula.
 
-// Collation keep-list: the scripts the game ships. Everything outside falls back to
-// implicit weights, code point order (= UTF-8 byte order), after all listed scripts.
+// Collation keep-list. Outside -> implicit weights, cp order (= UTF-8 byte order).
 // Han is implicit (no alphabet, cp order ~ radical-stroke).
 typedef struct range_t { uint32_t lo, hi; } range_t;
 static const range_t collate_keep[] = {
-    { 0x0000, 0x024F },     // Basic Latin .. Latin Extended-B (ASCII, all of Latin Europe)
-    { 0x0300, 0x036F },     // combining marks (decomposed accents carry the secondaries)
+    { 0x0000, 0x024F },     // Basic Latin .. Latin Extended-B
+    { 0x0300, 0x036F },     // combining marks
     { 0x0370, 0x03FF },     // Greek and Coptic
     { 0x0400, 0x052F },     // Cyrillic + Supplement
-    { 0x16A0, 0x16FF },     // Runic (Futhark)
-    { 0x1E00, 0x1EFF },     // Latin Extended Additional (Vietnamese, Welsh)
-    { 0x1F00, 0x1FFF },     // Greek Extended (polytonic / Ancient Greek)
-    { 0x2000, 0x206F },     // General Punctuation (real quotes, dashes)
-    { 0x20A0, 0x20CF },     // currency signs
-    { 0x3000, 0x30FF },     // CJK punctuation, hiragana, katakana
+    { 0x16A0, 0x16FF },     // Runic
+    { 0x1E00, 0x1EFF },     // Latin Extended Additional
+    { 0x1F00, 0x1FFF },     // Greek Extended
+    { 0x2000, 0x206F },     // General Punctuation
+    { 0x20A0, 0x20CF },     // currency
+    { 0x3000, 0x30FF },     // CJK punct, hiragana, katakana
     { 0x31F0, 0x31FF },     // katakana phonetic extensions
-    { 0xFF00, 0xFFEF },     // half/fullwidth forms
+    { 0xFF00, 0xFFEF },     // half/fullwidth
 };
 
 static int collate_kept(uint32_t cp)
@@ -269,7 +260,7 @@ static int collate_kept(uint32_t cp)
     return 0;
 }
 
-// Classification/case keep-list: the collation scripts plus Han.
+// Classification keep-list: collate_keep + Han.
 static const range_t class_extra[] = {
     { 0x3400, 0x4DBF },     // CJK Extension A
     { 0x4E00, 0x9FFF },     // CJK Unified Ideographs
@@ -289,7 +280,7 @@ static void parse_allkeys(void)
 {
     FILE *f = open_or_die("tools/ucd/allkeys.txt", "r");
     char line[2048];
-    ce_span_count = 1;      // span 0 = not listed, runtime computes implicit weights
+    ce_span_count = 1;      // span 0 = unlisted (implicit)
 
     while (fgets(line, sizeof line, f) != NULL) {
         char *hash = strchr(line, '#');
@@ -302,7 +293,7 @@ static void parse_allkeys(void)
             continue;
         *semi = '\0';
 
-        // Code points before the ';'. More than one = a contraction, skipped.
+        // Cps before ';'. ncp != 1 = contraction, skip.
         uint32_t cp = 0;
         int ncp = 0;
         for (char *p = line; ; ) {
@@ -318,7 +309,7 @@ static void parse_allkeys(void)
         if (ncp != 1 || !collate_kept(cp))
             continue;
 
-        // Collation elements: [.pppp.ssss.tttt] or [*pppp.ssss.tttt], one or more.
+        // CEs: [.p.s.t] or [*p.s.t], one or more.
         uint32_t seq[CE_MAX_PER_CP];
         uint8_t  seq_len = 0;
         for (char *q = semi + 1; (q = strchr(q, '[')) != NULL; ) {
@@ -341,7 +332,7 @@ static void parse_allkeys(void)
         if (seq_len == 0)
             continue;
 
-        // Reuse any identical run already in the pool.
+        // Reuse identical pool run.
         ce_span_t span = { UINT32_MAX, seq_len };
         for (size_t at = 0; at + seq_len <= ce_pool_count; at++) {
             if (memcmp(&ce_pool[at], seq, seq_len * sizeof seq[0]) == 0) {
@@ -365,8 +356,7 @@ static void parse_allkeys(void)
     fclose(f);
 }
 
-// The runtime CE queue holds one source rune's worth of CEs. Bound it here:
-// decomposed pieces contribute their span lengths (or 2 for implicit weights).
+// Bound runtime CE queue: decomp pieces use span lens (or 2 if implicit).
 static void assert_ce_queue_bound(int runtime_cap)
 {
     for (long cp = 0; cp < MAX_CP; cp++) {
@@ -397,7 +387,7 @@ static void parse_prop_list(void)
         char *hash = strchr(line, '#');
         if (hash != NULL)
             *hash = '\0';
-        // Exact property-name match.
+        // Exact property name.
         char *semi = strchr(line, ';');
         if (semi == NULL)
             continue;
@@ -434,7 +424,7 @@ static void read_version(char *out, size_t cap)
     fclose(f);
 }
 
-// Dedupe 256-entry blocks of map[0..TABLE_CP) into stage1/stage2. Block 0 = all-zero.
+// Dedupe 256-entry blocks of map[0..TABLE_CP) into stage1/stage2. Block 0 = zero.
 static void build_two_stage(const uint16_t *map)
 {
     memset(stage2, 0, 256 * sizeof stage2[0]);
@@ -458,8 +448,7 @@ static void build_two_stage(const uint16_t *map)
 
 static void build_tables(void)
 {
-    // Record 0 is the all-zero identity record: unassigned, caseless, and every code
-    // point outside the keep-list (SMP included, runtime guards cp >= TABLE_CP).
+    // Record 0 = identity: unassigned, caseless, outside keep-list (SMP included; runtime guards cp >= TABLE_CP).
     records[0] = (record_t){0, 0, 0};
     record_count = 1;
     for (long cp = 0; cp < TABLE_CP; cp++) {
@@ -526,17 +515,14 @@ static void emit_collate_tables(const char *version)
         " * SPDX-License-Identifier: LGPL-3.0 */\n"
         "/*  == Anoptic Game Engine v0.0000001 == */\n"
         "\n"
-        "// GENERATED FILE -- do not edit. Produced by tools/gen_unicode_tables.c from the\n"
-        "// DUCET (allkeys.txt) and UnicodeData.txt canonical decompositions, version %s.\n"
-        "// Trimmed to the collate_keep script list (Latin, Greek, Cyrillic, Runic, kana,\n"
-        "// punctuation) and BMP-bound; everything else falls back to implicit weights\n"
-        "// = code point order (the runtime guards cp >= 0x10000).\n"
+        "// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from DUCET + UnicodeData, version %s.\n"
+        "// Trimmed to collate_keep (Latin, Greek, Cyrillic, Runic, kana, punct) and BMP.\n"
+        "// Else: implicit weights = cp order (runtime guards cp >= 0x10000).\n"
         "//\n"
-        "// A collation element packs primary(16).secondary(11).tertiary(5) into one u32.\n"
+        "// CE: primary(16).secondary(11).tertiary(5) in one u32.\n"
         "// ano_ce_stage2[(size_t)ano_ce_stage1[cp >> 8] * 256 + (cp & 0xFF)] indexes\n"
-        "// ano_ce_spans (u16, offset << 4 | len into ano_ce_pool). Span 0 = unlisted: the\n"
-        "// runtime computes UCA implicit weights. Decompositions are fully expanded NFD:\n"
-        "// bsearch ano_decomp_cp, u16 spans (offset << 3 | len) into ano_decomp_pool.\n"
+        "// ano_ce_spans (u16, offset << 4 | len into ano_ce_pool). Span 0 = unlisted (implicit).\n"
+        "// Decomps are full NFD: bsearch ano_decomp_cp, u16 spans (offset << 3 | len) into ano_decomp_pool.\n"
         "\n"
         "#ifndef ANOPTIC_SRC_STRINGS_ANO_COLLATE_TABLES_H\n"
         "#define ANOPTIC_SRC_STRINGS_ANO_COLLATE_TABLES_H\n"
@@ -547,8 +533,7 @@ static void emit_collate_tables(const char *version)
         "\n",
         version, version);
 
-    // Spans pack into u16: offset(12).len(4). Decomp side packs offset(13).len(3).
-    // All decomposition pieces are BMP, pool is u16.
+    // Spans: offset(12).len(4). Decomp: offset(13).len(3). Pool is u16 (BMP pieces).
     static uint16_t spans_packed[sizeof ce_spans / sizeof ce_spans[0]];
     for (size_t k = 0; k < ce_span_count; k++) {
         if (ce_spans[k].offset >= (1u << 12) || ce_spans[k].len >= (1u << 4)) {
@@ -563,8 +548,7 @@ static void emit_collate_tables(const char *version)
     emit_u16_array(f, "ano_ce_stage2", stage2, block_count * 256);
     emit_u16_array(f, "ano_ce_stage1", stage1, BLOCK_COUNT);
 
-    // Flat ASCII fast path: every ASCII cp maps to exactly one CE and never decomposes.
-    // Asserted here.
+    // ASCII fast path: one CE each, no decomp.
     uint32_t ce_ascii[128];
     for (uint32_t cp = 0; cp < 128; cp++) {
         uint16_t span = ce_span_of_cp[cp];
@@ -630,15 +614,13 @@ int main(void)
         " * SPDX-License-Identifier: LGPL-3.0 */\n"
         "/*  == Anoptic Game Engine v0.0000001 == */\n"
         "\n"
-        "// GENERATED FILE -- do not edit. Produced by tools/gen_unicode_tables.c from\n"
-        "// the Unicode Character Database, version %s.\n"
-        "// Trimmed to the shipped scripts (collate_keep + Han) and BMP-bound: the runtime\n"
-        "// treats cp >= 0x10000 as record 0 (uncased, no flags).\n"
+        "// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from UCD, version %s.\n"
+        "// Trimmed to shipped scripts (collate_keep + Han) and BMP.\n"
+        "// cp >= 0x10000 -> record 0 (uncased, no flags).\n"
         "//\n"
-        "// Two-stage lookup:\n"
+        "// Two-stage:\n"
         "//     ano_uc_stage2[(size_t)ano_uc_stage1[cp >> 8] * 256 + (cp & 0xFF)]\n"
-        "// yields an index into ano_uc_records. Record 0 is the identity record\n"
-        "// (uncased, no flags), shared by unassigned, caseless, and unlisted code points.\n"
+        "// -> index into ano_uc_records. Record 0 = identity (uncased, no flags).\n"
         "\n"
         "#ifndef ANOPTIC_SRC_STRINGS_ANO_UNICODE_TABLES_H\n"
         "#define ANOPTIC_SRC_STRINGS_ANO_UNICODE_TABLES_H\n"
@@ -655,8 +637,8 @@ int main(void)
         "#define ANO_UC_PUNCT      %uu\n"
         "\n"
         "typedef struct ano_uc_record_t {\n"
-        "    int32_t upper_delta;   // 0 when no simple uppercase mapping\n"
-        "    int32_t lower_delta;   // 0 when no simple lowercase mapping\n"
+        "    int32_t upper_delta;   // 0 = no simple uppercase\n"
+        "    int32_t lower_delta;   // 0 = no simple lowercase\n"
         "    uint8_t flags;\n"
         "} ano_uc_record_t;\n"
         "\n",

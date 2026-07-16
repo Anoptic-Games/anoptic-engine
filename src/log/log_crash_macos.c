@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// macOS: the shared POSIX handler plus the two native pieces it needs. Module map from the dyld image list at init, one entry per executable segment. base is the slide: recorded offsets are unslid, fed straight to atos -o <module>.
+// macOS: shared POSIX handler + dyld module map at init (one entry per executable segment). base = slide for atos -o.
 
 #include "log/log_crash_posix.h"
 
@@ -34,7 +34,7 @@ static void bb_modmap_build(void)
     }
 }
 
-// Inputs: the handler's ucontext. Outputs: the interrupted thread's pc and fp, plus lr on arm64 (0 elsewhere). The Darwin getter macros handle the opaque arm64e thread state.
+// Inputs: ucontext. Outputs: pc, fp, lr on arm64 (0 elsewhere). Darwin getters for arm64e thread state.
 static void bb_crash_regs(void *uctx, uintptr_t *pc, uintptr_t *fp, uintptr_t *lr)
 {
     const ucontext_t *uc = uctx;

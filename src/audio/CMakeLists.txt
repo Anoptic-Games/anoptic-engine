@@ -1,5 +1,4 @@
-# Audio stack: bridge transport, mixer core, device backends, WAV utility.
-# Joins anoptic_core; per-platform device files are selected below.
+# Audio: bridge, mixer, device backends, WAV.
 target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/ano_audio.c
         ${CMAKE_CURRENT_SOURCE_DIR}/audio_mixer.c
@@ -8,9 +7,9 @@ target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/audio_wav.c
 )
 
-# Per-platform device backends (APPLE before UNIX: both are true on macOS).
+# Per-platform device (APPLE before UNIX).
 if (WIN32)
-    # WASAPI + DirectSound; ole32/avrt/dsound are runtime-loaded (no link deps)
+    # WASAPI + DirectSound. ole32/avrt/dsound runtime-loaded.
     target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_win64.c)
 elseif (APPLE)
     # CoreAudio default-output AudioUnit
@@ -19,11 +18,11 @@ elseif (APPLE)
             "-framework CoreAudio" "-framework AudioUnit" "-framework AudioToolbox")
 elseif (UNIX)
     target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_linux.c)
-    # backends are dlopen'd — no link dep on pipewire/asound, just the loader
+    # dlopen backends — loader only
     target_link_libraries(anoptic_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-# sinf/cosf/expf live in a separate libm on Linux; MinGW and macOS fold it into libc.
+# libm on Linux. MinGW/macOS fold into libc.
 if(UNIX AND NOT APPLE)
     target_link_libraries(anoptic_core PUBLIC m)
 endif()

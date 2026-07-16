@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_theory.c
- * Scales, chords, guides, counterpoint, and pivot modulation — the pure
- * (draw-free) theory kernel, ported from musicgen/theory/{pitch,scales,
- * chords,guides,counterpoint,modulation}.py. Integer-only except the display
- * helpers; nothing here touches the RNG. Table contents and iteration orders
- * are the prototype's verbatim.
- */
+// Draw-free theory: scales, chords, guides, counterpoint, pivots.
+// Table contents and iteration orders are prototype-verbatim. Nothing here touches the RNG.
 
 #include "music_theory.h"
 
@@ -24,9 +18,7 @@ static inline int pymod(int a, int m)
     return r < 0 ? r + m : r;
 }
 
-// ---------------------------------------------------------------------------
-// Scales
-// ---------------------------------------------------------------------------
+/* Scales */
 
 const char *const ANO_MODE_NAMES[ANO_MODE_COUNT] = {
     "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian",
@@ -131,9 +123,7 @@ const char *ano_scale_name(AnoScale s, char *buf, uint32_t cap)
     return buf;
 }
 
-// ---------------------------------------------------------------------------
-// Pitch display
-// ---------------------------------------------------------------------------
+/* Pitch */
 
 const char *ano_pitch_name(int midi, bool preferFlats, char *buf, uint32_t cap)
 {
@@ -146,9 +136,7 @@ const char *ano_pitch_name(int midi, bool preferFlats, char *buf, uint32_t cap)
     return buf;
 }
 
-// ---------------------------------------------------------------------------
-// Chords
-// ---------------------------------------------------------------------------
+/* Chords */
 
 static const char *const ROMAN[7] = { "I", "II", "III", "IV", "V", "VI", "VII" };
 
@@ -303,9 +291,7 @@ const char *ano_chord_symbol(AnoChord c, AnoScale context, char *buf, uint32_t c
     return buf;
 }
 
-// ---------------------------------------------------------------------------
-// Guide tones
-// ---------------------------------------------------------------------------
+/* Guide tones */
 
 void ano_guide_pcs(AnoChord c, AnoScale s, int out[2])
 {
@@ -335,9 +321,7 @@ int ano_next_guide(int prevPc, AnoChord c, AnoScale s)
     return best;
 }
 
-// ---------------------------------------------------------------------------
-// Counterpoint predicates
-// ---------------------------------------------------------------------------
+/* Counterpoint */
 
 bool ano_is_perfect(int lower, int upper)
 {
@@ -383,9 +367,7 @@ bool ano_forbidden_direct(int prevLower, int prevUpper, int lower, int upper, in
     return (du < 0 ? -du : du) > maxStep;
 }
 
-// ---------------------------------------------------------------------------
-// Pivot modulation
-// ---------------------------------------------------------------------------
+/* Pivot modulation */
 
 // pivot preference by NEW-key degree; old-dominant chords pull backward
 static const int NEW_DEGREE_RANK[8] = { 0, 3, 0, 4, 1, 8, 2, 9 }; // index by degree

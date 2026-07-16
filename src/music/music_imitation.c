@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_imitation.c
- * The collision-policy retry list. Parity notes: fixed candidate order with
- * strict < replacement (first least-clashing wins, break on zero); the
- * melody probe takes the FIRST event sounding at the onset whose role is not
- * "doubling"; degree annotations come from ctx->scale (not the chord's
- * borrowed scale).
- */
+// Collision retry list. Fixed candidate order; strict < replacement (first least-clashing wins; break on zero).
+// Melody probe: first event sounding at onset whose role is not "doubling". Degrees from ctx->scale.
 
 #include <string.h>
 

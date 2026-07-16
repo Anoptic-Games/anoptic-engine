@@ -3,17 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_theory.h (private to src/music/)
- * The theory kernel, ported line for line from the prototype's musicgen
- * theory package: scales as
- * (tonic pc, mode), chords as symbolic degrees realized against a scale,
- * the RNG-driven functional harmony walk, the minimum-movement voicing
- * search, guide-tone threading, species counterpoint predicates, and pivot
- * modulation. Bit-parity discipline: every RNG draw order, weight iteration
- * order, and float operation order matches the prototype exactly — a 1-ULP
- * or one-draw drift flips musical decisions (TECH_SPEC §3.3, §8.3).
- */
+// Theory kernel: scales, chords, functional walk, voicing, guides, counterpoint, pivots.
+// RNG draw order, weight iteration, and float op order are parity-load-bearing.
 
 #ifndef ANO_MUSIC_THEORY_H
 #define ANO_MUSIC_THEORY_H
@@ -24,14 +15,12 @@
 #include "music_det.h"
 #include <anoptic_music.h>
 
-// ---------------------------------------------------------------------------
-// Scales (theory/scales.py)
-// ---------------------------------------------------------------------------
+
+/* Scales */
 
 extern const char *const ANO_MODE_NAMES[ANO_MODE_COUNT];
 
-// Usable modes bright to dark; locrian deliberately scores like "darkest"
-// via the prototype's BRIGHTNESS.get(mode, -1) default.
+// Usable modes bright to dark; locrian scores -1 via BRIGHTNESS.get(mode, -1).
 int ano_mode_brightness(AnoMode mode); // lydian +3 .. phrygian -2, locrian -1
 
 typedef struct AnoScale
@@ -40,8 +29,7 @@ typedef struct AnoScale
     uint8_t mode;  // AnoMode
 } AnoScale;
 
-// Ascending semitone offsets from the tonic (7 entries) for a mode.
-const uint8_t *ano_mode_intervals(AnoMode mode);
+const uint8_t *ano_mode_intervals(AnoMode mode); // 7 ascending semitone offsets
 
 void ano_scale_pcs(AnoScale s, uint8_t out[7]);
 bool ano_scale_contains(AnoScale s, int midi);
@@ -50,22 +38,20 @@ int  ano_scale_pitch_at(AnoScale s, int degree, int octave); // degrees wrap pas
 int  ano_snap_to_scale(AnoScale s, int pitch);  // deltas tried (0,1,-1,2,-2)
 int  ano_diatonic_shift(AnoScale s, int pitch, int steps);
 
-// "Eb ionian" style display name into buf; returns buf.
+// "Eb ionian" into buf; returns buf.
 const char *ano_scale_name(AnoScale s, char *buf, uint32_t cap);
 
-// ---------------------------------------------------------------------------
-// Pitch helpers (theory/pitch.py)
-// ---------------------------------------------------------------------------
+
+/* Pitch */
 
 static inline int ano_pitch_class(int midi) { return midi % 12; }
 static inline int ano_octave_of(int midi) { return midi / 12 - 1; } // 60 == C4
 
-// "C#4" style (sharps unless preferFlats) into buf; returns buf.
+// "C#4" into buf; returns buf.
 const char *ano_pitch_name(int midi, bool preferFlats, char *buf, uint32_t cap);
 
-// ---------------------------------------------------------------------------
-// Chords (theory/chords.py)
-// ---------------------------------------------------------------------------
+
+/* Chords */
 
 typedef enum AnoChordExt
 {
@@ -92,7 +78,7 @@ typedef struct AnoChord
     uint8_t inversion;
     int8_t  sourceMode; // AnoMode, ANO_MODE_NONE when diatonic
     uint8_t applied;    // secondary-dominant target degree, 0 = none
-    bool    valid;      // false = "no chord" (the prototype's None)
+    bool    valid;      // false = no chord
 } AnoChord;
 
 static inline AnoChord ano_chord(int degree, uint8_t extensions)
@@ -101,11 +87,10 @@ static inline AnoChord ano_chord(int degree, uint8_t extensions)
 }
 static inline AnoChord ano_chord_none(void) { return (AnoChord){0}; }
 
-// V/target: major-minor 7th a fifth above the target (chromatic realization).
+// V/target: major-minor 7th a fifth above the target.
 AnoChord ano_chord_applied_dominant(int target, bool seventh);
 
-// The scale a chord is spelled in: the context unless a borrow's sourceMode
-// re-modes it on the same tonic.
+// Spelling scale: context unless sourceMode re-modes on the same tonic.
 static inline AnoScale ano_chord_scale_for(AnoChord c, AnoScale context)
 {
     if (c.sourceMode == ANO_MODE_NONE || c.sourceMode == (int8_t)context.mode)
@@ -113,29 +98,22 @@ static inline AnoScale ano_chord_scale_for(AnoChord c, AnoScale context)
     return (AnoScale){ context.tonic, (uint8_t)c.sourceMode };
 }
 
-char ano_chord_function(AnoChord c); // 'T', 'P' (pre-dominant), 'D'
+char ano_chord_function(AnoChord c); // 'T', 'P', 'D'
 
-// Root-first stacked-third member degrees (3..5 entries); returns the count.
-uint32_t ano_chord_member_degrees(AnoChord c, int out[5]);
-
-// Member pitch classes root-first (ignores inversion); returns the count.
+uint32_t ano_chord_member_degrees(AnoChord c, int out[5]); // root-first stacked thirds
 uint32_t ano_chord_pitch_classes(AnoChord c, AnoScale context, uint8_t out[5]);
-
-// Members rotated so the inversion's bass pc comes first.
-uint32_t ano_chord_voiced_pcs(AnoChord c, AnoScale context, uint8_t out[5]);
+uint32_t ano_chord_voiced_pcs(AnoChord c, AnoScale context, uint8_t out[5]); // bass pc first
 
 int ano_chord_bass_pc(AnoChord c, AnoScale context);
 AnoChordQuality ano_chord_quality(AnoChord c, AnoScale context);
 
-// Roman-numeral symbol in context ("V7", "iv", "bVI", "V7/vi", "ii65"...).
+// Roman-numeral symbol ("V7", "iv", "bVI", "V7/vi", "ii65"...).
 const char *ano_chord_symbol(AnoChord c, AnoScale context, char *buf, uint32_t cap);
 
-// ---------------------------------------------------------------------------
-// The functional walk (theory/harmony.py)
-// ---------------------------------------------------------------------------
 
-// doubles, never floats: these constants multiply into choices() weights, and
-// (double)1.6f is not Python's 1.6
+/* Functional Walk */
+
+// doubles, never floats: these multiply into choices() weights ((double)1.6f != Python 1.6).
 typedef struct AnoHarmonyConfig
 {
     double dominantTensionBias; // 1.6
@@ -156,50 +134,42 @@ typedef enum AnoCadenceSlot
     ANO_SLOT_CADENCE,
 } AnoCadenceSlot;
 
-// One step of the functional walk (prototype next_chord, trace elided).
-// prev may be ano_chord_none(). All draws come from rng, in prototype order.
+// One step of the functional walk. prev may be ano_chord_none(). Draws in prototype order.
 AnoChord ano_next_chord(AnoChord prev, AnoCadenceSlot slot, AnoCadencePolicy policy,
                         double tension, double valence, AnoMode mode,
                         bool phraseStart, bool pieceStart,
                         const AnoHarmonyConfig *cfg, AnoMusicRng *rng,
                         bool suppressTonic, int tonicize, bool forceDominant);
 
-// ---------------------------------------------------------------------------
-// Voicing search (theory/voicing.py)
-// ---------------------------------------------------------------------------
+
+/* Voicing */
 
 typedef struct AnoVoicingConfig
 {
     uint8_t voices;         // 4
     uint8_t lo, hi;         // 52 (E3), 79 (G5)
     uint8_t maxAdjacentGap; // 12
-    double  center;         // 64.0 (double: feeds the float cost)
+    double  center;         // 64.0
     uint8_t maxVoiceMove;   // 7
 } AnoVoicingConfig;
 
 AnoVoicingConfig ano_voicing_config_default(void);
 
-// Best strictly-ascending voicing of root-first chord pcs given the previous
-// voicing (prevLen 0 = none). First minimum wins in candidate order (the
-// prototype's min()). Returns the voice count, cost in *outCost.
+// Best strictly-ascending voicing. First minimum wins. Returns voice count, cost in *outCost.
 uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
                          const int *prev, uint32_t prevLen,
                          const AnoVoicingConfig *cfg, int out[6], double *outCost);
 
-// ---------------------------------------------------------------------------
-// Guide tones (theory/guides.py)
-// ---------------------------------------------------------------------------
 
-// The chord's (3rd, 7th-or-5th) candidates.
-void ano_guide_pcs(AnoChord c, AnoScale s, int out[2]);
+/* Guide Tones */
 
-// Continue the thread: nearest candidate by folded pc distance, ties low.
-// prevPc -1 = first chord (takes the 3rd).
+void ano_guide_pcs(AnoChord c, AnoScale s, int out[2]); // (3rd, 7th-or-5th)
+
+// Nearest candidate by folded pc distance, ties low. prevPc -1 = take the 3rd.
 int ano_next_guide(int prevPc, AnoChord c, AnoScale s);
 
-// ---------------------------------------------------------------------------
-// Counterpoint predicates (theory/counterpoint.py)
-// ---------------------------------------------------------------------------
+
+/* Counterpoint */
 
 typedef enum AnoMotion
 {
@@ -219,9 +189,8 @@ AnoMotion ano_motion(int prevLower, int prevUpper, int lower, int upper);
 bool ano_forbidden_parallel(int prevLower, int prevUpper, int lower, int upper);
 bool ano_forbidden_direct(int prevLower, int prevUpper, int lower, int upper, int maxStep);
 
-// ---------------------------------------------------------------------------
-// Pivot modulation (theory/modulation.py)
-// ---------------------------------------------------------------------------
+
+/* Pivot Modulation */
 
 typedef struct AnoPivot
 {
@@ -230,10 +199,10 @@ typedef struct AnoPivot
     uint8_t pcs[3]; // root-first in the old key
 } AnoPivot;
 
-// Triads diatonic in both scales, best first. Returns the count (<= 7).
+// Triads diatonic in both scales, best first. Returns count (<= 7).
 uint32_t ano_find_pivots(AnoScale oldKey, AnoScale newKey, AnoPivot out[7]);
 
-// Signed circle-of-fifths steps pc a -> pc b, sharpwards positive, -5..+6.
+// Signed circle-of-fifths steps a -> b, sharpwards positive, -5..+6.
 int ano_fifths_between(int a, int b);
 
 #endif // ANO_MUSIC_THEORY_H

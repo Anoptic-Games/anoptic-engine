@@ -2,7 +2,7 @@
 
 SPDX-License-Identifier: LGPL-3.0 -->
 
-# Resource Manager: State of the Art
+# Resource Manager: Why the Machinery Looks Like This
 
 **Status:** the machinery rationale and source base.
 **Scope:** `resource-manager-plan.md` is the ordered implementation and testing sequence
@@ -23,10 +23,10 @@ Every source agrees on where the fight is, and it is not peak MB/s:
   saturates only when many requests are in flight at once. Legacy synchronous I/O stacks
   fall over at high *request rates* long before the drive runs out of *bandwidth*
   (Haas & Leis, VLDB'23; the DirectStorage documentation makes the same point as its
-  founding premise).
+  starting premise).
 - **The industry bar is explicit.** DirectStorage's design goal: **50,000 requests/second
   at ≤ 10% of one CPU core**, minimum 2 GB/s raw over any 250 ms window. Those are the
-  numbers a modern asset streamer is expected to hit. Adopt them as our ceiling-check
+  numbers a modern asset streamer is expected to hit. Adopt them as our ceiling
   targets; our workloads are smaller, our per-request overhead should not be worse.
 - **Two workload shapes, two easy/hard splits.** Bulk level load = few large sequential
   reads — trivially saturates with readahead, any design passes. Steady-state streaming =
@@ -36,13 +36,13 @@ Every source agrees on where the fight is, and it is not peak MB/s:
   same assets, hundreds of runs) buffered reads tie or beat everything — mmap and
   O_DIRECT tricks buy nothing. On a cold cache (first run, the shipped game)
   io_uring + O_DIRECT measured 3.6–3.8× faster than mmap on NVMe with thousands of
-  requests in flight (safetensors' 2026 Linux fast path). Consequence: **the default
+  requests in flight (safetensors' 2026 Linux fast path). So: **the default
   path is buffered and page-cache-friendly; the pack tier keeps the cold-start door
   open.** Never optimize the dev loop away to win a benchmark the dev loop never runs.
 - **The transport layer is already free.** Our logger's ring enqueue costs 22–48 ns —
   three to four orders of magnitude below one NVMe operation (~10 µs warm, ~100 µs
   cold). Queueing overhead is noise. The entire budget is queue depth, decompression,
-  and memory placement. This is why the plan reuses the logger's transport instead of
+  and memory placement. That is why the plan reuses the logger's transport instead of
   inventing a new one.
 
 ## 2. The shape: rings and a pump (the logger, generalized)
@@ -50,7 +50,7 @@ Every source agrees on where the fight is, and it is not peak MB/s:
 Gregory's async-I/O blueprint (§7.1.3) is a thread pulling requests off a queue, doing
 blocking reads, signalling completion. That is the logger's exact topology, already
 built, benchmarked, and TSan-clean in this codebase — with better answers than the book's
-semaphore-and-callback in every slot. The mapping is mechanical:
+semaphore-and-callback in every slot. The mapping is one-to-one:
 
 | Logger mechanism (in-tree, proven) | Resource manager equivalent |
 |---|---|
@@ -70,14 +70,14 @@ header has been waiting for.
 
 ## 3. Memory: fixed chunks, registered once, loaded in place
 
-- **A pool of fixed-size chunks (512 KiB) is the streaming currency.** Three independent
+- **A pool of fixed-size chunks (512 KiB) is what streaming spends.** Three independent
   sources land on the same grain: Naughty Dog shipped 512 KiB (PS3) / 1 MiB (PS4)
   streaming pools (GEA §7.2.2); io_uring reads above ~512 KiB fall off the kernel-worker
   cliff; registered-buffer amortization pays off precisely for small-frequent operations.
   Pool allocation is O(1), fragmentation-immune, and the chunk array is exactly what
   `io_uring_register_buffers` wants handed to it later (+8–18% throughput, kernel CPU
   per-op measurably reduced — the `get_user_pages` cost paid once instead of per read).
-- **Load-in-place is the parse killer** (GEA §7.2.2.8–.10). Baked resources are PODS
+- **Load-in-place kills runtime parsing** (GEA §7.2.2.8–.10). Baked resources are PODS
   images: serialize contiguously, store pointers as offsets plus a fix-up table, load the
   whole image into one arena block, add the base address to each fix-up slot, done. C23
   makes this *free* — no placement-new, no constructor ordering, the C-over-C++ advantage
@@ -97,7 +97,7 @@ assets is a 4 GB/s drive, provided decode keeps up and overlaps the next read.
 
 - **Codecs:** LZ4 where decode latency gates (streaming chunks), **zstd** for bulk —
   the choice DirectStorage 1.4 (GDC 2026) just standardized on for the entire Windows
-  ecosystem, for the same reasons we would pick it: open, fast, everywhere. Trained zstd
+  stack, for the same reasons we would pick it: open, fast, everywhere. Trained zstd
   dictionaries for many-small-similar classes (SPIR-V modules, JSON); store-raw for
   already-compressed payloads (PNG, Opus).
 - **Placement:** decode runs on worker threads (the job system, once it exists; a decode
@@ -109,9 +109,9 @@ assets is a 4 GB/s drive, provided decode keeps up and overlaps the next read.
   trick, not a runtime dependency.
 - **GPU decompression** (DirectStorage's GDeflate-to-VRAM path): watched, not adopted —
   Win11/D3D12-coupled and MinGW-hostile. The pack format's codec byte reserves the id;
-  that is its entire footprint until the day it earns more.
+  that is the whole footprint until the day it earns more.
 
-## 5. Prefetch: disclosure, not divination
+## 5. Prefetch: disclosure, not guessing
 
 TIP (Patterson et al., SOSP'95) settled this three decades ago: prefetching works when
 the application *discloses* its future accesses, not when the storage layer guesses.
@@ -125,12 +125,12 @@ streaming system knows which chunks border the player. So:
   can never starve the frame or the higher bands.
 - A blocking wait on any ticket **boosts it to BLOCKING** — the disclosure was wrong,
   correct it instead of stalling.
-- The level file doubles as the disclosure list; a mount-time manifest of content hashes
-  doubles as the hot-reload confirmation source in dev builds.
+- The level file is also the disclosure list; a mount-time manifest of content hashes
+  is also the hot-reload confirmation source in dev builds.
 
 ## 6. The backend ladder: one interface, N backends
 
-TigerBeetle's storage lesson, adopted whole: define **one completion-shaped IO
+TigerBeetle's storage lesson, taken whole: define **one completion-shaped IO
 interface** and let backends compete underneath it. The rings above are that interface.
 The ladder, climbed only on measured demand:
 
@@ -152,14 +152,14 @@ The ladder, climbed only on measured demand:
 
 Each rung must beat the previous one in `anotest_resbench` percentile tables — p50/p99
 per band under a streaming background load, bulk-load wall time, requests/sec at fixed
-CPU budget — before it merges. Means don't count; the logger's benchmark culture
+CPU budget — before it merges. Averages don't count; the logger's benchmark culture
 (percentiles or it didn't happen) applies unchanged.
 
 ## 7. Pack format: no filenames at runtime
 
 Unreal's IoStore drew the right conclusion: at ship, the runtime should never touch a
 path string — chunked containers keyed by hashed ids, resolved through a table of
-contents. Ours, minimally:
+contents. Ours, stripped down:
 
 - TOC entries `{rid, offset, size, csize, codec, hash}`, payloads 4 KiB-aligned, TOC
   checksummed and verified **at mount** — a corrupt pack refuses at startup, never
@@ -171,7 +171,7 @@ contents. Ours, minimally:
 - A pack is just another mount in the namespace walk; loose files shadow it during dev
   (write root first), which is the hot-reload story and the mod story in one mechanism.
 - The builder is a ~200-line offline tool; it and the load-in-place baker (§3) are the
-  two halves of Gregory's offline conditioning pipeline, built to the same "formats are
+  two halves of Gregory's offline conditioning pipeline, under the same "formats are
   frozen on paper first" rule as the save frame.
 
 ## 8. Build order
@@ -185,15 +185,14 @@ contents. Ours, minimally:
 3. **The economy** — chunk pool, ranged reads, decode workers with LZ4/zstd,
    pipeline overlap. *Bar:* effective read bandwidth exceeds raw drive bandwidth on
    compressed assets.
-4. **The pack** — TOC + builder + load-in-place bake for one class end-to-end (models),
+4. **The pack** — TOC + builder + load-in-place bake for one class through the whole pipeline (models),
    mount-time verification, loose-file shadowing intact. *Bar:* the demo scene loads
    with zero runtime parsing and zero path strings.
 5. **Rung climb** — parallel pread, then io_uring/IOCP, each gated by its bench.
 
-Steps 2–5 each land with their `anotest_resbench` series and a hostile-FS smoke test
+Steps 2–5 each land with their `anotest_resbench` series and a fault-injection FS smoke test
 (kill the process at every protocol step; assert degradation, never corruption) — the
-same validation culture the logger set: model it, sanitize it, benchmark it in
-percentiles, fuzz the oracle.
+same bar the logger set: model it, sanitize it, benchmark it in percentiles, fuzz the oracle.
 
 ## 9. Sources
 
@@ -214,7 +213,7 @@ percentiles, fuzz the oracle.
   vs mmap cold, 4096 in flight, adaptive 64 KiB–16 MiB chunks; and the warm-cache
   caveat that shapes our default.
 - DirectStorage 1.4 + GACL (GDC 2026) — the 50K IOPS / 10%-core bar; zstd as the
-  ecosystem codec; BCn shuffle transforms; request shape `{file, offset, len, dest,
+  stack codec; BCn shuffle transforms; request shape `{file, offset, len, dest,
   codec}` (ours, minus the D3D12 coupling).
 - kernel-internals.org, *Fixed Buffers and Files* — registered-buffer gains
   (+8–18% throughput, per-op CPU reductions) and their small-frequent-ops scope.
@@ -223,5 +222,5 @@ percentiles, fuzz the oracle.
   containers, no runtime path strings. ripgrep — buffered reads over mmap for many-file
   workloads.
 - In-tree: `src/log/log_ring.h` + `log_core.c` (the transport, the park/wake
-  discipline, the validation culture), `docs/text/logger.md`, the render bridge's
+  discipline, the same bar), `docs/text/logger.md`, the render bridge's
   ownership-transfer and false-on-full conventions, `tests/templates/bench.h`.

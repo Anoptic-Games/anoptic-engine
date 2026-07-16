@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * dsp/biquad.h (private to src/audio/)
- * RBJ-cookbook biquad: low/high shelf and peaking sections for the 3-band EQ
- * and the reverb's output shelf (TECH_SPEC §12.2). Transposed direct form II;
- * coefficients recompute per block from smoothed parameters.
- */
+// RBJ biquad: low/high shelf and peaking. Transposed DF-II. Coefs per block.
 
 #ifndef ANO_DSP_BIQUAD_H
 #define ANO_DSP_BIQUAD_H
@@ -18,8 +13,8 @@
 
 typedef struct AnoDspBiquad
 {
-    float b0, b1, b2; // feedforward (normalized by a0)
-    float a1, a2;     // feedback (normalized by a0)
+    float b0, b1, b2; // feedforward / a0
+    float a1, a2;     // feedback / a0
 } AnoDspBiquad;
 
 typedef struct AnoDspBiquadState
@@ -32,7 +27,6 @@ static inline float ano_dsp_bq_clampf_(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Peaking EQ at freq/Q with gainDb boost/cut.
 static inline void ano_dsp_biquad_peak(AnoDspBiquad *c, float freq, float q, float gainDb, float fs)
 {
     freq = ano_dsp_bq_clampf_(freq, 10.0f, 0.45f * fs);
@@ -49,7 +43,7 @@ static inline void ano_dsp_biquad_peak(AnoDspBiquad *c, float freq, float q, flo
     c->a2 = (1.0f - alpha / A) / a0;
 }
 
-// Shelf helpers (slope S = 1).
+// Shelf. slope S = 1.
 static inline void ano_dsp_biquad_shelf(AnoDspBiquad *c, float freq, float gainDb, float fs, int high)
 {
     freq = ano_dsp_bq_clampf_(freq, 10.0f, 0.45f * fs);

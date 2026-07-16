@@ -4,8 +4,8 @@ SPDX-License-Identifier: LGPL-3.0 -->
 
 # String Identity: `ANOSTR_SID` and Friends
 
-**Status:** usage doc for the identity primitives in `include/anoptic_strings.h`.
-**Scope:** when and how to key things by strings without paying for strings. The value type
+Usage doc for the identity primitives in `include/anoptic_strings.h`.
+Covers when and how to key things by strings without paying for strings. The value type
 (`anostr_t`), builder, and byte-level ops are specified in the header itself; this doc covers
 the two identity primitives — the compile-time sid (**s**tring **id**) and the runtime intern
 table — and the idiomatic patterns for real engine and editor scenarios. Several examples sketch subsystems
@@ -27,7 +27,7 @@ the intended call-site shape, not a shipped API.
 | good for | keys known when you write the code | keys discovered while the game runs |
 | indexing arrays | no — sparse | yes — dense by design |
 
-They share one hash function, and that is the load-bearing property:
+They share one hash function, and that is the property everything else leans on:
 
 ```c
 ANOSTR_SID(x)   == anostr_hash  (anostr_lit(x))   // always

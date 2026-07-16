@@ -3,21 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for the Phase 3 DSP library and console (src/audio/dsp headers,
- * src/audio/audio_fx.c, the fx-chain + send routing in the mixer):
- *  - unit oracles on the primitives: sliding-window max vs the naive max
- *    (exact), peak-follower attack/decay properties, linear ramp exactness,
- *    biquad shelf gains by sine probe, SVF pass/stop-band by sine probe;
- *  - effect properties via offline renders: the limiter NEVER exceeds its
- *    ceiling, the DC blocker kills DC, WIDTH 0 collapses to mono bit-exactly,
- *    the compressor reduces peaks, sends ring a reverb tail that then decays,
- *    a zero send is silent where a live one is not, the ping-pong echoes at
- *    its delay time, chorus changes the signal without changing its level;
- *  - THE Phase 3 exit gate: the full console topology (strips with EQ+filter,
- *    two send returns carrying reverb and ping-pong, a master chain of
- *    drive -> compressor -> limiter -> DC block) instantiates from config and
- *    renders noise byte-identically across deliberate heap churn.
- * All offline: deterministic, CI-safe. argv[1] scales soak rounds. Exit 0 == pass. */
+// Coverage: DSP primitives, offline FX properties, console golden under heap churn.
+// argv[1] scales soak rounds. Exit 0 == pass.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,7 +37,7 @@ static float peak_of(const float *buf, uint64_t samples)
     return peak;
 }
 
-// RMS over the stereo frame window [f0, f1).
+// RMS over stereo frames [f0, f1).
 static float rms_win(const float *buf, uint64_t f0, uint64_t f1)
 {
     double acc = 0.0;
@@ -59,11 +46,11 @@ static float rms_win(const float *buf, uint64_t f0, uint64_t f1)
     return (float)sqrt(acc / (double)((f1 - f0) * 2u));
 }
 
-// --- section 1: primitive unit oracles ---
+/* Primitives */
 
 static void test_primitives(void)
 {
-    // sliding-window max == naive max, exactly, on random data
+    // Sliding-window max == naive max.
     {
         mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
         enum { N = 5000, WIN = 64 };
@@ -83,7 +70,7 @@ static void test_primitives(void)
         CHECK(exact, "window max matches naive max exactly");
     }
 
-    // follower: instant attack, monotone exponential decay
+    // Follower: instant attack, monotone decay.
     {
         AnoDspFollower f = { .env = 0.0f, .decay = 0.999f };
         CHECK(ano_dsp_follower_step(&f, 0.8f) == 0.8f, "follower attack is instant");
@@ -97,7 +84,7 @@ static void test_primitives(void)
         CHECK(mono && prev < 0.8f && prev > 0.7f, "follower decay monotone at its rate");
     }
 
-    // ramp reaches its target in exactly N steps
+    // Ramp lands on target at step N.
     {
         AnoDspRamp r = { .y = 0.0f };
         ano_dsp_ramp_to(&r, 1.0f, 100);
@@ -108,7 +95,7 @@ static void test_primitives(void)
         CHECK(ano_dsp_ramp_step(&r) == last, "ramp holds after N");
     }
 
-    // biquad low shelf: +12 dB deep below the corner, ~0 dB far above
+    // Biquad low shelf: +12 dB below corner, ~flat above.
     {
         AnoDspBiquad c;
         AnoDspBiquadState s = {0};
@@ -133,7 +120,7 @@ static void test_primitives(void)
         CHECK(gainDb > -1.0f && gainDb < 1.0f, "low shelf leaves the top ~flat");
     }
 
-    // SVF lowpass: pass band ~unity, stop band well down
+    // SVF lowpass: pass ~unity, stop attenuated.
     {
         AnoDspSvfCoef c;
         AnoDspSvfState s = {0};
@@ -159,10 +146,10 @@ static void test_primitives(void)
     }
 }
 
-// --- section 2: effect properties via offline renders ---
+/* Effects */
 
 #define CLICK_FRAMES 4800u
-static float g_click[CLICK_FRAMES]; // mono decaying noise burst
+static float g_click[CLICK_FRAMES]; // mono decaying noise
 static float g_dc[256];             // constant offset (loopable)
 static float g_stereo[512 * 2u];    // uncorrelated L/R (loopable)
 
@@ -181,7 +168,7 @@ static void make_material(void)
     }
 }
 
-// Render `frames` with one bus layout, a fixed buffer set, and a short event list.
+// Offline render: bus layout + buffers + event list.
 static bool render_case(const AnoAudioBusDesc *layout, uint32_t busCount,
                         const AnoAudioOfflineEvent *events, uint32_t eventCount,
                         float *out, uint64_t frames)
@@ -214,7 +201,7 @@ static void test_effects(void)
         return;
     }
 
-    // limiter: a 2x-hot tone through a 0.5 ceiling NEVER exceeds it
+    // Limiter: 2x-hot tone under 0.5 ceiling.
     {
         const AnoAudioBusDesc layout[2] = {
             [0] = { .fx = { ANO_AUDIO_FX_LIMITER } },
@@ -227,13 +214,13 @@ static void test_effects(void)
                 .desc = { .kind = ANO_AUDIO_SOURCE_TONE, .bus = 1, .gain = 2.0f, .freqHz = 220.0f } } },
         };
         CHECK(render_case(layout, 2, ev, 2, out, F), "limiter case renders");
-        // the ceiling retarget glides (~30 ms); the property holds once settled
+        // Ceiling retarget glides ~30 ms; property after settle.
         float p = peak_of(out + 9600 * 2, (uint64_t)(F - 9600) * 2u);
         CHECK(p <= 0.501f, "limiter never exceeds its settled ceiling");
         CHECK(p > 0.40f, "limiter is limiting, not silencing");
     }
 
-    // DC blocker: a constant-offset loop decays to ~zero
+    // DC blocker: constant-offset loop -> ~zero.
     {
         const AnoAudioBusDesc layout[2] = {
             [0] = { 0 },
@@ -248,7 +235,7 @@ static void test_effects(void)
         CHECK(rms_win(out, F - 9600, F) < 0.01f, "DC blocker kills the offset");
     }
 
-    // width 0: uncorrelated stereo collapses to identical channels
+    // WIDTH 0: uncorrelated stereo -> identical channels.
     {
         const AnoAudioBusDesc layout[2] = {
             [0] = { 0 },
@@ -262,14 +249,14 @@ static void test_effects(void)
                           .flags = ANO_AUDIO_SOURCE_LOOP, .gain = 0.5f } } },
         };
         CHECK(render_case(layout, 2, ev, 2, out, F), "width case renders");
-        // the amount retarget glides then snaps to exactly 0; check the settled half
+        // Amount glides then snaps to 0; check settled half.
         bool mono = true;
         for (uint64_t i = F / 2u; i < (uint64_t)F; i++)
             if (out[2u * i] != out[2u * i + 1u]) { mono = false; break; }
         CHECK(mono, "WIDTH 0 collapses to mono bit-exactly once settled");
     }
 
-    // compressor: hot tone's peak comes down vs the uncompressed render
+    // Compressor: hot tone peak below uncompressed.
     {
         const AnoAudioBusDesc comp[2] = {
             [0] = { 0 },
@@ -291,8 +278,7 @@ static void test_effects(void)
         CHECK(pc < pf * 0.7f, "compressor reduces steady-state peaks > 3 dB");
     }
 
-    // sends + reverb: the tail rings after the source dies, then decays;
-    // a zero send leaves the return silent
+    // Sends + reverb: tail after source dies, then decays; zero send silent.
     {
         AnoAudioBusDesc layout[3] = {
             [0] = { 0 },
@@ -304,7 +290,7 @@ static void test_effects(void)
                 .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 2, .gain = 0.8f } } },
         };
         CHECK(render_case(layout, 3, ev, 1, out, F), "reverb case renders");
-        // click + release die well before 0.6 s; the tail is pure reverb
+        // Click gone by 0.6 s; window is reverb only.
         float early = rms_win(out, 28800, 33600); // 0.60-0.70 s
         float late  = rms_win(out, 43200, 48000); // 0.90-1.00 s
         CHECK(early > 1.0e-4f, "reverb tail rings after the source dies");
@@ -314,7 +300,7 @@ static void test_effects(void)
         CHECK(rms_win(alt, 28800, 48000) < 1.0e-6f, "zero send leaves the return silent");
     }
 
-    // ping-pong: a click echoes at its delay time
+    // Ping-pong: click echoes at delay time.
     {
         const AnoAudioBusDesc layout[3] = {
             [0] = { 0 },
@@ -328,12 +314,12 @@ static void test_effects(void)
                 .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 2, .gain = 0.8f } } },
         };
         CHECK(render_case(layout, 3, ev, 2, out, F), "pingpong case renders");
-        float echo  = rms_win(out, 12000, 16800); // 0.25-0.35 s: first echo window
-        float quiet = rms_win(out, 8400, 11000);  // 0.175-0.23 s: between click and echo
+        float echo  = rms_win(out, 12000, 16800); // 0.25-0.35 s first echo
+        float quiet = rms_win(out, 8400, 11000);  // 0.175-0.23 s between click and echo
         CHECK(echo > quiet * 2.0f, "ping-pong echoes at its delay time");
     }
 
-    // chorus: changes the waveform, preserves the level
+    // Chorus: waveform changes, level holds.
     {
         const AnoAudioBusDesc wet[2] = {
             [0] = { 0 },
@@ -356,7 +342,7 @@ static void test_effects(void)
     mi_free(alt);
 }
 
-// --- section 3: the console golden (the Phase 3 exit gate) ---
+/* Console golden */
 
 static void churn_heap(test_rng *rng, uint32_t rounds)
 {
@@ -382,7 +368,7 @@ static void churn_heap(test_rng *rng, uint32_t rounds)
 
 static bool render_console(float *out, uint64_t frames)
 {
-    // master chain <- reverb return (1) + delay return (2) <- music (3) + sfx (4)
+    // Master <- reverb(1) + delay(2) <- music(3) + sfx(4).
     const AnoAudioBusDesc layout[5] = {
         [0] = { .fx = { ANO_AUDIO_FX_DRIVE, ANO_AUDIO_FX_COMPRESSOR,
                         ANO_AUDIO_FX_LIMITER, ANO_AUDIO_FX_DCBLOCK } },

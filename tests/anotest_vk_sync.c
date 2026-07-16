@@ -28,11 +28,11 @@ int main() {
         return 1;
     }
 
-    // 1. Test Single Time Command submission which inherently tests vkQueueSubmit and vkQueueWaitIdle
+    // 1. Single-time command (vkQueueSubmit + vkQueueWaitIdle)
     printf("Testing synchronous command buffer submission...\n");
     VkCommandBuffer cmd = beginSingleTimeCommands(ctx);
 
-    // Perform a dummy operation (e.g., pipeline barrier without any actual memory transition just to have a command)
+    // Dummy barrier (no real transition) so the CB is non-empty
     VkMemoryBarrier memBarrier = {};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     memBarrier.srcAccessMask = 0;
@@ -62,7 +62,7 @@ int main() {
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    // We won't actually wait on the semaphore because there's no swapchain image acquisition in this headless test,
+    // Headless: no swapchain acquire, so no semaphore wait
     // which would cause a deadlock or timeout. Instead, we'll just test the Fence.
 
     // Use the first frame's pre-allocated command buffer and fence.
@@ -107,7 +107,7 @@ int main() {
         return 1;
     }
 
-    // 3. Intentionally trigger a synchronization validation error (Invalid Fence Create Flags)
+    // 3. Intentional sync validation error (invalid fence create flags)
     printf("Triggering intentional validation error (invalid fence creation)...\n");
     uint32_t currentErrors = g_ValidationErrors;
 

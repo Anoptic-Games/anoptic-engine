@@ -44,7 +44,7 @@ extern const PipelineType ano_draw_pipelines[]; // drawing pipeline types, in sl
 uint32_t ano_draw_pipeline_count(void);         // number of drawing types == per-camera-view draw-slot stride
 uint32_t ano_draw_slot_of(PipelineType type);   // enum -> draw slot, ANO_NO_DRAW_SLOT if it never draws
 
-// Compacted-draw partitions: view*drawSlotCount+slot; shadow gets solid + MASKED. Single sizing source.
+// Compacted-draw partitions: camera views get every draw slot (view*drawSlotCount+slot); each shadow frustum gets solid + MASKED. Single sizing source for the three buffers and their cull map.
 uint32_t ano_draw_partition_count(void);
 
 typedef enum PassType

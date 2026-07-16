@@ -23,7 +23,7 @@ ENV_VARS: ANO_SHADOW_BUDGET=2
 
 ## Window manager
 
-Desktop Window Manager (DWM), the Windows 11 compositor. Frames are DWM-composited; the engine never takes exclusive fullscreen.
+Desktop Window Manager (DWM), the Windows 11 compositor. Frames are DWM-composited. No exclusive fullscreen.
 
 ## Mode
 
@@ -61,7 +61,7 @@ For textbuffer viewing convenience:
 
 All six rows foreground-verified. wall fps is the median per-window throughput from the [frame] line (ANO_PERF_WINDOW_FRAMES = 128 presented frames per window). 1% low and 0.1% low are 1000/p99 and 1000/p999 from the [frametime] line, each percentile the median across windows; max ms is the run's worst single frame. GPU ms is the median GPU-pass total (upload + compute + shadow + lighting + composite); GPU cap = 1000 / GPU ms; wall/cap at or above 0.9 is GPU-bound, below is CPU/present-bound; swap MiB is the swapchain allocator's resident VRAM.
 
-Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio, so every row rendered at its true labeled resolution; swap, not the window label, is the authority and rules out a DPI-scaled mislabel.
+Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio — every row rendered at its true labeled resolution. Swap, not the window label, is the authority; that rules out a DPI-scaled mislabel.
 
 ## vs feature-profiling baseline (2026-07-11-bench2.md)
 
@@ -95,7 +95,7 @@ For textbuffer viewing convenience:
 └───────────┴─────────────────────────────────────┴───────────────────────────────────┘
 ```
 
-The 1% / 0.1% lows are also markedly worse (e.g. 4K 553.7 -> 216.3 fps 1% low). Both GPU-pass time and frametime consistency regressed, so this is not purely a CPU/present-side cost. This warrants investigation before merge; candidates in order of suspicion: the logging refactor (b85e213) adding drain/IO contention on the render thread, unaccounted background load during this run, or GPU thermal/clock state. The two runs are not perfectly controlled (this run used the default 45 s/point vs bench2's 15 s/point, and machine state differed), so re-run both back-to-back on this branch and its merge-base before treating the delta as a hard regression.
+The 1% / 0.1% lows are also markedly worse (e.g. 4K 553.7 -> 216.3 fps 1% low). Both GPU-pass time and frametime consistency regressed, so this is not purely a CPU/present-side cost. Investigate before merge. Candidates in order of suspicion: the logging refactor (b85e213) adding drain/IO contention on the render thread, unaccounted background load during this run, or GPU thermal/clock state. The two runs are not perfectly controlled (this run used the default 45 s/point vs bench2's 15 s/point, and machine state differed), so re-run both back-to-back on this branch and its merge-base before treating the delta as a hard regression.
 
 ## Harness note
 

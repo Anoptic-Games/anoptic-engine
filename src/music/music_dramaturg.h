@@ -3,16 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_dramaturg.h (private to src/music/)
- * The dramaturg (musicgen/gen/dramaturg.py): a tension-debt ledger between
- * the affect stream and the memoryless mapper. Withholding rations the
- * authentic cadence (deceptive instead), escalates gate/register pressure,
- * and anchors buildups on a dominant pedal or lament ground; a spend cashes
- * the ledger as a graded payoff (mode brightening, snapped-back tiers). All
- * draw-free; the ledger is a pure function of (seed, affect trajectory,
- * bar). Trace strings are elided (inspection-only in the prototype).
- */
+// Tension-debt ledger: withhold authentic cadence, escalate, spend as graded payoff.
+// Draw-free. Ledger is a pure function of (seed, affect trajectory, bar).
 
 #ifndef ANO_MUSIC_DRAMATURG_H
 #define ANO_MUSIC_DRAMATURG_H
@@ -29,17 +21,15 @@ typedef struct AnoLedger
     bool   hasPrevBaseTension;
     int    cadenceTag[ANO_PHRASE_WINDOW];    // owning phrase, ANO_SLOT_EMPTY = unset
     int8_t phraseCadence[ANO_PHRASE_WINDOW]; // AnoCadencePolicy
-    bool   suppressTonic; // per-bar: the walk circles the tonic
-    bool   lament;        // per-bar (B4): the walk rides the lament ground
-    int    buildups;      // completed withhold->spend cycles
+    bool   suppressTonic;
+    bool   lament;        // B4
+    int    buildups;
     double lastSpend;
 } AnoLedger;
 
 void ano_ledger_init(AnoLedger *l);
 
-// The cadence the dramaturg forced on a phrase, ANO_CADENCE_NONE if it let the
-// phrase alone (or if the phrase has aged out of the ring, which no caller can
-// reach: the ledger is read inside the phrase it was written for).
+// ANO_CADENCE_NONE if unset, or if phrase aged out of the ring (callers only read the live phrase).
 static inline int8_t ano_ledger_cadence(const AnoLedger *l, int phrase)
 {
     if (!ano_phrase_live(l->cadenceTag, phrase))
@@ -55,7 +45,6 @@ static inline void ano_ledger_set_cadence(AnoLedger *l, int phrase, int8_t polic
     l->phraseCadence[ano_ring_phrase(phrase)] = policy;
 }
 
-// What the dramaturg asks of a bar; all-neutral when idle.
 typedef struct AnoDirective
 {
     int8_t   cadence; // AnoCadencePolicy; NONE = no forced policy
@@ -67,18 +56,15 @@ typedef struct AnoDirective
     bool     withholdRootTonic;
     int      escalation;
     double   payoff; // > 0 on a spend bar
-    bool     suspend;      // M14: request a prepared pad suspension
-    bool     appoggiatura; // M14: allow an unprepared pad lean
+    bool     suspend;      // M14
+    bool     appoggiatura; // M14
     int      pedal;        // M14: bass pedal degree (0 none; 5 dominant)
     bool     lament;       // B4
 } AnoDirective;
 
-// The graded payoff: strictly increasing in accrued debt, saturating in
-// [0, 1).
-double ano_spend_magnitude(const AnoLedger *l, const AnoDramaturgConfig *cfg);
+double ano_spend_magnitude(const AnoLedger *l, const AnoDramaturgConfig *cfg); // [0, 1)
 
-// Observe one realized bar; update the ledger; return the bar's directive.
-// The accrue/spend decision is taken once per phrase at pos 0.
+// Accrue/spend decided once per phrase at pos 0.
 AnoDirective ano_dramaturg_on_bar(const AnoDramaturgConfig *cfg, AnoLedger *l,
                                   double baseTension, AnoPhrasePos pos);
 

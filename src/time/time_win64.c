@@ -255,6 +255,7 @@ int ano_busywait(uint64_t ns) {
 }
 
 // Win10 1803+ hi-res timer flag. Define if SDK headers predate it.
+// Target 1803+: hi-res timer always available; no timeBeginPeriod floor.
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -317,7 +318,8 @@ int ano_sleep(uint64_t us) {
         HANDLE timer = ano_sleep_timer();
         bool yielded = false;
         if (timer != NULL) {
-            // Relative due time in 100ns units, negative per Win32 ABI. Clamp to INT64_MAX, floor to 1.
+            // Relative due time in 100ns units, negative per Win32 ABI.
+            // Clamp to INT64_MAX so negation never becomes an absolute due; floor to 1 so a wait never rounds to "signal now".
             uint64_t units = coarse_ns / 100ULL;
             if (units == 0) units = 1;
             if (units > (uint64_t)INT64_MAX) units = (uint64_t)INT64_MAX;
@@ -335,7 +337,7 @@ int ano_sleep(uint64_t us) {
             Sleep((DWORD)(coarse_ns / 1000000ULL));
     }
 
-    // Spin stage: remaining time in <=MAX_BUSYWAIT_NS chunks.
+    // Spin stage: remaining time in <=MAX_BUSYWAIT_NS chunks (oversleep / missing coarse must not trip busywait's 1e9ns cap).
     for (;;) {
         uint64_t now = ano_timestamp_raw();
         if (now == 0 || now == UINT64_MAX)

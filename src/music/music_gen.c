@@ -3,15 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_gen.c
- * Rhythm and structure leaves. rough_cell reproduces the prototype's draw
- * gates exactly: Python's `and` short-circuits, so the merge draw happens
- * only when a successor exists, the split draw only when dur >= 2, and the
- * drop draw never for the first note — a skipped draw shifts every later
- * decision on the stream. effective_tension keeps the prototype's float op
- * order, including the runtime (1.30 - 0.85) constant.
- */
+// Rhythm + phrase structure. rough_cell: merge draw only if successor exists; split only if dur >= 2;
+// drop never draws for first note — a skipped draw shifts every later decision on the stream.
+// effective_tension keeps float op order, including the (1.30 - 0.85) constant.
 
 #include "music_gen.h"
 

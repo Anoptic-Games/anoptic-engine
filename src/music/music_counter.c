@@ -3,15 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_counter.c
- * Parity notes: the surface sort is STABLE by start (doubling filtered
- * first); candidate lists sort by the total order (|p - target|, p); the
- * two-pass clean search tries 3rds/6ths-preferred before any consonance;
- * the motion chains apply only inside their one-bar expiry; forbidden_direct
- * uses max_step 2 (the kwarg default). The guide thread advances every bar,
- * sounding or not.
- */
+// Stable sort by start (doubling filtered first). Candidates by (|p-target|, p).
+// Two-pass clean: 3rds/6ths-preferred before any consonance. Motion chains: one-bar expiry.
+// forbidden_direct max_step 2. Guide advances every bar, sounding or not.
 
 #include <string.h>
 

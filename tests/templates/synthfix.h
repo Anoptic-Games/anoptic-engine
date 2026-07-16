@@ -3,11 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Loader for .anofix score fixtures (the prototype's export_fixture.py
- * format): flat token-tagged lines — header counts, tempo points, per-bar
- * affect + DSP-tier params + instrument names, then post-modifier events with
- * tie flags. Feeds the synth's score API; score_end merges and schedules.
- * Header-only test template; no CMake registration. */
+// .anofix score loader (export_fixture.py format): header, tempo, bars, events -> ano_synth_score_*.
+// Header-only template; no CMake registration.
 
 #ifndef ANOTEST_SYNTHFIX_H
 #define ANOTEST_SYNTHFIX_H
@@ -16,7 +13,7 @@
 
 #include <anoptic_synth.h>
 
-// Load `path` into `s`. Returns true on a complete, well-formed fixture.
+// Load path into s. True on complete well-formed fixture.
 static bool synthfix_load(AnoSynth *s, const char *path)
 {
     FILE *f = fopen(path, "r");

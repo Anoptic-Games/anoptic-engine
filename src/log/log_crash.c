@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Calm half of the blackbox: resolve the CRASH.log path once, run the Stage 4 look-back, hand off to the per-platform Stage 1 hooks. The handlers live in the platform TUs.
+// Calm blackbox: resolve CRASH.log path, Stage 4 look-back, hand off to platform Stage 1 hooks.
 
 #include <anoptic_log_crash.h>
 #include <anoptic_filesystem.h>
@@ -14,7 +14,7 @@
 
 char bb_crashPath[MAXPATH];
 
-// Stage 4: leftover *_CRASH.log files mark previous crashes. Announce the count on both sinks, then prune each log type to the newest BB_KEEP_LOGS, the live session's files excepted.
+// Stage 4: announce leftover *_CRASH.log count, prune each type to BB_KEEP_LOGS (live session excepted).
 static void investigate_previous_flight(const char *dir)
 {
     char newest[MAXPATH];
@@ -30,7 +30,7 @@ static void investigate_previous_flight(const char *dir)
 
 int ano_log_crash_init(void)
 {
-    // Resolve <logs>/<stamp>_CRASH.log once at init, handlers only open() it. Fallbacks: <gamedir>, then CWD.
+    // Resolve <logs>/<stamp>_CRASH.log once. Fallbacks: <gamedir>, then CWD.
     ano_fspath dir = ano_fs_logpath();
     if (dir.length == 0)
         dir = ano_fs_gamepath();
@@ -47,7 +47,7 @@ int ano_log_crash_init(void)
     return bb_install();
 }
 
-// Thin routing to the per-platform arm/release. Contract in the public header.
+// Route to per-platform arm/release.
 int ano_log_crash_thread_arm(void)
 {
     return bb_thread_arm();

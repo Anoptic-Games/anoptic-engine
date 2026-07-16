@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_ir.c
- * Meter derivations, event validation, context lookup, parameter defaults
- * (musicgen/ir.py). Meter math is the parity-sensitive part: bar_of is
- * Python float floor division (ano_music_floordiv, NOT floor(a/b)), and
- * every round() is banker's (ano_music_round_int). Float op order matches
- * the prototype expression for expression.
- */
+// Meter, events, context, params. bar_of = ano_music_floordiv (not floor(a/b)); rounds are banker's.
+// Float op order matches prototype expression-for-expression.
 
 #include "music_ir.h"
 
@@ -104,8 +98,7 @@ const char *const ANO_LAYER_NAMES[ANO_MUSIC_LAYER_COUNT] = {
     "pad", "bass", "melody", "counter", "arp", "perc",
 };
 
-// p: the bar's generation-side params. Returns the public bridge block; the
-// gate order of p->layers is dropped (the synth asks only "is it sounding").
+// Gen params -> public bridge (layers list -> bitmask).
 AnoMusicalParams ano_gen_params_bridge(const AnoGenParams *p)
 {
     AnoMusicalParams o = {
@@ -154,10 +147,7 @@ bool ano_note_event_valid(const AnoNoteEvent *ev)
     return true;
 }
 
-// in/out: the event streams (in == out merges in place). cap bounds out.
-// Invariant: a chain's head is the only event kept; its dur accumulates with
-// round(.,10) exactly as the prototype does, so a half-open chain left by a
-// truncated render still yields the head's own duration.
+// Merge tie chains in place (in == out ok). Head dur accumulates via round(.,10).
 uint32_t ano_merge_ties(const AnoMusicEvent *in, uint32_t n,
                         AnoMusicEvent *out, uint32_t cap)
 {

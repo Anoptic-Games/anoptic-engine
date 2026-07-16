@@ -3,12 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_form.c
- * The scheduled phrase clock. All-integer logic; the parity contract is the
- * reversed segment scan (later segments win a shared bar) and the frontier
- * extrapolation reproducing pure div/mod when nothing is scheduled.
- */
+// Phrase clock. Reverse scan: later segments win a shared bar. Frontier extrapolates as div/mod.
+// Scan stops at the live WINDOW; older segments are overwritten.
 
 #include "music_form.h"
 
@@ -29,9 +25,6 @@ int ano_clock_frontier(const AnoPhraseClock *c)
     return last->start + last->bars;
 }
 
-// The reverse scan stops at the live window: a segment older than that has been
-// overwritten, and no caller asks about one — position() is queried for the
-// current bar and the one-bar chord lookahead only.
 AnoPhrasePos ano_clock_position(const AnoPhraseClock *c, int bar)
 {
     int oldest = (int)c->segmentCount - ANO_PHRASE_WINDOW;

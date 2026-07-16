@@ -13,7 +13,8 @@
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/frame/frame.h"
 
-// --- Profiling harness ---------------------------------------------------------------------
+/* Profiling Harness */
+
 // Per-pass GPU timestamps as fence-posts: region time = consecutive delta * timestampPeriod.
 static double   g_tsAccumMs[ANO_TS_COUNT - 1]; // accumulated per-region ms
 static uint32_t g_tsFrames = 0;             // frames since last print
@@ -38,9 +39,7 @@ void ano_ts(VkCommandBuffer cmd, uint32_t query) {
             rendererState.frames[rendererState.frameIndex].timestampPool, query);
 }
 
-// Print averaged per-pass GPU times + per-allocator resident VRAM. shadowAtlas reported separately.
-// res= is the realized swapchain extent -- the render-resolution ground truth for bench drivers
-// (a window label or DPI-scaled request can lie; this cannot).
+// Averaged per-pass GPU times + per-allocator VRAM (shadowAtlas separate). res= = realized swapchain extent.
 static void ano_print_profiling(void) {
     static const char* const modeNames[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RC" };
     uint32_t m = rendererState.lightingMode;
@@ -63,7 +62,7 @@ static void ano_print_profiling(void) {
                             + (VkDeviceSize)ANO_SHADOW_FRUSTUM_COUNT * ANO_SHADOW_DIM * ANO_SHADOW_DIM * 4u) / MiB;
 
     double frusta = g_shadowRenderFrames ? (double)g_shadowRenderAccum / (double)g_shadowRenderFrames : 0.0;
-    // TODO: gate on a dedicated profiling build tag; ano_log keeps this periodic frame-time line in release for now.
+    // TODO: gate on a dedicated profiling build tag.
     ano_log(ANO_INFO, "[profile mode=%s res=%ux%u] GPU ms: upload=%.3f compute=%.3f shadow=%.3f (frusta %.1f/%u) lighting=%.3f composite=%.3f total=%.3f"
            " | VRAM MiB: gpu=%.1f tex=%.1f swap=%.1f staging=%.1f | shadowAtlas(resident)=%.1f",
            mn, rendererState.imageExtent.width, rendererState.imageExtent.height,
@@ -147,12 +146,7 @@ static double frametime_pct_ms(const uint32_t* s, uint32_t n, double q) {
     return us / 1000.0;
 }
 
-// Drain one full accumulator window (ano_frame_mark, every ANO_PERF_WINDOW_FRAMES presented
-// frames): [frame] wall fps + mean frametime over the window span, then exact [frametime]
-// percentiles over the window's sorted dts, then reset. Independent of GPU timestamp support:
-// the profile line above goes silent when constant swapchain recreation starves the timestamp
-// reads, but this keeps measuring. Both release-visible, same policy as the profile line;
-// one line pair per window, nothing per-frame is ever logged.
+// Drain one ANO_PERF_WINDOW_FRAMES window: [frame] fps/mean, [frametime] percentiles, then reset. Independent of GPU timestamps.
 void anoperf_flush(anoperf_accumulator_t* acc) {
     uint32_t n = acc->count;
     uint64_t span = acc->prevUs - acc->startUs;   // == sum of dtUs, telescoped

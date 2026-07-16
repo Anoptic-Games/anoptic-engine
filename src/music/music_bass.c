@@ -3,13 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_bass.c
- * Parity notes: the approach draw fires ONLY when density/lookahead/bar-length
- * gates all pass AND at least one option survives the range filter; option
- * order is below(0.40), above(0.30), chromatic(0.30, only when distinct from
- * the diatonic below); nearest-instance ties break low (min by (|d|, p)).
- */
+// Approach draw gated on density/lookahead/bar-length/range. Options: below(0.40), above(0.30),
+// chromatic(0.30, only when distinct from diatonic below). Nearest-instance ties break low (min by (|d|, p)).
 
 #include <string.h>
 

@@ -3,18 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Logger x strings stress benchmark: a fuckton of anostr_t values through
- * ano_log("... %.*s ...", anostr_fmt(s)) -- the deferred-capture path copying UTF-8
- * item names (Latin, accents, Cyrillic, Greek, kana, Han, Runic) into the ring under
- * multi-producer fire. Per-call enqueue latency percentiles like anotest_logtail, plus
- * two oracles that make it a correctness test as well as a benchmark:
- *   - no loss: output lines == records enqueued (the ring's contract);
- *   - byte transparency: a sentinel line's exact UTF-8 bytes (あの Bjørn's Agda Gun)
- *     appear in the file untouched -- capture honors %.*s precision on bytes that are
- *     NOT NUL-terminated (inline anostr_t) and the drain renders them verbatim.
- * Deterministic (fixed seed). argv[1] overrides messages-per-producer.
- * Built so it cannot rot, DISABLED in ctest -- run ./anotest_logstrbench by hand from
- * a -O3 build (build.bat 8). Prints a table; exits nonzero only if an oracle breaks. */
+// Logger x strings stress: anostr_t through ano_log("%.*s", anostr_fmt(s)) under multi-producer fire.
+// Percentiles like anotest_logtail, plus oracles:
+//   - no loss: output lines == enqueued;
+//   - byte transparency: sentinel UTF-8 (あの Bjørn's Agda Gun) exact in file (%.*s on non-NUL inline).
+// Deterministic. argv[1] = messages-per-producer. DISABLED in ctest. Exit nonzero only on oracle break.
 
 #include <anoptic_log.h>
 #include <anoptic_memory.h>
@@ -44,8 +37,9 @@ static const int POINTS[] = {1, 4, 8};
 static int g_msgs = DEFAULT_MSGS;
 static anostr_t g_pool[POOL_N];
 
-/* Tick source: calibrated rdtsc on x86-64 (QPC's 100ns grain would swallow the ~40ns
-   fast path), ano_timestamp_ticks elsewhere. Same scheme as anotest_logtail. */
+/* Tick Source */
+
+// Calibrated rdtsc on x86-64 (below QPC grain), else ano_timestamp_ticks. Same as anotest_logtail.
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
 static inline uint64_t tick_now(void) { return __rdtsc(); }
@@ -64,7 +58,7 @@ static void tick_calibrate(void) { }
 static uint64_t tick_to_ns(uint64_t t) { return ano_ticks_to_ns(t); }
 #endif
 
-// The same inventory-name shapes the sort benchmark uses, heavy on non-ASCII.
+// Inventory-name shapes, heavy on non-ASCII.
 static const char *base_ascii[] = {
     "Sword", "Shield", "Potion", "Scroll", "Amulet", "Ring", "Helm", "Bow",
 };
@@ -134,7 +128,7 @@ static bench_stats run_point(int producers, uint64_t *buf)
     return bench_lat_stats_with(&merged, tick_to_ns);
 }
 
-// Whole-file scan for the sentinel's exact UTF-8 bytes. Byte transparency oracle.
+// Whole-file scan for sentinel UTF-8. Byte transparency oracle.
 static bool file_contains(const char *path, const char *needle)
 {
     FILE *f = fopen(path, "rb");
@@ -194,9 +188,7 @@ int main(int argc, char **argv)
         bench_lat_row(label, s);
     }
 
-    // The sentinel: an inline-unfriendly mixed-script name (29 bytes, heap-backed) and
-    // a 12-byte inline value whose bytes are NOT NUL-terminated -- both must land
-    // byte-exact.
+    // Sentinel: heap mixed-script + 12-byte non-NUL inline. Both must land byte-exact.
     anostr_t sentinel = anostr_lit(SENTINEL);
     anostr_t inl = anostr_lit("inline-12b!!");
     ano_log(ANO_INFO, "sentinel: %.*s / %.*s", anostr_fmt(sentinel), anostr_fmt(inl));

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private tuning constants for the lock-free ring logger (log_core.c).
+// Private tuning for the lock-free ring logger (log_core.c).
 
 #ifndef ANOPTICENGINE_LOG_CORE_H
 #define ANOPTICENGINE_LOG_CORE_H
@@ -11,14 +11,12 @@
 #include <anoptic_log.h>
 #include <anoptic_memory.h>   // ANO_CACHE_LINE
 
-// A stored line plus the wall-clock prefix total 4096 bytes. ANO_LOG_MSG_MAX is the stored cap.
-// ANO_LOG_TIME_RESV is the prefix budget. A max-size entry spans ceil((16 + MSG_MAX) / ANO_CL) <= 64 lines.
-#define ANO_LOG_TIME_RESV 16u                          // budget for the "HH:MM:SS " prefix
-#define ANO_LOG_MSG_MAX   (4096u - ANO_LOG_TIME_RESV)  // stored line, stored + prefix = 4096
+// Stored line + wall-clock prefix = 4096. MSG_MAX = stored cap, TIME_RESV = prefix budget.
+// Max entry spans ceil((16 + MSG_MAX) / ANO_CL) <= 64 lines.
+#define ANO_LOG_TIME_RESV 16u                          // "HH:MM:SS " prefix budget
+#define ANO_LOG_MSG_MAX   (4096u - ANO_LOG_TIME_RESV)  // stored + prefix = 4096
 
-// Ring capacity in BYTES, a power of two. Aligned to a power of two so the ring sits in one self-sized
-// region (page-allocator, Windows cache-view, Linux large-folio, hugepage at 2 MiB). Line count derives.
-// Override with: -DANO_LOG_RING_BYTES (64 KiB to 2 MiB).
+// Ring capacity in BYTES, power of two. Override: -DANO_LOG_RING_BYTES (64 KiB to 2 MiB).
 #ifndef ANO_LOG_RING_BYTES
 // 2MB
 //#define ANO_LOG_RING_BYTES (2u * 1024u * 1024u)
@@ -31,7 +29,8 @@
 _Static_assert((ANO_LOG_RING_BYTES & (ANO_LOG_RING_BYTES - 1)) == 0, "ring bytes must be a power of two");
 _Static_assert(ANO_LOG_RING_LINES >= 64, "ring must hold at least one max-size entry (64 lines)");
 
-// One log file per session: "<stamp>" ANO_LOG_FILESUFFIX, the stamp from ano_fs_session_stamp().
+// One log file per session: "<stamp>" ANO_LOG_FILESUFFIX via ano_fs_session_stamp().
 #define ANO_LOG_FILESUFFIX "_ano.log"
 
-#endif //ANOPTICENGINE_LOG_CORE_H
+#endif // ANOPTICENGINE_LOG_CORE_H
+

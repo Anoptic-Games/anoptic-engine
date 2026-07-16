@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_conductor.h (private to src/music/)
- * MusicEngine: the pull-based bar generator (musicgen/gen/conductor.py).
- * Chords generate one bar ahead so generators see next_chord; all sequential
- * state lives in AnoConductorState; every draw comes from a fresh tagged
- * stream, so parity reduces to condition gating and state-mutation ORDER —
- * both transcribed faithfully. Trace strings are elided throughout.
- */
+// Pull-based bar generator. Chords generate one bar ahead. All draws from fresh tagged streams.
+// State mutation ORDER is load-bearing (one-bar chord lookahead reads live state).
 
 #ifndef ANO_MUSIC_CONDUCTOR_H
 #define ANO_MUSIC_CONDUCTOR_H
@@ -51,7 +45,7 @@ typedef struct AnoEngineConfig
     AnoClockConfig   clock;
     bool            hasMapper;
     AnoMappingTable mapper;
-    bool useChains;     // false = {} (modifiers disabled)
+    bool useChains;     // false = modifiers disabled
     bool performChains; // default_chains(perform=True)
     AnoHarmonyConfig  harmony;
     AnoVoicingConfig  voicing;
@@ -64,7 +58,7 @@ typedef struct AnoEngineConfig
 
 AnoEngineConfig ano_engine_config_default(void);
 
-// Pinned Tier-2 parameters (set_override); a has-flag per pinnable field.
+// Pinned Tier-2 parameters (set_override); has-flag per pinnable field.
 typedef struct AnoOverrides
 {
     bool hasTempoBpm;       double tempoBpm;
@@ -110,10 +104,7 @@ typedef struct AnoConductorState
     AnoMelodyState  melody;
     AnoCounterState counter;
     int      padTie; // ANO_NEAR_NONE
-    // Phrase- and bar-indexed caches: direct-mapped rings tagged with the index
-    // that owns each slot (music_form.h). The index stays absolute; only the
-    // storage wraps, so the piece runs indefinitely without the form machinery
-    // ageing out from under it.
+    // Phrase-/bar-indexed caches: direct-mapped rings tagged with owning index (music_form.h).
     int      motifTag[ANO_PHRASE_WINDOW];
     AnoMotif motifs[ANO_PHRASE_WINDOW];
     int       grooveTag[ANO_PHRASE_WINDOW];
@@ -171,7 +162,7 @@ typedef struct AnoConductorState
 typedef struct AnoBarResult
 {
     int           bar;
-    AnoMusicEvent events[ANO_BAR_MAX_EVENTS]; // post-modifier (what plays)
+    AnoMusicEvent events[ANO_BAR_MAX_EVENTS]; // post-modifier
     uint32_t      eventCount;
     AnoMusicEvent rawEvents[ANO_BAR_MAX_EVENTS]; // pre-modifier IR
     uint32_t      rawEventCount;
@@ -195,7 +186,7 @@ typedef struct AnoMusicEngine
 
 void ano_engine_init(AnoMusicEngine *e, uint64_t seed, const AnoEngineConfig *cfg);
 
-// Partial updates via NAN (the prototype's None).
+// Partial updates via NAN.
 void ano_engine_set_affect(AnoMusicEngine *e, double valence, double energy,
                            double tension, bool urgent);
 void ano_engine_request_key(AnoMusicEngine *e, int pc, bool urgent);
@@ -203,9 +194,8 @@ void ano_engine_request_motif(AnoMusicEngine *e, const char *tag);
 
 void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out);
 
-// The section-8.4 comparator seam: the canonical event-stream digest — each
-// event serialized as Python-float.hex()-exact text, BLAKE2b-8, big-endian
-// u64. The Python golden generator emits the identical digest.
+// Event-stream digest: Python-float.hex()-exact text, BLAKE2b-8, big-endian u64.
+// Streamed event-by-event (no staging buffer — truncate would false-match).
 uint64_t ano_events_digest(const AnoMusicEvent *events, uint32_t count);
 
 #endif // ANO_MUSIC_CONDUCTOR_H

@@ -3,13 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_arp.c
- * Parity notes: the skip draw short-circuits on slot 0 (no draw), both in
- * the per-phrase mask and the per-bar rolls; the pool is sorted so Python's
- * set-of-pcs order is immaterial; the updown sequence is pool + reversed
- * interior (pool[-2:0:-1]); accented slots add 4 with no re-clamp.
- */
+// Skip draw short-circuits on slot 0 (phrase mask and per-bar rolls). Pool sorted (set-of-pcs order immaterial).
+// updown = pool + reversed interior. Accented slots add 4 with no re-clamp.
 
 #include <string.h>
 

@@ -77,23 +77,19 @@ int testTimeStamps() {
     return 0;
 }
 
-/* Resolution tests: assert the waits actually land near their target across every scale.
- * (These replace the earlier print-only sleep checks, which never failed on a wrong wait.) */
+/* Resolution tests: assert waits land near target across every scale. */
 
 #define SLEEP_SAMPLES   8   // best-of-N: scheduler hiccups inflate the worst case, not the best
 #define BUSY_SAMPLES    5
 
-// One ano_sleep resolution case. Asserts no sample ever wakes early (the hard contract), and the
-// best sample lands within an overshoot tolerance (the achievable resolution). skipCeil drops the
-// ceiling assertion where the kernel cannot express it (macOS nix sandbox); the floor always holds.
-//   in:  us (uint64_t) requested sleep, microseconds; skipCeil (int) assert the floor only
+// ano_sleep case: never early (hard), best within ceil. skipCeil drops ceil (macOS nix sandbox).
+//   in:  us (uint64_t) sleep us; skipCeil (int) floor only
 //   out: int, 0 pass, 1 fail
 static int sleepCase(uint64_t us, int skipCeil) {
     uint64_t want = us * 1000ULL;                       // ns
-    // Never-early floor: tolerate only clock quantization, not Sleep()-style truncation.
+    // Never-early floor: clock quantization only, not Sleep()-style truncation.
     uint64_t floorSlack = want / 100ULL + 20000ULL;     // 1% + 20us
-    // Achievable-resolution ceiling on the best sample: generous so it isn't scheduler-flaky,
-    // tight enough that 15.6ms Sleep granularity on a sub-ms request still fails.
+    // Achievable-resolution ceiling on the best sample.
     uint64_t ceil = want + (want / 2ULL > 2000000ULL ? want / 2ULL : 2000000ULL);
 
     uint64_t best = UINT64_MAX;
@@ -123,8 +119,7 @@ static int sleepCase(uint64_t us, int skipCeil) {
     return ok ? 0 : 1;
 }
 
-// One ano_busywait resolution case. The spin must elapse at least its target (the Windows ano_sleep
-// spin-tail relies on this) and not wildly overshoot.
+// ano_busywait case: must elapse at least target, not wildly overshoot.
 //   in:  ns (uint64_t) requested busy-wait
 //   out: int, 0 pass, 1 fail
 static int busyCase(uint64_t ns) {
@@ -152,13 +147,12 @@ static int busyCase(uint64_t ns) {
     return ok ? 0 : 1;
 }
 
-// Sweep both primitives across sub-ms to 100ms scales and assert resolution at each.
+// Sweep both primitives across sub-ms to 100ms scales.
 //   out: int, count of failed cases
 static int testResolution(void) {
     int fails = 0;
 
-    // Warm up: the first ano_sleep lazily creates the per-thread waitable timer (Windows); keep that
-    // one-time cost out of the timed samples.
+    // Warm up: first ano_sleep creates the per-thread waitable timer (Windows).
     ano_sleep(1000);
     ano_busywait(1000);
 
@@ -167,10 +161,7 @@ static int testResolution(void) {
     for (size_t i = 0; i < sizeof busyNs / sizeof busyNs[0]; i++)
         fails += busyCase(busyNs[i]);
 
-    // The macOS nix-daemon sandbox coalesces kernel timers: multi-ms wakeup floor, up to ~9x
-    // stretch, erratic per scale. No yielding sleep can hold the ceilings there and no public
-    // API reports the band (PRIO_DARWIN_PROCESS reads 0), so assert the floor only. nix develop
-    // (and thus every `nix run` test profile) exports IN_NIX_SHELL and keeps the full assertions.
+    // macOS nix-daemon sandbox: coalesced timers, assert floor only. IN_NIX_SHELL keeps full ceilings.
     int skipCeil = 0;
 #if defined(__APPLE__)
     skipCeil = getenv("NIX_BUILD_TOP") != NULL && getenv("IN_NIX_SHELL") == NULL;
@@ -187,10 +178,7 @@ static int testResolution(void) {
     return fails;
 }
 
-/* Timebase granularity: the smallest nonzero step ano_timestamp_ticks can resolve, in ns. Raw QPC on
- * many Windows hosts steps in 100ns, too coarse to order log records stamped in the same window; the
- * calibrated rdtsc timebase resolves far finer. Assert sub-100ns so a regression back to raw QPC (or
- * any equally coarse clock) fails here. Linux CLOCK_MONOTONIC and macOS 24MHz mach ticks both clear it. */
+/* Timebase granularity: min nonzero ano_timestamp_ticks step, in ns. Assert <100ns (raw QPC is 100ns). */
 #define GRAIN_SAMPLES 200000
 #define GRAIN_MAX_NS  100
 

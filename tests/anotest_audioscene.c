@@ -3,15 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Phase 2 live scene (the exit gate, audible by hand): a looping ambient bed
- * anchored in front of the world origin while the listener orbits it, click
- * one-shots firing from random directions, and a lowpass sweeping the SFX bus.
- * You should hear the bed swing around your head, the clicks land at distinct
- * bearings, and the sweep glide with no zipper. Asserts only what holds on ANY
- * backend (CI cascades to null): heartbeat, audibility, every click retiring,
- * the ambient stop, and both sample blocks coming home on release.
- * ANO_AUDIO_BACKEND=pipewire|alsa|null pins the backend. argv[1] scales the
- * scene length in seconds (default 8). Exit 0 == pass. */
+// Live scene: orbiting listener around positional bed, random clicks, SFX lowpass sweep.
+// Asserts any-backend: heartbeat, audible, click/bed retire, both blocks home.
+// ANO_AUDIO_BACKEND=pipewire|alsa|null. argv[1] = seconds (default 8). Exit 0 == pass.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +22,7 @@ static int failures = 0;
 } while (0)
 
 #define RATE 48000u
-#define BED_FRAMES   24000u // 0.5 s, loop-clean (integer cycles of both partials)
+#define BED_FRAMES   24000u // 0.5 s, loop-clean
 #define CLICK_FRAMES 2400u
 
 static float g_bed[BED_FRAMES];
@@ -66,7 +60,7 @@ static bool pred_heartbeat(const AnoAudioTelemetry *t) { return t->blockIndex >=
 static bool pred_audible(const AnoAudioTelemetry *t)   { return t->masterPeak > 0.01f; }
 static bool pred_quiet(const AnoAudioTelemetry *t)     { return t->sourcesActive == 0u; }
 
-// submit with the backpressure contract honored
+// Submit until accepted (backpressure).
 static void must_submit(AnoAudioBridge *b, const AnoAudioCommand *c)
 {
     while (!ano_audio_submit(b, c))
@@ -82,7 +76,7 @@ int main(int argc, char **argv)
     }
     make_material();
 
-    // console: master <- reverb return (1) <- sfx strip (2, filter + send to the return)
+    // Master <- reverb(1) <- sfx(2) filter + send.
     AnoAudioBusDesc layout[3] = {
         [0] = { 0 },
         [1] = { .parent = 0, .gain = 0.8f, .fx = { ANO_AUDIO_FX_REVERB } },
@@ -99,7 +93,7 @@ int main(int argc, char **argv)
     while (!ano_audio_buffer_register(b, 1, g_bed, BED_FRAMES, 1)) ano_sleep(1000);
     while (!ano_audio_buffer_register(b, 2, g_click, CLICK_FRAMES, 1)) ano_sleep(1000);
 
-    // SFX strip: lowpass insert, swept during the scene
+    // SFX lowpass, swept during the scene.
     AnoAudioCommand fxSet = { .kind = ACMD_FX_SET, .bus = 2, .fxSlot = 0,
         .paramId = ANO_AUDIO_P_FILTER_CUTOFF, .value = 8000.0f };
     must_submit(b, &fxSet);
@@ -110,7 +104,7 @@ int main(int argc, char **argv)
     fxSet.value = (float)ANO_AUDIO_FILTER_LOWPASS;
     must_submit(b, &fxSet);
 
-    // the bed: looping, positional, fixed ahead of the origin
+    // Looping positional bed ahead of origin.
     AnoAudioCommand bed = { .kind = ACMD_SOURCE_PLAY, .source_id = 100,
         .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 2, .gain = 0.5f,
                   .flags = ANO_AUDIO_SOURCE_LOOP | ANO_AUDIO_SOURCE_POSITIONAL,
@@ -118,7 +112,7 @@ int main(int argc, char **argv)
     must_submit(b, &bed);
     CHECK(wait_telemetry(b, pred_audible, 2000), "bed audible");
 
-    // orbit the listener twice around the origin; clicks from random bearings
+    // Two listener orbits; clicks from random bearings.
     test_rng rng = rng_make(0x0Bu);
     const uint32_t stepMs = 20;
     const uint32_t steps = seconds * 1000u / stepMs;
@@ -127,13 +121,13 @@ int main(int argc, char **argv)
         float th = 2.0f * 6.2831853f * (float)i / (float)steps; // two orbits
         AnoAudioListener l = {
             .pos = { 4.0f * sinf(th), 0.0f, 4.0f * cosf(th) },
-            .forward = { -sinf(th), 0.0f, -cosf(th) }, // facing the origin
+            .forward = { -sinf(th), 0.0f, -cosf(th) }, // face origin
             .up = { 0.0f, 1.0f, 0.0f },
             .seq = i,
         };
         ano_audio_publish_listener(b, &l);
 
-        if (i % (400u / stepMs) == 0u) { // a click every 400 ms
+        if (i % (400u / stepMs) == 0u) { // click every 400 ms
             float a = (float)rng_below(&rng, 6283u) / 1000.0f;
             AnoAudioCommand click = { .kind = ACMD_SOURCE_PLAY, .source_id = nextClickId++,
                 .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 2, .bus = 2, .gain = 0.7f,
@@ -143,7 +137,7 @@ int main(int argc, char **argv)
             must_submit(b, &click);
             clicksFired++;
         }
-        if (i % (500u / stepMs) == 0u) { // sweep the lowpass, glide between retargets
+        if (i % (500u / stepMs) == 0u) { // lowpass sweep retargets
             float ph = 6.2831853f * (float)i / (float)steps;
             AnoAudioCommand sweep = { .kind = ACMD_FX_SET, .bus = 2, .fxSlot = 0,
                 .paramId = ANO_AUDIO_P_FILTER_CUTOFF,
@@ -157,7 +151,7 @@ int main(int argc, char **argv)
         ano_sleep(stepMs * 1000u);
     }
 
-    // wind down: stop the bed, release both buffers, collect every fact
+    // Wind-down: stop bed, release buffers, collect retirements.
     AnoAudioCommand stopBed = { .kind = ACMD_SOURCE_STOP, .source_id = 100 };
     must_submit(b, &stopBed);
     while (!ano_audio_buffer_release(b, 1)) ano_sleep(1000);

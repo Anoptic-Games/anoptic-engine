@@ -3,15 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_ir.h (private to src/music/)
- * The generation-side IR (musicgen/ir.py): Meter derivations, the annotated
- * note event, the per-bar HarmonicContext handed to generators, and the
- * Tier-2 parameter block in its prototype-faithful shape. The playable core
- * (AnoNoteEvent) is the public bridge type from anoptic_music.h; everything
- * here wraps or feeds it. All times are quarter-note beats from piece start;
- * pre-modifier events align to the 16th grid.
- */
+// Generation IR: meter, annotated events, HarmonicContext, Tier-2 params.
+// Times are quarter-note beats from piece start; pre-modifier events align to the 16th grid.
 
 #ifndef ANO_MUSIC_IR_H
 #define ANO_MUSIC_IR_H
@@ -22,85 +15,52 @@
 
 #define ANO_MUSIC_GRID 0.25 // 16th-note grid, in quarter-note beats
 
-// ---------------------------------------------------------------------------
-// Meter
-// ---------------------------------------------------------------------------
 
-#define ANO_METER_MAX_SLOTS 32 // 12/8 needs 24; headroom beyond any real meter
+/* Meter */
+
+#define ANO_METER_MAX_SLOTS 32 // 12/8 needs 24
 
 static inline AnoMeter ano_meter_default(void) { return (AnoMeter){ 4, 4 }; }
 
-// Bar length in quarter-note beats (4/4 -> 4.0, 6/8 -> 3.0).
-double ano_meter_bar_quarters(AnoMeter m);
+double ano_meter_bar_quarters(AnoMeter m); // 4/4 -> 4.0, 6/8 -> 3.0
+int    ano_meter_bar_of(AnoMeter m, double start); // Python float floordiv
+double ano_meter_beat_in_bar(AnoMeter m, double start); // 1-based within bar
+int    ano_meter_slots(AnoMeter m); // 16 in 4/4, 12 in 3/4 and 6/8
+int    ano_meter_slot_of(AnoMeter m, double start);
 
-// 0-based bar index containing a beat position (Python float floordiv).
-int ano_meter_bar_of(AnoMeter m, double start);
+bool   ano_meter_is_compound(AnoMeter m); // 6/8, 9/8, 12/8 group in threes
+int    ano_meter_pulses(AnoMeter m); // 4/4 -> 4, 6/8 -> 2
+double ano_meter_pulse_quarters(AnoMeter m); // 1.0 in x/4, 1.5 in 6/8
+int    ano_meter_pulse_slots(AnoMeter m); // 4 in x/4, 6 in 6/8
 
-// 1-based musician-style beat position within the bar.
-double ano_meter_beat_in_bar(AnoMeter m, double start);
-
-// Grid slots per bar (16 in 4/4, 12 in 3/4 and 6/8).
-int ano_meter_slots(AnoMeter m);
-
-// Grid slot within the bar for a beat position.
-int ano_meter_slot_of(AnoMeter m, double start);
-
-// Compound meters (6/8, 9/8, 12/8) group in threes: the felt pulse is the
-// dotted unit, not the notated denominator beat.
-bool ano_meter_is_compound(AnoMeter m);
-
-// Felt beats per bar (4/4 -> 4, 3/4 -> 3, 6/8 -> 2, 12/8 -> 4).
-int ano_meter_pulses(AnoMeter m);
-
-// Quarter-note length of one felt beat (1.0 in x/4, 1.5 in 6/8).
-double ano_meter_pulse_quarters(AnoMeter m);
-
-// Grid slots per felt beat (4 in x/4, 6 in 6/8).
-int ano_meter_pulse_slots(AnoMeter m);
-
-// Accent hierarchy per grid slot: downbeat 4.0, mid-bar pulse 3.5, other
-// pulses 3.0, 8ths 2.0, 16ths 1.0. Returns the slot count.
+// Accent hierarchy: downbeat 4.0, mid-bar 3.5, pulses 3.0, 8ths 2.0, 16ths 1.0.
 uint32_t ano_meter_metric_weights(AnoMeter m, double out[ANO_METER_MAX_SLOTS]);
+uint32_t ano_meter_strong_slots(AnoMeter m, int out[ANO_METER_MAX_SLOTS]); // weight >= 3.0
 
-// Slots carrying beat-level weight (metric weight >= 3.0); returns the count.
-uint32_t ano_meter_strong_slots(AnoMeter m, int out[ANO_METER_MAX_SLOTS]);
 
-// ---------------------------------------------------------------------------
-// Annotated events
-// ---------------------------------------------------------------------------
+/* Annotated Events */
 
 extern const char *const ANO_LAYER_NAMES[ANO_MUSIC_LAYER_COUNT]; // "pad", ...
 
-// NoteEvent.__post_init__ as a predicate (the prototype raises; callers gate).
 bool ano_note_event_valid(const AnoNoteEvent *ev);
 
-// The generation-side event: the playable core plus the inspection
-// annotations (no acoustic effect; textdump and the lint oracle read them).
-// role is a free string in the prototype ("chord-tone", "drum:kick", ...).
+// Playable core + inspection annotations (textdump / lint). role is free string.
 typedef struct AnoMusicEvent
 {
     AnoNoteEvent core;
     uint8_t      degree;       // 1..7 within the bar's scale, 0 = None
-    char         chordSym[16]; // roman-numeral symbol in context
+    char         chordSym[16];
     char         role[20];
 } AnoMusicEvent;
 
-// Collapse tie chains into logical notes: consecutive same-layer same-pitch
-// events whose ends meet the next start, flagged out -> both... -> in, become
-// one note with the head's start, velocity and annotations and the summed
-// duration. Untied events pass through in order; an orphan "out" (a tie into a
-// rest) dissolves into a plain note, an orphan "in" passes through struck.
-// Input is expected in chronological per-layer emission order. in == out is
-// legal (the merge only ever writes behind its read cursor). Returns the
-// merged count, clamped to cap.
+// Collapse out -> both... -> in chains into one note. Orphan out -> plain; orphan in struck.
+// Input: chronological per-layer emission order. in == out legal. Returns merged count, clamped to cap.
 uint32_t ano_merge_ties(const AnoMusicEvent *in, uint32_t n,
                         AnoMusicEvent *out, uint32_t cap);
 
-// ---------------------------------------------------------------------------
-// HarmonicContext
-// ---------------------------------------------------------------------------
 
-// ctx.cadence_slot: "" | "pre-cadence" | "cadence" (open/free bars carry "").
+/* HarmonicContext */
+
 typedef enum AnoCtxSlot
 {
     ANO_CTX_SLOT_NONE = 0,
@@ -108,7 +68,6 @@ typedef enum AnoCtxSlot
     ANO_CTX_SLOT_CADENCE,
 } AnoCtxSlot;
 
-// ctx.obligation: "" | "cadential64" | "lament" | "tonicize:N".
 typedef enum AnoObligation
 {
     ANO_OBL_NONE = 0,
@@ -117,7 +76,6 @@ typedef enum AnoObligation
     ANO_OBL_TONICIZE, // target degree in obligationTarget
 } AnoObligation;
 
-// ctx.form: "" | "antecedent" | "consequent" (period contract annotation).
 typedef enum AnoPhraseForm
 {
     ANO_FORM_NONE = 0,
@@ -125,22 +83,19 @@ typedef enum AnoPhraseForm
     ANO_FORM_CONSEQUENT,
 } AnoPhraseForm;
 
-// One intra-bar timeline entry: (beat offset within the bar, chord).
 typedef struct AnoChordSpan
 {
-    double   off;
+    double   off; // beat offset within the bar
     AnoChord chord;
 } AnoChordSpan;
 
-// Per-bar harmonic state handed from the conductor to generators. chordPcs is
-// bass-first: chordPcs[0] is the sounding bass pitch class (respecting
-// inversion); the linter's bass-root rule relies on this. The chords timeline
-// is populated only for the compressed cadential 6/4 (2 spans max).
+// Per-bar harmonic state for generators. chordPcs[0] = sounding bass pc (inversion).
+// chords timeline populated only for compressed cadential 6/4 (2 spans max).
 typedef struct AnoHarmonicContext
 {
     int      bar; // 0-based
     AnoScale scale;
-    AnoChord chord; // .valid == false is the prototype's None
+    AnoChord chord; // .valid == false = no chord
     char     chordSym[16];
     uint8_t  chordPcs[5];
     uint32_t chordPcCount;
@@ -148,33 +103,28 @@ typedef struct AnoHarmonicContext
     char     nextChordSym[16];
     double   tension;
     AnoCtxSlot    cadenceSlot;
-    int8_t        cadencePolicy; // AnoCadencePolicy; NONE when slot is empty
+    int8_t        cadencePolicy; // AnoCadencePolicy; NONE when slot empty
     char          modulation[96]; // key-change annotation, inspection only
     AnoObligation obligation;
     uint8_t       obligationTarget; // tonicize resolution degree
-    int           phrasePos;  // 0-based bar position within the phrase
-    int           phraseBars; // phrase length in bars
+    int           phrasePos;
+    int           phraseBars;
     AnoChordSpan  chords[2];
     uint32_t      chordSpanCount;
-    int           phraseApex; // bar-in-phrase of the planned apex, -1 = none
+    int           phraseApex; // bar-in-phrase of planned apex, -1 = none
     AnoPhraseForm form;
 } AnoHarmonicContext;
 
-// The chord in force at a beat offset within the bar: the last timeline entry
-// at or before the offset (1e-9 slack), else the downbeat chord.
+// Chord in force at beat offset: last timeline entry at or before offset (1e-9 slack).
 AnoChord ano_ctx_chord_at(const AnoHarmonicContext *ctx, double beatOffset);
 
-// ---------------------------------------------------------------------------
-// Tier-2 parameters (prototype MusicalParams; the public AnoMusicalParams in
-// anoptic_music.h is the bridge shape this reduces to at the synth boundary)
-// ---------------------------------------------------------------------------
+
+/* Tier-2 Parameters */
 
 extern const char *const ANO_PATCH_NAMES[ANO_PATCH_COUNT]; // "" first
 
-// All knobs that multiply into draws or costs are double (never float: the
-// parity hazard from music_theory.h applies). layers is ORDERED — the gate
-// emits pad, bass, melody, perc, arp and the conductor iterates in that
-// order, so a bitmask would lose draw order.
+// Knobs that multiply into draws/costs are double (never float; see music_theory.h).
+// layers is ORDERED — gate emits pad/bass/melody/perc/arp; conductor iterates that order (not a bitmask).
 typedef struct AnoGenParams
 {
     double  tempoBpm;      // 100.0
@@ -192,7 +142,7 @@ typedef struct AnoGenParams
     AnoTexture texture;       // default NONE
     uint8_t instruments[ANO_MUSIC_LAYER_COUNT]; // AnoPatchName per layer
 
-    // DSP tier (consumed by the synth backend; inert on the raw-events path)
+    /* DSP tier */
     double filterCutoff; // Hz, 2500.0
     double reverbSend;   // 0.20
     double delaySend;    // 0.10
@@ -202,14 +152,9 @@ typedef struct AnoGenParams
 
 AnoGenParams ano_gen_params_default(void);
 
-// The generation-side params reduced to the public bridge shape the synth
-// consumes (anoptic_music.h). The ordered layers list collapses to a bitmask —
-// the synth only ever asks whether a layer is sounding, never in what order the
-// generators ran — and the doubles narrow to the float the synth's smoothers
-// hold. This is the whole of the music->synth parameter boundary.
+// Gen params -> public bridge: ordered layers -> bitmask, doubles -> float.
 AnoMusicalParams ano_gen_params_bridge(const AnoGenParams *p);
 
-// The affect triple as the synth's console consumes it.
 static inline AnoMusicAffect ano_affect_bridge(const double a[3])
 {
     return (AnoMusicAffect){ (float)a[0], (float)a[1], (float)a[2] };

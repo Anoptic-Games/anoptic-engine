@@ -3,13 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Glyph-curve bake: FreeType outlines -> directed monotone quadratic Beziers in em
-// space -> packed binary16 shared-vertex stream + glyph directory. Grammar in
-// text_internal.h.
-//
-// Per glyph: decompose contours to quads in double em, normalize winding to
-// fill-right, split each quad at its interior per-axis extrema, drop degenerate
-// pieces, quantize to halves with controls clamped into their endpoint box.
+// Glyph-curve bake: FT outlines -> directed monotone quads in em -> packed binary16 shared-vertex stream + directory. Grammar in text_internal.h.
+// Per glyph: decompose to quads (double em), normalize fill-right winding, split at interior per-axis extrema, drop degenerates, quantize halves with controls clamped to endpoint box.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -27,7 +22,9 @@
 #include FT_TRUETYPE_TABLES_H
 #include FT_TRUETYPE_TAGS_H
 
-// binary16 conversion (round-to-nearest-even), bit-exact. Overflow clamps to +-inf.
+/* Half pack */
+
+// binary16 round-to-nearest-even, bit-exact. Overflow -> +-inf.
 
 uint16_t ano_half_pack(float v)
 {
@@ -37,11 +34,11 @@ uint16_t ano_half_pack(float v)
     x &= 0x7FFFFFFFu;
     if (x >= 0x47800000u) // >= 65536 after rounding: inf/nan/overflow
         return (uint16_t)(sign | (x > 0x7F800000u ? 0x7E00u : 0x7C00u));
-    if (x < 0x38800000u) // below the smallest normal half: subnormal or zero
+    if (x < 0x38800000u) // subnormal or zero
     {
-        if (x < 0x33000000u) // < 2^-25: rounds to zero
+        if (x < 0x33000000u) // < 2^-25 -> 0
             return (uint16_t)sign;
-        uint32_t shift = 126u - (x >> 23); // 14..24, implicit-bit mantissa -> 10-bit field
+        uint32_t shift = 126u - (x >> 23); // 14..24, implicit mant -> 10-bit
         uint32_t mant  = (x & 0x7FFFFFu) | 0x800000u;
         uint32_t half  = mant >> shift;
         uint32_t rem   = mant & ((1u << shift) - 1u);
@@ -69,7 +66,7 @@ float ano_half_unpack(uint16_t h)
         bits = sign | ((em + 0x1C000u) << 13);
     else if (em == 0u)
         bits = sign;
-    else // subnormal: renormalize
+    else // subnormal renormalize
     {
         uint32_t e = 113u, m = em;
         while (!(m & 0x400u))
@@ -84,9 +81,9 @@ float ano_half_unpack(uint16_t h)
     return out;
 }
 
-// Quad utilities.
+/* Quad utilities */
 
-// De Casteljau split of q at parameter t into l (before) and r (after).
+// De Casteljau split at t into l (before) and r (after).
 static void quad_split_at(const AnoQuad *q, double t, AnoQuad *l, AnoQuad *r)
 {
     double ax = q->x[0] + (q->x[1] - q->x[0]) * t;
@@ -131,7 +128,7 @@ int ano_quad_split_monotone(const AnoQuad *q, AnoQuad out[3])
         out[0] = *q;
         return 1;
     }
-    // Successive splits, later parameters remapped into the remaining right piece.
+    // Successive splits: later t remapped into remaining right piece.
     AnoQuad rest = *q;
     double  consumed = 0.0;
     int     count = 0;
@@ -148,8 +145,7 @@ int ano_quad_split_monotone(const AnoQuad *q, AnoQuad out[3])
     return count;
 }
 
-// Recursive halving. Emits a single-quad approximation once the deviation bound
-// (sqrt(3)/36 * |p3 - 3c2 + 3c1 - p0|) is within tol or the depth budget is spent.
+// Recursive halving. Emit one quad when deviation (sqrt(3)/36 * |p3-3c2+3c1-p0|) <= tol or depth spent.
 static void cubic_rec(const double px[4], const double py[4], double tol, AnoQuad *out,
                       int *count, int depth)
 {
@@ -185,14 +181,15 @@ int ano_cubic_to_quads(const double px[4], const double py[4], double tolEm, Ano
         return -1;
     int depth = 0;
     while ((2 << depth) <= maxOut && depth < 8)
-        depth++; // 2^depth pieces never exceed maxOut
+        depth++; // 2^depth pieces <= maxOut
     int count = 0;
     cubic_rec(px, py, tolEm, out, &count, depth);
     return count;
 }
 
-// Decompose collector: FreeType callbacks accumulate per-contour quads in double em
-// coordinates on the scratch heap.
+/* Decompose collector */
+
+// FT callbacks accumulate per-contour quads in double em on scratch.
 
 typedef struct BakeContour {
     AnoQuad *quads;
@@ -210,7 +207,7 @@ typedef struct BakeCollect {
     bool         oom; // sticky, aborts the decompose
 } BakeCollect;
 
-// Doubles capacity to fit need, returns NULL on OOM.
+// Grow capacity to fit need. NULL on OOM.
 static void *bake_grow(mi_heap_t *heap, void *p, uint32_t *cap, uint32_t need, size_t elem)
 {
     if (need <= *cap)
@@ -240,7 +237,7 @@ static void bake_push_quad(BakeCollect *c, double x0, double y0, double x1, doub
     con->quads[con->count++] = (AnoQuad){ .x = { x0, x1, x2 }, .y = { y0, y1, y2 } };
 }
 
-// Ends the open contour: emits the closing line if needed, drops empty contours.
+// Close open contour: emit closing line if needed, drop empty.
 static void bake_close_contour(BakeCollect *c)
 {
     if (!c->open)
@@ -312,7 +309,7 @@ static int bake_cubic_to(const FT_Vector *c1, const FT_Vector *c2, const FT_Vect
     return c->oom ? 1 : 0;
 }
 
-// Reverses a contour's direction in place: quad order flips and each quad swaps p0/p2.
+// Reverse contour in place: flip quad order, swap each p0/p2.
 static AnoQuad quad_reversed(AnoQuad q)
 {
     return (AnoQuad){ .x = { q.x[2], q.x[1], q.x[0] }, .y = { q.y[2], q.y[1], q.y[0] } };
@@ -331,7 +328,7 @@ static void bake_reverse_contour(BakeContour *con)
         con->quads[n / 2u] = quad_reversed(con->quads[n / 2u]);
 }
 
-// Packing.
+/* Packing */
 
 typedef struct StreamVec {
     uint32_t *v;
@@ -348,7 +345,7 @@ static bool stream_push(mi_heap_t *heap, StreamVec *s, uint32_t val)
     return true;
 }
 
-// Quantizes one coordinate, outputting the exact float the GPU will unpack.
+// Quantize one coordinate. *q = exact float the GPU unpacks.
 static uint16_t bake_quant(double v, float *q)
 {
     uint16_t h = ano_half_pack((float)v);
@@ -376,8 +373,7 @@ static void bbox_add(BakeBBox *b, float x, float y)
     b->maxY = fmaxf(b->maxY, y);
 }
 
-// Emits one glyph's contours into the stream per the header grammar, quantizing to
-// halves. Controls clamp into their quantized endpoints' box. bbox is exact. False on OOM.
+// Pack one glyph's contours per header grammar to halves. Controls clamp to quantized endpoint box. bbox exact. False on OOM.
 static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeContour *cons,
                             uint32_t conCount, AnoGlyphEntry *e)
 {
@@ -407,7 +403,7 @@ static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeCon
             float q2x, q2y;
             uint16_t h2x = bake_quant(q->x[2], &q2x);
             uint16_t h2y = bake_quant(q->y[2], &q2y);
-            // Clamp the control into the quantized endpoint box, then quantize.
+            // Clamp control to quantized endpoint box, then quantize.
             float c1x = (float)q->x[1];
             float c1y = (float)q->y[1];
             float lox = fminf(q0x, q2x), hix = fmaxf(q0x, q2x);
@@ -437,10 +433,9 @@ static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeCon
     return true;
 }
 
-// Kerning extraction: each face's GPOS PairPos adjustments for its own slots,
-// accumulated over a shared dense matrix and compacted into one key-sorted pair
-// table on the caller heap. Fail-soft: a missing or malformed table contributes
-// nothing, only allocation failure is an error. Oversized bakes skip extraction.
+/* Kern extraction */
+
+// Per-face GPOS PairPos into shared dense matrix, compact to key-sorted pairs on caller heap. Missing GPOS -> skip face. Malformed -> warn, keep any partial dense already written. OOM only hard error. Oversized bakes (>1024 slots) skip.
 
 static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *glyphs,
                       uint32_t glyphCount, FT_Face *slotFace, const uint32_t *slotCp,
@@ -456,12 +451,12 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
     if (slotGids == NULL || dense == NULL)
         return ENOMEM;
 
-    // One pass per distinct face: build its gid map, then null its slots out of slotFace.
+    // One pass per distinct face: build gid map, then null its slots out of slotFace.
     for (uint32_t f = 0; f < glyphCount; f++)
     {
         FT_Face face = slotFace[f];
         if (face == NULL)
-            continue; // face already handled
+            continue; // already handled
         for (uint32_t i = 0; i < glyphCount; i++)
             slotGids[i] = (slotFace[i] == face && !(glyphs[i].flags & ANO_GLYPH_MISSING))
                               ? (uint32_t)FT_Get_Char_Index(face, slotCp[i])
@@ -491,11 +486,11 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
     if (pairs == NULL)
         return ENOMEM;
     uint32_t w = 0;
-    for (uint32_t s1 = 0; s1 < glyphCount; s1++) // s1-major walk lands keys sorted
+    for (uint32_t s1 = 0; s1 < glyphCount; s1++) // s1-major -> keys sorted
         for (uint32_t s2 = 0; s2 < glyphCount; s2++)
         {
             int32_t v = dense[s1 * glyphCount + s2];
-            if (v != 0) // both slots share a face, the left one's upem converts
+            if (v != 0) // shared face: left slot's upem converts
                 pairs[w++] = (AnoKernPair){ .key = s1 << 16 | s2,
                                             .xAdvance = (float)((double)v * slotInvUpem[s1]) };
         }
@@ -504,8 +499,10 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
     return 0;
 }
 
-// Bake entry point, module thread. Temporaries live on a scoped scratch heap.
-// Only the result blobs land in the caller's heap.
+/* Bake entry */
+
+// Module thread. Scratch for temps; result blobs on caller heap.
+// Per glyph: load outline -> decompose -> fill-right -> monotonize -> pack. Then GPOS kern.
 
 int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
                               mi_heap_t *heap, AnoFontBake *out)
@@ -518,7 +515,7 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
         if (ano_text_face(ranges[r].font) == NULL || ranges[r].first > ranges[r].last)
             return EINVAL;
         if (r > 0 && ranges[r].first <= ranges[r - 1u].last)
-            return EINVAL; // ranges must be sorted ascending and disjoint
+            return EINVAL; // sorted ascending + disjoint
         glyphCount += (uint64_t)ranges[r].last - ranges[r].first + 1u;
     }
     if (glyphCount > 4096u)
@@ -534,7 +531,7 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
     if (scratch == NULL)
         return ENOMEM;
 
-    // Per-slot face/codepoint/upem tables, keyed by the glyph loop and the kern pass.
+    // Per-slot face/codepoint/upem for glyph loop + kern pass.
     FT_Face  *slotFace = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(FT_Face));
     uint32_t *slotCp = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(uint32_t));
     double   *slotInvUpem = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(double));
@@ -597,14 +594,13 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
         if (err != FT_Err_Ok)
             return EIO;
 
-        // Fill-right convention: PostScript-wound faces flip.
-        // Empty/ambiguous outlines pass through.
+        // Fill-right: PostScript-wound faces flip. Empty/ambiguous pass through.
         if (col.contourCount > 0
             && FT_Outline_Get_Orientation(outline) == FT_ORIENTATION_POSTSCRIPT)
             for (uint32_t ci = 0; ci < col.contourCount; ci++)
                 bake_reverse_contour(&col.contours[ci]);
 
-        // Monotonize each contour, dropping pieces that collapsed to a point.
+        // Monotonize each contour, drop collapsed points.
         for (uint32_t ci = 0; ci < col.contourCount; ci++)
         {
             BakeContour *con = &col.contours[ci];
@@ -633,7 +629,7 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
             return ENOMEM;
     }
 
-    // bake_kerns consumes slotFace destructively. Nothing reads it afterwards.
+    // bake_kerns consumes slotFace destructively.
     int kerr = bake_kerns(scratch, heap, glyphs, (uint32_t)glyphCount, slotFace, slotCp,
                           slotInvUpem, out);
     if (kerr != 0)

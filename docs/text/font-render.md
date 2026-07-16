@@ -1,7 +1,7 @@
-# FONT_RENDER.md — Scanline Sweeper text: scouting report
+# FONT_RENDER.md — Scanline Sweeper text
 
-Scouting pass for GPU glyph rendering via the Scanline Sweeper technique
-(`docs/references/scanline_sweep.md`), tested against the current renderer. Verdict up front:
+How GPU glyph rendering via the Scanline Sweeper technique plugs into this renderer
+(`docs/references/scanline_sweep.md`). Short version:
 the technique fits this renderer unusually well. The renderer already has every structural
 prerequisite — a dedicated async compute queue with four timeline lanes, a lag-0 async pass
 precedent (light-cull) whose sync shape is exactly what text needs, cross-queue CONCURRENT
@@ -11,7 +11,7 @@ No frame-graph surgery is required; the work is one new async lane plus one new 
 Friction points exist (§6) but all have known mitigations; two of them were found by auditing
 the actual font file and are worth reading before anything else is built.
 
-## 1. The technique, reduced to what shapes the integration
+## 1. The technique (what shapes the integration)
 
 Full summary in `docs/references/scanline_sweep.md`. The properties that drive design:
 
@@ -31,7 +31,7 @@ Full summary in `docs/references/scanline_sweep.md`. The properties that drive d
 - One documented failure mode: overlapping same-winding contours break the area sum
   (coverage denominator exceeds 1). This is live in our demo charset — see §6.1.
 
-## 2. Proposed architecture end-to-end
+## 2. Architecture end-to-end
 
 Init (CPU, once per face): `src/text` loads `resources/fonts/Geist/static/Geist-Regular.ttf`
 through FreeType (`FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING`, font units, UPEM=1000),
@@ -70,7 +70,7 @@ post-tonemap in LDR, which is what UI text wants.
 - Geist vendored at `resources/fonts/Geist/` — 18 static TrueType instances plus two
   variable-font TTFs. TrueType means quadratic outlines natively; the cubic→quad
   preprocessing stage is a no-op for this font (keep the hook for CFF/OTF later).
-- Audit of Geist-Regular ASCII 32..126 (fontTools, this scouting pass; corrected during
+- Audit of Geist-Regular ASCII 32..126 (fontTools, this pass; corrected during
   step 2 — the first pass missed composite glyphs `: ; \` i j`, which FreeType decomposes):
   1654 monotone segments total (958 quads + 696 lines), mean 17.4 per glyph, worst `@` at
   63. Measured baked stream: 3490 points ≈ 13.6 KiB for the ASCII set; the full 974-glyph
@@ -83,14 +83,14 @@ post-tonemap in LDR, which is what UI text wants.
   no CMakeLists yet. Wiring recipe in §5.
 - `src/render/text/ano_RenderText.{c,h}` — a disabled, uncompiled SDF/atlas-era stub. Every
   step of its rewrite plan (pixel sizes, atlas packing, bitmap staging, SDF) is obsolete
-  under this technique. Recommend deleting both files when the new module lands; nothing in
+  under this technique. Delete both files when the new module lands; nothing in
   them transfers. The old `feature-render-text` salvage branch named in `docs/notes.md:290`
   no longer exists on local or origin.
 - Reserved enum slots `PIPELINE_SDF_COMPOSITE` and `PIPELINE_UI` (`components.h:18-19`)
   anticipate this work. The compute raster pass takes a new `PIPELINE_COMPUTE_TEXTRASTER`
   slot; `PIPELINE_UI` stays reserved for the eventual in-world/UI draw lane (§9).
 - `anostr_t` (Step 4) shipped; `docs/TODO.md:28` explicitly gates the UTF meaning layer on
-  "until the text renderer forces it". This is the forcing event, but only a minimal UTF-8
+  "until the text renderer forces it". This is that moment, but only a minimal UTF-8
   decoder is needed (§4), not the full layer.
 
 ## 4. New module: `src/text` + the minimal shaper
@@ -100,10 +100,10 @@ faces are opaque ids), implementation `src/text/` registered as a core module
 (`target_sources(anoptic_core ...)`, mirroring `src/time/CMakeLists.txt`). Core-side rather
 than render-side because shaping is exactly the thing the logic world will call when text
 blocks start arriving over the bridge. FreeType allocations route through a module-owned
-mi_heap via custom `FT_Memory` hooks (FreeType supports this first-class), keeping the
+mi_heap via custom `FT_Memory` hooks (FreeType supports this natively), keeping the
 arena discipline.
 
-Proposed public surface, PoC scope:
+Public API, PoC scope:
 
     ano_text_init / ano_text_shutdown
     ano_text_font_load(path)                              -> AnoFontId
@@ -162,7 +162,7 @@ green<4ms<amber<8<red, VRAM line dimmed).
 
 ## 5. Renderer integration map
 
-All anchors verified against current source this pass.
+All anchors verified against current source.
 
 New async lane (mirrors light-cull, the lag-0 precedent — not Hi-Z, which is lag-2 because
 it consumes the frame's own depth; text inputs are CPU-side so it has no GPU dependency
@@ -243,7 +243,7 @@ full-viewport UI at the paper's cost class without ever touching the graphics cr
 ## 6. Friction points
 
 1. Coverage overflow from overlapping ink — confirmed, measured, and broader than the
-   scouting audit saw. The paper's coverage sum breaks when ink covers a pixel more than
+   first audit saw. The paper's coverage sum breaks when ink covers a pixel more than
    once, and Geist ships BOTH forms of that: separate same-winding contours overlapping
    (`# $ + f t`, measured unclamped coverage exactly 2.0; `%` was a bbox false positive in
    the original audit — its ink never overlaps) and single contours that SELF-overlap —
@@ -272,7 +272,7 @@ full-viewport UI at the paper's cost class without ever touching the graphics cr
 5. Multi-glyph pixel overlap forbids the naive per-glyph dispatch. Adjacent glyphs' bboxes
    overlap (kerned pairs, italics) even when ink doesn't; independent per-glyph workgroups
    doing read-modify-write on the overlay would race. The tile-gather design (§2) is
-   therefore load-bearing, not an optimization: each pixel is owned by exactly one thread,
+   therefore required for correctness, not an optimization: each pixel is owned by exactly one thread,
    which iterates all covering instances and blends in registers. Decided now so nobody
    "simplifies" it later into a race.
 6. Overlay VRAM: full-res RGBA8 ×3 ≈ 40 MiB at 2560×1368. Acceptable against the several
@@ -375,7 +375,7 @@ Registry: ANO_TEXT_MAX_BLOCKS (64) entries, render thread only; compose = OSD re
 region cap (static-asserted against ANO_TEXT_WORLD_FIRST); every change recomposes
 textPending and bumps textVersion — the frame-refresh protocol and the GPU dispatch are
 untouched. ANO_TEXT_DEMO's pin suppresses block COMPOSITION (registry still adopts), so
-the offline pixel-compare canvas stays exactly the torture text. Demo (main.c logic
+the offline pixel-compare canvas stays exactly the pinned demo text. Demo (main.c logic
 master): a styled title (runs path), a transient notice cleared 15 s after frames start
 (REVENT-free one-shot via the armed deadline), and a 1 Hz camera readout; all three
 verbs hardware-verified (notice visible then gone, validation 0 both normal + pinned
@@ -439,7 +439,7 @@ runs).
    cooperatively cull instances in 64-chunks into a shared verdict mask — order-preserving
    for the premultiplied over-blend — with an any-hit flag so empty tiles skip the scan,
    and untouched pixels skip the imageStore (the clear already wrote transparent). Demo:
-   126 instances, 3 torture lines covering all 95 glyphs at 36 px, shaped once into every
+   126 instances, 3 stress lines covering all 95 glyphs at 36 px, shaped once into every
    frame slot. Screenshot-compare via ANO_TEXT_OPAQUE (flags bit 0 = opaque backdrop) vs an
    offline harness that mirrors the shader loop over the exported ano_text_window_sum: RMS
    0.034/255 over the full 2560×1368 canvas, max 2.11/255, zero pixels past 4/255 — inside
@@ -477,12 +477,12 @@ runs).
    its fence wait (ano_vk_text_frame_refresh, called before record/submit), so in-flight
    GPU readers are never overwritten and the push-constant count always matches the
    slot's contents. Boot shows a title line until the first 120-frame print; ANO_TEXT_DEMO
-   pins the step-6 torture text so the offline pixel-compare harness keeps a stable
+   pins the step-6 stress text so the offline pixel-compare harness keeps a stable
    target — verified post-pin against two elapsed print intervals, still RMS 0.032/255.
    Hardware-verified: live on-screen updates across print intervals, validation-clean,
    suite 15/15. Numbers, release, busy desktop: composite with the stats overlay ≈ 0.11 ms
    vs no-text ≈ 0.09–0.14 ms — the on-timeline cost of the live readout is inside session
-   noise; the raster itself runs on the async lane (step 7). The PoC scouting goal — the
+   noise; the raster itself runs on the async lane (step 7). The PoC goal — the
    profile lines on-screen through the Scanline Sweeper — is delivered.)
 
 Rough scope: `src/text` ≈ 1000-1200 lines C (bake 400, shaper 300, tests 400),

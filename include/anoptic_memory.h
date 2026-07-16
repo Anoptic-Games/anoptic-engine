@@ -17,9 +17,12 @@
 #include <alloca.h>
 #endif
 
-// ANO_CACHE_LINE: coherency grain (default 128 Apple aarch64, else 64).
-// ANO_THREAD_LINE: false-sharing isolation for hot per-thread atomics (default 128).
-// Compile-time only. Override: -DANO_CACHE_LINE=N / -DANO_THREAD_LINE=N.
+// Hardware interference sizes. Compile-time only (_Alignas / struct layout); not a runtime query.
+// ANO_CACHE_LINE: true coherency grain for packing / line-granular reservation (128 Apple aarch64, else 64).
+// ANO_THREAD_LINE: false-sharing isolation for hot per-thread atomics — _Alignas cursors to it.
+// 128 on every target: Apple Silicon line is 128; x86-64 adjacent-line prefetch moves the 128-byte
+// buddy pair as one, so 64-byte separation still ping-pongs.
+// Override: -DANO_CACHE_LINE=N / -DANO_THREAD_LINE=N.
 #ifndef ANO_CACHE_LINE
 #if defined(__APPLE__) && defined(__aarch64__)
 #define ANO_CACHE_LINE 128
@@ -41,7 +44,7 @@ void ano_heap_release(mi_heap_t **in);
 #define ano_salloc(bytes) alloca((size_t)bytes)
 
 // Allocates size bytes aligned to alignment (power of 2). mi_malloc_aligned wrapper.
-// Returns pointer, or NULL on failure.
+// Returns pointer, or NULL on failure. NULL if size or alignment is 0.
 void* ano_aligned_malloc(size_t size, size_t alignment);
 
 // Frees a block from ano_aligned_malloc. Else UB.

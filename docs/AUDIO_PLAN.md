@@ -1,12 +1,6 @@
 # AUDIO_PLAN — The Anoptic Audio Stack
 
-Scouting report and plan for the engine audio stack: the general audio module,
-the synthesizer, the musicgen port, and the logic-thread bridge. Companion to
-TECH_SPEC.md (the musicgen port contract) and THEORY_SPEC.md (the musical
-rules). Where this document and TECH_SPEC disagree about a music-system
-contract, TECH_SPEC wins; this document decides everything TECH_SPEC left to
-the engine — device backends, module boundaries, thread topology, and the
-bridge protocol.
+Plan for the engine audio stack: the general audio module, the synthesizer, the musicgen port, and the logic-thread bridge. Goes with TECH_SPEC.md (the musicgen port contract) and THEORY_SPEC.md (the musical rules). Where this document and TECH_SPEC disagree about a music-system contract, TECH_SPEC wins; this document decides everything TECH_SPEC left to the engine — device backends, module boundaries, thread topology, and the bridge protocol.
 
 Inputs: TECH_SPEC.md §12 (the audio-library requirements probe and its nine
 findings), the musicgen prototype at `~/Documents/anoptic-musicgen` (generation
@@ -46,20 +40,20 @@ Distilled from TECH_SPEC §11–§12 and the prototype:
 - Two smoothing tiers (§12.5): the conductor slews musically; the audio side
   only ever glides retargets through one-poles (20–45 ms). The audio library
   never sees per-sample automation from above.
-- Determinism gauntlet (§12.7): seeded stochastic primitives, initialized DSP
+- Determinism gate (§12.7): seeded stochastic primitives, initialized DSP
   state, stable scheduling tiebreakers, and a churned-heap double-render
   bit-diff as a CI gate.
 - Generation itself is single-threaded and microseconds per bar; the prototype
   proved the shape where one thread generates, mutates, and renders,
-  interleaved between blocks. TECH_SPEC §11.4 explicitly blesses the split
+  interleaved between blocks. TECH_SPEC §11.4 explicitly names the split
   where the audio thread is the sole graph owner with a block-boundary command
   queue — the render-bridge pattern, named.
 
-### 1.2 What the engine provides today
+### 1.2 What the engine has today
 
 - No audio code exists: no `include/anoptic_audio.h`, no `src/audio/`, no
-  build-sequence slot in docs/TODO.md. This effort pioneers the module.
-- The render bridge is the sanctioned bridge template
+  build-sequence slot in docs/TODO.md. This is the first audio module.
+- The render bridge is the bridge template we already ship
   (`src/render_bridge/render_bridge.h`): a bounded lock-free SPSC ring
   (`AnoSpscRing`, cursors `_Alignas(ANO_THREAD_LINE)`), a latest-wins seqlock
   (`ano_seqpub_store/load`), copy-at-submit lifetime for POD commands,
@@ -179,7 +173,7 @@ AnoAudioBridge                          -> schedule NoteEvents (synth)         �
   §11.4 prescribes.
 - Pacing: the mixer produces whenever the block ring has space and
   `ano_sleep`s ~1 ms when full — lock-free, no condvar. If wakeup latency ever
-  matters, the logger's condvar drainer is the sanctioned fallback pattern.
+  matters, the logger's condvar drainer is the fallback pattern to copy.
 - The musicgen conductor runs on the audio thread, called at bar edges from
   the block loop. Generation is microseconds per bar against an 11 ms budget,
   and this is the prototype's proven single-threaded contract with the roles
@@ -201,7 +195,7 @@ AnoAudioBridge                          -> schedule NoteEvents (synth)         �
 
 ### 2.2 Module layout
 
-Three modules plus the bridge, mirroring engine conventions exactly:
+Three modules plus the bridge, same layout as the rest of the engine:
 
 | Layer | Public header | Source | Depends on |
 |---|---|---|---|
@@ -289,7 +283,7 @@ FDN and limiter last). Rules, from the findings:
   node, loudly in debug (finding 7).
 - Dynamics have specified, bounded makeup (finding 1). Detector primitives —
   asymmetric peak follower, gapless sliding-window max, linear
-  ramp-in-T — are first-class (finding 6).
+  ramp-in-T — are full primitives (finding 6).
 - Block-feedback primitives reject loop delays shorter than one block loudly
   (finding 5).
 - No `-ffast-math` anywhere in audio/synth/music TUs; `-ffp-contract=off` on
@@ -360,18 +354,15 @@ audio thread at runtime; fully drivable offline.
 - Testing seam: the prototype grows a small IR exporter (one JSON-line per
   event, per bar, plus tempo points and params — the flat textdump mode is the
   starting point). The C synth renders exported fixtures offline long before
-  the music module exists, and the result is listenable and diffable. This is
-  the stack's mid-layer conformance harness and the reason synth precedes
-  musicgen in the build order.
+  the music module exists, and the result is listenable and diffable. Mid-layer
+  conformance harness for the stack, and the reason synth precedes musicgen in
+  the build order.
 
 ---
 
 ## 5. Layer 3: anoptic_music
 
-The TECH_SPEC port, placed: `src/music/` mirrors the prototype's L0–L3
-layering (theory kernel, IR, generators, conductor/orchestration) with the
-parallel consumers (linter adapter, textdump, trace) in dev builds. This
-document adds only the engine-integration decisions:
+The TECH_SPEC port, placed: `src/music/` mirrors the prototype's L0–L3 layering (theory kernel, IR, generators, conductor/orchestration) with the parallel consumers (linter adapter, textdump, trace) in dev builds. This document only adds the engine-integration decisions:
 
 - Hosting: the conductor lives behind the pull API and is driven at bar edges
   by the audio thread's block loop (§2.1). Control commands are drained from
@@ -460,11 +451,7 @@ Rules, inherited verbatim from the render bridge:
   published once per block. Gameplay that wants beat-synced visuals reads the
   telemetry; gameplay that must not miss a bar reacts to `AEVT_MUSIC_BAR`.
 
-This bridge is the game-facing surface of the entire stack: the logic thread
-never links against synth or music internals, only `anoptic_audio.h` commands
-and events — the same isolation the render bridge gives the renderer, and the
-integration seam TECH_SPEC §9.1 mandates (affect in, telemetry out, no
-game-semantic inputs below this line).
+This bridge is the Public API of the entire stack: the logic thread never links against synth or music internals, only `anoptic_audio.h` commands and events — the same isolation the render bridge gives the renderer, and the integration seam TECH_SPEC §9.1 mandates (affect in, telemetry out, no game-semantic inputs below this line).
 
 ---
 

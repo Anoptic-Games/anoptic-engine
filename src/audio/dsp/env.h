@@ -3,17 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * dsp/env.h (private to src/audio/)
- * One-shot ASR envelope with curve shaping (TECH_SPEC §12.2): attack ramps
- * 0 -> 1 as t^curve, sustain holds 1, release falls 1 -> 0 as (1-t)^curve.
- * curve > 1 gives a soft attack and a percussive, exponential-feeling decay
- * (the prototype's drums live at curve 3-4). One-shot-per-event lifecycle:
- * init at voice allocation, step to completion, never retargeted. Segment
- * lengths are frames, fixed at init — the voice's exact end frame is
- * attack + sustain + release, known at allocation (finding 9's state-flip
- * voice pool depends on that).
- */
+// One-shot ASR. Attack 0->1 as t^curve. Release 1->0 as (1-t)^curve.
+// Segment lengths fixed at init. Never retargeted. Total frames = A+S+R known at allocation.
 
 #ifndef ANO_DSP_ENV_H
 #define ANO_DSP_ENV_H
@@ -23,14 +14,14 @@
 
 typedef struct AnoDspAsr
 {
-    uint64_t attack;  // frames
-    uint64_t sustain; // frames
-    uint64_t release; // frames
+    uint64_t attack;
+    uint64_t sustain;
+    uint64_t release;
     float    curve;
     uint64_t n; // frames elapsed
 } AnoDspAsr;
 
-// in: segment lengths in seconds (clamped >= 0), curve (clamped >= 0.1), rate.
+// Segment lengths in seconds (>= 0). curve >= 0.1.
 static inline void ano_dsp_asr_init(AnoDspAsr *e, float attackS, float sustainS,
                                     float releaseS, float curve, float sampleRate)
 {
@@ -49,7 +40,7 @@ static inline uint64_t ano_dsp_asr_total(const AnoDspAsr *e)
     return e->attack + e->sustain + e->release;
 }
 
-// One sample; 0 forever once the release has completed.
+// 0 forever after release completes.
 static inline float ano_dsp_asr_step(AnoDspAsr *e)
 {
     uint64_t n = e->n++;
@@ -64,7 +55,6 @@ static inline float ano_dsp_asr_step(AnoDspAsr *e)
     return 0.0f;
 }
 
-// True once the envelope has fully decayed (the voice's retirement test).
 static inline bool ano_dsp_asr_done(const AnoDspAsr *e)
 {
     return e->n >= ano_dsp_asr_total(e);

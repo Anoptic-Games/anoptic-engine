@@ -3,17 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Phase 4 live scene (audible by hand): the journey-demo fixture playing in
- * REALTIME through the full stack — synth generator on the mixer thread,
- * music console (strips -> sends -> returns -> glue master), device backend.
- * The logic thread paces the per-bar console automation against telemetry,
- * exactly how a game would drive it. You should hear the calm explore theme
- * darken through threat into combat and resolve to calm. Asserts only what
- * holds on ANY backend (CI cascades to null): mixer heartbeat, the synth
- * becoming audible after transport start, and a clean wind-down.
- * ANO_AUDIO_BACKEND=pipewire|alsa|null pins the backend. argv[1] caps the
- * scene length in seconds (default 30; 0 = play the whole piece).
- * Exit 0 == pass. */
+// Live journey fixture through mixer + music console + device backend.
+// Asserts any-backend: heartbeat, audible after transport, clean wind-down.
+// ANO_AUDIO_BACKEND=pipewire|alsa|null. argv[1] = seconds (default 30; 0 = full). Exit 0 == pass.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,19 +75,19 @@ int main(int argc, char **argv)
     if (!b) return 1;
     CHECK(wait_telemetry(b, pred_heartbeat, 3000), "mixer heartbeat");
 
-    // console setup + per-bar automation, score-relative frames
+    // Console setup + per-bar automation (score-relative frames).
     static AnoAudioOfflineEvent evts[64u + 80u * 9u];
     uint32_t evtCount = ano_synth_console_setup(evts, 64);
     evtCount += ano_synth_console_automation(syn, evts + evtCount,
                                              (uint32_t)(sizeof evts / sizeof *evts) - evtCount);
     CHECK(evtCount > 64u, "automation emitted");
 
-    // setup lands before the transport starts
+    // Setup before transport start.
     uint32_t cursor = 0;
     while (cursor < evtCount && evts[cursor].frame == 0u)
         must_submit(b, &evts[cursor++].cmd);
 
-    // start the score a few blocks out, then pace automation ~0.5 s ahead
+    // Transport a few blocks out; pace automation ~0.5 s ahead.
     AnoAudioTelemetry t;
     CHECK(ano_audio_acquire_telemetry(b, &t), "telemetry frame");
     uint64_t transport = (t.blockIndex + 8u) * t.blockFrames;
@@ -129,7 +121,7 @@ int main(int argc, char **argv)
     }
 
     ano_synth_transport_stop(syn);
-    ano_sleep(50000); // let the mixer pass the stop and the tails ring down
+    ano_sleep(50000); // stop + tails
 
     if (ano_audio_acquire_telemetry(b, &t))
         printf("info: scene — blocks %llu, cpu %llu ns/block, underruns %u, clipped %u, dropped %u\n",

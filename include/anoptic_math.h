@@ -9,7 +9,8 @@
 
 /* Types */
 
-// Shared linear-algebra value types (row-major float POD, std430).
+// Shared linear-algebra value types (row-major float POD, trivially copyable, std430).
+// Canonical across render, ECS, and the logic<->render bridge.
 // Ops still in render/vertex.h until a non-render caller needs them.
 
 // Row-major 4x4. Arg decays to float(*)[4], member is 64 bytes.

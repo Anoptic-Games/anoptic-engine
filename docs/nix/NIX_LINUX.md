@@ -1,11 +1,10 @@
-# NIX_LINUX — the native Linux target through Nix: root causes, fixes, verification
+# NIX_LINUX — native Linux through Nix
 
 Branch `nix-anygpu`. Validation machine: Ubuntu 24.04 (glibc 2.39, X11/Cinnamon,
 `DISPLAY=:0`), NVIDIA open kernel module 590.48.01, RTX 3090 + RTX 3060, Nix 2.18.1,
-no `/run/opengl-driver` (foreign distro). This report closes out the runbook in
-`docs/nix/nixfuckery.md`: every step was executed, the one previously-unexplained failure
-was root-caused (it was **not** a stale CMakeCache), and two engine bugs plus one
-packaging hole were fixed along the way.
+no `/run/opengl-driver` (foreign distro). This closes the runbook in
+`docs/nix/nixfuckery.md`: every step ran, the leftover failure was **not** a stale
+CMakeCache, and two engine bugs plus one packaging hole got fixed on the way.
 
 ## Verified end state
 
@@ -21,8 +20,8 @@ packaging hole were fixed along the way.
 | Scene content | Spinning viking room and both transmissive candle holders verified on screen via staggered window captures (Sponza temporarily commented out for the isolation shots, then restored) |
 
 Loader-level evidence (from `VK_LOADER_DEBUG=all` runs): the host `/usr/share/vulkan/icd.d`
-manifests all still fail to dlopen under the Nix loader as originally diagnosed, and the
-engine instead renders through
+manifests still fail to dlopen under the Nix loader, as originally diagnosed. The
+engine renders through
 `~/.cache/nix-gl-host/<hash>/glx/libGLX_nvidia.so.0` — the kernel-module-matched userspace
 harvested at launch. Both discrete GPUs enumerate; the engine picks the 3090.
 
@@ -34,13 +33,13 @@ Host ICD manifests reference bare sonames (`libGLX_nvidia.so.0`); Nix's `ld.so` 
 neither `/etc/ld.so.cache` nor `/usr/lib`, so every host driver dlopen fails →
 `VK_ERROR_INCOMPATIBLE_DRIVER`. Proprietary NVIDIA userspace must match the host kernel
 module, so it can never be a build input. The bridge added earlier on this branch
-(runtime harvest via `nixglhost`, mesa ICDs via `VK_ADD_DRIVER_FILES`) is the correct
+(runtime harvest via `nixglhost`, mesa ICDs via `VK_ADD_DRIVER_FILES`) is the right
 design and now has runtime confirmation on hardware.
 
 ### 2. `glfwInit()` failure in dev-shell builds — the real cause (not a stale CMakeCache)
 
-`docs/nix/nixfuckery.md` step 4 suspected a stale CMakeCache. Disproven: a from-scratch
-`build/` rebuild failed identically. The `glfwGetError()` diagnostic added at
+`docs/nix/nixfuckery.md` step 4 blamed a stale CMakeCache. Disproven: a from-scratch
+`build/` rebuild failed the same way. The `glfwGetError()` diagnostic at
 `src/vulkan_backend/instance/window.c:173` reported:
 
 ```
@@ -57,7 +56,7 @@ Mechanism:
   `readelf -d` on the failing binary showed a RUNPATH containing only vulkan-loader,
   glibc, and gcc libs — no X11, no Wayland.
 
-This is also exactly why the **pure** artifact needed the branch's `postFixup` patchelf
+Same reason the **pure** artifact needed the branch's `postFixup` patchelf
 (`--shrink-rpath` prunes non-`DT_NEEDED` entries): the flake comment claiming dev-shell
 binaries "keep the RUNPATH unshrunk" was wrong — they never had those entries at all.
 One mechanism, three victims: installed artifact (fixed earlier via patchelf), dev-shell
@@ -110,7 +109,7 @@ intentional error and the sandbox has no layer discovery of its own.
 `pickPhysicalDevice()` ranked only `DISCRETE_GPU` and `INTEGRATED_GPU` candidates. A
 suitable device of any other type (`CPU` — lavapipe, `VIRTUAL_GPU` — VMs) could pass
 `isDeviceSuitable()` and still hard-fail init with "Failed to find a suitable GPU!".
-This silently contradicted the `.#anygpu` target's lavapipe-fallback intent and would
+That silently contradicted the `.#anygpu` target's lavapipe-fallback intent and would
 break VM guests. Fixed with a third, last-resort ranking bucket (same mesh-then-memory
 ordering) plus a WARN when it engages.
 
@@ -119,10 +118,10 @@ ordering) plus a WARN when it engages.
 When `initVulkan()` fails early (e.g. no suitable device), `unInitVulkan()` →
 `cleanupVulkan()` called `vkDeviceWaitIdle(ctx->device)` with `device == VK_NULL_HANDLE`
 — a loader crash (SIGABRT with a blackbox record, plus a loader
-`VUID-vkDeviceWaitIdle-device-parameter` error). This turned every "no GPU" situation
-into a crash, which is what made the sandbox test failures read as "Subprocess aborted"
-and masked the actual message. Fixed by guarding the wait (the rest of the teardown was
-already handle-guarded); the no-device path now exits cleanly.
+`VUID-vkDeviceWaitIdle-device-parameter` error). Every "no GPU" situation became a
+crash, which is why the sandbox failures read as "Subprocess aborted" and hid the real
+message. Fixed by guarding the wait (the rest of the teardown was already handle-guarded);
+the no-device path now exits cleanly.
 
 ## Changes on disk
 
@@ -172,3 +171,5 @@ VK_LOADER_DEBUG=all nix run .#nvidia    # loader-level proof if anything misbeha
 
 Success signature in the loader log: a `nix-gl-host` cache path as the driver for the
 selected device, and your discrete GPU in the engine's device table.
+
+If your config is cursed and that doesn't work, just use Nix okay? (You already are.)
