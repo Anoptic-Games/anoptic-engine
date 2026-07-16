@@ -113,6 +113,15 @@ target_link_libraries(anotest_meshoptimizer PRIVATE anoptic_core m)
 add_test(NAME anoptic_meshoptimizer COMMAND anotest_meshoptimizer)
 set_tests_properties(anoptic_meshoptimizer PROPERTIES TIMEOUT 10 LABELS "unit;mesh")
 
+# Meshlet build/bound pair guard: max_vertices < 3 / max_triangles < 1 must be rejected by
+# ano_build_meshlets exactly as its sizing twin ano_build_meshlets_bound already does, not
+# packed into meshlets that overrun bound()-sized buffers and break the max_vertices promise
+# (docs/BUGS.md, Mesh / Implementation). Fails until the guard lands.
+add_executable(anotest_meshguard anotest_meshguard.c)
+target_link_libraries(anotest_meshguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_meshguard COMMAND anotest_meshguard)
+set_tests_properties(anoptic_meshguard PROPERTIES TIMEOUT 30 LABELS "unit;mesh")
+
 # Testing for ``anoptic_memory.h`` (mimalloc heaps, aligned/scoped alloc, huge pages)
 add_executable(anotest_memory anotest_memory.c)
 target_link_libraries(anotest_memory PRIVATE anoptic_core)
