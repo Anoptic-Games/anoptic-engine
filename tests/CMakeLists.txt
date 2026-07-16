@@ -182,6 +182,13 @@ target_link_libraries(anotest_audio PRIVATE anoptic_core)
 add_test(NAME anoptic_audio COMMAND anotest_audio)
 set_tests_properties(anoptic_audio PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
+# Buffer-register argument guard: a frames count whose byte size wraps uint64 must be
+# rejected, not adopted (docs/BUGS.md, Audio / Implementation). Fails until the guard lands.
+add_executable(anotest_audioguard anotest_audioguard.c)
+target_link_libraries(anotest_audioguard PRIVATE anoptic_core)
+add_test(NAME anoptic_audioguard COMMAND anotest_audioguard)
+set_tests_properties(anoptic_audioguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
 # cascades to null); by hand on a desktop it is the audible Phase 1 check.
 add_executable(anotest_audiotone anotest_audiotone.c)
