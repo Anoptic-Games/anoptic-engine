@@ -3,20 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * ano_synth.c
- * Synth lifecycle, score loading (merge_ties + BeatClock + the frame-stamped
- * schedule), the transport, the generator, and the console helpers.
- * Public contract: include/anoptic_synth.h.
- *
- * Scheduling semantics ported exactly (TECH_SPEC §11.3): the FULL tempo map is
- * built before any event is placed (merged notes span bars); schedule order is
- * (frame, kind, seq) with params < note at equal frames; the generator steps
- * sub-block spans that stop at every bar edge and note onset, so event timing
- * is sample-accurate in both the realtime and offline paths — which closes the
- * prototype's documented realtime tie-rearticulation gap (a merged chain is
- * one voice with one envelope everywhere).
- */
+// Lifecycle, score load (merge_ties + BeatClock + frame schedule), transport, generator, console helpers.
+// Schedule: full tempo map before placement; order (frame, kind, seq) with params < note; sub-block spans at bar edges and note onsets.
 
 #include "synth_internal.h"
 
@@ -27,22 +15,15 @@
 #include <anoptic_log.h>
 #include <anoptic_time.h>
 
-// ---------------------------------------------------------------------------
-// Patch registry
-// ---------------------------------------------------------------------------
+
+/* Patch Registry */
 
 static const char *const PATCH_NAMES[ANO_SYNTH_PATCH_COUNT] = {
     "", "warm", "bright", "morph", "breeze", "round", "driven", "bad_ground",
     "soft", "hard", "mellow", "keys", "whistle", "pluck", "glass", "chimes",
 };
 
-// The composer names a TIMBRE (AnoPatchName, anoptic_music.h); the synth owns a
-// REGISTRY of voices that can play one. Two id spaces, and this is the only place
-// they meet — the music module cannot know what a backend implements, and this
-// backend's palette is its own business. They happen to line up today; the map is
-// explicit anyway, because the day they stop lining up must be a compile error and
-// not a bass patch quietly playing the melody. (It was, for a while. It sounded
-// great, and it was wrong.)
+// AnoPatchName -> AnoSynthPatch. Explicit map; _Static_assert on count drift.
 static const uint8_t PATCH_OF_MUSIC[ANO_PATCH_COUNT] = {
     [ANO_PATCH_NONE]       = ANO_SYNTH_PATCH_DEFAULT,
     [ANO_PATCH_WARM]       = ANO_SYNTH_PATCH_WARM,
@@ -85,9 +66,8 @@ uint32_t ano_synth_patch_of(uint32_t musicPatch)
                                         : ANO_SYNTH_PATCH_DEFAULT;
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+
+/* Lifecycle */
 
 AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
 {
@@ -109,6 +89,7 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
     s->maxVoices  = voices;
     s->smoothCoef = expf(-1.0f / (0.030f * (float)rate));
     atomic_init(&s->startFrame, ANO_SYNTH_IDLE);
+    atomic_init(&s->transportEpoch, 0u); // epochSeen 0 via calloc
 
     s->voices   = mi_heap_calloc(heap, voices, sizeof *s->voices);
     s->duckGain = mi_heap_calloc(heap, ANO_SYNTH_SPAN_MAX, sizeof(float));
@@ -117,7 +98,7 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
     s->bellFrames = (uint64_t)(1.6f * (float)rate);
     s->bell       = mi_heap_calloc(heap, s->bellFrames, sizeof(float));
 
-    // shimmer history: 2 s rounded up to a power of two
+    // shimmer history: 2 s, power-of-two
     uint32_t cap = 1;
     while (cap < rate * 2u)
         cap <<= 1;
@@ -144,11 +125,10 @@ uint32_t ano_synth_dropped(const AnoSynth *s)
     return s->dropped;
 }
 
-// ---------------------------------------------------------------------------
-// BeatClock (TECH_SPEC §11.1, ported verbatim)
-// ---------------------------------------------------------------------------
 
-// Ring accessors. Batch masks are UINT32_MAX, so these are plain indexing.
+/* BeatClock */
+
+// Ring accessors. Batch mask UINT32_MAX = plain index.
 static AnoSynthAnchor *anchor_at(const AnoSynth *s, uint32_t i)
 {
     return &s->anchors[i & s->anchorMask];
@@ -162,18 +142,14 @@ static AnoSynthNote *note_at(const AnoSynth *s, uint32_t i)
     return &s->notes[i & s->noteMask];
 }
 
-// The oldest anchor still addressable. Live drops anchors off the back of the
-// ring; every anchor carries its own ABSOLUTE time, so the truncated clock is
-// still exact for any beat at or after the oldest retained one — and the only
-// beats ever queried are at the playhead or ahead of it.
+// Oldest retained anchor index. Live drops off the back; absolute time keeps truncated clock exact for playhead-or-ahead.
 static uint32_t anchor_floor(const AnoSynth *s)
 {
     return s->live && s->anchorCount > s->anchorCap ? s->anchorCount - s->anchorCap
                                                     : 0u;
 }
 
-// A point at the last anchor's beat replaces its bpm; a point before it is an
-// error; otherwise the new anchor's time extends at the PREVIOUS anchor's bpm.
+// Same beat: replace bpm. Earlier: error. Else: extend at previous bpm.
 static bool clock_add(AnoSynth *s, double beat, double bpm)
 {
     AnoSynthAnchor *last = anchor_at(s, s->anchorCount - 1u);
@@ -187,12 +163,12 @@ static bool clock_add(AnoSynth *s, double beat, double bpm)
         return false;
     AnoSynthAnchor add = { beat, last->time + (beat - last->beat) * 60.0 / last->bpm,
                            bpm };
-    *anchor_at(s, s->anchorCount) = add; // live: retires the oldest
+    *anchor_at(s, s->anchorCount) = add; // live: retires oldest
     s->anchorCount++;
     return true;
 }
 
-// Last anchor at-or-before `beat`, extrapolated at that anchor's bpm.
+// Last anchor at-or-before beat, extrapolated at that bpm.
 static double clock_time_at(const AnoSynth *s, double beat)
 {
     uint32_t floor_ = anchor_floor(s);
@@ -205,9 +181,8 @@ static double clock_time_at(const AnoSynth *s, double beat)
     return a->time + (beat - a->beat) * 60.0 / a->bpm;
 }
 
-// ---------------------------------------------------------------------------
-// Score loading
-// ---------------------------------------------------------------------------
+
+/* Score Loading */
 
 bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
                            uint32_t tempoCount, uint32_t eventCount)
@@ -215,7 +190,7 @@ bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
     if (barQuarters <= 0.0 || barCount == 0u)
         return false;
     if (atomic_load_explicit(&s->startFrame, memory_order_acquire) != ANO_SYNTH_IDLE)
-        return false; // loading while the generator runs is a contract breach
+        return false; // must be idle
     mi_free(s->anchors);
     mi_free(s->bars);
     mi_free(s->raw);
@@ -258,7 +233,7 @@ bool ano_synth_score_bar(AnoSynth *s, uint32_t bar, const AnoMusicalParams *p,
     AnoSynthBar *b = &s->bars[s->barCount++];
     b->params = *p;
     b->affect = *a;
-    b->frame = 0;      // stamped in score_end, after the clock is complete
+    b->frame = 0; // stamped in score_end, after tempo map complete
     b->barSeconds = 0;
     return true;
 }
@@ -272,17 +247,13 @@ bool ano_synth_score_event(AnoSynth *s, const AnoNoteEvent *ev)
     return true;
 }
 
-// Python round(x, 10): scale, round half to even, unscale.
+// Python round(x, 10): scale, round half-even, unscale.
 static double round10(double x)
 {
     return nearbyint(x * 1e10) / 1e10;
 }
 
-// merge_ties, exact semantics (TECH_SPEC §4.2): chains keyed (layer, pitch);
-// an in/both event continues an open chain iff the head's end meets its start
-// within 1e-9 (in also closes it); out/both becomes a head — a copy with tie
-// cleared; everything else, including an orphan in, passes through in order.
-// Writes merged events into notes[].ev; returns the merged count.
+// merge_ties: chains keyed (layer, pitch). in/both continues open head if ends meet within 1e-9 (in closes). out/both becomes head (tie cleared). Else pass through. Writes notes[].ev.
 static uint32_t merge_ties(AnoSynth *s)
 {
     int32_t open[ANO_MUSIC_LAYER_COUNT][128];
@@ -350,7 +321,7 @@ bool ano_synth_score_end(AnoSynth *s)
 uint64_t ano_synth_score_frames(const AnoSynth *s, float tailSeconds)
 {
     if (!s->scoreReady || s->live)
-        return 0; // a live score has no end
+        return 0; // live has no end
     return s->lastNoteEnd + (uint64_t)(tailSeconds * (float)s->sampleRate);
 }
 
@@ -359,11 +330,10 @@ double ano_synth_time_at(const AnoSynth *s, double beat)
     return s->scoreReady ? clock_time_at(s, beat) : 0.0;
 }
 
-// ---------------------------------------------------------------------------
-// Live scoring: the same schedule, built one bar at a time
-// ---------------------------------------------------------------------------
 
-#define LIVE_NOTES   1024u // ring capacities (powers of two)
+/* Live Scoring */
+
+#define LIVE_NOTES   1024u // ring caps (powers of two)
 #define LIVE_BARS      16u
 #define LIVE_ANCHORS  256u
 
@@ -372,7 +342,7 @@ bool ano_synth_live_begin(AnoSynth *s, double barQuarters)
     if (barQuarters <= 0.0)
         return false;
     if (atomic_load_explicit(&s->startFrame, memory_order_acquire) != ANO_SYNTH_IDLE)
-        return false; // same contract as score_begin
+        return false; // must be idle
     mi_free(s->anchors);
     mi_free(s->bars);
     mi_free(s->raw);
@@ -402,25 +372,18 @@ bool ano_synth_live_begin(AnoSynth *s, double barQuarters)
     s->liveNextBar = 0;
     s->liveLate = s->liveOverflow = 0;
     memset(s->openChain, 0xFF, sizeof s->openChain); // all -1
-    s->scoreReady = true; // live has no separate "end"
+    s->scoreReady = true; // live has no separate end
     return true;
 }
 
-// The onset frame, from the clock in force. The bar's tempo points are added
-// before its events, so the ONSET is always knowable here. The sounding
-// DURATION is not — the note's end may reach into a bar that has not arrived —
-// so it is finalized at spawn (synth_spawn_note).
+// Onset from clock (tempo already added). Duration may reach unarrived bar; finalized at spawn.
 static void live_stamp(AnoSynth *s, AnoSynthNote *n)
 {
     n->frame = (uint64_t)(clock_time_at(s, n->ev.start) * (double)s->sampleRate);
     n->durS  = 0.0f;
 }
 
-// The appended run [from, noteCount) is sorted within itself (the generator
-// emits by (start, pitch)), but an echo can spill past the next bar's downbeat,
-// so the run may overlap the tail already queued. Insertion-sort it back into
-// place — stable, and never behind the cursor (a note there has already sounded).
-// Equal frames keep append order, which IS the batch path's `seq` order.
+// Insertion-sort run [from, noteCount) into schedule ahead of cursor (never behind — already sounded). Equal frames keep append order (= batch seq).
 static void live_order(AnoSynth *s, uint32_t from)
 {
     for (uint32_t i = from; i < s->noteCount; ++i) {
@@ -442,7 +405,7 @@ bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
     if (!s->live || !p || !a || bar != s->liveNextBar)
         return false;
     if (s->barCount - s->barCursor >= s->barCap)
-        return false; // the bar ring is full: the driver ran too far ahead
+        return false; // bar ring full: driver ran too far ahead
 
     // tempo first: every frame stamp below reads the clock
     for (uint32_t i = 0; i < tempoCount; ++i)
@@ -457,7 +420,7 @@ bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
     b->barSeconds = (float)(s->barQuarters * 60.0 / p->tempoBpm);
     s->barCount++;
 
-    // merge_ties, incrementally: the open chains persist across the barline
+    // incremental merge_ties across barline
     uint32_t from = s->noteCount;
     for (uint32_t i = 0; i < eventCount; ++i) {
         const AnoNoteEvent *ev = &events[i];
@@ -470,12 +433,11 @@ bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
                 if (fabs(head->ev.start + head->ev.dur - ev->start) < 1e-9) {
                     head->ev.dur = round10(head->ev.dur + ev->dur);
                     if (ev->tie == ANO_MUSIC_TIE_IN)
-                        *slot = -1; // the chain closed
+                        *slot = -1; // chain closed
                     continue;
                 }
             } else if (*slot >= 0) {
-                // the head already sounded — it cannot grow now, so the
-                // continuation stands alone (the orphan the linter licenses)
+                // head already sounded: continuation stands alone
                 s->liveLate++;
                 *slot = -1;
             }
@@ -505,7 +467,7 @@ uint32_t ano_synth_live_pending(const AnoSynth *s, uint64_t worldFrame)
         return 0;
     uint64_t t0 = atomic_load_explicit(&s->startFrame, memory_order_acquire);
     if (t0 == ANO_SYNTH_IDLE)
-        return s->barCount - s->barCursor; // nothing has sounded yet
+        return s->barCount - s->barCursor; // nothing sounded yet
     uint64_t scoreF = worldFrame > t0 ? worldFrame - t0 : 0u;
     uint32_t n = 0;
     for (uint32_t i = s->barCursor; i < s->barCount; ++i)
@@ -524,13 +486,10 @@ uint32_t ano_synth_live_overflow(const AnoSynth *s)
     return s->liveOverflow;
 }
 
-// ---------------------------------------------------------------------------
-// The attached composer
-// ---------------------------------------------------------------------------
 
-// The composer's outbound queue. A full queue means nobody is draining, and the
-// oldest goes rather than the newest — a stale cadence is worth less than the
-// current one.
+/* Music Driver */
+
+// Event queue: full drops oldest.
 static void synth_emit(AnoSynth *s, const AnoAudioEvent *e)
 {
     s->evtQueue[s->evtHead++ % ANO_SYNTH_EVENT_QUEUE] = *e;
@@ -538,10 +497,7 @@ static void synth_emit(AnoSynth *s, const AnoAudioEvent *e)
         s->evtTail = s->evtHead - ANO_SYNTH_EVENT_QUEUE;
 }
 
-// Compose one bar and schedule it. Times the composition — this is the audio
-// thread's exposure to the music engine and the only reason hosting it here is
-// a decision rather than an assumption. false = the bar could not be scheduled
-// (the ring is full): the bar is composed and LOST, so callers stop pumping.
+// Compose one bar and schedule it. Times composition. false = ring full (bar composed and lost).
 static bool music_pump(AnoSynth *s)
 {
     uint64_t t0 = ano_timestamp_us();
@@ -551,10 +507,7 @@ static bool music_pump(AnoSynth *s)
     if (us > s->musicBarUsMax)
         s->musicBarUsMax = us;
 
-    // Rebase: the engine speaks in ITS piece's beats (bar 900 starts at beat
-    // 3600), the schedule in its own. Shifting the beats is what lets a seeked
-    // engine keep its bar numbering — which it must, since that numbering spells
-    // the RNG stream tags, and renumbering it would compose different music.
+    // Rebase engine beats onto schedule via musicBeatOffset (keeps engine bar numbering / RNG tags).
     AnoMusicBar *mb = &s->musicBar;
     if (s->musicBeatOffset != 0.0) {
         for (uint32_t i = 0; i < mb->tempoCount; ++i)
@@ -569,19 +522,19 @@ static bool music_pump(AnoSynth *s)
         return false;
 
     AnoSynthBar *b = bar_at(s, bar);
-    b->meaning    = mb->meaning; // the ENGINE's bar number: what the game means by it
+    b->meaning    = mb->meaning; // engine's bar number
     b->hasMeaning = true;
     return true;
 }
 
-// The offset that lands the engine's next bar on the schedule's next barline.
+// Offset landing engine's next bar on schedule's next barline.
 static double music_rebase(const AnoSynth *s)
 {
     return ((double)s->liveNextBar - (double)ano_music_next_bar(s->music))
            * s->barQuarters;
 }
 
-// Keep LOOKAHEAD bars standing between the playhead and the end of the score.
+// Keep LOOKAHEAD bars ahead of playhead.
 static void music_topup(AnoSynth *s, uint64_t worldFrame)
 {
     while (ano_synth_live_pending(s, worldFrame) < ANO_SYNTH_LIVE_LOOKAHEAD)
@@ -594,12 +547,12 @@ bool ano_synth_attach_music(AnoSynth *s, AnoMusicEngine *music)
     if (!music)
         return false;
     if (!ano_synth_live_begin(s, ano_music_bar_quarters(music)))
-        return false; // not idle, or a degenerate meter
+        return false; // not idle, or bad meter
 
-    s->music      = music;
-    s->musicBarUs = s->musicBarUsMax = 0;
-    s->evtHead    = s->evtTail = 0;
-    s->musicBeatOffset = music_rebase(s); // 0 for a fresh engine; a jump for a restored one
+    s->music = music;
+    // musicBarUs/evt queue resets belong to the staged transport reset (mixer-side);
+    // touching them here would race the always-running poll/stats hooks.
+    s->musicBeatOffset = music_rebase(s); // 0 fresh; jump if restored mid-piece
     while (s->barCount < ANO_SYNTH_LIVE_LOOKAHEAD)
         if (!music_pump(s)) {
             s->music = NULL;
@@ -614,38 +567,22 @@ void ano_synth_detach_music(AnoSynth *s)
         s->music = NULL;
 }
 
-// Adopt an engine state at the next barline (ACMD_MUSIC_SEEK). The expensive
-// half of a seek — fast-forwarding a fresh engine to bar N — already happened on
-// the producer's thread; what is left is a copy and a rebase, and both are cheap.
-//
-// What is already sounding plays out: the bar under the playhead finishes, and
-// everything scheduled BEHIND that barline belongs to a piece no longer being
-// played, so it goes. `snapshot` is a borrowed engine image, valid for this call
-// only, and it must be ano_music_snapshot_size() bytes — the command carries no
-// length, so that is a contract rather than a check. false = nothing was adopted
-// (no engine attached, or a different meter — that is a different piece, and it
-// wants a fresh attach rather than the clock bent under it).
+// ACMD_MUSIC_SEEK: restore snapshot at next barline. Sounding bar finishes; drop schedule behind edge. Snapshot = ano_music_snapshot_size() bytes. false = no engine or meter mismatch.
 static bool music_seek(AnoSynth *s, const void *snapshot)
 {
     if (!s->music || !s->live || !snapshot)
         return false;
-    // the incoming bytes ARE an engine (pointer-free by construction), so the
-    // meter can be read off them before anything is committed
     const AnoMusicEngine *incoming = snapshot;
     if (fabs(ano_music_bar_quarters(incoming) - s->barQuarters) > 1e-9)
         return false;
     if (!ano_music_restore(s->music, snapshot, ano_music_snapshot_size()))
         return false;
 
-    // the barline the new music lands on: the first bar not yet applied
     uint32_t edgeBar   = s->barCursor;
     uint64_t edgeFrame = edgeBar < s->barCount ? bar_at(s, edgeBar)->frame : UINT64_MAX;
     double   edgeBeat  = (double)edgeBar * s->barQuarters;
 
-    // the old piece's future goes: its bars, the notes at or behind the barline
-    // (a suffix — the schedule IS deadline-sorted), and the tempo anchors no
-    // surviving bar needs. A tie reaching into the dropped bars dissolves, which
-    // is the orphan the IR already licenses.
+    // Drop future bars/notes/anchors past edge. Open ties dissolve.
     s->barCount = edgeBar;
     while (s->noteCount > s->noteCursor
            && note_at(s, s->noteCount - 1u)->frame >= edgeFrame)
@@ -662,8 +599,7 @@ static bool music_seek(AnoSynth *s, const void *snapshot)
         if (!music_pump(s))
             break;
 
-    // the handshake: the producer's block is free again. NOT "the new music is
-    // audible" — that is the next AEVT_MUSIC_BAR, a barline later.
+    // Handshake: producer block free. Audible change = next AEVT_MUSIC_BAR.
     AnoAudioEvent e = { .kind = AEVT_MUSIC_SEEKED, .u.seekedBar = adopted };
     synth_emit(s, &e);
     return true;
@@ -679,14 +615,10 @@ uint32_t ano_synth_music_bar_us_max(const AnoSynth *s)
     return s->musicBarUsMax;
 }
 
-// ---------------------------------------------------------------------------
-// The generator back-channel (the mixer's hooks; all on the mixer thread)
-// ---------------------------------------------------------------------------
 
-// Every hook below, and the generator itself, is reached through a void* the
-// caller wired into AnoAudioConfig. All four take the SAME one — the synth — and
-// handing one of them anything else is otherwise silent: the audio plays on and
-// the steering simply never arrives. Say so, once, and do nothing.
+/* Generator Back-Channel */
+
+// All four hooks share .generatorUser. Wrong pointer: warn once, no-op.
 static AnoSynth *synth_of(void *user, const char *hook)
 {
     AnoSynth *s = user;
@@ -704,16 +636,52 @@ static AnoSynth *synth_of(void *user, const char *hook)
     return NULL;
 }
 
-// The bridge's ACMD_MUSIC_*, applied to the attached engine. This is the only
-// path by which the logic thread reaches the composer, and it lands here, on the
-// thread that owns it. A tag arrives as a fixed field, so it is terminated here
-// rather than trusted.
+// Everything the render path owns once transport runs. Mixer thread
+// (or the idle-offline caller driving the hooks directly).
+static void synth_runtime_reset(AnoSynth *s)
+{
+    memset(s->voices, 0, (size_t)s->maxVoices * sizeof *s->voices);
+    s->noteCursor = s->barCursor = 0;
+    s->dropped    = 0;
+    s->musicBarUs = s->musicBarUsMax = 0;
+    s->evtHead = s->evtTail = 0;
+    s->cmdHead = s->cmdTail = 0;
+    ano_audio_smooth_snap(&s->cutoff, 2500.0f);
+    ano_audio_smooth_snap(&s->duckDepth, 0.0f);
+    ano_audio_smooth_snap(&s->shimGain, 0.0f);
+    s->cutoff.coef = s->duckDepth.coef = s->shimGain.coef = s->smoothCoef;
+    s->lfoPhase      = 0.0f;
+    s->sweepVal      = 0.0f;
+    s->lastBarCutoff = 2500.0f;
+    memset(s->instruments, 0, sizeof s->instruments);
+    memset(s->sweeps, 0, sizeof s->sweeps);
+    memset(s->ducks, 0, sizeof s->ducks);
+    memset(s->duckLive, 0, sizeof s->duckLive);
+    memset(s->grainRing, 0, (size_t)s->grainCap * sizeof(float));
+    ano_dsp_grain_init(&s->grain, s->grainRing, s->grainCap,
+                       0.2f, 2.0f, 0.12f, 2.0f, 0x5EEDu);
+}
+
+// Consume a staged transport start exactly once; every hook calls this first.
+// IDLE consumes nothing (logic owns the synth while idle). Multiple bumps
+// collapse into one reset.
+static void synth_transport_sync(AnoSynth *s)
+{
+    if (atomic_load_explicit(&s->startFrame, memory_order_acquire) == ANO_SYNTH_IDLE)
+        return;
+    uint64_t ep = atomic_load_explicit(&s->transportEpoch, memory_order_relaxed);
+    if (ep == s->epochSeen)
+        return;
+    s->epochSeen = ep;
+    synth_runtime_reset(s);
+}
+
 bool ano_music_apply_command(AnoMusicEngine *e, const AnoAudioCommand *cmd)
 {
     if (!e || !cmd)
         return false;
 
-    // the tag arrives as a fixed field, so it is terminated here rather than trusted
+    // fixed-field tag: terminate, do not trust
     char tag[ANO_AUDIO_TAG_MAX];
     memcpy(tag, cmd->tag, sizeof tag);
     tag[sizeof tag - 1] = '\0';
@@ -738,19 +706,20 @@ bool ano_music_apply_command(AnoMusicEngine *e, const AnoAudioCommand *cmd)
         ano_music_clear_override(e, tag);
         return true;
     default:
-        return false; // SEEK is not a state change an engine can apply to itself
+        return false; // SEEK not an engine self-apply
     }
 }
 
 void ano_synth_control(void *user, const AnoAudioCommand *cmd)
 {
     AnoSynth *s = synth_of(user, "ano_synth_control");
-    if (!s || !s->music)
+    if (!s)
+        return;
+    synth_transport_sync(s);
+    if (!s->music)
         return;
 
-    // SEEK is the synth's business (it owns the schedule the new state lands in);
-    // everything else is the engine's, and goes through the one interpretation a
-    // replaying producer also uses.
+    // SEEK: synth owns schedule. Else: engine via ano_music_apply_command.
     if (cmd->kind == ACMD_MUSIC_SEEK) {
         if (!music_seek(s, cmd->block))
             ano_debug_log(ANO_WARN, "synth: seek snapshot refused (no engine, or a "
@@ -760,12 +729,12 @@ void ano_synth_control(void *user, const AnoAudioCommand *cmd)
     ano_music_apply_command(s->music, cmd);
 }
 
-// What the composer had to say about the block just rendered.
 uint32_t ano_synth_poll(void *user, AnoAudioEvent *out, uint32_t cap)
 {
     AnoSynth *s = synth_of(user, "ano_synth_poll");
     if (!s)
         return 0;
+    synth_transport_sync(s);
     uint32_t n = 0;
     while (s->evtTail < s->evtHead && n < cap)
         out[n++] = s->evtQueue[s->evtTail++ % ANO_SYNTH_EVENT_QUEUE];
@@ -777,39 +746,23 @@ void ano_synth_stats(void *user, AnoAudioTelemetry *t)
     AnoSynth *s = synth_of(user, "ano_synth_stats");
     if (!s)
         return;
+    synth_transport_sync(s);
     t->genUs      = s->musicBarUs;
     t->genUsMax   = s->musicBarUsMax;
     t->genLate    = s->liveLate;
     t->genDropped = s->liveOverflow + s->dropped;
 }
 
-// ---------------------------------------------------------------------------
-// Transport
-// ---------------------------------------------------------------------------
+
+/* Transport */
 
 void ano_synth_transport_start(AnoSynth *s, uint64_t worldFrame)
 {
-    // full runtime reset first; the release store publishes it to the generator
-    memset(s->voices, 0, (size_t)s->maxVoices * sizeof *s->voices);
-    s->noteCursor = s->barCursor = 0;
-    s->dropped    = 0;
-    s->musicBarUsMax = 0;
-    s->evtHead = s->evtTail = 0;
-    s->cmdHead = s->cmdTail = 0;
-    ano_audio_smooth_snap(&s->cutoff, 2500.0f);
-    ano_audio_smooth_snap(&s->duckDepth, 0.0f);
-    ano_audio_smooth_snap(&s->shimGain, 0.0f);
-    s->cutoff.coef = s->duckDepth.coef = s->shimGain.coef = s->smoothCoef;
-    s->lfoPhase      = 0.0f;
-    s->sweepVal      = 0.0f;
-    s->lastBarCutoff = 2500.0f;
-    memset(s->instruments, 0, sizeof s->instruments);
-    memset(s->sweeps, 0, sizeof s->sweeps);
-    memset(s->ducks, 0, sizeof s->ducks);
-    memset(s->duckLive, 0, sizeof s->duckLive);
-    memset(s->grainRing, 0, (size_t)s->grainCap * sizeof(float));
-    ano_dsp_grain_init(&s->grain, s->grainRing, s->grainCap,
-                       0.2f, 2.0f, 0.12f, 2.0f, 0x5EEDu);
+    // Stage only. The reset runs mixer-side at the next hook (synth_transport_sync),
+    // exactly once per epoch; the epoch bump is sequenced before the release store,
+    // so a hook that sees the new startFrame sees the bump. Restarts converge
+    // within one block.
+    atomic_fetch_add_explicit(&s->transportEpoch, 1u, memory_order_relaxed);
     atomic_store_explicit(&s->startFrame, worldFrame, memory_order_release);
 }
 
@@ -818,15 +771,14 @@ void ano_synth_transport_stop(AnoSynth *s)
     atomic_store_explicit(&s->startFrame, ANO_SYNTH_IDLE, memory_order_release);
 }
 
-// ---------------------------------------------------------------------------
-// The generator
-// ---------------------------------------------------------------------------
+
+/* Generator */
 
 static uint32_t console_bar_cmds(const AnoSynthBar *bar, AnoAudioCommand *out);
 
 static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
 {
-    // the bar sounds NOW: release the meaning composed LOOKAHEAD bars ago
+    // bar sounds now: emit meaning composed LOOKAHEAD bars ago
     if (bar->hasMeaning) {
         const AnoMusicMeaning *m = &bar->meaning;
         AnoAudioEvent e = { .kind = AEVT_MUSIC_BAR };
@@ -842,9 +794,7 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
         synth_emit(s, &e);
     }
 
-    // the console follows the music: this bar's sends, width, drive and delay
-    // time, queued for the mixer. Live only — the batch path stamps the very same
-    // commands with frames before the transport even starts.
+    // live: queue this bar's console cmds. Batch stamps via console_automation.
     if (s->live) {
         AnoAudioCommand c[ANO_SYNTH_BAR_CMDS];
         uint32_t m = console_bar_cmds(bar, c);
@@ -858,8 +808,7 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
     const AnoMusicalParams *p = &bar->params;
     float cutoff = fmaxf(120.0f, p->filterCutoff);
 
-    // one-shot audio-rate cutoff sweep on a large upward retarget (>= 1.6x):
-    // bar-long attack, 1.5-bar release, summing, immutable once born
+    // one-shot cutoff sweep on upward retarget >= 1.6x: bar attack, 1.5-bar release
     for (uint32_t i = 0; i < ANO_SYNTH_MAX_SWEEPS; ++i)
         if (s->sweeps[i].barsLeft > 0)
             s->sweeps[i].barsLeft--;
@@ -889,11 +838,7 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
 static void synth_spawn_note(AnoSynth *s, AnoSynthNote *n)
 {
     if (s->live) {
-        // A note's END may lie in a bar whose tempo points had not arrived when
-        // the note was appended — a long pad note, or a tie. The lookahead means
-        // the clock covers it BY NOW, so this is the first moment the sounding
-        // duration is knowable, and it is the value the batch path computes with
-        // its complete map.
+        // Duration now knowable (LOOKAHEAD covers end tempo). Matches batch complete-map.
         double on  = clock_time_at(s, n->ev.start);
         double off = clock_time_at(s, n->ev.start + n->ev.dur);
         n->durS = (float)(off - on);
@@ -913,7 +858,7 @@ static void synth_spawn_note(AnoSynth *s, AnoSynthNote *n)
         s->dropped++;
         return;
     }
-    // each kick spawns one duck one-shot; overlapping kicks sum (flams pump deeper)
+    // kick -> one duck one-shot; overlapping kicks sum
     if (n->ev.layer == ANO_MUSIC_PERC && n->ev.pitch == 36u) {
         for (uint32_t i = 0; i < ANO_SYNTH_MAX_DUCKS; ++i) {
             if (s->duckLive[i])
@@ -929,7 +874,7 @@ static void synth_render_span(AnoSynth *s, float *const *busMix, uint32_t pos, u
 {
     float fs = (float)s->sampleRate;
 
-    // shared cutoff bus at span start: smoothed target x slow-LFO mod x sweeps
+    // shared cutoff at span start: smooth x LFO x sweeps
     float lfo = 1.0f + sinf(ANO_DSP_TWO_PI * s->lfoPhase) * 0.12f;
     float sw  = s->sweepVal > 1.0f ? 1.0f : s->sweepVal;
     float cutoffOut = s->cutoff.y * lfo * (1.0f + sw * 0.9f);
@@ -939,9 +884,9 @@ static void synth_render_span(AnoSynth *s, float *const *busMix, uint32_t pos, u
     staged[ANO_MUSIC_MELODY]  = cutoffOut;
     staged[ANO_MUSIC_COUNTER] = cutoffOut;
     staged[ANO_MUSIC_ARP]     = cutoffOut;
-    staged[ANO_MUSIC_PERC]    = cutoffOut; // percussion never reads it
+    staged[ANO_MUSIC_PERC]    = cutoffOut; // perc never reads it
 
-    // shared per-sample controls: advance smoothers/LFO/sweeps, fill duck gains
+    // per-sample: smoothers, LFO, sweeps, duck gains
     for (uint32_t n = 0; n < span; ++n) {
         ano_audio_smooth_step(&s->cutoff);
         ano_audio_smooth_step(&s->shimGain);
@@ -965,7 +910,7 @@ static void synth_render_span(AnoSynth *s, float *const *busMix, uint32_t pos, u
         s->duckGain[n] = 1.0f - duck * depth;
     }
 
-    // voices into their layer strips (pad + arp duck under kicks)
+    // voices into layer strips; pad + arp duck under kicks
     for (uint32_t i = 0; i < s->maxVoices; ++i) {
         AnoSynthVoice *v = &s->voices[i];
         if (!v->active)
@@ -990,7 +935,7 @@ static void synth_render_span(AnoSynth *s, float *const *busMix, uint32_t pos, u
         }
     }
 
-    // shimmer lane: granulate the pad strip's history an octave up
+    // shimmer: granulate pad history an octave up
     const float *pad = busMix[ANO_SYNTH_BUS_STRIP0 + ANO_MUSIC_PAD];
     float *shim = busMix[ANO_SYNTH_BUS_SHIMMER];
     float g = s->shimGain.y;
@@ -1010,24 +955,26 @@ void ano_synth_generator(void *user, float *const *busMix, uint32_t busCount,
     AnoSynth *s = synth_of(user, "ano_synth_generator");
     if (!s)
         return;
+    synth_transport_sync(s);
     uint64_t t0 = atomic_load_explicit(&s->startFrame, memory_order_acquire);
     if (t0 == ANO_SYNTH_IDLE || !s->scoreReady || busCount < ANO_SYNTH_CONSOLE_BUSES)
         return;
     if (s->music)
-        music_topup(s, startFrame); // compose ahead of the playhead, then render
+        music_topup(s, startFrame); // compose LOOKAHEAD ahead of playhead, then render
     if (startFrame + frames <= t0)
         return;
     uint32_t pos = t0 > startFrame ? (uint32_t)(t0 - startFrame) : 0u;
     uint64_t scoreF = startFrame + pos - t0;
 
     while (pos < frames) {
-        // schedule priority at equal frames: params, then notes (kind order)
+        // equal frames: params then notes (schedule order)
         while (s->barCursor < s->barCount && bar_at(s, s->barCursor)->frame <= scoreF)
             synth_apply_bar(s, bar_at(s, s->barCursor++));
         while (s->noteCursor < s->noteCount
                && note_at(s, s->noteCursor)->frame <= scoreF)
             synth_spawn_note(s, note_at(s, s->noteCursor++));
 
+        // sub-block span ends at next bar edge or note onset
         uint64_t next = UINT64_MAX;
         if (s->barCursor < s->barCount)
             next = bar_at(s, s->barCursor)->frame;
@@ -1043,16 +990,14 @@ void ano_synth_generator(void *user, float *const *busMix, uint32_t busCount,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Console helpers (values are tuning, lifted from the prototype console)
-// ---------------------------------------------------------------------------
 
-// per-layer strip trim, static reverb/delay send, canonical layer order
+/* Console Helpers */
+
 static const float STRIP_TRIM[6] = { 0.60f, 0.85f, 0.70f, 0.55f, 0.55f, 0.95f };
 static const float SEND_REV[6]   = { 1.00f, 0.10f, 0.75f, 0.65f, 0.90f, 0.30f };
 static const float SEND_DLY[6]   = { 0.00f, 0.00f, 1.00f, 0.30f, 0.80f, 0.00f };
 
-// per-strip 3-band EQ: linear low/mid/high gains, shelf corner freqs
+// per-strip 3-band EQ: low/mid/high gains, shelf corners
 static const float STRIP_EQ[6][5] = {
     { 0.85f, 1.00f, 1.05f, 260.0f, 3200.0f }, // pad
     { 1.12f, 1.00f, 0.80f, 180.0f, 2200.0f }, // bass
@@ -1062,7 +1007,6 @@ static const float STRIP_EQ[6][5] = {
     { 1.15f, 0.95f, 1.10f, 120.0f, 5000.0f }, // perc
 };
 
-// initial global send scales (bar-0 automation retargets immediately)
 #define CONSOLE_REV_INIT 0.20f
 #define CONSOLE_DLY_INIT 0.10f
 
@@ -1072,7 +1016,7 @@ uint32_t ano_synth_console_layout(AnoAudioBusDesc *out, uint32_t cap)
         return 0;
     memset(out, 0, ANO_SYNTH_CONSOLE_BUSES * sizeof *out);
 
-    out[0].gain = 1.0f; // engine master: clip guard only
+    out[0].gain = 1.0f; // engine master: clip guard
 
     out[ANO_SYNTH_BUS_MASTER] = (AnoAudioBusDesc){
         .parent = 0, .gain = 1.0f,
@@ -1084,7 +1028,7 @@ uint32_t ano_synth_console_layout(AnoAudioBusDesc *out, uint32_t cap)
         .fx = { ANO_AUDIO_FX_REVERB },
     };
     out[ANO_SYNTH_BUS_DELAY] = (AnoAudioBusDesc){
-        .parent = ANO_SYNTH_BUS_MASTER, .gain = 0.7f, // prototype's delay-bus trim
+        .parent = ANO_SYNTH_BUS_MASTER, .gain = 0.7f,
         .fx = { ANO_AUDIO_FX_PINGPONG },
     };
     for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l) {
@@ -1092,7 +1036,7 @@ uint32_t ano_synth_console_layout(AnoAudioBusDesc *out, uint32_t cap)
         b->parent = ANO_SYNTH_BUS_MASTER;
         b->gain   = STRIP_TRIM[l];
         b->fx[0]  = ANO_AUDIO_FX_EQ3;
-        if (l == ANO_MUSIC_PAD) { // pad-only extras
+        if (l == ANO_MUSIC_PAD) {
             b->fx[1] = ANO_AUDIO_FX_CHORUS;
             b->fx[2] = ANO_AUDIO_FX_WIDTH;
         }
@@ -1103,8 +1047,7 @@ uint32_t ano_synth_console_layout(AnoAudioBusDesc *out, uint32_t cap)
             b->sendLevel[1]  = SEND_DLY[l] * CONSOLE_DLY_INIT;
         }
     }
-    // shimmer lane: dry at x0.2 through the fader, full-strength into the
-    // reverb (post-fader send 5.0 x fader 0.2 = 1.0, the prototype's routing)
+    // shimmer: dry x0.2, post-fader send 5.0 (= full into reverb)
     out[ANO_SYNTH_BUS_SHIMMER] = (AnoAudioBusDesc){
         .parent = ANO_SYNTH_BUS_MASTER, .gain = 0.2f,
         .sendTarget = { ANO_SYNTH_BUS_REVERB }, .sendLevel = { 5.0f },
@@ -1129,7 +1072,7 @@ uint32_t ano_synth_console_setup(AnoAudioOfflineEvent *out, uint32_t cap)
     if (!out || cap < 64u)
         return 0;
     uint32_t n = 0;
-    // master glue: bounded makeup 1.5 into the limiter; drive post-trim 0.7
+    // master: drive trim 0.7, glue makeup 1.5
     out[n++] = fx_evt(0, ANO_SYNTH_BUS_MASTER, 0, ANO_AUDIO_P_DRIVE_TRIM, 0.7f);
     out[n++] = fx_evt(0, ANO_SYNTH_BUS_MASTER, 1, ANO_AUDIO_P_COMP_MAKEUP, 1.5f);
     for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l) {
@@ -1146,10 +1089,7 @@ uint32_t ano_synth_console_setup(AnoAudioOfflineEvent *out, uint32_t cap)
     return n;
 }
 
-// One bar's console moves: per-layer sends, pad width, master drive, and the
-// tempo-synced delay time. ANO_SYNTH_BAR_CMDS of them, from the bar's params
-// alone — which is what lets the batch path stamp them with frames and the live
-// path queue them at the barline, from this one piece of arithmetic.
+// One bar: per-layer sends, pad width, master drive, tempo-synced delay. ANO_SYNTH_BAR_CMDS.
 static uint32_t console_bar_cmds(const AnoSynthBar *bar, AnoAudioCommand *out)
 {
     const AnoMusicalParams *p = &bar->params;
@@ -1167,7 +1107,7 @@ static uint32_t console_bar_cmds(const AnoSynthBar *bar, AnoAudioCommand *out)
                       ANO_AUDIO_P_WIDTH_AMOUNT, width);
     out[n++] = fx_cmd(ANO_SYNTH_BUS_MASTER, 0,
                       ANO_AUDIO_P_DRIVE_AMOUNT, 1.0f + p->drive * 4.0f);
-    // tempo-synced dotted 8th, capped at the prototype's half-max-line
+    // tempo-synced dotted 8th, capped 0.7 s
     float dotted = 0.75f * 60.0f / fmaxf((float)p->tempoBpm, 30.0f);
     out[n++] = fx_cmd(ANO_SYNTH_BUS_DELAY, 0,
                       ANO_AUDIO_P_PP_TIME_MS, fminf(dotted, 0.7f) * 1000.0f);
@@ -1189,14 +1129,12 @@ uint32_t ano_synth_console_automation(const AnoSynth *s, AnoAudioOfflineEvent *o
     return n;
 }
 
-// The live path's console: the bar that just started sounding automates the desk
-// itself. The mixer drains this once per block and applies it like any command —
-// one block of latency on a smoothed send, against a bar of two-odd seconds.
 uint32_t ano_synth_commands(void *user, AnoAudioCommand *out, uint32_t cap)
 {
     AnoSynth *s = synth_of(user, "ano_synth_commands");
     if (!s)
         return 0;
+    synth_transport_sync(s);
     uint32_t n = 0;
     while (s->cmdTail < s->cmdHead && n < cap)
         out[n++] = s->cmdQueue[s->cmdTail++ % ANO_SYNTH_CMD_QUEUE];

@@ -3,28 +3,14 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * audio_bridge.h (private to src/)
- * The logic<->audio transport: the SPSC rings that carry the protocol, the
- * seqlock lanes for latest-wins state, and the bridge struct completing the
- * opaque AnoAudioBridge handle. Consumed only within src/audio/. Never include
- * from include/. The PUBLIC contract (command/event protocol, opaque handle,
- * ano_audio_submit) is include/anoptic_audio.h.
- *
- * The ring and seqlock are deliberate copies of src/render_bridge/render_bridge.h
- * with audio-local names (the originals export non-inline init symbols, and
- * private headers do not cross modules). Same semantics, same alignment
- * discipline. Migrate BOTH bridges to anoptic_collections.h when the generic
- * lock-free collections land — the audio bridge is the second consumer that
- * justifies the promotion.
- *
- * Two one-way streams plus two published lanes:
- *   logic master --AnoAudioCommand--> mixer thread   (commands ring, lossless)
- *   mixer thread --AnoAudioEvent----> logic master   (events ring; retirement
- *                                     facts are re-emitted until they land)
- *   logic publishes AnoAudioListener  (seqlock, latest-wins)
- *   mixer publishes AnoAudioTelemetry (seqlock, latest-wins)
- */
+// Logic<->audio transport (private to src/audio/): SPSC rings + seqlock lanes.
+// Completes opaque AnoAudioBridge. Public contract: include/anoptic_audio.h.
+// Ring/seqlock mirror src/render_bridge/render_bridge.h (audio-local names).
+//
+//   logic --AnoAudioCommand--> mixer   (commands, lossless)
+//   mixer --AnoAudioEvent----> logic   (events. retirement re-emits until landed)
+//   logic publishes AnoAudioListener   (seqlock, latest-wins)
+//   mixer publishes AnoAudioTelemetry  (seqlock, latest-wins)
 
 #ifndef ANO_AUDIO_BRIDGE_INTERNAL_H
 #define ANO_AUDIO_BRIDGE_INTERNAL_H
@@ -33,30 +19,27 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <string.h>
 #include <mimalloc.h>
 #include <anoptic_memory.h> // ANO_CACHE_LINE / ANO_THREAD_LINE
-#include <anoptic_audio.h>  // command/event protocol + opaque AnoAudioBridge
+#include <anoptic_audio.h>
 
-// ---------------------------------------------------------------------------
-// Bounded SPSC ring (copy of render_bridge.h AnoSpscRing; see header comment)
-// ---------------------------------------------------------------------------
 
-// Single-producer/single-consumer bounded ring over fixed-size POD elements.
-// Lock-free and wait-free both ends, capacity a power of two so index wrap is a
-// mask. The producer owns `tail`, the consumer owns `head`. Each reads the
-// other with acquire and publishes its own with release. tail and head sit on
-// separate ANO_THREAD_LINE regions; a HEAP owner must request that alignment
-// (e.g. mi_heap_malloc_aligned) for the separation to hold.
+/* Bounded SPSC ring */
+
+// Lock-free SPSC over fixed POD. capacity pow2. Producer owns tail, consumer head.
+// Each reads the other with acquire and publishes its own with release.
+// Heap owners: allocate the ring owner with ANO_THREAD_LINE alignment so tail/head stay apart.
 typedef struct AnoAudioRing
 {
-    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t tail; // producer-owned cursor: next index to write
-    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t head; // consumer-owned cursor: next index to read
-    _Alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
-    uint32_t                          stride;       // element size in bytes
-    uint8_t                          *buffer;       // capacity * stride bytes
+    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t tail; // next write index
+    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t head; // next read index
+    _Alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1
+    uint32_t                          stride;       // element bytes
+    uint8_t                          *buffer;       // capacity * stride
 } AnoAudioRing;
 
-// Smallest power of two >= v, floor of 2. Returns 0 on overflow (v > 2^31).
+// Smallest pow2 >= v, floor 2. 0 on overflow (v > 2^31).
 static inline uint32_t ano_audio_next_pow2(uint32_t v)
 {
     if (v < 2u) return 2u;
@@ -65,8 +48,7 @@ static inline uint32_t ano_audio_next_pow2(uint32_t v)
     return v + 1u; // wraps to 0 if v was > 2^31
 }
 
-// in:  ring, heap, capacity_pow2 (rounded up to a power of two, >= 2), stride (> 0)
-// out: true on success; false on bad args or allocation failure
+// capacity rounded up to pow2 (>= 2). false on bad args or alloc failure.
 static inline bool ano_audio_ring_init(AnoAudioRing *ring, mi_heap_t *heap,
                                        uint32_t capacity_pow2, uint32_t stride)
 {
@@ -84,7 +66,7 @@ static inline bool ano_audio_ring_init(AnoAudioRing *ring, mi_heap_t *heap,
     return true;
 }
 
-// Releases the ring buffer. Does not release the backing heap.
+// Free ring buffer. Does not free the heap.
 static inline void ano_audio_ring_destroy(AnoAudioRing *ring)
 {
     if (!ring) return;
@@ -98,8 +80,7 @@ static inline void ano_audio_ring_destroy(AnoAudioRing *ring)
     atomic_store_explicit(&ring->tail, 0u, memory_order_relaxed);
 }
 
-// PRODUCER only. Copies `stride` bytes from `elem` into the ring.
-// out: false if the ring is full (caller decides: drop, retry, or backpressure upstream).
+// PRODUCER. Copy stride bytes. false if full.
 static inline bool ano_audio_ring_push(AnoAudioRing *ring, const void *elem)
 {
     uint32_t tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
@@ -113,13 +94,12 @@ static inline bool ano_audio_ring_push(AnoAudioRing *ring, const void *elem)
     return true;
 }
 
-// CONSUMER only. Copies the next element into `out` (>= stride bytes).
-// out: false if the ring is empty.
+// CONSUMER. Copy next element into out. false if empty.
 static inline bool ano_audio_ring_pop(AnoAudioRing *ring, void *out)
 {
     uint32_t head = atomic_load_explicit(&ring->head, memory_order_relaxed);
     uint32_t tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
-    if (head == tail) // empty
+    if (head == tail)
         return false;
     const uint8_t *slot = ring->buffer + (size_t)(head & ring->mask) * ring->stride;
     for (uint32_t i = 0; i < ring->stride; ++i)
@@ -128,8 +108,7 @@ static inline bool ano_audio_ring_pop(AnoAudioRing *ring, void *out)
     return true;
 }
 
-// PRODUCER only. true when a push would fail — lets the mixer skip rendering a
-// block it could not deliver.
+// PRODUCER. true when push would fail.
 static inline bool ano_audio_ring_full(const AnoAudioRing *ring)
 {
     uint32_t tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
@@ -137,90 +116,94 @@ static inline bool ano_audio_ring_full(const AnoAudioRing *ring)
     return (tail - head) > ring->mask;
 }
 
-// ---------------------------------------------------------------------------
-// Lock-free latest-wins seqlock (copy of render_bridge.h; see header comment)
-// ---------------------------------------------------------------------------
-// A single producer writes the value guarded by an even/odd version: even ==
-// stable, odd == mid-write. The consumer copies and retries iff the version
-// moved across its copy. version == 0 means "never published".
-static inline void ano_audio_seq_store(void *value, _Atomic uint64_t *version, const void *v, size_t stride)
+
+/* Latest-wins seqlock */
+
+// Even version = stable. Odd = mid-write. version 0 = never published.
+// value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
+// Relaxed word copies keep concurrent store/load defined; torn loads are
+// discarded by the version recheck, exactly as before.
+static inline void ano_audio_seq_store(_Atomic uint64_t *value, _Atomic uint64_t *version, const void *v, size_t stride)
 {
-    uint64_t s = atomic_load_explicit(version, memory_order_relaxed); // single producer owns version
-    atomic_store_explicit(version, s + 1u, memory_order_relaxed);     // enter write (odd)
-    atomic_thread_fence(memory_order_release);                        // odd marker before the value writes
-    for (size_t i = 0; i < stride; ++i) ((uint8_t *)value)[i] = ((const uint8_t *)v)[i];
-    atomic_store_explicit(version, s + 2u, memory_order_release);     // exit write (even) + publish writes
+    uint64_t s = atomic_load_explicit(version, memory_order_relaxed);
+    atomic_store_explicit(version, s + 1u, memory_order_relaxed); // enter (odd)
+    atomic_thread_fence(memory_order_release);
+    for (size_t i = 0; i < stride / 8u; ++i) {
+        uint64_t w;
+        memcpy(&w, (const uint8_t *)v + 8u * i, 8u);
+        atomic_store_explicit(&value[i], w, memory_order_relaxed);
+    }
+    atomic_store_explicit(version, s + 2u, memory_order_release); // exit (even)
 }
 
-// out: false (out untouched) if nothing published yet. Otherwise copies a CONSISTENT (untorn) value.
-static inline bool ano_audio_seq_load(const void *value, const _Atomic uint64_t *version, void *out, size_t stride)
+// false if never published. Else copies an untorn value.
+static inline bool ano_audio_seq_load(const _Atomic uint64_t *value, const _Atomic uint64_t *version, void *out, size_t stride)
 {
     for (;;) {
         uint64_t s1 = atomic_load_explicit(version, memory_order_acquire);
-        if (s1 == 0u) return false; // never published
-        if (s1 & 1u) continue;      // producer mid-write, re-read
-        for (size_t i = 0; i < stride; ++i) ((uint8_t *)out)[i] = ((const uint8_t *)value)[i];
-        atomic_thread_fence(memory_order_acquire);                    // value reads before the recheck
+        if (s1 == 0u) return false;
+        if (s1 & 1u) continue;
+        for (size_t i = 0; i < stride / 8u; ++i) {
+            uint64_t w = atomic_load_explicit(&value[i], memory_order_relaxed);
+            memcpy((uint8_t *)out + 8u * i, &w, 8u);
+        }
+        atomic_thread_fence(memory_order_acquire);
         uint64_t s2 = atomic_load_explicit(version, memory_order_relaxed);
-        if (s1 == s2) return true;  // version unmoved across the copy -> consistent
+        if (s1 == s2) return true;
     }
 }
 
-// ---------------------------------------------------------------------------
-// The bridge
-// ---------------------------------------------------------------------------
 
-// Completes the opaque AnoAudioBridge declared in anoptic_audio.h.
+/* Bridge */
+
+_Static_assert(sizeof(_Atomic uint64_t) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
+_Static_assert(sizeof(AnoAudioListener)  % 8u == 0, "seqlock lane copies whole 64-bit words");
+_Static_assert(sizeof(AnoAudioTelemetry) % 8u == 0, "seqlock lane copies whole 64-bit words");
+
 struct AnoAudioBridge
 {
-    AnoAudioRing commands; // logic -> mixer (AnoAudioCommand)
-    AnoAudioRing events;   // mixer -> logic (AnoAudioEvent)
+    AnoAudioRing commands; // logic -> mixer
+    AnoAudioRing events;   // mixer -> logic
 
-    // Published latest-wins state, each a seqlock with its version on a private cache line.
-    // listener: logic publishes, mixer acquires. telemetry: mixer publishes, logic acquires.
-    AnoAudioListener listener;
+    // Seqlock lanes store object representation as atomic words; typed access
+    // only ever happens through the publish/acquire copies.
+    _Atomic uint64_t listener[sizeof(AnoAudioListener) / sizeof(uint64_t)];
     _Alignas(ANO_CACHE_LINE) _Atomic uint64_t listenerVersion;
-    AnoAudioTelemetry telemetry;
+    _Atomic uint64_t telemetry[sizeof(AnoAudioTelemetry) / sizeof(uint64_t)];
     _Alignas(ANO_CACHE_LINE) _Atomic uint64_t telemetryVersion;
 };
 
-// in:  bridge, heap, cmd_capacity_pow2, evt_capacity_pow2
-// out: true on success; false on allocation failure
-// inv: both rings allocate from `heap`; destroy the bridge before releasing it.
+// Rings from heap. Destroy bridge before releasing heap.
 bool ano_audio_bridge_init(AnoAudioBridge *bridge, mi_heap_t *heap,
                            uint32_t cmd_capacity_pow2, uint32_t evt_capacity_pow2);
 
 void ano_audio_bridge_destroy(AnoAudioBridge *bridge);
 
-// --- Logic master endpoints (anoptic_audio.h) ---
-// ano_audio_submit, ano_audio_poll_event, ano_audio_publish_listener, and
-// ano_audio_acquire_telemetry are public, defined non-inline in ano_audio.c.
+// Public producer endpoints live non-inline in ano_audio.c.
 
-// --- Mixer endpoints (consumes commands + listener, produces events + telemetry) ---
 
-// Dequeue one command into `out`. false if no command pending.
+/* Mixer endpoints */
+
 static inline bool ano_audio_next_command(AnoAudioBridge *bridge, AnoAudioCommand *out)
 {
     return ano_audio_ring_pop(&bridge->commands, out);
 }
 
-// Enqueue one event. false if the event ring is full. The mixer must NOT block:
-// it drops CAPACITY advisories and re-emits retirement facts next block.
+// false if full. Must not block: drop CAPACITY; re-emit retirement next block.
 static inline bool ano_audio_emit_event(AnoAudioBridge *bridge, const AnoAudioEvent *evt)
 {
     return ano_audio_ring_push(&bridge->events, evt);
 }
 
-// Publish this block's telemetry frame for the logic master.
 static inline void ano_audio_publish_telemetry(AnoAudioBridge *bridge, const AnoAudioTelemetry *t)
 {
-    ano_audio_seq_store(&bridge->telemetry, &bridge->telemetryVersion, t, sizeof *t);
+    ano_audio_seq_store(bridge->telemetry, &bridge->telemetryVersion, t, sizeof *t);
 }
 
-// Read the latest listener pose logic published. false (out untouched) before its first publish.
+// false before first listener publish.
 static inline bool ano_audio_acquire_listener(AnoAudioBridge *bridge, AnoAudioListener *out)
 {
-    return ano_audio_seq_load(&bridge->listener, &bridge->listenerVersion, out, sizeof *out);
+    return ano_audio_seq_load(bridge->listener, &bridge->listenerVersion, out, sizeof *out);
 }
 
 #endif // ANO_AUDIO_BRIDGE_INTERNAL_H
