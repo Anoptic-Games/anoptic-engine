@@ -45,6 +45,8 @@ audio_wav.c:34 〜 wav_write has the same unchecked frames * channels * sizeof(f
 
 ### Implementation bugs
 
+log_core.c:817 〜 the drain batch g_batch is sized ring bytes + 16 per record on the claim that a record's rendered text fits its ring footprint, but a deferred record renders at its format width, not its stored size 〜 "%*d" width 4000 holds one 64-byte ring line yet emits ~4016 batch bytes, so one pass over a ~164-record backlog walks blen past g_batchCap (the per-record prefix memcpy and newline are unchecked), the size_t room subtraction underflows and unbounds every later record into a multi-MB heap overwrite on the draining thread 〜 test: anotest_logflood
+
 ### Interlink / Composition bugs 
 
 
