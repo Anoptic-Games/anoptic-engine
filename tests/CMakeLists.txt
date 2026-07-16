@@ -246,6 +246,14 @@ target_link_libraries(anotest_musicscene PRIVATE anoptic_core)
 add_test(NAME anoptic_musicscene COMMAND anotest_musicscene 30)
 set_tests_properties(anoptic_musicscene PROPERTIES TIMEOUT 120 LABELS "unit;optional")
 
+# Bridge hot-op tail bench: logic-side publish/acquire latency + per-block mixer
+# cost under a live mixer. DISABLED; run by hand (argv[1] seconds). A/B vehicle
+# for cross-thread layout work.
+add_executable(anotest_bridgebench anotest_bridgebench.c)
+target_link_libraries(anotest_bridgebench PRIVATE anoptic_core)
+add_test(NAME anoptic_bridgebench COMMAND anotest_bridgebench)
+set_tests_properties(anoptic_bridgebench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+
 add_executable(anotest_synthscene anotest_synthscene.c)
 target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
 target_compile_definitions(anotest_synthscene PRIVATE
