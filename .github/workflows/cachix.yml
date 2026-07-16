@@ -8,7 +8,8 @@ name: cachix
 
 on:
   push:
-    # TEMP: module-audio added only to verify the pin/push rewrite end to end; remove before merging to main.
+    # module-audio keeps release-build coverage while the audio line is hot; the
+    # pin step below is main-gated, so branch runs never repoint production pins.
     branches: [main, module-audio]
   workflow_dispatch:
 
@@ -49,6 +50,8 @@ jobs:
           skipPush: true
       # Each target is pinned under a stable name (e.g. play-x86_64-linux) so the latest
       # main build is immune from cachix GC; --keep-revisions 1 drops the previous pin.
+      # PIN ONLY ON MAIN: branch runs build, push, and verify — full release-build
+      # coverage — but never repoint the production pin names.
       - name: Build, push, and pin runtime closures
         run: |
           set -euo pipefail
@@ -69,7 +72,9 @@ jobs:
             p=$(retry nix build "github:${{ github.repository }}/${{ github.sha }}${t#.}" --print-out-paths --no-link)
             echo "$p" >> outpaths.txt
             retry cachix push anoptic-games "$p"
-            retry cachix pin anoptic-games "${t#.#}-$system" "$p" --keep-revisions 1
+            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              retry cachix pin anoptic-games "${t#.#}-$system" "$p" --keep-revisions 1
+            fi
           done
       # Green push ≠ served: prove each top-level narinfo answers from the CDN.
       - name: Verify cache serves the paths
