@@ -4,7 +4,7 @@ The music module composes. Not "plays a track", not "crossfades stems" — it de
 one bar at a time, what notes exist, and it does so fast enough to run inside the audio
 callback. A piece has no length, no loop point, and no existence before it is heard.
 
-It is a port of a Python prototype (`docs/TECH_SPEC.md`, `docs/THEORY_SPEC.md`) and is
+It is a port of a Python prototype (`docs/music/TECH_SPEC.md`, `docs/music/THEORY_SPEC.md`) and is
 held bit-exact against it. That constraint shapes almost every decision below, so read
 the determinism section before the rest.
 

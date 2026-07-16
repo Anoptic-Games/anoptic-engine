@@ -3,13 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * dsp/dynamics.h (private to src/audio/)
- * Detector primitives (TECH_SPEC §12.2, finding 6): the asymmetric one-pole
- * peak follower (env = max(|x|, a*env)), a gapless sliding-window max, a
- * linear ramp-to-target-in-T, and the compressor gain computer. Detector
- * timing is sample-accurate — every step advances exactly one sample.
- */
+// Dynamics detectors: peak follower, sliding-window max, linear ramp, comp gain.
+// One step = one sample.
 
 #ifndef ANO_DSP_DYNAMICS_H
 #define ANO_DSP_DYNAMICS_H
@@ -19,18 +14,17 @@
 #include <stdint.h>
 #include <mimalloc.h>
 
-// One-pole coefficient for a time constant in ms at fs.
 static inline float ano_dsp_pole_ms(float ms, float fs)
 {
     if (ms < 0.01f) ms = 0.01f;
     return 1.0f - expf(-1000.0f / (ms * fs));
 }
 
-// Asymmetric peak follower: instant attack, exponential release.
+// Instant attack, exponential release.
 typedef struct AnoDspFollower
 {
     float env;
-    float decay; // per-sample release multiplier, e.g. expf(-1/(ms*fs/1000))
+    float decay; // per-sample release multiplier
 } AnoDspFollower;
 
 static inline float ano_dsp_follower_step(AnoDspFollower *f, float mag)
@@ -42,8 +36,7 @@ static inline float ano_dsp_follower_step(AnoDspFollower *f, float mag)
     return f->env;
 }
 
-// Gapless sliding-window max over the last `win` samples (monotonic wedge:
-// amortized O(1) per sample, exact — never a stale or missed peak).
+// Gapless window max over last `win` samples. Monotonic wedge, amortized O(1).
 typedef struct AnoDspWinMax
 {
     float    *val;
@@ -51,7 +44,7 @@ typedef struct AnoDspWinMax
     uint32_t  mask; // ring capacity - 1
     uint32_t  head, tail;
     uint64_t  n;   // samples pushed
-    uint32_t  win; // window length
+    uint32_t  win;
 } AnoDspWinMax;
 
 static inline bool ano_dsp_winmax_init(AnoDspWinMax *w, mi_heap_t *heap, uint32_t window)
@@ -70,7 +63,6 @@ static inline bool ano_dsp_winmax_init(AnoDspWinMax *w, mi_heap_t *heap, uint32_
     return true;
 }
 
-// Push one magnitude; returns max over the trailing window (inclusive).
 static inline float ano_dsp_winmax_push(AnoDspWinMax *w, float mag)
 {
     while (w->tail != w->head && w->val[(w->tail - 1u) & w->mask] <= mag)
@@ -84,8 +76,7 @@ static inline float ano_dsp_winmax_push(AnoDspWinMax *w, float mag)
     return w->val[w->head & w->mask];
 }
 
-// Linear ramp that reaches its target in exactly `samples` steps — a one-pole
-// never converges inside a lookahead window (finding 6).
+// Linear ramp. Reaches target in exactly `samples` steps (one-pole never converges inside a lookahead window).
 typedef struct AnoDspRamp
 {
     float    y;
@@ -114,8 +105,7 @@ static inline float ano_dsp_ramp_step(AnoDspRamp *r)
     return r->y;
 }
 
-// Compressor gain for an envelope above threshold: (env/thr)^(1/ratio - 1),
-// 1 below. Caller clamps the result — gain reduction is bounded, not implicit.
+// (env/thr)^(invRatio - 1) above threshold, else 1. Caller clamps.
 static inline float ano_dsp_comp_gain(float env, float threshold, float invRatio)
 {
     if (env <= threshold || threshold <= 0.0f)

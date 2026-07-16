@@ -3,14 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_motif.c
- * Motif factories, variation operators, and the signature-faithful realizers.
- * Parity notes: contour offsets round with banker's over exact float op
- * order; every max()-by-key keeps the FIRST maximal candidate (strict >
- * replacement); ornament and phrase_variant draw only on the prototype's
- * paths; _pick_base compares int tuples whose order flips with prefer_fit.
- */
+// Motif factories, variation, realizers. Contour offsets: banker's over exact float op order.
+// max-by-key: first maximal (strict >). ornament/phrase_variant draw only on prototype paths.
+// _pick_base: int-tuple order flips with prefer_fit.
 
 #include "music_motif.h"
 

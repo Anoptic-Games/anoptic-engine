@@ -322,7 +322,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	// Wait for device idle
 	vkDeviceWaitIdle(ctx->device);
 
-	// This is completely unecessary and introduces a bug on reinit.
+	// Do not recreate FIF semaphores on reinit (bugs).
 	// for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].imageAvailable, NULL);
 	// 	vkDestroySemaphore(ctx->device, rendererState.frames[i].renderFinished, NULL);

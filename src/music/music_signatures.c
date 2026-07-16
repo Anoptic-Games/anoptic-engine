@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_signatures.c
- * The overdue x fit selection. Parity notes: library order breaks rank ties
- * (first strictly-greater wins); the transform scan keeps the first max fit;
- * a request ranks 1e6 + fit so it outranks any pressure.
- */
+// overdue x fit. Library order breaks ties. Request ranks 1e6 + fit.
 
 #include <string.h>
 

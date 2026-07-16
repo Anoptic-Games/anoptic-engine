@@ -3,20 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Linux device backends: PipeWire native (primary), ALSA (fallback).
- * Both are dlopen'd at start() — the engine carries no link-time or header
- * dependency on either library, and a missing library fails start() cleanly
- * so the AUTO cascade can move on. Protocol references: PipeWire docs for
- * pw_stream; miniaudio's ALSA backend for the libasound protocol
- * (docs/references/miniaudio-legend.md). ALSA constants verified against
- * /usr/include/alsa/pcm.h on this machine; PipeWire ABI constants verified
- * against upstream 1.0.5 headers (see the block comment at the PipeWire
- * section). The OS libraries hold internal control-path locks — that is the
- * platform-file exception, same class as the Vulkan backend. */
+// Linux devices: PipeWire (primary), ALSA (fallback). Both dlopen'd at start().
 
 #include "audio_internal.h"
-#include "audio_pull.h" // shared ring consumer with partial-block carry
-#include "dsp/noise.h"  // TPDF dither at the final 16-bit quantization (ALSA s16 path)
+#include "audio_pull.h"
+#include "dsp/noise.h"  // TPDF dither (ALSA s16)
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -26,15 +17,9 @@
 #include <anoptic_log.h>
 #include <anoptic_time.h>
 
-// ---------------------------------------------------------------------------
-// ALSA fallback backend
-// ---------------------------------------------------------------------------
-// The simple API: snd_pcm_set_params does the whole hw/sw-params negotiation
-// (the full dance lives at miniaudio ma_device_init_by_type__alsa if we ever
-// need finer control). Blocking snd_pcm_writei paces the device thread.
-// Constants from alsa/pcm.h: STREAM_PLAYBACK=0, ACCESS_RW_INTERLEAVED=3,
-// FORMAT_S16_LE=2, FORMAT_FLOAT_LE=14.
+/* ALSA fallback */
 
+// snd_pcm_set_params + blocking writei. Constants from alsa/pcm.h.
 #define ANO_ALSA_STREAM_PLAYBACK   0
 #define ANO_ALSA_RW_INTERLEAVED    3
 #define ANO_ALSA_FORMAT_S16_LE     2
@@ -57,9 +42,9 @@ typedef struct AnoAlsaState
 
     ano_snd_pcm *pcm;
     AnoAudioPull pull;
-    AnoDspRng    dither; // seeded TPDF for the s16 path (finding 8: no global entropy)
-    float       *fbuf;   // one mixer block of f32 pulled from the ring
-    int16_t     *sbuf;   // s16 staging when the device refuses float; NULL when float granted
+    AnoDspRng    dither; // TPDF for s16
+    float       *fbuf;
+    int16_t     *sbuf;   // NULL when float granted
 } AnoAlsaState;
 
 static void *alsa_main(void *arg)
@@ -73,7 +58,7 @@ static void *alsa_main(void *arg)
         ano_audio_pull_frames(mx, &st->pull, st->fbuf, frames);
         const void *src = st->fbuf;
         if (st->sbuf) {
-            // final 16-bit quantization: the one place TPDF dither applies
+            // final 16-bit quantization: the one place TPDF dither applies (with DSound s16)
             for (uint32_t i = 0; i < frames * ANO_AUDIO_CHANNELS; ++i) {
                 float v = st->fbuf[i];
                 v = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
@@ -84,18 +69,17 @@ static void *alsa_main(void *arg)
             }
             src = st->sbuf;
         }
-        // blocking write paces this thread at the device rate
         uint32_t written = 0;
         while (written < frames && atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
             long n = st->pcm_writei(st->pcm, (const char *)src + (size_t)written * frameBytes,
                                     frames - written);
             if (n < 0) {
-                if ((int)n == -EPIPE) // xrun: the device ran dry
+                if ((int)n == -EPIPE)
                     atomic_fetch_add_explicit(&mx->underruns, 1u, memory_order_relaxed);
                 if (st->pcm_recover(st->pcm, (int)n, 1) < 0) {
                     ano_log(ANO_ERROR, "audio/alsa: unrecoverable write error: %s",
                             st->strerr((int)n));
-                    ano_sleep(10000); // do not spin; retry the loop
+                    ano_sleep(10000);
                     break;
                 }
                 continue;
@@ -116,7 +100,7 @@ static bool alsa_start(AnoAudioMixer *mx)
         st->lib = dlopen("libasound.so", RTLD_NOW | RTLD_LOCAL);
     if (!st->lib) {
         mi_free(st);
-        return false; // no ALSA on this machine: let the cascade move on
+        return false;
     }
 
 #define ANO_ALSA_SYM(dst, name) do { \
@@ -136,7 +120,7 @@ static bool alsa_start(AnoAudioMixer *mx)
     if (st->pcm_open(&st->pcm, "default", ANO_ALSA_STREAM_PLAYBACK, 0) < 0)
         goto fail;
 
-    // request the block-ring depth as device latency; float first, s16 fallback
+    // float first, s16 fallback. latency = 4 blocks
     unsigned latencyUs = (unsigned)((uint64_t)mx->blockFrames * 4u * 1000000ull / mx->sampleRate);
     int err = st->pcm_set_params(st->pcm, ANO_ALSA_FORMAT_FLOAT_LE, ANO_ALSA_RW_INTERLEAVED,
                                  ANO_AUDIO_CHANNELS, mx->sampleRate, 1, latencyUs);
@@ -204,16 +188,9 @@ const AnoAudioDeviceApi *ano_audio_device_alsa(void)
     return &api;
 }
 
-// ---------------------------------------------------------------------------
-// PipeWire native backend
-// ---------------------------------------------------------------------------
-// Hand-declared minimal pw_stream ABI, verified against upstream 1.0.5 headers
-// and this machine's runtime lib — every constant, layout, and the format-pod
-// byte sequence below are documented in docs/references/pipewire-abi.md.
-// pw_thread_loop owns the data thread; with RT_PROCESS the process callback
-// runs on the RT thread without the loop lock, so its only work is the
-// lock-free ring pull. Control operations (connect, state polls) take the
-// loop lock — OS-internal, control-path-only, the platform-file exception.
+/* PipeWire */
+
+// Minimal pw_stream ABI (docs/references/pipewire-abi.md). RT_PROCESS: pull only.
 
 #define ANO_PW_ID_ANY               0xFFFFFFFFu
 #define ANO_PW_DIRECTION_OUTPUT     1
@@ -224,10 +201,10 @@ const AnoAudioDeviceApi *ano_audio_device_alsa(void)
 #define ANO_PW_STATE_ERROR          (-1)
 #define ANO_PW_STATE_PAUSED         2
 
-typedef struct ano_pw_thread_loop ano_pw_thread_loop; // opaque
-typedef struct ano_pw_loop        ano_pw_loop;        // opaque
-typedef struct ano_pw_stream      ano_pw_stream;      // opaque
-typedef struct ano_pw_properties  ano_pw_properties;  // opaque
+typedef struct ano_pw_thread_loop ano_pw_thread_loop;
+typedef struct ano_pw_loop        ano_pw_loop;
+typedef struct ano_pw_stream      ano_pw_stream;
+typedef struct ano_pw_properties  ano_pw_properties;
 
 typedef struct AnoSpaPod
 {
@@ -262,21 +239,19 @@ typedef struct AnoSpaBuffer
     AnoSpaData *datas;
 } AnoSpaBuffer;
 
-// Stream-allocated; the client reads `buffer` and `requested` only (`time` is
-// a 1.0.5 tail addition — never sizeof this from the client side).
+// Client reads buffer + requested only. Never sizeof this.
 typedef struct AnoPwBuffer
 {
     AnoSpaBuffer *buffer;
     void         *user_data;
     uint64_t      size;
-    uint64_t      requested; // frames suggested by the graph; 0 = no suggestion
+    uint64_t      requested; // 0 = no suggestion
     uint64_t      time;
 } AnoPwBuffer;
 
-// Held by POINTER for the stream's lifetime — instance below is static const.
 typedef struct AnoPwStreamEvents
 {
-    uint32_t version; // ANO_PW_VERSION_STREAM_EVENTS
+    uint32_t version;
     void (*destroy)(void *data);
     void (*state_changed)(void *data, int oldState, int newState, const char *error);
     void (*control_info)(void *data, uint32_t id, const void *control);
@@ -299,13 +274,13 @@ typedef struct AnoPwApi
     ano_pw_thread_loop *(*thread_loop_new)(const char *name, const void *props);
     void (*thread_loop_destroy)(ano_pw_thread_loop *loop);
     int  (*thread_loop_start)(ano_pw_thread_loop *loop);
-    void (*thread_loop_stop)(ano_pw_thread_loop *loop); // call WITHOUT the lock held
+    void (*thread_loop_stop)(ano_pw_thread_loop *loop); // without lock
     void (*thread_loop_lock)(ano_pw_thread_loop *loop);
     void (*thread_loop_unlock)(ano_pw_thread_loop *loop);
     ano_pw_loop *(*thread_loop_get_loop)(ano_pw_thread_loop *loop);
-    ano_pw_properties *(*properties_new)(const char *key, ...); // k,v pairs, NULL-terminated
+    ano_pw_properties *(*properties_new)(const char *key, ...); // NULL-terminated k,v
     ano_pw_stream *(*stream_new_simple)(ano_pw_loop *loop, const char *name,
-                                        ano_pw_properties *props, // ownership taken
+                                        ano_pw_properties *props, // takes ownership
                                         const AnoPwStreamEvents *events, void *data);
     void (*stream_destroy)(ano_pw_stream *stream);
     int  (*stream_connect)(ano_pw_stream *stream, int direction, uint32_t targetId,
@@ -322,13 +297,11 @@ typedef struct AnoPipewireState
     ano_pw_thread_loop *loop;
     ano_pw_stream      *stream;
     AnoAudioPull        pull;
-    _Atomic int         error; // set by state_changed(ERROR); mixer restart policy later
+    _Atomic int         error; // state_changed(ERROR)
     AnoAudioMixer      *mx;
 } AnoPipewireState;
 
-// The fixed EnumFormat object pod (mediaType=audio, mediaSubtype=raw,
-// format=F32, rate, channels=2, position=[FL,FR]) — the byte-exact output of
-// spa_format_audio_raw_build for these values. 42 words / 168 bytes.
+// EnumFormat pod: F32 stereo at rate. 42 words / 168 bytes.
 static uint32_t pw_build_format_pod(uint32_t *w, uint32_t rate)
 {
     uint32_t i = 0;
@@ -356,7 +329,7 @@ static uint32_t pw_build_format_pod(uint32_t *w, uint32_t rate)
     return i * (uint32_t)sizeof(uint32_t);
 }
 
-// RT data thread, no loop lock (RT_PROCESS): pull cooked frames, set the chunk.
+// RT_PROCESS: no loop lock. Pull cooked frames, set chunk, queue.
 static void pw_on_process(void *data)
 {
     AnoPipewireState *st = data;
@@ -364,7 +337,7 @@ static void pw_on_process(void *data)
     if (!b)
         return;
     AnoSpaData *d = &b->buffer->datas[0];
-    if (!d->data) { // not mapped (should not happen with MAP_BUFFERS)
+    if (!d->data) {
         st->api.stream_queue_buffer(st->stream, b);
         return;
     }
@@ -406,7 +379,7 @@ static bool pw_start(AnoAudioMixer *mx)
     st->api.lib = dlopen("libpipewire-0.3.so.0", RTLD_NOW | RTLD_LOCAL);
     if (!st->api.lib) {
         mi_free(st);
-        return false; // no PipeWire on this machine: cascade moves on
+        return false;
     }
 
 #define ANO_PW_SYM(dst, name) do { \
@@ -439,8 +412,7 @@ static bool pw_start(AnoAudioMixer *mx)
     if (!st->loop)
         goto fail_deinit;
 
-    // request our block as the quantum; the graph may grant more or less —
-    // the carry-aware pull absorbs any quantum
+    // request block as quantum (pull absorbs any grant)
     char latency[32], rateStr[32];
     snprintf(latency, sizeof latency, "%u/%u", mx->blockFrames, mx->sampleRate);
     snprintf(rateStr, sizeof rateStr, "1/%u", mx->sampleRate);
@@ -472,8 +444,7 @@ static bool pw_start(AnoAudioMixer *mx)
     if (res < 0)
         goto fail_started;
 
-    // wait out CONNECTING: no server / refused negotiation must fail here so
-    // the cascade can fall through to ALSA instead of playing silence
+    // wait for PAUSED (or fail so AUTO can cascade)
     for (uint32_t waited = 0;; waited += 50u) {
         st->api.thread_loop_lock(st->loop);
         int state = st->api.stream_get_state(st->stream, NULL);
@@ -513,8 +484,7 @@ static void pw_stop(AnoAudioMixer *mx)
     AnoPipewireState *st = mx->deviceState;
     if (!st)
         return;
-    // upstream teardown order: stop the loop (lock NOT held), then destroy
-    st->api.thread_loop_stop(st->loop);
+    st->api.thread_loop_stop(st->loop); // without lock
     st->api.stream_destroy(st->stream);
     st->api.thread_loop_destroy(st->loop);
     st->api.deinit();

@@ -3,22 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Coverage for the audio stack, Phases 0-2 (public include/anoptic_audio.h;
- * private transport src/audio/audio_bridge.h):
- *  - transport layout: the ring cursors really sit on separate cache lines;
- *  - offline determinism (THE exit gate): a score exercising tones, looping
- *    positional buffer playback with rate glides, a moving listener, bus
- *    filter sweeps, stereo balance, stops and natural expiries renders
- *    byte-identical across renders interleaved with deliberate heap churn.
- *    Oracle: memcmp == 0.
- *  - signal sanity: fade-in from silence, sane peak, actual signal present;
- *  - WAV writer/loader: header oracle, f32 round-trip bit-exactness, PCM16
- *    scaling, resample length + level sanity;
- *  - live world round-trip on the null backend: init, telemetry heartbeat,
- *    PLAY -> audible peak -> AEVT_SOURCE_RETIRED, buffer register/release ->
- *    AEVT_BUFFER_RETIRED round-trip, listener publish, double-init rejection,
- *    shutdown idempotence, re-init after shutdown.
- * argv[1] scales the churn/render soak rounds. Exit 0 == pass. */
+// Coverage: audio ring layout, offline score determinism under heap churn, WAV oracles, null-backend live round-trip.
+// argv[1] scales churn/render soak rounds. Exit 0 == pass.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,8 +20,7 @@
 #include "templates/rng.h"
 #include "templates/scratch.h"
 
-// The false-sharing avoidance must be real, not aspirational (mirrors the
-// render_bridge transport test; the audio ring is its deliberate copy).
+// Ring head/tail on separate cache lines (render_bridge transport twin).
 _Static_assert(offsetof(AnoAudioRing, head) - offsetof(AnoAudioRing, tail) >= ANO_CACHE_LINE,
                "audio SPSC head/tail must live on separate cache lines");
 #define ANO_MIN_LINE (ANO_CACHE_LINE < ANO_THREAD_LINE ? ANO_CACHE_LINE : ANO_THREAD_LINE)
@@ -51,8 +36,7 @@ static int failures = 0;
 #define FRAMES 48000u // one second
 #define SAMPLES (FRAMES * ANO_AUDIO_CHANNELS)
 
-// Deliberate heap churn: scatter live allocations of random sizes, dirty their
-// pages, free in random order. Renders on either side of this must not differ.
+// Heap churn: random alloc/dirty/free. Renders across it must match.
 static void churn_heap(test_rng *rng, uint32_t rounds)
 {
     enum { SLOTS = 256 };
@@ -75,11 +59,11 @@ static void churn_heap(test_rng *rng, uint32_t rounds)
         if (ptr[i]) mi_free(ptr[i]);
 }
 
-// --- deterministic test material ---
+/* Material */
 
 #define CLICK_FRAMES 4000u
 #define BED_FRAMES   1000u
-static float g_click[CLICK_FRAMES];       // mono decaying noise burst
+static float g_click[CLICK_FRAMES];       // mono decaying noise
 static float g_bed[BED_FRAMES * 2u];      // stereo sine pair
 
 static void make_material(void)
@@ -95,10 +79,7 @@ static void make_material(void)
     }
 }
 
-// The offline score: a smoothed tone with retargets, a looping positional
-// click buffer with rate glides and a position jump, a bus lowpass sweeping
-// down and back up, a stereo bed on the balance path, a moving listener,
-// stops, a duration expiry, and a natural data expiry.
+// Offline score: tone retargets, looping positional click, filter sweep, stereo bed, moving listener, stops/expiries.
 static const AnoAudioOfflineEvent k_events[] = {
     { .frame = 0, .cmd = { .kind = ACMD_BUS_SET, .bus = 1,
         .fields = ANO_AUDIO_FIELD_GAIN, .gain = 0.9f } },
@@ -131,7 +112,7 @@ static const AnoAudioOfflineEvent k_events[] = {
     { .frame = 30000, .cmd = { .kind = ACMD_SOURCE_STOP, .source_id = 1 } },
     { .frame = 36000, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 4,
         .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 0, .buffer_id = 11,
-                  .gain = 0.5f, .pan = -0.5f } } }, // stereo bed: balance path, natural expiry
+                  .gain = 0.5f, .pan = -0.5f } } }, // stereo bed, natural expiry
     { .frame = 40000, .cmd = { .kind = ACMD_SOURCE_STOP, .source_id = 3 } },
 };
 
@@ -170,7 +151,7 @@ static float peak_of(const float *buf, uint64_t samples)
     return peak;
 }
 
-// --- section 1: offline determinism on a churned heap (the exit gate) ---
+/* Offline determinism */
 
 static void test_offline_determinism(uint32_t soak)
 {
@@ -183,7 +164,7 @@ static void test_offline_determinism(uint32_t soak)
 
     CHECK(render_score(golden), "offline render (golden)");
 
-    // signal sanity: the gate must never pass vacuously on silence
+    // Signal present, fade-in from near silence.
     float peak = peak_of(golden, SAMPLES);
     CHECK(peak > 0.05f && peak < 1.5f, "peak within a sane audible range");
     float first = golden[0] < 0.0f ? -golden[0] : golden[0];
@@ -193,13 +174,13 @@ static void test_offline_determinism(uint32_t soak)
     test_rng rng = rng_make(0xC0FFEEu);
     for (uint32_t round = 0; round < soak; round++) {
         churn_heap(&rng, 64);
-        memset(again, 0x5A, SAMPLES * sizeof(float)); // poison: a partial render must not pass
+        memset(again, 0x5A, SAMPLES * sizeof(float)); // poison partial render
         CHECK(render_score(again), "offline render (churned heap)");
         CHECK(memcmp(golden, again, SAMPLES * sizeof(float)) == 0,
               "churned-heap re-render is byte-identical");
     }
 
-    // degenerate inputs stay well-defined
+    // Degenerate inputs.
     CHECK(ano_audio_render_offline(NULL, again, 100), "NULL desc renders defaults");
     CHECK(!ano_audio_render_offline(NULL, NULL, 100), "NULL out rejected");
 
@@ -207,7 +188,7 @@ static void test_offline_determinism(uint32_t soak)
     mi_free(again);
 }
 
-// --- section 2: WAV writer + loader oracles ---
+/* WAV oracles */
 
 static void test_wav(void)
 {
@@ -222,7 +203,7 @@ static void test_wav(void)
     const char *path = "anotest_audio_scratch/tone.wav";
     CHECK(ano_audio_wav_write(path, buf, FRAMES, ANO_AUDIO_CHANNELS, RATE), "wav write");
 
-    // header + size oracle: 58-byte header, IEEE-float tag, exact data size
+    // Header: 58-byte IEEE float, exact data size.
     FILE *f = fopen(path, "rb");
     CHECK(f != NULL, "wav reopens");
     if (f) {
@@ -240,7 +221,7 @@ static void test_wav(void)
     }
     CHECK(!ano_audio_wav_write(NULL, buf, FRAMES, 2, RATE), "NULL path rejected");
 
-    // f32 round-trip: loader at the native rate is bit-exact
+    // f32 round-trip at native rate: bit-exact.
     uint64_t lf = 0;
     uint32_t lc = 0;
     float *loaded = ano_audio_wav_load(path, 0, &lf, &lc);
@@ -251,7 +232,7 @@ static void test_wav(void)
         ano_audio_block_free(loaded);
     }
 
-    // resample to half rate: length halves, level survives
+    // Half-rate resample: length halves, level survives.
     loaded = ano_audio_wav_load(path, RATE / 2u, &lf, &lc);
     CHECK(loaded != NULL, "wav loads resampled");
     if (loaded) {
@@ -261,7 +242,7 @@ static void test_wav(void)
         ano_audio_block_free(loaded);
     }
 
-    // PCM16 scaling: a hand-built 4-sample mono file
+    // PCM16 scaling fixture (4-sample mono).
     {
         const char *p16 = "anotest_audio_scratch/pcm16.wav";
         uint8_t w[44 + 8] = {0};
@@ -296,7 +277,7 @@ static void test_wav(void)
     mi_free(buf);
 }
 
-// --- section 3: live world round-trip on the null backend ---
+/* Live null-backend round-trip */
 
 typedef bool (*telem_pred)(const AnoAudioTelemetry *t);
 static bool wait_telemetry(AnoAudioBridge *b, telem_pred pred, uint32_t timeoutMs)
@@ -327,7 +308,7 @@ static void test_live_world(void)
 
     CHECK(wait_telemetry(b, pred_heartbeat, 2000), "mixer heartbeat (blocks advancing)");
 
-    // buffer round-trip: register, play to retirement, release, block comes home
+    // Buffer: register -> play -> retire -> release -> AEVT_BUFFER_RETIRED.
     CHECK(ano_audio_buffer_register(b, 42, g_click, CLICK_FRAMES, 1), "buffer registers");
     AnoAudioCommand play = { .kind = ACMD_SOURCE_PLAY, .source_id = 7,
         .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 42, .bus = 1, .gain = 0.6f,
@@ -367,7 +348,7 @@ static void test_live_world(void)
     ano_audio_shutdown(); // idempotent
     CHECK(anoAudioBridge() == NULL, "bridge handle NULL after shutdown");
 
-    // the world restarts cleanly
+    // Re-init after shutdown.
     CHECK(ano_audio_init(NULL), "re-init after shutdown");
     CHECK(anoAudioBridge() != NULL, "bridge valid after re-init");
     ano_audio_shutdown();

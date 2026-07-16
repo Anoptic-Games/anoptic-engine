@@ -3,21 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Phase 7 gate for the synth's LIVE path: the conductor driving the synth one
- * bar at a time from inside the block loop, the way the audio thread will.
- *
- * The proof is an equivalence, not a new oracle. The batch score path is
- * already proven (anotest_synth); so the same music, fed the same synth two
- * ways — loaded whole while idle, versus streamed bar-by-bar from a generator
- * hook that tops up as the playhead advances — must render BIT-IDENTICAL
- * audio. Anything the live schedule gets wrong (a tie that fails to merge
- * across the barline, a note stamped against an incomplete tempo map, an echo
- * that spills past the next downbeat and lands out of order) moves samples.
- *
- * Also asserts the driver's contract: with the lookahead respected, no tie
- * arrives late and no note is dropped; and a driver that deliberately starves
- * the schedule is DETECTED (late/overflow counters) rather than silently
- * corrupting the music. Exit 0 == pass. */
+// Live synth path: batch score vs bar-by-bar stream from the block loop must be bit-identical.
+// Also: lookahead driver has no late/overflow; starved driver increments late counter.
+// Exit 0 == pass.
 
 #include <math.h>
 #include <stdio.h>
@@ -42,8 +30,7 @@ static int failures = 0;
 #define BARS  24u
 #define TAIL  2.0f
 
-// The engine both paths draw from: identical seed and config, so the two
-// renders are of the same music by construction.
+// Same seed + config for both paths.
 static void engine_config(AnoEngineConfig *cfg)
 {
     *cfg = ano_engine_config_default();
@@ -60,7 +47,7 @@ static void engine_config(AnoEngineConfig *cfg)
     cfg->melody.planApex = cfg->melody.counterpoint = true;
 }
 
-// One bar's worth of the conductor's output, in the synth's public shapes.
+// One conductor bar in synth public shapes.
 typedef struct BarFeed
 {
     AnoMusicalParams params;
@@ -83,23 +70,17 @@ static void capture(AnoBarResult *r, BarFeed *f)
         f->events[i] = r->events[i].core;
 }
 
-// --- the live driver: exactly what the block loop will do -------------------
-// Before rendering a block, top the schedule up so at least LOOKAHEAD bars are
-// appended but not yet started. Generation is microseconds; this is the whole
-// of "bar edge? -> advance_bar() -> schedule".
+// --- live driver: top schedule to LOOKAHEAD, then render -------------------
 typedef struct LiveDriver
 {
     AnoSynth      *synth;
     AnoMusicEngine engine;
     AnoBarResult   result;
     uint32_t       nextBar;
-    uint32_t       maxBars;   // stop generating past the piece
+    uint32_t       maxBars;
     uint32_t       lookahead;
-    uint32_t       stall;  // top up only every Nth block (0 = every block).
-    uint32_t       blocks; // A tie-out head sits at the END of its bar, so any
-                           // driver that keeps one bar pending still appends the
-                           // continuation in time. Lateness needs the schedule to
-                           // run DRY — the generator falling a whole bar behind.
+    uint32_t       stall;  // top up every Nth block (0 = every block)
+    uint32_t       blocks; // one pending bar still continues in time; lateness needs schedule dry
 } LiveDriver;
 
 static void top_up(LiveDriver *d, uint64_t startFrame)
@@ -120,7 +101,7 @@ static void live_generator(void *user, float *const *busMix, uint32_t busCount,
 {
     LiveDriver *d = user;
     if (!d->stall || d->blocks % d->stall == 0u)
-        top_up(d, startFrame); // the contract: schedule ahead, then render
+        top_up(d, startFrame); // schedule ahead, then render
     d->blocks++;
     ano_synth_generator(d->synth, busMix, busCount, frames, startFrame);
 }
@@ -135,7 +116,7 @@ int main(void)
     AnoEngineConfig cfg;
     engine_config(&cfg);
 
-    // --- capture the piece once (both paths replay the same bars) -----------
+    // --- capture once (both paths replay the same bars) ---
     static BarFeed feed[BARS];
     static AnoMusicEngine eng;
     static AnoBarResult res;
@@ -149,7 +130,7 @@ int main(void)
     }
     CHECK(totalEvents > 200u, "the piece has substance");
 
-    // --- A: the proven batch path -------------------------------------------
+    // --- A: batch path ---
     AnoSynth *batch = ano_synth_create(&sd);
     CHECK(batch != NULL, "batch synth");
     CHECK(ano_synth_score_begin(batch, 4.0, BARS, totalTempo, totalEvents),
@@ -186,7 +167,7 @@ int main(void)
     CHECK(ano_audio_render_offline(&od, bufA, frames), "batch render");
     CHECK(ano_synth_dropped(batch) == 0u, "batch dropped no voices");
 
-    // --- B: the live path, streamed from the block loop ----------------------
+    // --- B: live path from the block loop ---
     AnoSynth *live = ano_synth_create(&sd);
     CHECK(live != NULL, "live synth");
     static LiveDriver drv;
@@ -196,10 +177,10 @@ int main(void)
     drv.lookahead = ANO_SYNTH_LIVE_LOOKAHEAD;
     drv.stall = 0;
     drv.blocks = 0;
-    ano_engine_init(&drv.engine, 42, &cfg); // same seed: the same music
+    ano_engine_init(&drv.engine, 42, &cfg); // same seed
 
     CHECK(ano_synth_live_begin(live, 4.0), "live_begin");
-    // prime the lookahead, then start: a bar must exist before it is reached
+    // Prime lookahead before transport start.
     while (drv.nextBar < ANO_SYNTH_LIVE_LOOKAHEAD) {
         ano_engine_advance_bar(&drv.engine, &drv.result);
         BarFeed f;
@@ -221,7 +202,7 @@ int main(void)
     CHECK(ano_synth_live_overflow(live) == 0u, "no note overflowed the ring");
     CHECK(ano_synth_dropped(live) == 0u, "live dropped no voices");
 
-    // --- the equivalence -----------------------------------------------------
+    // --- equivalence ---
     size_t samples = (size_t)frames * ANO_AUDIO_CHANNELS;
     size_t diff = 0;
     double worst = 0.0;
@@ -237,20 +218,15 @@ int main(void)
                worst);
     CHECK(diff == 0, "live renders BIT-IDENTICAL to batch");
 
-    // the render is real, not silence
+    // Audible, not silence.
     double peak = 0.0;
     for (size_t i = 0; i < samples; ++i)
         if (fabs((double)bufA[i]) > peak)
             peak = fabs((double)bufA[i]);
     CHECK(peak > 0.01, "the render is audible");
 
-    // --- the starved driver is DETECTED, not silently wrong ------------------
-    // This driver tops up only every 900th block (~9.6 s, longer than the two
-    // bars it keeps pending), so the schedule runs DRY: a note tying out of the
-    // last scheduled bar meets its continuation only after it has already sounded.
-    // The schedule stays coherent — the tie dissolves into a plain note, the orphan
-    // the IR licenses — and the counter says so, instead of the music quietly
-    // going wrong.
+    // --- starved driver: late counter fires ---
+    // stall=900 (~9.6 s) > 2 pending bars (~4.8 s): schedule runs dry, late > 0.
     AnoSynth *starved = ano_synth_create(&sd);
     static LiveDriver sd2;
     sd2.synth = starved;

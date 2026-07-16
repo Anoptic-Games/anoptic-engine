@@ -3,10 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* The mixer core: command application, block rendering, the realtime block
- * loop, and the offline driver. Everything here runs on exactly one thread at
- * a time — the mixer thread (realtime) or the caller (offline) — so the graph
- * needs no synchronization beyond the bridge rings feeding it. */
+// Mixer core: apply, render_block, realtime loop, offline driver. Single-threaded graph.
 
 #include "audio_internal.h"
 
@@ -33,7 +30,7 @@ bool ano_audio_graph_init(AnoAudioMixer *mx, const AnoAudioBusDesc *layout)
         float    gain   = 1.0f;
         if (layout) {
             if (b > 0u && layout[b].parent >= b)
-                return false; // parents must precede children (acyclic by construction)
+                return false; // parents before children
             parent = layout[b].parent;
             if (layout[b].gain != 0.0f)
                 gain = layout[b].gain;
@@ -45,7 +42,7 @@ bool ano_audio_graph_init(AnoAudioMixer *mx, const AnoAudioBusDesc *layout)
         ano_audio_smooth_snap(&bus->gain, gain);
         bus->gain.coef = mx->smoothCoef;
 
-        // insert chain: from the layout, or the default lone FILTER on aux buses
+        // insert chain (default: FILTER on aux slot 0)
         for (uint32_t s = 0; s < ANO_AUDIO_MAX_FX; ++s) {
             uint32_t kind = ANO_AUDIO_FX_NONE;
             if (layout)
@@ -56,30 +53,23 @@ bool ano_audio_graph_init(AnoAudioMixer *mx, const AnoAudioBusDesc *layout)
                 return false;
         }
 
-        // post-fader sends: targets must precede the sender; 0 = unused
+        // post-fader sends (target 0 = unused, must precede sender)
         for (uint32_t s = 0; s < ANO_AUDIO_MAX_SENDS; ++s) {
             uint32_t target = layout ? layout[b].sendTarget[s] : 0u;
             float    level  = layout ? layout[b].sendLevel[s] : 0.0f;
             if (target != 0u && (b == 0u || target >= b || target >= mx->busCount))
-                return false; // master cannot send; sends must point at earlier buses
+                return false;
             bus->sends[s].target = target;
             ano_audio_smooth_snap(&bus->sends[s].level, clampf(level, 0.0f, 4.0f));
             bus->sends[s].level.coef = mx->smoothCoef;
         }
     }
-    // Source and buffer pools start all-FREE (the mixer struct is zeroed at birth).
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Spatialization
-// ---------------------------------------------------------------------------
-// Per block, per positional voice: derive pan (lateral component against the
-// listener frame), distance attenuation (clamped inverse-distance), and an
-// air-absorption lowpass target. The derived values glide through the voice's
-// smoothers, so listener/source motion never zippers. Front/back is flat
-// (no HRTF yet — the pan stage is that seam).
+/* Spatialization */
 
+// Per positional voice: pan, distance gain, air-absorption cutoff. Glides via smoothers.
 static void source_spatialize(AnoAudioMixer *mx, AnoAudioSource *s)
 {
     float panT = 0.0f, spatT = 1.0f, airT = 20000.0f;
@@ -90,8 +80,7 @@ static void source_spatialize(AnoAudioMixer *mx, AnoAudioSource *s)
         float dz = s->position[2] - l->pos[2];
         float d  = sqrtf(dx * dx + dy * dy + dz * dz);
         if (d > 1.0e-4f) {
-            // listener right = forward x up
-            float rx = l->forward[1] * l->up[2] - l->forward[2] * l->up[1];
+            float rx = l->forward[1] * l->up[2] - l->forward[2] * l->up[1]; // right
             float ry = l->forward[2] * l->up[0] - l->forward[0] * l->up[2];
             float rz = l->forward[0] * l->up[1] - l->forward[1] * l->up[0];
             float rl = sqrtf(rx * rx + ry * ry + rz * rz);
@@ -100,27 +89,24 @@ static void source_spatialize(AnoAudioMixer *mx, AnoAudioSource *s)
             }
             float dc = clampf(d, s->minDist, s->maxDist);
             spatT = s->minDist / (s->minDist + s->rolloff * (dc - s->minDist));
-            airT  = clampf(20000.0f * (s->minDist / dc), 1200.0f, 20000.0f); // tuning
+            airT  = clampf(20000.0f * (s->minDist / dc), 1200.0f, 20000.0f);
         }
     } else if (!(s->flags & ANO_AUDIO_SOURCE_POSITIONAL)) {
-        return; // pan/spatGain stay caller-driven
+        return;
     }
     s->pan.target       = panT;
     s->spatGain.target  = spatT;
     s->airCutoff.target = airT;
-    float fc   = ano_audio_smooth_step(&s->airCutoff); // per-block cadence
+    float fc   = ano_audio_smooth_step(&s->airCutoff);
     s->airCoef = 1.0f - expf(-ANO_AUDIO_TAU_F * fc / (float)mx->sampleRate);
     if (s->airLp < 1.0e-20f && s->airLp > -1.0e-20f)
-        s->airLp = 0.0f; // denormal flush
+        s->airLp = 0.0f;
 }
 
-// ---------------------------------------------------------------------------
-// Voice rendering
-// ---------------------------------------------------------------------------
+/* Voice rendering */
 
-// in:  slot in PLAYING/STOPPING, its bus accumulation buffer, frames, 1/rate
-// out: slot state advanced; may flip to RETIRING mid-block (rest of block silent)
-// inv: smoothers advance once per FRAME so a skipped sample can never shift them
+// PLAYING/STOPPING into bus mix. May flip RETIRING mid-block.
+// Smoothers advance once per frame so a skipped sample can never shift them.
 static void source_render(AnoAudioSource *s, float *mix, uint32_t frames, float fsInv)
 {
     const bool loop       = (s->flags & ANO_AUDIO_SOURCE_LOOP) != 0u;
@@ -182,19 +168,18 @@ static void source_render(AnoAudioSource *s, float *mix, uint32_t frames, float 
         }
 
         if (positional && s->bufChannels <= 1u) {
-            // air absorption on the mono signal, pre-pan
             s->airLp += s->airCoef * (vl - s->airLp);
             vl = vr = s->airLp;
         }
 
         if (s->kind == ANO_AUDIO_SOURCE_BUFFER && s->bufChannels == 2u) {
-            // stereo material: pan is a linear balance, unity at center
+            // stereo: linear balance
             float bl = p > 0.0f ? 1.0f - p : 1.0f;
             float br = p < 0.0f ? 1.0f + p : 1.0f;
             mix[2u * i]      += vl * amp * bl;
             mix[2u * i + 1u] += vr * amp * br;
         } else {
-            // mono signal: constant-power pan
+            // mono: constant-power
             float a = (p + 1.0f) * ANO_AUDIO_PI4_F;
             mix[2u * i]      += vl * amp * cosf(a);
             mix[2u * i + 1u] += vr * amp * sinf(a);
@@ -204,9 +189,7 @@ static void source_render(AnoAudioSource *s, float *mix, uint32_t frames, float 
     }
 }
 
-// ---------------------------------------------------------------------------
-// Command application
-// ---------------------------------------------------------------------------
+/* Command application */
 
 static AnoAudioBufferSlot *buffer_find(AnoAudioMixer *mx, uint32_t buffer_id, uint32_t state)
 {
@@ -216,8 +199,7 @@ static AnoAudioBufferSlot *buffer_find(AnoAudioMixer *mx, uint32_t buffer_id, ui
     return NULL;
 }
 
-// Reject an adopted block: send it home for freeing, or (events ring full /
-// offline) free it here — the documented control-path exception.
+// Reject adopted block: emit AEVT_BUFFER_RETIRED, or free if ring full / offline.
 static void buffer_reject(AnoAudioMixer *mx, uint32_t buffer_id, const void *block)
 {
     if (mx->bridge) {
@@ -299,7 +281,6 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
                 slot->flags &= ~(uint32_t)ANO_AUDIO_SOURCE_POSITIONAL;
             }
         }
-        // spatial model inputs (defaults are tuning)
         slot->position[0] = d->position[0];
         slot->position[1] = d->position[1];
         slot->position[2] = d->position[2];
@@ -350,7 +331,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
             }
             return;
         }
-        return; // unknown / already-retired id: no-op (idempotent)
+        return;
     }
 
     case ACMD_SOURCE_STOP: {
@@ -362,7 +343,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
                 return;
             }
         }
-        return; // unknown / already-stopping id: no-op (idempotent)
+        return;
     }
 
     case ACMD_BUS_SET: {
@@ -441,7 +422,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
     case ACMD_BUFFER_RELEASE: {
         AnoAudioBufferSlot *slot = buffer_find(mx, cmd->source_id, ANO_AUDIO_BUF_LIVE);
         if (!slot)
-            return; // unknown / already retiring: no-op (idempotent)
+            return;
         slot->state = ANO_AUDIO_BUF_RETIRING;
         uint32_t idx = (uint32_t)(slot - mx->buffers);
         for (uint32_t i = 0; i < ANO_AUDIO_MAX_SOURCES; ++i) {
@@ -461,7 +442,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
     case ACMD_MUSIC_OVERRIDE:
     case ACMD_MUSIC_RELEASE:
     case ACMD_MUSIC_SEEK:
-        // the mixer owns no music: it forwards these, it does not read them
+        // Mixer owns no music: forward verbatim, do not read.
         if (mx->generatorControl)
             mx->generatorControl(mx->generatorUser, cmd);
         return;
@@ -472,12 +453,8 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Block rendering
-// ---------------------------------------------------------------------------
+/* Block rendering */
 
-// The bus's insert chain over its accumulated block, in place. Parameters
-// glide at block cadence (~86 steps/s through the 30 ms pole — no zipper).
 static void bus_chain_block(AnoAudioMixer *mx, AnoAudioBus *bus, uint32_t frames)
 {
     for (uint32_t s = 0; s < ANO_AUDIO_MAX_FX; ++s)
@@ -490,8 +467,8 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
     const size_t   bytes  = (size_t)frames * ANO_AUDIO_CHANNELS * sizeof(float);
     const float    fsInv  = 1.0f / (float)mx->sampleRate;
 
-    // the generator's own console moves, applied at the block boundary like any
-    // command (a composing generator automates the desk that plays it)
+    // 1) generator desk cmds  2) zero buses  3) generator write  4) voices
+    // 5) fold high->low (chain, parent, sends)  6) master  7) retirement passes
     if (mx->generatorCommands) {
         AnoAudioCommand gc[ANO_AUDIO_GEN_CMDS];
         uint32_t gn = mx->generatorCommands(mx->generatorUser, gc, ANO_AUDIO_GEN_CMDS);
@@ -502,7 +479,7 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
     for (uint32_t b = 0; b < mx->busCount; ++b)
         memset(mx->buses[b].mix, 0, bytes);
 
-    // attached generator writes into the zeroed bus mixes ahead of the fold
+    // generator writes into the zeroed bus mixes ahead of the fold
     if (mx->generator) {
         float *busMix[ANO_AUDIO_MAX_BUSES];
         for (uint32_t b = 0; b < mx->busCount; ++b)
@@ -523,9 +500,7 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
     }
     mx->sourcesActive = active;
 
-    // bus tree fold: children (higher index) run their chain, then the faded
-    // signal feeds the parent and any post-fader sends (targets precede the
-    // sender, so a send lands in a bus not yet processed this block)
+    // fold high->low: chain, then parent + post-fader sends (targets not yet processed this block)
     for (uint32_t b = mx->busCount; b-- > 1u;) {
         AnoAudioBus *bus = &mx->buses[b];
         bus_chain_block(mx, bus, frames);
@@ -570,7 +545,7 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
     mx->masterPeak = peak;
     mx->clippedSamples += clipped;
 
-    // retirement pass: lossless facts re-emit until the ring takes them
+    // retirement: lossless facts re-emit until the ring takes them
     for (uint32_t i = 0; i < ANO_AUDIO_MAX_SOURCES; ++i) {
         AnoAudioSource *s = &mx->sources[i];
         if (s->state != ANO_AUDIO_SRC_RETIRING)
@@ -605,8 +580,7 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
         memset(slot, 0, sizeof *slot); // FREE
     }
 
-    // generator events (a composing generator's facts about the block that just
-    // sounded), lossless on the same terms: staged here, offered until taken.
+    // staged generator events, re-offer until taken
     if (mx->generatorPoll && mx->bridge) {
         if (mx->genPendingCount < ANO_AUDIO_GEN_EVENTS)
             mx->genPendingCount += mx->generatorPoll(
@@ -662,15 +636,13 @@ void *ano_audio_mixer_main(void *arg)
             .clippedSamples = mx->clippedSamples,
         };
         if (mx->generatorStats)
-            mx->generatorStats(mx->generatorUser, &t); // the generator meters itself
+            mx->generatorStats(mx->generatorUser, &t);
         ano_audio_publish_telemetry(mx->bridge, &t);
     }
     return NULL;
 }
 
-// Offline driver: the same graph and apply/render core, driven synchronously on
-// the calling thread with no device, no telemetry, and no clock reads —
-// identical desc and frame count render byte-identical output (the CI gate).
+// Offline: sync drive, no device/telemetry. Deterministic for identical desc+frames.
 bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint64_t frames)
 {
     if (!out)
@@ -689,7 +661,6 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
     if (buses > ANO_AUDIO_MAX_BUSES)
         return false;
 
-    // scoped heap: every allocation below dies with it, on every return path
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
     if (!heap)
         return false;
@@ -714,7 +685,6 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
     if (!scratch)
         return false;
 
-    // borrowed buffers, pre-registered
     for (uint32_t i = 0; i < d.bufferCount; ++i) {
         const AnoAudioOfflineBuffer *ob = &d.buffers[i];
         if (!ob->data || ob->frames == 0u || ob->channels < 1u || ob->channels > 2u)

@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Development WAV writer: interleaved f32 -> IEEE-float WAV (format tag 3,
- * with the fact chunk the spec requires for non-PCM). Little-endian bytes are
- * written explicitly; the raw sample block is written as-is, which is correct
- * on every engine target (x86-64 and AArch64 are little-endian IEEE-754).
- * Plain stdio: general-purpose file creation is portable C, and the
- * filesystem module's writer is append-only (log-shaped). */
+// WAV write/load. Interleaved f32 <-> IEEE-float (or PCM) WAV. stdio.
 
 #include <anoptic_audio.h>
 #include <anoptic_memory.h>
@@ -43,23 +38,23 @@ bool ano_audio_wav_write(const char *path, const float *interleaved,
     const uint32_t byteRate  = sampleRate * channels * (uint32_t)sizeof(float);
     const uint16_t align     = (uint16_t)(channels * sizeof(float));
 
-    // RIFF(12) + fmt(8+18) + fact(8+4) + data header(8) = 58 bytes
+    // RIFF + fmt + fact + data = 58
     uint8_t h[58];
     put_u32(h + 0, 0x46464952u);            // "RIFF"
     put_u32(h + 4, 50u + dataBytes);        // file size - 8
     put_u32(h + 8, 0x45564157u);            // "WAVE"
     put_u32(h + 12, 0x20746d66u);           // "fmt "
-    put_u32(h + 16, 18u);                   // fmt chunk size (with cbSize)
+    put_u32(h + 16, 18u);
     put_u16(h + 20, 3u);                    // WAVE_FORMAT_IEEE_FLOAT
     put_u16(h + 22, (uint16_t)channels);
     put_u32(h + 24, sampleRate);
     put_u32(h + 28, byteRate);
     put_u16(h + 32, align);
-    put_u16(h + 34, 32u);                   // bits per sample
+    put_u16(h + 34, 32u);
     put_u16(h + 36, 0u);                    // cbSize
     put_u32(h + 38, 0x74636166u);           // "fact"
     put_u32(h + 42, 4u);
-    put_u32(h + 46, (uint32_t)frames);      // samples per channel
+    put_u32(h + 46, (uint32_t)frames);
     put_u32(h + 50, 0x61746164u);           // "data"
     put_u32(h + 54, dataBytes);
 
@@ -74,9 +69,7 @@ bool ano_audio_wav_write(const char *path, const float *interleaved,
     return ok;
 }
 
-// ---------------------------------------------------------------------------
-// Loader
-// ---------------------------------------------------------------------------
+/* Loader */
 
 static uint32_t get_u32(const uint8_t *p)
 {
@@ -88,14 +81,11 @@ static uint16_t get_u16(const uint8_t *p)
     return (uint16_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8));
 }
 
-// Windowed-sinc resample of one channel-interleaved buffer, deterministic and
-// load-time only. 16 taps per side under a Blackman window; downsampling
-// scales the kernel cutoff so aliasing stays below the window floor.
-// out: frame count at dstRate; writes mi_malloc'd samples to *outData
+// Windowed-sinc resample (16 taps/side, Blackman). Load-time only. mi_malloc'd *outData.
 static uint64_t wav_resample(const float *src, uint64_t srcFrames, uint32_t channels,
                              uint32_t srcRate, uint32_t dstRate, float **outData)
 {
-    const int T = 16; // taps per side
+    const int T = 16;
     uint64_t dstFrames = (uint64_t)((double)srcFrames * (double)dstRate / (double)srcRate);
     if (dstFrames == 0u)
         dstFrames = 1u;
@@ -103,7 +93,7 @@ static uint64_t wav_resample(const float *src, uint64_t srcFrames, uint32_t chan
     if (!dst)
         return 0u;
     const double step = (double)srcRate / (double)dstRate;
-    const double c    = step > 1.0 ? 1.0 / step : 1.0; // kernel cutoff scale when decimating
+    const double c    = step > 1.0 ? 1.0 / step : 1.0; // cutoff when decimating
     for (uint64_t n = 0; n < dstFrames; ++n) {
         double t  = (double)n * step;
         int64_t i0 = (int64_t)t;
@@ -114,10 +104,10 @@ static uint64_t wav_resample(const float *src, uint64_t srcFrames, uint32_t chan
                 int64_t idx = i0 + k;
                 if (idx < 0) idx = 0;
                 if (idx >= (int64_t)srcFrames) idx = (int64_t)srcFrames - 1;
-                double u = (double)k - fr;                        // tap offset
+                double u = (double)k - fr;
                 double s = u == 0.0 ? 1.0 : sin(3.14159265358979 * c * u) / (3.14159265358979 * c * u);
                 double w = 0.42 + 0.5 * cos(3.14159265358979 * u / T)
-                         + 0.08 * cos(2.0 * 3.14159265358979 * u / T); // Blackman
+                         + 0.08 * cos(2.0 * 3.14159265358979 * u / T);
                 acc += (double)src[(size_t)idx * channels + ch] * c * s * w;
             }
             dst[(size_t)n * channels + ch] = (float)acc;
@@ -135,7 +125,6 @@ float *ano_audio_wav_load(const char *path, uint32_t targetRate,
     FILE *f = fopen(path, "rb");
     if (!f)
         return NULL;
-    // slurp: SFX-sized assets; chunk walking over a flat buffer stays simple
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -150,7 +139,7 @@ float *ano_audio_wav_load(const char *path, uint32_t targetRate,
         return NULL;
     }
 
-    // chunk walk (chunks are word-aligned: odd sizes carry a pad byte)
+    // word-aligned chunk walk
     uint32_t tag = 0, channels = 0, rate = 0, bits = 0;
     const uint8_t *data = NULL;
     uint64_t dataBytes = 0;
@@ -165,7 +154,7 @@ float *ano_audio_wav_load(const char *path, uint32_t targetRate,
             rate     = get_u32(body + 4);
             bits     = get_u16(body + 14);
             if (tag == 0xFFFEu && csize >= 40)
-                tag = get_u16(body + 24); // WAVE_FORMAT_EXTENSIBLE: subformat GUID leads with the tag
+                tag = get_u16(body + 24); // WAVE_FORMAT_EXTENSIBLE
         } else if (memcmp(raw + at, "data", 4) == 0) {
             data      = body;
             dataBytes = csize;

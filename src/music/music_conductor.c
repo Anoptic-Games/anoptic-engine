@@ -3,18 +3,12 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_conductor.c
- * The advance_bar pipeline, transcribed step for step from the prototype:
- * extension -> dramaturg -> codetta/elision -> wander -> period ->
- * instruments -> mode -> params (mapped or static, incl. the cadence rit)
- * -> withholding/escalation/hypermeter/texture/counter-gate -> lifecycle ->
- * apex -> chord queue -> context -> director -> layers (pad/bass/melody+
- * imitation+counter/arp/perc) -> raw sort -> per-layer chains -> final sort
- * -> modulation arrival. Every stream tag matches the prototype's Seeder
- * (colon-joined, seed first); state mutations keep the prototype's ORDER
- * because the one-bar chord lookahead reads live state.
- */
+// advance_bar: extension -> dramaturg -> codetta/elision -> wander -> period ->
+// instruments -> mode -> params -> withhold/escalate/hyper/texture/counter ->
+// lifecycle -> apex -> chord queue -> context -> director ->
+// layers (pad/bass/melody+imitation+counter/arp/perc) ->
+// raw sort -> per-layer chains -> final sort -> modulation arrival.
+// Stream tags: colon-joined, seed first. State mutation ORDER is load-bearing.
 
 #include <math.h>
 #include <stdio.h>
@@ -44,8 +38,7 @@ static const AnoTexture TEXTURES[5] = {
 
 AnoEngineConfig ano_engine_config_default(void)
 {
-    // memset, not `= {0}`: C leaves PADDING unspecified under an initializer, and
-    // this struct is copied into the engine, whose bytes are its snapshot.
+    // memset: initializer leaves padding unspecified; snapshot = bytes.
     AnoEngineConfig c;
     memset(&c, 0, sizeof c);
     c.meter = ano_meter_default();
@@ -73,9 +66,7 @@ AnoEngineConfig ano_engine_config_default(void)
     return c;
 }
 
-// ---------------------------------------------------------------------------
-// small helpers
-// ---------------------------------------------------------------------------
+/* Helpers */
 
 static void eng_stream1(const AnoMusicEngine *e, AnoMusicRng *r, const char *name)
 {
@@ -236,8 +227,7 @@ static void plan_modulation(AnoMusicEngine *e, int pivotBar, int target, bool al
     e->st.hasModulation = true;
 }
 
-// The chord a modulation-window bar sounds; false on a pivot bar with no
-// usable common chord (the walk proceeds normally).
+// Modulation-window chord. false = no usable pivot (walk proceeds).
 static bool modulation_chord(AnoMusicEngine *e, int bar, AnoPhrasePos pos, AnoChord *out)
 {
     const AnoModulationPlan *plan = &e->st.modulation;
@@ -704,9 +694,7 @@ static const AnoMotif *motif_of(AnoMusicEngine *e, int phrase, const AnoGenParam
     return &e->st.motifs[sl];
 }
 
-// ---------------------------------------------------------------------------
-// engine API
-// ---------------------------------------------------------------------------
+/* Engine API */
 
 void ano_engine_init(AnoMusicEngine *e, uint64_t seed, const AnoEngineConfig *cfg)
 {
@@ -722,8 +710,7 @@ void ano_engine_init(AnoMusicEngine *e, uint64_t seed, const AnoEngineConfig *cf
     st->counter = ano_counter_state_init();
     ano_ledger_init(&st->ledger);
     ano_planner_init(&st->planner);
-    // tags, not values: slot 0 legitimately belongs to phrase 0 / bar 0, so a
-    // zeroed tag would claim them
+    // tags not values: zero would claim phrase/bar 0
     for (uint32_t i = 0; i < ANO_PHRASE_WINDOW; ++i) {
         st->motifTag[i] = st->grooveTag[i] = st->arpSkipTag[i] = ANO_SLOT_EMPTY;
         st->apexTag[i] = st->imitationTag[i] = st->textureTag[i] = ANO_SLOT_EMPTY;
@@ -1130,9 +1117,7 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
         uint32_t n1 = ano_chord_pitch_classes(chord, e->scale, pcs1);
         uint32_t n2 = ano_chord_pitch_classes(st->splits[ano_ring_bar(bar)], e->scale,
                                               pcs2);
-        // C4 "monophonic" thins this bar exactly as it thins an ano_generate_pad
-        // bar — the split path voices its own blocks, so it must apply the dyad
-        // rule itself or the phrase's leanest state grows a 4-note pad.
+        // C4 monophonic: split path must thin itself (same dyad rule as generate_pad).
         AnoVoicingConfig vcfg = cfg->voicing;
         if (params.texture == ANO_TEX_MONOPHONIC) {
             n1 = ano_thin_voicing(pcs1, n1, &vcfg); // voices=2 is idempotent,
@@ -1521,9 +1506,7 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
     st->bar += 1;
 }
 
-// ---------------------------------------------------------------------------
-// the section-8.4 digest
-// ---------------------------------------------------------------------------
+/* Digest */
 
 // Python float.hex()-exact text (13 mantissa digits; 0.0 special-cased).
 static void py_hex(double x, char *buf, size_t cap)
@@ -1534,9 +1517,7 @@ static void py_hex(double x, char *buf, size_t cap)
         snprintf(buf, cap, "%.13a", x);
 }
 
-// events/count: any stream — one bar or a whole piece. Streamed into the hash
-// event by event: a staging buffer would silently truncate a long piece, and a
-// truncated digest reads as a matching one.
+// Streamed event-by-event (no staging buffer — truncate would false-match).
 uint64_t ano_events_digest(const AnoMusicEvent *events, uint32_t count)
 {
     AnoBlake2b8 st;

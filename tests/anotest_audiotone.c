@@ -3,15 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Live audio smoke: bring the audio world up on the AUTO backend cascade
- * (pipewire -> alsa -> null on Linux), play a short two-tone figure through
- * the bridge, and report backend behavior. Asserts only what holds on ANY
- * backend — init, mixer heartbeat, audible telemetry peak, source retirement,
- * clean shutdown — so CI (which cascades to null) passes while a by-hand run
- * on a desktop is the Phase 1 hardware check: you should HEAR the tones, and
- * the stream should appear in `pactl list sink-inputs` while it runs.
- * ANO_AUDIO_BACKEND=pipewire|alsa|null pins the backend under test.
- * argv[1] extends the play time in seconds (soak). Exit 0 == pass. */
+// Live smoke: AUTO backend (pipewire -> alsa -> null), two-tone figure.
+// Asserts any-backend: init, heartbeat, audible peak, retire, shutdown.
+// ANO_AUDIO_BACKEND=pipewire|alsa|null. argv[1] = play seconds. Exit 0 == pass.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,7 +50,7 @@ int main(int argc, char **argv)
 
     CHECK(wait_telemetry(b, pred_heartbeat, 3000), "mixer heartbeat");
 
-    // a fifth, staggered: A440 sustained, E330 joining after half the run
+    // Fifth: A440, then E330 after half the run.
     AnoAudioCommand play = { .kind = ACMD_SOURCE_PLAY, .source_id = 1,
         .desc = { .kind = ANO_AUDIO_SOURCE_TONE, .bus = 1, .gain = 0.30f, .pan = -0.4f,
                   .freqHz = 440.0f } };
@@ -72,7 +66,7 @@ int main(int argc, char **argv)
 
     ano_sleep((uint64_t)seconds * 500000ull);
 
-    // stop both; drain events until both retire
+    // Stop both; drain until both retire.
     AnoAudioCommand stop1 = { .kind = ACMD_SOURCE_STOP, .source_id = 1 };
     AnoAudioCommand stop2 = { .kind = ACMD_SOURCE_STOP, .source_id = 2 };
     CHECK(ano_audio_submit(b, &stop1), "submit stop A");

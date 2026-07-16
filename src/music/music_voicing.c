@@ -3,16 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_voicing.c
- * Minimum-movement voicing search (musicgen/theory/voicing.py). Candidates
- * enumerate in itertools.product order (rightmost voice's octave varies
- * fastest), are sorted ascending, deduped by first occurrence, filtered for
- * unisons and wide adjacent gaps, and the FIRST minimum of the float cost
- * wins — Python min() semantics, and float ties are real here (TECH_SPEC
- * §3.3's "sorting by float keys" hazard). Cost arithmetic keeps the
- * prototype's operation order.
- */
+// Min-movement voicing. product order (rightmost fastest); ascending; dedupe by first occurrence;
+// filter unisons / wide adjacent gaps. First float-cost minimum wins (float ties are real). Cost op order binds.
 
 #include "music_theory.h"
 

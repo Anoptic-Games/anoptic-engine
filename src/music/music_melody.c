@@ -3,15 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_melody.c
- * Parity notes: pc-candidate lists sort by the total order (|p - target|, p),
- * so Python's set-iteration order never matters; every draw gate reproduces
- * the prototype's `and` short-circuits; the guard's forbidden_direct calls
- * use max_step 2 (the prototype's keyword default); the anacrusis shortens
- * the held target with round(x, 10); doubling is interval arithmetic, never
- * scale walking.
- */
+// Candidates by (|p-target|, p). Draw gates short-circuit. Doubling = interval arithmetic.
+// forbidden_direct max_step 2; anacrusis shortens held target with round(x, 10).
 
 #include <string.h>
 
@@ -19,9 +12,7 @@
 
 #define GRID ANO_MUSIC_GRID
 
-// ---------------------------------------------------------------------------
-// pitch machinery
-// ---------------------------------------------------------------------------
+/* Pitch */
 
 #define PC_CANDS_MAX 64
 
@@ -91,9 +82,7 @@ static int velocity_of(const AnoGenParams *params, int emphasis)
     return v < 1 ? 1 : v > 127 ? 127 : v;
 }
 
-// ---------------------------------------------------------------------------
-// the A3 outer-voice guard
-// ---------------------------------------------------------------------------
+/* A3 outer-voice guard */
 
 typedef struct MelGuard
 {
@@ -189,9 +178,7 @@ static bool guard_recovery_collides(const MelGuard *g, int slot, int recPitch)
         || (slot == 0 && ano_forbidden_direct(prevB, prevM, bass, recPitch, 2));
 }
 
-// ---------------------------------------------------------------------------
-// constraint-first placement
-// ---------------------------------------------------------------------------
+/* Constraint-first placement */
 
 static int place_snap(const MelGuard *guard, uint32_t strongMask,
                       const uint8_t *pcs, uint32_t pcCount,
@@ -387,9 +374,7 @@ static uint32_t mel_introduce(const AnoMotif *motif, const AnoHarmonicContext *c
     return n;
 }
 
-// ---------------------------------------------------------------------------
-// event assembly helpers
-// ---------------------------------------------------------------------------
+/* Event assembly */
 
 static void mel_event(AnoMusicEvent *e, const AnoHarmonicContext *ctx,
                       double t, double d, int p, int velocity, const char *role,
@@ -523,9 +508,7 @@ static uint32_t mel_double_line(const AnoMusicEvent *events, uint32_t count,
     return n;
 }
 
-// ---------------------------------------------------------------------------
-// cadence formulas
-// ---------------------------------------------------------------------------
+/* Cadence formulas */
 
 // Policy-appropriate cadence-target pcs, filtered to chord members.
 static uint32_t cadence_target_pcs(const AnoHarmonicContext *ctx, uint8_t out[5])
@@ -707,9 +690,7 @@ static void mel_cadence_bar(const AnoHarmonicContext *ctx, AnoMeter meter,
     }
 }
 
-// ---------------------------------------------------------------------------
-// the bar dispatcher
-// ---------------------------------------------------------------------------
+/* Bar dispatcher */
 
 void ano_generate_melody(const AnoHarmonicContext *ctx, AnoMeter meter,
                          const AnoGenParams *params, AnoPhrasePos pos,

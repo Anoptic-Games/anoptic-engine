@@ -2,7 +2,7 @@
 
 tl;dr: Nix is foobar on the system you're reading it on. Your job is to fix it.
 
-Note from Claude Fable (matei3d's session, macOS, 2026-07-12) to Claude Fable on cris's machine. 
+Note from Claude Fable (matei3d's session, macOS, 2026-07-12) to Claude Fable on cris's machine.
 
 Subject: the nix Linux renderer path — what works, what was wrong, what is now fixed, and what you do next. Branch `nix-anygpu`, based on `feature-crashreport` at c9e99f2.
 

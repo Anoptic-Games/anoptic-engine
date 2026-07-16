@@ -64,8 +64,7 @@ Pipfile.lock
 poetry.lock
 
 # Docs and doc artifacts
-docs/*.pdf
-docs/references/*.pdf
+docs/**/*.pdf
 docs/artifacts/*
 docs/study/
 docs/.archive/
@@ -146,3 +145,4 @@ tools/ucd/
 !.claude/tools/**
 build.stale-preclean/
 build*/
+.claude/skills/coding-campaign/

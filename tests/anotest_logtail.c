@@ -3,13 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Logger tail-latency benchmark: PER-CALL ano_log() latency percentiles (p50/p90/p99/p99.9),
-// the numbers anotest_logbench's means cannot show. Every call is timed individually with a
-// calibrated rdtsc on x86-64 (QPC's 100ns grain would swallow a ~30ns fast path), falling back to
-// ano_timestamp_ticks elsewhere. P producers hammer enqueue while the logger's own drain thread
-// consumes, so full-ring waits and contention land in the tail where they belong. Like
-// anotest_logbench: built so it cannot rot, DISABLED in CTest, run ./anotest_logtail by hand.
-// Always exits 0 and prints a table. argv[1] overrides messages-per-producer for a longer run.
+// Tail-latency benchmark: per-call ano_log() percentiles (p50/p90/p99/p99.9).
+// Calibrated rdtsc on x86-64, else ano_timestamp_ticks. P producers + owned drain thread.
+// DISABLED in CTest. Always exits 0. argv[1] = messages-per-producer.
 
 #include <anoptic_log.h>
 #include <anoptic_threads.h>
@@ -32,15 +28,16 @@ static const int POINTS[] = {1, 2, 4, 8, 16};
 
 static int g_msgs = DEFAULT_MSGS;
 
-/* Tick source: rdtsc calibrated against the platform clock, so percentiles resolve below one QPC
-   step. Invariant TSC is assumed (any x86-64 this engine targets). */
+/* Tick Source */
+
+// rdtsc calibrated against platform clock (below QPC grain). Invariant TSC assumed.
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
 static inline uint64_t tick_now(void) { return __rdtsc(); }
 static double g_nsPerTick = 1.0;
 
-// Ratio from a ~50ms window against ano_timestamp_raw. Calibration error is < 0.1% at this width.
+// Ratio from ~50ms window vs ano_timestamp_raw.
 static void tick_calibrate(void)
 {
     uint64_t ns0 = ano_timestamp_raw(), t0 = tick_now();
@@ -55,7 +52,9 @@ static void tick_calibrate(void) { }
 static uint64_t tick_to_ns(uint64_t t) { return ano_ticks_to_ns(t); }
 #endif
 
-/* Producers: every call timed, samples into a caller-owned slice of one big buffer */
+/* Producers */
+
+// Every call timed; samples into a caller-owned slice of one big buffer.
 
 typedef struct {
     int       id, count;
@@ -73,8 +72,7 @@ static void *producer(void *p)
     return NULL;
 }
 
-// One point: P producers, each timing every enqueue into its own buffer slice. Slices are merged
-// (they are adjacent) and reduced to one percentile row for the point.
+// One point: P producers time every enqueue into adjacent slices, merged to one percentile row.
 static bench_stats run_point(int producers, uint64_t *buf)
 {
     anothread_t th[MAXP];
@@ -116,7 +114,7 @@ int main(int argc, char **argv)
     printf("Anoptic logger tail benchmark -- per-call enqueue latency percentiles\n");
     printf("  %d msgs/producer, logger's own drain thread consuming\n\n", g_msgs);
 
-    // The timer's own cost, so readers can subtract it from the series below.
+    // Timer cost (subtract from series below).
     {
         bench_lat ovh;
         bench_lat_init(&ovh, buf, 4096);

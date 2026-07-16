@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_control.c
- * The affect -> parameter mappers (musicgen/control/mapping.py), pure and
- * draw-free. Parity notes: gate_layers compares energy STRICTLY >, while
- * pick_instruments compares >= — the prototype mixes them; nearest_mode
- * iterates BRIGHTNESS in dict insertion order (bright to dark) with the
- * min() key tuple (|delta|, -brightness); rounds are banker's.
- */
+// Affect -> Tier-2 mappers. gate_layers: energy >; pick_instruments: >=.
+// nearest_mode: BRIGHTNESS insertion order, min key (|delta|, -brightness). Rounds are banker's.
 
 #include <math.h>
 
@@ -82,10 +76,7 @@ AnoMappingTable ano_mapping_table_default(void)
 
 AnoMappingTable ano_mapping_table_electronic(void)
 {
-    // Everything about WHAT to play is the default's; only the band changes.
-    // The rows deliberately cross the layer/patch grain: a bass patch is a saw
-    // plus a sub with a filter envelope on it, and that is a lead — if you put it
-    // on the melody. The composer names timbres, not instruments, so it can.
+    // Same defaults; different instrument rows (timbres may cross layer grain).
     AnoMappingTable t = ano_mapping_table_default();
     t.instrumentRows[0] = (AnoInstrumentRow){
         ANO_MUSIC_PAD, 2, { { ANO_PATCH_WARM, 0.0 }, { ANO_PATCH_BRIGHT, 0.60 } } };
@@ -142,8 +133,7 @@ double ano_map_brightness_target(double valence)
     return -2.0 + 5.0 * (valence + 1.0) / 2.0;
 }
 
-// BRIGHTNESS in the prototype's dict insertion order, bright to dark
-// (locrian deliberately absent: the control layer never selects it).
+// BRIGHTNESS insertion order, bright to dark (locrian absent).
 static const struct { AnoMode mode; int b; } EMS[6] = {
     { ANO_MODE_LYDIAN, 3 },  { ANO_MODE_IONIAN, 2 },  { ANO_MODE_MIXOLYDIAN, 1 },
     { ANO_MODE_DORIAN, 0 },  { ANO_MODE_AEOLIAN, -1 }, { ANO_MODE_PHRYGIAN, -2 },

@@ -3,24 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Collation sort benchmark: the "player clicks sort by name on a 6000-item inventory"
- * scenario, multi-script names (Latin+accents, Cyrillic, Greek, kana, Han, Runic
- * decorations) with realistic duplicate stacks and "Potion of ..." tie families.
- *
- * Series (full-sort latency, percentiles over shuffled reps):
- *   - qsort+collate      : the streaming comparator loop (the old anostr_sort)
- *   - anostr_sort        : prefix keys + radix + tie resolution, keys rebuilt per call
- *   - anostr_sort presrt : the already-sorted early-out (re-click on a sorted list)
- *   - anostr_sort_idx    : permutation only, inventory structs never move
- *   - sym_sort warm      : interned symbols, cached keys -- zero string bytes read
- *   - qsort bytes        : anostr_compare byte order, the meaningless-order floor
- * plus one-shot rows (sym_sort cold = cache build) and a throughput section for
- * anostr_collate_prefix, anostr_collate_key, replace_all, cull, and rune_sort.
- *
- * Deterministic (fixed seeds). argv[1] overrides the item count (default 6000).
- * Built always so it cannot rot; DISABLED in ctest -- run by hand from a -O3 build
- * (build.bat 8 / build.sh 8). Prints a table, exits 0 (1 only if results are WRONG:
- * every timed sort is verified against the streaming comparator's order once). */
+/* Collation sort bench: multi-script inventory sort (qsort+collate, anostr_sort, sort_idx, sym_sort).
+ * DISABLED in ctest; run from -O3. argv[1] = item count (default 6000). Exits 1 if order wrong. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,8 +17,7 @@
 
 enum { REPS = 40 };
 
-// Inventory name generator. Distinct pool ~ count/4, drawn with replacement, so stacks
-// duplicate like a real inventory and the intern table has real work to collapse.
+// Inventory name generator. Pool ~ count/4 with replacement (duplicate stacks).
 
 static const char *base_ascii[] = {
     "Sword", "Shield", "Potion", "Scroll", "Amulet", "Ring", "Helm", "Bow", "Dagger",
@@ -59,7 +42,7 @@ static anostr_t make_name(mi_heap_t *heap, test_rng *rng)
 {
     char buf[96];
     uint32_t kind = rng_below(rng, 10);
-    if (kind < 5) {         // "Potion of Healing" shared-prefix ties
+    if (kind < 5) {         // "Potion of Healing" ties
         snprintf(buf, sizeof buf, "%s of %s",
                  base_ascii[rng_below(rng, sizeof base_ascii / sizeof base_ascii[0])],
                  mod_ascii[rng_below(rng, sizeof mod_ascii / sizeof mod_ascii[0])]);
@@ -67,11 +50,11 @@ static anostr_t make_name(mi_heap_t *heap, test_rng *rng)
         snprintf(buf, sizeof buf, "+%u %s %s", 1 + rng_below(rng, 9),
                  mod_ascii[rng_below(rng, sizeof mod_ascii / sizeof mod_ascii[0])],
                  base_ascii[rng_below(rng, sizeof base_ascii / sizeof base_ascii[0])]);
-    } else if (kind < 9) {  // non-Latin scripts
+    } else if (kind < 9) {  // non-Latin
         snprintf(buf, sizeof buf, "%s %s",
                  base_other[rng_below(rng, sizeof base_other / sizeof base_other[0])],
                  mod_ascii[rng_below(rng, sizeof mod_ascii / sizeof mod_ascii[0])]);
-    } else {                // Diablo-style decorative runes around a Latin core
+    } else {                // decorative runes around Latin
         snprintf(buf, sizeof buf, "\xE1\x9A\xA6%s\xE1\x9A\xA6",
                  base_ascii[rng_below(rng, sizeof base_ascii / sizeof base_ascii[0])]);
     }

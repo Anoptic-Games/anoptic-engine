@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// include guard
 #ifndef ANOPTIC_THREADS_H
 #define ANOPTIC_THREADS_H
 
@@ -12,64 +11,53 @@
 #include <stdatomic.h>
 #include <time.h>     // struct timespec for ano_thread_cond_timedwait
 
-// Represents a thread handle.
 typedef pthread_t anothread_t;
 
-// Represents a mutex handle.
 typedef pthread_mutex_t anothread_mutex_t;
 typedef pthread_mutexattr_t anothread_mutexattr_t;
 
-// Represents a thread attribute
 typedef pthread_attr_t anothread_attr_t;
 
-// Represents condition variables and attributes
 typedef pthread_cond_t anothread_cond_t;
 typedef pthread_condattr_t anothread_condattr_t;
 
-// Represents spinlock types
 #if defined(__APPLE__)
-// macOS libpthread has no pthread_spinlock_t; define it (C23 atomics).
+// Darwin: atomic_int spin (0 free / 1 held). pshared ignored.
 typedef atomic_int pthread_spinlock_t;
 #endif
 typedef pthread_spinlock_t anothread_spinlock_t;
 
-// Represents rwlock types.
 typedef pthread_rwlock_t anothread_rwlock_t;
 typedef pthread_rwlockattr_t anothread_rwlockattr_t;
 
-// Represents barrier types
 #if defined(__APPLE__)
-// macOS libpthread has no pthread_barrier_t/attr; define per glibc's shape (C23 atomics).
+// Darwin: POSIX barrier stand-in (C23 atomics). attr ignored.
 typedef struct {
     unsigned int count;       // required arrivals, set at init
     atomic_uint  arrived;     // arrivals this round
     atomic_uint  generation;  // phase counter enabling barrier reuse
 } pthread_barrier_t;
 typedef struct {
-    int pshared;
+    int pshared;              // accepted, unused
 } pthread_barrierattr_t;
 #endif
 typedef pthread_barrier_t anothread_barrier_t;
 typedef pthread_barrierattr_t anothread_barrierattr_t;
 
-// Represents key types for thread local storage
 typedef pthread_key_t anothread_key_t;
 
 
-// Function signature for thread entry point.
 //typedef void *(*ano_thread_func)(void *arg);
 
 
 /* Thread Management */
 
-// Stack reserve for every engine thread. ano_thread_create pins it on any NULL attr.
-// On win64 the PE header carries it instead (root CMakeLists --stack), sizing the main thread too.
+// Stack reserve for engine threads (NULL attr). Win64: PE --stack sizes those and the main thread.
 #define ANO_THREAD_STACK_SIZE ((size_t)8 << 20)
 
 int ano_thread_create(anothread_t *thread, const anothread_attr_t *attr, void *(* func)(void *), void *arg);
 
-// Stack budget of the process's initial thread.
-// RLIMIT_STACK soft on POSIX (SIZE_MAX when unlimited), the PE-header reserve on win64, 0 when unknown.
+// Initial-thread stack budget. POSIX soft RLIMIT_STACK (SIZE_MAX if unlimited), win64 PE reserve, else 0.
 size_t ano_thread_main_stack(void);
 
 int ano_thread_join(anothread_t thread, void **res);
@@ -98,8 +86,7 @@ int ano_thread_cond_init(anothread_cond_t *conditionVariable, const anothread_co
 
 int ano_thread_cond_wait(anothread_cond_t *conditionVariable, anothread_mutex_t *external_mutex);
 
-// Wait with an absolute CLOCK_REALTIME deadline (pthread_cond_timedwait parity). Returns 0 on
-// signal, ETIMEDOUT on deadline, else an errno. Build the deadline with timespec_get(TIME_UTC).
+// Absolute CLOCK_REALTIME deadline. 0 / ETIMEDOUT / errno. Build with timespec_get(TIME_UTC).
 int ano_thread_cond_timedwait(anothread_cond_t *conditionVariable, anothread_mutex_t *external_mutex,
                               const struct timespec *abstime);
 
@@ -111,6 +98,7 @@ int ano_thread_cond_destroy(anothread_cond_t *conditionVariable);
 
 
 /* Spinlocks */
+
 int ano_thread_spin_init(anothread_spinlock_t *lock, int pshared);
 
 int ano_thread_spin_destroy(anothread_spinlock_t *lock);

@@ -82,7 +82,7 @@ Full text: `Michael L. Scott, Trevor Brown - Shared-Memory Synchronization (2024
 
 Why this doc exists: the lock-free queue literature moved off compare-and-swap (CAS) and onto fetch-and-add (FAA) as its core synchronization primitive, and that shift is the single fact that explains why the post-2013 queues (LCRQ, SCQ, wCQ) scale where Michael & Scott (1996) does not. `docs/notes.md` already reaches for it — "reserve with `fetch_add` on the tail" — without naming the lineage. This is the named lineage, the hardware truth underneath it, and the map onto Anoptic's logger, event bus, and the cache-line-stripe idea.
 
-Companion to `docs/logger.md` §2 (the per-thread-lanes vs shared-ring decision) and `docs/notes.md` §2.
+Goes with `docs/logger.md` §2 (the per-thread-lanes vs shared-ring decision) and `docs/notes.md` §2.
 
 ---
 
@@ -104,7 +104,7 @@ FAA is one of a family of **unconditional** read-modify-write (RMW) operations �
 | ARMv8.1-A (LSE) | `LDADD` / `LDADDA` / `LDADDAL` | true single-instruction atomic add with optional acquire/release. |
 | ARMv8.0 (no LSE) | `LDAXR`/`STLXR` loop | there is no atomic-add instruction; the compiler emits an LL/SC retry loop, so "FAA" is *secretly a CAS-class loop here* and loses its contention advantage. |
 
-The ARM caveat is load-bearing for this engine's targets. Apple Silicon (M1 and later) implements LSE, so FAA is a real single instruction on the macOS target. On generic aarch64, Clang/GCC default to "outline atomics" that runtime-detect LSE; for the Apple target build with `-mcpu=apple-m1` (or `-march=armv8.4-a`) so FAA inlines to `LDADD` instead of an LL/SC loop. On the Ryzen x86-64 target it is always `LOCK XADD`. Verify this in the disassembly before trusting any FAA-based scalability claim on ARM — the difference is invisible in C source and total in the generated code.
+The ARM caveat matters for this engine's targets. Apple Silicon (M1 and later) implements LSE, so FAA is a real single instruction on the macOS target. On generic aarch64, Clang/GCC default to "outline atomics" that runtime-detect LSE; for the Apple target build with `-mcpu=apple-m1` (or `-march=armv8.4-a`) so FAA inlines to `LDADD` instead of an LL/SC loop. On the Ryzen x86-64 target it is always `LOCK XADD`. Verify this in the disassembly before trusting any FAA-based scalability claim on ARM — the difference is invisible in C source and total in the generated code.
 
 ---
 
@@ -179,7 +179,7 @@ Each step's one-line contribution. The through-line: push CAS off the common pat
 | M&S queue | 1996 | lock-free linked list, CAS on head and tail | the foundational lock-free FIFO | Michael & Scott, PODC'96 |
 | Vyukov bounded MPMC | ~2010 | array ring, per-slot sequence number, CAS on position | bounded, no node reclamation; practitioner staple | Vyukov (1024cores) |
 | LCRQ | 2013 | ring of cells; enqueue/dequeue **FAA** a counter to pick a cell, then a near-always-uncontended CAS on that cell; link rings with M&S at the rare boundary | moved the hot path from contended CAS to FAA; big scalability jump on x86 | Morrison & Afek, PPoPP'13 |
-| WFqueue | 2016 | wait-free queue whose fast path is essentially an FAA, with fast-path/slow-path helping | "wait-free as fast as fetch-and-add" — wait-freedom at FAA cost | Yang & Mellor-Crummey, PPoPP'16 |
+| WFqueue | 2016 | wait-free queue whose fast path is basically an FAA, with fast-path/slow-path helping | "wait-free as fast as fetch-and-add" — wait-freedom at FAA cost | Yang & Mellor-Crummey, PPoPP'16 |
 | SCQ | 2019 | scalable circular queue; an indirection (a queue of indices) so **single-word** CAS suffices; livelock-free | killed LCRQ's double-width CAS (`cmpxchg16b`) portability dependence and its starvation cases; memory-efficient | Nikolaev, DISC'19 |
 | wCQ | 2022 | SCQ + fast-path/slow-path helping for wait-freedom, bounded memory | wait-free with bounded memory, still FAA-cored | Nikolaev & Ravindran, SPAA'22 |
 
@@ -191,7 +191,7 @@ Two practitioner notes. LCRQ needs a 128-bit CAS (`cmpxchg16b` on x86) to swap a
 
 FAA-reserve introduces a hazard: a thread can FAA a cell index and then stall — or die — before depositing its value, leaving a reserved-but-empty cell in the middle of the ring. A naive consumer that walks forward and stops at the first unfilled cell then wedges behind it forever, unable to distinguish a slow producer from a dead one. This is the "gap problem" `notes.md` flags.
 
-LCRQ/SCQ solve it with **cycle numbers** (a generation tag per cell): the dequeuer reaching a cell that holds an older cycle than expected can mark it unsafe and advance past it. The record in that cell is lost, but the queue keeps flowing — no wedge. That correction is load-bearing for any ring whose producers can stall on real work between reserve and commit — the event bus. The logger (`docs/logger.md` §7) deliberately does *not* carry cycle numbers: its reserve→publish window holds no syscall, lock, or allocation — only a bounded copy and one release store — so a producer cannot block there, only be preempted, and that self-heals within a scheduler quantum. A genuinely dead producer would wedge the drain, but death in a window with nothing that can block is not a real failure mode, so the cheaper deterministic gap-stop (stop at the first uncommitted entry, resume next pass) suffices. Both designs still lose a record whose producer died before publishing it; neither async design can save it.
+LCRQ/SCQ solve it with **cycle numbers** (a generation tag per cell): the dequeuer reaching a cell that holds an older cycle than expected can mark it unsafe and advance past it. The record in that cell is lost, but the queue keeps flowing — no wedge. That correction is required for any ring whose producers can stall on real work between reserve and commit — the event bus. The logger (`docs/logger.md` §7) deliberately does *not* carry cycle numbers: its reserve→publish window holds no syscall, lock, or allocation — only a bounded copy and one release store — so a producer cannot block there, only be preempted, and that self-heals within a scheduler quantum. A genuinely dead producer would wedge the drain, but death in a window with nothing that can block is not a real failure mode, so the cheaper deterministic gap-stop (stop at the first uncommitted entry, resume next pass) suffices. Both designs still lose a record whose producer died before publishing it; neither async design can save it.
 
 ---
 

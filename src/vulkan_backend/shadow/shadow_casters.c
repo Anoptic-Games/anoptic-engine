@@ -28,7 +28,8 @@ static void shadow_frustum_free(RendererState* st, uint32_t base) {
     }
 }
 
-// Stage light shadow info+config. Budget-full -> castsShadow=0.
+// Stage light shadow info+config (castsShadow=1, base, count); record base on registry row.
+// Budget-full stages castsShadow=0 and stays shadowless. lightPalIdx = absolute palette row; regRow = relative registry row.
 void shadow_caster_attach(RendererState* st, uint32_t lightPalIdx, uint32_t regRow,
                                  uint32_t lightType, uint32_t frameIndex) {
     uint32_t base = shadow_frustum_alloc(st, lightType);
@@ -85,7 +86,8 @@ void cascade_detach_lights(RendererState* state, uint32_t parentRid, uint32_t fr
     } while (n == 64u);
 }
 
-// Register STATIC-region caster for staged light row. Past budget -> shadowless.
+// Register STATIC-region caster for staged light row. Allocates frustum block (point=6 faces, dir/spot=1);
+// stages config (active=1) + light info (castsShadow=1, base, count). Past budget/region -> shadowless.
 void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t lightType,
                                    uint32_t frameIndex, uint32_t parentSlot, float range) {
     uint32_t budget = lightType == LIGHT_TYPE_DIRECTIONAL ? ANO_SHADOW_DIR_COUNT

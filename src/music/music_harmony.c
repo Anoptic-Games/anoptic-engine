@@ -3,16 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_harmony.c
- * The functional progression walk (musicgen/theory/harmony.py): a weighted
- * transition over harmonic functions realized as degrees within the mode,
- * with cadence slots and a tension-tiered dissonance budget. Pure: sequential
- * state comes in as `prev`, every draw comes from the caller's per-bar
- * stream. Draw ORDER and COUNT are the parity contract — weight lists keep
- * the prototype's dict insertion orders; force_dominant and the borrow gate
- * short-circuit their draws exactly as the Python `or`/early-return does.
- */
+// Functional progression walk. Draw ORDER/COUNT are parity: weight lists keep dict insertion order;
+// force_dominant and borrow gate short-circuit draws exactly as Python or/early-return.
 
 #include "music_theory.h"
 

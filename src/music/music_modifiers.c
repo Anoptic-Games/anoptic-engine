@@ -3,16 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_modifiers.c
- * Parity notes: Humanize draws its two gauss per event ALWAYS (tie zeroing
- * happens after the draws, so the stream stays aligned); every moved start
- * is round(x, 6); Echo's span mask grows as echoes land, so later repeats
- * are masked by earlier ones, and a masked repeat still decays the running
- * velocity; Strum groups by EXACT float start equality and recomputes a
- * tied-out half's dur from the rounded start so the join end stays
- * bit-exact; Swing's fmod is safe (starts are non-negative).
- */
+// Humanize: two gauss per event always (tie zero after draws; stream stays aligned). Starts round(.,6).
+// Echo: span mask grows as echoes land; masked repeat still decays velocity.
+// Strum: groups by EXACT float start; tied-out half dur recomputed from rounded start (join bit-exact).
+// Swing fmod safe (starts non-negative).
 
 #include <math.h>
 #include <string.h>

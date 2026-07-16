@@ -3,15 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_det.c
- * The determinism kernel: BLAKE2b (RFC 7693 reference, keyless, 8-byte
- * digests), MT19937 with CPython's init_by_array seeding, the exact CPython
- * 3.12 draw algorithms, and Python 3 banker's rounding. No allocation, no
- * state beyond the caller's AnoMusicRng. This TU must build with
- * -ffp-contract=off: choices' cumulative sums and gauss' transcendentals are
- * bit-parity surfaces (TECH_SPEC §3.3, §8.3).
- */
+// Determinism kernel: BLAKE2b-8, CPython MT19937, banker's round.
+// Build with -ffp-contract=off: choices cumulative sums and gauss transcendentals are bit-parity.
 
 #include "music_det.h"
 
@@ -20,9 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ---------------------------------------------------------------------------
-// BLAKE2b (RFC 7693), unkeyed, digest_size 8
-// ---------------------------------------------------------------------------
+/* BLAKE2b */
 
 static const uint64_t B2B_IV[8] = {
     0x6A09E667F3BCC908ull, 0xBB67AE8584CAA73Bull, 0x3C6EF372FE94F82Bull,
@@ -116,9 +107,7 @@ void ano_music_blake2b8(const void *msg, size_t len, uint8_t out[8])
         out[i] = (uint8_t)(h[0] >> (8 * i)); // little-endian first state word
 }
 
-// Streaming form of the same hash, for messages too large to stage in one
-// buffer. Invariant: a buffered block is compressed only once a further byte
-// is known to follow, because BLAKE2b's last block carries the final flag.
+// Incremental hash. Buffered block compresses only when a further byte follows (final flag).
 void ano_blake2b8_init(AnoBlake2b8 *s)
 {
     memcpy(s->h, B2B_IV, sizeof s->h);
@@ -156,9 +145,7 @@ void ano_blake2b8_final(AnoBlake2b8 *s, uint8_t out[8])
         out[i] = (uint8_t)(s->h[0] >> (8 * i));
 }
 
-// ---------------------------------------------------------------------------
-// MT19937, CPython seeding and draws
-// ---------------------------------------------------------------------------
+/* MT19937 */
 
 #define MT_N 624
 #define MT_M 397
@@ -211,8 +198,7 @@ uint32_t ano_music_getrandbits32(AnoMusicRng *r)
     return y;
 }
 
-// random.Random(int): the key word count follows the seed's magnitude —
-// values below 2^32 seed with ONE word, not a zero-padded pair.
+// Seed < 2^32: one key word, not a zero-padded pair.
 void ano_music_rng_seed(AnoMusicRng *r, uint64_t seed)
 {
     uint32_t key[2] = { (uint32_t)seed, (uint32_t)(seed >> 32) };
@@ -225,7 +211,7 @@ void ano_music_stream(AnoMusicRng *r, const char *tag)
 {
     uint8_t d[8];
     ano_music_blake2b8(tag, strlen(tag), d);
-    uint64_t seed = 0; // big-endian digest -> int (TECH_SPEC §8.1)
+    uint64_t seed = 0; // big-endian digest -> int
     for (int i = 0; i < 8; ++i)
         seed = seed << 8 | d[i];
     ano_music_rng_seed(r, seed);
@@ -316,8 +302,7 @@ double ano_music_uniform(AnoMusicRng *r, double a, double b)
     return a + (b - a) * ano_music_random(r);
 }
 
-// CPython sample(): pool method below the setsize heuristic, selection-set
-// tracking above it. Reproduced exactly, including the log-based threshold.
+// CPython sample(): pool below setsize heuristic, selection-set above.
 void ano_music_sample(AnoMusicRng *r, uint32_t n, uint32_t k, uint32_t *out)
 {
     uint32_t setsize = 21u;
@@ -370,14 +355,9 @@ double ano_music_gauss(AnoMusicRng *r, double mu, double sigma)
     return mu + z * sigma;
 }
 
-// ---------------------------------------------------------------------------
-// Python 3 banker's rounding
-// ---------------------------------------------------------------------------
-// CPython rounds floats to ndigits through correctly-rounded decimal
-// conversion (David Gay), ties to even. glibc's printf/strtod pair performs
-// the identical correctly-rounded conversion in both directions, so a
-// round-trip through the shortest sufficient decimal string reproduces it.
+/* Rounding */
 
+// Python 3 banker's via printf/strtod round-trip.
 double ano_music_round(double x, int ndigits)
 {
     if (!isfinite(x))
@@ -395,9 +375,7 @@ int64_t ano_music_round_int(double x)
 
 double ano_music_floordiv(double vx, double wx)
 {
-    // CPython floatobject.c float_divmod, quotient half: fmod-based remainder
-    // sign-matched to the denominator, then the quotient snapped to the
-    // nearest integral value (it is always within 0.5 of one).
+    // CPython float_divmod quotient half: fmod remainder sign-matched to denom, snap to nearest integral.
     double mod = fmod(vx, wx);
     double div = (vx - mod) / wx;
     if (mod != 0.0) {

@@ -1,53 +1,31 @@
 #!/usr/bin/env python3
-"""anopticengine FPS / GPU-pass benchmark harness -- MACOS (Cocoa) DRIVER.
+"""anopticengine FPS / GPU-pass bench -- MACOS (Cocoa) driver.
 
-Sibling of bench_fps_win64.py / bench_fps_linux.py. Methodology and the engine log
-contract live in tools/perf/bench_fps.md. This file implements that contract with
-macOS primitives, none of which need the Accessibility permission.
+Methodology: tools/perf/bench_fps.md. This file: macOS primitives (no Accessibility).
 
-macOS-specific:
-  - external window resize (AXUIElement) and key injection (CGEventPost) are
-    Accessibility-gated, so the driver uses the engine's launch knobs instead:
-    ANO_RES=WxH sizes the window at boot, ANO_MENU opens the HUD menu at boot.
-    A data point is a fresh process anyway, so launch-time knobs lose nothing.
-  - THREE resolutions coexist on a scaled Retina desktop and the driver reports all
-    of them instead of pretending they are one number: the physical PANEL (e.g.
-    2560x1600), the desktop MODE in points (e.g. 1440x900), and the BACKING store
-    the swapchain actually renders into (points x backingScaleFactor, e.g.
-    2880x1800 -- which can EXCEED the panel; WindowServer downsamples). Bench
-    pixels are backing pixels: --res / sweep values are framebuffer pixels on
-    every driver, and ANO_RES takes points, so the driver divides by the scale.
-  - the sweep is derived from the measured display, never a hardcoded ladder: the
-    standard ladder is filtered to points this display can realize, and the top
-    point is the display max (largest titled-window content x scale). No request
-    is ever made that AppKit would silently clamp.
-  - the render column is ground truth: the engine's [profile] line carries res=WxH,
-    the realized swapchain extent. swap= MiB stays the linear cross-check.
-  - window discovery by PID via CGWindowListCopyWindowInfo (kCGWindowOwnerPID),
-    the CGWindow precedent from the screenshot-macos tool
-  - FRONT means active or <5% occluded (CGWindowList z-order): macOS 14 cooperative
-    activation denies focus grabs to background scripts, so the driver floats the
-    window above normal windows (ANO_FLOAT) instead of stealing focus. Measured
-    control on this stack: even a fully occluded window benched within 1%.
-  - --churn is unsupported: storming a live window's size needs Accessibility.
+macOS:
+  - size/menu via launch knobs: ANO_RES=WxH, ANO_MENU (no AX / CGEventPost)
+  - three resolutions reported: PANEL (native px), MODE (pt), BACKING (pt x scale)
+    Bench pixels = backing. --res / sweep = framebuffer px. ANO_RES takes points (/ scale).
+  - sweep from measured display: ladder filtered, topped by display max (max titled content x scale)
+  - render column = engine [profile] res=WxH. swap= MiB cross-check
+  - window by PID via CGWindowListCopyWindowInfo (kCGWindowOwnerPID)
+  - FRONT: active or <5% occluded (CGWindowList z-order). ANO_FLOAT instead of focus steal
+  - --churn unsupported (needs Accessibility)
 
-Parsed engine log lines (logs/<stamp>_ano.log, same on every target), each flushed every
-ANO_PERF_WINDOW_FRAMES (128) frames, so line cadence scales with fps:
-  [frame] <fps> fps <ms> ms wall            -- wall-clock throughput (profiling.c: anoperf_flush)
-  [frametime] n=128 min= p50= p90= p99= p999= max= ms  -- per-frame dt percentiles, same window
-  [profile mode=... res=WxH] total=<ms> (frusta N/42) ... swap=<MiB>  -- GPU-pass profile + VRAM;
-    res= is the realized swapchain extent (exes older than the res= addition tabulate "?")
+Log lines (logs/<stamp>_ano.log), flushed every ANO_PERF_WINDOW_FRAMES (128):
+  [frame] <fps> fps <ms> ms wall
+  [frametime] n=128 min= p50= p90= p99= p999= max= ms
+  [profile mode=... res=WxH] total=<ms> (frusta N/42) ... swap=<MiB>
+    res= = realized swapchain extent (render column). Older exes tabulate "?"
 
-One table row per data point: avgFPS/p50 over the per-window [frame] samples, the 1%/0.1%
-lows (1000/p99, 1000/p999, each percentile the median across [frametime] windows), the run's
-worst single frame (maxms), then the GPU-pass columns. Rows paste straight into
-docs/benchmarks/template.md.
+One row per point: avgFPS/p50 over [frame] samples, 1%/0.1% lows (1000/p99, 1000/p999, each median across [frametime] windows), maxms (run worst frame), then GPU-pass columns. Rows paste into docs/benchmarks/template.md.
 
 Python via NIX, never brew:
   nix-shell -p "python3.withPackages (ps: [ps.pyobjc-framework-Quartz ps.pyobjc-framework-Cocoa])" \
     --run "python3 tools/perf/bench_fps_macos.py"
 
-Requires: macOS, pyobjc (Quartz + Cocoa). Dev-only tool, not built or shipped.
+Requires: macOS, pyobjc (Quartz + Cocoa). Dev-only.
 
 Examples:
   python3 tools/perf/bench_fps_macos.py                          # resolution sweep, menu open
@@ -66,23 +44,18 @@ except ImportError:
              '  nix-shell -p "python3.withPackages (ps: [ps.pyobjc-framework-Quartz'
              ' ps.pyobjc-framework-Cocoa])" --run "python3 tools/perf/bench_fps_macos.py"')
 
-# Standard cross-machine ladder. The actual sweep is derived per display in main():
-# ladder points this display can realize, topped by the display-max point.
+# Cross-machine ladder. Sweep derived per display in main().
 LADDER = [(640, 360), (960, 540), (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)]
-WINDOW_FRAMES = 128  # engine ANO_PERF_WINDOW_FRAMES; frames per [frame]/[frametime]/[profile] window
-WARMUP_S = 2.0       # leading seconds of [frame]/[frametime] windows to discard
-KDM_NATIVE = 0x02000000  # IOKit kDisplayModeNativeFlag: the panel's own pixel grid
+WINDOW_FRAMES = 128  # ANO_PERF_WINDOW_FRAMES; frames per [frame]/[frametime]/[profile] window
+WARMUP_S = 2.0       # leading [frame]/[frametime] seconds to discard
+KDM_NATIVE = 0x02000000  # IOKit kDisplayModeNativeFlag
 
-# Engine env applied to every run before --env; --env wins per key. The bench measures the
-# shadow-culled path by default -- pass --env ANO_SHADOW_BUDGET=0 for the uncapped baseline.
-# ANO_FLOAT keeps the window above normal windows (unoccluded -> FRONT without stealing focus,
-# which macOS 14 cooperative activation denies to background scripts). ANO_POS is computed in
-# main() from the measured display, never hardcoded. House rule: every mac run carries the
-# Metal performance HUD (MTL_HUD_*), part of the standard config and echoed in ENV_VARS.
+# Defaults before --env. --env wins. ANO_FLOAT: unoccluded without focus steal.
+# MTL_HUD_* standard on mac, echoed in ENV_VARS. ANO_POS set in main() from display.
 ENGINE_DEFAULTS = {"ANO_SHADOW_BUDGET": "2", "ANO_FLOAT": "1",
                    "MTL_HUD_ENABLED": "1", "MTL_HUD_VISIBLE": "1"}
 
-# Engine log contract, same regexes as the win64/linux drivers.
+# Engine log contract (same regexes as win64/linux).
 PF = re.compile(r"\[frame\] ([0-9.]+) fps")
 PT = re.compile(r"\[frametime\].*?p50=([0-9.]+) p90=([0-9.]+) p99=([0-9.]+) p999=([0-9.]+) max=([0-9.]+)")
 PG = re.compile(r"total=([0-9.]+)")
@@ -92,30 +65,26 @@ PX = re.compile(r"res=(\d+)x(\d+)")
 
 
 def _display_info():
-    """Main-display facts, measured not assumed. Three resolutions coexist on a scaled Retina
-    desktop: the physical panel, the desktop mode in points, and the backing store (points x
-    backingScaleFactor) that windows -- and the swapchain -- actually render into. The backing
-    store can exceed the panel (1440x900 pt @2x = 2880x1800 px onto a 2560x1600 panel);
-    WindowServer downsamples the result. Bench pixels are backing pixels."""
+    """Main display: panel px, mode pt, backing px (pt x scale), max titled content."""
     s = NSScreen.mainScreen()
     scale = float(s.backingScaleFactor()) if s else 1.0
     fr, vf = s.frame(), s.visibleFrame()
-    # Physical panel: the native-flagged display mode; largest-pixel mode as the fallback.
+    # Physical panel: native-flagged mode, else largest-pixel mode.
     did = Quartz.CGMainDisplayID()
     dims = [(Quartz.CGDisplayModeGetPixelWidth(m), Quartz.CGDisplayModeGetPixelHeight(m),
              Quartz.CGDisplayModeGetIOFlags(m))
             for m in (Quartz.CGDisplayCopyAllDisplayModes(did, None) or [])]
     native = [(w, h) for (w, h, fl) in dims if fl & KDM_NATIVE]
     panel = native[0] if native else (max((w, h) for (w, h, _) in dims) if dims else None)
-    # Exact titled-frame overhead via class-method geometry; no window is created.
+    # Titled-frame overhead via class-method geometry.
     try:
         r = NSWindow.frameRectForContentRect_styleMask_(((0, 0), (256, 256)), 1)  # titled mask
         titlebar = float(r.size.height) - 256.0
     except Exception:
         titlebar = 28.0
-    # visibleFrame excludes the menu bar and dock. Cocoa origin is bottom-left; GLFW's top-left.
+    # visibleFrame excludes menu bar and dock. Cocoa origin bottom-left; GLFW top-left.
     inset = (int(vf.origin.x), int(fr.size.height - (vf.origin.y + vf.size.height)))
-    maxc_pt = (int(vf.size.width), int(vf.size.height - titlebar))  # largest titled-window content
+    maxc_pt = (int(vf.size.width), int(vf.size.height - titlebar))
     return {"scale": scale, "panel_px": panel,
             "mode_pt": (int(fr.size.width), int(fr.size.height)),
             "backing_px": (int(fr.size.width * scale), int(fr.size.height * scale)),
@@ -125,7 +94,7 @@ def _display_info():
 
 
 def _find_window(pid):
-    """Bounds dict of the engine's on-screen window for pid via CGWindowList, None until mapped."""
+    """Bounds of engine on-screen window for pid via CGWindowList. None until mapped."""
     wins = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
         Quartz.kCGNullWindowID) or []
@@ -136,8 +105,7 @@ def _find_window(pid):
 
 
 def _activate(pid):
-    """Best-effort activation. macOS 14 cooperative activation declines focus grabs from
-    background scripts (returns True, does nothing), so this is never the verification."""
+    """Best-effort activate. macOS 14 may no-op focus grabs from background scripts."""
     app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
     if app:
         app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
@@ -145,10 +113,7 @@ def _activate(pid):
 
 
 def _front_state(pid):
-    """FRONT on macOS: the app is active, or its window shows <5% occlusion by normal-layer
-    windows above it (CGWindowList is front-to-back). Measured on this stack, even full
-    occlusion moves throughput <1%, but the gate stays strict; ANO_FLOAT makes it hold
-    structurally by floating the window above every normal window."""
+    """FRONT: app active, or <5% occlusion by normal-layer windows above (CGWindowList)."""
     front = NSWorkspace.sharedWorkspace().frontmostApplication()
     if front and front.processIdentifier() == pid:
         return True
@@ -164,7 +129,7 @@ def _front_state(pid):
     if t is None:
         return False
     covered = 0.0
-    for w in wins[:idx]:                         # earlier in the list = in front of the target
+    for w in wins[:idx]:                         # earlier = in front
         if w.get("kCGWindowLayer", 0) != 0: continue
         b = w.get("kCGWindowBounds", {})
         ox = max(0.0, min(t["X"] + t["Width"],  b["X"] + b["Width"])  - max(t["X"], b["X"]))
@@ -178,7 +143,7 @@ def _mean(a):
 
 
 def _pct(a, q):
-    # Linear-interpolation percentile (numpy-default method), q in [0, 100].
+    # Linear-interp percentile, q in [0, 100].
     if not a: return 0.0
     s = sorted(a)
     if len(s) == 1: return s[0]
@@ -192,7 +157,7 @@ def _median(a):
 
 
 def _warmup_cut(fps, seconds=WARMUP_S):
-    # Windows are WINDOW_FRAMES long, so cadence scales with fps: cut warmup by elapsed time, not line count.
+    # Cut by elapsed time (window cadence scales with fps).
     t, k = 0.0, 0
     while k < len(fps) and t < seconds:
         t += (WINDOW_FRAMES / fps[k]) if fps[k] > 0 else seconds
@@ -201,8 +166,7 @@ def _warmup_cut(fps, seconds=WARMUP_S):
 
 
 def parse_stream(lines):
-    """Fold engine log lines into (fps, total_ms, swap_MiB, frusta, frametime, res) sample lists.
-    Shared by the live tail and offline replay of a captured _ano.log."""
+    """Fold log lines into (fps, tot, swap, frusta, frametime, res) lists."""
     fps, tot, sw, fru, res = [], [], [], [], []
     ft = {"p50": [], "p90": [], "p99": [], "p999": [], "max": []}
     for line in lines:
@@ -221,37 +185,34 @@ def parse_stream(lines):
 
 
 def summarize(fps, tot, sw, fru, ft, res, front=True):
-    """Drop warmup, take medians, derive GPUcap, the wall/cap bound indicator, and the
-    frametime lows (methodology: tools/perf/bench_fps.md)."""
-    cut = _warmup_cut(fps)                       # drop warmup: [frame]/[frametime] by time, profile by line
+    """Drop warmup, medians, GPUcap, bound, frametime lows. See bench_fps.md."""
+    cut = _warmup_cut(fps)                       # [frame]/[frametime] by time, profile by line
     fps, tot, fru = fps[cut:], tot[4:], fru[4:]
-    ft = {k: v[cut:] for k, v in ft.items()}     # [frametime] pairs 1:1 with [frame]; same cut
+    ft = {k: v[cut:] for k, v in ft.items()}     # [frametime] 1:1 with [frame]
     wf, gt = _median(fps), _median(tot)
     cap = 1000.0 / gt if gt else 0.0
     ratio = wf / cap if cap else 0.0
-    # Lows: median across windows of each per-window percentile (never averaged), then 1000/ms.
-    # At n=128 p999 reads as the typical worst-frame-per-window; maxms is the run's worst frame outright.
+    # Lows: median of per-window percentiles, then 1000/ms. maxms = run worst frame.
     p99, p999 = _median(ft["p99"]), _median(ft["p999"])
     return {"front": front, "swap": (sw[-1] if sw else 0.0),
-            "res": (res[-1] if res else None),   # realized swapchain extent; None on pre-res= exes
+            "res": (res[-1] if res else None),   # None on pre-res= exes
             "avg_fps": _mean(fps), "p50": wf, "n": len(fps), "n_ft": len(ft["p99"]),
             "low1": (1000.0 / p99 if p99 else 0.0), "low01": (1000.0 / p999 if p999 else 0.0),
             "ft_max": (max(ft["max"]) if ft["max"] else 0.0),
             "gpu_ms": gt, "gpu_cap": cap, "ratio": ratio, "frusta": _median(fru),
-            # No profile lines past the cut (run too short at low fps): "?" -- never claim a bound.
+            # No profile past cut: "?"
             "bound": ("GPU" if ratio > 0.9 else "CPU/present") if gt else "?"}
 
 
 def run_once(exe, w, h, dur, menu, env, scale):
-    # Logging refactor (b85e213): each run writes logs/<session-stamp>_ano.log, no fixed anoptic.log.
-    # Snapshot preexisting logs, then pick up whichever new file this process opens.
+    # logs/<session-stamp>_ano.log. Snapshot preexisting, pick up the new file.
     logdir = os.path.join(os.path.dirname(exe), "logs")
     def _logfiles():
         try: return {os.path.join(logdir, n) for n in os.listdir(logdir) if n.endswith("_ano.log")}
         except FileNotFoundError: return set()
     pre = _logfiles()
 
-    # Framebuffer target -> window points for ANO_RES. Fractional points warn, swap= arbitrates.
+    # Framebuffer target -> window points for ANO_RES.
     pw, ph = round(w / scale), round(h / scale)
     if (pw * scale, ph * scale) != (w, h):
         print(f"WARNING: {w}x{h} px is not integral at scale {scale:g}; "
@@ -271,7 +232,7 @@ def run_once(exe, w, h, dur, menu, env, scale):
     if bounds:
         _activate(p.pid)
         front = _front_state(p.pid)
-        # Frame is content + title bar in points; a short frame means AppKit clamped it to the display.
+        # Frame = content + title bar in points. Short frame = AppKit clamp.
         if bounds["Width"] + 2 < pw or bounds["Height"] + 2 < ph:
             print(f"WARNING: requested {pw}x{ph} pts, window frame is "
                   f"{bounds['Width']:.0f}x{bounds['Height']:.0f} pts (display too small?), the render column has the truth",
@@ -281,7 +242,7 @@ def run_once(exe, w, h, dur, menu, env, scale):
     log = None
     while time.perf_counter() - t0 < dur:
         if f is None:
-            if log is None:                      # newest log file this process created
+            if log is None:                      # newest log this process created
                 fresh = _logfiles() - pre
                 if fresh: log = max(fresh, key=os.path.getmtime)
                 else: time.sleep(0.01); continue
@@ -290,7 +251,7 @@ def run_once(exe, w, h, dur, menu, env, scale):
         chunk = f.readline()
         if not chunk: time.sleep(0.003); continue
         part += chunk
-        if not part.endswith("\n"): continue    # torn mid-append: wait for the rest of the line
+        if not part.endswith("\n"): continue    # torn mid-append
         buf.append(part); part = ""
 
     p.terminate()
@@ -324,18 +285,17 @@ def main():
 
     env = dict(os.environ)
     env.update(ENGINE_DEFAULTS)                  # harness defaults over ambient
-    # Placement from the measured display, not a magic constant: content lands below the menu
-    # bar plus title bar, so AppKit never constrains the frame and the display-max point fits.
+    # Placement from measured display: content below menu bar + title bar.
     env["ANO_POS"] = f"{disp['inset_pt'][0]}x{int(disp['inset_pt'][1] + disp['titlebar_pt'])}"
     for kv in args.env:                          # --env wins over defaults
         k, _, v = kv.partition("="); env[k] = v
     if "ANO_RES" in env: sys.exit("ANO_RES is the driver's sizing mechanism: use --res, not --env ANO_RES")
     if "ANO_MENU" in env: sys.exit("ANO_MENU is the driver's menu mechanism: use --no-menu, not --env ANO_MENU")
-    # MTL_* included: the Metal HUD is part of the standard mac config and belongs in the writeup.
+    # MTL_* included: Metal HUD is standard mac config.
     ano = {k: env[k] for k in env if k.startswith(("ANO_", "MTL_"))}
-    print("ENV_VARS: " + ", ".join(f"{k}={ano[k]}" for k in sorted(ano)))  # paste into the bench template
+    print("ENV_VARS: " + ", ".join(f"{k}={ano[k]}" for k in sorted(ano)))  # paste into bench template
 
-    # The retina story, stated instead of assumed. Targets below are framebuffer (backing) pixels.
+    # Targets below are framebuffer (backing) pixels.
     pw, ph = disp["panel_px"] or (0, 0)
     mw, mh = disp["mode_pt"]; bw, bh = disp["backing_px"]
     over = " -- scaled mode: renders past the panel, WindowServer downsamples" \
@@ -355,7 +315,7 @@ def main():
         sizes = [p for p in LADDER if p[0] <= xw and p[1] <= xh]
         dropped = [p for p in LADDER if p not in sizes]
         if (xw, xh) not in sizes:
-            sizes.append((xw, xh))               # display-max point: the full-desktop datum
+            sizes.append((xw, xh))               # display-max point
         if dropped:
             print("sweep: dropped " + ", ".join(f"{w}x{h}" for w, h in dropped)
                   + f" (exceed this display); display max {xw}x{xh} tops the sweep")
@@ -373,7 +333,7 @@ def main():
               f"{r['frusta']:6.1f}  {r['bound']}")
         if r["bound"] == "?":
             short.append(f"{w}x{h}")
-    # A run too short for GPU profile windows never passes silently.
+    # Short run with no GPU profile: fail.
     if short:
         sys.exit(f"ERROR: no GPU profile window survived warmup at {', '.join(short)} -- "
                  f"the run is too short for that point's fps; rerun with a longer --dur")

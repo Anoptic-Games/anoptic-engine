@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# screenshot-macos: capture one on-screen macOS app window to a PNG. macOS-only.
-# screencapture + a CGWindowList helper. Never osascript.
+# Capture one on-screen macOS app window to PNG. screencapture + CGWindowList.
+# Never osascript (Accessibility is denied).
 # Run from a plain shell. Never inside `nix develop`.
 #
 # Usage: screenshot-macos <app-owner-substring> <outfile.png>
-#   owner = process name substring, case-insensitive. The Anoptic engine is "anoptic"
-#   (its window title "Vulkan" never matches).
-#   exit 2 = no matching on-screen window yet. Wait and retry.
+#   owner = process name substring, case-insensitive. Engine: "anoptic" (title "Vulkan" won't match).
+#   exit 2 = no matching on-screen window. Wait and retry.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 src="$here/screenshot-macos-winid.swift"

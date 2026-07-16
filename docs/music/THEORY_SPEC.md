@@ -1,64 +1,26 @@
 # THEORY_SPEC — The Music of Anoptic Musicgen
 
-This document is the music-theory specification of the generator: every rule that
-shapes the final composition, stated as music, with the conditions under which it
-applies and the numbers that define it. It is the companion to PLANS.md (project
-history and milestones) and the predecessor of the C-engine technical spec (data
-structures, APIs, scheduling — deliberately absent here).
+Music-theory spec for the generator: every rule that shapes the final composition, stated as music, with the conditions under which it applies and the numbers that define it. Goes with PLANS.md (project history and milestones). The C-engine technical spec (data structures, APIs, scheduling) lives elsewhere — not here on purpose.
 
-**How to read it.** Rules come in two strengths:
+**How to read it.** Two strengths:
 
-- **Law** — a rule the music must obey. Every law has (or must gain) a mirror in
-  the theory linter, and a violation is a defect. Laws are written here with
-  *must / never*.
-- **Tuning** — a constant chosen by ear (a probability, a velocity offset, a
-  crest depth). Tunings are quoted so the intent is legible, but they may be
-  retuned without amending this document, provided the surrounding law still
-  holds. Tunings are written with *currently / by default*.
+- **Law** — a rule the music must obey. Every law has (or must gain) a mirror in the theory linter; a violation is a defect. Written with *must / never*.
+- **Tuning** — a constant chosen by ear (a probability, a velocity offset, a crest depth). Quoted so the intent is clear; retune freely without amending this document, as long as the surrounding law still holds. Written with *currently / by default*.
 
-**Divergence protocol.** Where the implementation is found to disagree with this
-document, exactly one of two things is true: the intent evolved — in which case
-this document is amended, with the reason recorded — or the code is wrong, in
-which case it is fixed. Silent divergence is the one forbidden state. The
-automated form of this protocol is the lint covenant (§19): every generative
-rule is independently re-derived from the realized output by a linter that does
-not trust the generator's claims.
+**Divergence protocol.** When the implementation disagrees with this document, exactly one of two things is true: the intent evolved — amend this document and record why — or the code is wrong, so fix it. Silent divergence is the one forbidden state. The automated form is the lint suite (§18): every generative rule is independently re-derived from the realized output by a linter that does not trust the generator's claims.
 
 ---
 
 ## 1. The aesthetic stance
 
-The generator produces **coherent tonal music indefinitely from rules** — no
-machine learning, no corpus, no pre-composed material — steered in real time by
-three semantic levers. The music is functional-tonal, common-practice-informed,
-built for the way games consume music: a continuous stream of chained phrases
-(no da capo forms), with every transition landing on a musical boundary rather
-than a hard cut.
+The generator produces **coherent tonal music indefinitely from rules** — no machine learning, no corpus, no pre-composed material — steered in real time by three semantic levers. Functional-tonal, common-practice-informed, built for how games consume music: a continuous stream of chained phrases (no da capo forms), with every transition landing on a musical boundary rather than a hard cut.
 
-Correctness is necessary but not sufficient. The honest test, in the project's
-own words, is that a render *"survives a 3-minute background-listen without
-irritation."* The named enemy is output that is *"technically correct but
-boring/noodly"* — the unconstrained random walk being *"the #1 'sounds
-procedural' tell."* The target quality is **perceived intent**: the sense that
-*"a mind composed this."* Concretely, that quality is pursued through a specific
-inventory of signals, each of which is a chapter of this spec: the
-antecedent–consequent period (*"arguably the single strongest 'a mind composed
-this' signal in tonal music"*), imitation (*"the listener hears the voices
-listening to each other"*), prepared cadences, one planned climax per phrase,
-groove identity as a contract, a recurring motif that is only ever completed at
-a dramatic payoff, and systematic (never random) performance deviation.
+Correctness is necessary but not sufficient. The project's own bar: a render *"survives a 3-minute background-listen without irritation."* The thing to kill is output that is *"technically correct but boring/noodly"* — the unconstrained random walk being *"the #1 'sounds procedural' tell."* The target is **perceived intent**: the sense that *"a mind composed this."* Concretely, that quality rides on a specific inventory of signals, each a chapter of this spec: the antecedent–consequent period (*"arguably the single strongest 'a mind composed this' signal in tonal music"*), imitation (*"the listener hears the voices listening to each other"*), prepared cadences, one planned climax per phrase, groove identity as a contract, a recurring motif that is only ever completed at a dramatic payoff, and systematic (never random) performance deviation.
 
 Two structural convictions run through everything:
 
-1. **Setup is a ledger, not a plan.** A game cannot schedule payoffs, so the
-   engine makes payoff *magnitude* a function of accumulated state: sustained
-   tension quietly banks debt by withholding resolution, and the release spends
-   the whole ledger at once. *"The game decides when; the engine decides how big
-   and with what materials."* (§9)
-2. **Every rule is checkable.** "Why did it play that?" must always have a
-   greppable answer, and every rule the generator obeys is re-verified from the
-   realized notes by an independent linter. The linter *is* the acceptance spec
-   for any reimplementation. (§19)
+1. **Setup is a ledger, not a plan.** A game cannot schedule payoffs, so the engine makes payoff *magnitude* a function of accumulated state: sustained tension quietly banks debt by withholding resolution, and the release spends the whole ledger at once. *"The game decides when; the engine decides how big and with what materials."* (§9)
+2. **Every rule is checkable.** "Why did it play that?" must always have a searchable answer, and every rule the generator obeys is re-verified from the realized notes by an independent linter. The linter *is* the acceptance spec for any reimplementation. (§18)
 
 ---
 
@@ -71,9 +33,9 @@ function of these three plus a mapping table.
 |---|---|---|
 | **valence** | −1 … +1 | unpleasant/dark ↔ pleasant/bright |
 | **energy** | 0 … 1 | arousal, activation, intensity |
-| **tension** | 0 … 1 | unresolvedness, suspense — deliberately independent: *calm-but-tense exists* |
+| **tension** | 0 … 1 | unresolvedness, suspense — independent on purpose: *calm-but-tense exists* |
 
-The design directions, verbatim: *"tempo is the strongest arousal lever; mode
+The design directions, as written: *"tempo is the strongest arousal lever; mode
 brightness follows valence; density, roughness, articulation, dynamics, and
 layer count follow energy; dissonance budget and cadence policy follow
 tension."*
@@ -90,7 +52,7 @@ tension."*
 | accent depth | round(4 + 14·energy) | metric accent amount |
 | register center | round(72 + 4·valence + 2·tension) | tension lifts the line slightly |
 | mode brightness | target = 2.5·valence + 0.5 on the −2…+3 axis | §4.1 |
-| dissonance budget | = tension, verbatim | chord-extension tiers (§5.4) |
+| dissonance budget | = tension, as-is | chord-extension tiers (§5.4) |
 | cadence policy | tension &lt; 0.35 authentic; &lt; 0.65 half; else deceptive | §6.2 |
 | harmonic rhythm | 0.5 chords/bar iff energy &lt; 0.30 AND tension &lt; 0.50, else 1.0 | slow only when calm *and* slack |
 | stereo width / sends / cutoff / drive | brightness widens; tension or calm wets the reverb; energy opens the filter and drive | mix-level tunings |
@@ -130,8 +92,7 @@ bar-legal halves (§15).
 
 ### 3.2 Meter (law)
 
-Meters are general over numerator/denominator; the felt-beat model is the
-load-bearing idea. A compound meter (6/8, 9/8, 12/8) groups in threes: **the
+Meters are general over numerator/denominator; the felt-beat model is the important idea. A compound meter (6/8, 9/8, 12/8) groups in threes: **the
 felt pulse is the dotted unit**, so 6/8 has two pulses, not six. Metric weights
 per slot: downbeat 4.0; mid-bar pulse 3.5 (only when the pulse count is even);
 other felt pulses 3.0; 8ths 2.0; 16ths 1.0. **Strong slots** are those with
@@ -172,15 +133,14 @@ color.
 ### 4.1 The mode axis (law)
 
 Six church modes on a brightness axis, bright → dark: **lydian +3, ionian +2,
-mixolydian +1, dorian 0, aeolian −1, phrygian −2. Locrian is deliberately
-excluded** — the control layer may only select from these six. Valence maps
+mixolydian +1, dorian 0, aeolian −1, phrygian −2. Locrian is left out on purpose** — the control layer may only select from these six. Valence maps
 onto the axis (target = 2.5·valence + 0.5, nearest mode, ties break brighter),
 giving the bands: lydian above +0.8, ionian to +0.4, mixolydian to 0.0, dorian
 to −0.4, aeolian to −0.8, phrygian below. A hysteresis deadband (0.60 on the
 brightness axis) keeps the sitting mode until valence genuinely commits.
 
 Mode changes are **phrase-quantized** (barline-quantized under an urgent
-request), frozen during a modulation window so the pivot analysis stays true,
+request), held fixed during a modulation window so the pivot analysis stays true,
 and held through a codetta so a payoff's brightening outlasts it. A dramaturg
 spend may lift the mode 1 step brighter on the same tonic (2 steps for a big
 spend, payoff ≥ 0.7) — the parallel-mode brightening that makes the payoff
@@ -273,7 +233,7 @@ budget is *ambient* color — structural dissonance (suspensions, appoggiaturas,
 pedals) is a separate, obligation-bearing system (§9.6, §18) and must read as
 setup and payoff, never as spice.
 
-### 5.5 Harmonic rhythm (law — decision record D3)
+### 5.5 Harmonic rhythm (law — decision D3)
 
 **One chord per bar is the primary shape of harmony.** Two refinements exist:
 
@@ -286,7 +246,7 @@ setup and payoff, never as spice.
   consumed by the harmonic layers and the linter only; the downbeat chord
   remains the bar's identity for every melodic generator.
 
-The decision record, verbatim: *"Generalizing to arbitrary 2/bar would mean
+Why not more: *"Generalizing to arbitrary 2/bar would mean
 per-segment chord membership in every melodic generator, segmented
 voice-leading memory, and windowed versions of every chord rule — a rewrite
 priced against audible gain that the prototype shows is confined to the
@@ -316,7 +276,7 @@ When several systems want a phrase's cadence, precedence is, from the top:
 
 **modulation &gt; override &gt; dramaturg &gt; period planner &gt; cycle / mapper**
 
-The dramaturg outranking the planner is a musical statement, recorded verbatim:
+The dramaturg outranking the planner is a musical statement, on the record:
 *"while withholding, a consequent's promised PAC becomes another deception and
 the period rolls forward — and a dramaturg spend landing on a consequent is the
 maximal arrival (PAC + cadential 6/4 + the cadence-fused motif statement +
@@ -339,8 +299,7 @@ form) or the next bar (§18).
 The compressed, driving form: the pre-cadence bar itself carries I6/4 on the
 downbeat and V at the mid-bar pulse. Requires the plain 6/4's conditions
 **plus energy ≥ 0.6**; when it fires it owns the phrase's cadence approach
-(the three-bar form stands down). The classical genius of the idiom is honored
-deliberately: the **bass needs nothing** (the dominant pitch pervades both
+(the three-bar form stands down). Classical reason the idiom works: the **bass needs nothing** (the dominant pitch pervades both
 chords); the pad re-voices at the pulse (*"the harmonic motion IS the
 event"* — ornament and animation stand down); melody, arp, and counter keep
 the downbeat chord, whose tones over the V half *are* the 4–3/6–5 suspension
@@ -385,7 +344,7 @@ cadence.
 
 The "same question" is structural, not approximate: the consequent reuses the
 antecedent's opening **chord**; replays the antecedent's opening-bar melody
-**verbatim** when harmony and scale still match (and the replay walks the
+**as-written** when harmony and scale still match (and the replay walks the
 outer-voice frame cleanly — otherwise the aliased motif answers in rhythm
 only); develops the antecedent's motif rather than drawing its own; and keeps
 the antecedent's texture. A consequent is also one of the promised arrivals
@@ -525,7 +484,7 @@ running so they discharge into the now-authentic cadence.
 
 ## 9. Melody
 
-### 9.1 The doctrine (law)
+### 9.1 The rule (law)
 
 *"Pitch selection is constraint-first, never a free random walk: strong beats
 snap to chord tones, weak beats move by scale steps, leaps beyond a fourth
@@ -809,7 +768,7 @@ at recognizability ≥ 0.9.
 
 ### 12.1 The ladder (C4, law)
 
-Texture is a first-class musical parameter with five states, lean → rich:
+Texture is a musical parameter with five states, lean → rich:
 
 **monophonic → homophonic → doubled → imitative → counter**
 
@@ -927,7 +886,7 @@ suspension preparation (§11.3), and cross-bar syncopation (§9.5).
 
 ## 15. The performed surface
 
-### 15.1 The invariance doctrine (A1, law)
+### 15.1 The invariance rule (A1, law)
 
 Performance shaping **never changes which notes exist**. The pre-performance
 score is identical whether shaping runs or not; any audible difference *is*
@@ -976,7 +935,7 @@ harmony at N+2, everything else at N+1. Every phrase-level deviation
 a phrase's first bar — at least two bars before any slot it changes, safely
 outside the lookahead.
 
-The per-bar order is load-bearing; each step exists because of what follows
+The per-bar order is fixed; each step exists because of what follows
 it:
 
 1. **Extension** decides first — before the dramaturg reads the phrase — so
@@ -1027,7 +986,7 @@ dependent voice reads realized notes, never intentions.
 
 ## 17. Obligations: the ledger of promises
 
-An obligation is a first-class promise attached to a bar or a note, which the
+An obligation is a promise attached to a bar or a note, which the
 linter **independently re-derives from the realized output** — the generator
 claims a role; the linter verifies it discharges. The normative set:
 
@@ -1046,7 +1005,7 @@ family (the checks are dormant, not waived).
 
 ---
 
-## 18. The verification covenant
+## 18. The verification suite
 
 **Every rule the generator obeys becomes a linter rule, and every
 obligation-style rule gets a test that plants a deliberate violation and
@@ -1092,9 +1051,9 @@ on noise.
 
 ---
 
-## 19. Determinism and real-time doctrine
+## 19. Determinism and real-time rules
 
-These are engineering doctrines with direct musical consequences, so they are
+These are engineering rules with direct musical consequences, so they are
 law here too:
 
 - **Per-decision seeding.** A bar's material depends only on (master seed,
@@ -1109,7 +1068,7 @@ law here too:
   the clock, the caches) — save/resume, replay, and exact A/B come free. The
   ledger itself is a pure function of (seed, affect trajectory, bar).
 - **Byte-identical defaults.** Every feature is gated, and the disabled path
-  reproduces the prior output byte-for-byte — the permanent regression anchor.
+  reproduces the prior output byte-for-byte — the regression anchor.
 - **Boundary quantization** (§2.2) and the **one-bar lookahead / first-bar
   commitment discipline** (§16) are the two real-time contracts: control may
   arrive at any moment, but music changes only at musical joints, and no
@@ -1117,19 +1076,19 @@ law here too:
 
 ---
 
-## 20. Decision records and open ground
+## 20. Decisions and open ground
 
-Recorded decisions that bound this spec:
+Decisions that bound this spec:
 
 - **Harmonic rhythm (D3)**: one chord per bar is primary; the optional
   intra-bar timeline serves the cadence approach only (§5.5).
 - **No Locrian** on the mode axis; **no 11th/13th extensions**; **no plagal
   cadence policy** (plagal color is a codetta gesture).
-- **Deliberately out of scope**: machine learning and corpus training (*"we
+- **Out of scope**: machine learning and corpus training (*"we
   want explainable rules"*); the game-state→affect model (the affect API is
-  the integration seam; the mapping from game state to affect is a separate,
+  the integration surface; the mapping from game state to affect is a separate,
   game-specific model); authored timbre design beyond what the synthesis
-  requirements probe needed.
+  shopping list needed.
 - **Deferred by ear**: modal-mixture obligations at cadences (collides with
   the applied dominant at the same slot); ionian leading tones on modal
   modulation dominants (revisit if arrivals feel under-sold).
@@ -1139,7 +1098,7 @@ Recorded decisions that bound this spec:
   sequences. Both extend this spec when they land; nothing here precludes
   them.
 
-The spec-freeze statement this document inherits: the IR (ties, six layers,
+The freeze this document inherits: the IR (ties, six layers,
 the texture parameter, the optional chord timeline), the phrase clock, and the
 counterpoint/species law families were settled by building and listening, not
-by prediction. *"Everything else ports as tuning, not architecture."*
+by guessing. *"Everything else ports as tuning, not architecture."*

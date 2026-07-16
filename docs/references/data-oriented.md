@@ -2,8 +2,8 @@
 
 A single distillation of the study corpus in `docs/study/`: seven recorded talks, their slides
 and code, and five academic papers. Each talk gets its own segment. Techniques are pulled to
-their load-bearing core and tied back to the Anoptic Engine (see `docs/notes.md`). The closing
-section is a decision-oriented guidance playbook.
+the parts that matter and tied back to the Anoptic Engine (see `docs/notes.md`). The closing
+section is decision guidance.
 
 The corpus maps cleanly onto the engine's three structural pillars: data-oriented design
 (the ECS and the render path), region memory (the arena hierarchy and mimalloc heaps), and
@@ -377,7 +377,7 @@ wins, and the virtual-interface overhead is usually nil.
 For Anoptic. The engine's hierarchy is Lakos's taxonomy: frame and scratch arenas are monotonic
 allocators; per-level and per-subsystem heaps are local allocators; `mi_heap_destroy` is
 release/winking out (his "10 seconds to zero" reclamation anecdote is the engine's bulk-free
-claim, validated). The load-bearing warning for a million-entity simulation running for hours is
+claim, validated). The warning that matters for a million-entity simulation running for hours is
 diffusion: even with mimalloc as the global allocator, entities that spawn and die across a
 long session will diffuse and lose locality unless each subsystem and resolution level owns its
 arena or pool. DIV LUC + fragmentability is a ready decision tool — the ECS component stores are
@@ -539,7 +539,7 @@ invisible-reader, per-thread-descriptor design also reinforces the cache-frugal 
 
 # Cross-cutting synthesis — the best techniques
 
-The non-redundant set worth lifting, in rough order of leverage for a million-entity engine.
+The non-redundant set worth lifting, in rough order of payoff for a million-entity engine.
 
 1. Layout for the cache line, not the object. Default to structure of arrays; split hot from
    cold fields; never put a hot value behind a `bool` in a fat struct (Acton, Meyers, Kelley,
@@ -625,7 +625,7 @@ performance reason the arena work is foundational, not cosmetic.
 
 # Guidance
 
-A decision-oriented playbook for the engine, distilled to the choices that recur.
+A decision guide for the engine, distilled to the choices that recur.
 
 Layout. Default every component and every bulk buffer to structure of arrays. Use array-of-structs
 only when fields are always accessed together. Split hot fields (transform, position) from cold

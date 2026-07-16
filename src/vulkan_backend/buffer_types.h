@@ -84,7 +84,7 @@ typedef struct TransformStreamBuffer
     uint32_t      stagedGen[MAX_FRAMES_IN_FLIGHT];
 } TransformStreamBuffer;
 
-// Per-slot DEVICE_LOCAL buffer + per-frame host-visible delta staging. Apply packs; record uploads staging[f]->device under barrier. Growth copies device-side under idle.
+// Per-slot DEVICE_LOCAL + per-frame host-visible delta staging. render_apply_commands packs staging[f]; recordCommandBuffer uploads staging[f]->device under barrier. Growth copies device-side under idle.
 typedef struct SlotUpload
 {
     VkBuffer        device;                            // ×1 DEVICE_LOCAL authoritative (GPU reads this)
@@ -122,16 +122,21 @@ typedef struct CullUBO
     uint32_t drawSlotOf[16];
     // Special draw slots (ano_draw_slot_of): [0] additive, [1] transmission, [2] masked. std140 uvec4.
     uint32_t specialSlots[4];
-    // viewCullParams[v]: [0] screenAreaScale, [1] pixelThresholdSq (0=off), [2] lodThresholdPx (0=off), [3] lodBias.
+    // Per-view screen-area cull knobs. One vec4/view, packed to mirror GLSL vec4[]. Per view:
+    //   [0] screenAreaScale  = |proj[1][1]| * 0.5 * screenHeight; rpx = worldRadius * scale / dist.
+    //   [1] pixelThresholdSq = (min drawn pixel radius)^2; drop iff rpx^2 < this. 0 disables.
+    //   [2] lodThresholdPx   = rpx at which LOD level 1 begins. 0 disables LOD.
+    //   [3] lodBias          = signed LOD-level bias as float; + coarser.
     float    viewCullParams[ANO_VIEW_COUNT][4];
     // Shadow LOD relative bias vs view 0 (+ = coarser).
     int32_t  shadowLodBias;
     int32_t  _hizPad[3];   // std140 pad to offset 464
-    // Hi-Z: prevViewProj for reprojection; hizParams={baseW,baseH,mipCount,pad} (0=off); hizProj={p00,p11,p22,p32}.
+    // Hi-Z (single-phase). prevViewProj reprojects bounds into last frame's screen.
+    // hizParams={baseW,baseH,mipCount,pad} (0=off); hizProj={p00,p11,p22,p32}.
     mat4     prevViewProj[ANO_VIEW_COUNT];
     float    hizParams[ANO_VIEW_COUNT][4];
     float    hizProj[ANO_VIEW_COUNT][4];
-    // taskParams[0]!=0 -> mesh-path indirect = ceil(meshletCount/32) TASK WGs. std140 uvec4.
+    // taskParams[0]!=0 -> mesh-path indirect = ceil(meshletCount/32) TASK WGs. Mirrors RendererState.taskCull. std140 uvec4.
     uint32_t taskParams[4];
 } CullUBO;
 

@@ -3,17 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * synth_voices.c
- * Patches as data, voices as kernels. Every numeric constant below is tuning
- * lifted verbatim from the prototype's patch set (musicgen/synth/patches.py);
- * the topology per class is fixed (finding 4: a sounding voice keeps its
- * patch, no per-voice branching beyond the class switch). Filter keytracking
- * bakes at allocation: kt = clamp((f/261.63)^amount, 0.5, 2.5). Amplitude is
- * (velocity/127)^1.5, applied by the caller at spawn. Drum transients use
- * fixed per-recipe noise seeds — every kick is bit-identical by design; the
- * generation side's Humanize supplies variation.
- */
+// Patches as data, voices as kernels. Constants from prototype patch set. Topology fixed per class.
+// Filter keytrack at alloc: kt = clamp((f/261.63)^amount, 0.5, 2.5). Amp = (velocity/127)^1.5 at spawn.
+// Drum noise seeds fixed per recipe (bit-identical); Humanize supplies variation upstream.
 
 #include <math.h>
 #include <string.h>
@@ -21,7 +13,7 @@
 #include "synth_internal.h"
 #include "../audio/dsp/wavetable.h"
 
-// constant-power pan: p in [-1, 1] -> L/R gains
+// constant-power pan: p in [-1, 1] -> L/R
 static void pan_gains(float p, float *gl, float *gr)
 {
     float th = (p + 1.0f) * 0.78539816339f; // pi/4
@@ -35,7 +27,7 @@ static float keytrack(float freq, float amount)
     return v < 0.5f ? 0.5f : v > 2.5f ? 2.5f : v;
 }
 
-// signalflow resonance [0,1) -> SVF Q (zeta = 1 - res)
+// signalflow res [0,1) -> SVF Q (zeta = 1 - res)
 static float q_from_res(float res)
 {
     if (res > 0.98f) res = 0.98f;
@@ -47,12 +39,10 @@ static float midi_hz(uint8_t pitch)
     return 440.0f * exp2f(((float)pitch - 69.0f) / 12.0f);
 }
 
-// ---------------------------------------------------------------------------
-// Baked banks
-// ---------------------------------------------------------------------------
 
-// 4 single-cycle frames, dark -> bright: harmonics 1..23 at 1/h^(2.3 - 0.45f),
-// even harmonics fading in as 0.35 + 0.2f; each frame normalized to 0.9 peak.
+/* Baked Banks */
+
+// 4 frames dark->bright: harmonics 1..23 at 1/h^(2.3-0.45f), even amp 0.35+0.2f; peak 0.9.
 void ano_synth_bake_wavetable(float *bank)
 {
     for (uint32_t f = 0; f < ANO_SYNTH_WT_FRAMES; ++f) {
@@ -82,8 +72,7 @@ void ano_synth_bake_wavetable(float *bank)
     }
 }
 
-// The sampler's "recording": a deterministic 1.6 s bell at root C5 (MIDI 72),
-// inharmonic partials (ratio, amp, decay) + a 12 ms noise chiff, 0.8 peak.
+// Bell sample: 1.6 s at C5 (MIDI 72), inharmonic partials + 12 ms noise chiff, peak 0.8.
 void ano_synth_bake_bell(float *out, uint64_t frames, float sampleRate)
 {
     static const float part[4][3] = {
@@ -118,11 +107,9 @@ void ano_synth_bake_bell(float *out, uint64_t frames, float sampleRate)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Spawn: resolve (layer, patch) to a configured voice
-// ---------------------------------------------------------------------------
 
-// Layer defaults when instruments[] holds 0 (or a reserved texture patch).
+/* Spawn */
+
 static uint32_t default_patch(uint32_t layer)
 {
     switch (layer) {
@@ -155,7 +142,7 @@ static void spawn_pad(AnoSynth *s, AnoSynthVoice *v, float dur, bool bright)
     v->cutMult = (bright ? 1.7f : 1.0f) * keytrack(v->freq, 0.2f);
     v->resQ    = q_from_res(bright ? 0.32f : 0.15f);
     v->total   = (uint64_t)((dur + 0.8f) * fs);
-    v->panL = v->panR = 1.0f; // pan lives in og
+    v->panL = v->panR = 1.0f; // pan in og
 }
 
 static void spawn_wtpad(AnoSynth *s, AnoSynthVoice *v, float dur)
@@ -192,7 +179,6 @@ static void spawn_bass(AnoSynth *s, AnoSynthVoice *v, float dur, bool driven)
     pan_gains(0.0f, &v->panL, &v->panR);
 }
 
-// osc type codes for lead slots
 enum { LO_SINE = 0, LO_TRI, LO_SAW, LO_SQUARE };
 
 static void spawn_lead(AnoSynth *s, AnoSynthVoice *v, float dur, uint32_t patch)
@@ -270,7 +256,7 @@ static void spawn_chime(AnoSynth *s, AnoSynthVoice *v, float dur, uint8_t pitch)
         ano_dsp_asr_init(&v->u.chime.penv[i], 0.001f, 0.0f,
                          fmaxf(ring / decays[i], 0.05f), 3.0f, fs);
     }
-    (void)ratios; // read in the step kernel
+    (void)ratios; // read in step
     ano_dsp_asr_init(&v->u.chime.chiff, 0.0005f, 0.0f, 0.02f, 3.0f, fs);
     ano_dsp_svf_coef(&v->u.chime.bpc, 5200.0f, q_from_res(0.4f), fs);
     v->u.chime.bps = (AnoDspSvfState){0};
@@ -284,8 +270,7 @@ static void spawn_chime(AnoSynth *s, AnoSynthVoice *v, float dur, uint8_t pitch)
     pan_gains(pan, &v->panL, &v->panR);
 }
 
-// GM pitch -> drum recipe. Everything here has a fixed spectrum: filter coefs
-// bake now, cutoff staging never touches percussion.
+// GM pitch -> drum recipe. Filter coefs baked; cutoff staging unused.
 static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
 {
     float fs = (float)s->sampleRate;
@@ -294,7 +279,7 @@ static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
     v->u.drum.s1 = v->u.drum.s2 = (AnoDspSvfState){0};
     float total, pan;
     switch (pitch) {
-    case 36: // kick: 44 -> 129 Hz sweep + band-passed click
+    case 36: // kick: 44->129 Hz sweep + BP click
         v->u.drum.kind = ANO_SYNTH_DRUM_KICK;
         ano_dsp_asr_init(&v->u.drum.e2, 0.0005f, 0.0f, 0.09f, 4.0f, fs);
         ano_dsp_asr_init(&v->u.drum.e3, 0.0005f, 0.0f, 0.012f, 3.0f, fs);
@@ -303,7 +288,7 @@ static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD1C4u);
         total = 0.30f; pan = 0.0f;
         break;
-    case 38: // snare: band-passed rattle + 195 Hz tone
+    case 38: // snare: BP rattle + 195 Hz tone
         v->u.drum.kind = ANO_SYNTH_DRUM_SNARE;
         ano_dsp_asr_init(&v->env, 0.001f, 0.01f, 0.16f, 3.0f, fs);      // rattle
         ano_dsp_asr_init(&v->u.drum.e3, 0.001f, 0.0f, 0.08f, 3.0f, fs); // tone
@@ -311,7 +296,7 @@ static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD5A2u);
         total = 0.22f; pan = 0.04f;
         break;
-    case 42: case 46: { // hats: high-passed noise, closed/open decay
+    case 42: case 46: { // hats: HP noise, closed/open decay
         bool open = pitch == 46;
         v->u.drum.kind = open ? ANO_SYNTH_DRUM_OHAT : ANO_SYNTH_DRUM_CHAT;
         float decay = open ? 0.28f : 0.045f;
@@ -331,7 +316,7 @@ static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
         total = 0.36f; pan = 0.0f;
         break;
     }
-    case 49: // crash: high-passed wash + band-passed shimmer
+    case 49: // crash: HP wash + BP shimmer
         v->u.drum.kind = ANO_SYNTH_DRUM_CRASH;
         ano_dsp_asr_init(&v->env, 0.002f, 0.05f, 1.3f, 2.5f, fs);
         ano_dsp_svf_coef(&v->u.drum.c1, 5200.0f, q_from_res(0.1f), fs);
@@ -347,7 +332,7 @@ static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD5ACu);
         total = 0.10f; pan = -0.3f;
         break;
-    default: // rim, and the fallback for unmapped percussion
+    default: // rim / unmapped
         v->u.drum.kind = ANO_SYNTH_DRUM_RIM;
         ano_dsp_asr_init(&v->env, 0.0005f, 0.0f, 0.045f, 3.0f, fs);
         ano_dsp_svf_coef(&v->u.drum.c1, 4500.0f, q_from_res(0.6f), fs);
@@ -376,7 +361,7 @@ bool ano_synth_voice_spawn(AnoSynth *s, AnoSynthVoice *v, const AnoSynthNote *n)
     uint32_t patch = s->instruments[n->ev.layer];
     if (patch == ANO_SYNTH_PATCH_DEFAULT || patch >= ANO_SYNTH_PATCH_COUNT
         || patch == ANO_SYNTH_PATCH_BREEZE || patch == ANO_SYNTH_PATCH_WHISTLE
-        || patch == ANO_SYNTH_PATCH_BAD_GROUND) // reserved textures fall back
+        || patch == ANO_SYNTH_PATCH_BAD_GROUND) // reserved -> layer default
         patch = default_patch(n->ev.layer);
 
     switch (patch) {
@@ -398,9 +383,8 @@ bool ano_synth_voice_spawn(AnoSynth *s, AnoSynthVoice *v, const AnoSynthNote *n)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-span coefficient refresh (classes whose cutoff rides the shared bus)
-// ---------------------------------------------------------------------------
+
+/* Span Coefs */
 
 void ano_synth_voice_span_coef(AnoSynth *s, AnoSynthVoice *v, const float *staged)
 {
@@ -415,7 +399,7 @@ void ano_synth_voice_span_coef(AnoSynth *s, AnoSynthVoice *v, const float *stage
         ano_dsp_svf_flush(&v->f0);
         ano_dsp_svf_flush(&v->f1);
         return;
-    case ANO_SYNTH_VC_BASS: // per-sample sweep; just keep the state denormal-free
+    case ANO_SYNTH_VC_BASS: // per-sample sweep; flush denormals
         ano_dsp_svf_flush(&v->f0);
         return;
     default:
@@ -423,9 +407,8 @@ void ano_synth_voice_span_coef(AnoSynth *s, AnoSynthVoice *v, const float *stage
     }
 }
 
-// ---------------------------------------------------------------------------
-// One sample per class
-// ---------------------------------------------------------------------------
+
+/* Step */
 
 static float lead_osc(uint8_t type, AnoDspTri *tri, float phase, float dt)
 {
@@ -546,7 +529,7 @@ void ano_synth_voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged,
         float chiff = ano_dsp_svf_step(&v->u.chime.bpc, &v->u.chime.bps,
                                        ano_dsp_noise(&v->u.chime.rng), ANO_DSP_SVF_BANDPASS)
                     * ano_dsp_asr_step(&v->u.chime.chiff) * 0.3f;
-        (void)ano_dsp_asr_step(&v->env); // lifecycle only; partials shape decay
+        (void)ano_dsp_asr_step(&v->env); // lifecycle; partials shape decay
         float o = ano_dsp_svf_step(&v->fc, &v->f0, body + chiff, ANO_DSP_SVF_LOWPASS) * v->amp;
         *l += o * v->panL;
         *r += o * v->panR;

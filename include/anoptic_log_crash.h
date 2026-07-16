@@ -12,20 +12,17 @@
 
 // Enter: anoptic_log_crash.h
 
-
 // Stage 1: Initializing the blackbox.
 // Captures the SIGSEGV, SIGABRT, SIGFPE, etc.
 // Loads up the blackbox infrastructure.
 
-
 // Stage 2: Hopefully never, but...
 // A crash occurs. Immediately write trace to CRASH.log
 
-
-// Stage 3: Immediately following stage 2, a hail mary ano_log_drain() to hopefully recover anything that might've survived in the log buffers, *after* we have already written the CRASH.log.
+// Stage 3: Immediately following stage 2, a hail mary ano_log_flush() to hopefully recover anything that might've survived in the log buffers, *after* we have already written the CRASH.log.
 
 // Stage 4: Final, the anocraft accident investigation.
-/// TODO: Ask user if they want to send telemetry (future implement)
+// TODO: Ask user if they want to send telemetry (future implement)
 // First boot post-crash, investigate what happened, append it to logs in further details if necessary/possible/desireable.
 
 #ifndef ANOPTIC_LOG_CRASH_H

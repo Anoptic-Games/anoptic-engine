@@ -89,7 +89,7 @@ void recordHiZCompute(uint32_t frameIndex)
     vkEndCommandBuffer(cmd);
 }
 
-// Async light-cull CB: both views' froxel binning on computeQueue.
+// Async light-cull CB: both views' froxel binning on computeQueue, recorded every frame even with no entities.
 void recordLightcullCompute(uint32_t frameIndex)
 {
     VkCommandBuffer cmd = rendererState.frames[frameIndex].lightcullCommandBuffer;

@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * dsp/osc.h (private to src/audio/)
- * Band-limited voice oscillators (TECH_SPEC §12.2): sine, polyBLEP saw and
- * square, and triangle via a leaky integration of the polyBLEP square. Each is
- * a phase accumulator in cycles [0,1) advanced by freq/rate per sample; the
- * caller owns the phase and may frequency-modulate it freely (vibrato, FM).
- * All state must be init-zeroed (finding 8).
- */
+// Band-limited oscillators: sine, polyBLEP saw/square, leaky-integrated triangle.
+// Phase in cycles [0,1). Caller owns phase. Init-zero state.
 
 #ifndef ANO_DSP_OSC_H
 #define ANO_DSP_OSC_H
@@ -19,8 +13,7 @@
 
 #define ANO_DSP_TWO_PI 6.28318530717958647692f
 
-// Advance a phase accumulator by dt = freq/sampleRate; wraps into [0, 1).
-// Negative dt (extreme FM) wraps correctly too.
+// Advance phase by dt = freq/sampleRate. Wraps [0, 1). Negative dt ok.
 static inline float ano_dsp_phase_step(float *phase, float dt)
 {
     float p = *phase + dt;
@@ -29,14 +22,12 @@ static inline float ano_dsp_phase_step(float *phase, float dt)
     return p;
 }
 
-// in: phase cycles [0,1). out: sine sample [-1, 1].
 static inline float ano_dsp_sine(float phase)
 {
     return sinf(ANO_DSP_TWO_PI * phase);
 }
 
-// Two-sided polyBLEP residual at phase t with per-sample increment dt:
-// smooths the unit step a naive discontinuity would alias on.
+// polyBLEP residual at phase t with increment dt.
 static inline float ano_dsp_polyblep(float t, float dt)
 {
     if (dt <= 0.0f)
@@ -52,13 +43,11 @@ static inline float ano_dsp_polyblep(float t, float dt)
     return 0.0f;
 }
 
-// in: phase cycles [0,1), dt = freq/rate. out: band-limited saw [-1, 1].
 static inline float ano_dsp_saw(float phase, float dt)
 {
     return 2.0f * phase - 1.0f - ano_dsp_polyblep(phase, dt);
 }
 
-// in: phase cycles [0,1), dt = freq/rate. out: band-limited square [-1, 1].
 static inline float ano_dsp_square(float phase, float dt)
 {
     float v = phase < 0.5f ? 1.0f : -1.0f;
@@ -69,14 +58,12 @@ static inline float ano_dsp_square(float phase, float dt)
     return v;
 }
 
-// Triangle integrator state (one per oscillator; init-zero).
 typedef struct AnoDspTri
 {
-    float y; // leaky-integrated square
+    float y;
 } AnoDspTri;
 
-// in: phase cycles [0,1), dt = freq/rate. out: band-limited triangle [-1, 1].
-// Leak keeps the integrator DC-free; gain 4*dt scales the ramp to unit peak.
+// Leak keeps DC-free. gain 4*dt scales to unit peak.
 static inline float ano_dsp_triangle(AnoDspTri *s, float phase, float dt)
 {
     float sq = ano_dsp_square(phase, dt);

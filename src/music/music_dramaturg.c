@@ -3,20 +3,14 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_dramaturg.c
- * Ledger arithmetic. Parity notes: intensify is Python TRUE division
- * (rung / escalation_cap as doubles); the release level keeps the
- * prototype's op order; phrase cadences persist across the whole piece
- * (the dict never evicts).
- */
+// Ledger arithmetic. intensify = true division (rung / escalation_cap as doubles).
+// Release level keeps prototype op order. Phrase cadences persist (ring never evicts mid-piece reads).
 
 #include "music_dramaturg.h"
 
 AnoDramaturgConfig ano_dramaturg_config_default(void)
 {
-    // static: an object with static storage has its PADDING zeroed, and this
-    // struct is copied into the engine, whose bytes are its snapshot.
+    // static storage zeros padding (snapshot = bytes).
     static const AnoDramaturgConfig k = {
         .enabled = true, .leniency = 0.5, .accrueAbove = 0.55, .debtGain = 0.12,
         .escalatePhrases = 2, .holdTier = ANO_MUSIC_ARP, .registerCapMax = 6,

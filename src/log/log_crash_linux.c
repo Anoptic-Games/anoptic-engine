@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Linux: the shared POSIX handler plus the two native pieces it needs. Module map from dl_iterate_phdr at init. _GNU_SOURCE is for REG_RIP/REG_RBP and dl_iterate_phdr.
+// Linux: shared POSIX handler + dl_iterate_phdr module map. _GNU_SOURCE for REG_* / dl_iterate_phdr.
 
 #define _GNU_SOURCE
 #include "log/log_crash_posix.h"
@@ -11,7 +11,7 @@
 #include <link.h>
 #include <ucontext.h>
 
-// One [lo, hi) entry per executable PT_LOAD. dlpi_addr is the load bias. The main executable's name is "": data carries /proc/self/exe.
+// One [lo, hi) per executable PT_LOAD. dlpi_addr = load bias. Main exe name "": data = /proc/self/exe.
 static int bb_phdr_cb(struct dl_phdr_info *info, size_t size, void *data)
 {
     (void)size;
@@ -36,7 +36,7 @@ static void bb_modmap_build(void)
     dl_iterate_phdr(bb_phdr_cb, exe);
 }
 
-// Inputs: the handler's ucontext. Outputs: the interrupted thread's pc and fp, plus lr on aarch64 (0 elsewhere).
+// Inputs: ucontext. Outputs: pc, fp, lr on aarch64 (0 elsewhere).
 static void bb_crash_regs(void *uctx, uintptr_t *pc, uintptr_t *fp, uintptr_t *lr)
 {
     const ucontext_t *uc = uctx;

@@ -1,31 +1,31 @@
 ## Mathematical Theory
 
-The core objective of this method is to eliminate "light bleeding" artifacts by using a statistical approach to approximate the depth distribution within a filtered shadow map area.
+Kill "light bleeding" by approximating the depth distribution inside a filtered shadow-map area with statistics, not a hard depth compare.
 
 ### 1. The Step Visibility Function
 
-Traditionally, shadow mapping relies on a non-linear step visibility function $v(z_{r})$ to determine if a point is in shadow:
+Classic shadow mapping uses a non-linear step visibility $v(z_{r})$:
 
 
 $$v(z_{r}) = \epsilon(z_{o} - z_{r})$$
 
-* This function yields **0** if the occluder distance ($z_{o}$) from the light source is smaller than the receiver distance ($z_{r}$), and **1** otherwise.
+* **0** when the occluder is closer than the receiver ($z_{o} < z_{r}$), **1** otherwise.
 
 
-* Because this comparison is non-linear, standard linear filtering introduces aliasing.
+* The compare is non-linear, so linear filtering aliases.
 
 
 
 ### 2. Statistical Probability Framework
 
-Instead of evaluating the step function directly, this statistical method models the probability that a shaded point passes the depth test. To eliminate self-occlusion on planar surfaces, the visibility function is biased using the average depth ($\bar{z}_{o}$):
+Don't evaluate the step directly. Model the probability that a shaded point passes the depth test. Bias with mean depth ($\bar{z}_{o}$) so planar surfaces don't self-occlude:
 
 
 $$V(z_{r}) = \begin{cases} P(z_{o} \ge z_{r}) & \text{if } z_{r} > \bar{z}_{o} \\ 1 & \text{otherwise} \end{cases}$$
 
 
 
-By utilizing the Cumulative Distribution Function (CDF) of the random depth variable, defined as $F(z) = P(z_{o} < z)$, the visibility formulation becomes:
+With the CDF $F(z) = P(z_{o} < z)$ that becomes:
 
 
 $$v(z_{r}) = \frac{1 - F(z_{r})}{1 - F(\bar{z}_{o})}$$
@@ -34,37 +34,37 @@ $$v(z_{r}) = \frac{1 - F(z_{r})}{1 - F(\bar{z}_{o})}$$
 
 ### 3. Normalized Depth Parameter
 
-To simplify the notation and math, a normalized depth parameter $t$ is introduced:
+Normalize depth to $t$:
 
 
 $$t = \frac{z - z_{min}}{z_{max} - z_{min}} = \frac{z - z_{min}}{\Delta z}$$
 
 
 
-* Where $\Delta z = z_{max} - z_{min}$.
+* $\Delta z = z_{max} - z_{min}$.
 
 
-* Under this normalization, $F(z) = 0$ if $t < 0$, $F(z) = 1$ if $t > 1$, and $F(z)$ is monotonically non-decreasing in the $[0, 1]$ interval.
+* Then $F(z) = 0$ if $t < 0$, $F(z) = 1$ if $t > 1$, and $F(z)$ is monotonically non-decreasing on $[0, 1]$.
 
 
 
 ### 4. CDF Power Function Approximation
 
-The paper proposes fitting the CDF between the boundaries using a power function curve governed by a data-fitting parameter $\beta$:
+Fit the CDF between the bounds with a power curve and a free parameter $\beta$:
 
 
 $$F(z) = t^{\beta}$$
 
  where $z(t) = t\Delta z + z_{min}$ 
 
-To satisfy the constraint that the function matches the mean depth ($\bar{z}_{o}$), the integration of the distribution is defined as:
+Match the mean depth ($\bar{z}_{o}$) by integrating the distribution:
 
 
 $$\bar{z}_{o} = \int_{0}^{1} (t\Delta z + z_{min})\beta t^{\beta-1} dt = \frac{\beta\Delta z}{\beta + 1} + z_{min}$$
 
 
 
-Solving this equation specifically for the fitting parameter $\beta$ yields:
+Solve for $\beta$:
 
 
 $$\beta = \frac{\bar{z}_{o} - z_{min}}{z_{max} - \bar{z}_{o}}$$
@@ -73,7 +73,7 @@ $$\beta = \frac{\bar{z}_{o} - z_{min}}{z_{max} - \bar{z}_{o}}$$
 
 ### 5. Final Visibility Formula
 
-By defining the normalized expected depth parameter as $\bar{t} = \frac{\bar{z}_{o} - z_{min}}{\Delta z} = \frac{\beta}{\beta + 1}$, the definitive visibility function evaluated at runtime is:
+With normalized mean depth $\bar{t} = \frac{\bar{z}_{o} - z_{min}}{\Delta z} = \frac{\beta}{\beta + 1}$, the runtime visibility is:
 
 
 $$v(t) = \frac{1 - t^{\beta}}{1 - \left(\frac{\beta}{\beta + 1}\right)^{\beta}}$$
@@ -87,37 +87,37 @@ $$v(t) = \frac{1 - t^{\beta}}{1 - \left(\frac{\beta}{\beta + 1}\right)^{\beta}}$
 ### 1. Texture Storing Requirements
 
 * 
-**Three-Channel Storage**: The Power CDF filtering method requires storing at least three distinct values in the shadow map texture channels: the minimum depth ($z_{min}$), the maximum depth ($z_{max}$), and the mean depth ($\bar{z}_{o}$).
+**Three-Channel Storage**: Store at least three values in the shadow map: min depth ($z_{min}$), max depth ($z_{max}$), and mean depth ($\bar{z}_{o}$).
 
 
 
 ### 2. Filtering Operation
 
 * 
-**Separable Kernel**: The filtering mechanism evaluates an area of interest in the depth buffer using a separable kernel configuration.
+**Separable Kernel**: Filter the depth buffer over an area of interest with a separable kernel.
 
 
 * 
-**Shadow Softness**: The size of the filtered area directly controls shadow softness; a larger filter area yields more blurred shadows.
+**Shadow Softness**: Filter size is shadow softness; bigger area → blurrier shadows.
 
 
 
 ### 3. Precision and Hardware Performance
 
 * 
-**16-bit Floating-Point Optimization**: While alternatives like Variance Shadow Maps (VSM) and Exponential Shadow Maps (ESM) are highly sensitive to floating-point precision and generally require **32 bits** per channel, the Power CDF technique functions seamlessly with **16 bits** per channel without producing visual artifacts.
+**16-bit Floating-Point Optimization**: VSM and ESM are precision-hungry and usually want **32 bits** per channel. Power CDF runs clean on **16 bits** per channel.
 
 
 * 
-**Texture Efficiency**: Because it maintains clarity at lower resolutions and requires fewer texture samples to maintain sharp antialiasing, lower-resolution shadow maps can be used to optimize rendering workloads.
+**Texture Efficiency**: Stays sharp at lower resolutions and needs fewer samples for clean AA, so you can run lower-res shadow maps.
 
 
 
 ### 4. Scalability and Artifact Mitigation
 
 * 
-**Layered Extension**: In exceptionally complex scenes where light bleeding might still manifest, the technique can be mapped into a layered framework (identical to Layered Variance Shadow Maps / LVSM) to fully eradicate artifacts.
+**Layered Extension**: In heavy scenes where bleeding still shows, layer it the same way as Layered Variance Shadow Maps (LVSM) until the artifacts are gone.
 
 
 * 
-**Contact Shadow Stability**: The algorithm is robust against contact shadow flaws typically introduced by ESM and remains unaffected by light-leaking artifacts triggered by multiple distant occluders.
+**Contact Shadow Stability**: Holds up on contact shadows that ESM usually breaks, and doesn't light-leak from multiple distant occluders.

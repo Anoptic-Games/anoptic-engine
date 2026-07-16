@@ -16,13 +16,9 @@
 #include "vulkan_backend/shadow/shadow.h"
 #include "vulkan_backend/bridge/bridge.h"
 
-// ---------------------------------------------------------------------------
-// ECS <-> render bridge consumer.
-// Drains state-transition commands, applies them to GPU buffers by slot.
-// Advances the slot quarantine, reports retired render_ids back.
-// ---------------------------------------------------------------------------
+// Bridge consumer: drain commands -> GPU by slot; advance quarantine; report retired ids.
 
-// Stages a resolved CREATE/UPDATE/DESTROY command's flagged fields into this frame's delta staging.
+// Stage resolved CREATE/UPDATE/DESTROY flagged fields into this frame's delta staging.
 // DESTROY dead-marks the entity slot so the cull pass skips it.
 
 static void stage_command_fields(RendererState* s, const RenderCommand* c, uint32_t slot, uint32_t f)
@@ -51,12 +47,12 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
         slot_upload_stage(&s->culling.entity, f, slot, ent);
         if (slot < s->slotMotionCap) s->slotMeshIdx[slot] = c->mesh_index;
     }
-    // Teleport / mesh swap refreshes the slot bound; ANIM re-bounds via shadow_track_motion.
+    // Teleport/mesh swap refreshes bound; ANIM via shadow_track_motion.
     if ((fields & (RFIELD_TRANSFORM | RFIELD_MESH_MAT)) && !(fields & RFIELD_ANIM))
         mover_refresh_slot(s, slot);
     if (fields & RFIELD_TRANSFORM)
         shadow_volumes_reparent(s, slot);
-    // Light-entity writes the static palette region only; bound the index off runtime rows.
+    // Light-entity writes static palette only; index off runtime rows.
     if ((fields & RFIELD_LIGHT) && c->light_index < ANO_STATIC_LIGHT_COUNT) {
         LightData L = {0};
         L.color[0]       = c->light.color[0];
@@ -74,9 +70,7 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
 }
 
 
-// Stages the held streamed slice into this frame's scatter lane; re-resolves only on a resolveGen bump.
-// in:  state, frameIndex
-// out: slotMapped[frameIndex], count[frameIndex], dynOffset[frameIndex], frameSeq[frameIndex]
+// Stage held stream slice into scatter lane; re-resolve only on resolveGen bump.
 static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
 {
     TransformStreamBuffer* ts = &state->transformStream;
@@ -112,13 +106,12 @@ static void free_owned_bulk(const RenderCommand* c)
 
 void render_apply_commands(RendererState* state, uint32_t frameIndex)
 {
-    // Drain the bridge, stage each command's changed per-slot fields into this frame's delta staging.
-    // DESTROY dead-marks its slot and retires it; the quarantine keeps it out of reuse until drained.
+    // Drain bridge -> delta staging. DESTROY dead-marks + retires (quarantine until drained).
     RenderCommand cmd;
     while (ano_render_next_command(&state->bridge, &cmd)) {
         switch (cmd.kind) {
         case RCMD_STREAM_TRANSFORMS:
-            // Adopt the published slice as the held snapshot; bump resolveGen so every frame re-resolves it.
+            // Adopt published slice; bump resolveGen (scatter re-resolves when stagedGen lags).
             state->transformStream.curSeq   = cmd.stream_seq;
             state->transformStream.curCount = cmd.stream_count;
             state->transformStream.resolveGen++;
@@ -184,7 +177,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 slot_upload_stage(&state->initialTransformBuffer, frameIndex, slot, &b->transforms[e]);
                 slot_upload_stage(&state->motionBuffer, frameIndex, slot, &b->motion[e]);
                 shadow_track_motion(state, slot, &b->motion[e]);
-                // Batch carries no instance data; clear it so a recycled slot renders inert.
+                // No instance data: clear so recycled slot renders inert.
                 slot_upload_stage(&state->instanceDataBuffer, frameIndex, slot, &inert);
                 uint32_t ent[2] = { b->mesh[e], b->material[e] };
                 slot_upload_stage(&state->culling.entity, frameIndex, slot, ent);
@@ -195,7 +188,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
         }
 
         case RCMD_BULK_UPDATE: {
-            // Apply the shared field mask to each resolvable target (unresolved ids dropped).
+            // Apply shared field mask to resolvable targets.
             const RenderUpdateBatch* u = cmd.update;
             if (!u) break;
             for (uint32_t e = 0; e < u->count; e++) {
@@ -250,7 +243,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
         }
 
         case RCMD_LIGHT_ATTACH: {
-            // Attach a runtime light to a renderable: it rides that slot's transform at light_offset.
+            // Attach runtime light to renderable (slot transform + light_offset).
             uint32_t parentSlot = render_slots_resolve(&state->slots, cmd.render_id);
             if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent not (yet) resolvable: drop
             uint32_t row = light_registry_alloc(&state->lightRegistry, cmd.light_id, cmd.render_id);
@@ -259,7 +252,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             LightData L = light_data_from_params(&cmd.light, parentSlot, cmd.light_offset);
             state->lightRegistry.rowMirror[regRow] = L; // seed the partial-update RMW base
             slot_upload_stage(&state->lightBuffer, frameIndex, row, &L);
-            // Allocate a runtime frustum if requested, else stage non-casting info so a reused row inherits none.
+            // Alloc runtime frustum if casting; else stage non-casting info.
             if (cmd.light.castsShadow) {
                 shadow_caster_attach(state, row, regRow, L.type, frameIndex);
             } else {
@@ -276,7 +269,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             uint32_t parentRid  = light_registry_parent_of(&state->lightRegistry, cmd.light_id);
             uint32_t parentSlot = render_slots_resolve(&state->slots, parentRid);
             if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent gone: drop
-            // RMW the mirror: merge masked fields, refresh transformIndex + enabled, re-stage the element.
+            // RMW mirror: merge fields, refresh transformIndex+enabled, re-stage.
             uint32_t fields = cmd.light_fields ? cmd.light_fields : ANO_LIGHT_FIELD_ALL;
             uint32_t regRow = row - state->lightRegistry.base;
             LightData* mir = &state->lightRegistry.rowMirror[regRow];
@@ -285,7 +278,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             mir->transformIndex = parentSlot;
             mir->enabled = 1u;
             slot_upload_stage(&state->lightBuffer, frameIndex, row, mir);
-            // Shadow-caster transitions: only ANO_LIGHT_FIELD_CAST toggles casting; a TYPE change re-allocates.
+            // Caster transitions: CAST toggles; TYPE change re-allocates.
             bool isCasting   = state->lightRegistry.rowShadowBase[regRow] != ANO_SHADOW_NONE;
             bool wantCast    = (fields & ANO_LIGHT_FIELD_CAST) ? (cmd.light.castsShadow != 0u) : isCasting;
             bool typeChanged = mir->type != oldType;
@@ -298,7 +291,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 ShadowLightInfo si = {0}; // castsShadow == 0
                 slot_upload_stage(&state->shadowInfo, frameIndex, row, &si);
             }
-            // Changed fields on a staying caster stale its cached layers; the volume re-installs too.
+            // Staying caster field change: stale cache layers + reinstall volume.
             shadow_layers_invalidate(state, state->lightRegistry.rowShadowBase[regRow],
                 mir->type == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u);
             if (state->lightRegistry.rowShadowBase[regRow] != ANO_SHADOW_NONE)
@@ -356,11 +349,11 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
     if (anyRetired) {
         state->transformStream.resolveGen++; // a freed/recycled slot invalidates cached resolves
 
-        // Drop slotHighWater past a trailing run of freed slots so cull/update skip dead tail slots.
+        // Compact slotHighWater past trailing free slots so cull/update skip dead tail.
         render_slots_compact(&state->slots);
     }
 
-    // Return quarantine-expired light rows to the free-list; publish cull light count = base + high-water.
+    // Return expired light rows to free-list; cull light count = base + high-water.
     light_registry_collect(&state->lightRegistry, state->globalFrame);
     light_registry_compact(&state->lightRegistry); // peel trailing free rows -> shrink the cull light count
     state->lightBuffer.count = state->lightRegistry.base + state->lightRegistry.highWater;

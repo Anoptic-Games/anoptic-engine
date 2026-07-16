@@ -2,7 +2,7 @@
 
 Type Ancient Greek or Elder Futhark into a C string literal and it renders as anti-aliased vector glyphs, swept on the GPU. This is the map between those two points, written around the demo text (Homer and the Gallehus horn). It also records the byte-count refactor that made the styled-run tables safe to edit.
 
-`FONT_RENDER.md` is the rasterizer's design of record. This covers the layer above: fonts, bake ranges, shaping, the two display lanes, and how demo text is authored.
+`FONT_RENDER.md` is the rasterizer design doc. This covers the layer above: fonts, bake ranges, shaping, the two display lanes, and how demo text is authored.
 
 ---
 
@@ -98,7 +98,7 @@ Edit a line and its run resizes with it. The checksum `static_assert` became red
 Two conventions the world table demonstrates, keep them when editing:
 
 - A run starting a new line owns its leading `'\n'`, because `'\n'` steps the pen by its own run's lineHeight: the new line's size, not the old one's.
-- Line 3's color splits land inside the kern pairs (`A|V`, `L|T`, `T|o`, `W|a`) on purpose. Same-size runs must not move a glyph, so the line is a standing proof that color boundaries preserve kerning.
+- Line 3's color splits land inside the kern pairs (`A|V`, `L|T`, `T|o`, `W|a`) on purpose. Same-size runs must not move a glyph, so the line shows that color boundaries preserve kerning.
 
 ## The two lanes and what the demo shows
 
@@ -127,4 +127,4 @@ On the quotes: the Gallehus horn inscription (ᛖᚲ ᚺᛚᛖᚹᚨᚷᚨᛊᛏ
 | `src/vulkan_backend/text_raster.c` | bake assembly, both lanes' pipelines, demo panel text |
 | `src/engine/main.c` | logic-thread HUD blocks through the render bridge |
 | `resources/fonts/` | Geist, Noto Sans (Greek), Noto Sans Runic, staged exe-relative |
-| `FONT_RENDER.md` | design of record for the GPU rasterizer |
+| `FONT_RENDER.md` | design doc for the GPU rasterizer |

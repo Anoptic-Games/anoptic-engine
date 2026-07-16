@@ -3,16 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_pad.c
- * Parity notes: the ornament searches are max-by-tuple with strict >
- * (suspension key (pitch, -step): highest suspension, then the tighter
- * step; appoggiatura key (onto-tonic, target) with the whole-step lean
- * winning per target via the loop break); the connective picker prefers a
- * 3rd-sized gap then the HIGHEST voice, its passing tone the min by
- * (|q - mid|, q) against the FLOAT midpoint; comping draws rough_cell over
- * the pulse grid at base_step 1.
- */
+// Ornament searches: max-by-tuple strict > (suspension (pitch,-step); appoggiatura (onto-tonic,target)).
+// Connective: prefer 3rd-sized gap then HIGHEST voice; passing tone min by (|q-mid|, q) vs FLOAT midpoint.
+// Comping: rough_cell on pulse grid at base_step 1.
 
 #include <string.h>
 

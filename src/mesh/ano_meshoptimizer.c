@@ -861,8 +861,9 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
         }
     }
 
-    // Growth cap: max resulting edge / move = edge_len_factor * mean source edge (unit-extent).
-    // <=0 -> maxEdge2=FLT_MAX (guards off).
+    // Growth cap: QEM is ~0 anywhere on a coplanar surface, so nothing else bounds triangle GROWTH;
+    // chained in-plane collapses otherwise bridge a floor/wall. Cap resulting edge / move at
+    // edge_len_factor * mean source edge (unit-extent). <=0 -> maxEdge2=FLT_MAX (guards off).
     float maxEdge2 = FLT_MAX;
     if (edge_len_factor > 0.0f && tris > 0) {
         double edgesum = 0.0;
@@ -880,7 +881,8 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
         float mean_edge = (float)(edgesum / (double)(tris * 3));
         if (mean_edge > 0.0f) {
             float m = edge_len_factor * mean_edge;
-            // Abs backstop: clamp to ANO_SIMPLIFY_ABS_EDGE_FRAC of bbox axis (extent==1).
+            // Abs backstop: on coarse flats factor*mean can itself span the surface; clamp to
+            // ANO_SIMPLIFY_ABS_EDGE_FRAC of bbox axis (extent==1). Inert on dense meshes.
             if (m > ANO_SIMPLIFY_ABS_EDGE_FRAC) m = ANO_SIMPLIFY_ABS_EDGE_FRAC;
             maxEdge2 = m * m;
         }
@@ -892,7 +894,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
         // Incident tris per canonical vertex.
         build_triangle_adjacency(&adj, wtri, tris_before * 3, vertex_count);
 
-        // Edge uses -> kind (border / locked-complex / manifold). Rebuild each pass.
+        // Edge uses -> kind (border / locked-complex / manifold). Rebuild each pass; quadrics are not.
         ano_count_edges(ekeys, ecnt, ecap, wtri, tris_before);
         for (size_t v = 0; v < vertex_count; ++v)
             kind[v] = (adjCounts[v] == 0) ? ANO_VK_LOCKED : ANO_VK_MANIFOLD;
@@ -923,7 +925,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
                         if (ano_edge_get(ekeys, ecnt, ecap, v<nb?v:nb, v<nb?nb:v) != 1) continue;
                     } else {
                         if (kind[nb] == ANO_VK_LOCKED) continue;
-                        // Feature-slide: feature vert snaps only onto another feature vert.
+                        // Feature-slide: feature vert snaps only onto another feature vert (crease/rim along itself, never inward).
                         if (feature[v] && !feature[nb]) continue;
                     }
                     // Reject move longer than growth cap (inert when off).
@@ -1024,7 +1026,8 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
                     float olen2 = dot_product(on, on);
                     if (dot_product(on, nn) <= 0.25f * sqrtf(olen2 * nlen2)) flip = 1;
                     else {
-                        // Growth cap: reject if any resulting edge exceeds maxEdge2.
+                        // Growth cap (anti-bridge): reject if any resulting edge exceeds maxEdge2.
+                        // Fold misses this — a bridge keeps its facing.
                         float ne3[3] = { o2[0]-o1[0], o2[1]-o1[1], o2[2]-o1[2] };
                         if (dot_product(ne1, ne1) > maxEdge2 || dot_product(ne2, ne2) > maxEdge2 ||
                             dot_product(ne3, ne3) > maxEdge2) flip = 1;
@@ -1034,7 +1037,8 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
             if (flip) continue;
 
             collapse[v] = j; locked[v] = 1; locked[j] = 1;
-            // Guard 6: lock all corners of v's incident tris (per-pass edge-cap invariant).
+            // Guard 6: lock all corners of v's incident tris so the edge-cap is a per-pass invariant
+            // (not a ~3x per-collapse bound against mutated geometry). Inert when off.
             if (maxEdge2 != FLT_MAX) {
                 for (uint32_t a = 0; a < adjCounts[v]; ++a) {
                     uint32_t t = adjData[adjOff[v] + a];
@@ -1076,7 +1080,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
         outid[o] = (r == c) ? o : r;
     }
 
-    // Emit source tris that survive in canonical position space.
+    // Emit source tris that survive in canonical position space (drop even when kept corners are distinct seam wedges).
     size_t outcount = 0;
     for (size_t t = 0; t < tri0; ++t) {
         uint32_t o0 = indices[t*3+0], o1 = indices[t*3+1], o2 = indices[t*3+2];

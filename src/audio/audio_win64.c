@@ -3,50 +3,29 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Windows device backends: WASAPI (primary), DirectSound (compatibility
- * fallback). ole32, avrt, and dsound are runtime-loaded so the module adds no
- * link-time dependency beyond the Win32 baseline, and a failed load fails
- * start() cleanly so the AUTO cascade can move on. COM interfaces are
- * hand-declared C vtables — the layouts, IIDs, and negotiation rules are
- * lifted from miniaudio's WASAPI/DSound backends (docs/references/
- * miniaudio-legend.md: IIDs 21776+, vtables 22123+, negotiation 23626,
- * cursor-chase loop 26410) — the same route miniaudio takes to sidestep
- * historically incomplete MinGW COM headers. All COM work happens on the
- * device thread (created, used, and torn down there), so no cross-apartment
- * marshalling exists anywhere. The OS libraries hold internal control-path
- * locks — the platform-file exception, same class as the Vulkan backend.
- *
- * Baseline scope: default endpoint, shared mode, no device-loss recovery yet
- * (a failing device logs and keeps trying; the reopen-between-blocks design
- * with AEVT_DEVICE arrives with the control plane). UNTESTED on real Windows
- * as of writing — validation is deferred to a Windows session per the plan.
- */
+// Windows devices: WASAPI (primary), DirectSound (fallback). ole32/avrt/dsound runtime-loaded.
+// Hand-declared COM vtables (miniaudio layouts). COM stays on the device thread.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 
-#include <stddef.h> // offsetof (layout asserts)
+#include <stddef.h>
 
 #include "audio_internal.h"
 #include "audio_pull.h"
-#include "dsp/noise.h" // TPDF dither at the final 16-bit quantization (DSound s16 path)
+#include "dsp/noise.h" // TPDF dither (DSound s16)
 
 #include <anoptic_log.h>
 #include <anoptic_time.h>
 
-// ---------------------------------------------------------------------------
-// Shared wave formats (own declarations, mirroring miniaudio's). The
-// EXTENSIBLE struct is deliberately FLAT, not a nested AnoWfx: sizeof(AnoWfx)
-// is 20 (2 bytes of tail padding from the DWORD alignment), so nesting it
-// would shift every extensible field by +2 and hand the OS a malformed
-// format. Declared flat, every member lands on its natural alignment at the
-// packed SDK offsets (Samples 18, dwChannelMask 20, SubFormat 24).
-// ---------------------------------------------------------------------------
+/* Wave formats */
+
+// AnoWfxExt is flat (not nested AnoWfx): nesting would shift fields by +2 pad.
 
 #define ANO_WAVE_FORMAT_PCM        0x0001
 #define ANO_WAVE_FORMAT_EXTENSIBLE 0xFFFE
-#define ANO_SPEAKER_FRONT_PAIR     0x3 // FRONT_LEFT | FRONT_RIGHT
+#define ANO_SPEAKER_FRONT_PAIR     0x3 // FL | FR
 
 typedef struct AnoWfx
 {
@@ -77,8 +56,6 @@ typedef struct AnoWfxExt
     GUID  SubFormat;
 } AnoWfxExt;
 
-// AnoWfxExt must alias AnoWfx through its leading members (every API below
-// takes AnoWfx* and reads cbSize bytes of extension past it).
 _Static_assert(offsetof(AnoWfxExt, Samples) == 18, "extensible fields start at 18");
 _Static_assert(offsetof(AnoWfxExt, dwChannelMask) == 20, "channel mask at 20");
 _Static_assert(offsetof(AnoWfxExt, SubFormat) == 24, "subformat at 24");
@@ -86,7 +63,6 @@ _Static_assert(offsetof(AnoWfxExt, SubFormat) == 24, "subformat at 24");
 static const GUID ANO_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
     { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
 
-// f32 interleaved stereo at the engine rate
 static AnoWfxExt wfx_f32_stereo(uint32_t rate)
 {
     AnoWfxExt w = {0};
@@ -103,9 +79,7 @@ static AnoWfxExt wfx_f32_stereo(uint32_t rate)
     return w;
 }
 
-// ---------------------------------------------------------------------------
-// WASAPI COM surface (hand-declared, layouts per miniaudio/audioclient.h)
-// ---------------------------------------------------------------------------
+/* WASAPI COM surface */
 
 static const GUID ANO_CLSID_MMDeviceEnumerator =
     { 0xBCDE0395, 0xE52F, 0x467C, { 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E } };
@@ -178,7 +152,6 @@ struct AnoIAudioClient { AnoIAudioClientVtbl *v; };
 
 typedef struct AnoIAudioClient3Vtbl
 {
-    // IUnknown + IAudioClient (order identical to AnoIAudioClientVtbl)
     HRESULT (STDMETHODCALLTYPE *QueryInterface)(AnoIAudioClient3 *, const GUID *, void **);
     ULONG   (STDMETHODCALLTYPE *AddRef)(AnoIAudioClient3 *);
     ULONG   (STDMETHODCALLTYPE *Release)(AnoIAudioClient3 *);
@@ -194,11 +167,9 @@ typedef struct AnoIAudioClient3Vtbl
     HRESULT (STDMETHODCALLTYPE *Reset)(AnoIAudioClient3 *);
     HRESULT (STDMETHODCALLTYPE *SetEventHandle)(AnoIAudioClient3 *, HANDLE);
     HRESULT (STDMETHODCALLTYPE *GetService)(AnoIAudioClient3 *, const GUID *, void **);
-    // IAudioClient2
     HRESULT (STDMETHODCALLTYPE *IsOffloadCapable)(AnoIAudioClient3 *, int, BOOL *);
     HRESULT (STDMETHODCALLTYPE *SetClientProperties)(AnoIAudioClient3 *, const void *);
     HRESULT (STDMETHODCALLTYPE *GetBufferSizeLimits)(AnoIAudioClient3 *, const AnoWfx *, BOOL, int64_t *, int64_t *);
-    // IAudioClient3
     HRESULT (STDMETHODCALLTYPE *GetSharedModeEnginePeriod)(AnoIAudioClient3 *, const AnoWfx *, UINT32 *, UINT32 *, UINT32 *, UINT32 *);
     HRESULT (STDMETHODCALLTYPE *GetCurrentSharedModeEnginePeriod)(AnoIAudioClient3 *, AnoWfx **, UINT32 *);
     HRESULT (STDMETHODCALLTYPE *InitializeSharedAudioStream)(AnoIAudioClient3 *, DWORD, UINT32, const AnoWfx *, const GUID *);
@@ -215,15 +186,10 @@ typedef struct AnoIAudioRenderClientVtbl
 } AnoIAudioRenderClientVtbl;
 struct AnoIAudioRenderClient { AnoIAudioRenderClientVtbl *v; };
 
-// ---------------------------------------------------------------------------
-// WASAPI backend
-// ---------------------------------------------------------------------------
-// All COM lives on the device thread: it opens the default render endpoint in
-// shared mode with event-driven buffering, prefers the IAudioClient3
-// low-latency path when the engine rate matches the mix rate (AUTOCONVERTPCM
-// is documented-incompatible with it), and otherwise lets Windows resample via
-// AUTOCONVERTPCM | SRC_DEFAULT_QUALITY. The loop is the canonical
-// padding-driven writer: wait event -> GetCurrentPadding -> fill the gap.
+/* WASAPI backend */
+
+// Device thread: default shared endpoint, event-driven. Client3 when rates match.
+// Else AUTOCONVERTPCM. Loop: wait -> GetCurrentPadding -> fill.
 
 typedef enum AnoWinInit
 {
@@ -239,11 +205,11 @@ typedef struct AnoWasapiState
     void    (WINAPI *coUninit)(void);
     HRESULT (WINAPI *coCreate)(const GUID *, void *, DWORD, const GUID *, void **);
     void    (WINAPI *coTaskFree)(void *);
-    HMODULE avrt; // optional MMCSS
+    HMODULE avrt;
     HANDLE  (WINAPI *avSet)(const char *, DWORD *);
     BOOL    (WINAPI *avRevert)(HANDLE);
 
-    _Atomic int  init;   // AnoWinInit handshake with start()
+    _Atomic int  init; // AnoWinInit
     AnoAudioPull pull;
 } AnoWasapiState;
 
@@ -274,9 +240,7 @@ static void *wasapi_main(void *arg)
 
     AnoWfxExt wfx = wfx_f32_stereo(mx->sampleRate);
 
-    // The IAudioClient3 path forbids AUTOCONVERTPCM, so it gets NO rate or
-    // channel conversion: take it only when the shared engine already mixes
-    // at our rate AND channel count; otherwise the classic path converts.
+    // Client3 only when mix rate/channels match (no AUTOCONVERTPCM on that path).
     AnoWfx *mix = NULL;
     uint32_t mixRate = 0, mixChannels = 0;
     if (SUCCEEDED(client->v->GetMixFormat(client, &mix)) && mix) {
@@ -294,7 +258,6 @@ static void *wasapi_main(void *arg)
                 UINT32 period = mx->blockFrames / fund * fund;
                 if (period < mn) period = mn;
                 if (period > mx3) period = mx3;
-                // AUTOCONVERTPCM/SRC flags are documented-incompatible here
                 if (SUCCEEDED(c3->v->InitializeSharedAudioStream(
                         c3, ANO_AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period,
                         (const AnoWfx *)&wfx, NULL)))
@@ -304,7 +267,7 @@ static void *wasapi_main(void *arg)
         }
     }
     if (!viaClient3) {
-        // classic shared mode: Windows converts rate/format for us
+        // classic shared + AUTOCONVERTPCM
         int64_t bufferDuration = (int64_t)mx->blockFrames * 4 * 10000000ll / mx->sampleRate;
         DWORD flags = ANO_AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                     | ANO_AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
@@ -322,14 +285,14 @@ static void *wasapi_main(void *arg)
     if (FAILED(client->v->GetService(client, &ANO_IID_IAudioRenderClient, (void **)&render)))
         goto fail;
 
-    // prefill silence so Start() has a full buffer of headroom
+    // prefill silence
     BYTE *p = NULL;
     if (SUCCEEDED(render->v->GetBuffer(render, bufferFrames, &p)) && p)
         render->v->ReleaseBuffer(render, bufferFrames, ANO_AUDCLNT_BUFFERFLAGS_SILENT);
 
     if (st->avSet) {
         DWORD idx = 0;
-        mmcss = st->avSet("Pro Audio", &idx); // best-effort MMCSS priority
+        mmcss = st->avSet("Pro Audio", &idx);
     }
     if (FAILED(client->v->Start(client)))
         goto fail;
@@ -342,10 +305,10 @@ static void *wasapi_main(void *arg)
 
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
         if (WaitForSingleObject(evt, 2000) != WAIT_OBJECT_0)
-            continue; // spurious timeout; deviceRun gate decides
+            continue;
         UINT32 padding = 0;
         if (FAILED(client->v->GetCurrentPadding(client, &padding))) {
-            // device invalidated (unplug/format change): no recovery yet, idle politely
+            // device invalidated (unplug/format change): no recovery yet
             ano_sleep(10000);
             continue;
         }
@@ -406,7 +369,7 @@ static bool wasapi_start(AnoAudioMixer *mx)
     if (ano_thread_create(&mx->deviceThread, NULL, wasapi_main, mx) != 0)
         goto fail;
 
-    // the thread owns every COM step; wait for its verdict (bounded)
+    // wait for device-thread init (bounded)
     for (uint32_t waited = 0; waited < 5000u; waited += 5u) {
         int s = atomic_load_explicit(&st->init, memory_order_acquire);
         if (s == ANO_WIN_INIT_OK)
@@ -449,14 +412,9 @@ const AnoAudioDeviceApi *ano_audio_device_wasapi(void)
     return &api;
 }
 
-// ---------------------------------------------------------------------------
-// DirectSound fallback backend
-// ---------------------------------------------------------------------------
-// dsound.dll runtime-loaded; hand-declared IDirectSound/IDirectSoundBuffer
-// vtables. A looping secondary buffer of 4 mixer blocks is chased by a
-// virtual write cursor: each pass fills the region the play cursor has
-// consumed, one block at a time. f32 extensible first; s16 + TPDF dither when
-// the driver refuses float.
+/* DirectSound fallback */
+
+// dsound.dll. Looping 4-block secondary. Cursor chase. f32 first, else s16+TPDF.
 
 #define ANO_DSSCL_PRIORITY             2u
 #define ANO_DSBCAPS_PRIMARYBUFFER      0x00000001u
@@ -530,7 +488,7 @@ typedef struct AnoDsoundState
     AnoDspRng    dither;
 } AnoDsoundState;
 
-// fill one mixer block into the locked ring region, converting when s16
+// Fill one mixer block into locked region (s16 convert if needed).
 static void dsound_fill(AnoAudioMixer *mx, AnoDsoundState *st, float *fbuf,
                         void *dst, uint32_t frames, bool s16)
 {
@@ -539,6 +497,7 @@ static void dsound_fill(AnoAudioMixer *mx, AnoDsoundState *st, float *fbuf,
         memcpy(dst, fbuf, (size_t)frames * ANO_AUDIO_CHANNELS * sizeof(float));
         return;
     }
+    // s16 path: TPDF dither at final quantization (with ALSA s16)
     int16_t *out = dst;
     for (uint32_t i = 0; i < frames * ANO_AUDIO_CHANNELS; ++i) {
         float v = fbuf[i];
@@ -570,7 +529,7 @@ static void *dsound_main(void *arg)
 
     AnoWfxExt wfx = wfx_f32_stereo(mx->sampleRate);
 
-    // primary format is advisory; ignore failures (miniaudio does the same)
+    // primary format advisory
     AnoDsBufferDesc pdesc = { .dwSize = sizeof pdesc, .dwFlags = ANO_DSBCAPS_PRIMARYBUFFER };
     if (SUCCEEDED(ds->v->CreateSoundBuffer(ds, &pdesc, &primary, NULL)))
         primary->v->SetFormat(primary, (const AnoWfx *)&wfx);
@@ -584,7 +543,7 @@ static void *dsound_main(void *arg)
         .lpwfxFormat = (AnoWfx *)&wfx,
     };
     if (FAILED(ds->v->CreateSoundBuffer(ds, &sdesc, &secondary, NULL))) {
-        // float refused: plain PCM s16 (the one other place dither applies)
+        // s16 + TPDF
         AnoWfx w16 = {
             .wFormatTag = ANO_WAVE_FORMAT_PCM,
             .nChannels = ANO_AUDIO_CHANNELS,
@@ -607,7 +566,6 @@ static void *dsound_main(void *arg)
     if (!fbuf)
         goto fail;
 
-    // silence-prime the whole ring, then loop it
     void *p1 = NULL, *p2 = NULL;
     DWORD n1 = 0, n2 = 0;
     if (SUCCEEDED(secondary->v->Lock(secondary, 0, bufferBytes, &p1, &n1, &p2, &n2, 0))) {
@@ -623,7 +581,7 @@ static void *dsound_main(void *arg)
             s16 ? "s16 (float refused)" : "f32", bufferBytes);
     atomic_store_explicit(&st->init, ANO_WIN_INIT_OK, memory_order_release);
 
-    // the cursor chase: fill block-sized chunks the play cursor has consumed
+    // cursor chase: fill block-sized chunks the play cursor has consumed
     DWORD writeCursor = 0;
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
         DWORD status = 0;
@@ -652,7 +610,7 @@ static void *dsound_main(void *arg)
             wrote = true;
         }
         if (!wrote)
-            ano_sleep(2000); // 2 ms idle poll, ~1/5 block
+            ano_sleep(2000);
     }
 
 fail:

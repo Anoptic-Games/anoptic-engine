@@ -1,12 +1,12 @@
-# Mathematical and Theoretical Foundations of Radiance Cascades for Non-LTE Radiative Transfer
+# Radiance Cascades for Non-LTE Radiative Transfer
 
-This document compiles the comprehensive mathematical framework, scaling laws, governing equations, and algorithmic theory of **Radiance Cascades** applied to multi-dimensional non-Local Thermodynamic Equilibrium (non-LTE) radiative transfer, as presented in the reference paper.
+Math, scaling laws, and algorithms for **Radiance Cascades** on multi-dimensional non-Local Thermodynamic Equilibrium (non-LTE) radiative transfer, from the reference paper.
 
 ---
 
 ## 1. The Multi-Dimensional Non-LTE Problem
 
-The fundamental numerical problem in multi-dimensional non-LTE radiative transfer is computing the radiation field throughout a domain to determine atomic transition rates. The core quantity required is the angle-averaged monochromatic intensity (the zeroth moment of the radiation field), defined at frequency $\nu$ and spatial location $\vec{p}$ as:
+The fundamental numerical problem in multi-dimensional non-LTE radiative transfer is computing the radiation field throughout a domain to determine atomic transition rates. The quantity you need is the angle-averaged monochromatic intensity (zeroth moment of the radiation field) at frequency $\nu$ and position $\vec{p}$:
 
 $$J_{\nu}(\vec{p})=\frac{1}{4\pi}\oint_{\Sigma^{2}}I_{\nu}(\vec{p},\hat{\omega})d\hat{\omega}$$
 
@@ -23,7 +23,7 @@ The specific intensity distribution $I_{\nu}(\vec{p},\hat{\omega})$ is a five-di
 
 ## 2. The Penumbra Criterion & Spatial-Angular Coupling
 
-Traditional discrete ordinates ($S_N$) methods encounter **ray effects** because they use a fixed, purely discrete angular sampling grid across the entire domain. Radiance Cascades eliminates these effects by utilizing an adaptive spatial-angular resolution trade-off governed by the **Penumbra Criterion**.
+Traditional discrete ordinates ($S_N$) methods hit **ray effects** because they use a fixed, purely discrete angular sampling grid across the whole domain. Radiance Cascades kills those with an adaptive spatial-angular resolution trade-off under the **Penumbra Criterion**.
 
 ### Mathematical Derivation via Flatland Geometry
 
@@ -71,7 +71,7 @@ Where $F$ and $G$ are linear functions. (Note: If $d \approx D$ and the angle is
 
 ## 3. Radiance Intervals & Merging Algebra
 
-The primitive computational unit of the radiance cascades framework is the **Radiance Interval**.
+The basic unit of radiance cascades is the **Radiance Interval**.
 
 ### Definition
 
@@ -105,7 +105,7 @@ A *Radiance Cascade* $i$ is defined as the complete set of radiance intervals re
 
 ### Exponential Scaling Laws
 
-To obey the Penumbra Criterion efficiently, successive cascades are structured hierarchically using an exponential branching factor $\alpha \ge 1$:
+To hit the Penumbra Criterion cheaply, successive cascades use an exponential branching factor $\alpha \ge 1$:
 
 $$\begin{cases}\Delta_{s} \propto 2^i \\ \Delta_{\omega} \propto \frac{1}{2^{\alpha i}}\end{cases}$$
 
@@ -151,28 +151,28 @@ For a hierarchy containing $I$ total cascades, the total number of rays mathemat
 
 $$\text{Rays Computed} = \sum_{i=0}^{I-1} N_{C_i} = N_{C_0} \sum_{i=0}^{I-1} \left(\frac{1}{2}\right)^i < 2N_{C_0}$$
 
-However, through spatial bilinear interpolation and angular splitting, the effective number of high-resolution rays *constructed* at the finest scale at the outermost boundary shell scales exponentially:
+With spatial bilinear interpolation and angular splitting, the number of high-resolution rays *constructed* at the finest scale on the outermost boundary shell still scales exponentially:
 
 $$\text{Rays Constructed} = N_I' = 2^I N_{C_0}$$
 
 ### General Branching Factor $\alpha = 2$
 
-When utilizing a branching factor of $\alpha = 2$ in a 2D spatial grid:
+With branching factor $\alpha = 2$ on a 2D spatial grid:
 
 * Spatial probes down-sample by 4 ($P_i = P_{i-1}/4$).
 * Angular samples up-sample by $2^\alpha = 4$ ($W_i = 4W_{i-1}$).
-* Consequently, the number of rays computed at *every* cascade layer remains constant: $N_{C_i} = N_{C_0}$.
-* The total computational cost scales linearly with the number of cascades ($I \cdot N_{C_0}$), while the constructed angular resolution at the domain edge scales exponentially as $2^{2I} N_{C_0}$.
+* So rays computed at *every* cascade layer stay constant: $N_{C_i} = N_{C_0}$.
+* Total cost scales linearly with cascade count ($I \cdot N_{C_0}$); constructed angular resolution at the domain edge scales exponentially as $2^{2I} N_{C_0}$.
 
 ---
 
 ## 6. Parallax Artefacts & The Bilinear Fix
 
-Because higher cascades down-sample spatial probe locations, a spatial parallax mismatch occurs when a localized high-opacity emitting source is simultaneously visible to a low-level cascade probe and the higher-level cascade probes used for bilinear interpolation. This parallax causes energy non-conservation, manifesting visually as a ringing artifact around sharp interfaces.
+Higher cascades down-sample probe locations, so a localized high-opacity emitter can be visible to a low-level probe and to the higher-level probes used for bilinear interpolation at once. That parallax breaks energy conservation and shows up as ringing around sharp interfaces.
 
 ### Algorithmic Mechanics of the Bilinear Fix
 
-To eliminate parallax error, the standard spatial interpolation step is replaced with an analytic ray reprojection mapping called the **Bilinear Fix**:
+Replace plain spatial interpolation with an analytic ray reprojection — the **Bilinear Fix**:
 
 1. Let $\vec{p}$ be a probe center at cascade level $i$. Under standard execution, its radiance interval merges directly with an angularly pooled value bilinearly interpolated from four neighboring "parent" probes $\{A, B, C, D\}$ at cascade level $i+1$.
 2. Under the Bilinear Fix, rather than tracing a single interval from $\vec{p}$'s standard origin, **four distinct radiance intervals** are spawned from $\vec{p}$.
@@ -225,7 +225,7 @@ $$v_{\text{projected}} = \vec{v}_k \cdot \hat{\omega}$$
 
 ## 8. Multi-Level Accelerated Lambda Iteration (MALI)
 
-To solve for the self-consistent atomic level populations, DexRT couples the Radiance Cascades formal solver to a preconditioned Multi-level Accelerated Lambda Iteration scheme utilizing the "same-preconditioning" methodology of Rybicki & Hummer (1992).
+For self-consistent atomic level populations, DexRT couples the Radiance Cascades formal solver to a preconditioned Multi-level Accelerated Lambda Iteration scheme using Rybicki & Hummer (1992) "same-preconditioning."
 
 ### Diagonal Approximate Lambda Operator (ALO)
 
@@ -261,7 +261,7 @@ Where $\vec{n}_s$ is the vector of atomic level populations for atomic species $
 
 ## 9. Thermodynamic Conservation Laws
 
-To maintain consistency with magnetohydrodynamic (MHD) input models specified under constant pressure or strict charge conservation constraints, two auxiliary numerical iterations are coupled to the population solver.
+MHD input models often fix pressure or charge conservation. Two auxiliary iterations hang off the population solver to keep those constraints.
 
 ### 1. Post-MALI Charge Conservation
 
@@ -269,7 +269,7 @@ Electron density $n_e$ is adjusted self-consistently after each statistical equi
 
 $$n_e^{m+1} = n_e^m - \left[\left(\frac{\partial F_{\text{charge}}}{\partial n_e}\right)^{-1} F_{\text{charge}}\right]^m$$
 
-Where $F_{\text{charge}} = \sum_{\text{ions}} Z \cdot n_{\text{ion}} - n_e = 0$, explicitly tracking hydrogen ionization states in the active Jacobian framework.
+Where $F_{\text{charge}} = \sum_{\text{ions}} Z \cdot n_{\text{ion}} - n_e = 0$, with hydrogen ionization states in the active Jacobian.
 
 ### 2. Pressure Conservation Equation
 

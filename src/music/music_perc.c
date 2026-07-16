@@ -3,15 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_perc.c
- * Parity notes: events emit in sorted(hits) order where hits are
- * (slot, drum NAME, velocity) tuples — the tie-break on equal slots is the
- * drum name's STRING order, reproduced with strcmp; the open-hat draw
- * happens only at slot slots-2 and only after the drop draw passed (`and`
- * short-circuit); fill velocities are 84 + 7i before the dyn scale and the
- * banker's round.
- */
+// Hits sort by (slot, drum NAME, velocity); equal-slot tie-break is strcmp on drum name.
+// ohat draw: only at slot slots-2, and only after drop draw passed (and short-circuit).
+// Fill velocities: 84 + 7i before dyn scale, then banker's round.
 
 #include <stdio.h>
 #include <string.h>

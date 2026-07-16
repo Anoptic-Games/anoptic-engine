@@ -3,14 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * music_pad.h (private to src/music/)
- * Sustained voice-led pad chords (musicgen/gen/pad.py) with the M14 cadence
- * ornaments (prepared suspension, else the payoff appoggiatura), C2 inner-
- * voice animation (connective walk / comping figure), C4 thinning, and D1
- * suspension preparation held across the barline. The returned voicing is
- * always the block target, so voice-leading memory is untouched.
- */
+// Voice-led pad chords: M14 ornaments, C2 animation, C4 thinning, D1 tie prep.
+// Returned voicing is always the block target (voice-leading memory untouched).
 
 #ifndef ANO_MUSIC_PAD_H
 #define ANO_MUSIC_PAD_H
@@ -19,13 +13,12 @@
 
 typedef enum AnoPadAnimate
 {
-    ANO_PAD_BLOCK = 0, // ""
+    ANO_PAD_BLOCK = 0,
     ANO_PAD_CONNECTIVE,
     ANO_PAD_COMPING,
 } AnoPadAnimate;
 
-// D1 tie preparation: the NEXT bar's root-first pcs, its voiced-pc set, and
-// its scale — the same preview the suspension realizer will run.
+// D1 tie prep: next bar's root-first pcs, voiced-pc set, and scale.
 typedef struct AnoPadTiePrep
 {
     uint8_t  pcs[5];
@@ -39,20 +32,15 @@ typedef struct AnoPadResult
 {
     AnoMusicEvent events[16];
     uint32_t      eventCount;
-    int           voicing[6]; // the block target (threads voice leading)
+    int           voicing[6]; // block target
     uint32_t      voiceCount;
 } AnoPadResult;
 
-// C4 "monophonic": strip root-first pcs (in place) to a bare root+fifth dyad,
-// free of thirds entirely, and hold the voicer to two voices. Returns the new
-// pc count. Shared with the conductor's D3 split-6/4 bar, which voices its two
-// half-bar blocks itself instead of calling ano_generate_pad — it must thin
-// identically or a monophonic phrase grows a four-note pad at its split bar.
+// C4 monophonic: strip to root+fifth dyad, hold voicer to 2 voices.
+// Shared with D3 split path (must thin identically or a monophonic phrase grows a 4-note pad).
 uint32_t ano_thin_voicing(uint8_t *pcs, uint32_t pcCount, AnoVoicingConfig *cfg);
 
-// One bar of sustained chord. prevVoicing NULL/0 = None; nextPcs feeds the
-// connective preview; rng only draws for comping; prevTie = ANO_NEAR_NONE
-// or the pitch the previous bar tied out (closes the D1 loop).
+// prevVoicing NULL/0 = None. rng draws only for comping. prevTie = ANO_NEAR_NONE or tied pitch.
 void ano_generate_pad(const AnoHarmonicContext *ctx, AnoMeter meter,
                       const AnoGenParams *params,
                       const int *prevVoicing, uint32_t prevCount,

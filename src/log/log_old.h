@@ -3,16 +3,15 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// The pre-ring mutex logger, the benchmark baseline for anotest_logbench. NOT part of anoptic_core,
-// never in the standard build, compiled only into the optional benchmark. The API mirrors
-// anoptic_log.h, namespaced mtxlog_*.
+// Pre-ring mutex logger, benchmark baseline for anotest_logbench. Not in anoptic_core.
+// API mirrors anoptic_log.h, namespaced mtxlog_*.
 
 #ifndef ANOPTICENGINE_LOG_OLD_H
 #define ANOPTICENGINE_LOG_OLD_H
 
 #include <stdint.h>
 
-// The retired 5-tier severities, kept with the baseline.
+// Retired 5-tier severities for the baseline.
 typedef enum {
     LOG_DEBUG,
     LOG_INFO,
@@ -25,7 +24,7 @@ typedef enum {
 #define MTXLOG_BUF_CAP  (1u << 16)        // shared buffer, must exceed MSG_MAX
 #define MTXLOG_FILENAME "anoptic_mtx.log" // distinct from the ring logger's file
 
-// The mutex logger's own full-buffer policy enum (the ring logger dropped runtime policy entirely).
+// Full-buffer policy (ring logger has no runtime policy).
 typedef enum {
     MTXLOG_FULL_IMMEDIATE = 0,
     MTXLOG_DROP_NEWEST    = 1,

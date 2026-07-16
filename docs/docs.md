@@ -5,12 +5,8 @@
 Every engine subsystem is a module: a public interface in `include/` paired with an implementation folder in `src/`.
 
 - **`include/anoptic_<module_name>.h` — the contract.** Public surface. Constants, type aliases, function signatures. All a caller ever sees. Functions surfaced by `anoptic_<module_name>.h` always begin with `ano_` and are always lowercase.
-- **`src/<module_name>/` — the secret.** The implementation. It can contain private
-  headers (`<module_name>_<platform>.h`) included only by files *inside* the module.
-  Implementation details, raw `pthread_*`/Win32 prototypes, internal structs,
-  helper declarations all live here and never leak into `include/`.
-- **Platform splits live in `src/`.** A common `<module_name>.c` always compiles.
-`<module_name>_<platform>.c`, eg `timers_linux.c`, `timers_win64.c`, are platform-specific, dynamically selected by the CMakeLists.txt.
+- **`src/<module_name>/` — the secret.** The implementation. It can contain private headers (`<module_name>_<platform>.h`) included only by files *inside* the module. Implementation details, raw `pthread_*`/Win32 prototypes, internal structs, helper declarations all live here and never leak into `include/`.
+- **Platform splits live in `src/`.** A common `<module_name>.c` always compiles. `<module_name>_<platform>.c`, eg `timers_linux.c`, `timers_win64.c`, are platform-specific, picked by the CMakeLists.txt.
 
 ### Example
 

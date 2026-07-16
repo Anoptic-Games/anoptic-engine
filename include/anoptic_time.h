@@ -20,8 +20,8 @@
 // High-resolution monotonic timestamp in nanoseconds.
 uint64_t ano_timestamp_raw();
 
-// Raw monotonic hardware counter, no unit conversion.
-// Units: mach ticks (Darwin), TSC or QPC counts (Windows), nanoseconds (Linux). Value or delta; convert via ano_ticks_to_ns.
+// Raw monotonic hardware counter, no unit conversion — cheapest stamp.
+// Units: mach ticks (Darwin), TSC or QPC counts (Windows), nanoseconds (Linux). Value or delta; convert via ano_ticks_to_ns (hot path stamp, cold path convert).
 uint64_t ano_timestamp_ticks();
 
 // Convert a raw counter value or delta from ano_timestamp_ticks to nanoseconds.

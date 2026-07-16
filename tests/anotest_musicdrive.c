@@ -3,28 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Phase 7: the composer hosted INSIDE the audio callback (ano_synth_attach_music).
- *
- * The claim being tested is that this changes nothing. The batch path — the
- * whole piece loaded while idle, then played — is the proven one; attaching a
- * music engine moves composition into the block loop, two bars ahead of the
- * playhead, and the audio must come out sample-identical over the bars the two
- * share. If in-thread composition perturbed the schedule at all (a tempo point
- * arriving after a note was stamped, a tie not yet extendable, a bar edge
- * landing in the wrong span), it would show up here as a differing sample.
- *
- * Then the things only the live path can be asked:
- *   - the piece does not end. The batch score is BARS long; the attached one
- *     keeps composing past it, for as long as the transport runs.
- *   - a bar's MEANING arrives when the bar SOUNDS, not when it was composed.
- *     The generator runs ahead; a game that flinches at a cadence must flinch
- *     on the cadence, so the meaning is held to its own downbeat.
- *   - the game can STEER it. ACMD_MUSIC_* ride the offline command list here, so
- *     the steering is reproducible and the music's answer can be asserted rather
- *     than listened for — and with no control hook wired the same commands change
- *     nothing, which is what proves the mixer never interprets them itself.
- *
- * Exit 0 == pass. */
+// Composer in the audio callback (ano_synth_attach_music): sample-identical to batch over shared bars.
+// Also: endless compose past score, meaning on downbeat, ACMD_MUSIC_* steering, seek rebase.
+// Exit 0 == pass.
 
 #include <math.h>
 #include <stdio.h>
@@ -45,24 +26,15 @@ static int failures = 0;
     } while (0)
 
 #define RATE   48000u
-#define BARS   24u // the bars the two renders are compared over
+#define BARS   24u // shared compare window
 #define BLOCK  512u
 #define TAIL   2.0f
 #define BQ     4.0 // 4/4
 
-// The batch reference must be LONGER than the window it is compared over. A
-// score that simply STOPS at bar N has different music in bar N-1: a note tied
-// out of it finds no continuation and dissolves into a plain note, and since
-// articulation gates the release at a fraction of the duration, the shortened
-// note starts releasing BEFORE the barline. The driven engine, which never
-// stops, extends the note instead. So the reference carries the same lookahead
-// the live path does, and the truncation artifact is pushed clear of the window.
+// Batch = BARS + LOOKAHEAD: a cut score dissolves barline ties (early release) and fails the shared-window compare.
 #define SCORE_BARS (BARS + ANO_SYNTH_LIVE_LOOKAHEAD)
 
-// Everything on: the richest schedule the engine can produce (ties across the
-// barline, mid-bar tempo dips into cadences, elisions) — the cases where
-// composing one bar at a time is hardest to make identical to composing all of
-// them at once.
+// Everything-on schedule (ties, cadence rits, elisions).
 static void public_config(AnoMusicConfig *c)
 {
     *c = ano_music_config_default();
@@ -82,13 +54,13 @@ static void public_config(AnoMusicConfig *c)
     c->melody.planApex = c->melody.counterpoint = true;
 }
 
-// The mixer's job, in miniature: render, then drain what started sounding.
+// Mixer stand-in: render, then drain bar/seek events.
 typedef struct Drive
 {
     AnoSynth       *synth;
     AnoMusicEngine *music;
-    AnoAudioEvent   got[64];   // AEVT_MUSIC_BAR / AEVT_MUSIC_SEEKED, in order
-    uint64_t        gotAt[64]; // the block in which each surfaced
+    AnoAudioEvent   got[64];   // AEVT_MUSIC_BAR / AEVT_MUSIC_SEEKED order
+    uint64_t        gotAt[64]; // block startFrame when each surfaced
     uint32_t        gotCount;
 } Drive;
 
@@ -106,21 +78,15 @@ static void drive_generator(void *user, float *const *busMix, uint32_t busCount,
     }
 }
 
-// The hooks all take the SAME user pointer. This test wraps the generator (to
-// drain the meanings as a mixer would), so it must wrap the control hook too and
-// hand the synth on — passing the Drive straight to ano_synth_control is exactly
-// the mistake the synth's magic check now refuses.
+// Same user ptr for generator + control (Drive wraps both; synth refuses wrong magic).
 static void drive_control(void *user, const AnoAudioCommand *cmd)
 {
     Drive *d = user;
     ano_synth_control(d->synth, cmd);
 }
 
-// One driven render, from a fresh synth and a fresh engine on the same seed.
-// `cmds` are the producer's ACMD_MUSIC_* stamped with the frame they land on —
-// what ano_audio_submit would deliver at a block boundary, made reproducible.
-// wireControl = false leaves generatorControl NULL: the commands still reach the
-// mixer, which is what proves the mixer does not interpret them itself.
+// Driven render: fresh synth + engine. cmds = ACMD_MUSIC_* at frame stamps.
+// wireControl false: mixer gets cmds but does not interpret them.
 static void render_driven_from(const AnoMusicConfig *cfg, const AnoAudioOfflineDesc *base,
                                float *buf, uint64_t frames, const AnoAudioOfflineEvent *cmds,
                                uint32_t cmdCount, bool wireControl, uint32_t startBar,
@@ -130,7 +96,7 @@ static void render_driven_from(const AnoMusicConfig *cfg, const AnoAudioOfflineD
     memset(d, 0, sizeof *d);
     d->synth = ano_synth_create(&sd);
     d->music = ano_music_create(cfg, 42);
-    for (uint32_t b = 0; b < startBar; ++b) { // the off-thread half of a seek
+    for (uint32_t b = 0; b < startBar; ++b) { // off-thread seek half
         static AnoMusicBar skip;
         ano_music_advance_bar(d->music, &skip);
     }
@@ -169,7 +135,7 @@ int main(void)
     AnoMusicConfig cfg;
     public_config(&cfg);
 
-    // --- the same music, captured once for the batch reference ---------------
+    // --- batch reference capture ---
     static AnoMusicBar feed[SCORE_BARS];
     uint32_t totalEvents = 0, totalTempo = 0;
     AnoMusicEngine *capture = ano_music_create(&cfg, 42);
@@ -182,7 +148,7 @@ int main(void)
     ano_music_destroy(capture);
     CHECK(totalEvents > 200u, "the piece has substance");
 
-    // --- A: the proven path — the whole score, loaded while idle -------------
+    // --- A: batch path (whole score idle) ---
     AnoSynth *batch = ano_synth_create(&sd);
     CHECK(ano_synth_score_begin(batch, BQ, SCORE_BARS, totalTempo, totalEvents),
           "score_begin");
@@ -217,7 +183,7 @@ int main(void)
     };
     CHECK(ano_audio_render_offline(&od, bufA, frames), "batch render");
 
-    // --- B: the composer in the callback -------------------------------------
+    // --- B: composer in the callback ---
     static Drive drv;
     render_driven(&cfg, &od, bufB, frames, NULL, 0, true, &drv);
     AnoSynth       *drivenSynth = drv.synth;
@@ -227,10 +193,7 @@ int main(void)
     CHECK(ano_synth_live_overflow(drivenSynth) == 0u, "no note overflowed the ring");
     CHECK(ano_synth_dropped(drivenSynth) == 0u, "no voice was dropped");
 
-    // --- the equivalence, over the bars the two scores share -----------------
-    // The window ends at bar BARS's downbeat: the reference runs LOOKAHEAD bars
-    // past it (see SCORE_BARS) so that nothing inside the window is a truncation
-    // artifact, and nothing composed for a later bar can sound before it.
+    // --- equivalence over shared bars (cut at BARS; SCORE_BARS has lookahead) ---
     uint64_t cut = (uint64_t)(ano_synth_time_at(batch, (double)BARS * BQ) * RATE);
     CHECK(cut > 0 && cut <= frames, "the shared span is the score");
 
@@ -249,9 +212,7 @@ int main(void)
         for (size_t i = 0; i < samples && first == samples; ++i)
             if (bufA[i] != bufB[i])
                 first = i;
-        // where it starts is the diagnosis: a tiny worst-case confined to the
-        // last bars is the reference truncating (see SCORE_BARS), anywhere else
-        // is the live schedule genuinely diverging
+        // First-diff frame: late-window tip = truncation; elsewhere = live diverge.
         printf("  %zu of %zu samples differ, worst %.3g, first at frame %zu of %llu\n",
                diff, samples, worst, first / ANO_AUDIO_CHANNELS,
                (unsigned long long)cut);
@@ -263,12 +224,10 @@ int main(void)
         rms += (double)bufB[i] * (double)bufB[i];
     CHECK(sqrt(rms / (double)samples) > 0.01, "and it is audible");
 
-    // --- the piece does not end ----------------------------------------------
-    // The batch score was BARS long. The attached engine kept composing through
-    // the tail, because nothing told it to stop.
+    // --- piece does not end ---
     CHECK(ano_music_next_bar(music) > (int)SCORE_BARS, "the composer ran past the score");
 
-    // --- the meaning lands on its own downbeat -------------------------------
+    // --- meaning lands on its own downbeat ---
     CHECK(drv.gotCount >= BARS, "every bar reported its meaning");
     bool ordered = true, timely = true;
     for (uint32_t k = 0; k < drv.gotCount; ++k) {
@@ -277,8 +236,7 @@ int main(void)
         if (k < BARS) {
             uint64_t downbeat =
                 (uint64_t)(ano_synth_time_at(batch, (double)k * BQ) * RATE);
-            // composed up to LOOKAHEAD bars earlier; surfaced in the very block
-            // that crosses its downbeat
+            // Composed up to LOOKAHEAD earlier; surfaced in the block that crosses its downbeat.
             if (!(downbeat >= drv.gotAt[k] && downbeat < drv.gotAt[k] + BLOCK))
                 timely = false;
         }
@@ -291,46 +249,38 @@ int main(void)
         cadences += drv.got[k].u.music.isCadence;
     CHECK(cadences > 1u, "cadences reached the game");
 
-    // --- what it costs the audio thread --------------------------------------
-    // The block period is the budget: BLOCK / RATE. This is the whole risk of
-    // hosting a composer in the callback, so it is measured, not assumed.
+    // --- callback cost vs block budget ---
     uint32_t blockUs = (uint32_t)((uint64_t)BLOCK * 1000000u / RATE);
     uint32_t worstUs = ano_synth_music_bar_us_max(drivenSynth);
     printf("  bar composition: worst %u us of the %u us block (%.1f%%)\n", worstUs,
            blockUs, 100.0 * (double)worstUs / (double)blockUs);
     CHECK(worstUs < blockUs, "composing a bar fits inside one block");
 
-    // and that number is what the mixer ships: telemetry is how a game finds out
+    // Same number in telemetry.
     AnoAudioTelemetry tel = { 0 };
     ano_synth_stats(drivenSynth, &tel);
     CHECK(tel.genUsMax == worstUs, "the composer's cost reaches the telemetry frame");
     CHECK(tel.genLate == 0u && tel.genDropped == 0u, "and it reports nothing lost");
 
-    // The hooks take a void*, and all four take the SAME one. The wrong pointer
-    // must be refused rather than obeyed -- this test made that exact mistake,
-    // and it presented as steering that silently never arrived.
+    // Wrong user ptr refused (hooks share one ptr).
     AnoAudioEvent spill[4];
     CHECK(ano_synth_poll(&drv, spill, 4) == 0u, "a user pointer that is not a synth is refused");
 
-    // --- the control plane: steering the composer through the bridge ----------
-    // ACMD_MUSIC_* are submitted by the logic thread, forwarded by the mixer
-    // (which owns no music) and applied by the synth on the thread that owns the
-    // engine. Here they ride the offline command list, so the steering is
-    // reproducible and the response can be asserted rather than listened for.
+    // --- control plane: ACMD_MUSIC_* via offline command list ---
     {
         static Drive steered;
         float *bufC = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufC);
         CHECK(bufC != NULL, "steer buffer");
 
-        // where the baseline is NOT, so the arrival is unambiguous
+        // Away from baseline tonic so arrival is unambiguous.
         int home = drv.got[0].u.music.keyTonic;
-        int away = (home + 7) % 12; // the dominant: a key it will actually reach
+        int away = (home + 7) % 12; // dominant
         AnoAudioOfflineEvent cmds[] = {
             { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_KEY, .paramId = (uint32_t)away,
                                        .urgent = true } },
             { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_OVERRIDE, .tag = "reverb_send",
                                        .value = 0.9f } },
-            // a name nobody defines: REFUSED and logged, never silently ignored
+            // Unknown tag: refused + logged.
             { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_OVERRIDE, .tag = "revreb_send",
                                        .value = 0.9f } },
         };
@@ -347,15 +297,14 @@ int main(void)
         CHECK(marked, "and the bar it landed on says so");
         CHECK(steered.got[0].u.music.keyTonic == home, "it was not already there");
 
-        // the music genuinely changed: a different key is different audio
+        // Different key -> different audio.
         size_t sdiff = 0;
         for (size_t i = 0; i < samples; ++i)
             if (bufB[i] != bufC[i])
                 sdiff++;
         CHECK(sdiff > samples / 10, "steering changed what is heard");
 
-        // ...and with no control hook wired, the very same commands do NOTHING.
-        // The mixer forwards what it cannot interpret; it does not interpret it.
+        // No control hook: same cmds change nothing (mixer does not interpret).
         static Drive ignored;
         float *bufD = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufD);
         render_driven(&cfg, &od, bufD, frames, cmds, 3, false, &ignored);
@@ -368,16 +317,8 @@ int main(void)
         drive_free(&ignored);
     }
 
-    // --- the seek: adopting a state built off the audio thread ---------------
-    // Fast-forwarding an engine to bar SEEK_TO costs ~120 ms per 1000 bars — it
-    // can never run in the callback. So the producer builds it on its own thread
-    // and hands over the bytes; the callback does a copy and a rebase.
-    //
-    // THE GATE IS THE REBASE. A seek issued before anything has sounded must be
-    // indistinguishable from having attached that engine in the first place —
-    // same music, same barlines, sample for sample. If the beat offset were off
-    // by anything, or a stale tempo anchor survived the cut, the two would
-    // diverge immediately.
+    // --- seek: off-thread snapshot + callback rebase ---
+    // Seek-at-0 == attach engine already at SEEK_TO (sample-identical).
 #define SEEK_TO 40u
     {
         static Drive seeked, direct;
@@ -385,7 +326,7 @@ int main(void)
         float *bufF = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufF);
         CHECK(bufE && bufF, "seek buffers");
 
-        // the producer's half: a fresh engine, fast-forwarded, snapshotted
+        // Producer: fast-forward + snapshot.
         static AnoMusicBar skip;
         void *snap = malloc(ano_music_snapshot_size());
         AnoMusicEngine *off = ano_music_create(&cfg, 42);
@@ -403,14 +344,12 @@ int main(void)
               "a seek to bar N is sample-identical to attaching an engine at bar N");
         CHECK(seeked.gotCount > 2u && direct.gotCount > 2u, "both played");
 
-        // the seek announced itself, and did so BEFORE any of its music sounded
+        // SEEKED before any seeked music; bar numbering continues from engine.
         CHECK(seeked.got[0].kind == AEVT_MUSIC_SEEKED, "the seek acknowledged first");
         CHECK(seeked.got[0].u.seekedBar == (int)SEEK_TO, "at the bar it was given");
         CHECK(seeked.got[1].kind == AEVT_MUSIC_BAR
                   && seeked.got[1].u.music.bar == (int)SEEK_TO,
               "and the music that follows IS bar SEEK_TO");
-        // the engine keeps its own numbering across the jump — it is what spells
-        // its RNG streams, so renumbering it would compose a different piece
         bool numbered = true;
         for (uint32_t k = 1; k < seeked.gotCount; ++k)
             if (seeked.got[k].kind != AEVT_MUSIC_BAR
@@ -422,7 +361,7 @@ int main(void)
                   && ano_synth_dropped(seeked.synth) == 0u,
               "the seek cost nothing: no lateness, no overflow, no dropped voice");
 
-        // --- and mid-flight: what is already sounding plays out ---------------
+        // --- mid-flight: pre-seek audio untouched ---
         static Drive jumped;
         float *bufG = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufG);
         uint64_t at = (uint64_t)(ano_synth_time_at(batch, 6.0 * BQ) * RATE) - BLOCK;
@@ -431,13 +370,10 @@ int main(void)
         };
         render_driven(&cfg, &od, bufG, frames, seekMid, 1, true, &jumped);
 
-        // everything the seek did NOT touch is untouched: the audio before the
-        // command is bit-identical to the unseeked render
         CHECK(memcmp(bufB, bufG, (size_t)at * ANO_AUDIO_CHANNELS * sizeof *bufB) == 0,
               "a seek does not disturb what has already sounded");
 
-        // ...and the bars that follow are the NEW piece, landing on barlines that
-        // were already scheduled (so the jump is metrically seamless)
+        // Post-seek bars are the new piece on already-scheduled barlines.
         int jump = -1;
         for (uint32_t k = 0; k < jumped.gotCount; ++k)
             if (jumped.got[k].kind == AEVT_MUSIC_SEEKED)
@@ -448,10 +384,7 @@ int main(void)
         CHECK(jumped.got[jump - 1].u.music.bar < (int)SEEK_TO,
               "and the one before it was still the old piece");
 
-        // The jump is metrically seamless: the new music's first bar sounds on the
-        // barline the OLD schedule had already fixed — same clock, same beat, the
-        // anchors behind it untouched. (Only the first: past it, the new piece's
-        // own tempo map governs and the old reference no longer applies.)
+        // First seeked bar on the old schedule's barline; after that, new tempo map.
         uint64_t barline = (uint64_t)(ano_synth_time_at(batch, (double)jump * BQ) * RATE);
         CHECK(barline >= jumped.gotAt[jump + 1] && barline < jumped.gotAt[jump + 1] + BLOCK,
               "the seeked bar lands on the barline the old schedule had already fixed");
@@ -459,10 +392,7 @@ int main(void)
                   && ano_synth_dropped(jumped.synth) == 0u,
               "the mid-flight seek dropped nothing either");
 
-        // --- a different meter is a different piece --------------------------
-        // The clock the schedule is running on was built for THIS meter. Bending
-        // it under a 3/4 engine would re-time everything already scheduled, so the
-        // snapshot is refused outright and the running music carries on.
+        // --- other meter refused; running music untouched ---
         static Drive kept;
         float *bufH = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufH);
         AnoMusicConfig waltz = cfg;

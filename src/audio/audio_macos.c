@@ -3,21 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* macOS device backend: the default-output AudioUnit (AUHAL). The unit is
- * asked for interleaved f32 stereo at the engine rate on its input scope and
- * converts rate/format to whatever the hardware runs — and, because it is the
- * DefaultOutput subtype, it follows default-device changes on its own, which
- * covers the baseline device-change story without a listener. The render
- * callback runs on CoreAudio's realtime thread and only pulls the lock-free
- * block ring (the platform-file exception applies to the control path:
- * AudioUnit setup/teardown hold OS-internal locks). Protocol reference:
- * miniaudio's Core Audio backend (docs/references/miniaudio-legend.md 33469+,
- * AUHAL setup 35769, render callback 35089).
- *
- * Baseline scope: default device, no explicit device selection, no
- * kAudioObjectPropertyDefaultOutputDevice listener. UNTESTED on real macOS as
- * of writing — validation is deferred to a macOS session per the plan.
- */
+// macOS: default-output AUHAL. f32 stereo at engine rate on input scope; unit converts to hardware.
+// Render callback pulls the lock-free block ring only.
 
 #include <AudioUnit/AudioUnit.h>
 #include <CoreAudio/CoreAudio.h>
@@ -30,14 +17,12 @@
 typedef struct AnoCoreAudioState
 {
     AudioUnit    unit;
-    bool         unitLive; // AudioComponentInstanceNew succeeded
-    bool         started;  // AudioOutputUnitStart succeeded
+    bool         unitLive;
+    bool         started;
     AnoAudioPull pull;
 } AnoCoreAudioState;
 
-// The AUHAL pull: fill every buffer in the list (interleaved stereo = one
-// buffer; anything else is zeroed defensively — we set the format, so a
-// mismatch means the unit was reconfigured under us).
+// Fill interleaved stereo buffers. Zero anything else.
 static OSStatus coreaudio_render(void *user, AudioUnitRenderActionFlags *flags,
                                  const AudioTimeStamp *ts, UInt32 bus,
                                  UInt32 frames, AudioBufferList *io)
@@ -86,7 +71,6 @@ static bool coreaudio_start(AnoAudioMixer *mx)
         goto fail;
     st->unitLive = true;
 
-    // interleaved f32 stereo at the engine rate; AUHAL converts to hardware
     AudioStreamBasicDescription fmt = {
         .mSampleRate       = (Float64)mx->sampleRate,
         .mFormatID         = kAudioFormatLinearPCM,
@@ -106,7 +90,6 @@ static bool coreaudio_start(AnoAudioMixer *mx)
                              kAudioUnitScope_Input, 0, &cb, sizeof cb) != noErr)
         goto fail;
 
-    // keep render quanta bounded regardless of what the HAL negotiates
     UInt32 maxSlice = 4096;
     AudioUnitSetProperty(st->unit, kAudioUnitProperty_MaximumFramesPerSlice,
                          kAudioUnitScope_Global, 0, &maxSlice, sizeof maxSlice);
@@ -118,7 +101,7 @@ static bool coreaudio_start(AnoAudioMixer *mx)
     if (AudioUnitInitialize(st->unit) != noErr)
         goto fail_published;
     if (AudioOutputUnitStart(st->unit) != noErr)
-        goto fail_published; // teardown uninitializes via unitLive
+        goto fail_published;
     st->started = true;
     ano_log(ANO_INFO, "audio/coreaudio: default-output AUHAL up, %u Hz f32 stereo (unit converts).",
             mx->sampleRate);
@@ -137,9 +120,8 @@ static void coreaudio_stop(AnoAudioMixer *mx)
     AnoCoreAudioState *st = mx->deviceState;
     if (!st)
         return;
-    // AudioOutputUnitStop synchronizes with the render thread: after it
-    // returns no callback is in flight, so the state can be freed.
     atomic_store_explicit(&mx->deviceRun, false, memory_order_release);
+    // AudioOutputUnitStop syncs with the render thread; after it returns, free is safe.
     coreaudio_teardown(st);
     mx->deviceState = NULL;
 }

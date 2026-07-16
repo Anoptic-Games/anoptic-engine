@@ -2,19 +2,19 @@
 
 SPDX-License-Identifier: LGPL-3.0 -->
 
-# Resource Management: Report & Design of Record for `anoptic_resourcemg.h`
+# Resource Management: Design for `anoptic_resourcemg.h`
 
-**Status:** design of record, pre-implementation.
-**Scope:** Part I reports everything that surfaced around `anoptic_filesystem.h` — the bug
+**Status:** the design we code against; not implemented yet.
+**Scope:** Part I covers everything around `anoptic_filesystem.h` — the bug
 history, the audit of how the engine actually touches disk today, and the threat model that
 falls out of it. Part II is the plan for `anoptic_resourcemg.h`: a strict superset of
 `anoptic_filesystem.h` that gives every resource class — shaders, textures, models, sounds,
 levels, gamesaves, config — one consistent loading and saving story, with a specified path
-from synchronous loose files to SOTA async streaming and pack files without an API break.
+from synchronous loose files to async streaming and pack files without an API break.
 
 ---
 
-## Part I — What surfaced around `anoptic_filesystem.h`
+## Part I — What we found around `anoptic_filesystem.h`
 
 ### 1. The incident that started this
 
@@ -37,7 +37,7 @@ And remote filesystems are not exotic for this project:
   the network. `ano_fs_userpath()` writes exactly there on Windows. This is a real
   deployment target, not a hypothetical.
 
-**Consequence adopted throughout this design: treat the remote filesystem as the floor.**
+**Consequence used throughout this design: treat the remote filesystem as the floor.**
 Never trust `stat()` size or mtime; never depend on file locks; validate content by what
 was actually read, not what metadata claims.
 
@@ -46,7 +46,7 @@ size-then-read to a **read-until-EOF grow loop** (commit `b589d43`), which is
 coherence-independent and behavior-identical on local filesystems. But the same antipattern
 exists in the engine proper — see §3.
 
-### 2. What `anoptic_filesystem.h` is — and deliberately lacks
+### 2. What `anoptic_filesystem.h` is — and what it leaves out
 
 The module is a thin, correct OS-path + append-file layer. Full public surface:
 
@@ -78,8 +78,7 @@ What it has **no API for at all** — the gap `anoptic_resourcemg.h` fills:
 | overwrite/truncate write | only append exists |
 | mkdir -p | only the one-level `mkdir` inside `userpath` |
 
-This is by design — filesystem.h stays the thin layer — but it means every consumer invented
-its own path scheme, which is how the mess in §3 accumulated.
+filesystem.h stays the thin layer on purpose. Every consumer invented its own path scheme, which is how the mess in §3 accumulated.
 
 ### 3. The audit: how the engine actually touches disk today
 
@@ -105,11 +104,11 @@ Findings on the read helper the six shader sites share, `loadFile()`
   of the mimalloc override; inconsistent with the `ano_aligned_free` calls at
   `pipeline.c:416/474`.
 
-Other debts surfaced by the audit, inherited knowingly:
+Other debts the audit turned up, inherited knowingly:
 
 - **`MAXPATH` 256 + ANSI Windows APIs** (`GetModuleFileNameA`, `CreateFileA`,
   `getenv("APPDATA")`): a long or non-ASCII Windows profile path can fail resolution.
-  This is filesystem.h's debt (wide-path `W` APIs); resourcemg deliberately does **not**
+  This is filesystem.h's debt (wide-path `W` APIs); resourcemg does **not**
   fork its own path type around it — one path type, one place to fix.
 - Vestigial `src/filesystem/filesystem_win64.h` (`USER_SUBDIR = "Documents\\My Games\\…"`)
   is dead code superseded by `%APPDATA%`.
@@ -130,7 +129,7 @@ Other debts surfaced by the audit, inherited knowingly:
    install rule *could* be written before now.
 
 One concept kills all three (§Part II): a logical namespace over an ordered set of
-absolute roots. And one discipline kills the 9P bug class permanently: **believe only
+absolute roots. And one discipline kills the 9P bug class for good: **believe only
 bytes you have read; validate content, not metadata.**
 
 ---
@@ -139,31 +138,30 @@ bytes you have read; validate content, not metadata.**
 
 ### 0. How this design was chosen
 
-Three independent designs were produced against the same codebase inventory and research
+Three designs competed against the same codebase inventory and research
 base (Gregory's *Game Engine Architecture* ch. 7; engine prior art: Unreal IoStore/pak,
-Godot `res://`+`user://`, Bevy AssetServer, sokol_fetch; SOTA IO literature: io_uring
+Godot `res://`+`user://`, Bevy AssetServer, sokol_fetch; IO literature: io_uring
 studies, the CIDR'22 mmap-in-DBMS argument, TIP informed prefetching (SOSP'95),
 Pillai et al. OSDI'14 "All File Systems Are Not Created Equal"/ALICE, the PostgreSQL
-fsyncgate lesson) and judged through three lenses (engineering reality, correctness,
-future-proofing):
+fsyncgate lesson) and were scored on engineering reality, correctness, and longevity:
 
 - **"ANORES-9: One Namespace, Nine Functions"** (minimal-first) — **winner, 2 of 3 judges**
-  (9/9/6). Zero shared mutable state after init; the write path is the v0 flagship.
+  (9/9/6). Zero shared mutable state after init; the write path is v0's main deliverable.
 - "The Content Ledger" (identity/pipeline-first) — best pack/manifest foundation; lost for
-  deferring the write path (the module's founding mandate) to v1.
+  deferring the write path (the reason this module exists) to v1.
 - "Everything Is A Request" (streaming-first) — best async model; lost for shipping a
   256-slot concurrent state machine that today's 7-asset workload never exercises.
 
-What follows is ANORES-9 **plus the panel's grafts** from the other two (marked ⊕ where
-they land). Guiding convictions:
+What follows is ANORES-9 **plus grafts** from the other two (marked ⊕ where
+they land). Rules:
 
 1. **A namespace over ordered roots** — not a registry, not handles, not a cache — is the
    minimal concept that fixes all three pathologies. Everything else is deferrable.
-2. **Correctness machinery is never deferred; performance machinery always is.** The full
+2. **Correctness machinery ships now; performance machinery waits.** The full
    crash-consistency write protocol ships in v0. io_uring does not.
 3. **Async is built on sync, never the reverse.** v0's `ano_res_load` is a pure function of
    (frozen mount table, logical path, caller's heap) — exactly the function a v1 IO worker
-   calls. The seam is proven by construction.
+   calls. Same function, both paths.
 4. **Bytes over metadata.** Fresh handle per read, `fstat` as a size *hint* only, read to
    EOF, in-file framing + hashes for anything that matters. stat/mtime/locks are advisory.
 5. **Formats are forever.** ⊕ The save frame *and* the pack TOC are frozen on paper in this
@@ -191,7 +189,7 @@ day the last caller migrates, and is then deleted.
 ⊕ *Graft (mount prefixes):* mounts carry an optional logical **prefix**, so
 `ano_res_mount("models/", assets_dir)` can graft the historical `assets/` directory into
 the namespace without physically moving files during migration. v0 may only ever pass
-`""`, but the field exists in the table from day one so enabling it never changes the
+`""`, but the field exists in the table from day one so turning it on never changes the
 table format.
 
 Logical path rules (checked by every function; violations hit the failure sentinel, never
@@ -211,7 +209,7 @@ Sketch in house style:
 
 // Anoptic Resource Manager -- one logical namespace over every resource class.
 // Strict superset of anoptic_filesystem.h (which stays the thin OS-path/append layer).
-// Design of record: docs/resourcesmg.md.
+// Design: docs/resourcesmg.md.
 //
 // Threading: ano_res_init and all ano_res_mount calls happen on the main thread before
 // other threads load (the ano_log_init discipline). After that every read is stateless
@@ -245,12 +243,12 @@ int ano_res_init(void);
 // Output: 0; -1 on invalid prefix, root.length == 0, or a full table.
 int ano_res_mount(const char *prefix, ano_fspath root);
 
-// -- Resolution (escape hatch; new code should prefer ano_res_load) ----------------------
+// -- Resolution (prefer ano_res_load; these exist for parsers that open files themselves) --
 
 // Absolute OS path where a logical path's bytes live right now -- for parser libraries
 // that open files themselves (cgltf sibling URIs, stb_image). Loose-directory mounts
 // only: once an asset moves into a pack file (v2), resolution for it returns the empty
-// path. Every call site of this function is migration debt owed to ano_res_load.
+// path. Every call site of this function is migration work owed to ano_res_load.
 // Output: path by value; length == 0 if invalid or absent from every mount.
 ano_fspath ano_res_resolve(const char *logical);
 
@@ -333,8 +331,8 @@ ano_res_savedata ano_res_save_load(mi_heap_t *heap, const char *slot);
 ```
 
 ⊕ *Grafts visible above:* `prefix` on `ano_res_mount`; `ano_res_subpath` promoted public;
-`ano_res_exists` documented advisory-only; `ano_res_quarantine` shipped in v0 (not "a
-future helper"); internal per-slot save serialization (a save mutex — saves are rare
+`ano_res_exists` documented advisory-only; `ano_res_quarantine` shipped in v0 (not parked
+as a later helper); internal per-slot save serialization (a save mutex — saves are rare
 events; the seq-collision clobber window two committers would otherwise race is closed
 inside the module, not by caller discipline).
 
@@ -360,9 +358,9 @@ inside the module, not by caller discipline).
   allocations in v0 — which is what makes "no cleanup function" honest.
 - ⊕ **Read-chunk constant:** the platform layer reads in chunks ≤ 512 KiB from day one —
   the size that dodges the io_uring kernel-worker fallback cliff — so the v2 backend swap
-  inherits correct sizing instead of retrofitting it.
+  inherits correct sizing instead of bolting it on later.
 
-### 4. The write protocol (v0 flagship)
+### 4. The write protocol (v0's main job)
 
 Every omitted step below is a named data-loss mode (Pillai et al. OSDI'14 found 60 such
 omissions in 11 mature applications). POSIX:
@@ -391,7 +389,7 @@ but returns 0 (integrity intact; only durability of the rename is in question).
 not reliably flush the drive cache), `CloseHandle`; then `ReplaceFileW` when the target
 exists (**preserves ACLs/attributes — the enterprise `%APPDATA%` requirement**) else
 `MoveFileExW(MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)`; both retried up to 5× with
-100 ms backoff on `ERROR_SHARING_VIOLATION` (scanners briefly holding fresh files is a top
+100 ms backoff on `ERROR_SHARING_VIOLATION` (scanners briefly holding fresh files is a common
 real-world failure). `MoveFileEx`'s documented silent copy+delete fallback and
 `ReplaceFileW`'s `UNABLE_TO_MOVE_REPLACEMENT_2` window are both neutralized by the
 generation scheme: recovery never depends on a single name.
@@ -463,9 +461,9 @@ guaranteed-local disk.
 | 5 | `src/engine/main.c:129` | delete the chdir shim; later delete `ano_fs_chdir_gamepath` itself when nothing needs it. |
 | 6 | logger | optional later one-liner: output dir from `ano_res_resolve_write("logs/…")`. |
 
-`ano_res_resolve` call sites (steps 3–4) are **named migration debt**: the doc comment
+`ano_res_resolve` call sites (steps 3–4) are **named migration work**: the doc comment
 self-destructs them (returns empty for pak-backed assets in v2), making the cgltf
-memory-buffer migration compulsory rather than aspirational.
+memory-buffer migration compulsory rather than optional later.
 
 ### 7. v1 — async + identity (spec now, code when needed)
 
@@ -490,10 +488,10 @@ stays small:** `ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, an 8-byte t
   - **A missing file is not a submit error**: the request completes FAILED through the
     ticket path, so sync and async report identically.
   - **Ranged reads** (`offset`/`length`) are in the ticket payload format **from v1 day
-    one** — the actual streaming primitive for audio/level/mip paging; retrofitting ranges
+    one** — the actual streaming primitive for audio/level/mip paging; adding ranges
     later would touch the ticket format.
   - **Async writes are copy-at-submit**: the payload is memcpy'd into module memory at
-    submit, structurally enforcing the fsyncgate source-of-truth rule instead of relying
+    submit, which enforces the fsyncgate source-of-truth rule instead of relying
     on caller discipline.
   - **Prefetch is byte-budget-metered, refilled by `ano_res_pump`** each frame (frame-rate
     protection); a blocking wait on a ticket **boosts it to BLOCKING**.
@@ -515,7 +513,7 @@ stays small:** `ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, an 8-byte t
 - **`anopak` mount type** — dumb frozen format, TOC layout pinned now ⊕:
   header `{magic 'ANOPAK\0\1', u32 entry_count, u64 toc_offset}`; TOC entries
   `{u64 rid, u64 offset, u64 size, u64 csize, u8 codec, u8 hash_id, u16 flags, u64 payload_hash}`;
-  payloads 4 KiB-aligned. Per-entry compression: LZ4 for latency-critical streaming,
+  payloads 4 KiB-aligned. Per-entry compression: LZ4 for latency-sensitive streaming,
   zstd-3 for bulk, **trained zstd dictionaries** for many-small-similar classes (SPIR-V,
   config), store-raw for already-compressed formats (PNG, Opus). Codec byte reserves
   GDeflate's ID without implementing it. ⊕ **TOC is checksum-verified at mount** — a
@@ -530,14 +528,14 @@ stays small:** `ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, an 8-byte t
 - `hash_id` flips to xxh3 for large saves; offline conditioning (KTX2 textures, `.glb`)
   becomes worth doing when asset count justifies a cooker.
 
-### 9. Permanent rejections (recorded so they stay rejected)
+### 9. Permanent rejections (written down so they stay rejected)
 
 | Rejected | Why |
 |---|---|
 | **mmap as a load mechanism** | fault stalls + eviction bottlenecks (CIDR'22 "Are You Sure You Want to Use MMAP in Your DBMS?", libtorrent 2.0 regression); broken-to-forbidden over this project's known 9P/SMB deployment filesystems (SIGBUS on truncation, coherence) |
 | **O_DIRECT** | unsupported over 9P/SMB; forfeits the page cache that repeat dev loads love; 4 KiB-aligned pack chunks keep the door open anyway |
 | **SQPOLL / IOPOLL / NVMe passthrough** | core-burning database tricks; wrong power/complexity budget for a game |
-| **DirectStorage/GDeflate as a dependency** | Win11/D3D12-coupled, MinGW-hostile, mixed shipping results; the reserved codec byte is its entire footprint |
+| **DirectStorage/GDeflate as a dependency** | Win11/D3D12-coupled, MinGW-hostile, mixed shipping results; the reserved codec byte is the whole footprint |
 | **SQLite savefiles** | WAL `-shm` + fcntl locking documented-broken over NFS/SMB/9P — exactly our floor |
 | **Relocatable defragmenting resource heaps** | mimalloc size-class pages already bound fragmentation; handles exist (v1) for unload/reload/async states, not defrag |
 | **128-bit GUIDs + import databases** | team-scale rename-resilience machinery; solo scale greps (Godot's UID retrofit is the cautionary tale in the other direction — mitigated here by hashing *logical* paths, which are already location-independent) |
@@ -555,7 +553,7 @@ stays small:** `ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, an 8-byte t
 2. Asset migration (glTF/texture sites), chdir shim deleted.
 3. `ano_res_write` + quarantine + `save_commit`/`save_load` with full framing, generations,
    Windows path; config overlay demonstrated on one real settings file.
-4. Windows platform file exercised under the MinGW cross build; **hostile-FS smoke test**:
+4. Windows platform file exercised under the MinGW cross build; **fault-injection smoke test**:
    a headless test target with a fault-injection `#ifdef` that kills the process at each
    protocol step and asserts the loader degrades to the previous generation.
 

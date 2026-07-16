@@ -3,26 +3,19 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/*
- * dsp/smooth.h (private to src/audio/)
- * One-pole parameter smoother: every audible parameter glides through one of
- * these (~30 ms), so retargets never zipper (TECH_SPEC §12.5, the second
- * smoothing tier). Snap-on-converge kills denormals. Two step cadences exist:
- * per-sample (voice/bus gains, pan, freq, rate) and per-block (anything that
- * feeds a coefficient recompute) — the cadence is baked into `coef`.
- */
+// One-pole parameter smoother (~30 ms). Snap-on-converge kills denormals.
+// Cadence (per-sample or per-block) is baked into coef.
 
 #ifndef ANO_DSP_SMOOTH_H
 #define ANO_DSP_SMOOTH_H
 
 typedef struct AnoAudioSmooth
 {
-    float y;      // current value
-    float target; // retarget destination
-    float coef;   // pole for the caller's step cadence
+    float y;      // current
+    float target;
+    float coef;   // pole for caller's step cadence
 } AnoAudioSmooth;
 
-// Advance one step (sample or block, per the coef baked in) and return the value.
 static inline float ano_audio_smooth_step(AnoAudioSmooth *s)
 {
     float d = s->y - s->target;
