@@ -3,12 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-/* Audio world lifecycle + the logic-side bridge endpoints. The hot-path
- * push/pop and the mixer-side endpoints stay inlined in the private
- * audio_bridge.h; only the cold init/shutdown and the public (non-inline)
- * endpoints live here. Platform-agnostic and device-free (the null backend);
- * real device backends join per-platform in later phases.
- * Public contract: include/anoptic_audio.h. */
+// Audio lifecycle + public bridge endpoints. Hot-path push/pop stay in audio_bridge.h.
 
 #include "audio_internal.h"
 
@@ -18,15 +13,11 @@
 
 #include <anoptic_log.h>
 
-// Guard the ring element sizes (copied per push/pop, sized capacity * these).
-// The command budget went 160 -> 192 for the ACMD_MUSIC_* name field: a motif
-// tag and a parameter name are strings, and a fixed field is the only way to
-// carry one through a POD ring that copies by value. At the default capacity
-// that is 16 KiB more for the whole ring.
+// Ring element size budget.
 _Static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
 _Static_assert(sizeof(AnoAudioCommand) <= 192u, "AnoAudioCommand grew past 192 bytes; revisit the command ring");
 
-// The audio world singleton. One per program, owned by the engine entry point.
+// Audio world singleton.
 static AnoAudioMixer *g_mixer;
 static mi_heap_t     *g_heap;
 
@@ -43,12 +34,11 @@ static const AnoAudioDeviceApi *backend_api(AnoAudioBackend which)
     case ANO_AUDIO_BACKEND_PIPEWIRE: return ano_audio_device_pipewire();
     case ANO_AUDIO_BACKEND_ALSA:     return ano_audio_device_alsa();
 #endif
-    default: return NULL; // not built on this platform
+    default: return NULL;
     }
 }
 
-// ANO_AUDIO_BACKEND overrides the config for testing (names in the public
-// header comment). Naming a backend another platform owns just fails init.
+// ANO_AUDIO_BACKEND env override.
 static AnoAudioBackend backend_env_override(AnoAudioBackend want)
 {
     const char *env = getenv("ANO_AUDIO_BACKEND");
@@ -75,11 +65,11 @@ bool ano_audio_bridge_init(AnoAudioBridge *bridge, mi_heap_t *heap,
         ano_audio_ring_destroy(&bridge->commands);
         return false;
     }
-    // Published latest-wins lanes start unpublished (version 0): until logic
-    // publishes a listener the mixer keeps its default field, and until the
-    // mixer publishes a block logic's telemetry acquire fails.
-    memset(&bridge->listener, 0, sizeof bridge->listener);
-    memset(&bridge->telemetry, 0, sizeof bridge->telemetry);
+    // version 0 = unpublished; lane words need atomic_init, not memset
+    for (size_t i = 0; i < sizeof bridge->listener / sizeof bridge->listener[0]; ++i)
+        atomic_init(&bridge->listener[i], 0u);
+    for (size_t i = 0; i < sizeof bridge->telemetry / sizeof bridge->telemetry[0]; ++i)
+        atomic_init(&bridge->telemetry[i], 0u);
     atomic_init(&bridge->listenerVersion, 0u);
     atomic_init(&bridge->telemetryVersion, 0u);
     return true;
@@ -100,7 +90,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
         return false;
     }
 
-    // granted configuration: zero fields take defaults
+    // zero fields -> defaults
     AnoAudioConfig c = cfg ? *cfg : (AnoAudioConfig){0};
     uint32_t rate      = c.sampleRate ? c.sampleRate : 48000u;
     uint32_t bf        = c.blockFrames ? c.blockFrames : 512u;
@@ -119,7 +109,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     if (!heap)
         return false;
 
-    // the ring cursors carry _Alignas(ANO_THREAD_LINE); a heap owner must request it
+    // ring cursors carry _Alignas(ANO_THREAD_LINE); heap owner must request it
     AnoAudioMixer *mx = mi_heap_malloc_aligned(heap, sizeof *mx, _Alignof(AnoAudioMixer));
     if (!mx)
         goto fail_heap;
@@ -148,7 +138,6 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
         goto fail_heap;
     mx->bridge = bridge;
 
-    // cooked-block lane + both sides' scratch
     const uint32_t blockStride = bf * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(float);
     if (!ano_audio_ring_init(&mx->blockRing, heap, devBlocks, blockStride))
         goto fail_heap;
@@ -161,8 +150,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
         goto fail_heap;
     }
 
-    // backend selection: explicit config (or env override) demands one backend;
-    // AUTO cascades platform-best-first and cannot fail (null always opens)
+    // AUTO cascades to null. Named backend must open.
     AnoAudioBackend want = backend_env_override((AnoAudioBackend)c.backend);
     if (want == ANO_AUDIO_BACKEND_AUTO) {
         static const AnoAudioBackend cascade[] = {
@@ -209,7 +197,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     return true;
 
 fail_heap:
-    mi_heap_destroy(heap); // releases mixer, bridge, rings, scratch in one sweep
+    mi_heap_destroy(heap);
     return false;
 }
 
@@ -219,7 +207,7 @@ void ano_audio_shutdown(void)
         return;
     AnoAudioMixer *mx = g_mixer;
 
-    // stop the producer first, then the consumer; no submit may race teardown
+    // Stop mixer (producer) then device (consumer); no submit may race teardown.
     atomic_store_explicit(&mx->mixerRun, false, memory_order_release);
     ano_thread_join(mx->mixerThread, NULL);
     mx->device->stop(mx);
@@ -227,7 +215,7 @@ void ano_audio_shutdown(void)
     ano_audio_bridge_destroy(mx->bridge);
     ano_audio_ring_destroy(&mx->blockRing);
     g_mixer = NULL;
-    mi_heap_destroy(g_heap); // releases everything else in one sweep
+    mi_heap_destroy(g_heap);
     g_heap = NULL;
     ano_log(ANO_INFO, "audio: down.");
 }
@@ -237,8 +225,8 @@ AnoAudioBridge *anoAudioBridge(void)
     return g_mixer ? g_mixer->bridge : NULL;
 }
 
-// Public producer endpoints (anoptic_audio.h). Non-inline, reached through the
-// opaque handle. The mixer-side halves stay inlined in audio_bridge.h.
+/* Public producer endpoints */
+
 bool ano_audio_submit(AnoAudioBridge *bridge, const AnoAudioCommand *cmd)
 {
     return ano_audio_ring_push(&bridge->commands, cmd);
@@ -251,18 +239,16 @@ bool ano_audio_poll_event(AnoAudioBridge *bridge, AnoAudioEvent *out)
 
 void ano_audio_publish_listener(AnoAudioBridge *bridge, const AnoAudioListener *l)
 {
-    ano_audio_seq_store(&bridge->listener, &bridge->listenerVersion, l, sizeof *l);
+    ano_audio_seq_store(bridge->listener, &bridge->listenerVersion, l, sizeof *l);
 }
 
 bool ano_audio_acquire_telemetry(AnoAudioBridge *bridge, AnoAudioTelemetry *out)
 {
-    return ano_audio_seq_load(&bridge->telemetry, &bridge->telemetryVersion, out, sizeof *out);
+    return ano_audio_seq_load(bridge->telemetry, &bridge->telemetryVersion, out, sizeof *out);
 }
 
-// Buffer producer endpoints. Registration packs the samples behind a block
-// header into one owned allocation the mixer adopts; the caller's array need
-// only live until the call returns. The block rides home for freeing in
-// AEVT_BUFFER_RETIRED after release. Same backpressure contract as submit.
+/* Buffer producer endpoints */
+
 bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
                                const float *interleaved, uint64_t frames, uint32_t channels)
 {
@@ -281,7 +267,7 @@ bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
     AnoAudioCommand c = { .kind = ACMD_BUFFER_REGISTER, .source_id = buffer_id, .block = h };
     if (!ano_audio_ring_push(&bridge->commands, &c)) {
         mi_free(h);
-        return false; // backpressure: caller retries
+        return false; // backpressure
     }
     return true;
 }
