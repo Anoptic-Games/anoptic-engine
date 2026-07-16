@@ -78,7 +78,9 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
     mi_heap_t *heap = mi_heap_new();
     if (!heap)
         return NULL;
-    AnoSynth *s = mi_heap_calloc(heap, 1, sizeof *s);
+    // zalloc_aligned: the struct carries _Alignas(ANO_THREAD_LINE) members; a
+    // plain calloc's 16-byte alignment would not honor them.
+    AnoSynth *s = mi_heap_zalloc_aligned(heap, sizeof *s, _Alignof(AnoSynth));
     if (!s) {
         mi_heap_destroy(heap);
         return NULL;

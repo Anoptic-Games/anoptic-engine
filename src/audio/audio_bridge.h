@@ -167,10 +167,12 @@ struct AnoAudioBridge
 
     // Seqlock lanes store object representation as atomic words; typed access
     // only ever happens through the publish/acquire copies.
+    // One ANO_THREAD_LINE region per direction, version leading its words:
+    // publish and acquire each move one line, and the two directions never share one.
+    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t listenerVersion; // logic publishes
     _Atomic uint64_t listener[sizeof(AnoAudioListener) / sizeof(uint64_t)];
-    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t listenerVersion;
+    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t telemetryVersion; // mixer publishes
     _Atomic uint64_t telemetry[sizeof(AnoAudioTelemetry) / sizeof(uint64_t)];
-    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t telemetryVersion;
 };
 
 // Rings from heap. Destroy bridge before releasing heap.

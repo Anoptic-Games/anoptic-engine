@@ -158,14 +158,16 @@ struct AnoRenderBridge
     AnoSpscRing commands; // logic -> render (RenderCommand)
     AnoSpscRing events;   // render -> logic (RenderEvent)
 
-    // Published latest-wins lanes, each a seqlock with its version on a private cache line.
-    // snapshot: render publishes, logic acquires. viewState: logic publishes, render acquires.
-    // Lanes store object representation as atomic words; typed access only ever
-    // happens through the publish/acquire copies.
+    // Published latest-wins lanes. snapshot: render publishes, logic acquires.
+    // viewState: logic publishes, render acquires. Lanes store object
+    // representation as atomic words; typed access only ever happens through
+    // the publish/acquire copies.
+    // One ANO_THREAD_LINE region per direction, version leading its words:
+    // publish and acquire each move one line, and the two directions never share one.
+    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t snapshotVersion; // render publishes
     _Atomic uint64_t snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
-    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t snapshotVersion;
+    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t viewStateVersion; // logic publishes
     _Atomic uint64_t viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
-    _Alignas(ANO_CACHE_LINE) _Atomic uint64_t viewStateVersion;
 };
 
 // in:  bridge, heap, cmd_capacity_pow2, evt_capacity_pow2
