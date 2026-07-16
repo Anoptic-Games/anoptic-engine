@@ -1,12 +1,22 @@
 # Build the engine and push its runtime closure to the anoptic-games cachix cache.
 # Push is an explicit `cachix push` of the built outputs only — the action's automatic
 # store-diff push would upload the whole toolchain and eat the 5 GB free tier.
+# Build the github: ref, NOT the checkout: `nix build .#x` on the runner evaluated to
+# different store paths than `nix run github:...` does for users (byte-identical outputs,
+# different drv hashes), so green pushes landed on paths nobody ever asks for.
 name: cachix
 
 on:
   push:
-    branches: [main]
+    # TEMP: module-audio added only to verify the pin/push rewrite end to end; remove before merging to main.
+    branches: [main, module-audio]
   workflow_dispatch:
+
+# One run per ref: overlapping runs raced pin updates (whichever finished last won the pin,
+# even if older). A newer push supersedes an in-flight run; its pins land minutes later anyway.
+concurrency:
+  group: cachix-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -25,7 +35,6 @@ jobs:
             targets: .#play
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
@@ -38,5 +47,58 @@ jobs:
           name: anoptic-games
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipPush: true
-      - name: Build and push runtime closures
-        run: nix build ${{ matrix.targets }} --print-out-paths --no-link | xargs cachix push anoptic-games
+      # Each target is pinned under a stable name (e.g. play-x86_64-linux) so the latest
+      # main build is immune from cachix GC; --keep-revisions 1 drops the previous pin.
+      - name: Build, push, and pin runtime closures
+        run: |
+          set -euo pipefail
+          # retry CMD...: 3 attempts, 30s apart. Rides out transient failures (substituter
+          # fetch, github: tarball, cachix 5xx); a deterministic compile error just fails 3x.
+          # Messages go to stderr so command substitution stays clean.
+          retry() {
+            for i in 1 2 3; do
+              if "$@"; then return 0; fi
+              echo "attempt $i/3 failed: $*" >&2
+              if [ "$i" -lt 3 ]; then sleep 30; fi
+            done
+            return 1
+          }
+          system=$(nix eval --raw --impure --expr builtins.currentSystem)
+          : > outpaths.txt
+          for t in ${{ matrix.targets }}; do
+            p=$(retry nix build "github:${{ github.repository }}/${{ github.sha }}${t#.}" --print-out-paths --no-link)
+            echo "$p" >> outpaths.txt
+            retry cachix push anoptic-games "$p"
+            retry cachix pin anoptic-games "${t#.#}-$system" "$p" --keep-revisions 1
+          done
+      # Green push ≠ served: prove each top-level narinfo answers from the CDN.
+      - name: Verify cache serves the paths
+        run: |
+          set -euo pipefail
+          while read -r p; do
+            h=$(basename "$p" | cut -c1-32)
+            curl -sf -o /dev/null "https://anoptic-games.cachix.org/$h.narinfo" || { echo "cache MISSING $p" >&2; exit 1; }
+          done < outpaths.txt
+
+  # Manual-dispatch-only probe of the checkout-eval divergence (2026-07-15): the runner's
+  # `nix build .#x` hashed a different source copy than the github: tarball, without a
+  # dirty-tree warning. This prints both source narHashes and drvPaths side by side.
+  # Delete this job once the mechanism is identified.
+  eval-divergence-probe:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+      - name: Compare checkout eval vs github ref eval
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD; git status --porcelain | head
+          echo "checkout metadata:"; nix flake metadata . --json | head -c 2000; echo
+          echo "github metadata:"; nix flake metadata "github:${{ github.repository }}/${{ github.sha }}" --json | head -c 2000; echo
+          echo "checkout drv: $(nix eval --raw .#play.drvPath)"
+          echo "github   drv: $(nix eval --raw "github:${{ github.repository }}/${{ github.sha }}#play.drvPath")"
