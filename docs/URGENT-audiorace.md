@@ -103,3 +103,35 @@ Inventory there: `anoticket` (wait-free FAA tickets), `anoring_spsc` (owner-curs
 ## Verdict
 
 None of today's remediation comes for free from backup-resource-manager: its seqpub shares cluster 1's bug, and no primitive addresses cluster 2. The dependency points the other way — today's word-lane seqlock belongs in `anoseqpub` when collections land, at which point both bridges (and their rings) migrate and the twins die, per their own promotion notes. Follow-ups for that merge: port the word-lane copy into `ano_seqpub_publish`/`ano_seqpub_read`, add a concurrent 1W/NR seqpub stress to `anotest_collections`, and gate the collections branch on `tests-tsan` (it currently has no TSan history).
+
+---
+
+# Post-mortem: CI red after the fix — two non-race causes (2026-07-16, evening)
+
+The fix commit `5004ad4` still failed the same two CI jobs. Investigation closed both with evidence; neither is a race, and one earlier inference in this file is corrected below.
+
+## Evidence
+
+- The exact committed derivation (`github:.../5004ad4#tests-tsan`) passes 24/24 on a many-core machine. Commit-vs-worktree diff is comment-only; the fix is in the commit.
+- The macOS run-6 log (finally read, pasted from the Actions UI): `musicdrive`, `musicscene`, `synthscene` all PASSED on macOS pre-fix. The failing suite is `anoptic_music` (#33) with 16 assertion failures, byte-identical across two consecutive executions: `mixgate gauss` (anotest_music.c:191), the affect `map` block (:676-682), `effective_tension arc` (:893).
+- Stress repro of the committed tsan derivation pinned to 2 cores (GitHub-runner shape): `musicdrive` Timeout 119.9s, `render_bridge` Timeout 60s, `anoptic_time` failed, `musicscene` failed — and zero `WARNING: ThreadSanitizer` reports in the entire run. The run-6 CI tsan tail shows the same shape (`musicdrive (Timeout)`).
+
+## Cause 1 — macOS headless: `-ffp-contract=off` was a silent CMake no-op, so arm64 fused fmadd broke CPython bit-parity
+
+First read as libm ULP divergence; the failing-function inventory refuted that — `ano_map_density`/`velocity`/`articulation`/`reverb_send` contain no transcendental at all (one mul + one add + clamp), yet failed, while `ano_map_filter_cutoff` with its `pow(2, x)` passed. The only mechanism that fits all 16 failures is contraction: `a*b + c` fusing to `fmadd`.
+
+The music module already declared `-ffp-contract=off` ("bit-parity with CPython float op order", src/music/CMakeLists.txt) — but `set_source_files_properties` without `TARGET_DIRECTORY` only applies to targets defined in the same directory, and `anoptic_core` is defined at the root: the property was silently ignored. Baseline x86-64 codegen has no FMA instruction, so the no-op cost nothing on Linux CI and went unnoticed; arm64's baseline `fmadd` made macOS the first platform where contraction actually fired. `src/log/CMakeLists.txt:17` uses the `TARGET_DIRECTORY anoptic_core` form correctly — music's omission was the bug.
+
+`ano_music_gauss` additionally runs Box-Muller through libm `log`/`cos`/`sin`; whether Apple's arm64 libm agrees with glibc's values on the tested inputs is unresolved until a CI run with the contract fix — `feq` now prints `%a` bit patterns on mismatch so a residual libm divergence names itself in the CI log. This corrects the earlier "Why each CI job fails" section: cluster 2 never manifested on macOS; the scene suites passed there all along.
+
+## Cause 2 — ubuntu tests-tsan: starvation on 2-core runners, not races
+
+TSan costs 5-15x; GitHub runners have 2 cores; ctest runs suites in parallel against fixed per-test timeouts. `musicdrive` (26s healthy) blows its timeout; timing-sensitive suites (`anoptic_time`, heartbeat waits in `musicscene`) miss deadlines. The races this file documents are gone — no TSan report survives even under deliberate 2-core stress.
+
+## Disposition — fixes applied 2026-07-16 (evening)
+
+1. `src/music/CMakeLists.txt`: `set_source_files_properties` now passes `TARGET_DIRECTORY anoptic_core`, making `-ffp-contract=off` real. Verified via `compile_commands.json`: all 22 compiled music TUs carry the flag. Restores CPython float-op-order parity on arm64; x86-64 binaries are unchanged (the flag was never needed there to avoid fusion, only to declare intent).
+2. `tests/CMakeLists.txt`: ctest `TIMEOUT` properties scale under `ANOPTIC_SANITIZE` — tsan x8, asan x4, applied in one loop over all registered tests at the end of the file. Sized so `musicdrive` (26 s healthy, 120 s budget) survives a 5-15x tsan slowdown on a 2-core runner.
+3. `tests/anotest_music.c`: `feq` prints `got %a want %a` on mismatch. If Apple libm ULP-diverges from the CPython/glibc goldens in `gauss` after the contract fix, the CI log now names the exact bit patterns; the fallback then is per-platform golden gating via the platformization conventions.
+
+Remaining risk: the gauss/libm question is only answerable by the next macOS CI run. Everything else is closed with local evidence.

@@ -332,3 +332,25 @@ else()
         "##  Run a non-headless build with the Vulkan SDK to cover.    ##\n"
         "################################################################\n")
 endif()
+
+# Sanitizers run 2-15x slower and CI runners have 2 cores; scale every ctest
+# TIMEOUT so starvation cannot masquerade as failure (musicdrive hit its 120 s
+# budget under tsan on 2026-07-16 with zero race reports). Tests without an
+# explicit TIMEOUT keep the ctest default.
+if(ANOPTIC_SANITIZE STREQUAL "tsan")
+    set(ANO_TEST_TIMEOUT_SCALE 8)
+elseif(ANOPTIC_SANITIZE STREQUAL "asan")
+    set(ANO_TEST_TIMEOUT_SCALE 4)
+else()
+    set(ANO_TEST_TIMEOUT_SCALE 1)
+endif()
+if(ANO_TEST_TIMEOUT_SCALE GREATER 1)
+    get_directory_property(ANO_ALL_TESTS TESTS)
+    foreach(ANO_T IN LISTS ANO_ALL_TESTS)
+        get_test_property(${ANO_T} TIMEOUT ANO_T_SECS)
+        if(ANO_T_SECS)
+            math(EXPR ANO_T_SECS "${ANO_T_SECS} * ${ANO_TEST_TIMEOUT_SCALE}")
+            set_tests_properties(${ANO_T} PROPERTIES TIMEOUT ${ANO_T_SECS})
+        endif()
+    endforeach()
+endif()
