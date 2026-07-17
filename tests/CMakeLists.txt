@@ -297,6 +297,16 @@ target_link_libraries(anotest_synthtempoguard PRIVATE anoptic_core)
 add_test(NAME anoptic_synthtempoguard COMMAND anotest_synthtempoguard)
 set_tests_properties(anoptic_synthtempoguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Score-begin anchor-cap wrap guard: anchorCap = tempoCount + 1u wraps to 0 at UINT32_MAX,
+# the zero-count calloc passes the NULL check, and score_begin OOB-writes the 24-byte seed
+# anchor into a zero-size block while returning true (docs/BUGS.md, Synth / Interface-level,
+# ano_synth.c:202). Fails (first promised tempo point rejected, or allocator abort) until
+# the sizing rejects or survives the wrap.
+add_executable(anotest_synthbeginguard anotest_synthbeginguard.c)
+target_link_libraries(anotest_synthbeginguard PRIVATE anoptic_core)
+add_test(NAME anoptic_synthbeginguard COMMAND anotest_synthbeginguard)
+set_tests_properties(anoptic_synthbeginguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
 # cascades to null); by hand on a desktop it is the audible Phase 1 check.
 add_executable(anotest_audiotone anotest_audiotone.c)
