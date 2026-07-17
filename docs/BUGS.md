@@ -119,6 +119,8 @@ shadow_casters.c:97 〜 register_static_shadow indexes shadowTypeUsed[3] with th
 
 ### Implementation bugs
 
+texture.c:435 〜 createTextureImage's mip-0 upload passes texture.texWidth as BOTH extents of the buffer->image copy (its sibling createTextureImageFromPixels at :377 passes width, height), so every non-square texture file uploads wrong: landscape (w > h) submits a copy region w rows tall against an h-row image and reads w*(w-h)*4 bytes past the w*h*4 staging buffer (VUID breach on both the image bound and the buffer bound, device-lost territory), portrait (w < h) uploads only w rows and leaves the rest of mip 0 undefined for generateMipmaps to smear down the whole chain; reached from every glTF texture upload (ano_GltfParser.c:270) 〜 test: anotest_texuploadguard
+
 ### Interlink / Composition bugs 
 
 
