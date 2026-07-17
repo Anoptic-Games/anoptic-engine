@@ -121,6 +121,8 @@ shadow_casters.c:97 〜 register_static_shadow indexes shadowTypeUsed[3] with th
 
 texture.c:435 〜 createTextureImage's mip-0 upload passes texture.texWidth as BOTH extents of the buffer->image copy (its sibling createTextureImageFromPixels at :377 passes width, height), so every non-square texture file uploads wrong: landscape (w > h) submits a copy region w rows tall against an h-row image and reads w*(w-h)*4 bytes past the w*h*4 staging buffer (VUID breach on both the image bound and the buffer bound, device-lost territory), portrait (w < h) uploads only w rows and leaves the rest of mip 0 undefined for generateMipmaps to smear down the whole chain; reached from every glTF texture upload (ano_GltfParser.c:270) 〜 test: anotest_texuploadguard
 
+device.c:663 〜 createLogicalDevice's transfer-queue fetch is armed by indices->computePresent 〜 a copy-paste of the compute block directly above it 〜 instead of transferPresent, and the queue-create loop at :537 feeds uniqueQueueFamilies from transferFamily with no presence check at all, so on a device whose families advertise GRAPHICS|COMPUTE without TRANSFER_BIT (spec-legal: the transfer capability graphics/compute imply is optional to report) findQueueFamilies hands back transferPresent=false / transferFamily=UINT32_MAX and createLogicalDevice both creates a queue on family UINT32_MAX inside vkCreateDevice and calls vkGetDeviceQueue(UINT32_MAX) 〜 a VUID breach twice over at engine boot; the converse arm (compute absent, transfer present) would skip the fetch and leave ctx->transferQueue NULL for every geometry_pool_upload submit (geometry.c:339), unreachable today only because graphics implies a compute-capable family 〜 test: anotest_transferqueueguard
+
 ### Interlink / Composition bugs 
 
 

@@ -457,6 +457,20 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_texuploadguard COMMAND anotest_texuploadguard)
     set_tests_properties(anoptic_texuploadguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Transfer-queue presence guard: createLogicalDevice's transfer-queue fetch is armed by
+    # indices->computePresent 〜 a copy-paste of the compute block above it 〜 not transferPresent,
+    # and the queue-create loop consumes transferFamily with no presence check (device.c:663 /
+    # :537, docs/BUGS.md, Render / Vulkan backend / Implementation). A spec-legal family table
+    # that omits TRANSFER_BIT rides findQueueFamilies' UINT32_MAX sentinel into vkCreateDevice
+    # and vkGetDeviceQueue. Compiles the real device.c TU against link-seam vk/config stubs that
+    # capture every requested family index; no GPU device, no loader. Fails until the sentinel
+    # stops reaching the device.
+    add_executable(anotest_transferqueueguard anotest_transferqueueguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/device.c)
+    target_include_directories(anotest_transferqueueguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_transferqueueguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_transferqueueguard COMMAND anotest_transferqueueguard)
+    set_tests_properties(anoptic_transferqueueguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
