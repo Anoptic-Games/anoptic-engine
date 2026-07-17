@@ -373,6 +373,18 @@ target_link_libraries(anotest_musiccadenceguard PRIVATE anoptic_core)
 add_test(NAME anoptic_musiccadenceguard COMMAND anotest_musiccadenceguard)
 set_tests_properties(anoptic_musiccadenceguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Perc compound-meter slot guard: the grouped-kick pickup writes kick[slots - 2] past the
+# 32-entry stack set for meters past 8 quarters (9/4 -> 36, music_perc.c:121), and the u32
+# hatDrops mask shifts wrap for slot >= 32 so in-range mask bits eat the out-of-range hats
+# (music_perc.c:79/:154) (docs/BUGS.md, Music / Implementation). Fails (mask aliasing observed
+# differentially; the OOB kick write runs in the same call) until the 32-wide shapes handle
+# wide bars.
+add_executable(anotest_percmeterguard anotest_percmeterguard.c)
+target_link_libraries(anotest_percmeterguard PRIVATE anoptic_core)
+target_include_directories(anotest_percmeterguard PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME anoptic_percmeterguard COMMAND anotest_percmeterguard)
+set_tests_properties(anoptic_percmeterguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their

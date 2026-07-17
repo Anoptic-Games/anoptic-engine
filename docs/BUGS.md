@@ -103,6 +103,8 @@ music_host.c:193 〜 ano_music_set_override("cadence_policy", v) refuses unknown
 
 music_arp.c:102 〜 ano_generate_arp emits one event per meter slot into AnoArpResult.events[ANO_METER_MAX_SLOTS] with no bound, but ano_meter_slots exceeds the 32-slot cap for any meter past 8 quarters (9/4 is 36, 12/4 is 48) and ano_music_create accepts such meters unvalidated, so at noteDensity > 0.65 the loop writes the tail past the stack array inside ano_engine_advance_bar 〜 the 33rd write lands on eventCount itself, recycling the tail into events[0..2] and silently truncating the bar to 3 events on top of the stack stomp 〜 the metric-weights twin at music_ir.c:63 clamps exactly this and the arp does not 〜 test: anotest_musicarpguard
 
+music_perc.c:121 〜 ano_generate_perc's compound branch writes the grouped-kick pickup kick[slots - 2] into bool kick[ANO_METER_MAX_SLOTS] at noteDensity > 0.75, but ano_meter_slots is 36 for 9/4 (48 for 12/4), so the write lands past the stack array and the sorted-set readback then reads kick[32..35] off the frame as phantom kicks; the same 32-wide shape breaks the hat lane 〜 AnoGroove.hatDrops is a u32 slot bitmask and the shifts at :79 (1u << s) and :154 (hatDrops >> s) are UB for slot ≥ 32, wrapping on x86/arm so mask bits for slots 0..3 silently drop the hats at 32..35 〜 and the widest legal bars overrun the emit buffers outright (9/4 can push ~55 hits into AnoPercResult.events[48], 12/4 ~68 into the Hit hits[64] scratch); reached like the arp twin 〜 music_host.c:56 copies the config meter unvalidated 〜 test: anotest_percmeterguard (pins the :154 wrap deterministically; the :121 stack write executes in the same failing call)
+
 ### Interlink / Composition bugs 
 
 
