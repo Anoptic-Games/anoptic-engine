@@ -305,6 +305,19 @@ target_link_libraries(anotest_logflood PRIVATE anoptic_core)
 add_test(NAME anoptic_logflood COMMAND anotest_logflood)
 set_tests_properties(anoptic_logflood PROPERTIES TIMEOUT 120 LABELS "unit;concurrency;mem")
 
+# sourceFile call-time capture guard: the deferred capture stores the caller's sourceFile as
+# a raw pointer in the ring blob (log_core.c:205) and format_deferred derefs it at drain
+# (:268/:277), while the header's lifetime contract is one-sided 〜 anoptic_log.h:53 constrains
+# printFormat only, and the %s arm deep-copies every other caller-owned string at capture
+# (docs/BUGS.md, Log / Interface-level, log_core.c:205). Real public logger end to end:
+# controls prove literal and intact-buffer round-trips, then trigger records pass live buffers
+# scribbled right after the call returns, behind a FIFO backlog that pins the drainer. Fails
+# (drained lines carry the scribble, not the call-time names) until capture copies by value.
+add_executable(anotest_logsrcguard anotest_logsrcguard.c)
+target_link_libraries(anotest_logsrcguard PRIVATE anoptic_core)
+add_test(NAME anoptic_logsrcguard COMMAND anotest_logsrcguard)
+set_tests_properties(anoptic_logsrcguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Score-event field-range guard: velocity and pitch above their documented AnoNoteEvent
 # ranges (1..127 / 0..127) must be rejected like velocity 0 already is, not staged to render
 # at ~2x the amplitude ceiling or alias pitch & 0x7F tie chains (docs/BUGS.md, Synth /
