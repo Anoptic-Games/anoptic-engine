@@ -784,6 +784,21 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_descpoolguard COMMAND anotest_descpoolguard)
     set_tests_properties(anoptic_descpoolguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Window-create failure guard: initWindow guards glfwInit's failure but never glfwCreateWindow's
+    # (window.c:214) 〜 the NULL handle from a failed create (headless / dead display:
+    # GLFW_PLATFORM_ERROR; a 0x0 configured resolution: GLFW_INVALID_VALUE) rides ten GLFW entry
+    # points (:226-:241) that require a valid window 〜 assert in debug GLFW, straight NULL deref in
+    # release 〜 so boot crashes inside GLFW instead of returning NULL to the caller's
+    # FATAL-and-teardown arm (vulkanMaster.c:324, instanceInit.h:26 contract) (docs/BUGS.md,
+    # Render / Vulkan backend / Implementation). Compiles the real window.c TU against link-seam
+    # glfw/config/render-api stubs keeping a NULL-handle ledger; no GPU device, no loader, no real
+    # glfw. Fails until a failed create returns NULL with the dead handle untouched.
+    add_executable(anotest_windowcreateguard anotest_windowcreateguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/window.c)
+    target_include_directories(anotest_windowcreateguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_windowcreateguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_windowcreateguard COMMAND anotest_windowcreateguard)
+    set_tests_properties(anoptic_windowcreateguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
