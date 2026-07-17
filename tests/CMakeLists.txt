@@ -747,6 +747,25 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_entitygrowguard COMMAND anotest_entitygrowguard)
     set_tests_properties(anoptic_entitygrowguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Texture registration ownership-drop guard: ano_vk_register_texture is the only route a
+    # loaded texture's image/view take into the teardown registry (cleanup.c:64-:71 walks
+    # primitives.textureBuffers and nothing else destroys them), yet it returns void and its
+    # realloc-failure arm drops the TextureData record after an ANO_ERROR log
+    # (components.c:76-:78), so the glTF caller proceeds to bindless-register and draw a view
+    # whose ownership vanished (ano_GltfParser.c:282-:288) 〜 the objects orphan permanently at
+    # shutdown with no failure channel; the mesh twin ano_vk_register_mesh shares the shape and
+    # has no production caller (docs/BUGS.md, Render / Vulkan backend / Interlink-Composition,
+    # components.c:72). Compiles the real components.c TU with the allocator tokens interposed
+    # onto libc to refuse exactly one registry growth; caller and teardown modeled
+    # contract-faithfully; no GPU device, no loader. Fails until a refused registration cannot
+    # silently orphan the adopted handles.
+    add_executable(anotest_texregisterguard anotest_texregisterguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/components.c)
+    target_include_directories(anotest_texregisterguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(anotest_texregisterguard PRIVATE mi_realloc=anotest_seam_realloc mi_free=anotest_seam_free)
+    target_link_libraries(anotest_texregisterguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_texregisterguard COMMAND anotest_texregisterguard)
+    set_tests_properties(anoptic_texregisterguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
