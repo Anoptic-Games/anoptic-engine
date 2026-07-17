@@ -766,6 +766,24 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_texregisterguard COMMAND anotest_texregisterguard)
     set_tests_properties(anoptic_texregisterguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
 
+    # Descriptor-pool sampler-budget guard: createDescriptorPool's combined-image-sampler term
+    # (descriptors.c:39) budgets tonemap/view + 4 shadow + Hi-Z/mip + cull bind11/view + 1 text
+    # overlay but omits the task-cull Hi-Z sampler the global layout gains at binding 13 when
+    # taskCull is on (layouts.c:123-:128/:149, written at descriptors.c:483-:496), so with the
+    # shipped constants createDescriptorSets consumes the sampler budget exactly (219/219) and the
+    # pool's LAST consumer 〜 the text overlay sets (text_raster.c:846/:852) 〜 is refused with
+    # VK_ERROR_OUT_OF_POOL_MEMORY and silently disabled (:862-:864), UI riding with it, on exactly
+    # the mesh+task hardware where taskCull defaults on (vulkanMaster.c:390) (docs/BUGS.md,
+    # Render / Vulkan backend / Implementation). Compiles the real descriptors.c TU against
+    # link-seam vk stubs doing contract-faithful per-type pool accounting; layout specs mirror the
+    # real binding tables, the text consumer mirrors text_raster.c batch for batch; no GPU device,
+    # no loader. Fails until the pool budgets the binding-13 samplers.
+    add_executable(anotest_descpoolguard anotest_descpoolguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/descriptors.c)
+    target_include_directories(anotest_descpoolguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_descpoolguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_descpoolguard COMMAND anotest_descpoolguard)
+    set_tests_properties(anoptic_descpoolguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
