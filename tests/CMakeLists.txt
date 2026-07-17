@@ -464,6 +464,19 @@ target_link_libraries(anotest_musicmodeguard PRIVATE anoptic_core)
 add_test(NAME anoptic_musicmodeguard COMMAND anotest_musicmodeguard)
 set_tests_properties(anoptic_musicmodeguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Cadence-cycle count guard: the config seam copies cadencePolicyCount unvalidated
+# (music_host.c:66) while clamping its sibling motifLibraryCount (:101), and policy_of's
+# explicit-cycle arm indexes cadencePolicies[phrase % count] (music_conductor.c:147), so any
+# count > 8 reads past the int8_t [8] array and republishes an out-of-enum policy through
+# AnoMusicMeaning.cadencePolicy into the same one-sided [3]-table guard chain as the
+# cadence_policy override (docs/BUGS.md, Music / Interface-level). Fails (out-of-enum meaning
+# on phrase 8's flagged bars, or a crash in the policy tables) until the count is clamped or
+# rejected at the seam.
+add_executable(anotest_musiccadcountguard anotest_musiccadcountguard.c)
+target_link_libraries(anotest_musiccadcountguard PRIVATE anoptic_core)
+add_test(NAME anoptic_musiccadcountguard COMMAND anotest_musiccadcountguard)
+set_tests_properties(anoptic_musiccadcountguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
