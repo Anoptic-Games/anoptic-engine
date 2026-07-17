@@ -696,6 +696,23 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_scenebufferguard COMMAND anotest_scenebufferguard)
     set_tests_properties(anoptic_scenebufferguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Texture mip-chain publish guard: createTextureImage discards generateMipmaps' bool at
+    # texture.c:437 while the fallback whole-chain TRANSFER_DST->SHADER_READ transition beneath
+    # it is commented out (:439-443), and the generator's only failure arm 〜 driver-reported
+    # format properties without SAMPLED_IMAGE_FILTER_LINEAR (:239-243) 〜 returns before
+    # recording anything, so the upload returns true with the image parked in
+    # TRANSFER_DST_OPTIMAL and mips 1..N-1 never written while the full-chain view is bound
+    # bindless as SHADER_READ_ONLY_OPTIMAL (:36) (texture.c:437, docs/BUGS.md, Render / Vulkan
+    # backend / Implementation). Compiles the real texture.c TU against link-seam vk/helper
+    # stubs shadowing per-mip layout and written state from every recorded barrier, copy and
+    # blit; real stbi decode, no GPU device, no loader. Fails until a true return implies a
+    # fully written SHADER_READ chain.
+    add_executable(anotest_texmipchainguard anotest_texmipchainguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/texture/texture.c)
+    target_include_directories(anotest_texmipchainguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_texmipchainguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_texmipchainguard COMMAND anotest_texmipchainguard)
+    set_tests_properties(anoptic_texmipchainguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
