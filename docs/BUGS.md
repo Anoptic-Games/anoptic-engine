@@ -21,6 +21,8 @@ audio_linux.c:168 〜 alsa_stop joins mx->deviceThread before its !st deviceStat
 
 audio_fx.c:100 〜 fx_limiter's analysis window is one sample shorter than its delay line: winmax_init gets window == lookahead while the sample emitted each step is the one written lookahead steps ago (:391), and the wedge expires stamp + win <= n (dynamics.h:73), so a peak's stamp leaves the window on the exact push that emits it 〜 the "instant attack" gain takes one release step back toward 1.0 before the peak is multiplied out, breaching the ceiling by releaseCoef * (peak - ceiling) on every transient; at the public 1 ms release floor a 10x impulse under the default 0.92 ceiling emits 1.107, past digital full scale, and the sine-driven ceiling check in anotest_audiodsp cannot see it because adjacent sine samples are near-equal 〜 test: anotest_limiterguard
 
+ano_audio.c:204 〜 ano_audio_shutdown discharges no adopted sample block: it joins the mixer, stops the device, and destroys both bridge rings and the module heap, but never walks mx->buffers or drains a ring, and adopted blocks live on the default mi heap (plain mi_malloc at :260), not the module heap the teardown frees 〜 so LIVE owned blocks, ACMD_BUFFER_REGISTER blocks still queued in the command ring, and un-polled AEVT_BUFFER_RETIRED blocks all orphan permanently (the producer can never poll a destroyed world to get them back), breaching the lossless-block invariant (audio_internal.h:9) and the block-rides-home promise (anoptic_audio.h:326) on every world torn down with resident audio 〜 test: anotest_audioshutguard
+
 ### Interlink / Composition bugs 
 
 
