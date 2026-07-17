@@ -821,6 +821,22 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_uboshareguard COMMAND anotest_uboshareguard)
     set_tests_properties(anoptic_uboshareguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Shader-module sentinel guard: ano_vk_init_compute discards createShaderModule's documented
+    # NULL failure return at all nine consumption sites (compute.c:83/:152/:197/:254/:262/:326/
+    # :386/:443/:478) and hands the dead handle to vkCreateComputePipelines as stage.module 〜 an
+    # invalid-usage pipeline create (VUID-VkPipelineShaderStageCreateInfo-module, no maintenance5
+    # fallback chained) instead of the boot refusal the same function's loadFile arms prove
+    # intended, while pipeline.c:104 guards the identical mint one file over (docs/BUGS.md,
+    # Render / Vulkan backend / Implementation, compute.c:83). Compiles the real compute.c TU
+    # against link-seam vk stubs with a module mint/destroy ledger and a stage.module ledger;
+    # loadFile/createShaderModule are contract-faithful stand-ins mirroring pipeline.c:41/:78-93;
+    # no GPU device, no loader. Fails until a NULL module aborts init before pipeline creation.
+    add_executable(anotest_shadermodguard anotest_shadermodguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/pipelines/compute.c)
+    target_include_directories(anotest_shadermodguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_shadermodguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_shadermodguard COMMAND anotest_shadermodguard)
+    set_tests_properties(anoptic_shadermodguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
