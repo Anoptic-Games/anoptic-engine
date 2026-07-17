@@ -444,6 +444,19 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_boottelemetryguard COMMAND anotest_boottelemetryguard)
     set_tests_properties(anoptic_boottelemetryguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Texture mip-0 upload copy-extent guard: createTextureImage hands texture.texWidth as
+    # BOTH dimensions of the buffer->image copy (texture.c:435) where its sibling
+    # createTextureImageFromPixels passes (width, height) (:377), so every non-square file
+    # over-reads the staging buffer (landscape) or leaves mip-0 rows undefined (portrait)
+    # (docs/BUGS.md, Render / Vulkan backend / Implementation). Compiles the real texture.c
+    # TU against link-seam vk/helper stubs that capture the copy region; real stbi decode,
+    # no GPU device, no loader. Fails until the copy takes texHeight.
+    add_executable(anotest_texuploadguard anotest_texuploadguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/texture/texture.c)
+    target_include_directories(anotest_texuploadguard PRIVATE ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_texuploadguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_texuploadguard COMMAND anotest_texuploadguard)
+    set_tests_properties(anoptic_texuploadguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
