@@ -568,6 +568,22 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_swapleakguard COMMAND anotest_swapleakguard)
     set_tests_properties(anoptic_swapleakguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
 
+    # Staged-upload copy-failure guard: stagingTransfer's copyBuffer arm (commands.c:201) is
+    # dead code 〜 copyBuffer returns true unconditionally (:267) because the single-time-command
+    # pair discards every VkResult (alloc :222, begin :228, end :235, submit :247, wait :248),
+    # so a one-shot GPU copy that never executed reports success to the text-bake uploads
+    # (text_raster.c:639/:644), a failed CB allocation's undefined out-param handle rides the
+    # recording entry points as VUID breaches, and the arm itself would leak the staging buffer
+    # if a fix armed it (:204 skips the :208 destroy) (docs/BUGS.md, Render / Vulkan backend /
+    # Implementation). Compiles the real commands.c TU against link-seam vk/engine stubs that
+    # capture creates, destroys, copies and submits; no GPU device, no loader. Fails until
+    # copyBuffer propagates the failing result and discharges the staging buffer on every path.
+    add_executable(anotest_stagingcopyguard anotest_stagingcopyguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/commands.c)
+    target_include_directories(anotest_stagingcopyguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_stagingcopyguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_stagingcopyguard COMMAND anotest_stagingcopyguard)
+    set_tests_properties(anoptic_stagingcopyguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
