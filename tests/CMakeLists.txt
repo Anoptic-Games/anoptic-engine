@@ -227,6 +227,18 @@ target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
 add_test(NAME anoptic_render_bridge COMMAND anotest_render_bridge)
 set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
 
+# UI-block stop-window guard: ano_render_ui_set bounds every block-local reference except
+# a paint's [stopFirst, +stopCount) window (ui_prim_valid, ano_render_bridge.c:204); the
+# compose rebases it blind (ui_raster.c:123) and the GPU evaluator's promised fail-closed
+# mirror check is absent (uicoverage.glsl:176 vs ui_raster_ref.c:229), so a hand-built
+# block walks the stop SSBO out of bounds (docs/BUGS.md, Render / Vulkan backend /
+# Interlink-Composition). Device-free 〜 bridge transport + CPU ref evaluator only. Fails
+# until the bridge drops the bad window like its sibling references.
+add_executable(anotest_uistopguard anotest_uistopguard.c)
+target_link_libraries(anotest_uistopguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_uistopguard COMMAND anotest_uistopguard)
+set_tests_properties(anoptic_uistopguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Testing for the audio stack Phase 0 (churned-heap offline determinism; WAV; live null-backend round-trip)
 add_executable(anotest_audio anotest_audio.c)
 target_link_libraries(anotest_audio PRIVATE anoptic_core)
