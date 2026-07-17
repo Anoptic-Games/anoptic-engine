@@ -117,6 +117,8 @@ ano_meshoptimizer.c:282 〜 ano_build_meshlets clamps max_vertices/max_triangles
 
 ### Implementation bugs
 
+ano_strings_ops.c:86 〜 anostr_join sizes its result as sep.len * (count-1) plus part lengths in uint64, so sep.len near UINT32_MAX with count ≈ 2^32+3 wraps the product to ≤ UINT32_MAX and slips the :89 oversize guard that exists to reject exactly this; the write loop then streams ~2^64 bytes into the ~4 GiB allocation 〜 the cheapest trigger needs a 64 GiB parts array (2^32+3 16-byte anostr_t entries), far past any engine caller but constructible on a large-memory host 〜 test: pending 〜 needs a 64 GiB parts array
+
 ### Interlink / Composition bugs 
 
 
