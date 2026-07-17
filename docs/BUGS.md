@@ -205,6 +205,8 @@ ui_build.c:236 〜 paint_push's fullness guard adds b->stopCount + stopCount in 
 
 ui_tiles.c:66 〜 ano_ui_tile_build computes nTiles = tilesX * tilesY and guards nTiles + 1 > offsetsCap in uint32, so 65536 x 65536 wraps nTiles to 0, the cap guard passes, *ok stays true for a 2^32-tile grid the buffers cannot hold, and any prim in the scene scatters pass-1 counts into offsets[] far past offsetsCap; tilesX = UINT32_MAX with tilesY = 1 wraps nTiles+1 to 0 instead and the :73 zero-fill writes 2^32 offsets out of bounds 〜 absurd tile counts, but "*ok false if a cap is too small" is exactly the promise the wrap defeats 〜 test: anotest_uitileguard
 
+ui_raster_ref.c:229 〜 ano_ui_ref_paint's stop-window reject arm computes pa->stopFirst + pa->stopCount in uint32, so stopFirst near UINT32_MAX wraps the sum under s->stopCount, the guard passes, and ui_stop_color reads s->stops[stopFirst] ~137 GB past the table on its first comparison 〜 a direct breach of the header's "Out-of-range ref fails CLOSED (transparent)" promise (anoptic_ui.h:275) in the CPU mirror the GPU evaluator cites as its fail-closed reference, and the exact wrap shape the bridge entry (ano_render_bridge.c:204) shows no upstream layer catches, so the last line of defense crashes on the block it exists to reject; the plain non-wrapping out-of-range window fails closed correctly 〜 test: anotest_uirefstopguard
+
 ### Interlink / Composition bugs 
 
 

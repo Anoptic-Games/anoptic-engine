@@ -116,6 +116,16 @@ target_link_libraries(anotest_uipaintguard PRIVATE anoptic_core m)
 add_test(NAME anoptic_uipaintguard COMMAND anotest_uipaintguard)
 set_tests_properties(anoptic_uipaintguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Ref-paint stop-window guard: ano_ui_ref_paint's reject arm computes stopFirst + stopCount
+# in uint32 (ui_raster_ref.c:229), so stopFirst UINT32_MAX wraps the sum under stopCount and
+# ui_stop_color reads the stop table ~137 GB out of bounds against the header's fail-CLOSED
+# contract (anoptic_ui.h:275) (docs/BUGS.md, UI / Implementation). Fails (access violation
+# in ui_stop_color) until the guard computes without wrap.
+add_executable(anotest_uirefstopguard anotest_uirefstopguard.c)
+target_link_libraries(anotest_uirefstopguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_uirefstopguard COMMAND anotest_uirefstopguard)
+set_tests_properties(anoptic_uirefstopguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
 # DISABLED in ctest, run ./anotest_strbench by hand from a -O3 build.
 add_executable(anotest_strbench anotest_strbench.c)
