@@ -471,6 +471,20 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_transferqueueguard COMMAND anotest_transferqueueguard)
     set_tests_properties(anoptic_transferqueueguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Image-view creation failure guard: createImageView's error arm only logs 〜 a failed
+    # vkCreateImageView falls through to `return imageView`, an out-param the failed call's
+    # contract leaves with undefined contents (swapchain.c:428, docs/BUGS.md, Render / Vulkan
+    # backend / Implementation), so all ten call sites store indeterminate stack bytes as a
+    # live handle, createImageViews reports true regardless (:441), and cleanupSwapChain
+    # destroys the garbage (:187). Compiles the real swapchain.c TU against link-seam
+    # vk/glfw/engine stubs whose failure arm writes a spec-legal poison out-param; no GPU
+    # device, no loader. Fails until failure returns VK_NULL_HANDLE.
+    add_executable(anotest_imageviewguard anotest_imageviewguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/swapchain.c)
+    target_include_directories(anotest_imageviewguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_imageviewguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_imageviewguard COMMAND anotest_imageviewguard)
+    set_tests_properties(anoptic_imageviewguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
