@@ -940,6 +940,25 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_insetscissorguard COMMAND anotest_insetscissorguard)
     set_tests_properties(anoptic_insetscissorguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Memory-type probe sign-bit shift guard: findMemoryType tests typeFilter & (1 << i) with
+    # i walking to memoryTypeCount - 1 (gpu_alloc.c:12, duplicated verbatim at commands.c:173),
+    # and the legal domain is VK_MAX_MEMORY_TYPES == 32 with the count adopted raw from
+    # vkGetPhysicalDeviceMemoryProperties, so a device exposing all 32 types evaluates 1 << 31 〜
+    # a signed int shifted into its sign bit, UB under the build's C23 (6.5.7; this tree's clang
+    # in -std=c23 traps it) 〜 on the very probe that should match bit 31; common codegen wraps
+    # to INT_MIN and happens to behave, which is why it stayed latent (docs/BUGS.md, Render /
+    # Vulkan backend / Implementation). Compiles the real gpu_alloc.c TU with -fsanitize=shift
+    # so the abstract-machine UB is a deterministic halt instead of codegen luck; link-seam vk
+    # stubs mint fake device memory and ledger every requested type index; no GPU device, no
+    # loader. Fails (shift trap at gpu_alloc.c:12) until the mask math is unsigned in both twins.
+    add_executable(anotest_memtypeshiftguard anotest_memtypeshiftguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/gpu_alloc.c)
+    target_include_directories(anotest_memtypeshiftguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${Vulkan_INCLUDE_DIRS})
+    target_compile_options(anotest_memtypeshiftguard PRIVATE -fsanitize=shift -fno-sanitize-recover=shift)
+    target_link_options(anotest_memtypeshiftguard PRIVATE -fsanitize=shift)
+    target_link_libraries(anotest_memtypeshiftguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_memtypeshiftguard COMMAND anotest_memtypeshiftguard)
+    set_tests_properties(anoptic_memtypeshiftguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
