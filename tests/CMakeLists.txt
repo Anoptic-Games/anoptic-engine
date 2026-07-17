@@ -330,6 +330,27 @@ target_link_libraries(anotest_gposwrapguard PRIVATE anoptic_core)
 add_test(NAME anoptic_gposwrapguard COMMAND anotest_gposwrapguard)
 set_tests_properties(anoptic_gposwrapguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Blank-glyph window-sum stream guard: ano_text_window_sum fetches pts[g->pointOffset] BEFORE
+# the curveCount loop with no curveCount > 0 precondition in its contract (text_raster_ref.c:92,
+# text_internal.h:96), and the bake mints zero-curve glyphs 〜 MISSING codepoints and blank
+# outlines, documented output 〜 whose pointOffset stays stream.count as assigned before load
+# (text_bake.c:565), so a zero-curve TAIL glyph has pointOffset == pointCount and the fetch
+# reads one uint32 past the points blob, while an all-blank bake (points NULL, text_bake.c:639)
+# NULL-derefs; every in-tree consumer carries its own compensating curveCount guard
+# (docs/BUGS.md, Text / Interface-level, text_raster_ref.c:92). Real Geist bake whose PUA tail
+# the bake itself mints MISSING; the bake's own stream bytes are relocated flush against a
+# guard page so the over-read is a deterministic crash instead of a silent heap read, and the
+# space-only bake drives the NULL-stream shape unrelocated. Fonts staged next to the binary.
+# Fails (access violation on the guard page) until the fetch honors curveCount == 0.
+add_executable(anotest_textblanksumguard anotest_textblanksumguard.c)
+target_link_libraries(anotest_textblanksumguard PRIVATE anoptic_core m)
+add_custom_command(TARGET anotest_textblanksumguard POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/resources/fonts ${CMAKE_CURRENT_BINARY_DIR}/resources/fonts
+        COMMENT "Staging fonts next to anotest_textblanksumguard"
+        VERBATIM)
+add_test(NAME anoptic_textblanksumguard COMMAND anotest_textblanksumguard)
+set_tests_properties(anoptic_textblanksumguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Score-event field-range guard: velocity and pitch above their documented AnoNoteEvent
 # ranges (1..127 / 0..127) must be rejected like velocity 0 already is, not staged to render
 # at ~2x the amplitude ceiling or alias pitch & 0x7F tie chains (docs/BUGS.md, Synth /
