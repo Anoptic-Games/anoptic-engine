@@ -533,6 +533,24 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_slotsentinelguard COMMAND anotest_slotsentinelguard)
     set_tests_properties(anoptic_slotsentinelguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
 
+    # Duplicate-create mapping guard: apply.c:125 forwards cmd.render_id into render_slots_alloc
+    # with no mapped-check on either side, and the alloc contract's "render_id unmapped" invariant
+    # (render_slots.h:66) is enforced by nobody (alloc stores blind, render_slots.c:79-:80), so a
+    # duplicate CREATE of a live id mints a second slot, overwrites the forward map, and strands
+    # the old slot live forever with its reverse entry still answering the id 〜 an undestroyable
+    # ghost the pick readback misattributes (profiling.c:174); the light sibling guards exactly
+    # this (light_registry.c:89) (docs/BUGS.md, Render / Vulkan backend / Interface-level).
+    # Compiles the real render_slots.c TU with the heap tokens interposed onto libc; pure index
+    # bookkeeping, no GPU device, no loader. Fails (second slot minted, bijection broken, stranded
+    # slot pins slotHighWater after full teardown) until the seam rejects or idempotently resolves
+    # an already-mapped id.
+    add_executable(anotest_slotdupguard anotest_slotdupguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/render_slots.c)
+    target_include_directories(anotest_slotdupguard PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(anotest_slotdupguard PRIVATE mi_heap_malloc=anotest_seam_heap_malloc mi_heap_realloc=anotest_seam_heap_realloc mi_free=anotest_seam_free)
+    target_link_libraries(anotest_slotdupguard PRIVATE anoptic_core)
+    add_test(NAME anoptic_slotdupguard COMMAND anotest_slotdupguard)
+    set_tests_properties(anoptic_slotdupguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+
     # Static-shadow light-type domain guard: register_static_shadow indexes shadowTypeUsed[3]
     # with the raw bridge light type (shadow_casters.c:97/:114), and types 7/10 alias the
     # runtime frustum free-list counters right after the array, so a drained pool resurrects
