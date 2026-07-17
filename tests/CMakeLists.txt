@@ -713,6 +713,24 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_texmipchainguard COMMAND anotest_texmipchainguard)
     set_tests_properties(anoptic_texmipchainguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Init depth/Hi-Z FATAL fall-through guard: initVulkan's depth and Hi-Z arms log ANO_FATAL
+    # "Quitting init" and fall through (vulkanMaster.c:505/:511 〜 ano_log never aborts) with no
+    # unInitVulkan and no return, while every sibling arm in the same function tears down and
+    # returns false (:444-:446, :518-:520, ...), so a failed createDepthResources /
+    # createHiZResources keeps initializing: layouts and pipelines build against an unset
+    # depthFormat, updateHiZDescriptorSets (:664) writes the never-created hizMipViews into live
+    # sets, the hizValidOrdinal warmup gate stays 0 (attachments.c:185 is success-only), and
+    # initVulkan returns true (:687); createColorResources above (:501) cannot even report
+    # failure (docs/BUGS.md, Render / Vulkan backend / Implementation). Compiles the real
+    # vulkanMaster.c TU against link-seam stubs for every init helper, recording which steps run
+    # after the failed arm; no GPU device, no loader, no glfw. Fails until a failed depth/Hi-Z
+    # arm stops the init.
+    add_executable(anotest_initdepthguard anotest_initdepthguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/vulkanMaster.c)
+    target_include_directories(anotest_initdepthguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_initdepthguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_initdepthguard COMMAND anotest_initdepthguard)
+    set_tests_properties(anoptic_initdepthguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
