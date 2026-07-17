@@ -53,6 +53,8 @@ filesystem_win64.c:137 〜 ano_fs_write's loop has no forward-progress check, so
 
 ### Interface-level bugs and logic inefficiencies
 
+log_core.c:205 〜 the deferred capture stores the caller's sourceFile as a raw pointer in the ring blob and format_deferred dereferences it at drain time (:268/:277, batch drain :555), but the header's lifetime contract is one-sided: anoptic_log.h:53 demands "printFormat MUST be a string literal" while sourceFile 〜 the parameter beside it, same trust level 〜 carries no lifetime requirement at all, so a caller passing a stack or heap path through the documented entry points ano_log_write/ano_log_vwrite (whose own comment invites wrappers, exactly where dynamic names arise) gets a dangling deref on the drain thread 〜 strnlen then memcpy of up to 256 bytes from freed or reused memory into the log 〜 or silently logs whatever the buffer holds at drain instead of at call; the implementation's own %s arm proves the intended rule by deep-copying every caller-owned string at capture (:247-:256), and sourceFile is the one string that misses it (the eager fallback at :180 copies it correctly) 〜 test: anotest_logsrcguard
+
 ### Implementation bugs
 
 log_core.c:817 〜 the drain batch g_batch is sized ring bytes + 16 per record on the claim that a record's rendered text fits its ring footprint, but a deferred record renders at its format width, not its stored size 〜 "%*d" width 4000 holds one 64-byte ring line yet emits ~4016 batch bytes, so one pass over a ~164-record backlog walks blen past g_batchCap (the per-record prefix memcpy and newline are unchecked), the size_t room subtraction underflows and unbounds every later record into a multi-MB heap overwrite on the draining thread 〜 test: anotest_logflood
