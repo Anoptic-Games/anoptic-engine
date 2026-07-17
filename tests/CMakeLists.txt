@@ -270,6 +270,16 @@ target_link_libraries(anotest_wavguard PRIVATE anoptic_core)
 add_test(NAME anoptic_wavguard COMMAND anotest_wavguard)
 set_tests_properties(anoptic_wavguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Limiter lookahead-window guard: fx_limiter sizes its winmax window == lookahead while the
+# emitted sample has age exactly lookahead (audio_fx.c:100/:391), so a peak expires from the
+# analysis window on the push that emits it and its output takes one release step of gain-up 〜
+# a 10x impulse at the 1 ms release floor emits ~1.107 over the 0.92 ceiling (docs/BUGS.md,
+# Audio / Implementation). Fails until the window covers the emitted sample.
+add_executable(anotest_limiterguard anotest_limiterguard.c)
+target_link_libraries(anotest_limiterguard PRIVATE anoptic_core)
+add_test(NAME anoptic_limiterguard COMMAND anotest_limiterguard)
+set_tests_properties(anoptic_limiterguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Drain-batch sizing guard: deferred records render at their format width, not their stored
 # size, so a wide "%*d" burst must survive a drain pass with nothing lost and full-width
 # fields (docs/BUGS.md, Log / Implementation). Fails (crashes in the drain pass) until the
