@@ -419,6 +419,19 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_shadowtypeguard COMMAND anotest_shadowtypeguard)
     set_tests_properties(anoptic_shadowtypeguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Boot telemetry handshake guard: music_world_start spins ano_audio_acquire_telemetry
+    # 200x and seeds ano_synth_transport_start from the out-param whether or not any acquire
+    # succeeded, consuming uninitialized stack telemetry on the timeout arm (main.c:391,
+    # docs/BUGS.md, Engine / Interlink-Composition). Compiles the real main.c TU with the
+    # acquire and transport-start seam tokens interposed to force the never-publish arm
+    # deterministically; real audio world underneath, no GPU device touched. Fails (transport
+    # seeded from a failed handshake) until the boot path honors the acquire's false arm.
+    add_executable(anotest_boottelemetryguard anotest_boottelemetryguard.c)
+    target_link_libraries(anotest_boottelemetryguard PRIVATE anoptic_render m)
+    target_include_directories(anotest_boottelemetryguard PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME anoptic_boottelemetryguard COMMAND anotest_boottelemetryguard)
+    set_tests_properties(anoptic_boottelemetryguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
