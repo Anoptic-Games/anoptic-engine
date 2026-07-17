@@ -597,6 +597,22 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_stagingcopyguard COMMAND anotest_stagingcopyguard)
     set_tests_properties(anoptic_stagingcopyguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Texture staging-buffer failure-path leak guard: createTextureImage acquires its staging
+    # buffer at texture.c:415 and discharges it only in the success epilogue (:445), so the
+    # failure returns at :426 (image creation) and :432 (layout transition) orphan the live
+    # VkBuffer; *outStagingBuffer is written only at :445, the glTF caller's calloc'd slot stays
+    # VK_NULL_HANDLE while stagingCount++ already consumed it (ano_GltfParser.c:274) and the
+    # destroy loop at :296 no-ops, and the sibling createTextureImageFromPixels arms
+    # (:368/:374/:382) orphan identically (texture.c:426, docs/BUGS.md, Render / Vulkan backend /
+    # Implementation). Compiles the real texture.c TU against link-seam vk/helper stubs keeping a
+    # mint/destroy ledger of every staging handle; real stbi decode, no GPU device, no loader.
+    # Fails until every failure return destroys or hands out the staging buffer.
+    add_executable(anotest_texstagingguard anotest_texstagingguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/texture/texture.c)
+    target_include_directories(anotest_texstagingguard PRIVATE ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_texstagingguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_texstagingguard COMMAND anotest_texstagingguard)
+    set_tests_properties(anoptic_texstagingguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
