@@ -799,6 +799,28 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_windowcreateguard COMMAND anotest_windowcreateguard)
     set_tests_properties(anoptic_windowcreateguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Async light-cull UBO sharing guard: createUniformBuffers mints each view's camera UBO
+    # EXCLUSIVE with no asyncLc arm (commands.c:82), yet updateClusterDescriptorSets binds it into
+    # the light-cull set at binding 0 (descriptors.c:308/:330) whose dispatch runs on the dedicated
+    # compute queue family when async light-cull is on (hiz.c:93-:111, submit.c:113), and no
+    # ownership transfer exists anywhere (every barrier passes VK_QUEUE_FAMILY_IGNORED) 〜 the
+    # compute family's reads of view/proj/near/far/clusterDims (lightcull.comp:78-:118) are
+    # spec-undefined, while the module's own buffer_share_async_compute rule (slot_upload.c:46)
+    # treats every sibling binding in the same set (scene_buffers.c:56/:208/:284) (docs/BUGS.md,
+    # Render / Vulkan backend / Implementation, commands.c:82). Compiles the real commands.c,
+    # descriptors.c, scene_buffers.c and slot_upload.c TUs against link-seam vk stubs keeping a
+    # sharing-mode ledger per created buffer and a write ledger per light-cull set; no GPU device,
+    # no loader. Fails until every buffer the async light-cull consumes is gfx+compute CONCURRENT.
+    add_executable(anotest_uboshareguard anotest_uboshareguard.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/commands.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/descriptors.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/scene_buffers.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/slot_upload.c)
+    target_include_directories(anotest_uboshareguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_uboshareguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_uboshareguard COMMAND anotest_uboshareguard)
+    set_tests_properties(anoptic_uboshareguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
