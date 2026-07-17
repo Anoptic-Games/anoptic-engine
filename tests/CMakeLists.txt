@@ -500,6 +500,23 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_render_slots COMMAND anotest_render_slots)
     set_tests_properties(anoptic_render_slots PROPERTIES TIMEOUT 10 LABELS "unit;render")
 
+    # Bulk-range mid-batch failure guard: render_slots_alloc_range publishes each element's
+    # forward/reverse mapping as it walks the batch (:93/:94) but advances slotHighWater only in
+    # the epilogue (:96), so the mid-batch logical_reserve OOM return (render_slots.c:92) reports
+    # UNMAPPED while the prefix stays mapped into the un-owned high-water region; apply.c:167
+    # discards the return, the next single CREATE re-hands the same physical slot to a different
+    # render_id, and a destroy of the stale id retires the live owner's slot into the free-list
+    # for a third owner (docs/BUGS.md, Render / Vulkan backend / Implementation). Compiles the
+    # real render_slots.c TU with the heap tokens interposed to fail exactly one growth; pure
+    # index bookkeeping, no GPU device, no loader. Fails until a failed batch unwinds (or never
+    # publishes) its prefix.
+    add_executable(anotest_slotrangeguard anotest_slotrangeguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/render_slots.c)
+    target_include_directories(anotest_slotrangeguard PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(anotest_slotrangeguard PRIVATE mi_heap_malloc=anotest_seam_heap_malloc mi_heap_realloc=anotest_seam_heap_realloc mi_free=anotest_seam_free)
+    target_link_libraries(anotest_slotrangeguard PRIVATE anoptic_core)
+    add_test(NAME anoptic_slotrangeguard COMMAND anotest_slotrangeguard)
+    set_tests_properties(anoptic_slotrangeguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+
     # Static-shadow light-type domain guard: register_static_shadow indexes shadowTypeUsed[3]
     # with the raw bridge light type (shadow_casters.c:97/:114), and types 7/10 alias the
     # runtime frustum free-list counters right after the array, so a drained pool resurrects
