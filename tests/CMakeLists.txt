@@ -907,6 +907,27 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_recordbeginguard COMMAND anotest_recordbeginguard)
     set_tests_properties(anoptic_recordbeginguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Composite inset scissor guard: ano_record_composite places each aux-view inset at
+    # y = H - margin - (insetH + margin)*(idx+1) + margin in uint32 before the int32 cast
+    # (record_views.c:302, x sibling at :301), so swapchain height <= 22 wraps y negative
+    # (H=22 gives -1) and rides into vkCmdSetScissor offset.y 〜 VUID-vkCmdSetScissor-x-00595,
+    # UB on real drivers 〜 with H <= 2 also emitting a zero-height inset viewport
+    # (VUID-VkViewport-height-01772); reachable since the composite runs unconditionally for
+    # ANO_VIEW_COUNT 2, imageExtent adopts the surface currentExtent 〜 the raw Win32 client
+    # size 〜 and recreateSwapChain's only floor is the 0x0 wait loop (swapchain.c:340-:345);
+    # Win32 minimum tracking size protects x but the client height drags into [1,22]
+    # (docs/BUGS.md, Render / Vulkan backend / Implementation, record_views.c:302). Compiles
+    # the real record_views.c + passes.c TUs against link-seam vk stubs capturing every
+    # vkCmdSetScissor/vkCmdSetViewport argument; no GPU device, no loader. Fails until
+    # small-height composites place (or skip) the inset legally.
+    add_executable(anotest_insetscissorguard anotest_insetscissorguard.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/frame/record_views.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/frame/passes.c)
+    target_include_directories(anotest_insetscissorguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_insetscissorguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_insetscissorguard COMMAND anotest_insetscissorguard)
+    set_tests_properties(anoptic_insetscissorguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
