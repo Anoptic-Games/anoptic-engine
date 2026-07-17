@@ -731,6 +731,22 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_initdepthguard COMMAND anotest_initdepthguard)
     set_tests_properties(anoptic_initdepthguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Entity-growth descriptor-liveness guard: ensureEntityCapacity's && chain publishes per arm 〜
+    # slot_upload_grow_device destroys the old device buffer and swaps in the new one
+    # (slot_upload.c:191-:193) 〜 while updateUboDescriptorSets runs only on full success (:276), so a
+    # later arm's OOM returns false (:258) with the prefix arms' old VkBuffers destroyed and the live
+    # descriptor sets still referencing them (descriptors.c:550/:743/:748); the FATAL at :257 never
+    # aborts and apply.c:123/:164 drop the spawn and keep rendering 〜 the next frame binds destroyed
+    # buffers (docs/BUGS.md, Render / Vulkan backend / Implementation, slot_upload.c:221). Compiles the
+    # real slot_upload.c TU against link-seam vk/helper stubs with a mint/destroy ledger and a
+    # descriptor-snapshot updateUboDescriptorSets; no GPU device, no loader. Fails until a failed
+    # growth leaves every descriptor-referenced handle live (defer, unwind, or re-point).
+    add_executable(anotest_entitygrowguard anotest_entitygrowguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/slot_upload.c)
+    target_include_directories(anotest_entitygrowguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_entitygrowguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_entitygrowguard COMMAND anotest_entitygrowguard)
+    set_tests_properties(anoptic_entitygrowguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
