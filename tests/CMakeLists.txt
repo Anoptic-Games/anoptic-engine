@@ -318,6 +318,18 @@ target_link_libraries(anotest_logsrcguard PRIVATE anoptic_core)
 add_test(NAME anoptic_logsrcguard COMMAND anotest_logsrcguard)
 set_tests_properties(anoptic_logsrcguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# GPOS subtable-offset wrap guard: ano_gpos_extract_kerns resolves subtable offsets with
+# unchecked uint32 math (text_gpos.c:304 so += innerOff, sibling :186 class matrix), so a type-9
+# Extension whose 32-bit extensionOffset overflows so back INTO the buffer parses a different
+# in-bounds structure and the extractor returns 0 (success) against its header contract's
+# "Malformed -> nonzero" (text_internal.h:89, docs/BUGS.md, Text / Interface-level). Links
+# anoptic_core and drives the extractor on hand-built GPOS byte tables 〜 no FreeType, no device.
+# Fails (malformed wrapping table returns 0) until the offset math is range-checked.
+add_executable(anotest_gposwrapguard anotest_gposwrapguard.c)
+target_link_libraries(anotest_gposwrapguard PRIVATE anoptic_core)
+add_test(NAME anoptic_gposwrapguard COMMAND anotest_gposwrapguard)
+set_tests_properties(anoptic_gposwrapguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Score-event field-range guard: velocity and pitch above their documented AnoNoteEvent
 # ranges (1..127 / 0..127) must be rejected like velocity 0 already is, not staged to render
 # at ~2x the amplitude ceiling or alias pitch & 0x7F tie chains (docs/BUGS.md, Synth /

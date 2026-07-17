@@ -211,6 +211,8 @@ ano_synth.c:246 〜 the score_event guard rejects velocity == 0 but never the do
 
 ### Interface-level bugs and logic inefficiencies
 
+text_gpos.c:304 〜 ano_gpos_extract_kerns resolves subtable offsets with unchecked uint32 arithmetic 〜 the type-9 Extension unwrap does so += innerOff where innerOff is a raw 32-bit extensionOffset (:299), and the fmt-2 class matrix indexes off + 16 + (c1*c2n+c2)*rec with c1n/c2n up to 0xFFFF and rec up to 32 (:186) 〜 so a malformed table whose offset overflows uint32 lands the resolved offset back INSIDE the buffer at a different structure; every g16/g32 read then stays in bounds, the malformation is never caught, and the function returns 0 (success) against its header contract "Bounds-checked. Malformed -> nonzero with dense possibly partial. 0 = success including 'no kerns'." (text_internal.h:89) 〜 a caller feeding a corrupt or hostile GPOS cannot tell it from a well-formed table with no kerns, so the nonzero false arm it needs to fall back (legacy 'kern' table, warn, refuse) never fires and text lays out with silently wrong or dropped spacing 〜 pattern class A (unchecked add/multiply offset wrap) at a documented contract boundary 〜 test: anotest_gposwrapguard
+
 ### Implementation bugs
 
 ### Interlink / Composition bugs 
