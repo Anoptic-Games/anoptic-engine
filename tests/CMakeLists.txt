@@ -959,6 +959,25 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_memtypeshiftguard COMMAND anotest_memtypeshiftguard)
     set_tests_properties(anoptic_memtypeshiftguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # glTF failed-texture orphan guard: parseGltf hears createTextureImage's false
+    # (ano_GltfParser.c:276) but no failure arm discharges the out-params the callee has already
+    # written 〜 the post-create failure family (texture.c:429-:433 transition; :446-:450 view,
+    # armed the day the tallied swapchain.c:428 / texture.c:437 fixes land) returns false with
+    # the VkImage + texture-arena allocation live in loadedImages[t]/loadedAllocs[t], adoption
+    # into the teardown registry is success-only (ano_vk_register_texture at :282, the sole
+    # route cleanupVulkan walks), and :619-:621 free the host arrays holding the only copies of
+    # the handles 〜 one whole device texture orphans per failed load (docs/BUGS.md, Render /
+    # Vulkan backend / Interlink-Composition, ano_GltfParser.c:277). Compiles the real
+    # ano_GltfParser.c TU (real cgltf parse of a hand-built two-texture .gltf) against
+    # link-seam stubs; createTextureImage keeps a mint/adopt/destroy image ledger and models
+    # the callee's post-create arm as written. No GPU device, no loader. Fails until a heard
+    # false leaves zero un-adopted, un-destroyed images.
+    add_executable(anotest_gltftexleakguard anotest_gltftexleakguard.c ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
+    target_include_directories(anotest_gltftexleakguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_gltftexleakguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_gltftexleakguard COMMAND anotest_gltftexleakguard)
+    set_tests_properties(anoptic_gltftexleakguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
