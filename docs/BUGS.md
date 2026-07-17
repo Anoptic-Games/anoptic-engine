@@ -111,6 +111,8 @@ music_arp.c:102 〜 ano_generate_arp emits one event per meter slot into AnoArpR
 
 ### Interface-level bugs and logic inefficiencies
 
+shadow_casters.c:97 〜 register_static_shadow indexes shadowTypeUsed[3] with the raw bridge light type ((uint32_t)cmd.light.type at apply.c:132; nothing between anoptic_render.h's documented RenderLightType {0,1,2} and here validates it, ano_render_submit is a bare ring push), so an out-of-enum type reads struct memory past the array as its budget counter and, when that alias holds 0, passes the guard and applies the += 1 at :114 out of bounds 〜 type 7 lands exactly on rtSingleFreeCount and type 10 on rtPointFreeCount (the runtime frustum free-lists sit directly after the array), so a drained pool resurrects to count 1 and the next runtime caster pops a frustum block already owned by a live light; larger types write arbitrarily far past RendererState, and the same raw type rides LightData.type to the shaders while the budget pick falls through to SPOT 〜 test: anotest_shadowtypeguard 〜 device-free, builds where anoptic_render does
+
 ### Implementation bugs
 
 ### Interlink / Composition bugs 
