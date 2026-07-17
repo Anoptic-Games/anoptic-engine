@@ -385,6 +385,18 @@ target_include_directories(anotest_percmeterguard PRIVATE ${CMAKE_SOURCE_DIR}/sr
 add_test(NAME anoptic_percmeterguard COMMAND anotest_percmeterguard)
 set_tests_properties(anoptic_percmeterguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Music mode domain guard: ano_music_set_override("mode", v) casts (int)v unchecked
+# (music_host.c:194) and the config seam copies cfg.mode as blind (:58); the conductor pins
+# either verbatim refusing only ANO_MODE_NONE, launders negatives via (uint8_t), and every bar
+# indexes ano_mode_intervals' [7][7] table with the raw value (music_theory.c:58) while
+# republishing it in AnoMusicMeaning.mode against its AnoMode contract (docs/BUGS.md, Music /
+# Interface-level). Fails (out-of-enum meaning.mode observed on both seams) until the mode
+# domain is validated.
+add_executable(anotest_musicmodeguard anotest_musicmodeguard.c)
+target_link_libraries(anotest_musicmodeguard PRIVATE anoptic_core)
+add_test(NAME anoptic_musicmodeguard COMMAND anotest_musicmodeguard)
+set_tests_properties(anoptic_musicmodeguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
