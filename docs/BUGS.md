@@ -39,6 +39,8 @@ audio_linux.c:168 〜 alsa_stop joins mx->deviceThread before its !st deviceStat
 
 ### Implementation bugs
 
+filesystem_win64.c:137 〜 ano_fs_write's loop has no forward-progress check, so a WriteFile returning TRUE with 0 bytes written advances neither cursor nor remaining and the writer spins forever instead of returning -1; MSDN never promises written > 0 on success for synchronous file handles (network redirectors and filter drivers are the plausible producers), and the linux twin is immune by POSIX (write of nbyte > 0 on a regular file cannot return 0) 〜 test: pending 〜 no seam to make the real WriteFile return a zero-progress TRUE
+
 ### Interlink / Composition bugs 
 
 
