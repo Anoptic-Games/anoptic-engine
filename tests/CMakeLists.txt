@@ -396,6 +396,17 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_render_slots COMMAND anotest_render_slots)
     set_tests_properties(anoptic_render_slots PROPERTIES TIMEOUT 10 LABELS "unit;render")
 
+    # Static-shadow light-type domain guard: register_static_shadow indexes shadowTypeUsed[3]
+    # with the raw bridge light type (shadow_casters.c:97/:114), and types 7/10 alias the
+    # runtime frustum free-list counters right after the array, so a drained pool resurrects
+    # and the next runtime caster double-allocates a live frustum block (docs/BUGS.md,
+    # Render / Vulkan backend / Interface-level). Pure host logic, no GPU device. Fails until
+    # the type is validated at the bridge seam.
+    add_executable(anotest_shadowtypeguard anotest_shadowtypeguard.c)
+    target_link_libraries(anotest_shadowtypeguard PRIVATE anoptic_render)
+    add_test(NAME anoptic_shadowtypeguard COMMAND anotest_shadowtypeguard)
+    set_tests_properties(anoptic_shadowtypeguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
