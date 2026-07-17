@@ -280,6 +280,22 @@ target_link_libraries(anotest_limiterguard PRIVATE anoptic_core)
 add_test(NAME anoptic_limiterguard COMMAND anotest_limiterguard)
 set_tests_properties(anoptic_limiterguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Shutdown adopted-block discharge guard: ano_audio_shutdown joins the mixer, stops the device,
+# and destroys both bridge rings and the module heap without walking mx->buffers or draining
+# either ring, while adopted blocks live on the DEFAULT mi heap (plain mi_malloc,
+# ano_audio.c:260) 〜 so LIVE owned blocks, queued ACMD_BUFFER_REGISTER blocks, and un-polled
+# AEVT_BUFFER_RETIRED blocks all orphan permanently against the lossless-block invariant
+# (audio_internal.h:9; ano_audio.c:204, docs/BUGS.md, Audio / Implementation). Compiles the real
+# ano_audio.c + audio_mixer.c TUs with the allocator tokens interposed to audit adopted-block
+# balance; null backend, no sound hardware. Fails until shutdown discharges every adopted block.
+add_executable(anotest_audioshutguard anotest_audioshutguard.c
+        ${CMAKE_SOURCE_DIR}/src/audio/ano_audio.c
+        ${CMAKE_SOURCE_DIR}/src/audio/audio_mixer.c)
+target_compile_definitions(anotest_audioshutguard PRIVATE mi_malloc=anotest_seam_malloc mi_free=anotest_seam_free)
+target_link_libraries(anotest_audioshutguard PRIVATE anoptic_core)
+add_test(NAME anoptic_audioshutguard COMMAND anotest_audioshutguard)
+set_tests_properties(anoptic_audioshutguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Drain-batch sizing guard: deferred records render at their format width, not their stored
 # size, so a wide "%*d" burst must survive a drain pass with nothing lost and full-width
 # fields (docs/BUGS.md, Log / Implementation). Fails (crashes in the drain pass) until the
