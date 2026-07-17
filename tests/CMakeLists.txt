@@ -100,6 +100,14 @@ target_link_libraries(anotest_uipathguard PRIVATE anoptic_core m)
 add_test(NAME anoptic_uipathguard COMMAND anotest_uipathguard)
 set_tests_properties(anoptic_uipathguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Paint-push stop guard: b->stopCount + stopCount wraps uint32, so a near-UINT32_MAX stop
+# count slips the cap guard and the copy loop runs off the stop array (docs/BUGS.md, UI /
+# Implementation). Fails (access violation in the copy) until the guard computes without wrap.
+add_executable(anotest_uipaintguard anotest_uipaintguard.c)
+target_link_libraries(anotest_uipaintguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_uipaintguard COMMAND anotest_uipaintguard)
+set_tests_properties(anoptic_uipaintguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
 # DISABLED in ctest, run ./anotest_strbench by hand from a -O3 build.
 add_executable(anotest_strbench anotest_strbench.c)
