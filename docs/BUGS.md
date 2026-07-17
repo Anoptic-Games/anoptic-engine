@@ -95,6 +95,8 @@ ano_meshoptimizer.c:282 〜 ano_build_meshlets clamps max_vertices/max_triangles
 
 ### Interface-level bugs and logic inefficiencies
 
+music_host.c:193 〜 ano_music_set_override("cadence_policy", v) refuses unknown names but accepts any value, casting (int8_t)v unchecked (the config seam memcpys cadencePolicies just as blind at :65), and policy_of returns the pin verbatim ahead of every other source (music_conductor.c:132), so any value outside {-1..2} indexes the [3]-sized policy tables out of bounds behind guards that only exclude NONE 〜 CADENCE_TARGET[3] (music_harmony.c:119) reads PRE_CADENCE_FUNCTION's 'D' as cadence chord degree 68, ano_chord_symbol then derefs ROMAN[67] == NULL and the engine segfaults on the composing (audio) thread at the first phrase's cadence lookahead; DEGS (music_melody.c:517) and ARRIVE/APPROACH/PNAME (music_verify.c:752) share the one-sided guard, and the raw value is republished to gameplay in AnoMusicMeaning.cadencePolicy against its documented AnoCadencePolicy contract 〜 test: anotest_musiccadenceguard
+
 ### Implementation bugs
 
 music_arp.c:102 〜 ano_generate_arp emits one event per meter slot into AnoArpResult.events[ANO_METER_MAX_SLOTS] with no bound, but ano_meter_slots exceeds the 32-slot cap for any meter past 8 quarters (9/4 is 36, 12/4 is 48) and ano_music_create accepts such meters unvalidated, so at noteDensity > 0.65 the loop writes the tail past the stack array inside ano_engine_advance_bar 〜 the 33rd write lands on eventCount itself, recycling the tail into events[0..2] and silently truncating the bar to 3 events on top of the stack stomp 〜 the metric-weights twin at music_ir.c:63 clamps exactly this and the arp does not 〜 test: anotest_musicarpguard

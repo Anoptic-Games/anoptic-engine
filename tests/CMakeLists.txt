@@ -352,6 +352,17 @@ target_include_directories(anotest_musicarpguard PRIVATE ${CMAKE_SOURCE_DIR}/src
 add_test(NAME anoptic_musicarpguard COMMAND anotest_musicarpguard)
 set_tests_properties(anoptic_musicarpguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Cadence-policy value domain guard: ano_music_set_override("cadence_policy", v) validates the
+# name but not the value (music_host.c:193), so any v outside {-1..2} rides policy_of verbatim
+# into three [3]-sized tables guarded only against NONE (music_melody.c:517 DEGS,
+# music_verify.c:752/:753/:762) and back out through AnoMusicMeaning.cadencePolicy
+# (docs/BUGS.md, Music / Interface-level). Fails (out-of-enum policy republished on every
+# cadence and pre-cadence bar) until the boundary rejects or clamps the value.
+add_executable(anotest_musiccadenceguard anotest_musiccadenceguard.c)
+target_link_libraries(anotest_musiccadenceguard PRIVATE anoptic_core)
+add_test(NAME anoptic_musiccadenceguard COMMAND anotest_musiccadenceguard)
+set_tests_properties(anoptic_musiccadenceguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
