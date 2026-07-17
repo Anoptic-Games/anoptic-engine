@@ -613,6 +613,21 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_texstagingguard COMMAND anotest_texstagingguard)
     set_tests_properties(anoptic_texstagingguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Texture staging-acquisition failure guard: createTextureImage discards createDataBuffer's
+    # status at texture.c:415 and consumes the out-params regardless, so the :417-418 memcpy
+    # writes the decoded image through stagingAlloc.mapped 〜 NULL on the callee's arena-exhaustion
+    # arm (commands.c:59-64), an uninitialized stack pointer on its vkCreateBuffer arm
+    # (commands.c:50-54); the sibling createTextureImageFromPixels repeats the shape at :360-363
+    # (docs/BUGS.md, Render / Vulkan backend / Implementation). Compiles the real texture.c TU
+    # against link-seam vk/helper stubs whose acquire failure is contract-faithful to the real
+    # exhaustion arm; real stbi decode, no GPU device, no loader. Fails (access violation in the
+    # memcpy) until the acquire's false arm is honored.
+    add_executable(anotest_texacquireguard anotest_texacquireguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/texture/texture.c)
+    target_include_directories(anotest_texacquireguard PRIVATE ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_texacquireguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_texacquireguard COMMAND anotest_texacquireguard)
+    set_tests_properties(anoptic_texacquireguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
