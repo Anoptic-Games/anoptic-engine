@@ -146,6 +146,16 @@ target_link_libraries(anotest_meshguard PRIVATE anoptic_core m)
 add_test(NAME anoptic_meshguard COMMAND anotest_meshguard)
 set_tests_properties(anoptic_meshguard PROPERTIES TIMEOUT 30 LABELS "unit;mesh")
 
+# Simplify collapse-validity guard: ano_simplify delegates to ano_simplify_ex with
+# edge_len_factor 0, and the link/tetra collapse exclusion only runs when the growth guards
+# are on (ano_meshoptimizer.c:955), so a rim collapse on a 3-tri cone fan emits the same face
+# twice 〜 a coincident opposite-wound duplicate the guards-on path rejects (docs/BUGS.md,
+# Mesh / Implementation). Fails until the base path enforces collapse validity.
+add_executable(anotest_meshsimplifyguard anotest_meshsimplifyguard.c)
+target_link_libraries(anotest_meshsimplifyguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_meshsimplifyguard COMMAND anotest_meshsimplifyguard)
+set_tests_properties(anoptic_meshsimplifyguard PROPERTIES TIMEOUT 30 LABELS "unit;mesh")
+
 # Testing for ``anoptic_memory.h`` (mimalloc heaps, aligned/scoped alloc, huge pages)
 add_executable(anotest_memory anotest_memory.c)
 target_link_libraries(anotest_memory PRIVATE anoptic_core)
