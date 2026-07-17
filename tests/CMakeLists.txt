@@ -517,6 +517,22 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_slotrangeguard COMMAND anotest_slotrangeguard)
     set_tests_properties(anoptic_slotrangeguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
 
+    # Sentinel-id wrap guard: logical_reserve grows the logical map to need = render_id + 1u
+    # (render_slots.c:35), so the module's own sentinel 0xFFFFFFFF wraps need to 0, ensure_cap
+    # reports success without growing, and render_slots_alloc consumes a slot then stores it at
+    # logicalToSlot[0xFFFFFFFF] 〜 a wild write ~16 GiB past the map on the render master thread;
+    # ano_render_submit is a bare ring push and apply.c:125/:167 forward the id raw, while the
+    # resolve twin guards this exact edge (:102) (docs/BUGS.md, Render / Vulkan backend /
+    # Interface-level). Compiles the real render_slots.c TU with the heap tokens interposed onto
+    # libc; pure index bookkeeping, no GPU device, no loader. Fails (crash on the wild store, or
+    # a live slot handed to the sentinel) until the alloc seam rejects the sentinel.
+    add_executable(anotest_slotsentinelguard anotest_slotsentinelguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/render_slots.c)
+    target_include_directories(anotest_slotsentinelguard PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_compile_definitions(anotest_slotsentinelguard PRIVATE mi_heap_malloc=anotest_seam_heap_malloc mi_heap_realloc=anotest_seam_heap_realloc mi_free=anotest_seam_free)
+    target_link_libraries(anotest_slotsentinelguard PRIVATE anoptic_core)
+    add_test(NAME anoptic_slotsentinelguard COMMAND anotest_slotsentinelguard)
+    set_tests_properties(anoptic_slotsentinelguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+
     # Static-shadow light-type domain guard: register_static_shadow indexes shadowTypeUsed[3]
     # with the raw bridge light type (shadow_casters.c:97/:114), and types 7/10 alias the
     # runtime frustum free-list counters right after the array, so a drained pool resurrects
