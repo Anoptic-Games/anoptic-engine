@@ -858,6 +858,23 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_gfxshadermodguard COMMAND anotest_gfxshadermodguard)
     set_tests_properties(anoptic_gfxshadermodguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Flat-builder failure-path orphan guard: flat_init_with_cull discharges its three
+    # ano_aligned_malloc'd shader-code buffers and minted VkShaderModules only in the success
+    # epilogue (flat.c:301-:309), so the failure returns at :79/:88/:101/:244/:261/:296 orphan
+    # whatever is live 〜 stack locals no cleanup can reach, the author's own TODO names the
+    # missing "garbo removers" (pipeline.c:122), and shadow_pipe.c:160-:161 shares the shape
+    # (flat.c:244, docs/BUGS.md, Render / Vulkan backend / Implementation). Compiles the real
+    # flat.c TU against link-seam vk stubs with the TU's ano_aligned allocator interposed for a
+    # live-set ledger plus a module mint/destroy ledger; armed Nth-call refusals on
+    # vkCreateGraphicsPipelines and loadFile; best-effort real teardown before measuring so
+    # ownership-adoption fixes pass; no GPU device, no loader. Fails until every failure return
+    # discharges the buffers and modules acquired before it.
+    add_executable(anotest_flatorphanguard anotest_flatorphanguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/pipelines/flat.c)
+    target_include_directories(anotest_flatorphanguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_flatorphanguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_flatorphanguard COMMAND anotest_flatorphanguard)
+    set_tests_properties(anoptic_flatorphanguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
