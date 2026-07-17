@@ -837,6 +837,27 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_shadermodguard COMMAND anotest_shadermodguard)
     set_tests_properties(anoptic_shadermodguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Graphics-side shader-module sentinel guard: every graphics pipeline builder discards
+    # createShaderModule's documented NULL failure return and bakes the dead handle into
+    # VkPipelineShaderStageCreateInfo.module for vkCreateGraphicsPipelines 〜 family head
+    # flat_init_with_cull mints three unchecked (flat.c:90-:92, consumed at :106/:112/:269 into
+    # the creates at :244/:261/:296 for all three boot lanes), the shape repeating at
+    # shadow_pipe.c:52-:53/:162-:163/:214-:215, tonemap.c:55-:56, additive.c:68-:69,
+    # transmission.c:75-:76, text_raster.c:344/:379-:380/:489-:490 〜 an invalid-usage pipeline
+    # create (VUID-VkPipelineShaderStageCreateInfo-module, no maintenance5 fallback) instead of
+    # the boot refusal every loadFile arm one line above proves intended, while pipeline.c:104
+    # guards the identical mint one file over (docs/BUGS.md, Render / Vulkan backend /
+    # Implementation, flat.c:90). Compiles the real flat.c TU against link-seam vk stubs with a
+    # module mint/destroy ledger and a per-stage module ledger; loadFile/createShaderModule/
+    # ano_pipeline_task_stage are contract-faithful stand-ins mirroring pipeline.c:41/:78-93/
+    # :96-117; no GPU device, no loader. Fails until a NULL module aborts init before pipeline
+    # creation.
+    add_executable(anotest_gfxshadermodguard anotest_gfxshadermodguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/pipelines/flat.c)
+    target_include_directories(anotest_gfxshadermodguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_gfxshadermodguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_gfxshadermodguard COMMAND anotest_gfxshadermodguard)
+    set_tests_properties(anoptic_gfxshadermodguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
