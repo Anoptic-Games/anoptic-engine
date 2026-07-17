@@ -342,6 +342,16 @@ target_link_libraries(anotest_music PRIVATE anoptic_core)
 add_test(NAME anoptic_music COMMAND anotest_music)
 set_tests_properties(anoptic_music PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Arp emission slot guard: ano_meter_slots exceeds ANO_METER_MAX_SLOTS for meters past 8
+# quarters (9/4 -> 36) and ano_generate_arp streams one event per slot into the 32-entry
+# AnoArpResult array with no bound (docs/BUGS.md, Music / Implementation). Fails (canary
+# stomped past the result struct, bar truncated) until the emission respects the cap.
+add_executable(anotest_musicarpguard anotest_musicarpguard.c)
+target_link_libraries(anotest_musicarpguard PRIVATE anoptic_core)
+target_include_directories(anotest_musicarpguard PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME anoptic_musicarpguard COMMAND anotest_musicarpguard)
+set_tests_properties(anoptic_musicarpguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
