@@ -87,6 +87,8 @@ memalign_win64.c:13 〜 ano_aligned_malloc forwards straight to mi_malloc_aligne
 
 ano_meshoptimizer.c:282 〜 ano_build_meshlets clamps max_vertices/max_triangles only from above and skips the max_vertices < 3 / max_triangles < 1 rejection its sizing twin ano_build_meshlets_bound enforces at :85, so build(indices {0,1,2}, max_vertices 2) returns 1 meshlet with vertex_count 3 where bound() returned 0 〜 a caller sizing buffers from bound() per the header contract hands build zero-length arrays and takes a heap overwrite, and the emitted meshlet breaks the max_vertices promise the meshlet_vertices layout is built on 〜 test: anotest_meshguard
 
+ano_meshoptimizer.c:955 〜 ano_simplify_ex runs the link/tetra collapse-validity exclusion only when the growth guards are on (maxEdge2 != FLT_MAX), and ano_simplify calls it with edge_len_factor 0, so the base public API executes topologically illegal collapses its own guards-on twin rejects: one rim collapse on a 3-triangle cone fan rewrites a surviving triangle onto the remaining rim pair and the output is the same face twice 〜 two coincident opposite-wound triangles, a zero-volume sack that z-fights and rides straight into LOD chains against the header's degenerate-dropping promise 〜 test: anotest_meshsimplifyguard
+
 ### Interlink / Composition bugs 
 
 
