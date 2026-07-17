@@ -875,6 +875,25 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_flatorphanguard COMMAND anotest_flatorphanguard)
     set_tests_properties(anoptic_flatorphanguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
 
+    # Frame-record begin guard: recordCommandBuffer checks vkBeginCommandBuffer and only logs 〜
+    # the function is void, drawFrame has no failure channel (vulkanMaster.c:228) 〜 and the
+    # asyncLc split repeats the shape at record.c:202/:205, so a begin refused under memory
+    # pressure keeps recording: every vkCmd* lands on a command buffer never put in RECORDING
+    # state, the :297 end is a second state breach, and ano_frame_submit consumes the
+    # never-recorded buffer as if executable (submit.c:44/:72/:94), while the same module's
+    # submit twin returns false on its own failing call (submit.c:47-:51) (docs/BUGS.md, Render /
+    # Vulkan backend / Implementation, record.c:29). Compiles the real record.c + passes.c TUs
+    # against link-seam vk stubs keeping a per-CB lifecycle state machine and dead-buffer
+    # ledgers; armed Nth-call begin refusals; no GPU device, no loader. Fails until a failed
+    # begin stops recording on both the plain and split paths.
+    add_executable(anotest_recordbeginguard anotest_recordbeginguard.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/frame/record.c
+        ${CMAKE_SOURCE_DIR}/src/vulkan_backend/frame/passes.c)
+    target_include_directories(anotest_recordbeginguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_recordbeginguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_recordbeginguard COMMAND anotest_recordbeginguard)
+    set_tests_properties(anoptic_recordbeginguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
