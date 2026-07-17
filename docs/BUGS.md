@@ -163,6 +163,8 @@ ano_synth.c:246 〜 the score_event guard rejects velocity == 0 but never the do
 
 time_linux.c:132 〜 ano_sleep's failure path perrors and returns errno, but clock_nanosleep reports errors in its return value without setting errno, so a real failure returns stale errno 〜 possibly 0, i.e. success 〜 instead of the status the loop already holds in sleepStatus; latent, the non-EINTR path needs a kernel-level failure today's argument conversion cannot produce 〜 test: pending 〜 linux-only and needs a clock_nanosleep failure injection seam
 
+time_win64.c:310 〜 ano_sleep computes target_ns = us * 1000 in uint64, so us > UINT64_MAX/1000 (a ~585-year request) wraps target_ns near zero and the call returns success almost immediately against the header's "sleep for us microseconds"; the macos twin has the same wrap at time_macos.c:168, while time_linux.c splits us into tv_sec/tv_nsec and is immune 〜 test: pending 〜 a correct ~585-year sleep cannot be awaited by a test
+
 ### Interlink / Composition bugs 
 
 
