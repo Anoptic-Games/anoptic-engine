@@ -661,6 +661,23 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_texacquireguard COMMAND anotest_texacquireguard)
     set_tests_properties(anoptic_texacquireguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Scene-buffer FATAL fall-through guard: createMaterialBuffer's vkCreateBuffer failure arm
+    # logs ANO_FATAL and falls through (scene_buffers.c:34-36 〜 ano_log never aborts), so :39
+    # consumes the failed call's out-param handle, gpu_alloc sizes from garbage requirements,
+    # :46 binds it and the creator returns true; createTransformBuffer repeats the shape at
+    # :174-176/:179/:186 and createCullingBuffers drops all six results with no guard
+    # (:343/:359/:375/:392/:409/:424), while the same file's siblings return false on the
+    # identical check (:212/:249/:288/:295) (docs/BUGS.md, Render / Vulkan backend /
+    # Implementation). Compiles the real scene_buffers.c TU against link-seam vk/helper stubs
+    # keeping a mint ledger; the contract-faithful failing create leaves the out-param untouched
+    # so pre-poisoned handle slots expose every wild consumption deterministically. No GPU
+    # device, no loader. Fails until each creator's failure arm actually returns false.
+    add_executable(anotest_scenebufferguard anotest_scenebufferguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/scene_buffers.c)
+    target_include_directories(anotest_scenebufferguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(anotest_scenebufferguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_scenebufferguard COMMAND anotest_scenebufferguard)
+    set_tests_properties(anoptic_scenebufferguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
