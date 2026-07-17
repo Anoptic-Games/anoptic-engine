@@ -288,6 +288,15 @@ target_link_libraries(anotest_synthguard PRIVATE anoptic_core)
 add_test(NAME anoptic_synthguard COMMAND anotest_synthguard)
 set_tests_properties(anoptic_synthguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Score-tempo schedule-state guard: score_tempo called before score_begin must report the
+# documented-order misuse with false like every sibling entry point does, not hand a NULL
+# anchor array to clock_add and die on the deref (docs/BUGS.md, Synth / Interface-level,
+# ano_synth.c:227). Fails (SEGFAULT at the trigger) until the state guard lands.
+add_executable(anotest_synthtempoguard anotest_synthtempoguard.c)
+target_link_libraries(anotest_synthtempoguard PRIVATE anoptic_core)
+add_test(NAME anoptic_synthtempoguard COMMAND anotest_synthtempoguard)
+set_tests_properties(anoptic_synthtempoguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
 # cascades to null); by hand on a desktop it is the audible Phase 1 check.
 add_executable(anotest_audiotone anotest_audiotone.c)
