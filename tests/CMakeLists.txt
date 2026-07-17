@@ -536,6 +536,22 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_imageviewguard COMMAND anotest_imageviewguard)
     set_tests_properties(anoptic_imageviewguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
+    # Swapchain support-query leak guard: initSwapChain consumes querySwapChainSupport's two
+    # calloc'd arrays (formats swapchain.c:33, presentModes :38) and returns on both arms
+    # without freeing either 〜 the by-value details struct is a discarded local 〜 so the boot
+    # call (vulkanMaster.c:449) orphans both blocks and every resize recreation
+    # (recreateSwapChain, swapchain.c:353) orphans two more, unbounded accrual under resize
+    # storms (swapchain.c:110, docs/BUGS.md, Render / Vulkan backend / Implementation).
+    # Compiles the real swapchain.c TU against link-seam vk/glfw/engine stubs with the TU's
+    # allocator tokens interposed to audit heap balance; no GPU device, no loader. Fails until
+    # the support arrays are discharged before return.
+    add_executable(anotest_swapleakguard anotest_swapleakguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/swapchain.c)
+    target_include_directories(anotest_swapleakguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(anotest_swapleakguard PRIVATE mi_malloc=anotest_seam_malloc mi_calloc=anotest_seam_calloc mi_free=anotest_seam_free)
+    target_link_libraries(anotest_swapleakguard PRIVATE anoptic_core m)
+    add_test(NAME anoptic_swapleakguard COMMAND anotest_swapleakguard)
+    set_tests_properties(anoptic_swapleakguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)
