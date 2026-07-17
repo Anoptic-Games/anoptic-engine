@@ -161,6 +161,8 @@ ano_synth.c:246 〜 the score_event guard rejects velocity == 0 but never the do
 
 ### Implementation bugs
 
+time_linux.c:132 〜 ano_sleep's failure path perrors and returns errno, but clock_nanosleep reports errors in its return value without setting errno, so a real failure returns stale errno 〜 possibly 0, i.e. success 〜 instead of the status the loop already holds in sleepStatus; latent, the non-EINTR path needs a kernel-level failure today's argument conversion cannot produce 〜 test: pending 〜 linux-only and needs a clock_nanosleep failure injection seam
+
 ### Interlink / Composition bugs 
 
 
