@@ -127,6 +127,8 @@ swapchain.c:428 〜 createImageView's failure arm only logs and falls through to
 
 ### Interlink / Composition bugs 
 
+ano_render_bridge.c:204 〜 ano_render_ui_set's validator ui_prim_valid bounds every block-local reference the header enumerates 〜 clipRef, paintRef, GLYPHS windows, the full PATH curve walk 〜 but never a paint's stop window [stopFirst, +stopCount) against ui->stopCount, and no later layer recovers: apply.c:325 adopts the block blind, ui_compose rebases pa.stopFirst += ns unchecked (ui_raster.c:123), and the GPU evaluator's only guard is stopCount != 0 (uicoverage.glsl:176) though its own comment claims the out-of-range window "fails CLOSED. Mirrors ano_ui_ref_paint" 〜 the mirror's range check exists solely in the CPU ref (ui_raster_ref.c:229), so a hand-built block with stopFirst past its stop table sails through the seam whose stated purpose is that hand-built blocks cannot run the GPU walker past a stream, and ui_stop_color indexes the stop SSBO out of bounds on every painted pixel (a large stopFirst reads past the whole uiFrameBuffer binding 〜 robustness-dependent garbage or device-lost); the lone ref guard itself wraps in uint32, so stopFirst near UINT32_MAX slips even it 〜 test: anotest_uistopguard
+
 
 
 ## Strings (including strings_utf.h)
