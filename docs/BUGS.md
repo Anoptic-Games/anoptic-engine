@@ -147,6 +147,8 @@ ano_strings_ops.c:86 〜 anostr_join sizes its result as sep.len * (count-1) plu
 
 ### Interface-level bugs and logic inefficiencies
 
+ano_synth.c:227 〜 ano_synth_score_tempo validates only bpm and hands straight to clock_add, which unconditionally dereferences the last anchor (:157), but the anchor array exists only after score_begin/live_begin 〜 on a fresh synth anchors is NULL and anchorMask 0, so the documented-order misuse (anoptic_synth.h:80) that every sibling entry point reports with false (score_bar/score_event via their zero-cap checks, score_end via barCount, live_bar via !live, score_frames/time_at via scoreReady) is a deterministic NULL deref on the logic thread; the same unguarded path called after score_end silently mutates the tempo map the notes were already frame-stamped against 〜 test: anotest_synthtempoguard
+
 ### Implementation bugs
 
 ano_synth.c:246 〜 the score_event guard rejects velocity == 0 but never the documented upper bounds (velocity 1..127, pitch 0..127 per AnoNoteEvent), so an event with velocity 200 or pitch 130 returns true and enters the schedule; the voice then renders at powf(v/127, 1.5) ≈ 2x the contract's amplitude ceiling, and merge_ties keys chains on pitch & 0x7F so an out-of-range pitch aliases a different in-range pitch's tie chain and silently merges two different-pitch notes into one 〜 the live twin at :429/:431 has the same one-sided filter 〜 test: anotest_synthguard
