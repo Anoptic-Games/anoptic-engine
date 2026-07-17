@@ -73,6 +73,8 @@ log_core.c:817 〜 the drain batch g_batch is sized ring bytes + 16 per record o
 
 ### Implementation bugs
 
+memalign_win64.c:13 〜 ano_aligned_malloc forwards straight to mi_malloc_aligned with no zero guard, so size 0 returns a live non-NULL block against the header's "NULL if size or alignment is 0" contract at anoptic_memory.h:47 (mimalloc hands back a unique pointer for size 0); the linux/macos twins at memalign_linux.c:13 / memalign_macos.c:13 are identical, and the alignment-0 half of the contract holds only by mimalloc's own power-of-two refusal 〜 test: anotest_memguard
+
 ### Interlink / Composition bugs 
 
 

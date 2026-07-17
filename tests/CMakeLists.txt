@@ -136,6 +136,14 @@ target_link_libraries(anotest_memory PRIVATE anoptic_core)
 add_test(NAME anoptic_memory COMMAND anotest_memory)
 set_tests_properties(anoptic_memory PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Aligned-malloc zero contract: anoptic_memory.h promises NULL when size or alignment is 0,
+# but every platform memalign forwards straight to mi_malloc_aligned, which hands back a live
+# pointer for size 0 (docs/BUGS.md, Memory / Implementation). Fails until the guard lands.
+add_executable(anotest_memguard anotest_memguard.c)
+target_link_libraries(anotest_memguard PRIVATE anoptic_core)
+add_test(NAME anoptic_memguard COMMAND anotest_memguard)
+set_tests_properties(anoptic_memguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
 # Easter egg: the original allocator experiment, preserved verbatim (see the file banner). 
 # Built so it cannot rot, but DISABLED in ctest
 # -- run ./anotest_chariots by hand. -w
