@@ -100,6 +100,14 @@ target_link_libraries(anotest_uipathguard PRIVATE anoptic_core m)
 add_test(NAME anoptic_uipathguard COMMAND anotest_uipathguard)
 set_tests_properties(anoptic_uipathguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Tile-build cap guard: tilesX*tilesY and nTiles+1 wrap uint32, so a 2^32-tile request slips
+# the offsetsCap guard and reports ok for buffers that hold none of it (docs/BUGS.md, UI /
+# Implementation). Fails until the sizing math stops wrapping.
+add_executable(anotest_uitileguard anotest_uitileguard.c)
+target_link_libraries(anotest_uitileguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_uitileguard COMMAND anotest_uitileguard)
+set_tests_properties(anoptic_uitileguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Paint-push stop guard: b->stopCount + stopCount wraps uint32, so a near-UINT32_MAX stop
 # count slips the cap guard and the copy loop runs off the stop array (docs/BUGS.md, UI /
 # Implementation). Fails (access violation in the copy) until the guard computes without wrap.

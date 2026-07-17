@@ -183,6 +183,8 @@ ui_path.c:99 〜 ano_ui_path_fill guards its quad budget (qn at :95/:122/:139) b
 
 ui_build.c:236 〜 paint_push's fullness guard adds b->stopCount + stopCount in uint32, so once any stops are resident a stopCount near UINT32_MAX wraps the sum under stopCap, the guard passes, and the :239 copy loop writes ~2^32 32-byte stops past the caller's array 〜 reached from the public ano_ui_paint_linear/radial/conic and a direct breach of the header's "full array -> ANO_UI_REF_NONE, no mutation" promise at anoptic_ui.h:121; absurd-argument territory, but the guard is defeated rather than the input rejected 〜 test: anotest_uipaintguard
 
+ui_tiles.c:66 〜 ano_ui_tile_build computes nTiles = tilesX * tilesY and guards nTiles + 1 > offsetsCap in uint32, so 65536 x 65536 wraps nTiles to 0, the cap guard passes, *ok stays true for a 2^32-tile grid the buffers cannot hold, and any prim in the scene scatters pass-1 counts into offsets[] far past offsetsCap; tilesX = UINT32_MAX with tilesY = 1 wraps nTiles+1 to 0 instead and the :73 zero-fill writes 2^32 offsets out of bounds 〜 absurd tile counts, but "*ok false if a cap is too small" is exactly the promise the wrap defeats 〜 test: anotest_uitileguard
+
 ### Interlink / Composition bugs 
 
 
