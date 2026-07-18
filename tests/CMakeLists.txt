@@ -23,6 +23,17 @@ target_link_libraries(anotest_filesystem PRIVATE anoptic_core)
 add_test(NAME anoptic_filesystem COMMAND anotest_filesystem)
 set_tests_properties(anoptic_filesystem PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Userpath squatter guard: mkdir's EEXIST is accepted without checking the existing entry is a
+# directory, so a regular file squatting the per-user game dir makes ano_fs_userpath return a
+# non-empty path that rejects every write, breaking the header's "ready to write into" promise
+# (docs/BUGS.md, Filesystem / Implementation). The user-data root is redirected into an
+# exe-anchored scratch, so the real per-user dir is never touched. Fails until the EEXIST
+# directory check lands.
+add_executable(anotest_fsguard anotest_fsguard.c)
+target_link_libraries(anotest_fsguard PRIVATE anoptic_core)
+add_test(NAME anoptic_fsguard COMMAND anotest_fsguard)
+set_tests_properties(anoptic_fsguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # Testing for ``anoptic_strings.h`` (the 16-byte value type, builder, keep, slicing)
 add_executable(anotest_strings anotest_strings.c)
 target_link_libraries(anotest_strings PRIVATE anoptic_core)
@@ -50,6 +61,19 @@ add_executable(anotest_strings_fuzz anotest_strings_fuzz.c)
 target_link_libraries(anotest_strings_fuzz PRIVATE anoptic_core)
 add_test(NAME anoptic_strings_fuzz COMMAND anotest_strings_fuzz)
 set_tests_properties(anoptic_strings_fuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;mem")
+
+# Trimmed-collation decomp guard: ce_push_rune consults the decomp table before the CE table,
+# and the generated decomp entries for U+01EF (ǯ, ezh-caron) / U+0374 (Greek numeral sign)
+# redirect through U+0292 / U+02B9, both trimmed OUT of the CE table -- so their correct direct
+# CEs ([270B.020.02], [04F2.020.02]) are unreachable and ce_push_cp falls to UCA implicit
+# weights, while the uppercase sibling U+01EE rides its kept target U+01B7: the case pair the
+# module itself maps splits across the whole collation space, lowercase after kana
+# (docs/BUGS.md, Strings / Implementation, ano_strings_collate.c:75). Fails until the decomp
+# and CE tables agree on coverage (or a direct CE listing wins over decomposition).
+add_executable(anotest_strguard anotest_strguard.c)
+target_link_libraries(anotest_strguard PRIVATE anoptic_core)
+add_test(NAME anoptic_strguard COMMAND anotest_strguard)
+set_tests_properties(anoptic_strguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Collation sort benchmark: the 6000-item inventory. qsort+collate baseline vs anostr_sort
 # / sort_idx / sym_sort (cold + warm) vs byte floor, plus replace_all/cull/rune_sort.
@@ -84,6 +108,15 @@ add_custom_command(TARGET anotest_text POST_BUILD
         VERBATIM)
 add_test(NAME anoptic_text COMMAND anotest_text)
 set_tests_properties(anoptic_text PROPERTIES TIMEOUT 30 LABELS "unit")
+
+# Measure guard: a trailing byteCount-0 run is documented as a no-op (anoptic_text.h:113) but
+# shape_core takes the final line height from runs[runCount-1].sizePx, so a trailing no-op run
+# inflates ano_text_measure_runs height (docs/BUGS.md, Text / Interface). Headless: a stack
+# AnoFontBake with no ranges, no font, no FreeType. Fails until the endStep skips no-op runs.
+add_executable(anotest_textguard anotest_textguard.c)
+target_link_libraries(anotest_textguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_textguard COMMAND anotest_textguard)
+set_tests_properties(anoptic_textguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Testing for ``anoptic_ui.h`` (prim ABI, builder, reference evaluator). Oracles:
 # 64x64-supersampled coverage + separable-Gaussian-blurred masks, both in double.
@@ -135,6 +168,14 @@ add_executable(anotest_memory anotest_memory.c)
 target_link_libraries(anotest_memory PRIVATE anoptic_core)
 add_test(NAME anoptic_memory COMMAND anotest_memory)
 set_tests_properties(anoptic_memory PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
+# Zero-size contract guard: ano_aligned_malloc(0, a) must return NULL per the header, but the
+# bare mi_malloc_aligned forward inherits malloc's zero-size convention and hands back a live
+# block (docs/BUGS.md, Memory / Implementation). Fails until the guard lands.
+add_executable(anotest_memguard anotest_memguard.c)
+target_link_libraries(anotest_memguard PRIVATE anoptic_core)
+add_test(NAME anoptic_memguard COMMAND anotest_memguard)
+set_tests_properties(anoptic_memguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Easter egg: the original allocator experiment, preserved verbatim (see the file banner). 
 # Built so it cannot rot, but DISABLED in ctest
@@ -192,6 +233,19 @@ add_executable(anotest_render_bridge anotest_render_bridge.c)
 target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
 add_test(NAME anoptic_render_bridge COMMAND anotest_render_bridge)
 set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
+
+# Bridge teardown lifetime guard: ownership of the render-owned text/UI/bulk payload blocks
+# transfers to the command ring at push, and every live path frees them (full-ring reject at
+# submit, consumer after adoption) 〜 but ano_render_bridge_destroy frees only the ring storage,
+# so commands still enqueued at destroy drop their blocks unreachable (docs/BUGS.md, Render /
+# Vulkan backend / Interlink, render_bridge/ano_render_bridge.c:92); main.c stops draining
+# before it stops the producer, so the window is hit every shutdown. Blocks are steered into a
+# watch heap and counted with mi_heap_visit_blocks. Headless. Fails until destroy (or a
+# teardown drain above it) releases the enqueued payloads.
+add_executable(anotest_bridgeguard anotest_bridgeguard.c)
+target_link_libraries(anotest_bridgeguard PRIVATE anoptic_core)
+add_test(NAME anoptic_bridgeguard COMMAND anotest_bridgeguard)
+set_tests_properties(anoptic_bridgeguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Testing for the audio stack Phase 0 (churned-heap offline determinism; WAV; live null-backend round-trip)
 add_executable(anotest_audio anotest_audio.c)
@@ -318,6 +372,25 @@ target_link_libraries(anotest_music PRIVATE anoptic_core)
 add_test(NAME anoptic_music COMMAND anotest_music)
 set_tests_properties(anoptic_music PROPERTIES TIMEOUT 30 LABELS "unit")
 
+# Guard: engine-instance independence under the documented off-thread seek shape.
+# Two engines advancing concurrently race ano_voice_chord's function-scope static
+# candidate table, so the bar stream / snapshot stop being a pure function of
+# (config, seed, bar) (docs/BUGS.md, Music / Implementation). Fails until the
+# table becomes per-thread (or per-call) state.
+add_executable(anotest_musicguard anotest_musicguard.c)
+target_link_libraries(anotest_musicguard PRIVATE anoptic_core)
+add_test(NAME anoptic_musicguard COMMAND anotest_musicguard)
+set_tests_properties(anoptic_musicguard PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# Guard: music -> synth seam event contract. The arp lane clamps velocity then adds
+# its +4 accent (music_arp.c:106), a velocity_center override crosses the host raw,
+# and the synth's one-sided guard stages the 128..131 event (docs/BUGS.md, Music /
+# Interlink). Fails until the arp re-clamps (or the seam validates both sides).
+add_executable(anotest_musicsynthguard anotest_musicsynthguard.c)
+target_link_libraries(anotest_musicsynthguard PRIVATE anoptic_core)
+add_test(NAME anoptic_musicsynthguard COMMAND anotest_musicsynthguard)
+set_tests_properties(anoptic_musicsynthguard PROPERTIES TIMEOUT 60 LABELS "unit")
+
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
     # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
@@ -340,6 +413,38 @@ if(TARGET anoptic_render)
     target_link_libraries(anotest_render_slots PRIVATE anoptic_render)
     add_test(NAME anoptic_render_slots COMMAND anotest_render_slots)
     set_tests_properties(anoptic_render_slots PROPERTIES TIMEOUT 10 LABELS "unit;render")
+
+    # glTF loader guard: parseGltf goes from cgltf_parse_file/cgltf_load_buffers straight to
+    # per-element accessor reads without ever calling cgltf_validate 〜 cgltf's only accessor/
+    # bufferView byte-range gate 〜 so a file whose accessor count*stride overruns its bufferView
+    # (or whose bufferView overruns its buffer) is read out of bounds off the loaded heap block
+    # and returned as a "parsed" asset (docs/BUGS.md, Render / Implementation,
+    # ano_GltfParser.c:30). Compiles the parser TU directly with the GPU entry points stubbed:
+    # the CPU parse path runs for real, no device, no window. Fails until the validate gate lands.
+    add_executable(anotest_gltfguard anotest_gltfguard.c
+            ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
+    target_link_libraries(anotest_gltfguard PRIVATE anoptic_core glfw Vulkan::Vulkan)
+    add_test(NAME anoptic_gltfguard COMMAND anotest_gltfguard)
+    set_tests_properties(anoptic_gltfguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
+    # Entity-growth descriptor guard: ensureEntityCapacity recreates the per-frame live-transform
+    # SSBOs (growBufferSet destroys the old handles, slot_upload.c:36) but only re-runs
+    # updateUboDescriptorSets 〜 the shadowsetup set's binding 1 is that same transform SSBO and
+    # its sole writer updateShadowDescriptorSets runs once at init (vulkanMaster.c:666) 〜 so
+    # after the first growth past capacity every frame's shadowsetup.comp dispatch reads world
+    # transforms through a descriptor referencing a destroyed VkBuffer (docs/BUGS.md, Render /
+    # Vulkan backend). Drives the real ensureEntityCapacity/update*DescriptorSets TUs over
+    # stubbed Vulkan entry points that record descriptor writes and destroys: no device, no
+    # window. Fails until growth re-points the shadowsetup set.
+    add_executable(anotest_vkguard anotest_vkguard.c
+            ${CMAKE_SOURCE_DIR}/src/vulkan_backend/slot_upload.c
+            ${CMAKE_SOURCE_DIR}/src/vulkan_backend/instance/descriptors.c
+            ${CMAKE_SOURCE_DIR}/src/vulkan_backend/gpu_alloc.c
+            ${CMAKE_SOURCE_DIR}/src/vulkan_backend/components.c
+            ${CMAKE_SOURCE_DIR}/src/vulkan_backend/render_slots.c)
+    target_link_libraries(anotest_vkguard PRIVATE anoptic_core glfw Vulkan::Vulkan)
+    add_test(NAME anoptic_vkguard COMMAND anotest_vkguard)
+    set_tests_properties(anoptic_vkguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
 
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
