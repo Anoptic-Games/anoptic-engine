@@ -564,7 +564,11 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
 
     // CPU side: bake blobs live on textHeap. FreeType memory faces retain their source
+<<<<<<< HEAD
     // One registered read scope pins font bytes until cleanup.
+=======
+    // pointers, so one registered read scope pins the engine-domain font bytes until cleanup.
+>>>>>>> block-b1-base
     ano_res_lifetime lifetime = ano_res_lifetime_engine();
     state->textResourceReader = (ano_res_reader){ .lane = ANO_RES_READER_NONE };
     if (ano_res_reader_register(&state->textResourceReader) != 0
@@ -590,7 +594,13 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
         return true;
     }
 
+<<<<<<< HEAD
     // Bake ranges: ASCII/Latin-1/Cyrillic (Geist), Greek (Noto), Runic (Noto Runic). Sorted+disjoint.
+=======
+    // Bake coverage: ASCII, Latin-1, core Cyrillic from Geist, Greek (mono + poly) from
+    // Noto Sans, Runic from Noto Sans Runic. Ranges must stay codepoint-sorted and
+    // disjoint. A missing auxiliary font degrades to the remaining ranges.
+>>>>>>> block-b1-base
     AnoFontId runeFont = ano_text_font_load_memory(ano_res_bytes(
         &state->textResourceRead, ano_res_get(lifetime, ANO_TEXT_RUNE_FONT_LOGICAL)));
     if (runeFont == 0)

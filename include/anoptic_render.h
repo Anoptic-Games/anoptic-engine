@@ -13,7 +13,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <anoptic_math.h>      // mat4, Vector4
+<<<<<<< HEAD
 #include <anoptic_resources.h> // anores_t, ano_res_lifetime, ano_res_read (renderer retains handles)
+=======
+#include <anoptic_resources.h> // anores_t, ano_res_lifetime, ano_res_read (the renderer retains handles)
+>>>>>>> block-b1-base
 #include <anoptic_text.h>      // AnoFontBake, AnoGlyphInstance (logic-side text shaping)
 #include <anoptic_ui.h>        // AnoUiPrim/Clip/Paint/Stop + builder (logic-side UI layout)
 
@@ -56,6 +60,7 @@ typedef struct AnoRenderableDesc
     uint32_t material_index;
 } AnoRenderableDesc;
 
+<<<<<<< HEAD
 // Renderer device context. Opaque; definition is render-private.
 typedef struct VulkanContext VulkanContext;
 
@@ -69,6 +74,32 @@ uint32_t anoRenderAssetCount(void);
 
 // Flatten asset `asset_id` at `root` into primitives. Returns TOTAL count; fills out[0..min(count,cap)). Cap 0 / out NULL sizes. Out-of-range -> 0.
 // TODO(W7, M12): takes anores_t binding, not asset_id.
+=======
+// The renderer's device context. Opaque here: its definition is render-private.
+typedef struct VulkanContext VulkanContext;
+
+// Bind a conditioned scene to the GPU: upload its geometry as LOD chains, decode and bind the
+// textures the active pipelines actually want, bake its materials. Output: a handle to the
+// derived GPU BINDING TABLE ('GBND') -- a three-plane block parallel to the scene's prims[]
+// {geometry_pool_index | material_index | bindless_index} -- adopted under
+// res_rid_derived(scene_rid, 'GBND') with a dependency edge back to the scene. Sentinel on
+// failure. The renderer names no path and owns no asset: it RETAINS HANDLES.
+//
+// TODO(W7, M12): this replaces parseGltf + ModelAsset, and the two queries below take an
+// anores_t binding instead of a positional asset_id. The old entry points below keep
+// compiling until that commit lands.
+anores_t ano_render_bind_scene(VulkanContext *ctx, ano_res_lifetime lifetime,
+                               const ano_res_read *read, anores_t scene);
+
+// Number of asset slots loaded at init (index space for the queries below).
+// TODO(W7, M12): deleted; the logic master holds the binding handles it created.
+uint32_t anoRenderAssetCount(void);
+
+// Flatten loaded asset `asset_id` at `root` into renderable primitives. Returns the TOTAL count;
+// fills out[0..min(count,cap)). Call with cap 0 (or out NULL) to size, then again to fill. An
+// out-of-range asset_id returns 0.
+// TODO(W7, M12): takes an anores_t binding handle, not a positional asset_id.
+>>>>>>> block-b1-base
 uint32_t anoRenderAssetPrimitives(uint32_t asset_id, const mat4 root, AnoRenderableDesc *out, uint32_t cap);
 
 // Fallback cube mesh index + default material for procedural renderables.
@@ -354,7 +385,14 @@ bool ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id);
 // Sentinel render_id for "cursor over no renderable" in REVENT_PICK_RESULT.
 #define ANO_RENDER_NO_PICK 0xFFFFFFFFu
 
+<<<<<<< HEAD
 // Input event kinds. GLFW codes forwarded as stable integers. New device = new AnoInputKind + union arm.
+=======
+// Input event kinds. GLFW codes (GLFW_KEY_*, GLFW_PRESS/RELEASE/REPEAT, GLFW_MOUSE_BUTTON_*) are
+// forwarded verbatim as stable integers; anoptic_keybindings maps key transitions to action SIDs.
+// A new device (joystick, IME) adds an AnoInputKind + a union arm, never
+// a new event kind or ring.
+>>>>>>> block-b1-base
 typedef enum AnoInputKind
 {
     ANO_INPUT_KEY,                // physical key transition

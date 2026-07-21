@@ -82,7 +82,13 @@ add_custom_target(ano_scrub
 # Options
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)
 option(ANOPTIC_HEADLESS "Build without the Vulkan renderer" OFF)
+<<<<<<< HEAD
 # Pack compression: LZ4 always, zstd opt-in (OFF = codec unavailable).
+=======
+# Pack compression. LZ4 is vendored and always built (two files, BSD-2-Clause). zstd is
+# opt-in: it is a bigger dependency than the ratio buys for a game's asset tree, so the
+# default is OFF and the codec byte simply reports itself unavailable.
+>>>>>>> block-b1-base
 option(ANOPTIC_ZSTD "Vendor zstd for the resource codec" OFF)
 set(ANOPTIC_SANITIZE "" CACHE STRING "Sanitizer for test builds: asan, tsan, or empty")
 
@@ -115,7 +121,12 @@ set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
 set(FT_ENABLE_ERROR_STRINGS ON CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/freetype EXCLUDE_FROM_ALL)
 
+<<<<<<< HEAD
 # LZ4 (vendored, pack default). -w: upstream
+=======
+# LZ4: two vendored files (external/lz4, BSD-2-Clause). The pack codec's default.
+# -w: upstream code, not ours to lint.
+>>>>>>> block-b1-base
 add_library(anoptic_lz4 STATIC ${CMAKE_SOURCE_DIR}/external/lz4/lz4.c)
 target_include_directories(anoptic_lz4 PUBLIC ${CMAKE_SOURCE_DIR}/external/lz4)
 target_compile_options(anoptic_lz4 PRIVATE -w)
@@ -188,15 +199,26 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/keybindings)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/log)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/mesh)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/text)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/audio)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/script)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/ui)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/render_bridge)
 
+<<<<<<< HEAD
 # anoptic_pack: deterministic archive builder (shares res_pack_build with engine).
+=======
+# anoptic_pack: the deterministic archive builder. Same input tree -> byte-identical pack.
+# It shares res_pack_build with the engine; there is no second format writer.
+>>>>>>> block-b1-base
 add_executable(anoptic_pack ${CMAKE_SOURCE_DIR}/tools/anopak/anopak.c)
 target_link_libraries(anoptic_pack PRIVATE anoptic_core)
 install(TARGETS anoptic_pack RUNTIME DESTINATION bin)
 
+<<<<<<< HEAD
 # Renderer (default on)
+=======
+# Renderer (default on).
+>>>>>>> block-b1-base
 if(NOT ANOPTIC_HEADLESS)
     find_package(Vulkan)
 endif()

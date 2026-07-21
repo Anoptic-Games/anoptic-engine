@@ -72,8 +72,14 @@ int rmos_read_chunk(rmos_file f, void *buf, size_t cap, size_t *got)
     return 0;
 }
 
+<<<<<<< HEAD
 // Positional. OVERLAPPED ReadFile also advances the file pointer. One handle is SINGLE-OWNER.
 // Short read is NOT EOF. Only *got == 0 is. Caller loops.
+=======
+// Positional. ReadFile with an OVERLAPPED offset on a synchronous handle is positional and
+// blocking, but it ALSO advances the file pointer (MSDN) -- so one handle is SINGLE-OWNER.
+// A short read is NOT EOF: only *got == 0 is. The caller loops.
+>>>>>>> block-b1-base
 int rmos_read_at(rmos_file f, uint64_t off, void *buf, size_t cap, size_t *got)
 {
     *got = 0;
@@ -89,7 +95,12 @@ int rmos_read_at(rmos_file f, uint64_t off, void *buf, size_t cap, size_t *got)
     return 0;
 }
 
+<<<<<<< HEAD
 // Advisory only. Win32 hints are open-time flags. Refused hint is not a failure.
+=======
+// Advisory only. Win32 hints are open-time flags (FILE_FLAG_SEQUENTIAL_SCAN), so there is
+// nothing to say after the fact; a refused hint is not a failure.
+>>>>>>> block-b1-base
 int rmos_advise(rmos_file f, uint64_t off, uint64_t len, rmos_advice advice)
 {
     (void)f; (void)off; (void)len; (void)advice;

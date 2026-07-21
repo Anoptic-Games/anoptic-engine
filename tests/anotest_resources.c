@@ -32,7 +32,13 @@
 #include "templates/scratch.h"
 #include "templates/rng.h"
 
+<<<<<<< HEAD
 // Temp-litter oracle needs a directory scan on both platforms. Module-private header via relative path.
+=======
+// The temp-litter oracle needs a directory scan on BOTH platforms; this target does not carry
+// src/resources on its include path (W0 owns tests/CMakeLists.txt), so the module-private
+// header is reached by relative path.
+>>>>>>> block-b1-base
 #include "../src/resources/resources_os.h"
 
 static int failures = 0;
@@ -326,8 +332,14 @@ static void test_write_and_quarantine(mi_heap_t *heap)
     CHECK(file_exists_stdio(broken), ".broken evidence exists");
     CHECK(ano_res_quarantine("anotest_res/cfg.bin") == -1, "re-quarantine refuses (absent)");
 
+<<<<<<< HEAD
 // No temp litter in the write directory. rmos_scan_dir (not a Windows-skipped dirent block).
 // Exactly the platform whose ReplaceFileW path is likeliest to strand a temp.
+=======
+    // No temp litter in the write directory. rmos_scan_dir, not a #ifndef _WIN32 dirent block:
+    // this oracle used to be compiled out on Windows -- the one platform whose ReplaceFileW
+    // path is likeliest to strand a temp, i.e. exactly where it needed to run.
+>>>>>>> block-b1-base
     char wdir[MAXPATH + 16];
     snprintf(wdir, sizeof wdir, "%s/anotest_res", user.str);
     int tmps = 0;

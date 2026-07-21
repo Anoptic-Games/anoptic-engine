@@ -121,8 +121,18 @@ static size_t base64(const uint8_t *in, size_t n, char *out)
     return o;
 }
 
+<<<<<<< HEAD
 // Ground truth for one ingested scene. Shape checks gate only the DEREFERENCES that follow on THIS scene.
 // Unusable shape is a LOUD failure, never a quiet skip.
+=======
+// ---------------------------------------------------------------------------------------------
+
+// Ground truth for one ingested scene. The shape checks below gate only the DEREFERENCES that
+// follow them, and only on THIS scene: keying that gate on the global `failures` (as this did)
+// silently skipped every per-field assertion once any unrelated earlier check had failed, so a
+// single staging typo could hide every wrong vertex in the file. An unusable shape is now a
+// LOUD failure, never a quiet skip.
+>>>>>>> block-b1-base
 static void check_scene(anoresgfx_scene s, const char *variant)
 {
     printf("  checking scene variant: %s\n", variant);

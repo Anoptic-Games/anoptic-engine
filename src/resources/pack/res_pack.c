@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 // anopak runtime and deterministic builder. Header/TOC frozen LE. No struct overlay.
 // Layout: header[32], TOC[48*n] sorted by rid, toc_hash[8], then per-entry 64-aligned data regions.
 // Mount reads header+TOC only. Corrupted anything REFUSES. Fresh handle per read.
@@ -206,10 +207,33 @@ int res_pack_mount(const char *prefix, ano_fspath file)
     ano_log(ANO_INFO, "respack: mounted %s (%u entries, prefix '%s')",
             file.str, hdr.entry_count, canon);
     return 0;
+=======
+// The anopak runtime. STUB.
+//
+// TODO(W4, M14): mount (header + TOC read, header_hash checked, ANO_PACK_FLAG_SORTED
+// REQUIRED), bsearch lookup by rid with an rid2 refusal, chunked reads through the codec,
+// ranged reads that decode only the chunks they touch, and the DETERMINISTIC builder (same
+// input tree -> byte-identical pack).
+//
+// The oracle that decides this landed: res_gfx parse_count must read 0 after loading a
+// BAKED scene. Prose is not evidence.
+
+#include "res_pack.h"
+
+#include <string.h>
+
+#include "../codec/res_codec.h"
+
+int res_pack_mount(const char *prefix, ano_fspath file)
+{
+    (void)prefix; (void)file;
+    return -1;                                  // TODO(W4, M14)
+>>>>>>> block-b1-base
 }
 
 void res_pack_unmount_all(void)
 {
+<<<<<<< HEAD
     for (int i = 0; i < g_pack_count; i++) {
         if (g_packs[i].toc_block.data != NULL)
             res_owned_free(&g_packs[i].toc_block, RES_FREE_RETAIL);
@@ -217,15 +241,23 @@ void res_pack_unmount_all(void)
         g_prefixes[i][0] = '\0';
     }
     g_pack_count = 0;
+=======
+                                                // TODO(W4, M14)
+>>>>>>> block-b1-base
 }
 
 int res_pack_count(void)
 {
+<<<<<<< HEAD
     return g_pack_count;
+=======
+    return 0;                                   // TODO(W4, M14)
+>>>>>>> block-b1-base
 }
 
 const res_pack *res_pack_at(int i)
 {
+<<<<<<< HEAD
     return (i >= 0 && i < g_pack_count) ? &g_packs[i] : NULL;
 }
 
@@ -703,6 +735,36 @@ out:
     mi_free(toc);
     mi_free(encbuf);
     return rc;
+=======
+    (void)i;
+    return NULL;                                // TODO(W4, M14)
+}
+
+int res_pack_find(const res_pack *pack, const char *logical, size_t len)
+{
+    (void)pack; (void)logical; (void)len;
+    return -1;                                  // TODO(W4, M14)
+}
+
+int res_pack_read_sink(const res_pack *pack, uint32_t entry, const res_sink *sink,
+                       size_t *out_size)
+{
+    (void)pack; (void)entry; (void)sink; (void)out_size;
+    return -1;                                  // TODO(W4, M14)
+}
+
+int res_pack_read_range(const res_pack *pack, uint32_t entry, uint64_t off, size_t len,
+                        void *dst)
+{
+    (void)pack; (void)entry; (void)off; (void)len; (void)dst;
+    return -1;                                  // TODO(W4, M14)
+}
+
+int res_pack_build(const char *src_dir, const char *out_pack, uint8_t codec)
+{
+    (void)src_dir; (void)out_pack; (void)codec;
+    return -1;                                  // TODO(W4, M14)
+>>>>>>> block-b1-base
 }
 
 int ano_res_mount_pack(const char *prefix, ano_fspath pack_file)

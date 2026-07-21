@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 // Placement seam LIVE. res_place_route is the ONLY model-dependent code. Alloc/free dispatch on res_site.backing.
 // Single-owner by construction (registry owner-thread gate). Roots/counters/telemetry are plain stores.
 // TRANSFER uses calling-thread default heap. Multipool may under-deliver alignment. No WINKABLE free path yet.
@@ -42,6 +43,40 @@ int res_place_init(const char *model_name)
 const char *res_place_name(void)
 {
     return g_place.model != NULL ? g_place.model->name : "none";
+=======
+// Placement: the 11-call seam of resources_place.h. STUB.
+//
+// TODO(W1, M5): the live seam. res_place_plan() is the 30-line pure router of blueprint 2.2
+// and the ONLY model-dependent code in the module; res_place_alloc/free dispatch on
+// res_site.backing. Until it lands, resources_registry.c still routes its own blocks and
+// res_place_name() reports the behavior the registry actually implements.
+
+#include "resources_place.h"
+
+#include "resources_internal.h"
+#include "resources_tel.h"
+
+// The scaffold name. TODO(W1, M5): read ANO_RES_PLACEMENT once at res_registry_init, log it
+// at INFO, and select the model literal. Today's registry behavior IS "scoped-pool": one
+// multipool per lifetime domain, over that domain's own mi_heap.
+static const char *g_place_name = "scoped-pool";
+
+int res_place_init(const char *model_name)
+{
+    if (model_name != NULL && model_name[0] != '\0')
+        g_place_name = model_name;
+    return 0;
+}
+
+void res_place_shutdown(void)
+{
+    g_place_name = "scoped-pool";
+}
+
+const char *res_place_name(void)
+{
+    return g_place_name;
+>>>>>>> block-b1-base
 }
 
 const char *ano_res_placement_name(void)
@@ -49,6 +84,7 @@ const char *ano_res_placement_name(void)
     return res_place_name();
 }
 
+<<<<<<< HEAD
 /* Roots */
 
 // Root a plan keys into. RES_ROOT_MAX on an unroutable key.
@@ -167,16 +203,32 @@ void res_place_domain_wink(ano_res_lifetime lt)
     default:
         return;
     }
+=======
+int res_place_domain_open(ano_res_lifetime lt)
+{
+    (void)lt;
+    return -1;                                  // TODO(W1, M5)
+}
+
+void res_place_domain_wink(ano_res_lifetime lt)
+{
+    (void)lt;                                   // TODO(W1, M6)
+>>>>>>> block-b1-base
 }
 
 mi_heap_t *res_place_transfer_heap(ano_res_lifetime lt)
 {
     (void)lt;
+<<<<<<< HEAD
     return NULL;                                // STUB
+=======
+    return NULL;                                // TODO(W1, M6)
+>>>>>>> block-b1-base
 }
 
 void res_place_transfer_heap_destroy(ano_res_lifetime lt)
 {
+<<<<<<< HEAD
     (void)lt;                                   // STUB
 }
 
@@ -309,10 +361,26 @@ void *res_place_alloc(const res_site *s, size_t size)
     }
     res_tel_alloc(s->cell, size, s->serving);
     return p;
+=======
+    (void)lt;                                   // TODO(W1, M6)
+}
+
+int res_place_route(const res_place_plan *p, size_t size, res_site *out)
+{
+    (void)p; (void)size; (void)out;
+    return -1;                                  // TODO(W1, M5): blueprint 2.2's 30 lines
+}
+
+void *res_place_alloc(const res_site *s, size_t size)
+{
+    (void)s; (void)size;
+    return NULL;                                // TODO(W1, M5)
+>>>>>>> block-b1-base
 }
 
 void res_place_free(const res_site *s, void *p, size_t size, res_free_mode m)
 {
+<<<<<<< HEAD
     (void)m;    // no site is winkable: every free is retail
     if (s == NULL || p == NULL)
         return;
@@ -343,19 +411,37 @@ ano_mem_stats res_place_arena_stats(uint32_t root, res_arena_id arena)
     if (r->backing[arena] == RES_BACK_MULTIPOOL && r->arena[arena] != NULL)
         return ano_mem_multipool_stats(r->arena[arena]);
     return (ano_mem_stats){0};                  // heap arenas not reported
+=======
+    (void)s; (void)p; (void)size; (void)m;      // TODO(W1, M5)
+}
+
+ano_mem_stats res_place_arena_stats(uint32_t root, res_arena_id arena)
+{
+    (void)root; (void)arena;
+    return (ano_mem_stats){0};                  // TODO(W1, M5)
+>>>>>>> block-b1-base
 }
 
 size_t res_place_domain_live_bytes(ano_res_lifetime lt)
 {
+<<<<<<< HEAD
     if (g_place.model == NULL)
         return 0;
     uint32_t key = root_key(g_place.model, lt, 0, 0);
     if (key >= RES_ROOT_MAX || !g_place.root[key].live)
         return 0;
     return g_place.root[key].live_bytes;
+=======
+    (void)lt;
+    return 0;                                   // TODO(W1, M6): the post-wink assert reads this
+>>>>>>> block-b1-base
 }
 
 void res_place_b_kind_wink(uint16_t dense_kind)
 {
+<<<<<<< HEAD
     (void)dense_kind;                           // STUB
+=======
+    (void)dense_kind;                           // TODO(W1, M19): contest harness only (D12)
+>>>>>>> block-b1-base
 }

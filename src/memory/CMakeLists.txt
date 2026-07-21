@@ -19,4 +19,8 @@ target_sources(anoptic_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/memory.c
         ${CMAKE_CURRENT_SOURCE_DIR}/pools.c
         ${CMAKE_CURRENT_SOURCE_DIR}/stripe.c
+<<<<<<< HEAD
 )
+=======
+)
+>>>>>>> block-b1-base

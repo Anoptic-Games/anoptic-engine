@@ -3,13 +3,26 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 // Models as DATA. Scaffolds: "scoped-pool" (production routing) and "global-pool" (one immortal root).
 // Every model is a `static const res_model` literal in THIS FILE only.
+=======
+// The models, as DATA. STUB.
+//
+// TODO(W1, M5):  the two scaffold literals, "global-pool" and "scoped-pool".
+// TODO(W1, M19): model-a .. model-e, behind the test-only selector.
+//
+// Every model is a `static const res_model` literal in THIS FILE and nowhere else. No
+// registry code, no consumer code, no public header change, no `if (model == ...)` outside
+// res_place_plan's 30 lines. `git diff model-a model-e -- src/ include/` must touch exactly
+// this file: that is the proof that the five models are a contest and not five rewrites.
+>>>>>>> block-b1-base
 
 #include <string.h>
 
 #include "resources_place.h"
 
+<<<<<<< HEAD
 // Legacy pooled/direct split. Bytes above this leave the multipool.
 #define SCAFFOLD_POOL_MAX ((size_t)1 << 20)
 
@@ -49,11 +62,15 @@ static const res_model MODEL_GLOBAL_POOL = {
 };
 
 static const res_model *const MODELS[] = { &MODEL_SCOPED_POOL, &MODEL_GLOBAL_POOL };
+=======
+static const res_model *const MODELS[] = { NULL };
+>>>>>>> block-b1-base
 
 const res_model *res_model_by_name(const char *name)
 {
     if (name == NULL)
         return NULL;
+<<<<<<< HEAD
     // Short env names map to the truthful model name.
     if (strcmp(name, "scoped") == 0)
         name = "scoped-pool";
@@ -61,6 +78,10 @@ const res_model *res_model_by_name(const char *name)
         name = "global-pool";
     for (size_t i = 0; i < sizeof MODELS / sizeof *MODELS; i++)
         if (strcmp(MODELS[i]->name, name) == 0)
+=======
+    for (size_t i = 0; i < sizeof MODELS / sizeof *MODELS; i++)
+        if (MODELS[i] != NULL && strcmp(MODELS[i]->name, name) == 0)
+>>>>>>> block-b1-base
             return MODELS[i];
     return NULL;
 }

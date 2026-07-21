@@ -717,7 +717,14 @@ anoresgfx_pixels ano_resgfx_image(ano_res_lifetime lifetime, const ano_res_read 
         .provenance = RES_PROVENANCE_DECODED,
         .alignment = _Alignof(max_align_t),
     };
+<<<<<<< HEAD
     // External alloc charge is never reversed. Caller frees rgba with ano_aligned_free.
+=======
+    // TODO(W6, M12): manager-owned pixels -- STBI_MALLOC/REALLOC/FREE route into the staging
+    // arena, decode then copy ONCE into the planned home, and res_account_copy charges that
+    // copy honestly. This external-allocation charge is never reversed, which is why
+    // `allocations == frees at shutdown` cannot be an oracle yet.
+>>>>>>> block-b1-base
     res_registry_external_allocation(&plan, pixel_bytes);
     px.rgba   = rgba;
     px.width  = (uint32_t)w;

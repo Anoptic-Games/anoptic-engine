@@ -3,8 +3,15 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 // Platform-free resource core: namespace/mounts, path grammar, durable write protocol, gamesave commits.
 // Read side in resources_read.c. Registry in resources_registry.c. OS via resources_os.h only.
+=======
+// The platform-free resource core: namespace and mounts, the logical-path grammar, the
+// durable write protocol, and gamesave commits. The READ side (candidate walk, sinks,
+// source dispatch, ranges) lives in resources_read.c; registry/handles in
+// resources_registry.c; parsing under graphics/. OS calls go through resources_os.h only.
+>>>>>>> block-b1-base
 
 #include <anoptic_resources.h>
 
@@ -100,7 +107,12 @@ void res_save_end(res_save_guard *guard)
     ano_mutex_unlock(&lane->mutex);
 }
 
+<<<<<<< HEAD
 /* Path grammar */
+=======
+// ---------------------------------------------------------------------------------------------
+// Path grammar.
+>>>>>>> block-b1-base
 
 static bool byte_ok(unsigned char c)
 {
@@ -205,10 +217,17 @@ ano_fspath res_join(const ano_fspath *root, const char *rel, size_t rel_len)
     return r;
 }
 
+<<<<<<< HEAD
 /* Mount table */
 
 // For the candidate walk. Owner-written at mount, frozen at first read, read-only after.
 
+=======
+// ---------------------------------------------------------------------------------------------
+// The mount table, for the candidate walk in resources_read.c. Owner-written at mount,
+// frozen at first read, read-only afterwards -- so the walk needs no lock.
+
+>>>>>>> block-b1-base
 int res_mount_count(void)
 {
     return res_ready() ? g_res.mount_count : 0;
@@ -219,6 +238,21 @@ ano_fspath res_mount_root(int i)
     if (!res_ready() || i < 0 || i >= g_res.mount_count)
         return (ano_fspath){0};
     return g_res.mounts[i].root;
+<<<<<<< HEAD
+=======
+}
+
+anostr_t res_mount_prefix(int i)
+{
+    if (!res_ready() || i < 0 || i >= g_res.mount_count)
+        return anostr_empty();
+    return g_res.mounts[i].prefix;
+}
+
+ano_fspath res_base_root(void)
+{
+    return res_ready() ? g_res.base : (ano_fspath){0};
+>>>>>>> block-b1-base
 }
 
 anostr_t res_mount_prefix(int i)
@@ -361,7 +395,13 @@ int ano_res_init(void)
     return 0;
 }
 
+<<<<<<< HEAD
 // Output: 0 after registry readers/domains/namespace/locks gone. -1 while readers pin reclamation. Init thread.
+=======
+// Inputs: none. Output: 0 after registry readers, domains, namespace metadata, and locks
+// are gone; -1 while registered readers still pin registry reclamation. Invariant: the
+// init thread calls shutdown, matching the owner-thread heap creation contract.
+>>>>>>> block-b1-base
 int ano_res_shutdown(void)
 {
     if (!g_res.init_done)
@@ -480,7 +520,12 @@ bool ano_res_exists(const char *logical)
     return false;
 }
 
+<<<<<<< HEAD
 /* The durable write protocol */
+=======
+// ---------------------------------------------------------------------------------------------
+// The durable write protocol.
+>>>>>>> block-b1-base
 
 int res_write_protocol(const char *final_abs, const res_iovec *parts, int nparts)
 {
@@ -665,10 +710,17 @@ int res_save_validate(const uint8_t *bytes, size_t len, uint32_t *out_format_ver
     return 0;
 }
 
+<<<<<<< HEAD
 /* Gamesave commits */
 
 // Same-slot serializes. Distinct slots independent.
 // Every generation is a new filename via a fresh handle. Older saves untouched. Only the user deletes.
+=======
+// ---------------------------------------------------------------------------------------------
+// Gamesave commits. Same-slot operations serialize; distinct slots proceed independently.
+// Every generation is a brand-new filename verified through a fresh handle. NOTHING older
+// is ever touched: saves are user data and only the user deletes them.
+>>>>>>> block-b1-base
 
 typedef struct save_scan {
     const char *slot;
@@ -809,9 +861,14 @@ int ano_res_save_commit(const char *slot, uint32_t format_version,
     return ano_res_save_commit_ex(slot, format_version, format_version, payload, size);
 }
 
+<<<<<<< HEAD
 /* Save bookkeeping */
 
 // Engine counts and reports. Only the USER deletes.
+=======
+// ---------------------------------------------------------------------------------------------
+// Save bookkeeping: the engine counts and reports, only the USER deletes.
+>>>>>>> block-b1-base
 
 typedef struct save_stats_scan {
     const char *slot;

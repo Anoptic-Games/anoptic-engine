@@ -13,8 +13,18 @@
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
 
+<<<<<<< HEAD
 // Scene vertex is wide (tangent/color/uv1/joints/weights); GPU Vertex is pos+normal+uv — narrow field-by-field. Shared fields must match width.
 // TODO(W7, M13): Vertex becomes anoresgfx_vertex; narrowing copy dies.
+=======
+// The scene view's vertex is the FROZEN final layout (tangent / color / uv1 / joints /
+// weights); the renderer's Vertex is still the narrow position+normal+uv triple, so geometry
+// is NARROWED field by field per primitive below. The three shared fields must agree in
+// width or that copy is a lie.
+// TODO(W7, M13): Vertex BECOMES anoresgfx_vertex -- vertex.h, every
+// VkVertexInputAttributeDescription and every shader widen in that commit, the offsets line
+// up again, and the narrowing copy dies (the scene view goes straight to the uploader).
+>>>>>>> block-b1-base
 static_assert(sizeof(((Vertex *)0)->position) == sizeof(((anoresgfx_vertex *)0)->position)
               && sizeof(((Vertex *)0)->normal) == sizeof(((anoresgfx_vertex *)0)->normal)
               && sizeof(((Vertex *)0)->texCoord) == sizeof(((anoresgfx_vertex *)0)->texcoord),
@@ -22,7 +32,11 @@ static_assert(sizeof(((Vertex *)0)->position) == sizeof(((anoresgfx_vertex *)0)-
 static_assert(sizeof(Vertex) < sizeof(anoresgfx_vertex),
               "the GPU vertex has not caught up to the conditioned one yet (M13)");
 
+<<<<<<< HEAD
 // File-truth feature bits must equal PbrFeatureFlags.
+=======
+// The file-truth feature bits must BE PbrFeatureFlags, or every material cast is a lie.
+>>>>>>> block-b1-base
 static_assert(PBR_FEATURE_BASE_COLOR_FACTOR == ANORESGFX_PBR_BASE_COLOR_FACTOR
               && PBR_FEATURE_NORMAL_TEXTURE == ANORESGFX_PBR_NORMAL_TEXTURE
               && PBR_FEATURE_ALPHA_MODE_BLEND == ANORESGFX_PBR_ALPHA_MODE_BLEND
@@ -83,7 +97,12 @@ static void bind_slot(const anoresgfx_texref* ref, const bool* loaded,
 
 ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
 {
+<<<<<<< HEAD
     // 1. Parse + condition via resource manager.
+=======
+    // 1. Parse + condition through the resource manager (single-copy; the raw JSON is
+    //    dropped right after, the conditioned scene at the end of this function).
+>>>>>>> block-b1-base
     ano_res_lifetime lifetime = ano_res_lifetime_engine();
     ano_res_reader reader = { .lane = ANO_RES_READER_NONE };
     ano_res_read read = {0};
@@ -117,8 +136,15 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
     ModelAsset* asset = calloc(1, sizeof(ModelAsset));
     strncpy(asset->name, logical, 63);
 
+<<<<<<< HEAD
     // 2. Geometry: upload each prim as LOD chain (narrow wide scene verts into scratch).
     //    TODO(W7, M13): widened Vertex deletes this copy.
+=======
+    // 2. Geometry: every conditioned primitive uploads as an LOD chain. The conditioned
+    //    vertex is wider than the GPU's, so each primitive narrows into a scratch array.
+    //    TODO(W7, M13): the widened Vertex deletes this copy -- the scene view goes straight
+    //    to the uploader again, as it did before the layout froze.
+>>>>>>> block-b1-base
     asset->meshCount = s.mesh_count;
     asset->meshes = calloc(asset->meshCount, sizeof(ModelMesh));
     for (uint32_t m = 0; m < s.mesh_count; ++m) {
@@ -420,7 +446,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* logical)
         memcpy(asset->rootNodes, s.roots, s.root_count * sizeof(uint32_t));
     }
 
+<<<<<<< HEAD
     // CPU scene done; GPU owns the data.
+=======
+    // The conditioned CPU scene served its purpose; the GPU owns the data now.
+>>>>>>> block-b1-base
     ano_res_unload(lifetime, sceneH);
     ano_res_read_end(&read);
     ano_res_reader_unregister(&reader);
