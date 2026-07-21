@@ -111,7 +111,7 @@ static AnoDirective spend(const AnoDramaturgConfig *cfg, AnoLedger *l, AnoPhrase
     int brighten = magnitude >= cfg->bigSpend ? 2 : 1;
     ano_ledger_set_cadence(l, pos.phrase, ANO_CADENCE_AUTHENTIC);
     l->lastSpend = magnitude;
-    l->barsSinceAuthentic = 0; // cashed — reset the ledger
+    l->barsSinceAuthentic = 0; // cashed 〜 reset the ledger
     l->deceptions = 0;
     l->withholdingPhrases = 0;
     l->peakTension = 0.0;

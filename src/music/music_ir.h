@@ -124,7 +124,7 @@ AnoChord ano_ctx_chord_at(const AnoHarmonicContext *ctx, double beatOffset);
 extern const char *const ANO_PATCH_NAMES[ANO_PATCH_COUNT]; // "" first
 
 // Knobs that multiply into draws/costs are double (never float; see music_theory.h).
-// layers is ORDERED — gate emits pad/bass/melody/perc/arp; conductor iterates that order (not a bitmask).
+// layers is ORDERED 〜 gate emits pad/bass/melody/perc/arp; conductor iterates that order (not a bitmask).
 typedef struct AnoGenParams
 {
     double  tempoBpm;      // 100.0

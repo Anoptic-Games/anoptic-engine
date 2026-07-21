@@ -9,7 +9,7 @@ Status: historical research and superseded planning material. The authoritative 
 **Status:** the build order. Machinery rationale and sources live in
 `resource-manager-SoA.md`; this document is the keepers only, in ascending order, each
 step with its test battery and its merge bar.
-**House premise:** the hard part is already in-tree. The logger *is* an async system —
+**House premise:** the hard part is already in-tree. The logger *is* an async system 〜
 lock-free MPSC ring in, owned consumer draining behind the callers, 22–48 ns enqueue,
 TSan-clean, fuzz-oracled. The render bridge ships SPSC ownership transfer. The async
 tier below is a port of shipped machinery, not new design.
@@ -24,7 +24,7 @@ tier below is a port of shipped machinery, not new design.
    size is bytes read to EOF, never stat metadata (9P/SMB lie).
 3. **Writes are durable or refused.** Old-complete or new-complete on disk, never torn.
 4. **Identity is an integer.** rid = FNV-1a-64 of the logical path: `ANOSTR_SID` at
-   compiled sites (zero cost), `anostr_hash` for parsed/discovered strings — one key
+   compiled sites (zero cost), `anostr_hash` for parsed/discovered strings 〜 one key
    space.
 5. **Bytes vs meaning.** The resource manager never parses. cgltf, stb_image, FreeType,
    the config parser, the future audio decoder keep the meaning half; they stop doing
@@ -52,7 +52,7 @@ Each step is independently mergeable. **Lands** = new capability. **Deletes** = 
 hardcoded path it kills (proof the generalization is real). **Tests** = the battery.
 **Bar** = what must be true to merge.
 
-### Step 0 — the namespace and the read path
+### Step 0 〜 the namespace and the read path
 
 - **Lands:** `include/anoptic_resourcemg.h`; `src/resourcemg/` (platform-free core +
   POSIX/win64 TUs behind an internal os header, the filesystem module's split).
@@ -63,17 +63,17 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
   loop to EOF, cache-line-aligned allocation in the caller's heap, one guard NUL.
   CMake: `ANO_DEV_RESOURCES` define consumed only in `main()`; the install rule
   (exe + `resources/`).
-- **Deletes:** nothing yet — this step is pure capability.
+- **Deletes:** nothing yet 〜 this step is pure capability.
 - **Tests:** new `anotest_resourcemg` (labels `unit;mem`): logical-path validation is
-  total (fuzz hostile paths — backslashes, `..`, leading `/`, overlong; all refuse, none
-  UB); shadow order (same name in two roots, write root wins); read contract oracles —
+  total (fuzz hostile paths 〜 backslashes, `..`, leading `/`, overlong; all refuse, none
+  UB); shadow order (same name in two roots, write root wins); read contract oracles 〜
   bytes byte-identical to a reference buffer, size == bytes written, guard NUL present,
   pointer alignment, absent file → NULL blob + one log line. Scratch dirs per
   `templates/scratch.h`, deleted on exit.
 - **Bar:** any code loads any staged file by logical name from any CWD, Debug and
   Release, both toolchains.
 
-### Step 1 — shaders ride it
+### Step 1 〜 shaders ride it
 
 - **Lands:** all ~20 `loadFile` sites (`pipeline.c`, `flat.c`, `transmission.c`,
   `additive.c`) become `ano_res_load(heap, "shaders/X.spv")` with a `LOCALHEAPATTR`
@@ -81,15 +81,15 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
 - **Deletes:** `loadFile`, `openEngineFile`, `struct Buffer`, and with them the
   `fseek`/`ftell` size-then-read antipattern and the `free()`-vs-`ano_aligned_free`
   inconsistency.
-- **Tests:** the existing suite is the harness — `build.bat 5` and `8` green, the vk
+- **Tests:** the existing suite is the harness 〜 `build.bat 5` and `8` green, the vk
   tests exercising every migrated pipeline; one manual engine run launched from a
   foreign CWD.
 - **Bar:** zero shader-path strings outside `ano_res_load` calls; suite green.
 
-### Step 2 — models, textures, fonts ride it; the shim dies
+### Step 2 〜 models, textures, fonts ride it; the shim dies
 
 - **Lands:** glTF sites take logical names (`ano_res_resolve` bridging cgltf's
-  self-opened files initially — each such call site is named migration debt); image
+  self-opened files initially 〜 each such call site is named migration debt); image
   URIs join via `ano_res_subpath` before `stbi_load`; fonts load as blobs +
   `FT_New_Memory_Face` (the text module's heap already owns bake blobs, the font bytes
   join them).
@@ -100,12 +100,12 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
 - **Bar:** CWD is irrelevant to the engine; nothing but the resource manager and the
   logger's append stream opens a file by path (grep-enforceable).
 
-### Step 3 — durable writes, saves, and the first write clients
+### Step 3 〜 durable writes, saves, and the first write clients
 
 - **Lands:** `ano_res_write` (same-dir exclusive temp → write → fsync → rename → dir
   fsync; ReplaceFileW path on Windows; failed fsync = unlink and report, never retry the
   handle), `ano_res_quarantine` (`<name>.broken`), `ano_res_save_commit`/`_load`
-  (framed payload — magic, versions, length, FNV-1a-64 content hash, end marker; each
+  (framed payload 〜 magic, versions, length, FNV-1a-64 content hash, end marker; each
   generation a brand-new `saves/<slot>.<seq>.anosave` filename; load = scan, newest
   that verifies wins, keep 3, prune only after the newest verifies). First clients ride
   immediately: `anoptic_config.h` (jsmn parse, `ANOSTR_SID`-keyed switch into a typed
@@ -114,7 +114,7 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
   `main.c`/`instanceInit.c` become action dispatches).
 - **Deletes:** hardcoded key handling; the "no settings persist" state of the engine.
 - **Tests:** frame round-trip and corruption battery in `anotest_resourcemg` (truncate,
-  bit-flip header vs body, rename-masquerade a generation — all detected, loader
+  bit-flip header vs body, rename-masquerade a generation 〜 all detected, loader
   degrades one generation); **fault-injection harness**: a `#ifdef`-gated child process
   killed at every protocol step, parent asserts old-complete-or-new-complete and that
   save_load never returns garbage (the hostile-FS smoke test); config round-trip +
@@ -123,36 +123,36 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
 - **Bar:** `kill -9` at any instant leaves every user file readable; a corrupt config
   cannot prevent boot; rebinding movement keys survives relaunch.
 
-### Step 4 — identity registry, and levels as its client
+### Step 4 〜 identity registry, and levels as its client
 
-- **Lands:** the rid registry — open addressing over cached hashes, dense slots (the
+- **Lands:** the rid registry 〜 open addressing over cached hashes, dense slots (the
   `anostr_intern_t` shape re-instantiated), single-copy enforcement, debug
   assert-on-collision at registration; diagnostics strings through the intern table
-  (sparse rid for identity, dense sym for side arrays). Client: the level module —
+  (sparse rid for identity, dense sym for side arrays). Client: the level module 〜
   `levels/demo.json` (jsmn) naming models/transforms/lights; each reference hashed at
   parse into the registry; the demo scene becomes data.
 - **Deletes:** the three hardcoded `parseGltf` filenames and `char name[64]` identity
   in `ModelAsset`; no asset filename remains in any `.c` file.
 - **Tests:** registry round-trip and growth (the intern-table test shape); the
   `ANOSTR_SID(x) == anostr_hash(anostr_lit(x))` bridge asserted at the module boundary;
-  level-load equivalence — the data-driven scene renders the same frame the hardcoded
+  level-load equivalence 〜 the data-driven scene renders the same frame the hardcoded
   scene did (the render suite as oracle).
 - **Bar:** the shipped scene is a level file a mod can shadow via the write root.
 
-### Step 5 — the transport (port, not design)
+### Step 5 〜 the transport (port, not design)
 
 - **Lands:** the logger's variable-length MPSC ring moves to `anoptic_collections.h`
-  as the generic ring it was always destined to be (the logger re-consumes it — one
+  as the generic ring it was always destined to be (the logger re-consumes it 〜 one
   ring, two users). On it: request ring (payload `{rid or path, offset, length, band,
-  ticket}` — **ranges in the format from day one**), one IO thread (the drainer's
+  ticket}` 〜 **ranges in the format from day one**), one IO thread (the drainer's
   park/wake and shutdown discipline verbatim), blocking `pread` +
   `posix_fadvise`, per-consumer SPSC completion rings drained by a per-frame pump.
   Tickets are `{u32 idx, u32 gen}`, false-on-full (render bridge convention). **Two
-  bands: NOW and LATER** — a blocking wait on a LATER ticket boosts it; four-band
+  bands: NOW and LATER** 〜 a blocking wait on a LATER ticket boosts it; four-band
   scheduling and byte-budget metering stay rejected until a starvation bench exists.
   Missing file completes FAILED through the ticket, identical to sync.
-- **Deletes:** nothing — sync `ano_res_load` remains the primitive the IO thread calls.
-- **Tests:** **TSan is mandatory** (`build.sh 7` under WSL — concurrent code touched);
+- **Deletes:** nothing 〜 sync `ano_res_load` remains the primitive the IO thread calls.
+- **Tests:** **TSan is mandatory** (`build.sh 7` under WSL 〜 concurrent code touched);
   `anotest_res_async` fuzz with the logfuzz oracle style: N producer threads submit
   randomized loads under full-ring pressure, every ticket completes exactly once, async
   bytes byte-identical to a sync load of the same name, FAILED count == missing-file
@@ -161,7 +161,7 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
 - **Bar:** TSan-clean; oracle holds over a soak; a level's bytes stream in the
   background with zero frame hitches on the demo scene.
 
-### Step 6 — the streaming economy
+### Step 6 〜 the streaming economy
 
 - **Lands:** the chunk pool (fixed 512 KiB blocks, free list over a flat array,
   false-on-empty); ranged reads exercised for real (audio/mip shape); LZ4 and plain
@@ -170,28 +170,28 @@ hardcoded path it kills (proof the generalization is real). **Tests** = the batt
 - **Deletes:** nothing; capacity only.
 - **Tests:** range correctness vs whole-file oracle (random offset/length fuzz); pool
   exhaustion returns false-on-empty, never blocks the IO thread; `anotest_resbench`
-  gains the compressed corpus — **bar: effective bandwidth on compressed assets exceeds
+  gains the compressed corpus 〜 **bar: effective bandwidth on compressed assets exceeds
   raw drive bandwidth** (the compression-as-bandwidth-amplification claim, proven or
   the codec work reverts).
 
-### Step 7 — the pack and the bake
+### Step 7 〜 the pack and the bake
 
-- **Lands:** `anopak` mount type — TOC as a sorted flat array of
+- **Lands:** `anopak` mount type 〜 TOC as a sorted flat array of
   `{rid, offset, size, csize, codec, hash}` binary-searched by the same integer
   compiled call sites already hold; TOC checksum verified at mount (corrupt pack
   refuses at startup, never mid-game); payloads 4 KiB-aligned; a ~200-line offline
   builder. Load-in-place bake for one class end-to-end (models): PODS image, pointers
-  as offsets, one fix-up loop over an offset table at load — zero runtime parsing.
+  as offsets, one fix-up loop over an offset table at load 〜 zero runtime parsing.
   Loose files keep shadowing packs (dev loop and modding unchanged).
 - **Deletes:** runtime JSON parsing for baked models; cgltf leaves the shipped path
   (remaining a dev-import tool), retiring the last `ano_res_resolve` debt.
 - **Tests:** bake determinism (same input → byte-identical pack); TOC bit-flip refuses
   at mount; shadow test (loose file wins over pack entry); load-equivalence (baked
-  model renders identically to the cgltf path — the fontTools-oracle culture applied to
+  model renders identically to the cgltf path 〜 the fontTools-oracle culture applied to
   models); `anotest_resbench` TOC-lookup series.
 - **Bar:** the demo scene loads with zero parse work and zero path strings at runtime.
 
-### Step 8 — parallel pread, on demand only
+### Step 8 〜 parallel pread, on demand only
 
 - **Lands (maybe never):** 2–4 IO threads pulling from the same request ring.
 - **Bar to even start:** `anotest_resbench` shows rung 0 leaving the drive idle while

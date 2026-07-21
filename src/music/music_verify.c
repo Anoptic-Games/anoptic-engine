@@ -316,7 +316,7 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
 
     char a[8], b[8];
     // A C3 entry hosted by the pad rides ABOVE the voicing: the range still
-    // applies, the voicing rules do not — it is a figure, not a voice.
+    // applies, the voicing rules do not 〜 it is a figure, not a voice.
     const AnoMusicEvent *grp[LINT_MAX_LINE];
     uint32_t ng = 0;
     for (uint32_t i = 0; i < np; ++i) {
@@ -332,7 +332,7 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
     }
 
     // Voicing analysis (unison doubling, voice movement) needs simultaneous
-    // chords — Strum staggers starts, so these rules are pre-modifier only.
+    // chords 〜 Strum staggers starts, so these rules are pre-modifier only.
     bool voicing = stage == ANO_LINT_PRE;
     int prev[LINT_MAX_GROUP];
     uint32_t prevN = 0;
@@ -375,7 +375,7 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
                         pname(grp[k]->core.pitch, a), csym(c));
         }
         // a lone pitch is a figure note (a C2 comping strike, an ornament's
-        // resolution), not a voicing — voice-leading is judged between chords
+        // resolution), not a voicing 〜 voice-leading is judged between chords
         if (voicing && hasPrev && prevN == cnt && cnt >= 2) {
             for (uint32_t k = 0; k < cnt; ++k)
                 if (abs(pitches[k] - prev[k]) > L->maxVoiceMove)
@@ -533,7 +533,7 @@ static void lint_ties(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
         }
         if (!hosted)
             vio(out, "tie", ano_meter_bar_of(meter, e->core.start),
-                "%s (%s) ties in from nothing — no same-pitch note ties out into "
+                "%s (%s) ties in from nothing 〜 no same-pitch note ties out into "
                 "its start",
                 pname(e->core.pitch, a), lname(e));
     }
@@ -709,7 +709,7 @@ static void lint_counter(const AnoMusicEvent *ev, uint32_t n,
     if (weak >= 10 && (double)overlap / weak > L->counterOverlapRatio)
         vio(out, "counter-overlap", -1,
             "%u/%u off-downbeat counter onsets coincide with melody onsets "
-            "(%.2f > %.2f) — the counter should move in the melody's holes",
+            "(%.2f > %.2f) 〜 the counter should move in the melody's holes",
             overlap, weak, (double)overlap / weak, L->counterOverlapRatio);
 }
 
@@ -751,7 +751,7 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, int horizo
         const int8_t *allowed = c->cadenceSlot == ANO_CTX_SLOT_CADENCE
                                     ? ARRIVE[c->cadencePolicy]
                                     : APPROACH[c->cadencePolicy];
-        // a D3 split bar is judged by the segment APPROACHING the cadence —
+        // a D3 split bar is judged by the segment APPROACHING the cadence 〜
         // the harmony in force when the barline arrives
         AnoChord judged = c->chordSpanCount ? c->chords[c->chordSpanCount - 1].chord
                                             : c->chord;
@@ -774,7 +774,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
     for (uint32_t i = 0; i < n; ++i) {
         const AnoMusicEvent *e = &ev[i];
         bool susp = role_is(e, "suspension");
-        // an appoggiatura carries the same resolution obligation, unprepared —
+        // an appoggiatura carries the same resolution obligation, unprepared 〜
         // but only in the pad: the melody's own leap / strong-beat rules govern
         // its melodic appoggiaturas, which pass through non-chord tones mid-run
         bool appog = role_is(e, "appoggiatura") && e->core.layer == ANO_MUSIC_PAD;
@@ -863,7 +863,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
                     "secondary dominant %s does not resolve to degree %d",
                     c->chordSym[0] ? c->chordSym : "(?)", c->obligationTarget);
         } else if (c->obligation == ANO_OBL_CADENTIAL64) {
-            // B1: the 6/4 is a promise — a root-position dominant must follow;
+            // B1: the 6/4 is a promise 〜 a root-position dominant must follow;
             // a D3 split bar may discharge it WITHIN the bar (the mid-pulse V)
             bool inBar = false;
             for (uint32_t k = 0; k < c->chordSpanCount; ++k)
@@ -879,7 +879,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
         }
     }
 
-    // B4: a lament ground (contiguous "lament" bars) must reach the dominant —
+    // B4: a lament ground (contiguous "lament" bars) must reach the dominant 〜
     // its own last chord is degree 5, or the bar after it is. The bass must
     // ARRIVE on 5: root position only.
     int lam[LINT_MAX_BARS];
@@ -921,7 +921,7 @@ static void lint_capacity(const AnoMusicEvent *ev, uint32_t n, AnoLintReport *ou
     for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l)
         if (per[l] > LINT_MAX_LINE)
             vio(out, "capacity", -1,
-                "%u %s events exceed the linter's %d-event line buffer — the "
+                "%u %s events exceed the linter's %d-event line buffer 〜 the "
                 "layer rules would silently see a truncated line",
                 per[l], ANO_LAYER_NAMES[l], LINT_MAX_LINE);
 }
@@ -1029,7 +1029,7 @@ void ano_lint_groove(const AnoMusicEvent *events, uint32_t n,
 {
     // Bars are walked in ascending order and a phrase's start bar is
     // non-decreasing in bar, so the previous bar of the CURRENT phrase is all
-    // the state the rule needs — a phrase never resumes after another begins.
+    // the state the rule needs 〜 a phrase never resumes after another begins.
     for (int rule = 0; rule < 2; ++rule) {
         bool isPerc = rule == 0;
         bool skipCadence = isPerc; // the cadence fill is the licensed variation
@@ -1200,7 +1200,7 @@ void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
             vio(out, "period", c->bar, "consequent without a recorded antecedent");
             continue;
         }
-        // a dramaturg/landmark payoff overrode the answer — the arrival wins
+        // a dramaturg/landmark payoff overrode the answer 〜 the arrival wins
         bool payoff = false;
         for (uint32_t k = 0; k < n && !payoff; ++k) {
             const AnoMusicEvent *e = &events[k];
@@ -1302,7 +1302,7 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
             if (contexts[i].bar == bars[0])
                 firstP = &params[i];
         if (!firstC || (int)nbars < firstC->phraseBars)
-            continue; // the render truncated this phrase — its claim never got room
+            continue; // the render truncated this phrase 〜 its claim never got room
 
         uint32_t nmel = 0, ndbl = 0, nimi = 0, nctr = 0;
         for (uint32_t k = 0; k < n; ++k) {

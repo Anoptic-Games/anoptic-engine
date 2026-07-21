@@ -61,7 +61,7 @@ For textbuffer viewing convenience:
 
 All six rows foreground-verified. wall fps is the median per-window throughput from the [frame] line (ANO_PERF_WINDOW_FRAMES = 128 presented frames per window). 1% low and 0.1% low are 1000/p99 and 1000/p999 from the [frametime] line, each percentile the median across windows; max ms is the run's worst single frame. GPU ms is the median GPU-pass total (upload + compute + shadow + lighting + composite); GPU cap = 1000 / GPU ms; wall/cap at or above 0.9 is GPU-bound, below is CPU/present-bound; swap MiB is the swapchain allocator's resident VRAM.
 
-Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio — every row rendered at its true labeled resolution. Swap, not the window label, is the authority; that rules out a DPI-scaled mislabel.
+Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio 〜 every row rendered at its true labeled resolution. Swap, not the window label, is the authority; that rules out a DPI-scaled mislabel.
 
 ## vs feature-profiling baseline (2026-07-11-bench2.md)
 

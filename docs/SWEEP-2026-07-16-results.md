@@ -1,4 +1,4 @@
-# Windows Sweep Results — 2026-07-16
+# Windows Sweep Results 〜 2026-07-16
 
 ## Meta
 - Branch: module-audio
@@ -38,7 +38,7 @@ DURATION_SEC=0.4
 - build 5: CTest during build including vulkan suite; 8 Disabled benches; EXIT=0
 - build 8: CTest during build; 8 Disabled benches + vk_compliance_layers + vk_sync Disabled; EXIT=0
 
-## CTest — HeadlessDebug
+## CTest 〜 HeadlessDebug
 
 ### Inventory (ctest -N)
 
@@ -533,7 +533,7 @@ EXIT=0
 DURATION_SEC=119.7
 ```
 
-## CTest — Tests
+## CTest 〜 Tests
 
 ### Inventory (ctest -N)
 
@@ -1080,7 +1080,7 @@ EXIT=0
 DURATION_SEC=142.3
 ```
 
-## CTest — O3Tests
+## CTest 〜 O3Tests
 
 ### Inventory (ctest -N)
 
@@ -1894,19 +1894,19 @@ DURATION_SEC=181.8
 
 | Suite | Passed | Failed | Disabled/Skipped | Notes |
 | --- | --- | --- | --- | --- |
-| build.bat 1–5, 8 | 6 | 0 | — | all linked/ran |
+| build.bat 1–5, 8 | 6 | 0 | 〜 | all linked/ran |
 | build.bat 6 ASan | 0 | 1 | expected | Windows unsupported message |
 | build.bat 7 TSan | 0 | 1 | expected | Windows unsupported message |
 | CTest HeadlessDebug | 25 | 0 | 8 | 33 listed; 119.7 s |
 | CTest Tests (Debug) | 31 | 0 | 8 | 39 listed; vulkan included; 142.3 s |
 | CTest O3Tests | 29 | 0 | 10 | 39 listed; vk_compliance_layers + vk_sync Disabled; 78.9 s |
-| Hand-run DISABLED benches (8) | 8 | 0 | — | sort/strops/logstr/str/sid/chariots/logbench/logtail |
-| Extra hand-run benches | 2 | 1 | — | mempoolbench OK, ringbench OK, resbench FAIL (2 checks) |
-| FPS bench | 1 | 0 | — | 6/6 FRONT rows, 4K GPU-bound |
+| Hand-run DISABLED benches (8) | 8 | 0 | 〜 | sort/strops/logstr/str/sid/chariots/logbench/logtail |
+| Extra hand-run benches | 2 | 1 | 〜 | mempoolbench OK, ringbench OK, resbench FAIL (2 checks) |
+| FPS bench | 1 | 0 | 〜 | 6/6 FRONT rows, 4K GPU-bound |
 
 ### Failures / expected skips
 - build.bat 6 and 7: expected fail on Windows (sanitizers Linux/macOS-only).
-- anotest_resbench.exe: EXIT=1 — `FAIL: no live leak across cycles` and `FAIL: retired domains return chunk bytes to baseline` (tests/anotest_resbench.c:329,331). Not part of default CTest.
+- anotest_resbench.exe: EXIT=1 〜 `FAIL: no live leak across cycles` and `FAIL: retired domains return chunk bytes to baseline` (tests/anotest_resbench.c:329,331). Not part of default CTest.
 - CTest Disabled (all three suites): sortbench, stropsbench, logstrbench, strbench, sidbench, chariots, logbench, logtail.
 - O3Tests additionally Disabled: anotest_vk_compliance_layers, anotest_vk_sync (both Passed under build/Tests Debug re-run).
 

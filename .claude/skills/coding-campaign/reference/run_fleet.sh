@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_fleet.sh — one bounded squad contest. Every IU generates and clears fitness under
+# run_fleet.sh 〜 one bounded squad contest. Every IU generates and clears fitness under
 # hard deadlines. Results persist per candidate; the first verified Sol pass starts one
 # fixed group clock; only fully green candidates can become champion.
 set -u -o pipefail
@@ -43,7 +43,7 @@ done
 for cmd in timeout ps awk grep sed; do command -v "$cmd" >/dev/null || fail "required command '$cmd' is unavailable"; done
 
 CLAUDEX="${CLAUDEX:-$(command -v claudex || echo "$HOME/.local/bin/claudex")}"
-[ -x "$CLAUDEX" ] || fail "backend '$CLAUDEX' not found — install claudex or set CLAUDEX"
+[ -x "$CLAUDEX" ] || fail "backend '$CLAUDEX' not found 〜 install claudex or set CLAUDEX"
 
 NAME="${NAME:-round}" EXT="${EXT:-rs}"
 readonly SOL=4 LUNA=6

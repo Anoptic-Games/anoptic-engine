@@ -184,7 +184,7 @@ static AnoScale chord_scale_for(AnoChord c, AnoScale context)
 uint32_t ano_chord_pitch_classes(AnoChord c, AnoScale context, uint8_t out[5])
 {
     if (c.applied) {
-        // dominant quality by pc offsets — the applied chord leaves the collection
+        // dominant quality by pc offsets 〜 the applied chord leaves the collection
         int rootPc = (ano_scale_pitch_at(context, c.applied, 4) + 7) % 12;
         static const int seven[4] = { 0, 4, 7, 10 };
         uint32_t n = (c.extensions & ANO_EXT_7) ? 4u : 3u;

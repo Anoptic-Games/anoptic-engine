@@ -6,7 +6,7 @@
 // UI per-tile prim lists: CPU-coarse stage of the scaling ladder (ui-render.md §3.7).
 // Dense tilesX*tilesY grid of 8px tiles; each prim scatters into overlapping tiles
 // (counting sort) so the GPU walks only a tile's prims. Runs at compose cadence.
-// Solid bit = prim fully covers the tile — GPU skips SDF, takes flat fill. Pure, any thread.
+// Solid bit = prim fully covers the tile 〜 GPU skips SDF, takes flat fill. Pure, any thread.
 //
 // PERF TODO (ui-render.md §3.7.3-4, deferred, measurement-gated):
 //  - opaque-truncation: opaque solid OVER resets its tile list to just it (bounds list depth)
@@ -32,7 +32,7 @@ void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2])
 }
 
 // Opaque RRECT fill fully covering tile [tx0,ty0)-(tx1,ty1)? True only when the tile sits
-// inside the coverage-1 core (inset by largest corner radius + 0.5px AA half-window) —
+// inside the coverage-1 core (inset by largest corner radius + 0.5px AA half-window) 〜
 // exact classification, never an approximation.
 static bool prim_solid_over(const AnoUiPrim *p, float tx0, float ty0, float tx1, float ty1)
 {

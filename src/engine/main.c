@@ -21,7 +21,7 @@
 #include <anoptic_text.h> // logic-side shaping over anoRenderTextBake()
 #include <anoptic_ui.h>
 // Composer runs INSIDE the audio callback (src/music/ANOPTIC_MUSICGEN.md).
-// Logic never touches it — steers over the audio bridge and hears bars as they sound.
+// Logic never touches it 〜 steers over the audio bridge and hears bars as they sound.
 #include <anoptic_audio.h>
 #include <anoptic_music.h>
 #include <anoptic_synth.h>
@@ -313,7 +313,7 @@ static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const 
 
 /* Music World */
 
-// Main-thread bring-up before the logic producer; teardown after join — same discipline as the render bridge: no submit may race destruction.
+// Main-thread bring-up before the logic producer; teardown after join 〜 same discipline as the render bridge: no submit may race destruction.
 // Composer lives on the audio thread (mixer callback), two bars ahead of the playhead. Logic reaches music ONLY through the audio bridge.
 
 #define MUSIC_RATE 48000u
@@ -455,7 +455,7 @@ static int music_hit(const MusicLayout* m, float x, float y)
 
 static float clamp01f(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 
-// Filled from AEVT_MUSIC_BAR — arrives on the bar's DOWNBEAT, not when composed, so a cadence lights when audible.
+// Filled from AEVT_MUSIC_BAR 〜 arrives on the bar's DOWNBEAT, not when composed, so a cadence lights when audible.
 typedef struct MusicState {
 	float valence, energy, tension; // the three axes, as the panel holds them
 	int   bar, keyTonic, mode, chordDegree;
@@ -727,7 +727,7 @@ void* anoLogicThreadMain(void* arg)
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
 	float    barVpH = 0.0f;          // bar layout height
 
-	// Music panel: logic owns layout + input; never touches the composer — steers with commands and listens back via the audio bridge.
+	// Music panel: logic owns layout + input; never touches the composer 〜 steers with commands and listens back via the audio bridge.
 	AnoAudioBridge* ab = anoAudioBridge(); // NULL if music_world_start failed
 	MusicState mus = { .valence = 0.30f, .energy = 0.35f, .tension = 0.20f, .bar = -1 };
 	bool musicVisible = false, musicDirty = false, affectDirty = false, flashOn = false;
@@ -1032,7 +1032,7 @@ int main()
         return -1;
     }
 
-    // Audio world before the producer exists — same ordering as the render bridge: nothing may submit into a bridge being destroyed. false -> silent run.
+    // Audio world before the producer exists 〜 same ordering as the render bridge: nothing may submit into a bridge being destroyed. false -> silent run.
     if (!music_world_start())
         ano_log(ANO_WARN, "Music: the audio world did not come up; running silent.");
 
@@ -1063,7 +1063,7 @@ int main()
     unInitVulkan();
 #else
     // Headless engine: no renderer. Idle console loop.
-    ano_rlog(ANO_INFO, ANO_TERM, "Anoptic Engine — headless console mode.");
+    ano_rlog(ANO_INFO, ANO_TERM, "Anoptic Engine 〜 headless console mode.");
     while (true) {
         ano_rlog(ANO_INFO, ANO_TERM, "Waiting...");
         ano_sleep(3 * 1000000);

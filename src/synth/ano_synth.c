@@ -385,7 +385,7 @@ static void live_stamp(AnoSynth *s, AnoSynthNote *n)
     n->durS  = 0.0f;
 }
 
-// Insertion-sort run [from, noteCount) into schedule ahead of cursor (never behind — already sounded). Equal frames keep append order (= batch seq).
+// Insertion-sort run [from, noteCount) into schedule ahead of cursor (never behind 〜 already sounded). Equal frames keep append order (= batch seq).
 static void live_order(AnoSynth *s, uint32_t from)
 {
     for (uint32_t i = from; i < s->noteCount; ++i) {

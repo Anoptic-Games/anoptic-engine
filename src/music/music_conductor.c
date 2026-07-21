@@ -531,7 +531,7 @@ static AnoChord gen_chord(AnoMusicEngine *e, int bar)
         }
     }
 
-    // D3: the compressed 6/4 — I64 downbeat, V at the mid-bar pulse
+    // D3: the compressed 6/4 〜 I64 downbeat, V at the mid-bar pulse
     if (ano_phrase_slot(pos) == ANO_SLOT_PRE_CADENCE && wants_split(e, pos)) {
         AnoChord chord = ano_chord(1, 0);
         chord.inversion = 2;
@@ -1517,7 +1517,7 @@ static void py_hex(double x, char *buf, size_t cap)
         snprintf(buf, cap, "%.13a", x);
 }
 
-// Streamed event-by-event (no staging buffer — truncate would false-match).
+// Streamed event-by-event (no staging buffer 〜 truncate would false-match).
 uint64_t ano_events_digest(const AnoMusicEvent *events, uint32_t count)
 {
     AnoBlake2b8 st;

@@ -2,14 +2,14 @@
 
 Line index for `docs/references/miniaudio.h` (miniaudio 0.11.25, 95,864 lines).
 The file is a read-only protocol reference for the engine's hand-rolled device
-backends — never edit it, or every index below goes stale. Read targeted ranges
+backends 〜 never edit it, or every index below goes stale. Read targeted ranges
 only; the whole file is 3.1 MB. Regeneration commands are at the bottom.
 
 miniaudio is not vendored into the build. We consult its per-platform device
 code as ground truth for OS protocol handling (format negotiation, recovery
 loops, COM plumbing, device-change tracking) while the engine keeps its own
 mixer, transport, and per-platform `src/audio/audio_<plat>.c` files. Note it
-has no PipeWire backend — for pw_stream the references are the PipeWire docs;
+has no PipeWire backend 〜 for pw_stream the references are the PipeWire docs;
 the PulseAudio section below matters only for its pipewire-pulse workarounds.
 
 ## File map
@@ -17,8 +17,8 @@ the PulseAudio section below matters only for its pipewire-pulse workarounds.
 | Range | Content |
 |---|---|
 | 1–3736 | usage manual (prose): build flags, backend list, examples |
-| 3737–6594 | decl: primitives — formats, dither, channel maps, conversion, resampler |
-| 6596–11545 | decl: DEVICE I/O — enums, config/context/device structs, MA_API surface |
+| 3737–6594 | decl: primitives 〜 formats, dither, channel maps, conversion, resampler |
+| 6596–11545 | decl: DEVICE I/O 〜 enums, config/context/device structs, MA_API surface |
 | 9947, 10113, 10299, 10617, 11110 | decl: decoding, encoding, resource manager, node graph, engine (unused by us) |
 | 11552 | `MINIAUDIO_IMPLEMENTATION` begins |
 | 12221 | `MA_DEFAULT_PERIOD_SIZE_IN_MILLISECONDS_LOW_LATENCY` (10 ms) and friends |
@@ -35,7 +35,7 @@ The architecture to read before any backend:
 |---|---|---|
 | 7102 | `struct ma_device_config` | per-backend config arms: wasapi 7149, alsa 7156, pulse 7162, coreaudio 7166 |
 | 7293 | `struct ma_backend_callbacks` | THE backend contract: onContextInit/onDeviceInit/onDeviceStart/onDeviceStop/onDeviceRead/onDeviceWrite/onDeviceDataLoop(+Wakeup) |
-| 7372 | `struct ma_context` | dlopen'd symbol tables live in its union: dsound 7416, alsa 7515 (all `ma_proc` members — the full libasound import list), pulse 7587, coreaudio 7643 |
+| 7372 | `struct ma_context` | dlopen'd symbol tables live in its union: dsound 7416, alsa 7515 (all `ma_proc` members 〜 the full libasound import list), pulse 7587, coreaudio 7643 |
 | 7781 | `struct ma_device` | per-device backend state union at 7863: wasapi 7872 (note actualBufferSizeInFramesPlayback comment on IAudioClient3 semantics 7876) |
 | 20713/42495 | `ma_device__post_init_setup` | decl/impl: converts granted device format <-> client format |
 | 20737 | `ma_device_audio_thread__default_read_write` | the generic data loop for read/write-style backends (ALSA uses this shape) |
@@ -64,7 +64,7 @@ The architecture to read before any backend:
 | OpenSL | 40228–41491 | (Android; out of scope) |
 | Web Audio | 41492–~42400 | (out of scope) |
 
-## ALSA (Phase 1 fallback — read in this order)
+## ALSA (Phase 1 fallback 〜 read in this order)
 
 28099–28495 is the dlopen surface: `ma_snd_*_proc` typedefs for every libasound
 symbol used (e.g. `ma_snd_pcm_recover_proc` 28376); the matching `ma_proc`
@@ -73,13 +73,13 @@ sits in `ma_context_init__alsa` 30004–30259.
 
 | Line | Function |
 |---|---|
-| 28687 | `ma_context_open_pcm__alsa` — device-name resolution + `snd_pcm_open` mode flags |
-| 29212 | `ma_device_init_by_type__alsa` — THE hw_params negotiation dance: access mode (mmap vs rw), format (incl. float fallback order), channels, rate, period/buffer sizing, sw_params |
+| 28687 | `ma_context_open_pcm__alsa` 〜 device-name resolution + `snd_pcm_open` mode flags |
+| 29212 | `ma_device_init_by_type__alsa` 〜 THE hw_params negotiation dance: access mode (mmap vs rw), format (incl. float fallback order), channels, rate, period/buffer sizing, sw_params |
 | 29650 | `ma_device_init__alsa` |
 | 29677 / 29710 | `ma_device_start__alsa` / `ma_device_stop__alsa` (start/drain/drop rules) |
-| 29770 | `ma_device_wait__alsa` — poll() on PCM descriptors + the wakeup eventfd trick |
-| 29842 / 29898 | `ma_device_read__alsa` / `ma_device_write__alsa` — `snd_pcm_recover` on EPIPE/ESTRPIPE (29874, 29929: xrun/suspend recovery, silent=true) |
-| 29960 | `ma_device_data_loop_wakeup__alsa` — eventfd write to break poll() |
+| 29770 | `ma_device_wait__alsa` 〜 poll() on PCM descriptors + the wakeup eventfd trick |
+| 29842 / 29898 | `ma_device_read__alsa` / `ma_device_write__alsa` 〜 `snd_pcm_recover` on EPIPE/ESTRPIPE (29874, 29929: xrun/suspend recovery, silent=true) |
+| 29960 | `ma_device_data_loop_wakeup__alsa` 〜 eventfd write to break poll() |
 | 28509 | device blacklists + name-format helpers (28496–28686) |
 
 Enumeration (28807) and device-info rate iteration (29007–29192) matter only
@@ -93,8 +93,8 @@ We write no Pulse code, but pipewire-pulse mimics these paths.
 |---|---|
 | 31926 | the PipeWire small-buffer glitch workaround: 25 ms forced default period (comment + `ma_calculate_period_size_in_frames_from_descriptor__pulse` 31922) |
 | 32138, 32300 | PipeWire AUX-channel-map bug workarounds in device info/init |
-| 31785 | `ma_device_write_to_stream__pulse` — begin_write/write cycle shape |
-| 31948 | `ma_device_init__pulse` — buffer attr (tlength/maxlength) negotiation |
+| 31785 | `ma_device_write_to_stream__pulse` 〜 begin_write/write cycle shape |
+| 31948 | `ma_device_init__pulse` 〜 buffer attr (tlength/maxlength) negotiation |
 | 32392 | cork/uncork start/stop semantics |
 
 ## WASAPI (Phase 5)
@@ -105,14 +105,14 @@ COM-from-C plumbing: IIDs/CLSIDs table 21776+ (`MA_IID_IAudioClient3` 21776),
 
 | Line | Function |
 |---|---|
-| 22367 / 22475 | `OnDeviceStateChanged` / `OnDefaultDeviceChanged` — the notification client impl; vtable instance 22590 |
-| 22626–22800 | the context command thread (device ops marshalled off the COM callback thread — the pattern our reopen-between-blocks design replaces) |
-| 23626 | `ma_device_init_internal__wasapi` — the negotiation core: IAudioClient3 `GetSharedModeEnginePeriod`/`InitializeSharedAudioStream` low-latency path, AUTOCONVERTPCM handling (23657: the flag is NOT used with IAudioClient3 — the documented incompatibility), format fallback, event-callback wiring |
-| 24108 / 24514 | `ma_device_reinit__wasapi` / `ma_device_reroute__wasapi` — device-loss + default-change recovery |
+| 22367 / 22475 | `OnDeviceStateChanged` / `OnDefaultDeviceChanged` 〜 the notification client impl; vtable instance 22590 |
+| 22626–22800 | the context command thread (device ops marshalled off the COM callback thread 〜 the pattern our reopen-between-blocks design replaces) |
+| 23626 | `ma_device_init_internal__wasapi` 〜 the negotiation core: IAudioClient3 `GetSharedModeEnginePeriod`/`InitializeSharedAudioStream` low-latency path, AUTOCONVERTPCM handling (23657: the flag is NOT used with IAudioClient3 〜 the documented incompatibility), format fallback, event-callback wiring |
+| 24108 / 24514 | `ma_device_reinit__wasapi` / `ma_device_reroute__wasapi` 〜 device-loss + default-change recovery |
 | 24229 | `ma_device_init__wasapi` |
 | 24573 / 24704 | start / stop |
-| 24725 / 24922 | read / write — `GetCurrentPadding`-driven chunking |
-| 25062 | `ma_context_init__wasapi` — runtime-linked ole32/CoInitialize handling |
+| 24725 / 24922 | read / write 〜 `GetCurrentPadding`-driven chunking |
+| 25062 | `ma_context_init__wasapi` 〜 runtime-linked ole32/CoInitialize handling |
 | 3643 | manual note: IAudioClient3 + AUTOCONVERTPCM failure mode (0x88890021) |
 
 ## DirectSound (Phase 5 fallback)
@@ -121,9 +121,9 @@ COM-from-C plumbing: IIDs/CLSIDs table 21776+ (`MA_IID_IAudioClient3` 21776),
 |---|---|
 | 25580 | speaker-config -> channel map |
 | 26118 | period sizing from descriptor |
-| 26135 | `ma_device_init__dsound` — primary/secondary buffer creation, WAVEFORMATEXTENSIBLE |
-| 26410 | `ma_device_data_loop__dsound` — the play-cursor chase loop (the whole art of DSound) |
-| 26949 | `ma_context_init__dsound` — dlopen dsound.dll, `DirectSoundCreate` |
+| 26135 | `ma_device_init__dsound` 〜 primary/secondary buffer creation, WAVEFORMATEXTENSIBLE |
+| 26410 | `ma_device_data_loop__dsound` 〜 the play-cursor chase loop (the whole art of DSound) |
+| 26949 | `ma_context_init__dsound` 〜 dlopen dsound.dll, `DirectSoundCreate` |
 
 ## Core Audio (Phase 5)
 
@@ -131,11 +131,11 @@ COM-from-C plumbing: IIDs/CLSIDs table 21776+ (`MA_IID_IAudioClient3` 21776),
 |---|---|
 | 33895 | device object-ID enumeration (AudioObjectGetPropertyData patterns) |
 | 34465 | `ma_find_best_format__coreaudio` |
-| 35089 | `ma_on_output__coreaudio` — the AudioUnit render callback (ring feed shape) |
+| 35089 | `ma_on_output__coreaudio` 〜 the AudioUnit render callback (ring feed shape) |
 | 35378 | `ma_default_device_changed__coreaudio` + tracking init 35453–35560 |
-| 35769 | `ma_device_init_internal__coreaudio` — AUHAL setup: enable IO, set device, stream format, buffer size, callback |
+| 35769 | `ma_device_init_internal__coreaudio` 〜 AUHAL setup: enable IO, set device, stream format, buffer size, callback |
 | 36261 / 36419 / 36443 | init / start / stop |
-| 36518 | `ma_context_init__coreaudio` — runtime-linked CoreFoundation/CoreAudio/AudioToolbox |
+| 36518 | `ma_context_init__coreaudio` 〜 runtime-linked CoreFoundation/CoreAudio/AudioToolbox |
 
 ## Regeneration
 

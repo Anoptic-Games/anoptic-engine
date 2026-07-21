@@ -1,11 +1,11 @@
 #version 450
 
-// SKELETON — not in the CMakeLists shader manifest, not loaded by any pipeline.
+// SKELETON 〜 not in the CMakeLists shader manifest, not loaded by any pipeline.
 // Documents the DECAL DRAW STAGE vertex half (PIPELINE_DECAL). Decals are their own
 // primitive, not a per-entity attribute: one instanced unit cube per DecalRecord
 // (structs.h), anchored to a host by render slot. The cube is placed by the host's
 // live transform composed with the decal's localTransform, so a decal rides a moving
-// host for free. The pool is a global budget with LRU recycling — unbounded over
+// host for free. The pool is a global budget with LRU recycling 〜 unbounded over
 // time, fixed in memory.
 //
 // To activate: add to the manifest + a PIPELINE_DECAL prototype + a g_framePasses
@@ -32,7 +32,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO { mat4 transforms[]; } transformBuf;
 // NOTE: set 0 binding 12 is now LightRuntimeSSBO in the live globalSetLayout (flat.frag/transmission.frag).
-// This decal skeleton is inert (no compiled pipeline), so there is no conflict yet — but renumber this
+// This decal skeleton is inert (no compiled pipeline), so there is no conflict yet 〜 but renumber this
 // to a free binding (>= 13) when PIPELINE_DECAL is actually wired against globalSetLayout.
 layout(set = 0, binding = 12) readonly buffer DecalSSBO    { DecalRecord decals[]; } decalBuf;
 

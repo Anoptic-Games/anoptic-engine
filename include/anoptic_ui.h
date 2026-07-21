@@ -46,7 +46,7 @@ typedef enum AnoUiPrimKind {
 // stride 96, GLSL twin in resources/shaders/uicoverage.glsl).
 //   inv    : 2x2 pixel->prim inverse as rows, applied to (pixel - origin). Builders
 //            emit identity; rotation folds here later without an ABI change.
-//   origin : prim center, y-down — logical units at build, device pixels after the
+//   origin : prim center, y-down 〜 logical units at build, device pixels after the
 //            compose fold (the GPU always sees pixels).
 //   half   : half extents in prim space. SHADOW culls with +3*sigma + 1px AA.
 //   param  : kind-specific ([0]: border width | sigma | lod).
@@ -288,7 +288,7 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4]);
 
 // Per-tile prim lists (ui-render.md §3.7): CPU-coarse stage of the scaling ladder,
 // built at compose cadence so the GPU walks only the prims that touch each 8x8 tile.
-// A tile entry is a prim index with a "solid" high bit — set when the prim fully covers
+// A tile entry is a prim index with a "solid" high bit 〜 set when the prim fully covers
 // the tile (coverage provably 1), so the GPU skips the SDF and takes the flat fill.
 // Glyphs are NOT tiled here.
 
@@ -302,7 +302,7 @@ void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2]);
 
 // Dense tile grid (tilesX*tilesY of 8px, top-left at ox,oy). offsets[t]..offsets[t+1]
 // owns tile t; cursor is tilesX*tilesY scratch. Returns entry count. *ok false (and bails)
-// if offsetsCap (needs tilesX*tilesY+1) or entryCap is too small — caller falls back to
+// if offsetsCap (needs tilesX*tilesY+1) or entryCap is too small 〜 caller falls back to
 // the brute scan.
 uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY,

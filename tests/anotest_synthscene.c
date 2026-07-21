@@ -124,7 +124,7 @@ int main(int argc, char **argv)
     ano_sleep(50000); // stop + tails
 
     if (ano_audio_acquire_telemetry(b, &t))
-        printf("info: scene — blocks %llu, cpu %llu ns/block, underruns %u, clipped %u, dropped %u\n",
+        printf("info: scene 〜 blocks %llu, cpu %llu ns/block, underruns %u, clipped %u, dropped %u\n",
                (unsigned long long)t.blockIndex, (unsigned long long)t.blockCpuNs,
                t.underruns, t.clippedSamples, ano_synth_dropped(syn));
 

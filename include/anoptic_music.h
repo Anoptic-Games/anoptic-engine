@@ -197,7 +197,7 @@ typedef struct AnoMotif
 // Tag is COPIED, not borrowed (engine is pointer-free for snapshot = bytes).
 typedef struct AnoSignatureMotif
 {
-    char     tag[ANO_MOTIF_TAG_MAX]; // "hero", "threat", ... — request handle
+    char     tag[ANO_MOTIF_TAG_MAX]; // "hero", "threat", ... 〜 request handle
     AnoMotif motif;
     double   importance; // 0..1: identity landmark (high) vs colour (low)
 } AnoSignatureMotif;

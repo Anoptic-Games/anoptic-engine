@@ -86,7 +86,7 @@ int main(int argc, char **argv)
 
     AnoAudioTelemetry t;
     if (ano_audio_acquire_telemetry(b, &t))
-        printf("info: %u Hz, block %u — blocks %llu, cpu %llu ns/block, peak %.3f, underruns %u\n",
+        printf("info: %u Hz, block %u 〜 blocks %llu, cpu %llu ns/block, peak %.3f, underruns %u\n",
                t.sampleRate, t.blockFrames, (unsigned long long)t.blockIndex,
                (unsigned long long)t.blockCpuNs, (double)t.masterPeak, t.underruns);
 

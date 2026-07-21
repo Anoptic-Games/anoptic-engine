@@ -8,7 +8,7 @@ This is the manifesto: *all allocations through arenas or thread-local heaps; no
 
 ---
 
-## Pillar I — Memory: Regions Bound to Scope
+## Pillar I 〜 Memory: Regions Bound to Scope
 
 ### The lineage
 
@@ -50,7 +50,7 @@ If you wrap a `cleanup` variable inside a GCC statement-expression macro (`({ ..
 
 ---
 
-## Pillar II — Concurrency: Wait-Freedom Bound to Hardware
+## Pillar II 〜 Concurrency: Wait-Freedom Bound to Hardware
 
 This is the pillar behind *"no mutexes outside the Vulkan backend."* A mutex serializes cores and lets one preempted thread stall everyone. Lock-free and wait-free structures guarantee system-wide (or per-thread) progress using atomic hardware primitives, **Compare-And-Swap** and **Fetch-And-Add**, instead of blocking.
 
@@ -83,7 +83,7 @@ And the hardware cooperates on every target, because the atomics *interface* hid
 
 ---
 
-## Pillar III — Structure: Types as Zero-Cost Layout
+## Pillar III 〜 Structure: Types as Zero-Cost Layout
 
 To orchestrate raw memory and atomics without a C++ type lattice or a borrow checker, we borrow ideas from type theory (Pierce, *TaPL*), but as *design inspiration realized in layout*.
 
@@ -91,11 +91,11 @@ To orchestrate raw memory and atomics without a C++ type lattice or a borrow che
 
 - **Union type-punning is legal C.** Reading a different union member than was written is well-defined in C since C99 (§6.5.2.3, footnote) and remains so in C23. That lets us build honest tagged-variant and view types at the bare metal without ceremony.
 
-- **`_Generic` dispatch.** C23's `_Generic` gives compile-time, type-directed selection — polymorphic interface macros that route to the right specialized routine. The right tool for typed, zero-overhead front-ends over our atomic/queue primitives.
+- **`_Generic` dispatch.** C23's `_Generic` gives compile-time, type-directed selection 〜 polymorphic interface macros that route to the right specialized routine. The right tool for typed, zero-overhead front-ends over our atomic/queue primitives.
 
 ---
 
-## Pillar IV — C23 as the Ergonomic Substrate
+## Pillar IV 〜 C23 as the Ergonomic Substrate
 
 The toolchain finally meets the theory on every target: gcc or clang on Linux, clang on macOS (Homebrew LLVM clang 22, since Apple clang 15 is too old for C23) and on Windows, all speaking the same C23.
 
@@ -105,7 +105,7 @@ The toolchain finally meets the theory on every target: gcc or clang on Linux, c
 
 ---
 
-## The Hardware Is Not Abstract — So the Platform Layer Is
+## The Hardware Is Not Abstract 〜 So the Platform Layer Is
 
 The research's performance section is implicitly x86-64/Linux: `rdtsc`, `PDPE1GB` 1 GiB hugepages, 64-byte lines, 4 KiB pages. But Anoptic ships on **three platforms at once**, Linux/x86-64 (SSA's box), Windows/x86-64, and macOS/arm64 (Apple Silicon), so those numbers are *one column of a matrix*. This is exactly why the engine splits `include/` (the platform-agnostic interface, every `ano_*` call) from `src/*_linux.c` / `*_win64.c` / `*_macos.c` (the per-platform implementation). The *principles* below transfer to all three. The *constants and instructions* differ, so every one of them is a value the platform layer resolves.
 
@@ -130,7 +130,7 @@ Three orthogonal axes of one discipline, and Anoptic already sits at their inter
 2. **Concurrency is bound to hardware.** CAS/FAA + interval-based reclamation + cache-line-aligned ownership give wait-free progress. The MESI protocol, respected at the cache line (`ANO_CACHELINE`, 64 B on x86-64, 128 B on Apple Silicon), becomes the publish/subscribe mechanism. No mutexes outside Vulkan, by construction.
 3. **Structure is bound to types.** SoA layout, legal C union punning, `_Generic` dispatch, and C23 purity attributes give polymorphism and safety as *layout and compile-time* facts.
 
-You need memory whose lifetime is visible in the code's geometry, concurrency whose ordering is visible in the hardware's geometry, and structure whose meaning is visible in the type's geometry. Decades of theory (Tofte & Talpin, Walker–Crary–Morrisett, Cyclone, Michael & Scott, the IBR line, Reynolds, Pierce) converge on it, and C23 plus modern clang/gcc — across Linux, Windows, and macOS — finally make it both legal and fast on every machine the team runs. Anoptic takes that convergence literally.
+You need memory whose lifetime is visible in the code's geometry, concurrency whose ordering is visible in the hardware's geometry, and structure whose meaning is visible in the type's geometry. Decades of theory (Tofte & Talpin, Walker–Crary–Morrisett, Cyclone, Michael & Scott, the IBR line, Reynolds, Pierce) converge on it, and C23 plus modern clang/gcc 〜 across Linux, Windows, and macOS 〜 finally make it both legal and fast on every machine the team runs. Anoptic takes that convergence literally.
 
 ---
 
@@ -143,6 +143,6 @@ So this document can be trusted in-tree, here is exactly where it tightens or he
 - **`rdtsc` and `PDPE1GB` 1 GiB hugepages are x86-64-specific.** arm64 uses `CNTVCT_EL0` / `mach_absolute_time()`. Large-page reservation differs per OS (Linux THP/`MAP_HUGETLB`, Windows `MEM_LARGE_PAGES`, macOS kernel-managed), all reached through the platform layer.
 - **"TSC-IBR"** is described here as a technique (hardware-clock interval source).
 - **ECS-as-intersection-types** and **C23 `auto` as Pierce–Turner local type inference** are framed as *analogies/inspiration*. The engineering payoff (SoA locality, `size_t` discipline) holds either way.
-- `[[unsequenced]]`/`[[reproducible]]`, `typeof`, `_Generic`, and C99/C23 union type-punning are reported as stated — those are accurate.
+- `[[unsequenced]]`/`[[reproducible]]`, `typeof`, `_Generic`, and C99/C23 union type-punning are reported as stated 〜 those are accurate.
 
 macOS/arm64 figures: `sysctl` on this Apple M1, macOS 14.5 (23F79). The x86-64 figures (64-byte line, 4 KiB page) are the standard platform values for Linux and Windows.

@@ -119,14 +119,14 @@ uint32_t ano_synth_dropped(const AnoSynth *s);
 // Idle only. Then LOOKAHEAD bars, then transport_start.
 bool ano_synth_live_begin(AnoSynth *s, double barQuarters);
 
-// One bar: tempo (monotonic absolute beats), params, affect, events (emission order, ties unmerged). Ascending, no gaps. Audio thread only; shares schedule with generator — nothing else may touch it.
+// One bar: tempo (monotonic absolute beats), params, affect, events (emission order, ties unmerged). Ascending, no gaps. Audio thread only; shares schedule with generator 〜 nothing else may touch it.
 // Wrapped drivers calling this before the block-0 hooks see pre-reset state: reset-transparent on a FRESH synth only; reuse requires an intervening hook.
 bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
                         const AnoTempoPoint *tempo, uint32_t tempoCount,
                         const AnoMusicalParams *p, const AnoMusicAffect *a,
                         const AnoNoteEvent *events, uint32_t eventCount);
 
-// Bars appended but not yet started at worldFrame — driver's top-up gate.
+// Bars appended but not yet started at worldFrame 〜 driver's top-up gate.
 uint32_t ano_synth_live_pending(const AnoSynth *s, uint64_t worldFrame);
 
 // Late ties (sounded before extend) and ring-full drops. Zero if LOOKAHEAD held.

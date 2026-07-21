@@ -110,7 +110,7 @@ static inline bool ano_spsc_pop(AnoSpscRing *ring, void *out)
 /* Seqlock */
 
 // Latest-wins epoch. Even version == stable, odd == mid-write; version 0 == unpublished.
-// One producer per version; readers retry if version moved across the copy —
+// One producer per version; readers retry if version moved across the copy 〜
 // never a torn value, at any payload size or scheduling.
 // value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
 // Relaxed word copies keep concurrent store/load defined; torn loads are

@@ -9,7 +9,7 @@
 // blockIndex). Part 2, render bridge twin: a synthetic render thread publishes
 // snapshots and drains viewState at 1 kHz while logic's acquire_snapshot /
 // publish_view are timed. Oracle for part 2: every acquired copy is internally
-// consistent (frameId mirrored into vpWidth/vpHeight; seq mirrored into eye[]) —
+// consistent (frameId mirrored into vpWidth/vpHeight; seq mirrored into eye[]) 〜
 // zero torn reads. A/B vehicle for lane-layout work.
 // DISABLED in ctest; run by hand. argv[1] = soak seconds per part (default 20, min 5).
 // Exit 0 unless the mixer never heartbeats, no blocks are observed, or a read tears.

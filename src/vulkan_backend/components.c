@@ -32,7 +32,7 @@ uint32_t ano_draw_partition_count(void) {
     return ANO_VIEW_COUNT * ano_draw_pipeline_count() + 2u * ANO_SHADOW_FRUSTUM_COUNT;
 }
 
-// in:  type — any PipelineType
+// in:  type 〜 any PipelineType
 // out: its compacted draw-partition index, or ANO_NO_DRAW_SLOT if the type never draws
 uint32_t ano_draw_slot_of(PipelineType type) {
     for (uint32_t i = 0; i < ano_draw_pipeline_count(); ++i) {

@@ -172,7 +172,7 @@ Higher cascades down-sample probe locations, so a localized high-opacity emitter
 
 ### Algorithmic Mechanics of the Bilinear Fix
 
-Replace plain spatial interpolation with an analytic ray reprojection — the **Bilinear Fix**:
+Replace plain spatial interpolation with an analytic ray reprojection 〜 the **Bilinear Fix**:
 
 1. Let $\vec{p}$ be a probe center at cascade level $i$. Under standard execution, its radiance interval merges directly with an angularly pooled value bilinearly interpolated from four neighboring "parent" probes $\{A, B, C, D\}$ at cascade level $i+1$.
 2. Under the Bilinear Fix, rather than tracing a single interval from $\vec{p}$'s standard origin, **four distinct radiance intervals** are spawned from $\vec{p}$.

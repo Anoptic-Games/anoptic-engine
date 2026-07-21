@@ -21,7 +21,7 @@
 // Registered buffers: mono (spatializable) or stereo (pan = balance, never positional).
 #define ANO_AUDIO_CHANNELS 2
 
-// Pool ceilings. Preallocated at init. Runtime "allocate" is a state flip — never a mixer-thread heap call.
+// Pool ceilings. Preallocated at init. Runtime "allocate" is a state flip 〜 never a mixer-thread heap call.
 #define ANO_AUDIO_MAX_BUSES   16
 #define ANO_AUDIO_MAX_SOURCES 64
 #define ANO_AUDIO_MAX_BUFFERS 256
@@ -86,7 +86,7 @@ typedef enum AnoAudioFxParam
     ANO_AUDIO_P_COMP_RATIO,
     ANO_AUDIO_P_COMP_ATTACK_MS,
     ANO_AUDIO_P_COMP_RELEASE_MS,
-    ANO_AUDIO_P_COMP_MAKEUP,       // linear, clamped [0.25, 4] — never implicit
+    ANO_AUDIO_P_COMP_MAKEUP,       // linear, clamped [0.25, 4] 〜 never implicit
 
     ANO_AUDIO_P_LIM_CEILING = 80,
     ANO_AUDIO_P_LIM_RELEASE_MS,
@@ -311,7 +311,7 @@ typedef struct AnoAudioEvent
             bool    isCadence, keyArrived, motifStated;
         } music;
 
-        // AEVT_MUSIC_SEEKED: adoption bar. Emitted when the snapshot is copied —
+        // AEVT_MUSIC_SEEKED: adoption bar. Emitted when the snapshot is copied 〜
         // before new music is audible (handshake: borrowed block free again).
         int32_t seekedBar;
     } u;

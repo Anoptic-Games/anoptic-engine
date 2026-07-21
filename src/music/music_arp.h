@@ -22,7 +22,7 @@ typedef enum AnoArpPattern
 
 typedef struct AnoArpConfig
 {
-    int baseOctave;     // 5 — pool starts at C5
+    int baseOctave;     // 5 〜 pool starts at C5
     int spanOctaves;    // 2
     int velocityOffset; // -16
 } AnoArpConfig;

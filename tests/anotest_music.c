@@ -113,7 +113,7 @@ int main(void)
     }
 
     // --- gauss (cached pair) ---
-    // V[1] is sin-leg; ucrt vs glibc 2 ULP — exact per-platform vectors.
+    // V[1] is sin-leg; ucrt vs glibc 2 ULP 〜 exact per-platform vectors.
     ano_music_rng_seed(&r, 99);
     {
 #ifdef _WIN32
@@ -2933,7 +2933,7 @@ static const LintVio L4_IMIT[] = { { "imitation", 8 } };
             BAD[0].core.pitch = 25;   // bass below its floor, chromatic, degree a lie
             BAD[1].core.pitch = 99;   // a drum off the map
             BAD[3].core.pitch = 90;   // pad above its ceiling, chromatic, non-chord
-            BAD[6].core.start = 0.55; // off the grid — its doubling loses its source
+            BAD[6].core.start = 0.55; // off the grid 〜 its doubling loses its source
             BAD[12].degree = 7;       // an annotation that contradicts the scale
             BAD[30].core.tie = ANO_MUSIC_TIE_IN; // continues a note that never sounded
             BAD[62].core.pitch = 73;             // chromatic, with no licensing role

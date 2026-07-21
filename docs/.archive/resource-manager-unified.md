@@ -6,7 +6,7 @@ SPDX-License-Identifier: LGPL-3.0 -->
 
 Status: historical research and superseded planning material. The authoritative resource-manager specification is `../resourcemanager-comprehensive.md`; authority, API-freeze, implementation-state, threading, and completion claims below are not current unless restated there.
 
-**Status:** the single plan of record for `anoptic_resourcemg.h`. What we code, we ship: every step lands whole, tested, and permanent — no placeholders, no throwaway tier. Deferrals exist only as bench-gated rungs, never as "correct design later." Supersedes `resource-manager.md`, `resource-manager-SoA.md`, and `resource-manager-plan.md`; where they disagreed, the newest decision is recorded here.
+**Status:** the single plan of record for `anoptic_resourcemg.h`. What we code, we ship: every step lands whole, tested, and permanent 〜 no placeholders, no throwaway tier. Deferrals exist only as bench-gated rungs, never as "correct design later." Supersedes `resource-manager.md`, `resource-manager-SoA.md`, and `resource-manager-plan.md`; where they disagreed, the newest decision is recorded here.
 **House premise:** the hard part is already in-tree. The logger is the async transport (lock-free MPSC ring, owned drain thread, 22–48 ns enqueue, TSan-clean, fuzz-oracled), the render bridge ships SPSC ownership transfer and false-on-full tickets, `anoptic_strings.h` ships the one key space (`ANOSTR_SID` / `anostr_hash`, intern table). The async tier is a port, not a design.
 
 ---
@@ -45,9 +45,9 @@ Every keeper passes the flatness test: hot path is an array walk, synchronizatio
 
 A static table of absolute roots, written once at init/mount on the main thread, read-only forever, lock-free resolution, debug atomic `ready` flag. First root containing the file answers.
 
-1. **Write root** — `ano_fs_userpath()`. Every write lands here; it shadows every read (user overrides, saves, mods, loose-over-pack hot reload — one mechanism).
+1. **Write root** 〜 `ano_fs_userpath()`. Every write lands here; it shadows every read (user overrides, saves, mods, loose-over-pack hot reload 〜 one mechanism).
 2. **Registered mounts**, newest-first. Dev build registers the source tree's `resources/` in `main()` via `ANO_DEV_RESOURCES`, consumed at that one site only. Mounts carry an optional logical prefix (`"models/"` can graft `assets/` during migration); the field exists from day one.
-3. **Base mount** — `<gamepath>/resources`. Installing = the exe with `resources/` next to it.
+3. **Base mount** 〜 `<gamepath>/resources`. Installing = the exe with `resources/` next to it.
 
 A pack (step 7) is just another mount in the same walk. The logger's append stream under `ano_fs_logpath()` (gamepath, not the write root) is the one blessed exception to write-root-only writes; whether logs move under userpath is decided at step 2.
 
@@ -65,9 +65,9 @@ A pack (step 7) is just another mount in the same walk. The logger's append stre
 
 **Save frame v1.** Little-endian, 48-byte header: magic `'ANOS'` (4), container_version=1 (2), hash_id (1; 1=FNV-1a-64, 2 reserved xxh3-64), flags=0 (1), format_version (4), min_reader_version (4), payload_len (8), seq (8, echoed from the filename), header_hash (8, FNV-1a-64 over bytes 0–31), reserved (8); payload; 16-byte footer: payload_hash + `'ANOSDONE'`. Truncation caught three independent ways; header vs body corruption distinguishable.
 
-**Pack TOC (anopak).** Header `{magic 'ANOPAK\0\1', u32 entry_count, u64 toc_offset}`; sorted flat TOC of `{u64 rid, u64 offset, u64 size, u64 csize, u8 codec, u8 hash_id, u16 flags, u64 payload_hash}` binary-searched by rid; payloads 4 KiB-aligned; TOC checksummed, verified at mount — a corrupt pack refuses at startup. Codec byte reserves GDeflate's id.
+**Pack TOC (anopak).** Header `{magic 'ANOPAK\0\1', u32 entry_count, u64 toc_offset}`; sorted flat TOC of `{u64 rid, u64 offset, u64 size, u64 csize, u8 codec, u8 hash_id, u16 flags, u64 payload_hash}` binary-searched by rid; payloads 4 KiB-aligned; TOC checksummed, verified at mount 〜 a corrupt pack refuses at startup. Codec byte reserves GDeflate's id.
 
-**Ticket.** `{u32 idx, u32 gen}`; `{0,0}` on a full ring. Request payload `{rid or path, offset, length, band, ticket}` — ranges in the format from day one.
+**Ticket.** `{u32 idx, u32 gen}`; `{0,0}` on a full ring. Request payload `{rid or path, offset, length, band, ticket}` 〜 ranges in the format from day one.
 
 ## 7. Write protocol
 
@@ -79,7 +79,7 @@ Windows: `CreateFileW` temp share-mode 0, `WriteFile` loop, `FlushFileBuffers`, 
 
 ## 8. The public surface
 
-This is V1, the shipped API, not a prototype tier. Step 0 lands these eleven functions, two value types, two constants; step 5 adds the four async entries (`ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, the ticket). Additions only — nothing here is ever removed, renamed, or re-signatured.
+This is V1, the shipped API, not a prototype tier. Step 0 lands these eleven functions, two value types, two constants; step 5 adds the four async entries (`ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, the ticket). Additions only 〜 nothing here is ever removed, renamed, or re-signatured.
 
 Threading: `ano_res_init` and all `ano_res_mount` calls happen on the main thread before other threads load (the `ano_log_init` discipline); after that every read is stateless and thread-safe, writes are safe from any thread, same-slot commits serialize internally.
 
@@ -195,55 +195,55 @@ Files: `include/anoptic_resourcemg.h`; `src/resourcemg/resourcemg_core.c` (platf
 
 Each step independently mergeable. **Lands** = new capability. **Deletes** = the hardcoded path it kills. **Bar** = merge condition.
 
-### Step 0 — namespace and read path
+### Step 0 〜 namespace and read path
 - **Lands:** header + core + platform TUs; init/mount/resolve/resolve_write/subpath/exists/load; CMake `ANO_DEV_RESOURCES` (one use, `main()`) and the install rule (exe + `resources/`).
 - **Deletes:** nothing.
 - **Tests:** new `anotest_resourcemg` (`unit;mem`): hostile-path fuzz (all refuse, none UB); shadow order; read-contract oracles (byte-identical, size == bytes written, guard NUL, alignment, absent file → NULL blob + one log line). Scratch dirs per `templates/scratch.h`.
 - **Bar:** any code loads any staged file by logical name from any CWD, Debug and Release, both toolchains.
 
-### Step 1 — shaders ride it
+### Step 1 〜 shaders ride it
 - **Lands:** all ~20 `loadFile` sites become `ano_res_load(heap, "shaders/X.spv")` with a `LOCALHEAPATTR` scoped heap per pipeline-build function.
 - **Deletes:** `loadFile`, `openEngineFile`, `struct Buffer`.
 - **Tests:** existing vk suite green; one manual run from a foreign CWD.
 - **Bar:** zero shader-path strings outside `ano_res_load` calls.
 
-### Step 2 — models, textures, fonts; the shim dies
-- **Lands:** glTF sites take logical names (`ano_res_resolve` bridging cgltf initially — named migration debt); models move to `resources/models/` or ride the `"models/"` prefix; image URIs join via `ano_res_subpath` before `stbi_load`; fonts load as blobs + `FT_New_Memory_Face`. Decide the logger/logpath question (blessed exception vs move under userpath).
+### Step 2 〜 models, textures, fonts; the shim dies
+- **Lands:** glTF sites take logical names (`ano_res_resolve` bridging cgltf initially 〜 named migration debt); models move to `resources/models/` or ride the `"models/"` prefix; image URIs join via `ano_res_subpath` before `stbi_load`; fonts load as blobs + `FT_New_Memory_Face`. Decide the logger/logpath question (blessed exception vs move under userpath).
 - **Deletes:** the chdir shim (`main.c:588`), then `ano_fs_chdir_gamepath`; the hand-rolled join in `text_raster.c`.
 - **Tests:** engine smoke from a foreign CWD on both OSes; installed-tree run; `anotest_text` green.
 - **Bar:** CWD is irrelevant; nothing but resourcemg and the logger opens a file by path (grep-enforceable).
 
-### Step 3 — durable writes, saves, first write clients
+### Step 3 〜 durable writes, saves, first write clients
 - **Lands:** `ano_res_write`, `ano_res_quarantine`, `ano_res_save_commit`/`_load` per §7. Immediate clients: `anoptic_config.h` (jsmn, `ANOSTR_SID`-keyed typed store, quarantine-and-regenerate, one real settings file) and keybindings as a config domain (scancode → SID action-id table; hardcoded GLFW switches in `main.c`/`instanceInit.c` become action dispatches).
 - **Deletes:** hardcoded key handling; the no-settings-persist state.
-- **Tests:** frame round-trip + corruption battery (truncate, bit-flip header vs body, rename-masquerade — all detected, degrade one generation); fault-injection harness (`#ifdef`-gated child killed at every protocol step, parent asserts old-or-new-complete); config round-trip + quarantine.
+- **Tests:** frame round-trip + corruption battery (truncate, bit-flip header vs body, rename-masquerade 〜 all detected, degrade one generation); fault-injection harness (`#ifdef`-gated child killed at every protocol step, parent asserts old-or-new-complete); config round-trip + quarantine.
 - **Bar:** `kill -9` at any instant leaves every user file readable; corrupt config cannot block boot; rebinds survive relaunch.
 
-### Step 4 — identity registry, levels as client
-- **Lands:** rid registry (open addressing over cached hashes, dense slots — the `anostr_intern_t` shape; single-copy enforcement, debug assert-on-collision); diagnostics strings through the intern table (sparse rid for identity, dense sym for side arrays). Client: level module, `levels/demo.json` (jsmn) naming models/transforms/lights; the demo scene becomes data.
+### Step 4 〜 identity registry, levels as client
+- **Lands:** rid registry (open addressing over cached hashes, dense slots 〜 the `anostr_intern_t` shape; single-copy enforcement, debug assert-on-collision); diagnostics strings through the intern table (sparse rid for identity, dense sym for side arrays). Client: level module, `levels/demo.json` (jsmn) naming models/transforms/lights; the demo scene becomes data.
 - **Deletes:** the three hardcoded `parseGltf` filenames; `char name[64]` in `ModelAsset`.
 - **Tests:** registry round-trip and growth; the SID/hash bridge asserted at the module boundary; level-load equivalence (data-driven scene renders the hardcoded scene's frame, render suite as oracle).
 - **Bar:** the shipped scene is a level file a mod can shadow via the write root.
 
-### Step 5 — the transport (port, not design)
+### Step 5 〜 the transport (port, not design)
 - **Lands:** the logger's variable-length MPSC ring moves to `anoptic_collections.h` as the generic ring (logger re-consumes it). On it: request ring per §6, one IO thread (drainer's park/wake, lap-counter reclaim, shutdown discipline verbatim), blocking `pread` + `posix_fadvise`, per-consumer SPSC completion rings drained by a per-frame pump. Public surface: `ano_res_load_async`, `ano_res_poll`, `ano_res_pump`, the 8-byte ticket. Completions polled, never callbacks. Two bands, NOW and LATER; a blocking wait on a LATER ticket boosts it. Missing file completes FAILED through the ticket, identical to sync. Workers call sync `ano_res_load` into worker-owned heaps; blob ownership transfers through the completion message. Async writes are copy-at-submit.
-- **Deletes:** nothing — sync `ano_res_load` remains the primitive.
+- **Deletes:** nothing 〜 sync `ano_res_load` remains the primitive.
 - **Tests:** TSan mandatory (`build.sh 7` under WSL); `anotest_res_async` fuzz, logfuzz-oracle style: N producers under full-ring pressure, every ticket completes exactly once, async bytes == sync bytes, FAILED count == missing-file count; `anotest_resbench` (bench, DISABLED in ctest): p50/p99/p99.9 per band under a background stream, bulk-load wall time vs step-0 baseline.
 - **Bar:** TSan-clean; oracle holds over a soak; a level streams in the background with zero frame hitches.
 
-### Step 6 — the streaming economy
+### Step 6 〜 the streaming economy
 - **Lands:** chunk pool (fixed 512 KiB blocks, free list over a flat array, false-on-empty); real ranged reads (audio/mip shape); LZ4 for latency, plain zstd for bulk, decoded on a worker pipelined so chunk N decodes while N+1 reads; store-raw for already-compressed payloads.
 - **Deletes:** nothing; capacity only.
 - **Tests:** range correctness vs whole-file oracle (random offset/length fuzz); pool exhaustion returns false-on-empty, never blocks the IO thread; `anotest_resbench` compressed corpus.
 - **Bar:** effective bandwidth on compressed assets exceeds raw drive bandwidth, or the codec work reverts.
 
-### Step 7 — the pack and the bake
+### Step 7 〜 the pack and the bake
 - **Lands:** `anopak` mount type per §6; ~200-line offline builder wired into install. Load-in-place bake for models end-to-end: PODS image, pointers as offsets, one fix-up loop at load, zero runtime parsing. Loose files keep shadowing packs. Dev hot reload rides the completion ring: 500 ms mtime+size poll, confirmed by content hash before a frame-boundary swap.
 - **Deletes:** runtime JSON parsing for baked models; cgltf leaves the shipped path (dev-import tool only), retiring the last `ano_res_resolve` debt.
 - **Tests:** bake determinism (byte-identical pack); TOC bit-flip refuses at mount; shadow test; load-equivalence (baked model renders identically to the cgltf path); `anotest_resbench` TOC-lookup series.
 - **Bar:** the demo scene loads with zero parse work and zero path strings at runtime.
 
-### Step 8 — parallel pread, on demand only
+### Step 8 〜 parallel pread, on demand only
 - **Lands (maybe never):** 2–4 IO threads on the same request ring.
 - **Bar to start:** `anotest_resbench` shows rung 0 leaving the drive idle while requests queue. **Bar to merge:** beats single-thread p99 on the streaming series. io_uring/IOCP remain a recorded rung below this one.
 

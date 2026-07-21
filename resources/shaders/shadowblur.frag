@@ -2,7 +2,7 @@
 
 // Separable box prefilter for the layered Power CDF atlas, bilinear-paired: 5 fetches/pass (was 9). Run
 // twice per active atlas sublayer (X then Y). Every channel is a linearly-filterable quantity (per-band
-// coverage, or coverage*meanDepth), so the footprint is a plain uniform box average of the 2R+1 texels —
+// coverage, or coverage*meanDepth), so the footprint is a plain uniform box average of the 2R+1 texels 〜
 // no min/max, and it stays separable (2D box mean = mean of row-means, equal counts). The footprint radius
 // sets shadow softness (the coverage gradient across a silhouette is the penumbra). Vertex stage is the
 // shared fullscreen triangle (tonemap.vert); uv lands on exact texel centres (target is 1:1 with source).

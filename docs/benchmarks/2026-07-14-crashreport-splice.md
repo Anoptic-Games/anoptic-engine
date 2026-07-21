@@ -1,6 +1,6 @@
 # 2026-07-14 FPS benchmark (feature-crashreport, post-splice)
 
-Default resolution sweep on an RTX 4090 at the head of feature-crashreport (commit 4abd042, the blackbox intdiv test splice; engine code identical to f9f22fa "Crisp tables", two commits past the 2026-07-11 run's 3e6259e and carrying the c9e99f2 Perfbench refactor). Harness default `ANO_SHADOW_BUDGET=2` (content-dirty shadow re-renders capped, frusta 8). Wall-clock throughput and GPU-pass time at each resolution, borderless windowed, SHADOWMAP. Compared against 2026-07-11-crashreport.md (same branch at 3e6259e) below — the regression flagged there does not reproduce.
+Default resolution sweep on an RTX 4090 at the head of feature-crashreport (commit 4abd042, the blackbox intdiv test splice; engine code identical to f9f22fa "Crisp tables", two commits past the 2026-07-11 run's 3e6259e and carrying the c9e99f2 Perfbench refactor). Harness default `ANO_SHADOW_BUDGET=2` (content-dirty shadow re-renders capped, frusta 8). Wall-clock throughput and GPU-pass time at each resolution, borderless windowed, SHADOWMAP. Compared against 2026-07-11-crashreport.md (same branch at 3e6259e) below 〜 the regression flagged there does not reproduce.
 
 ## System
 
@@ -61,11 +61,11 @@ For textbuffer viewing convenience:
 
 All six rows foreground-verified. wall fps is the median per-window throughput from the [frame] line (ANO_PERF_WINDOW_FRAMES = 128 presented frames per window). 1% low and 0.1% low are 1000/p99 and 1000/p999 from the [frametime] line, each percentile the median across windows; max ms is the run's worst single frame. GPU ms is the median GPU-pass total (upload + compute + shadow + lighting + composite); GPU cap = 1000 / GPU ms; wall/cap at or above 0.9 is GPU-bound, below is CPU/present-bound; swap MiB is the swapchain allocator's resident VRAM.
 
-Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio — every row rendered at its true labeled resolution. Swap, not the window label, is the authority. The swap column is byte-identical to the 2026-07-11 runs, as expected for an unchanged renderer.
+Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio 〜 every row rendered at its true labeled resolution. Swap, not the window label, is the authority. The swap column is byte-identical to the 2026-07-11 runs, as expected for an unchanged renderer.
 
 ## vs 2026-07-11-crashreport.md (3e6259e): the flagged regression does not reproduce
 
-Same machine, same branch, three commits apart (3e6259e -> 4abd042; the only engine-relevant delta is the c9e99f2 Perfbench refactor — f9f22fa is docs and 4abd042 is a test-only change). The 2026-07-11 run read ~20-30% below the feature-profiling baseline and flagged it for investigation before merge. Today's numbers recover fully and land on top of that baseline (2026-07-11-bench2.md, feature-profiling 781158e):
+Same machine, same branch, three commits apart (3e6259e -> 4abd042; the only engine-relevant delta is the c9e99f2 Perfbench refactor 〜 f9f22fa is docs and 4abd042 is a test-only change). The 2026-07-11 run read ~20-30% below the feature-profiling baseline and flagged it for investigation before merge. Today's numbers recover fully and land on top of that baseline (2026-07-11-bench2.md, feature-profiling 781158e):
 
 | res | wall fps (crashreport 07-11 -> 07-14) | GPU ms (07-11 -> 07-14) | profiling baseline fps |
 | --- | --- | --- | --- |

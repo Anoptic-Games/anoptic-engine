@@ -4,8 +4,8 @@
 
 Every engine subsystem is a module: a public interface in `include/` paired with an implementation folder in `src/`.
 
-- **`include/anoptic_<module_name>.h` — the contract.** Public surface. Constants, type aliases, function signatures. All a caller ever sees. Functions surfaced by `anoptic_<module_name>.h` always begin with `ano_` and are always lowercase.
-- **`src/<module_name>/` — the secret.** The implementation. It can contain private headers (`<module_name>_<platform>.h`) included only by files *inside* the module. Implementation details, raw `pthread_*`/Win32 prototypes, internal structs, helper declarations all live here and never leak into `include/`.
+- **`include/anoptic_<module_name>.h` 〜 the contract.** Public surface. Constants, type aliases, function signatures. All a caller ever sees. Functions surfaced by `anoptic_<module_name>.h` always begin with `ano_` and are always lowercase.
+- **`src/<module_name>/` 〜 the secret.** The implementation. It can contain private headers (`<module_name>_<platform>.h`) included only by files *inside* the module. Implementation details, raw `pthread_*`/Win32 prototypes, internal structs, helper declarations all live here and never leak into `include/`.
 - **Platform splits live in `src/`.** A common `<module_name>.c` always compiles. `<module_name>_<platform>.c`, eg `timers_linux.c`, `timers_win64.c`, are platform-specific, picked by the CMakeLists.txt.
 
 ### Example
@@ -28,7 +28,7 @@ endif()
 
 A private header carries implementation detail:
 ```c
-// src/threads/threads_macos.h  — included ONLY by threads_macos.c
+// src/threads/threads_macos.h  〜 included ONLY by threads_macos.c
 // macOS libpthread declares no spinlock/barrier primitives; we supply them.
 int pthread_spin_lock(pthread_spinlock_t *lock);
 int pthread_barrier_wait(pthread_barrier_t *barrier);
@@ -37,6 +37,6 @@ int pthread_barrier_wait(pthread_barrier_t *barrier);
 
 ### Idiomatic vs not
 
-❌ **Not anoptic** — an implementation bleeding into the public header
+❌ **Not anoptic** 〜 an implementation bleeding into the public header
 
-✅ **Anoptic** — the header signature stays `ano_xxxxx()`
+✅ **Anoptic** 〜 the header signature stays `ano_xxxxx()`

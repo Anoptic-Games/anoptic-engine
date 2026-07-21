@@ -195,7 +195,7 @@ void ano_engine_request_motif(AnoMusicEngine *e, const char *tag);
 void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out);
 
 // Event-stream digest: Python-float.hex()-exact text, BLAKE2b-8, big-endian u64.
-// Streamed event-by-event (no staging buffer — truncate would false-match).
+// Streamed event-by-event (no staging buffer 〜 truncate would false-match).
 uint64_t ano_events_digest(const AnoMusicEvent *events, uint32_t count);
 
 #endif // ANO_MUSIC_CONDUCTOR_H

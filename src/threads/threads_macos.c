@@ -11,7 +11,7 @@
 #include <errno.h>
 
 
-/* Spinlocks — POSIX gap-fill */
+/* Spinlocks 〜 POSIX gap-fill */
 
 // in: lock, pshared (ignored, always process-private). out: 0. unlocked state.
 int pthread_spin_init(pthread_spinlock_t *lock, int pshared) {
@@ -57,7 +57,7 @@ int pthread_spin_unlock(pthread_spinlock_t *lock) {
 }
 
 
-/* Synchronization Barriers — POSIX gap-fill */
+/* Synchronization Barriers 〜 POSIX gap-fill */
 
 // in: barrier, attr (ignored), count (>0). out: 0, or EINVAL if count==0.
 int pthread_barrier_init(pthread_barrier_t *barrier,
@@ -100,7 +100,7 @@ int pthread_barrier_destroy(pthread_barrier_t *barrier) {
 }
 
 
-/* Spinlocks — ano_ wrappers (Darwin) */
+/* Spinlocks 〜 ano_ wrappers (Darwin) */
 
 int ano_thread_spin_init(anothread_spinlock_t *lock, int pshared) {
 
@@ -128,7 +128,7 @@ int ano_thread_spin_unlock(anothread_spinlock_t *lock) {
 }
 
 
-/* Synchronization Barriers — ano_ wrappers (Darwin) */
+/* Synchronization Barriers 〜 ano_ wrappers (Darwin) */
 
 int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrierattr_t *attr, unsigned int count) {
 

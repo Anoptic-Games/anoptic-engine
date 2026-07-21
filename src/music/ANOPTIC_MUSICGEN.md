@@ -1,6 +1,6 @@
 # Anoptic Musicgen
 
-The music module composes. Not "plays a track", not "crossfades stems" — it decides,
+The music module composes. Not "plays a track", not "crossfades stems" 〜 it decides,
 one bar at a time, what notes exist, and it does so fast enough to run inside the audio
 callback. A piece has no length, no loop point, and no existence before it is heard.
 
@@ -24,11 +24,11 @@ device, no thread. It emits `AnoNoteEvent`s and an `AnoMusicalParams` block per 
 that is the whole of its output.
 
 The synth depends on music (it consumes the IR). Audio depends on neither. The dependency
-arrows never reverse — that is why `anoptic_audio.h` contains no music type even though it
+arrows never reverse 〜 that is why `anoptic_audio.h` contains no music type even though it
 carries `ACMD_MUSIC_*` commands: those are scalars.
 
 One consequence worth stating plainly, because getting it wrong cost real time: a patch
-name in `AnoMusicalParams.instruments` is an `AnoPatchName` — a *timbre the composer
+name in `AnoMusicalParams.instruments` is an `AnoPatchName` 〜 a *timbre the composer
 named*, not a voice id in some backend's registry. The synth decides which of its voices
 plays it, through one explicit table (`PATCH_OF_MUSIC` in `src/synth/ano_synth.c`). The
 composer never learns what a synth is.
@@ -45,7 +45,7 @@ byte-identical events. This is not aesthetics; three things depend on it:
 
 What it costs, and where it lives:
 
-- `music_det.{h,c}` — BLAKE2b-8, CPython's MT19937 with its exact draw semantics
+- `music_det.{h,c}` 〜 BLAKE2b-8, CPython's MT19937 with its exact draw semantics
   (`random`, `randrange`'s rejection sampling, `choice`, `choices`), banker's rounding, and
   `ano_music_floordiv`. That last one matters: Python's `//` on floats is *not*
   `floor(a/b)`; it is `fmod`-based with a snap-to-integral, and they disagree at
@@ -55,7 +55,7 @@ What it costs, and where it lives:
 - Every knob that multiplies into a draw or a cost is `double`, never `float`.
 
 The design that makes parity tractable: **every draw is a fresh stream, tagged.** A draw is
-seeded from `(seed, tag, bar)` — `"42:mod:melody:17"` — not pulled from one long sequence.
+seeded from `(seed, tag, bar)` 〜 `"42:mod:melody:17"` 〜 not pulled from one long sequence.
 So parity is not a question of "did we draw the same number of times overall"; it reduces
 to *condition gating* and *state-mutation order*. Get the branch right and the number is
 right. That is why almost every ported vector passed on its first build.
@@ -68,13 +68,13 @@ the hash.
 ## The bar pipeline
 
 `ano_engine_advance_bar` is the whole engine. It runs in this order, and the order is
-load-bearing — a state mutation moved across a draw changes the music:
+load-bearing 〜 a state mutation moved across a draw changes the music:
 
 1. Phrase clock. Extension (a hot withhold stretches the pre-dominant), codetta, elision.
 2. Dramaturg. The phrase's cadence rationing, decided once at phrase position 0.
 3. Period commitment (antecedent/consequent) at even phrase boundaries.
 4. Key wander, and the pending modulation (pivot → dominant → arrival).
-5. Instrument swaps and mode — phrase-quantized; `urgent` demotes them to the next barline.
+5. Instrument swaps and mode 〜 phrase-quantized; `urgent` demotes them to the next barline.
 6. Parameters: affect through the mapping table, slewed, with the cadential ritardando
    shading the emitted tempo points. (Or pinned, on the static path.)
 7. Dramaturg withholding: locked tiers, escalation.
@@ -105,7 +105,7 @@ Foundation:
 | `music_control` | affect → parameters: the mapping table and its ~20 mappers |
 | `music_gen` | euclidean rhythms, `rough_cell`, phrase positions, the tension arcs |
 
-Form and intent — the part that makes it music rather than a chord loop:
+Form and intent 〜 the part that makes it music rather than a chord loop:
 
 | file | what it holds |
 | --- | --- |
@@ -113,7 +113,7 @@ Form and intent — the part that makes it music rather than a chord loop:
 | `music_dramaturg` | the ledger: withhold tension, spend it, alternate the ground |
 | `music_motif` | motifs as rhythm + contour + shape, their transforms, and their realization into whatever harmony they land in |
 | `music_signatures` | the director: which authored motif to state, and when it is overdue |
-| `music_imitation` | canon — the melody's own head, answered |
+| `music_imitation` | canon 〜 the melody's own head, answered |
 
 Generators, one per layer:
 
@@ -131,7 +131,7 @@ The rest:
 | file | what it holds |
 | --- | --- |
 | `music_modifiers` | the performance chain: humanize, swing, articulate, accent, perform, echo, strum, transpose |
-| `music_conductor` | the engine — the pipeline above, plus the harmonic walk (`gen_chord`) |
+| `music_conductor` | the engine 〜 the pipeline above, plus the harmonic walk (`gen_chord`) |
 | `music_verify` | the lint oracle (see below) |
 | `music_host` | the public API: the opaque engine, the curated config, snapshot/restore |
 
@@ -141,8 +141,8 @@ A piece has no end, so no state may grow with the bar count.
 
 The phrase- and bar-indexed caches are **direct-mapped rings tagged with the index that
 owns each slot** (`music_form.h`: `ANO_PHRASE_WINDOW` 32, `ANO_BAR_WINDOW` 256). The index
-stays *absolute* — it spells the RNG stream tag, so rebasing it would compose different
-music — and only the storage wraps. A slot carries the index that owns it, and a read that
+stays *absolute* 〜 it spells the RNG stream tag, so rebasing it would compose different
+music 〜 and only the storage wraps. A slot carries the index that owns it, and a read that
 misses the tag is a miss, not stale data.
 
 This replaced flat arrays with bounds guards, which did not crash: they silently stopped
@@ -153,20 +153,20 @@ music kept being *plausible*. The long-run golden (1200 bars, per-bar digests fr
 The engine is **pointer-free by construction**. Its state is its bytes: `ano_music_snapshot`
 is a `memcpy`, and two engines built from the same config and seed and advanced to the same
 bar are byte-identical, padding included (which is why the config constructors return
-`static const` objects — C leaves padding indeterminate under an initializer, and stack
+`static const` objects 〜 C leaves padding indeterminate under an initializer, and stack
 garbage in the padding would make a snapshot meaningless).
 
 ## Hosting it on the audio thread
 
 A bar costs ~150–500 µs to compose. A block at 512 frames / 48 kHz is 10.6 ms. So the
-composer runs *inside the callback*, two bars ahead of the playhead — no producer thread,
+composer runs *inside the callback*, two bars ahead of the playhead 〜 no producer thread,
 no queue, no ahead-of-time generation. `ano_synth_attach_music` wires it, and the generator
 tops itself up every block.
 
 The control plane is `ACMD_MUSIC_*` over the audio bridge, forwarded by the mixer (which
-interprets nothing — it owns no music) to the synth, which applies it on the thread that
-owns the engine. Bars come back as `AEVT_MUSIC_BAR`, carrying the bar's *meaning* — key,
-chord, cadence, motif landing — and they arrive when the bar **sounds**, not when it was
+interprets nothing 〜 it owns no music) to the synth, which applies it on the thread that
+owns the engine. Bars come back as `AEVT_MUSIC_BAR`, carrying the bar's *meaning* 〜 key,
+chord, cadence, motif landing 〜 and they arrive when the bar **sounds**, not when it was
 composed. A game that flinches at a cadence must flinch on the cadence.
 
 Seek is: rebuild off-thread (~120 ms per 1000 bars, so never in the callback), hand the
@@ -179,19 +179,19 @@ Measured on a device, three minutes, steered live: worst bar 480 µs of the 10,6
 
 ## The two oracles
 
-**Parity** — `ano_events_digest` against CPython. `tests/anotest_music.c` carries the
+**Parity** 〜 `ano_events_digest` against CPython. `tests/anotest_music.c` carries the
 vectors: per-primitive unit vectors, generator walks, two whole-piece walks (minimal and
 everything-on), a 1200-bar long run, and the §14.4 acceptance matrix (12 seeds × dramaturg
 on/off × 5 affect trajectories = 120 configs × 32 bars, raw and final digests both).
 
-**Theory** — `music_verify.{h,c}`, a port of the prototype's linter. It judges the output
+**Theory** 〜 `music_verify.{h,c}`, a port of the prototype's linter. It judges the output
 against the rules the music is supposed to obey: grid and scale membership, pad voicing,
 bass-root placement, melodic line over merged ties, doubling, counterpoint, tie coherence,
 the drum map, cadence realization, and whether a planted obligation (a cadential 6/4, a
 lament, a tonicization) was ever discharged. The acceptance matrix is green on all seven
 rule families in both stages.
 
-The linter is not just a gate — it is a tripwire. It found three real bugs the digests could
+The linter is not just a gate 〜 it is a tripwire. It found three real bugs the digests could
 not, because the digests only prove *the same thing happened*, not that it was any good.
 
 Two subtleties in it that are easy to get wrong:
@@ -212,7 +212,7 @@ Things that cost time, so that they cost it once:
   offset from the grid slot the note was displaced *from* (`grid_pos`), not from where the
   jitter left it. Exact, because no modifier moves a note by half a grid step.
 - The layers list is *ordered*, not a bitmask, on the generation side. The gate emits pad,
-  bass, melody, perc, arp and the conductor iterates in that order — a bitmask loses draw
+  bass, melody, perc, arp and the conductor iterates in that order 〜 a bitmask loses draw
   order and therefore loses the music. It collapses to a bitmask only at the synth boundary,
   where nothing asks in what order the generators ran.
 - Two id spaces for patches (see the top). The composer names timbres.
@@ -222,7 +222,7 @@ Things that cost time, so that they cost it once:
 
 ## Deferred
 
-`foreshadow()` and multi-bar signatures (TECH_SPEC §16 — nothing here precludes them).
+`foreshadow()` and multi-bar signatures (TECH_SPEC §16 〜 nothing here precludes them).
 Trace strings on dramaturg decisions are elided. Cross-platform float identity is targeted
 for the generation core (integer/branch logic over pinned float op order) but is not
 promised for the DSP downstream of it.

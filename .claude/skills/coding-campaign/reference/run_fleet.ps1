@@ -1,6 +1,6 @@
 #!/usr/bin/env pwsh
 #Requires -Version 7
-# run_fleet.ps1 — one bounded squad contest. Every IU generates and clears fitness under
+# run_fleet.ps1 〜 one bounded squad contest. Every IU generates and clears fitness under
 # hard deadlines. Results persist per candidate; the first verified Sol pass starts one
 # fixed group clock; only fully green candidates can become champion.
 $ErrorActionPreference = 'Stop'
@@ -78,7 +78,7 @@ if ((Opt 'CAMPAIGN_TEST_MODE' '0') -eq '1') {
 
 $OnPath = Get-Command claudex -ErrorAction Ignore
 $Claudex = Opt 'CLAUDEX' ($(if ($OnPath) { $OnPath.Source } else { Join-Path $HOME '.local\bin\claudex' }))
-if (-not (Get-Command $Claudex -ErrorAction Ignore)) { throw "run_fleet.ps1: backend '$Claudex' not found — install claudex or set `$env:CLAUDEX" }
+if (-not (Get-Command $Claudex -ErrorAction Ignore)) { throw "run_fleet.ps1: backend '$Claudex' not found 〜 install claudex or set `$env:CLAUDEX" }
 if (-not (Test-Path -LiteralPath $PromptFile)) { throw "run_fleet.ps1: cannot read PROMPT_FILE '$PromptFile'" }
 
 $Fleet = @(

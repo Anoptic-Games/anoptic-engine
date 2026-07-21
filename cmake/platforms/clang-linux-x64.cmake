@@ -7,4 +7,4 @@ set(CMAKE_CXX_COMPILER clang++)
 set(CMAKE_C_FLAGS "-target x86_64-linux-gnu")
 set(CMAKE_CXX_FLAGS "-target x86_64-linux-gnu")
     
-# No CMAKE_SYSTEM_NAME: native build — let CMake detect the host (avoids cross-compile mode).
+# No CMAKE_SYSTEM_NAME: native build 〜 let CMake detect the host (avoids cross-compile mode).
