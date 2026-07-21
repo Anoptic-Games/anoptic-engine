@@ -1,6 +1,6 @@
 Implement a single Rust function: an assembler for a stack-machine bytecode.
 
-The instruction type is ALREADY DEFINED elsewhere in the crate as the following enum. Do NOT redefine it, do NOT write `enum Op`, do NOT write any `use` for it — just refer to `Op` and its variants directly:
+The instruction type is ALREADY DEFINED elsewhere in the crate as the following enum. Do NOT redefine it, do NOT write `enum Op`, do NOT write any `use` for it 〜 just refer to `Op` and its variants directly:
 
     enum Op { Push(i64), Pop, Add, Sub, Mul, Div, Mod, Neg, Dup, Swap, Jmp(usize), Jz(usize), Print, Halt }
 

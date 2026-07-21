@@ -1,6 +1,6 @@
 #version 450
 
-// SKELETON — not in the CMakeLists shader manifest, not loaded by any pipeline.
+// SKELETON 〜 not in the CMakeLists shader manifest, not loaded by any pipeline.
 // Documents the skinned-mesh POSE PRE-PASS: the sibling of update.comp that builds
 // the bone palette for every VISIBLE skinned instance. All skinning cost lives here;
 // the draw stage (skinned.mesh) only fetches the result.
@@ -24,7 +24,7 @@ layout(push_constant) uniform PushConstants {
     uint visibleSkinnedCount;
 } pc;
 
-// {rigId, clipA, clipB, blendStart, blendDuration, clipStartPhase} — mirrors
+// {rigId, clipA, clipB, blendStart, blendDuration, clipStartPhase} 〜 mirrors
 // SkinInstanceState (structs.h), sparse over skinned slots, compacted for the pass.
 struct SkinInstanceState {
     uint  rigId;
@@ -47,7 +47,7 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
 
 layout(set = 0, binding = 1) readonly  buffer SkinStateSSBO  { SkinInstanceState instances[]; } skinBuf;
 // Static rig assets (skeleton parent table, inverse-bind, clip keyframe tracks),
-// shared across instances and indexed by rigId — declared by the real pass.
+// shared across instances and indexed by rigId 〜 declared by the real pass.
 // layout(set = 0, binding = 2) readonly buffer RigSSBO   { ... } rigBuf;
 // layout(set = 0, binding = 3) readonly buffer ClipSSBO  { ... } clipBuf;
 layout(set = 0, binding = 4) writeonly buffer BonePaletteSSBO { mat4 palette[]; } paletteBuf;

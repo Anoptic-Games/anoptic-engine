@@ -101,7 +101,7 @@ int main() {
         return 1;
     }
 
-    // Cleanup. gpu_alloc has arena semantics — no individual free; the allocator
+    // Cleanup. gpu_alloc has arena semantics 〜 no individual free; the allocator
     // is torn down by unInitVulkan.
     vkDestroyBuffer(ctx->device, testBuffer, NULL);
 

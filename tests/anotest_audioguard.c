@@ -7,7 +7,7 @@
 // uint64 (frames * channels * sizeof(float) >= 2^64) must be rejected with false, per the
 // header contract ("false = backpressure or bad args"). Exposes the BUGS.md audio
 // implementation bug: the wrapped product passes the SIZE_MAX check, a near-empty block is
-// adopted with the huge frame count in its header, and the call returns true — arming a
+// adopted with the huge frame count in its header, and the call returns true 〜 arming a
 // mixer-thread out-of-bounds read for any voice that plays the buffer. Null device, no cue
 // ever plays the poisoned id, so the failing run stays memory-safe. Exit 0 == pass.
 

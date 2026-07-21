@@ -1,6 +1,6 @@
-# Sandbox test suites on every PR and every push, main included — a merge lands
+# Sandbox test suites on every PR and every push, main included 〜 a merge lands
 # tested or not at all. Secretless: substitution comes from the flake's own
-# nixConfig (public cache, read-only), nothing is pushed — safe on fork PRs and
+# nixConfig (public cache, read-only), nothing is pushed 〜 safe on fork PRs and
 # spends no cachix quota. Main-push release builds live in cachix.yml.
 name: tests
 
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 jobs:
-  # Pure evaluation across all systems — catches flake breakage before any compile.
+  # Pure evaluation across all systems 〜 catches flake breakage before any compile.
   flake-check:
     runs-on: ubuntu-latest
     timeout-minutes: 15

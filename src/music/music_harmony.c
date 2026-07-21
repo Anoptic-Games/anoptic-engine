@@ -23,7 +23,7 @@ AnoHarmonyConfig ano_harmony_config_default(void)
     return k;
 }
 
-// FUNCTION_TRANSITIONS rows in the prototype's dict insertion order — the
+// FUNCTION_TRANSITIONS rows in the prototype's dict insertion order 〜 the
 // order feeds choices() cumulative sums, so it is load-bearing.
 typedef struct FnRow { char fn[3]; double w[3]; } FnRow;
 static const FnRow TRANS_T  = { { 'T', 'P', 'D' }, { 0.15, 0.55, 0.30 } };

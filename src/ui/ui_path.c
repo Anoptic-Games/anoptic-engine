@@ -124,7 +124,7 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
             q[qn++] = (AnoQuad){ { cx, ctrlx, nx }, { cy, ctrly, ny } };
             cx = nx; cy = ny;
         }
-        // bbox over endpoints and controls (conservative — curve stays in their hull).
+        // bbox over endpoints and controls (conservative 〜 curve stays in their hull).
         for (uint32_t k = (i == 0 ? 0 : qn - 1); k < qn; k++)
             for (int j = 0; j < 3; j++)
             {

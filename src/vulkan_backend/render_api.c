@@ -112,7 +112,7 @@ bool ano_render_get_view_hiz_enable(uint32_t view) {
 }
 
 // Claim material SSBO row 0 with stock white PBR (all FIF). No-op if absent or row 0 taken. Before first parseGltf.
-/// TODO: shim — redo with asset manager.
+/// TODO: shim 〜 redo with asset manager.
 static void register_default_material(void)
 {
 	if (rendererState.materialBuffer.capacity == 0u || rendererState.materialBuffer.count != 0u)

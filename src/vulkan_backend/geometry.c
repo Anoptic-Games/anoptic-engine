@@ -289,7 +289,7 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
         finalIndexOffset = pool->indexWriteOffset;
     }
 
-    // Both fit — now commit the reservations.
+    // Both fit 〜 now commit the reservations.
     if (vertexFreeIdx >= 0) {
         pool->vertexFreeBlocks[vertexFreeIdx].offset += vertexSize;
         pool->vertexFreeBlocks[vertexFreeIdx].size -= vertexSize;
@@ -521,7 +521,7 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
             lvlIndices = simplified;
             lvlCount = (uint32_t)got;
             // Compact to just the referenced vertices (remaps `simplified` in place). On alloc failure
-            // (cc==0) keep the full array with the unmodified indices — correct, just not space-optimal.
+            // (cc==0) keep the full array with the unmodified indices 〜 correct, just not space-optimal.
             if (compacted) {
                 uint32_t cc = geometry_compact_level(vertices, vertexCount, simplified, lvlCount, compacted);
                 if (cc > 0u) { lvlVertices = compacted; lvlVertexCount = cc; }
@@ -589,7 +589,7 @@ void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
 }
 
 // Free a contiguous LOD chain, releasing each level's vertex/index ranges and mesh slot. Symmetric
-// with geometry_pool_upload_chain — freeing only lodBase would leak the rest of the chain.
+// with geometry_pool_upload_chain 〜 freeing only lodBase would leak the rest of the chain.
 void geometry_pool_free_chain(GeometryPool* pool, uint32_t lodBase, uint32_t lodCount)
 {
     for (uint32_t i = 0; i < lodCount; ++i)

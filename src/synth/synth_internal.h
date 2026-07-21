@@ -5,7 +5,7 @@
 
 // Private synth world: voice pool, patch constants, BeatClock, frame-stamped schedule, per-block controls (cutoff, sweeps, duck, shimmer).
 // Logic thread while idle AND no live mixer hooks; mixer thread once any transport has started. Render: no alloc, no locks. Stochastic seeds at transport_start.
-// transport_start only STAGES (epoch bump + startFrame publish); the first mixer-side hook after it runs the reset — logic must never touch runtime state past the first start.
+// transport_start only STAGES (epoch bump + startFrame publish); the first mixer-side hook after it runs the reset 〜 logic must never touch runtime state past the first start.
 // DSP primitives from src/audio/dsp/ (sanctioned cross-module private include).
 
 #ifndef ANO_SYNTH_INTERNAL_H
@@ -161,7 +161,7 @@ struct AnoSynth
     float   *bell;
     uint64_t bellFrames;
 
-    // Score: anchors/bars/notes are rings live, arrays batch. Counts/cursors absolute; mask = (cap-1) live, UINT32_MAX batch — same deadline loop / generator serve both.
+    // Score: anchors/bars/notes are rings live, arrays batch. Counts/cursors absolute; mask = (cap-1) live, UINT32_MAX batch 〜 same deadline loop / generator serve both.
     double         barQuarters;
     AnoSynthAnchor *anchors;
     uint32_t       anchorCount, anchorCap, anchorMask;

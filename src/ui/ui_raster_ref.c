@@ -320,7 +320,7 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4])
 
 /* Tiled Eval */
 
-// One tile entry: normal shade, or (solid bit) coverage forced to 1 with the SDF skipped —
+// One tile entry: normal shade, or (solid bit) coverage forced to 1 with the SDF skipped 〜
 // flat fill through clip and paint. Mirrors the GPU tiled branch.
 static void shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t py, float src[4])
 {

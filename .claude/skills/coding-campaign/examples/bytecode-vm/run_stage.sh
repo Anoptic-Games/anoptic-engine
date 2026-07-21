@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_stage.sh — one supervisor agent, one generation. A thin stage adapter over the
+# run_stage.sh 〜 one supervisor agent, one generation. A thin stage adapter over the
 # generic fleet runner: picks the stage prompt, wires compose_and_test.sh around the
 # frozen substrate as the fitness command, and delegates commissioning/scoring/ranking
 # to run_fleet.sh. The Claude supervisor that invokes this then reviews results.tsv
@@ -10,7 +10,7 @@ usage() { cat <<'EOF'
 usage:  CONTEST_ROOT=/harness WORK=/contest/agent-N  bash run_stage.sh <A|B|C>
 
   CONTEST_ROOT  holds prelude.rs, testmain.rs, compose_and_test.sh, prompts/prompt_<SLOT>.txt,
-                and substrate/{A,B,C}.rs — seed substrate/ first: goldens for a fresh
+                and substrate/{A,B,C}.rs 〜 seed substrate/ first: goldens for a fresh
                 contest, or orchestrator/substrate/ to rebuild against the frozen winners
   WORK          this agent's output dir: candidates in $WORK/<SLOT>/, results.tsv beside
                 them, champion at $WORK/champion_<SLOT>.rs
@@ -30,14 +30,14 @@ ROOT="${CONTEST_ROOT:?set CONTEST_ROOT to the harness dir (run_stage.sh -h for u
 
 for s in A B C; do
   [ "$s" = "$SLOT" ] || [ -f "$ROOT/substrate/$s.rs" ] || {
-    echo "run_stage.sh: missing $ROOT/substrate/$s.rs — seed substrate/ first (see run_stage.sh -h)" >&2; exit 2; }
+    echo "run_stage.sh: missing $ROOT/substrate/$s.rs 〜 seed substrate/ first (see run_stage.sh -h)" >&2; exit 2; }
 done
 
 here=$(cd "$(dirname "$0")" && pwd)
 for f in "${RUN_FLEET:-}" "$here/run_fleet.sh" "$here/../../reference/run_fleet.sh" "$here/../.claude/tools/run_fleet.sh"; do
   [ -n "$f" ] && [ -f "$f" ] && { RUN_FLEET=$f; break; }
 done
-[ -f "${RUN_FLEET:-}" ] || { echo "run_stage.sh: run_fleet.sh not found — set RUN_FLEET to its path" >&2; exit 2; }
+[ -f "${RUN_FLEET:-}" ] || { echo "run_stage.sh: run_fleet.sh not found 〜 set RUN_FLEET to its path" >&2; exit 2; }
 
 export ROOT
 case $SLOT in

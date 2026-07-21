@@ -340,7 +340,7 @@ static void test_live_world(void)
 
     AnoAudioTelemetry t;
     if (ano_audio_acquire_telemetry(b, &t))
-        printf("info: live telemetry — blocks %llu, cpu %llu ns/block, underruns %u, clipped %u\n",
+        printf("info: live telemetry 〜 blocks %llu, cpu %llu ns/block, underruns %u, clipped %u\n",
                (unsigned long long)t.blockIndex, (unsigned long long)t.blockCpuNs,
                t.underruns, t.clippedSamples);
 

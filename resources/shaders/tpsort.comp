@@ -9,7 +9,7 @@
 //
 // Single-workgroup bitonic sort in shared memory. SORT_CAP bounds the per-view transmission draws
 // that get sorted; any excess (drawCount > SORT_CAP) keeps its arbitrary order appended after the
-// sorted block — graceful degradation, never corruption. SORT_CAP=256 fits the 16 KiB guaranteed
+// sorted block 〜 graceful degradation, never corruption. SORT_CAP=256 fits the 16 KiB guaranteed
 // shared-memory floor (8 KiB used). Reuses the cull descriptor set + the useMeshShader spec constant.
 
 layout(local_size_x = 256) in;
@@ -19,7 +19,7 @@ const uint  SORT_CAP = 256u;       // power of two; per-view transmission draws 
 const uint  MAX_CMD_WORDS = 5u;    // VkDrawIndexedIndirectCommand (fallback); mesh path uses 3
 const float NEG_SENTINEL = -3.4e38; // sorts pad entries last (real keys = clip.w > 0 for visible geom)
 
-// constant_id 1: useMeshShader — selects the indirect command stride, matching cull.comp.
+// constant_id 1: useMeshShader 〜 selects the indirect command stride, matching cull.comp.
 layout(constant_id = 1) const bool useMeshShader = true;
 
 struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
@@ -96,7 +96,7 @@ void main() {
 
     // Scatter sorted order back to global. Output position p takes the entry whose original position
     // is sperm[p]; sperm[0..capN) is a permutation of [0,capN) (sentinels sorted to [capN,SORT_CAP)).
-    // Reads come from shared, writes go to global position p — no read/write hazard on the buffers.
+    // Reads come from shared, writes go to global position p 〜 no read/write hazard on the buffers.
     for (uint p = lid; p < capN; p += 256u) {
         uint src = sperm[p];
         entityIndices[base + p] = sentity[src];

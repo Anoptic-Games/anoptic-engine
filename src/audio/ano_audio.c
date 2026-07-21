@@ -192,7 +192,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
 
     g_mixer = mx;
     g_heap  = heap;
-    ano_log(ANO_INFO, "audio: up — backend=%s, %u Hz, block %u (%u deep), %u buses.",
+    ano_log(ANO_INFO, "audio: up 〜 backend=%s, %u Hz, block %u (%u deep), %u buses.",
             mx->device->name, rate, bf, devBlocks, buses);
     return true;
 

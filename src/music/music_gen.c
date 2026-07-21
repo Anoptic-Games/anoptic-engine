@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Rhythm + phrase structure. rough_cell: merge draw only if successor exists; split only if dur >= 2;
-// drop never draws for first note — a skipped draw shifts every later decision on the stream.
+// drop never draws for first note 〜 a skipped draw shifts every later decision on the stream.
 // effective_tension keeps float op order, including the (1.30 - 0.85) constant.
 
 #include "music_gen.h"

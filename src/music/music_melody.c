@@ -32,7 +32,7 @@ static uint32_t pc_candidates(const uint8_t *pcs, uint32_t pcCount, int target,
         for (int p = lo + ((pcs[i] - lo) % 12 + 12) % 12; p <= hi && n < PC_CANDS_MAX; p += 12)
             out[n++] = p;
     }
-    // sort by (|p - target|, p) — total, so pre-sort order is immaterial
+    // sort by (|p - target|, p) 〜 total, so pre-sort order is immaterial
     for (uint32_t i = 1; i < n; ++i) {
         int key = out[i];
         int ka = key - target < 0 ? target - key : key - target;
@@ -217,7 +217,7 @@ static uint32_t mel_place(const AnoMotif *cell, const AnoHarmonicContext *ctx,
         int offset = cell->contour[i];
         int pitch;
         if (i == 0 && slot == 0 && pinFirst != ANO_NEAR_NONE) {
-            pitch = pinFirst; // the tied continuation — given, not chosen
+            pitch = pinFirst; // the tied continuation 〜 given, not chosen
         } else if (i == peakI && !(recovery && prev != ANO_NEAR_NONE)) {
             pitch = place_snap(guard, strongMask, ctx->chordPcs, ctx->chordPcCount,
                                peak, lo, hi, slot);
@@ -293,7 +293,7 @@ static uint32_t mel_place(const AnoMotif *cell, const AnoHarmonicContext *ctx,
 }
 
 // Fragmentary introduction: the first half, its tail nudged to a hanging
-// 2^/7^ — standing down where the nudge would leap or break the frame.
+// 2^/7^ 〜 standing down where the nudge would leap or break the frame.
 static uint32_t mel_introduce(const AnoMotif *motif, const AnoHarmonicContext *ctx,
                               AnoScale mscale, const AnoGenParams *params,
                               const AnoMelodyState *state, int lo, int hi,

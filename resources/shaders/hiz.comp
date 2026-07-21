@@ -6,7 +6,7 @@
 // The reduce source's MSAA sample count is a second spec constant (msaaSamples), baked at pipeline
 // creation from ctx->msaaSamples: it replaces a runtime textureSamples() query so the per-sample
 // fetch loop unrolls and the fetches issue ahead of the max chain (was the dominant Long-Scoreboard
-// stall — one fetch drained per iteration with no memory-level parallelism).
+// stall 〜 one fetch drained per iteration with no memory-level parallelism).
 // Avenue 1: when the device supports VK_RESOLVE_MODE_MAX_BIT the build first hardware-resolves depth to
 // single-sample (farthest sample = conservative occluder), and this module is compiled a second time
 // with RESOLVED_DEPTH so the reduce reads a sampler2D (one fetch/texel) instead of the per-sample loop.
@@ -35,7 +35,7 @@ layout(push_constant) uniform PC {
 // Conservative MAX over the source footprint this destination texel covers. Standard ZO depth
 // (near=0, far=1, no reverse-Z): the pyramid stores the FARTHEST depth in each texel, so the cull
 // rejects an entity only when its nearest point is behind every covered surface. When a source
-// dimension is odd the footprint extends one texel at the boundary so no far sample is dropped —
+// dimension is odd the footprint extends one texel at the boundary so no far sample is dropped 〜
 // dropping one would shrink the stored max and risk culling visible geometry (over-occlusion).
 void main() {
     ivec2 d = ivec2(gl_GlobalInvocationID.xy);

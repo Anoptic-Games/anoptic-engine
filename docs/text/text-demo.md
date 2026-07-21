@@ -9,7 +9,7 @@ Type Ancient Greek or Elder Futhark into a C string literal and it renders as an
 ## The pipeline at a glance
 
 ```
- UTF-8 string literal (main.c / text_raster.c — Greek and runes typed verbatim)
+ UTF-8 string literal (main.c / text_raster.c 〜 Greek and runes typed verbatim)
         │
         ▼
  ano_text_shape / ano_text_shape_runs          src/text/text_shape.c   (any thread)
@@ -20,7 +20,7 @@ Type Ancient Greek or Elder Futhark into a C string literal and it renders as an
    [0, 8192)   screen overlay region (OSD + logic HUD blocks)
    [8192, …)   world panel region (shaped once at init)
         ▼
- textraster.comp — Scanline Sweeper            GPU, async compute lane
+ textraster.comp 〜 Scanline Sweeper            GPU, async compute lane
    analytic coverage from monotone quadratic Béziers; no atlas, no SDF
         ▼
  composite                                     GPU, graphics queue
@@ -46,7 +46,7 @@ Two flavors of "not there", both graceful. A codepoint outside every baked range
 
 Kerning comes from GPOS pair tables and never bridges faces. The shaper drops the kern chain across size changes, newlines, and gaps.
 
-## UTF-8 in string literals — yes, really
+## UTF-8 in string literals 〜 yes, really
 
 The source files are UTF-8 and C23 clang consumes UTF-8 source natively, so demo text is typed as itself:
 
@@ -110,9 +110,9 @@ Two conventions the world table demonstrates, keep them when editing:
 | `HUD_TEXT_NOTICE` | transient line, clears itself after 15 s (`RCMD_TEXT_CLEAR` proof) |
 | `HUD_TEXT_CAM` | camera readout, replaced once per second (REPLACE semantics proof) |
 | `HUD_TEXT_UNICODE` | Gallehus horn inscription + Cyrillic/Latin-1 sampler |
-| `HUD_TEXT_HOMER` | Odyssey 1.1 — Ἄνδρα μοι ἔννεπε, Μοῦσα, πολύτροπον |
+| `HUD_TEXT_HOMER` | Odyssey 1.1 〜 Ἄνδρα μοι ἔννεπε, Μοῦσα, πολύτροπον |
 
-**World panel.** Instance region `[8192, …)`, shaped once at init into every frame slot, drawn by `textworld.vert/.frag` as a quad in the scene (768×352 virtual pixels onto 6.0×2.75 world units). The bake's curve data is resolution-independent, so the same instances survive any camera distance and angle. No re-shape, no mips, no atlas. Its text is the styled-runs table above: title, kerning proof line, the Gallehus inscription, and Iliad 1.1 — Μῆνιν ἄειδε θεὰ Πηληϊάδεω Ἀχιλῆος.
+**World panel.** Instance region `[8192, …)`, shaped once at init into every frame slot, drawn by `textworld.vert/.frag` as a quad in the scene (768×352 virtual pixels onto 6.0×2.75 world units). The bake's curve data is resolution-independent, so the same instances survive any camera distance and angle. No re-shape, no mips, no atlas. Its text is the styled-runs table above: title, kerning proof line, the Gallehus inscription, and Iliad 1.1 〜 Μῆνιν ἄειδε θεὰ Πηληϊάδεω Ἀχιλῆος.
 
 On the quotes: the Gallehus horn inscription (ᛖᚲ ᚺᛚᛖᚹᚨᚷᚨᛊᛏᛁᛉ ᚺᛟᛚᛏᛁᛃᚨᛉ ᚺᛟᚱᚾᚨ ᛏᚨᚹᛁᛞᛟ, "I, Hlewagastiz of Holt, made the horn", ~400 AD) is among the most famous genuine Elder Futhark texts. It beats an Old Norse quote because Viking-age Norse used Younger Futhark, a different Unicode block from the Elder Futhark glyphs we bake.
 

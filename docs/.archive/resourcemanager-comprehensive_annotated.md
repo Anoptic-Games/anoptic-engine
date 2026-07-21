@@ -25,7 +25,7 @@ The owner's directives in `docs/resourcemanager-real.md` define the goal. `docs/
 
 The resource manager is an owner, not a filesystem convenience wrapper. It owns logical identity, registry state, backing allocator domains, raw bytes, parsed and conditioned resources, derived-resource relationships, lifetime retirement, asynchronous work, consumption, durable saves, pack lookup, and hot-reload publication. Domain extensions own meaning inside the module: graphics parses and conditions graphics, audio parses and conditions audio, world resources parse and condition levels, and config resources validate and migrate settings.
 
-The hierarchy has two layers. A minimal permanent handle directory keeps stable slot identity and generation/tombstone publication so stale copied handles can fail safely after an owning domain winks out. The substantial registry shard—names, hash tables, resource records, dependency metadata, placement metadata, and payloads—belongs to the backing allocator domain selected by the contest. The permanent directory must remain deliberately small; moving the whole registry into a global default heap and calling payload placement ownership is forbidden.
+The hierarchy has two layers. A minimal permanent handle directory keeps stable slot identity and generation/tombstone publication so stale copied handles can fail safely after an owning domain winks out. The substantial registry shard〜names, hash tables, resource records, dependency metadata, placement metadata, and payloads〜belongs to the backing allocator domain selected by the contest. The permanent directory must remain deliberately small; moving the whole registry into a global default heap and calling payload placement ownership is forbidden.
 
 `anores_t` remains the transparent read handle shape unless an interface review proves a stronger layout: `{rid, slot, generation}` by value, sentinel zero, immutable views, generation retirement, no reference-count mutation on reads. The owner publishes a stable SoA snapshot for handle resolution; consumers never enter the mutable owner registry.
 
@@ -101,31 +101,31 @@ Before timing, every model must pass the entire resource correctness battery, AS
 - Raw `mi_malloc`, default-parent allocation, a private scratch heap, or any other escape is legal only when it is a declared primitive of that contestant, owned by its root, charged to its reports, and subjected to its teardown and transfer rules. A hidden allocator cannot absorb a model's predicted wound.
 - Each model runs with real resource scopes in the engine, not only direct calls from a benchmark TU.
 
-### B.3 Model A — one complete multipool
+### B.3 Model A 〜 one complete multipool
 
 Model A owns the entire resource system with one backing heap and one full multipool hierarchy. Registry rows, names, dependency records, conditioned metadata, ordinary payloads, parse/import scratch, and allocator bookkeeping all live in this ownership domain; only objects whose external consume contract requires an independently transferable block may use an explicitly tracked transfer allocation from the same root. Category and lifetime are registry fields, not allocator boundaries. Unload and group retirement perform the required per-resource destruction without pretending to wink out a subset; a hidden monotonic lifetime heap may not make Model A look like Model C or E.
 
 Model A's home is steady mixed-size churn and maximum reuse/density. Its hostile ground is repeated partial lifetime retirement, cross-level residue, very large live-set changes, and category-local traversal. The implementation must make its predicted wound measurable rather than outsourcing lifetime work to a hidden per-group allocator.
 
-### B.4 Model B — full kind-major ownership
+### B.4 Model B 〜 full kind-major ownership
 
 Model B creates complete backing domains by resource kind: graphics models/meshes, textures/images, shaders/pipelines, fonts/text, levels/worlds, saves/config, audio, scripts, and any other real class established in Stage A. Each kind owns its registry shard, names, metadata multipool, payload policy, derived objects, and stats; its class-specific size histogram may tune multipool classes without changing public semantics. Whole-kind teardown is a real domain wink-out where the class contract allows it.
 
 Model B's home is kind-local iteration, kind-specific size distributions, cache/TLB locality, subsystem restart, and fragmentation over a long mixed-lifetime soak. Its hostile ground is level retirement spanning many kinds, shared resources, cross-kind dependencies, and promotion. No kind may be represented by a tag in the Model A pool.
 
-### B.5 Model C — full lifetime-major ownership
+### B.5 Model C 〜 full lifetime-major ownership
 
 Model C creates complete backing domains by lifetime: engine-forever, world/level, streaming window, transient/import, save/config, and other demonstrated lifetimes. Each domain owns its registry shard and one or more multipools required to serve its full size distribution. Opening a level in the real engine opens its domain; every disclosed dependency enters that domain or an explicit shared/promoted domain; retirement invalidates the published generations, crosses the reclamation barrier, and destroys the backing heap in the promised wink-out.
 
 Model C's home is repeated real level/world load-unload, streaming-window turnover, residual footprint, retire latency, and lifetime-local traversal. Its hostile ground is cross-level sharing, promotion, long-lived resources referenced by short-lived worlds, and category iteration. The current ambient test group is not Model C; lifetime tokens must be explicit and production-owned.
 
-### B.6 Model D — full role-split ownership
+### B.6 Model D 〜 full role-split ownership
 
 Model D separates roles completely. Stable registry metadata, names, dependency graphs, small conditioned structs, and control records live in metadata multipools; variable ordinary payloads live in appropriate payload multipools; fixed streaming chunks live in bounded `ano_mem_pool` instances; bulk SoA arrays and ticket/consume planes use cache-striped placement; transfer-eligible GPU/audio/world payloads use allocations that can move ownership without an interior-pointer copy. Every resource records the role domains it spans, and retire/release handles all of them exactly once.
 
 Model D's home is ranged streaming, parse-to-condition-to-consume throughput, GPU/audio hand-off, zero-copy rate across the full size distribution, SoA traversal, and bounded chunk reuse. Its hostile ground is metadata-heavy tiny resources, multi-domain teardown complexity, bookkeeping overhead, and fragmentation between roles. A 2 MiB direct allocation shared with every other model is not evidence for Model D.
 
-### B.7 Model E — the full C×D hybrid
+### B.7 Model E 〜 the full C×D hybrid
 
 Model E is implemented as the complete hybrid originally promised: lifetime-major backing heaps, and inside every lifetime domain a role split of registry/metadata multipools, variable payload multipools, bounded streaming pools, cache-striped SoA storage, transfer-compatible consume allocations, and transient monotonic staging. The real level domain owns its registry shard and all level resources; the engine domain owns permanent resources; shared immutable domains and explicit promotion answer cross-level sharing; worker staging winks out after adoption; final retirement invalidates handles, waits for the lock-free reclamation condition, and destroys the whole backing heap.
 
@@ -166,7 +166,7 @@ Stage B ends only when five full implementations have fought on every battlefiel
 
 Stage C changes how work and ownership move without weakening what Stage A and B established. The winning backing allocator domains remain the owners of registry shards and resources. One resource owner/service thread mutates those domains and performs or schedules IO; arbitrary engine threads submit requests through lock-free ingress; readonly handles resolve through a published SoA directory; the owner publishes consume work through cache-striped SPMC lanes; consumers return completion through the cheapest correct topology; every operation is correlated by a generational ticket.
 
-The default topology is deliberate: registered submitters use cache-aligned producer-local SPSC ingress lanes drained fairly by the owner, decomposing MPSC without a shared reserve-to-publish gap; a shared many-producer fallback is allowed only if it has a strict helping/recovery proof. SPMC consume lanes distribute homogeneous work from one owner to many consumers. Known workers return completions on SPSC lanes; any shared MPSC return path meets the same strict proof. Separate consume lanes by capability—graphics upload, audio decode/mix preparation, world conditioning, generic workers—rather than filtering incompatible work inside one FIFO.
+The default topology is deliberate: registered submitters use cache-aligned producer-local SPSC ingress lanes drained fairly by the owner, decomposing MPSC without a shared reserve-to-publish gap; a shared many-producer fallback is allowed only if it has a strict helping/recovery proof. SPMC consume lanes distribute homogeneous work from one owner to many consumers. Known workers return completions on SPSC lanes; any shared MPSC return path meets the same strict proof. Separate consume lanes by capability〜graphics upload, audio decode/mix preparation, world conditioning, generic workers〜rather than filtering incompatible work inside one FIFO.
 
 ### C.2 Lineage and algorithm choice
 
@@ -189,7 +189,7 @@ The current `anoring_spmc` is useful prior art but not the finished resource con
 
 ### C.4 Transparent readonly handles
 
-The read path stays simpler than the consume path. `anores_t` indexes a stable permanent publication directory. The owner finishes an immutable descriptor—counted owner/domain identity, immutable data pointer or offset, byte size, typed-view metadata, state, rid, and row generation—then release-publishes one lock-free atomic pointer to it; an all-atomic snapshot is an allowed measured alternative. A reader acquire-loads the immutable descriptor, verifies owner/rid/slot/generation/state, and returns an immutable view or the empty sentinel. Current `anoseqpub` may not publish resource rows as-is: versioned `memcpy` of ordinary storage that a writer can modify concurrently is a C23 data race. The reader never touches the mutable hash map, allocator, dependency graph, or owner queue on a cache hit.
+The read path stays simpler than the consume path. `anores_t` indexes a stable permanent publication directory. The owner finishes an immutable descriptor〜counted owner/domain identity, immutable data pointer or offset, byte size, typed-view metadata, state, rid, and row generation〜then release-publishes one lock-free atomic pointer to it; an all-atomic snapshot is an allowed measured alternative. A reader acquire-loads the immutable descriptor, verifies owner/rid/slot/generation/state, and returns an immutable view or the empty sentinel. Current `anoseqpub` may not publish resource rows as-is: versioned `memcpy` of ordinary storage that a writer can modify concurrently is a C23 data race. The reader never touches the mutable hash map, allocator, dependency graph, or owner queue on a cache hit.
 
 Published rows are stable and SoA; the current relocatable `mi_realloc` row array is not acceptable. Growth uses non-moving chunks, a bounded preallocated directory justified by population evidence, or another proven publication scheme. The substantial registry data remains in the winning allocator domain; the stable directory stores only the routing and tombstone information required for transparent handles. Owner identities and slots are monotone for the process or counted by a generation carried in every handle; owner, row, ticket, and stripe generation wrap causes refusal or a global-quiescent reset, never silent reuse.
 
@@ -215,7 +215,7 @@ The public asynchronous surface includes submit, poll, pump/acknowledge, cancel,
 
 Ordinary handle reads borrow immutable manager-owned memory. Resource consume is an explicit ticketed operation published by the manager to the appropriate SPMC lane. A consumer claims it exactly once, validates the handle generation captured by the ticket, performs the typed operation, and completes with a result/ownership disposition.
 
-Two consume classes are explicit. Borrow-consume lets a worker or subsystem process immutable manager-owned data while the ticket pins its retirement epoch; completion releases the pin and memory remains in the manager. Destructive-consume first withdraws the live handle publication and waits for every pre-existing read scope to cross its grace point, then publishes a counted transfer token—not an already-retired ordinary handle—to the SPMC lane. It is legal only for a placement class whose allocation can be transferred and reclaimed by the recipient without copying or freeing an interior multipool pointer. The allocator contest must therefore give consumable resources a transfer-compatible home. Hidden pooled copy-out is not destructive zero-copy.
+Two consume classes are explicit. Borrow-consume lets a worker or subsystem process immutable manager-owned data while the ticket pins its retirement epoch; completion releases the pin and memory remains in the manager. Destructive-consume first withdraws the live handle publication and waits for every pre-existing read scope to cross its grace point, then publishes a counted transfer token〜not an already-retired ordinary handle〜to the SPMC lane. It is legal only for a placement class whose allocation can be transferred and reclaimed by the recipient without copying or freeing an interior multipool pointer. The allocator contest must therefore give consumable resources a transfer-compatible home. Hidden pooled copy-out is not destructive zero-copy.
 
 Derived-resource consume may return a new manager handle instead of external ownership: a worker parses/decodes/conditions in its own staging allocator, sends the result and ticket back, the owner adopts it into the winning home, publishes the derived handle, and retires staging. Parser/worker allocators stay single-owner throughout; memory crosses threads only by an explicit transfer message.
 

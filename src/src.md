@@ -12,7 +12,7 @@ Other subdirectories within ``src/`` are for the various submodules
 Each module follows the platform-abstraction convention (see `docs/docs.md`):
 a public interface lives in `include/anoptic_<mod>.h` (exposing only `ano_*()`
 declarations and platform-agnostic types), while `src/<mod>/` holds the
-implementation — a common `<mod>.c` plus, where needed, per-platform files
+implementation 〜 a common `<mod>.c` plus, where needed, per-platform files
 (`<mod>_linux.c` / `<mod>_win64.c` / `<mod>_macos.c`) selected by the module's
 `CMakeLists.txt`. Callers only ever include the public header and call `ano_*()`.
 
@@ -39,7 +39,7 @@ src/
 ## Purpose of Each Subdirectory
 
 - `audio/` (public `include/anoptic_audio.h`): The audio world. A mixer thread owns every
-  audio structure — sources, buses, insert chains, sends — and structural change reaches it
+  audio structure 〜 sources, buses, insert chains, sends 〜 and structural change reaches it
   only as commands applied at block boundaries, over lock-free rings; telemetry and the
   listener pose ride published double buffers. Device backends are per-platform and
   hand-rolled, cascading to a null device when none opens. A `generator` seam lets another
@@ -51,12 +51,12 @@ src/
   composes ahead of the playhead every block, with steering, per-bar musical meaning, and
   seek riding the audio bridge.
 
-- `music/` (public `include/anoptic_music.h`): The composer — harmony, form, motifs,
+- `music/` (public `include/anoptic_music.h`): The composer 〜 harmony, form, motifs,
   dramaturgy, and one generator per layer, held bit-exact against a Python oracle. It knows
   nothing of audio, threads, or devices; it emits notes. See `music/ANOPTIC_MUSICGEN.md`.
 
 - `engine/`: The process entry point. `main.c` runs the render world (all Vulkan +
-  GLFW) directly on the main thread — GLFW pins window/event handling to the process
+  GLFW) directly on the main thread 〜 GLFW pins window/event handling to the process
   main thread, mandatory on macOS. It calls `initVulkan`, spawns the logic/ECS master
   (`anoLogicThreadMain`) as the sole producer of render commands over the bridge, then
   drives the frame loop (`glfwPollEvents` + `drawFrame`) until the window closes.
@@ -74,7 +74,7 @@ src/
   stable slots with holes, frame-gated reuse), drains the bridge, and grows the
   slot-indexed GPU buffers on demand. Owns all GLFW (window + event pump).
 
-- `render/`: Higher-level render support that feeds the backend — the glTF model
+- `render/`: Higher-level render support that feeds the backend 〜 the glTF model
   loader (`gltf/`) and the FreeType/SDF text stack (`text/`).
 
 - `mesh/` (`ano_meshoptimizer.h`): Clean-room reimplementation of the meshoptimizer

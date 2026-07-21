@@ -182,7 +182,7 @@ int main(int argc, char **argv)
 
     AnoAudioTelemetry t;
     if (ano_audio_acquire_telemetry(b, &t))
-        printf("info: scene — %u clicks, blocks %llu, cpu %llu ns/block, underruns %u, clipped %u\n",
+        printf("info: scene 〜 %u clicks, blocks %llu, cpu %llu ns/block, underruns %u, clipped %u\n",
                clicksFired, (unsigned long long)t.blockIndex,
                (unsigned long long)t.blockCpuNs, t.underruns, t.clippedSamples);
 

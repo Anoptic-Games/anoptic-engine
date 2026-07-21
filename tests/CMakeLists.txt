@@ -448,7 +448,7 @@ set_tests_properties(anoptic_audiodsp PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
 # Phase 4 synth offline gate: BeatClock oracle, tie chains render as single
 # voices (bit-compare vs the merged note), patch showcase, and the journey
-# fixture — churned-heap byte-identity plus the full listenable WAV artifact.
+# fixture 〜 churned-heap byte-identity plus the full listenable WAV artifact.
 add_executable(anotest_synth anotest_synth.c)
 target_link_libraries(anotest_synth PRIVATE anoptic_core)
 target_compile_definitions(anotest_synth PRIVATE

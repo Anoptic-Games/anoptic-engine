@@ -1,5 +1,5 @@
 # Build the engine and push its runtime closure to the anoptic-games cachix cache.
-# Push is an explicit `cachix push` of the built outputs only — the action's automatic
+# Push is an explicit `cachix push` of the built outputs only 〜 the action's automatic
 # store-diff push would upload the whole toolchain and eat the 5 GB free tier.
 # Build the github: ref, NOT the checkout: `nix build .#x` on the runner evaluated to
 # different store paths than `nix run github:...` does for users (byte-identical outputs,
@@ -50,8 +50,8 @@ jobs:
           skipPush: true
       # Each target is pinned under a stable name (e.g. play-x86_64-linux) so the latest
       # main build is immune from cachix GC; --keep-revisions 1 drops the previous pin.
-      # PIN ONLY ON MAIN: branch runs build, push, and verify — full release-build
-      # coverage — but never repoint the production pin names.
+      # PIN ONLY ON MAIN: branch runs build, push, and verify 〜 full release-build
+      # coverage 〜 but never repoint the production pin names.
       - name: Build, push, and pin runtime closures
         run: |
           set -euo pipefail

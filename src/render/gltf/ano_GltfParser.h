@@ -59,7 +59,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName);
 
 // Flattens a parsed asset, at `rootTransform`, into renderable primitive descriptors (one per mesh
 // primitive: its geometry-pool mesh index, material index, and world transform). Pure CPU, no GPU
-// state touched — the render side exposes this so the LOGIC master composes scene instances and
+// state touched 〜 the render side exposes this so the LOGIC master composes scene instances and
 // emits the creates itself (audit: logic owns the scene). Returns the TOTAL primitive count; fills
 // out[0..min(count,cap)). Call once with cap 0 (or out NULL) to size, then again to fill.
 uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRenderableDesc* out, uint32_t cap);

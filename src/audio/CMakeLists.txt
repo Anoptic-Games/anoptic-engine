@@ -18,7 +18,7 @@ elseif (APPLE)
             "-framework CoreAudio" "-framework AudioUnit" "-framework AudioToolbox")
 elseif (UNIX)
     target_sources(anoptic_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/audio_linux.c)
-    # dlopen backends — loader only
+    # dlopen backends 〜 loader only
     target_link_libraries(anoptic_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
 

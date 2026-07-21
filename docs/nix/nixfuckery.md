@@ -4,7 +4,7 @@ tl;dr: Nix is foobar on the system you're reading it on. Your job is to fix it.
 
 Note from Claude Fable (matei3d's session, macOS, 2026-07-12) to Claude Fable on cris's machine.
 
-Subject: the nix Linux renderer path — what works, what was wrong, what is now fixed, and what you do next. Branch `nix-anygpu`, based on `feature-crashreport` at c9e99f2.
+Subject: the nix Linux renderer path 〜 what works, what was wrong, what is now fixed, and what you do next. Branch `nix-anygpu`, based on `feature-crashreport` at c9e99f2.
 
 ## Working today
 
@@ -39,7 +39,7 @@ Verified: evals on x86_64-linux and aarch64-darwin, drv wrapper contents, mesa m
 
 ## Escape hatch
 
-`nixglhost` glibc version errors mean the host glibc is newer than the pin's 2.42. Then: `NIXPKGS_ALLOW_UNFREE=1 nix run --impure github:nix-community/nixGL#nixVulkanNvidia -- ./result/bin/anopticengine` — nixGL fetches NVIDIA userspace at the detected version. Report which one works.
+`nixglhost` glibc version errors mean the host glibc is newer than the pin's 2.42. Then: `NIXPKGS_ALLOW_UNFREE=1 nix run --impure github:nix-community/nixGL#nixVulkanNvidia -- ./result/bin/anopticengine` 〜 nixGL fetches NVIDIA userspace at the detected version. Report which one works.
 
 ## Do not chase
 

@@ -7,7 +7,7 @@ Notes on the **SCANLINE SWEEPER** glyph renderer: theory, math, and how it actua
 
 
 * 
-**Elimination of Singular Events**: Winding-number methods fight floating-point singularities — curve starts exactly on a sample, tangent to a ray, or through a sample point. Area integration only moves a little when roots jitter, so you don't need fancy singular-event handling.
+**Elimination of Singular Events**: Winding-number methods fight floating-point singularities 〜 curve starts exactly on a sample, tangent to a ray, or through a sample point. Area integration only moves a little when roots jitter, so you don't need fancy singular-event handling.
 
 
 * 
@@ -78,7 +78,7 @@ Strictly vertical segments take a fast path as a rectangle: $\text{Area} = \text
 
 
 * 
-**Clamping-Based Integration**: Skip branching on every geometric cut configuration. Compute up to four line intersections with the pixel bounds. Clamp $t$ and intersection points to $[0, \text{size}]$ so out-of-window regions collapse to zero — triangles and edge cases without branches.
+**Clamping-Based Integration**: Skip branching on every geometric cut configuration. Compute up to four line intersections with the pixel bounds. Clamp $t$ and intersection points to $[0, \text{size}]$ so out-of-window regions collapse to zero 〜 triangles and edge cases without branches.
 
 
 * 

@@ -98,7 +98,7 @@ uint32_t anoRenderDefaultMaterial(void);
 // UTF-8 into AnoGlyphInstance arrays with ano_text_shape/_runs against this bake on any
 // thread (the bake is immutable plain data, published before the logic thread starts)
 // and ships the instances through ano_render_text_set below. NULL when the text stack
-// failed init (missing font) — ano_text_shape over NULL yields 0 instances, so callers
+// failed init (missing font) 〜 ano_text_shape over NULL yields 0 instances, so callers
 // degrade to no text without a special path. Valid after initVulkan(); read-only.
 const AnoFontBake *anoRenderTextBake(void);
 
@@ -113,7 +113,7 @@ uint32_t anoRenderStaticLightBase(void);
 // ---------------------------------------------------------------------------
 
 // Absent-attribute sentinels, shared by logic and render. A renderable with
-// ANO_RENDER_NO_MESH carries no geometry (the cull pass skips it — e.g. a pure
+// ANO_RENDER_NO_MESH carries no geometry (the cull pass skips it 〜 e.g. a pure
 // light); ANO_RENDER_NO_LIGHT marks a renderable that drives no light.
 #define ANO_RENDER_NO_MESH  0xFFFFFFFFu
 #define ANO_RENDER_NO_LIGHT 0xFFFFFFFFu
@@ -186,7 +186,7 @@ typedef enum AnoLightingMode
 // RFIELD_ANIM) and the GPU update pass derives the live transform from global time
 // every frame, so a steady trajectory costs zero per-tick bridge traffic; only a
 // discrete change of trajectory re-sends. Arbitrary CPU/physics/pathfinding-driven
-// motion has no closed form and does NOT belong here — it takes the streamed path.
+// motion has no closed form and does NOT belong here 〜 it takes the streamed path.
 typedef enum AnoMotionType
 {
     ANO_MOTION_STATIC = 0, // no motion; live transform == base pose
@@ -201,7 +201,7 @@ typedef enum AnoMotionType
 // { uint type; uint flags; float epoch; float pad; vec4 p0; vec4 p1; }. `epoch` is
 // the global-time stamp the motion was established (t0); the GPU evaluates at
 // (time - epoch), so re-basing a trajectory is one RFIELD_ANIM command. The eight
-// p0/p1 floats hold every type's params inline — Kepler needs no side pool:
+// p0/p1 floats hold every type's params inline 〜 Kepler needs no side pool:
 //   SPIN / ORBIT : p0.xyz = axis * angular_speed (rad/s)
 //   LINEAR       : p0.xyz = velocity (units/s)
 //   KEPLER       : p0 = (semiMajorAxis, eccentricity, inclination, longAscendingNode)
@@ -247,8 +247,8 @@ typedef enum RenderFieldBits
 
 // Open-ended per-renderable instance channel: one packed integer lane plus one
 // full-precision lane, interpreted by the fragment shader as the game sees fit.
-// This is the single general per-entity attribute slot — tint, flags, scalars,
-// small indices — that exists so adding the next per-instance attribute never
+// This is the single general per-entity attribute slot 〜 tint, flags, scalars,
+// small indices 〜 that exists so adding the next per-instance attribute never
 // re-widens the bridge contract at six lockstep sites again.
 //
 // Convention (v1; the game owns the CPU pack <-> shader unpack, both in its layer):
@@ -278,12 +278,12 @@ typedef struct RenderCreateBatch
 } RenderCreateBatch;
 
 // Mass field change (RCMD_BULK_UPDATE): ONE shared `fields` mask applied across a
-// render_id array, with parallel value arrays — only the flagged fields' arrays are read
+// render_id array, with parallel value arrays 〜 only the flagged fields' arrays are read
 // (the rest may be NULL). This is the mass-event analogue of a single RFIELD_* UPDATE:
 // a battle re-skinning thousands of ships (RFIELD_MESH_MAT) or a solar flare flipping
 // 100k colonists' state (RFIELD_USERDATA) becomes O(1) ring messages. RFIELD_LIGHT is not
 // bulk (lights are few). Submit via ano_render_submit_bulk_update, which copies the batch
-// — the caller's arrays need only live until that call returns.
+// 〜 the caller's arrays need only live until that call returns.
 typedef struct RenderUpdateBatch
 {
     uint32_t        count;
@@ -298,7 +298,7 @@ typedef struct RenderUpdateBatch
 
 // Mass despawn (RCMD_BULK_DESTROY): a render_id array retired in one ring message.
 // Symmetric with RCMD_BULK_CREATE; submit via ano_render_submit_bulk_destroy, which
-// copies the array — the caller's array need only live until that call returns.
+// copies the array 〜 the caller's array need only live until that call returns.
 typedef struct RenderDestroyBatch
 {
     uint32_t        count;
@@ -313,12 +313,12 @@ typedef struct RenderDestroyBatch
 // One screen-text block (RCMD_TEXT_SET): shaped glyph instances, addressed by a
 // producer-owned text_id (its namespace to assign and recycle, like light_id). SET
 // REPLACES the block's previous contents (creating it if new); CLEAR removes it. The
-// producer shapes with ano_text_shape/_runs against anoRenderTextBake() — origins and
+// producer shapes with ano_text_shape/_runs against anoRenderTextBake() 〜 origins and
 // sizes in LOGICAL UNITS of the overlay surface (the space RenderSnapshot.uiWidth/
 // uiHeight describes); the renderer folds the surface scale at compose, so glyph
 // curves rasterize at full device resolution. Composited over the frame after the
 // render-internal overlay text. Submit via ano_render_text_set, which copies the
-// array into one render-owned block — the caller's array need only live until that
+// array into one render-owned block 〜 the caller's array need only live until that
 // call returns.
 typedef struct RenderTextBlock
 {
@@ -328,7 +328,7 @@ typedef struct RenderTextBlock
 
 // Per-block caps for RCMD_UI_SET (the composed union across blocks additionally caps at
 // the render-side table sizes; a block that would overflow the union is skipped whole,
-// never truncated — truncation would corrupt clip/paint/glyph references).
+// never truncated 〜 truncation would corrupt clip/paint/glyph references).
 #define ANO_RENDER_UI_MAX_PRIMS  1024u
 #define ANO_RENDER_UI_MAX_CLIPS  64u
 #define ANO_RENDER_UI_MAX_PAINTS 64u
@@ -378,7 +378,7 @@ typedef struct RenderUiBlock
 // free GPU ring slice (ano_render_stream_begin), writes its render_ids + live world
 // transforms straight into the mapped arrays, and publishes one tiny control command
 // (ano_render_stream_commit -> RCMD_STREAM_TRANSFORMS). The scatter pass reads the slice
-// in place via a dynamic descriptor offset — the matrices are never copied render-side,
+// in place via a dynamic descriptor offset 〜 the matrices are never copied render-side,
 // and the render master holds the last published slice so a tick with no new batch keeps
 // its pose. `ids` and `xforms` are parallel, length up to `capacity`; `token` is opaque
 // (carries the slice identity back to commit). Valid only between a successful begin and
@@ -425,7 +425,7 @@ typedef struct RenderCommand
 // Enqueue one command. Returns false ONLY when the command ring is full.
 //
 // Overflow policy (the contract, not "caller decides"): false means BACKPRESSURE, not
-// loss — the producer must retain the command and retry on a later tick; it must NOT
+// loss 〜 the producer must retain the command and retry on a later tick; it must NOT
 // drop it (a dropped DESTROY strands a slot; a dropped CREATE is an invisible entity).
 // The lock-free SPSC ring cannot be grown live, and spinning here would couple logic to
 // render, so retry is the policy. Mass events MUST use the bulk commands below so a
@@ -442,7 +442,7 @@ bool ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *ren
 
 // Streamed-transform lane (ANO_MOTION_STREAMED), zero-copy producer endpoint. `begin`
 // reserves the next free ring slice and points `out` at its mapped id/transform arrays,
-// returning false if every slice is still in flight on the GPU — the caller drops the
+// returning false if every slice is still in flight on the GPU 〜 the caller drops the
 // tick, and since the render side holds the last published slice, a dropped tick simply
 // repeats it. The producer fills out->ids[0..count) and out->xforms[0..count) (count <=
 // out->capacity), then `commit` publishes via one bridge command. `commit` returns false
@@ -475,11 +475,11 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 
 // Screen-text blocks (the v0 logic->render text path). `set` copies the
 // shaped instances into one render-owned block (count truncated to ANO_RENDER_TEXT_MAX)
-// and REPLACES block text_id's contents — the caller's array need only live until the
+// and REPLACES block text_id's contents 〜 the caller's array need only live until the
 // call returns. `clear` removes the block (idempotent; unknown text_id is a no-op).
 // Backpressure: false == ring full. Unlike CREATE/DESTROY, a dropped SET is harmless to
-// skip — it is a full replace, so the block is merely stale until the producer's next
-// set — but a producer that must not miss a one-shot set (or a clear) should retry.
+// skip 〜 it is a full replace, so the block is merely stale until the producer's next
+// set 〜 but a producer that must not miss a one-shot set (or a clear) should retry.
 // A set with count 0 clears the block. All blocks die with the renderer at shutdown.
 bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
                          const AnoGlyphInstance *instances, uint32_t count);
@@ -489,9 +489,9 @@ bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
 // builder's tables plus the shaped glyph labels into one render-owned block and REPLACES
 // block ui_id's contents; caller arrays need only live until the call returns. Text
 // semantics carry over: `clear` is idempotent, count-0 (empty builder) clears, false ==
-// ring full (retry), a dropped SET is merely stale. An INVALID block — per-block caps
+// ring full (retry), a dropped SET is merely stale. An INVALID block 〜 per-block caps
 // exceeded, out-of-range clip/paint/glyph references, or a UI_PATH whose curve walk
-// (ANO_UI_CURVE_SENTINEL grammar) would read past the stream — is dropped with a warning
+// (ANO_UI_CURVE_SENTINEL grammar) would read past the stream 〜 is dropped with a warning
 // and returns true, so backpressure retry loops never spin on bad input. UI_GLYPHS prims
 // index glyphs[] block-locally.
 bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
@@ -652,7 +652,7 @@ void    ano_render_set_lod_bias(int32_t bias);
 int32_t ano_render_get_lod_bias(void);
 
 // Coarse shadow LOD bias: the LOD level shadow casters are decimated to. Shadow frustums have no
-// per-caster screen-area metric, so this is one global level bias applied to every caster — shadows
+// per-caster screen-area metric, so this is one global level bias applied to every caster 〜 shadows
 // are low-frequency, so a coarser mesh in the depth atlas is cheap and usually imperceptible. Clamped
 // per-entity to that mesh's available levels (non-LOD meshes always cast their base level). Clamped to
 // [0, max LOD]; negative clamps to 0. Affects only meshes uploaded with LOD chains. Applies from the
@@ -662,7 +662,7 @@ int32_t ano_render_get_shadow_lod_bias(void);
 
 // Per-view GPU Hi-Z occlusion culling toggle. When enabled, the cull rejects entities fully hidden
 // behind the previous frame's depth for that view (single-phase hierarchical-Z; reprojected, so it
-// costs ~1 frame of latency — fast camera motion can briefly cull then reveal newly-disoccluded
+// costs ~1 frame of latency 〜 fast camera motion can briefly cull then reveal newly-disoccluded
 // geometry). Conservative: it never culls visible geometry, only occluded. Independent per view; off
 // by default. Applies from the next recorded frame; render thread only. Out-of-range view is ignored.
 void ano_render_set_view_hiz_enable(uint32_t view, bool enable);

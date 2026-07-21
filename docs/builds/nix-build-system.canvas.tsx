@@ -187,7 +187,7 @@ const dataSourceNodes: FlowNode[] = [
   },
   {
     id: "self",
-    label: "self — your git tree",
+    label: "self 〜 your git tree",
     detail: "committed files only: no submodule contents, no assets/, no build/",
   },
   {
@@ -204,7 +204,7 @@ const dataSourceNodes: FlowNode[] = [
   {
     id: "assets",
     label: "assets-free pack",
-    detail: "public asset input — private repo via --override-input anoptic-assets",
+    detail: "public asset input 〜 private repo via --override-input anoptic-assets",
   },
   {
     id: "eval",
@@ -214,7 +214,7 @@ const dataSourceNodes: FlowNode[] = [
   {
     id: "cache",
     label: "store lookup by hash",
-    detail: "same hash seen before? reuse instantly — otherwise build",
+    detail: "same hash seen before? reuse instantly 〜 otherwise build",
   },
   {
     id: "build",
@@ -224,7 +224,7 @@ const dataSourceNodes: FlowNode[] = [
   {
     id: "out",
     label: "/nix/store/<hash>-anopticengine-*",
-    detail: "immutable output — ./result symlink points at it",
+    detail: "immutable output 〜 ./result symlink points at it",
     mono: true,
     emphasis: true,
   },
@@ -271,13 +271,13 @@ const routingNodes: FlowNode[] = [
   {
     id: "a-shell",
     label: "devShells.<system>.default",
-    detail: "toolchain env only — nothing is built yet (.#windows: cross env)",
+    detail: "toolchain env only 〜 nothing is built yet (.#windows: cross env)",
     mono: true,
   },
   {
     id: "a-msys",
     label: "MSYS2 clang64 on PATH",
-    detail: "native Windows — Nix never enters the picture",
+    detail: "native Windows 〜 Nix never enters the picture",
   },
   {
     id: "r-default",
@@ -333,11 +333,11 @@ export default function NixBuildSystemRundown() {
   return (
     <Stack gap={20} style={{ maxWidth: 960 }}>
       <Stack gap={8}>
-        <H1>Anoptic × Nix — how the build system actually works</H1>
+        <H1>Anoptic × Nix 〜 how the build system actually works</H1>
         <Text tone="secondary">
           Goal recap: flat whole-program compiles with LTO and fast linkers, no
           incremental builds, and Nix owning both dependencies and setup. The
-          key insight is that this goal is not something bolted onto Nix — it
+          key insight is that this goal is not something bolted onto Nix 〜 it
           IS Nix's native execution model. A derivation cannot build
           incrementally: the sandbox starts empty every time, and the unit of
           caching is the whole immutable output, keyed by the hash of every
@@ -368,7 +368,7 @@ export default function NixBuildSystemRundown() {
         />
         <Caption>
           Source: flake.nix / flake.lock in the repo root. The cache-hit path
-          skips the build box entirely — a second `nix build` with nothing
+          skips the build box entirely 〜 a second `nix build` with nothing
           changed returns in milliseconds.
         </Caption>
       </Stack>
@@ -379,18 +379,18 @@ export default function NixBuildSystemRundown() {
           Two independent mechanisms decide this. <Text weight="semibold">
           What</Text>: the attribute path. Each command names an output
           attribute, and Nix fills in <Code>{"<system>"}</Code> from your host (that is the
-          platform detection — `x86_64-linux`, `aarch64-linux`, and
+          platform detection 〜 `x86_64-linux`, `aarch64-linux`, and
           `aarch64-darwin` each carry their own branch of the outputs tree,
           with the same attr names resolving to that platform's build). The
           one thing deliberately not auto-detected is the{" "}
           <Text italic>target</Text>: a Linux host can build both the Linux
           engine and the Windows cross build, so the flake makes you name
-          `.#release-wsl` — the flake-idiomatic "argument".
+          `.#release-wsl` 〜 the flake-idiomatic "argument".
         </Text>
         <Text tone="secondary">
           <Text weight="semibold">Why (or whether)</Text>: the derivation
-          hash. Change any bit of any input — a source file, a compiler flag,
-          the nixpkgs rev — and the `.drv` hash changes, which means a new
+          hash. Change any bit of any input 〜 a source file, a compiler flag,
+          the nixpkgs rev 〜 and the `.drv` hash changes, which means a new
           store path, which means a build. Nothing scans timestamps and no
           incremental state exists to go stale; an unchanged hash is an
           instant cache hit.
@@ -421,7 +421,7 @@ export default function NixBuildSystemRundown() {
               <Code>nix build</Code>,
               <Code>{"packages.<system>.default"}</Code>,
               "Vulkan renderer, Release, ./result/bin/anopticengine",
-              "Any supported host — the quickstart",
+              "Any supported host 〜 the quickstart",
             ],
             [
               <Code>{"nix build .#<type>[-headless]-<platform>-<arch>[-backend]"}</Code>,
@@ -463,7 +463,7 @@ export default function NixBuildSystemRundown() {
               <Code>build.bat N</Code>,
               "MSYS2 clang64 on PATH (no Nix)",
               "build\\<label>\\anopticengine.exe",
-              "Native Windows — Nix does not run there",
+              "Native Windows 〜 Nix does not run there",
             ],
           ]}
         />
@@ -485,12 +485,12 @@ export default function NixBuildSystemRundown() {
               "Linux (packages + dev shell)",
               "clang 22 (llvmPackages_latest)",
               "lld",
-              "ThinLTO (llvm-ar provided — the probe fails without it)",
+              "ThinLTO (llvm-ar provided 〜 the probe fails without it)",
               <Code>engineStdenv</Code>,
             ],
             [
               "macOS, Apple Silicon",
-              "clang 22 (llvmPackages_latest — full C23)",
+              "clang 22 (llvmPackages_latest 〜 full C23)",
               "ld64 (Apple policy, no override)",
               "ThinLTO (same llvm-ar note)",
               <Code>llvmPackages_latest.stdenv</Code>,
@@ -507,7 +507,7 @@ export default function NixBuildSystemRundown() {
               "MSYS2 clang64",
               "lld",
               "ThinLTO",
-              "MSYS2 — no Nix",
+              "MSYS2 〜 no Nix",
             ],
           ]}
         />
@@ -517,7 +517,7 @@ export default function NixBuildSystemRundown() {
         <H2>5 · What build.sh / build.bat are still for</H2>
         <Text tone="secondary">
           The packages answer "give me the artifact"; the scripts answer "let
-          me work on it". They are not legacy — they own everything a
+          me work on it". They are not legacy 〜 they own everything a
           hermetic package build can't do: iterating against your working
           tree, GPU-real test runs, and benchmarks. `nix run -- N` is the
           same path with the submodule gate and asset staging automated.
@@ -529,7 +529,7 @@ export default function NixBuildSystemRundown() {
           rows={[
             [
               <Code>build.sh</Code>,
-              "The dev-loop driver: profiles 1–7 map to Release / Debug / Tests / ASan / TSan / Headless / Release-tests. Runs ano_scrub before every build — the whole-build policy applied to the repo's mutable build/ trees.",
+              "The dev-loop driver: profiles 1–7 map to Release / Debug / Tests / ASan / TSan / Headless / Release-tests. Runs ano_scrub before every build 〜 the whole-build policy applied to the repo's mutable build/ trees.",
             ],
             [
               "…inside nix develop (or via nix run)",
@@ -557,8 +557,8 @@ export default function NixBuildSystemRundown() {
           hermetically, cached by hash), `devShells` for reproducing the
           human's environment (tools on PATH, nothing built), one lockfile
           pinning every input including vendored submodule sources, per-system
-          attributes for host detection, and explicit attribute names — never
-          heuristics — for anything a host can't infer, like cross targets.
+          attributes for host detection, and explicit attribute names 〜 never
+          heuristics 〜 for anything a host can't infer, like cross targets.
           Dependency handling and painless setup fall out of the same
           mechanism: there is nothing to install besides Nix itself, because
           the toolchain is data, pinned in the lockfile like everything else.
@@ -566,19 +566,19 @@ export default function NixBuildSystemRundown() {
         <Callout tone="warning" title="Sharp edges to remember">
           <Stack gap={4}>
             <Text size="small">
-              `assets/` is gitignored, so it is absent from `self` — the
+              `assets/` is gitignored, so it is absent from `self` 〜 the
               packages stage the pinned asset input beside the exe instead
               (public `assets-free` by default). The dev-shell flow reads
               your working tree; `nix run` fills an absent `assets/` from
               the private repo, falling back to the public pack.
             </Text>
             <Text size="small">
-              git flakes see tracked files only — a brand-new file is
+              git flakes see tracked files only 〜 a brand-new file is
               invisible to `nix build` until `git add`.
             </Text>
             <Text size="small">
               Flakes need `experimental-features = nix-command flakes` in
-              nix.conf — a flake cannot self-enable this.
+              nix.conf 〜 a flake cannot self-enable this.
             </Text>
             <Text size="small">
               `./result` is only a symlink into the store (gitignored);

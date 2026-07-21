@@ -2,7 +2,7 @@
 
 // GPU animation pass. Derives every slot's live transform from its per-slot motion
 // descriptor and the global clock, so continuous motion costs zero per-tick bridge
-// traffic — only a discrete change of trajectory re-sends a descriptor. Dispatched
+// traffic 〜 only a discrete change of trajectory re-sends a descriptor. Dispatched
 // over all entities; writes transforms[idx], read next by the cull pass.
 //
 // Motion is evaluated at t = global.time - motion.epoch, so a producer re-bases a

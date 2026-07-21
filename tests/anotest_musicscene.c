@@ -107,7 +107,7 @@ static AnoMusicEngine *reconstruct(const AnoMusicConfig *cfg, uint64_t seed,
                 ano_music_apply_command(e, &s->cue[i].cmd);
         ano_music_advance_bar(e, &sink);
     }
-    // Cue at toBar is pending for the next bar — apply after the loop.
+    // Cue at toBar is pending for the next bar 〜 apply after the loop.
     for (uint32_t i = 0; i < s->n; ++i)
         if (s->cue[i].bar == toBar)
             ano_music_apply_command(e, &s->cue[i].cmd);
@@ -219,7 +219,7 @@ int main(int argc, char **argv)
             if (e.kind == AEVT_MUSIC_SEEKED) {
                 seekAcked = true;
                 seekedTo = e.u.seekedBar;
-                printf("      · seek consumed — the save's bar %d is next\n", seekedTo);
+                printf("      · seek consumed 〜 the save's bar %d is next\n", seekedTo);
             }
             if (e.kind != AEVT_MUSIC_BAR)
                 continue;
@@ -287,7 +287,7 @@ int main(int argc, char **argv)
         }
         if (savedBar >= 0 && !loaded && phase > 0.80) {
             loaded = true;
-            printf("game: LOAD — rebuilding bar %d off the audio thread\n", savedBar);
+            printf("game: LOAD 〜 rebuilding bar %d off the audio thread\n", savedBar);
 
             // Two reconstructions of one save must be byte-identical.
             uint32_t t0 = ano_timestamp_ms();
@@ -321,7 +321,7 @@ int main(int argc, char **argv)
             }
             CHECK(seekAcked, "the audio thread consumed the save");
             CHECK(seekedTo == savedBar, "and adopted the bar it was given");
-            printf("      · seek consumed — the save's bar %d is next\n", seekedTo);
+            printf("      · seek consumed 〜 the save's bar %d is next\n", seekedTo);
             free(snapA);
             free(snapB);
             ano_music_destroy(a);
@@ -354,7 +354,7 @@ int main(int argc, char **argv)
     if (bars >= 16u)
         CHECK(cadences > 0u, "it cadenced, and the game was told");
     else
-        printf("note: %u bars — too short to reach a cadence once the steering has "
+        printf("note: %u bars 〜 too short to reach a cadence once the steering has "
                "displaced it; run it longer to gate that\n", bars);
     if (savedBar >= 0)
         CHECK(loaded && seekAcked, "the save was written and loaded back");

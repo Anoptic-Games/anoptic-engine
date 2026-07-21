@@ -292,7 +292,7 @@ int main(int argc, char **argv)
             const char *wav = ANO_TEST_OUTDIR "/journey_s42_synth.wav";
             CHECK(ano_audio_wav_write(wav, out, frames, ANO_AUDIO_CHANNELS, RATE),
                   "journey WAV written");
-            printf("info: journey — %.1f s, peak %.3f, %s\n",
+            printf("info: journey 〜 %.1f s, peak %.3f, %s\n",
                    (double)frames / RATE, (double)peak, wav);
         }
         free(out);

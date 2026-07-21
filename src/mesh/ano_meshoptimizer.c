@@ -1027,7 +1027,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
                     if (dot_product(on, nn) <= 0.25f * sqrtf(olen2 * nlen2)) flip = 1;
                     else {
                         // Growth cap (anti-bridge): reject if any resulting edge exceeds maxEdge2.
-                        // Fold misses this — a bridge keeps its facing.
+                        // Fold misses this 〜 a bridge keeps its facing.
                         float ne3[3] = { o2[0]-o1[0], o2[1]-o1[1], o2[2]-o1[2] };
                         if (dot_product(ne1, ne1) > maxEdge2 || dot_product(ne2, ne2) > maxEdge2 ||
                             dot_product(ne3, ne3) > maxEdge2) flip = 1;
