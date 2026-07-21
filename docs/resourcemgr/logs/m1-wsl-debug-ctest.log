@@ -1,0 +1,995 @@
+warning: Git tree '/mnt/c/Users/Pyrus/Code/anoptic-engine' is dirty
+[anoptic] Linux target — clang version 22.1.8
+=== Starting build profile 5 (Debug) ===
+-- The C compiler identification is Clang 22.1.8
+-- The CXX compiler identification is Clang 22.1.8
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /nix/store/x5kf6ri4kzybw24ibhjjj27fpp02fjcb-clang-wrapper-22.1.8/bin/clang - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /nix/store/x5kf6ri4kzybw24ibhjjj27fpp02fjcb-clang-wrapper-22.1.8/bin/clang++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Toolchain file specified: /mnt/c/Users/Pyrus/Code/anoptic-engine/cmake/platforms/debug_clang-linux-x64.cmake
+-- System name: Linux
+-- System version: 6.18.33.2-microsoft-standard-WSL2
+-- System processor: x86_64
+-- C Compiler: /nix/store/x5kf6ri4kzybw24ibhjjj27fpp02fjcb-clang-wrapper-22.1.8/bin/clang
+-- C++ Compiler: /nix/store/x5kf6ri4kzybw24ibhjjj27fpp02fjcb-clang-wrapper-22.1.8/bin/clang++
+-- 64-bit compiler detected.
+-- Release link-time optimization: ON
+-- Found Git: /nix/store/k3wl6cg7q50zkx47af3msmg1yrg1f203-git-2.54.0/bin/git (found version "2.54.0")
+-- 
+-- Architecture: x64
+-- Set debug level to internal assertion and invariant checking (CMAKE_BUILD_TYPE=Debug)
+-- Performing Test mi_has_libpthread
+-- Performing Test mi_has_libpthread - Success
+-- Performing Test mi_has_librt
+-- Performing Test mi_has_librt - Success
+-- Performing Test mi_has_libatomic
+-- Performing Test mi_has_libatomic - Success
+-- 
+-- Library name     : mimalloc-debug
+-- Version          : 2.3.2
+-- Build type       : debug
+-- C Compiler       : /nix/store/x5kf6ri4kzybw24ibhjjj27fpp02fjcb-clang-wrapper-22.1.8/bin/clang
+-- Compiler flags   : -Wall;-Wextra;-Wpedantic;-Wno-unknown-pragmas;-fvisibility=hidden;-Wstrict-prototypes;-Wno-static-in-inline;-ftls-model=initial-exec
+-- Compiler defines : MI_DEBUG=2;MI_CMAKE_BUILD_TYPE=debug
+-- Link libraries   : pthread;rt;atomic
+-- Build targets    : static
+-- 
+-- Found PkgConfig: /nix/store/sq5p43ziv78vxp51rpaajhvz0584lgqw-pkg-config-wrapper-0.29.2/bin/pkg-config (found version "0.29.2")
+-- Looking for unistd.h
+-- Looking for unistd.h - found
+-- Looking for fcntl.h
+-- Looking for fcntl.h - found
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Found Vulkan: /nix/store/y5a34h6vgvsc1pmfmvcqfcvxy2grg3hx-vulkan-loader-1.4.341.0/lib/libvulkan.so (found version "1.4.341") found components: glslc glslangValidator
+-- Including Wayland support
+-- Including X11 support
+-- Looking for memfd_create
+-- Looking for memfd_create - found
+-- Checking for modules 'wayland-client>=0.2.7;wayland-cursor>=0.2.7;wayland-egl>=0.2.7;xkbcommon>=0.5.0'
+--   Found wayland-client, version 1.25.0
+--   Found wayland-cursor, version 1.25.0
+--   Found wayland-egl, version 18.1.0
+--   Found xkbcommon, version 1.13.1
+Package libffi was not found in the pkg-config search path.
+Perhaps you should add the directory containing `libffi.pc'
+to the PKG_CONFIG_PATH environment variable
+Package 'libffi', required by 'wayland-client', not found
+Package libffi was not found in the pkg-config search path.
+Perhaps you should add the directory containing `libffi.pc'
+to the PKG_CONFIG_PATH environment variable
+Package 'libffi', required by 'wayland-client', not found
+Package libffi was not found in the pkg-config search path.
+Perhaps you should add the directory containing `libffi.pc'
+to the PKG_CONFIG_PATH environment variable
+Package 'libffi', required by 'wayland-client', not found
+Package libffi was not found in the pkg-config search path.
+Perhaps you should add the directory containing `libffi.pc'
+to the PKG_CONFIG_PATH environment variable
+Package 'libffi', required by 'wayland-client', not found
+-- Found X11: /nix/store/snm96wlrhhslp4vxgpiifc9p4h9k777b-xorgproto-2025.1/include
+-- Looking for XOpenDisplay in /nix/store/flhvh2a7c578zbca9arvn4n2vc2pcgpc-libx11-1.8.13/lib/libX11.so;/nix/store/b0dnb18ak3qwrkml30b5a9xcgk1vsb92-libxext-1.3.7/lib/libXext.so
+-- Looking for XOpenDisplay in /nix/store/flhvh2a7c578zbca9arvn4n2vc2pcgpc-libx11-1.8.13/lib/libX11.so;/nix/store/b0dnb18ak3qwrkml30b5a9xcgk1vsb92-libxext-1.3.7/lib/libXext.so - found
+-- Looking for gethostbyname
+-- Looking for gethostbyname - found
+-- Looking for connect
+-- Looking for connect - found
+-- Looking for remove
+-- Looking for remove - found
+-- Looking for shmat
+-- Looking for shmat - found
+-- Shader compiler: glslangValidator -gV
+-- Configuring done (89.5s)
+-- Generating done (3.9s)
+-- Build files have been written to: /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests
+[0/2] Re-checking globbed directories...
+[1/2] Scrubbing object files (whole rebuild ahead)
+-- ano_scrub: removed 4 object files from /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests
+[0/2] Re-checking globbed directories...
+[1/356] glslangValidator -gV additive.frag  -> additive.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/additive.frag
+[2/356] glslangValidator -gV cull.comp  -> cull.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/cull.comp
+[3/356] glslangValidator -gV flat.frag  -> flat.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.frag
+[4/356] glslangValidator -gV flat.mesh  -> flat.mesh.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.mesh
+[5/356] glslangValidator -gV flat.task  -> flat.task.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.task
+[6/356] glslangValidator -gV flat.vert  -> flat.vert.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.vert
+[7/356] glslangValidator -gV flat.mesh -DANO_DEPTH_ONLY -> flat_depth.mesh.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.mesh
+[8/356] glslangValidator -gV flat.vert -DANO_DEPTH_ONLY -> flat_depth.vert.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.vert
+[9/356] glslangValidator -gV flat.mesh -DANO_DEPTH_MASKED -> flat_depth_masked.mesh.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.mesh
+[10/356] glslangValidator -gV flat.vert -DANO_DEPTH_MASKED -> flat_depth_masked.vert.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.vert
+[11/356] glslangValidator -gV flat.mesh -DANO_TASK_CULL;-DANO_DEPTH_MASKED -> flat_depth_masked_task.mesh.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.mesh
+[12/356] glslangValidator -gV flat.mesh -DANO_TASK_CULL;-DANO_DEPTH_ONLY -> flat_depth_task.mesh.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.mesh
+[13/356] glslangValidator -gV flat.frag -DANO_CDF_FP16=1 -> flat_fp16.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.frag
+[14/356] glslangValidator -gV flat.frag -DANO_ALPHA_MASK=1 -> flat_masked.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.frag
+[15/356] glslangValidator -gV flat.frag -DANO_ALPHA_MASK=1;-DANO_CDF_FP16=1 -> flat_masked_fp16.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.frag
+[16/356] glslangValidator -gV flat.mesh -DANO_TASK_CULL -> flat_task.mesh.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/flat.mesh
+[17/356] glslangValidator -gV hiz.comp  -> hiz.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/hiz.comp
+[18/356] glslangValidator -gV hiz.comp -DRESOLVED_DEPTH -> hiz_resolve.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/hiz.comp
+[19/356] glslangValidator -gV lightcull.comp  -> lightcull.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/lightcull.comp
+[20/356] glslangValidator -gV lightsetup.comp  -> lightsetup.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/lightsetup.comp
+[21/356] glslangValidator -gV overlay.frag  -> overlay.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/overlay.frag
+[22/356] glslangValidator -gV scatter.comp  -> scatter.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/scatter.comp
+[23/356] glslangValidator -gV shadow_depth.frag  -> shadow_depth.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/shadow_depth.frag
+[24/356] glslangValidator -gV shadow_depth.frag -DANO_ALPHA_MASK=1 -> shadow_depth_masked.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/shadow_depth.frag
+[25/356] glslangValidator -gV shadowblur.frag  -> shadowblur.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/shadowblur.frag
+[26/356] glslangValidator -gV shadowblur.vert  -> shadowblur.vert.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/shadowblur.vert
+[27/356] glslangValidator -gV shadowsetup.comp  -> shadowsetup.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/shadowsetup.comp
+[28/356] glslangValidator -gV textraster.comp  -> textraster.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/textraster.comp
+[29/356] glslangValidator -gV textworld.frag  -> textworld.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/textworld.frag
+[30/356] glslangValidator -gV textworld.vert  -> textworld.vert.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/textworld.vert
+[31/356] glslangValidator -gV tonemap.frag  -> tonemap.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/tonemap.frag
+[32/356] glslangValidator -gV tonemap.vert  -> tonemap.vert.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/tonemap.vert
+[33/356] glslangValidator -gV tpsort.comp  -> tpsort.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/tpsort.comp
+[34/356] glslangValidator -gV transmission.frag  -> transmission.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/transmission.frag
+[35/356] glslangValidator -gV transmission.frag -DANO_CDF_FP16=1 -> transmission_fp16.frag.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/transmission.frag
+[36/356] glslangValidator -gV update.comp  -> update.comp.spv
+/mnt/c/Users/Pyrus/Code/anoptic-engine/resources/shaders/update.comp
+[37/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[38/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc-aligned.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[39/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/alloc-posix.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[40/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/arena.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[41/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/bitmap.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[42/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/heap.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[43/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/init.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[44/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/libc.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[45/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/options.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[46/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/os.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[47/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/page.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[48/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/random.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[49/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/segment.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[50/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/segment-map.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[51/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/stats.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[52/356] Building C object external/mimalloc/CMakeFiles/mimalloc-static.dir/src/prim/prim.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[53/356] Building C object CMakeFiles/anoptic_lz4.dir/external/lz4/lz4.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[54/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/autofit/autofit.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[55/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbase.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[56/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbbox.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[57/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbdf.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[58/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftbitmap.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[59/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftcid.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[60/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftfstype.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[61/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftgasp.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[62/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftglyph.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[63/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftgxval.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[64/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftinit.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[65/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftmm.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[66/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftotval.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[67/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftpatent.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[68/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftpfr.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[69/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftstroke.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[70/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftsynth.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[71/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/fttype1.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[72/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftwinfnt.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[73/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/bdf/bdf.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[74/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/bzip2/ftbzip2.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[75/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/cache/ftcache.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[76/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/cff/cff.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[77/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/cid/type1cid.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[78/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/gzip/ftgzip.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[79/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/lzw/ftlzw.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[80/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/pcf/pcf.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[81/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/pfr/pfr.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[82/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/pshinter/pshinter.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[83/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/psnames/psnames.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[84/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/raster/raster.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[85/356] Generating wayland-client-protocol.h
+[86/356] Generating wayland-client-protocol-code.h
+[87/356] Generating viewporter-client-protocol.h
+[88/356] Generating viewporter-client-protocol-code.h
+[89/356] Generating xdg-shell-client-protocol.h
+[90/356] Generating xdg-shell-client-protocol-code.h
+[91/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/psaux/psaux.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[92/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/sdf/sdf.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[93/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/sfnt/sfnt.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[94/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/smooth/smooth.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[95/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/svg/svg.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[96/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/type1/type1.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[97/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/type42/type42.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[98/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/winfonts/winfnt.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[99/356] Building C object external/freetype/CMakeFiles/freetype.dir/builds/unix/ftsystem.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[100/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/base/ftdebug.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[101/356] Generating idle-inhibit-unstable-v1-client-protocol.h
+[102/356] Generating idle-inhibit-unstable-v1-client-protocol-code.h
+[103/356] Generating pointer-constraints-unstable-v1-client-protocol.h
+[104/356] Generating pointer-constraints-unstable-v1-client-protocol-code.h
+[105/356] Generating relative-pointer-unstable-v1-client-protocol.h
+[106/356] Generating relative-pointer-unstable-v1-client-protocol-code.h
+[107/356] Generating fractional-scale-v1-client-protocol.h
+[108/356] Generating fractional-scale-v1-client-protocol-code.h
+[109/356] Generating xdg-activation-v1-client-protocol.h
+[110/356] Generating xdg-activation-v1-client-protocol-code.h
+[111/356] Generating xdg-decoration-unstable-v1-client-protocol.h
+[112/356] Generating xdg-decoration-unstable-v1-client-protocol-code.h
+[113/356] Linking C static library libanoptic_lz4.a
+[114/356] Building C object external/freetype/CMakeFiles/freetype.dir/src/truetype/truetype.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[115/356] Building C object CMakeFiles/anoptic_core.dir/src/memory/memalign_linux.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[116/356] Building C object CMakeFiles/anoptic_core.dir/src/memory/memory.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[117/356] Building C object CMakeFiles/anoptic_core.dir/src/memory/pools.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[118/356] Building C object CMakeFiles/anoptic_core.dir/src/memory/stripe.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[119/356] Building C object CMakeFiles/anoptic_core.dir/src/collections/collections.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[120/356] Building C object CMakeFiles/anoptic_core.dir/src/threads/threads.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[121/356] Building C object CMakeFiles/anoptic_core.dir/src/threads/threads_bridges.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[122/356] Building C object CMakeFiles/anoptic_core.dir/src/time/time.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[123/356] Building C object CMakeFiles/anoptic_core.dir/src/time/time_linux.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[124/356] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[125/356] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_ops.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[126/356] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_intern.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[127/356] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_utf.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[128/356] Building C object CMakeFiles/anoptic_core.dir/src/strings/ano_strings_collate.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[129/356] Building C object CMakeFiles/anoptic_core.dir/src/filesystem/filesystem.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[130/356] Building C object CMakeFiles/anoptic_core.dir/src/filesystem/filesystem_linux.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[131/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_posix.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[132/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_ident.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[133/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_core.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[134/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_read.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[135/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_registry.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[136/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_ext.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[137/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_place.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[138/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_models.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[139/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_tel.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[140/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_block.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[141/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_stream.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[142/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/resources_reload.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[143/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/audio/res_audio.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[144/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/script/res_script.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[145/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/text/res_font.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[146/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/codec/res_codec.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[147/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/world/res_world.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+/mnt/c/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:172:27: warning: passing 'const char *' to parameter of type 'const uint8_t *' (aka 'const unsigned char *') converts between pointers to integer types where one is of the unique plain 'char' type and the other is not [-Wpointer-sign]
+  172 |         valid = decode_v1(anostr_bytes(&payload), anostr_len(payload), state);
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+/mnt/c/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:82:38: note: passing argument to parameter 'bytes' here
+   82 | static bool decode_v1(const uint8_t *bytes, size_t len, anoresworld_state *state)
+      |                                      ^
+/mnt/c/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:174:27: warning: passing 'const char *' to parameter of type 'const uint8_t *' (aka 'const unsigned char *') converts between pointers to integer types where one is of the unique plain 'char' type and the other is not [-Wpointer-sign]
+  174 |         valid = decode_v2(anostr_bytes(&payload), anostr_len(payload), state);
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+/mnt/c/Users/Pyrus/Code/anoptic-engine/src/resources/world/res_world.c:97:38: note: passing argument to parameter 'bytes' here
+   97 | static bool decode_v2(const uint8_t *bytes, size_t len, anoresworld_state *state)
+      |                                      ^
+2 warnings generated.
+[148/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/world/res_level.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[149/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/pack/res_pack.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[150/356] Building C object CMakeFiles/anoptic_core.dir/src/config/config.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[151/356] Building C object CMakeFiles/anoptic_core.dir/src/log/log_core.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[152/356] Building C object CMakeFiles/anoptic_core.dir/src/log/log_crash.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[153/356] Building C object CMakeFiles/anoptic_core.dir/src/mesh/ano_meshoptimizer.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[154/356] Building C object CMakeFiles/anoptic_core.dir/src/text/text_gpos.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[155/356] Building C object CMakeFiles/anoptic_core.dir/src/text/text_raster_ref.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[156/356] Building C object CMakeFiles/anoptic_core.dir/src/text/text_shape.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[157/356] Building C object CMakeFiles/anoptic_core.dir/src/audio/audio.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[158/356] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_build.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[159/356] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_demo.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[160/356] Linking C static library external/mimalloc/libmimalloc-debug.a
+[161/356] Building C object CMakeFiles/anoptic_core.dir/src/log/log_crash_linux.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[162/356] Building C object CMakeFiles/anoptic_core.dir/src/text/text.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[163/356] Building C object CMakeFiles/anoptic_core.dir/src/text/text_bake.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[164/356] Building C object CMakeFiles/anoptic_core.dir/src/script/script.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[165/356] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_path.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[166/356] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_raster_ref.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[167/356] Building C object CMakeFiles/anoptic_core.dir/src/ui/ui_tiles.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[168/356] Building C object CMakeFiles/anoptic_core.dir/src/render_bridge/ano_render_bridge.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[169/356] Linking C static library external/freetype/libfreetyped.a
+[170/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/context.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[171/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/init.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[172/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/input.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[173/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/monitor.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[174/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/platform.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[175/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/vulkan.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[176/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/egl_context.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[177/356] Building C object CMakeFiles/anoptic_core.dir/src/resources/graphics/res_graphics.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[178/356] Building C object CMakeFiles/anoptic_core.dir/src/keybindings/keybindings.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[179/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/window.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[180/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/osmesa_context.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[181/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_init.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[182/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_monitor.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[183/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_window.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[184/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/null_joystick.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[185/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/posix_module.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[186/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/posix_time.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[187/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/posix_thread.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[188/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/x11_init.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[189/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/x11_monitor.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[190/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/x11_window.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[191/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/xkb_unicode.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[192/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/glx_context.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[193/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/wl_init.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[194/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/wl_monitor.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[195/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/wl_window.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[196/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/linux_joystick.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[197/356] Building C object external/glfw/src/CMakeFiles/glfw.dir/posix_poll.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[198/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vulkanMaster.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[199/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/profiling.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[200/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/update.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[201/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/passes.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[202/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/hiz.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[203/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/light_registry.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[204/356] Linking C static library libanoptic_core.a
+[205/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/record_views.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[206/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/record.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[207/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/frame/submit.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[208/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/slot_upload.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[209/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_cache.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[210/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_casters.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[211/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_resources.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[212/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/shadow/shadow_record.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[213/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/scene_buffers.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[214/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/bridge/apply.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[215/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/bridge/producer.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[216/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/render_api.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[217/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/components.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[218/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/instance.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[219/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/device.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[220/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/swapchain.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[221/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/attachments.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[222/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/descriptors.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[223/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/commands.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[224/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/cleanup.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[225/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipeline.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[226/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/layouts.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[227/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/tonemap.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[228/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vertex/vertex.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[229/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/window.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[230/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/shadow_pipe.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[231/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/compute.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[232/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/flat.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[233/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/transmission.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[234/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/instance/pipelines/additive.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[235/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/vulkanConfig.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[236/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/gpu_alloc.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[237/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/geometry.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[238/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/render_slots.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[239/356] Linking C static library external/glfw/src/libglfw3.a
+[240/356] Building C object CMakeFiles/anoptic_pack.dir/tools/anopak/anopak.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[241/356] Building C object tests/CMakeFiles/anotest_time.dir/anotest_time.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[242/356] Building C object tests/CMakeFiles/anotest_filesystem.dir/anotest_filesystem.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[243/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/texture/texture.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[244/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/text_raster.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[245/356] Building C object CMakeFiles/anoptic_render.dir/src/vulkan_backend/ui_raster.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[246/356] Building C object CMakeFiles/anoptic_render.dir/src/render/gltf/ano_GltfParser.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[247/356] Building C object tests/CMakeFiles/anotest_logging.dir/anotest_logging.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[248/356] Building C object tests/CMakeFiles/anotest_strings_utf.dir/anotest_strings_utf.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[249/356] Building C object tests/CMakeFiles/anotest_strings_sort.dir/anotest_strings_sort.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[250/356] Building C object tests/CMakeFiles/anotest_sortbench.dir/anotest_sortbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[251/356] Building C object tests/CMakeFiles/anotest_stropsbench.dir/anotest_stropsbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[252/356] Building C object tests/CMakeFiles/anotest_text.dir/anotest_text.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[253/356] Building C object tests/CMakeFiles/anotest_ui.dir/anotest_ui.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[254/356] Building C object tests/CMakeFiles/anotest_strbench.dir/anotest_strbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[255/356] Building C object tests/CMakeFiles/anotest_meshoptimizer.dir/anotest_meshoptimizer.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[256/356] Building C object tests/CMakeFiles/anotest_memory.dir/anotest_memory.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[257/356] Building C object tests/CMakeFiles/anotest_resources.dir/anotest_resources.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[258/356] Building C object tests/CMakeFiles/anotest_resgfx.dir/anotest_resgfx.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[259/356] Building C object tests/CMakeFiles/anotest_resgroups.dir/anotest_resgroups.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[260/356] Building C object tests/CMakeFiles/anotest_resownership.dir/anotest_resownership.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[261/356] Building C object tests/CMakeFiles/anotest_collections.dir/anotest_collections.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[262/356] Building C object tests/CMakeFiles/anotest_resfault.dir/anotest_resfault.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[263/356] Building C object tests/CMakeFiles/anotest_resfault.dir/__/src/resources/resources_core.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[264/356] Building C object tests/CMakeFiles/anotest_resdurability.dir/anotest_resdurability.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[265/356] Building C object tests/CMakeFiles/anotest_rescodec.dir/anotest_rescodec.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[266/356] Building C object tests/CMakeFiles/anotest_resplace.dir/anotest_resplace.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[267/356] Building C object tests/CMakeFiles/anotest_resrange.dir/anotest_resrange.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[268/356] Staging shaders (and assets, if present) into tests/
+[269/356] Building C object CMakeFiles/anopticengine.dir/src/engine/main.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[270/356] Building C object tests/CMakeFiles/anotest_resdurability.dir/__/src/resources/resources_core.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[271/356] Building C object tests/CMakeFiles/anotest_respack.dir/anotest_respack.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[272/356] Building C object tests/CMakeFiles/anotest_resbake.dir/anotest_resbake.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[273/356] Building C object tests/CMakeFiles/anotest_reshotreload.dir/anotest_reshotreload.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[274/356] Building C object tests/CMakeFiles/anotest_resaudio.dir/anotest_resaudio.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[275/356] Linking C static library libanoptic_render.a
+[276/356] Building C object tests/CMakeFiles/anotest_resscript.dir/anotest_resscript.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[277/356] Building C object tests/CMakeFiles/anotest_reslevel.dir/anotest_reslevel.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[278/356] Building C object tests/CMakeFiles/anotest_resremote.dir/anotest_resremote.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[279/356] Building C object tests/CMakeFiles/anotest_mempools.dir/anotest_mempools.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[280/356] Building C object tests/CMakeFiles/anotest_mempoolbench.dir/anotest_mempoolbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[281/356] Building C object tests/CMakeFiles/anotest_persistence.dir/anotest_persistence.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[282/356] Building C object tests/CMakeFiles/anotest_bridges.dir/anotest_bridges.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[283/356] Building C object tests/CMakeFiles/anotest_ringbench.dir/anotest_ringbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[284/356] Building C object tests/CMakeFiles/anotest_resbench.dir/anotest_resbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[285/356] Building C object tests/CMakeFiles/anotest_chariots.dir/anotest_chariots.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[286/356] Building C object tests/CMakeFiles/anotest_logbench.dir/anotest_logbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[287/356] Building C object tests/CMakeFiles/anotest_logbench.dir/__/src/log/log_old.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[288/356] Building C object tests/CMakeFiles/anotest_logfuzz.dir/anotest_logfuzz.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[289/356] Building C object tests/CMakeFiles/anotest_blackbox.dir/anotest_blackbox.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[290/356] Building C object tests/CMakeFiles/anotest_render_bridge.dir/anotest_render_bridge.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[291/356] Building C object tests/CMakeFiles/anotest_strings.dir/anotest_strings.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[292/356] Building C object tests/CMakeFiles/anotest_strings_fuzz.dir/anotest_strings_fuzz.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[293/356] Building C object tests/CMakeFiles/anotest_logstrbench.dir/anotest_logstrbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[294/356] Linking C executable anoptic_pack
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[295/356] Linking C executable tests/anotest_time
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[296/356] Linking C executable tests/anotest_logging
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[297/356] Linking C executable tests/anotest_filesystem
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[298/356] Linking C executable tests/anotest_strings_utf
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[299/356] Linking C executable tests/anotest_strings_sort
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[300/356] Linking C executable tests/anotest_sortbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[301/356] Linking C executable tests/anotest_stropsbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[302/356] Linking C executable tests/anotest_ui
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[303/356] Linking C executable tests/anotest_strbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[304/356] Linking C executable tests/anotest_meshoptimizer
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[305/356] Linking C executable tests/anotest_memory
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[306/356] Linking C executable tests/anotest_resources
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[307/356] Linking C executable tests/anotest_resgfx
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[308/356] Linking C executable tests/anotest_resgroups
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[309/356] Linking C executable tests/anotest_collections
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[310/356] Linking C executable tests/anotest_resownership
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[311/356] Linking C executable tests/anotest_persistence
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[312/356] Linking C executable tests/anotest_resfault
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[313/356] Linking C executable tests/anotest_resplace
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[314/356] Linking C executable tests/anotest_resdurability
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[315/356] Linking C executable tests/anotest_rescodec
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[316/356] Linking C executable tests/anotest_resrange
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[317/356] Linking C executable tests/anotest_respack
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[318/356] Linking C executable tests/anotest_reshotreload
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[319/356] Linking C executable tests/anotest_resbake
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[320/356] Building C object tests/CMakeFiles/anotest_sidbench.dir/anotest_sidbench.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[321/356] Linking C executable tests/anotest_strings
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[322/356] Linking C executable tests/anotest_strings_fuzz
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[323/356] Linking C executable tests/anotest_resaudio
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[324/356] Linking C executable tests/anotest_logstrbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[325/356] Linking C executable tests/anotest_reslevel
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[326/356] Linking C executable tests/anotest_resscript
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[327/356] Linking C executable tests/anotest_resremote
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[328/356] Linking C executable tests/anotest_mempools
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[329/356] Linking C executable tests/anotest_bridges
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[330/356] Linking C executable tests/anotest_chariots
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[331/356] Linking C executable tests/anotest_mempoolbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[332/356] Linking C executable tests/anotest_resbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[333/356] Linking C executable tests/anotest_ringbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[334/356] Linking C executable tests/anotest_blackbox
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[335/356] Linking C executable tests/anotest_render_bridge
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[336/356] Linking C executable tests/anotest_logbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[337/356] Linking C executable tests/anotest_logfuzz
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[338/356] Building C object tests/CMakeFiles/anotest_logtail.dir/anotest_logtail.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[339/356] Linking C executable tests/anotest_sidbench
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[340/356] Linking C executable tests/anotest_logtail
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[341/356] Linking C executable tests/anotest_text; Staging fonts next to anotest_text
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[342/356] Running utility command for anoptic_test_resources
+[343/356] Building C object tests/CMakeFiles/anotest_render_slots.dir/anotest_render_slots.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[344/356] Building C object tests/CMakeFiles/anotest_vk_components.dir/anotest_vk_components.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[345/356] Building C object tests/CMakeFiles/anotest_vk_lifecycle.dir/anotest_vk_lifecycle.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[346/356] Building C object tests/CMakeFiles/anotest_vk_compliance_layers.dir/anotest_vk_compliance_layers.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[347/356] Building C object tests/CMakeFiles/anotest_vk_sync.dir/anotest_vk_sync.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[348/356] Building C object tests/CMakeFiles/anotest_vk_memory.dir/anotest_vk_memory.c.o
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[349/356] Linking C executable tests/anotest_render_slots
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[350/356] Linking C executable tests/anotest_vk_components
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[351/356] Linking C executable tests/anotest_vk_lifecycle
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[352/356] Linking C executable tests/anotest_vk_memory
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[353/356] Linking C executable tests/anotest_vk_compliance_layers
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[354/356] Linking C executable tests/anotest_vk_sync
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+[355/356] Linking C executable anopticengine; Staging assets/ into resources/models; Staging fonts next to anopticengine
+Warning: supplying the --target x86_64-linux-gnu != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+Test project /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests
+      Start  1: anoptic_time
+ 1/51 Test  #1: anoptic_time .....................   Passed    1.42 sec
+      Start  2: anoptic_logging
+ 2/51 Test  #2: anoptic_logging ..................   Passed    0.79 sec
+      Start  3: anoptic_filesystem
+ 3/51 Test  #3: anoptic_filesystem ...............   Passed    0.03 sec
+      Start  4: anoptic_strings
+ 4/51 Test  #4: anoptic_strings ..................   Passed    0.02 sec
+      Start  5: anoptic_strings_utf
+ 5/51 Test  #5: anoptic_strings_utf ..............   Passed    0.07 sec
+      Start  6: anoptic_strings_sort
+ 6/51 Test  #6: anoptic_strings_sort .............   Passed    0.04 sec
+      Start  7: anoptic_strings_fuzz
+ 7/51 Test  #7: anoptic_strings_fuzz .............   Passed    0.07 sec
+      Start  8: anoptic_sortbench
+ 8/51 Test  #8: anoptic_sortbench ................***Not Run (Disabled)   0.00 sec
+      Start  9: anoptic_stropsbench
+ 9/51 Test  #9: anoptic_stropsbench ..............***Not Run (Disabled)   0.00 sec
+      Start 10: anoptic_logstrbench
+10/51 Test #10: anoptic_logstrbench ..............***Not Run (Disabled)   0.00 sec
+      Start 11: anoptic_text
+11/51 Test #11: anoptic_text .....................   Passed    1.21 sec
+      Start 12: anoptic_ui
+12/51 Test #12: anoptic_ui .......................   Passed    1.18 sec
+      Start 13: anoptic_strbench
+13/51 Test #13: anoptic_strbench .................***Not Run (Disabled)   0.00 sec
+      Start 14: anoptic_sidbench
+14/51 Test #14: anoptic_sidbench .................***Not Run (Disabled)   0.00 sec
+      Start 15: anoptic_meshoptimizer
+15/51 Test #15: anoptic_meshoptimizer ............   Passed    0.01 sec
+      Start 16: anoptic_memory
+16/51 Test #16: anoptic_memory ...................   Passed    0.01 sec
+      Start 17: anoptic_resources
+17/51 Test #17: anoptic_resources ................   Passed    0.60 sec
+      Start 18: anoptic_resgfx
+18/51 Test #18: anoptic_resgfx ...................   Passed    0.13 sec
+      Start 19: anoptic_resgroups
+19/51 Test #19: anoptic_resgroups ................   Passed    0.06 sec
+      Start 20: anoptic_resownership
+20/51 Test #20: anoptic_resownership .............   Passed    2.32 sec
+      Start 21: anoptic_collections
+21/51 Test #21: anoptic_collections ..............   Passed    0.54 sec
+      Start 22: anoptic_resfault
+22/51 Test #22: anoptic_resfault .................   Passed    0.02 sec
+      Start 23: anoptic_persistence
+23/51 Test #23: anoptic_persistence ..............   Passed    0.29 sec
+      Start 24: anoptic_resdurability
+24/51 Test #24: anoptic_resdurability ............   Passed    0.04 sec
+      Start 25: anoptic_rescodec
+25/51 Test #25: anoptic_rescodec .................   Passed    0.01 sec
+      Start 26: anoptic_resplace
+26/51 Test #26: anoptic_resplace .................   Passed    0.00 sec
+      Start 27: anoptic_resrange
+27/51 Test #27: anoptic_resrange .................   Passed    0.00 sec
+      Start 28: anoptic_respack
+28/51 Test #28: anoptic_respack ..................   Passed    0.00 sec
+      Start 29: anoptic_resbake
+29/51 Test #29: anoptic_resbake ..................   Passed    0.00 sec
+      Start 30: anoptic_reshotreload
+30/51 Test #30: anoptic_reshotreload .............   Passed    0.00 sec
+      Start 31: anoptic_resaudio
+31/51 Test #31: anoptic_resaudio .................   Passed    0.00 sec
+      Start 32: anoptic_resscript
+32/51 Test #32: anoptic_resscript ................   Passed    0.00 sec
+      Start 33: anoptic_reslevel
+33/51 Test #33: anoptic_reslevel .................   Passed    0.00 sec
+      Start 34: anoptic_resremote
+34/51 Test #34: anoptic_resremote ................   Passed    0.00 sec
+      Start 35: anoptic_mempools
+35/51 Test #35: anoptic_mempools .................   Passed    0.46 sec
+      Start 36: anoptic_mempoolbench
+36/51 Test #36: anoptic_mempoolbench .............***Not Run (Disabled)   0.00 sec
+      Start 37: anoptic_bridges
+37/51 Test #37: anoptic_bridges ..................   Passed    0.06 sec
+      Start 38: anoptic_ringbench
+38/51 Test #38: anoptic_ringbench ................***Not Run (Disabled)   0.00 sec
+      Start 39: anoptic_resbench
+39/51 Test #39: anoptic_resbench .................***Not Run (Disabled)   0.00 sec
+      Start 40: anoptic_chariots
+40/51 Test #40: anoptic_chariots .................***Not Run (Disabled)   0.00 sec
+      Start 41: anoptic_logbench
+41/51 Test #41: anoptic_logbench .................***Not Run (Disabled)   0.00 sec
+      Start 42: anoptic_logtail
+42/51 Test #42: anoptic_logtail ..................***Not Run (Disabled)   0.00 sec
+      Start 43: anoptic_logfuzz
+43/51 Test #43: anoptic_logfuzz ..................   Passed    4.90 sec
+      Start 44: anoptic_blackbox
+44/51 Test #44: anoptic_blackbox .................***Failed   94.37 sec
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_348860_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_127274_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_189273_CRASH.log
+anoptic: fatal SIGABRT, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_909557_CRASH.log
+anoptic: fatal SIGILL, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_645034_CRASH.log
+anoptic: fatal SIGFPE, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_438008_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_129330_CRASH.log
+anoptic: fatal SIGILL, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_606047_CRASH.log
+anoptic: fatal SIGFPE, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_579731_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_694415_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_209082_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_984798_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_559226_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_678171_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_822577_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_790013_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_899478_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_986679_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_599433_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_177393_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_234302_CRASH.log
+22:19:28 WARN  blackbox: 1 crash log detected, /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_234302_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_616610_CRASH.log
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_167185_CRASH.log
+22:19:35 WARN  blackbox: 1 crash log detected, /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_167185_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_607546_CRASH.log
+22:19:38 WARN  blackbox: 1 crash log detected, /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_607546_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_188225_CRASH.log
+22:19:41 WARN  blackbox: 2 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_607546_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_812726_CRASH.log
+22:19:43 WARN  blackbox: 3 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_812726_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_401890_CRASH.log
+22:19:47 WARN  blackbox: 4 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_812726_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_161445_CRASH.log
+22:19:49 WARN  blackbox: 5 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_812726_CRASH.log.
+anoptic: fatal SIGSEGV, blackbox record written to /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_570868_CRASH.log
+22:19:52 WARN  blackbox: 5 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2026-07-13_812726_CRASH.log.
+22:19:52 WARN  blackbox: 6 crash logs detected, newest /mnt/c/Users/Pyrus/Code/anoptic-engine/build/Tests/tests/logs/2006-01-01_000001_CRASH.log.
+FAIL (533): ring_full: wrong death: signal 14
+anotest_blackbox: 1 check(s) failed
+
+      Start 45: anoptic_render_bridge
+45/51 Test #45: anoptic_render_bridge ............   Passed    0.07 sec
+      Start 46: anoptic_render_slots
+46/51 Test #46: anoptic_render_slots .............   Passed    0.01 sec
+      Start 47: anotest_vk_lifecycle
+47/51 Test #47: anotest_vk_lifecycle .............***Failed    0.01 sec
+FATAL Failed to initialize GLFW!
+FATAL Window initialization failed.
+initVulkan() failed.
+Starting Vulkan lifecycle test...
+
+      Start 48: anotest_vk_components
+48/51 Test #48: anotest_vk_components ............   Passed    0.01 sec
+      Start 49: anotest_vk_compliance_layers
+49/51 Test #49: anotest_vk_compliance_layers .....***Failed    0.01 sec
+FATAL Failed to initialize GLFW!
+FATAL Window initialization failed.
+Starting Vulkan Compliance Layer test...
+Failed to init Vulkan!
+
+      Start 50: anotest_vk_memory
+50/51 Test #50: anotest_vk_memory ................***Failed    0.01 sec
+FATAL Failed to initialize GLFW!
+FATAL Window initialization failed.
+Starting Vulkan Memory Allocation test...
+Failed to init Vulkan!
+
+      Start 51: anotest_vk_sync
+51/51 Test #51: anotest_vk_sync ..................***Failed    0.01 sec
+FATAL Failed to initialize GLFW!
+FATAL Window initialization failed.
+Starting Vulkan Synchronization Primitives test...
+Failed to init Vulkan!
+
+
+88% tests passed, 5 tests failed out of 40
+
+Label Time Summary:
+bench          =   0.00 sec*proc (10 tests)
+concurrency    = 103.35 sec*proc (9 tests)
+easteregg      =   0.00 sec*proc (1 test)
+fuzz           =   4.97 sec*proc (3 tests)
+mem            =   3.96 sec*proc (13 tests)
+mesh           =   0.01 sec*proc (1 test)
+optional       =   0.00 sec*proc (11 tests)
+render         =   0.01 sec*proc (1 test)
+resource       =   3.49 sec*proc (18 tests)
+unit           = 103.82 sec*proc (38 tests)
+vulkan         =   0.05 sec*proc (5 tests)
+
+Total Test time (real) = 109.22 sec
+
+The following tests did not run:
+	  8 - anoptic_sortbench (Disabled)
+	  9 - anoptic_stropsbench (Disabled)
+	 10 - anoptic_logstrbench (Disabled)
+	 13 - anoptic_strbench (Disabled)
+	 14 - anoptic_sidbench (Disabled)
+	 36 - anoptic_mempoolbench (Disabled)
+	 38 - anoptic_ringbench (Disabled)
+	 39 - anoptic_resbench (Disabled)
+	 40 - anoptic_chariots (Disabled)
+	 41 - anoptic_logbench (Disabled)
+	 42 - anoptic_logtail (Disabled)
+
+The following tests FAILED:
+	 44 - anoptic_blackbox (Failed)                         concurrency unit
+	 47 - anotest_vk_lifecycle (Failed)                     unit vulkan
+	 49 - anotest_vk_compliance_layers (Failed)             unit vulkan
+	 50 - anotest_vk_memory (Failed)                        unit vulkan
+	 51 - anotest_vk_sync (Failed)                          unit vulkan
+Errors while running CTest

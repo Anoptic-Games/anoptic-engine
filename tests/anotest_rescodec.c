@@ -17,7 +17,10 @@
  * TOC corruption battery. */
 
 #include <stdint.h>
+<<<<<<< HEAD
 #include <stdlib.h>
+=======
+>>>>>>> block-b1-base
 #include <stdio.h>
 #include <string.h>
 
@@ -49,6 +52,7 @@ static void roundtrip(res_codec_id id, const uint8_t *src, size_t len, const cha
     CHECK(m == len && memcmp(dec, src, len) == 0, "decode round-trips byte-exact");
 }
 
+<<<<<<< HEAD
 // Fill buffer with mixed pattern: long runs spliced with xorshift noise.
 static void fill_mixed(uint8_t *p, size_t n, uint64_t seed)
 {
@@ -115,6 +119,8 @@ static void roundtrip_chunked(res_codec_id id, size_t total, const char *what)
     free(src); free(out); free(enc);
 }
 
+=======
+>>>>>>> block-b1-base
 int main(void)
 {
     printf("res_codec: RAW + LZ4 chunk codecs\n");
@@ -168,6 +174,7 @@ int main(void)
     CHECK(res_codec_encode(RES_CODEC_LZ4, compressible, RES_CODEC_CHUNK + 1, enc, sizeof enc) == 0,
           "a chunk larger than RES_CODEC_CHUNK is refused");
 
+<<<<<<< HEAD
     /* Size matrix */
 
     // 0, 1, 495 KiB, 496 KiB (== RES_CODEC_CHUNK), 497 KiB (refused), and a 5 MiB multi-chunk drive. The codec is a single-chunk primitive: the last is exercised exactly as the pack layers it.
@@ -207,6 +214,8 @@ int main(void)
     CHECK(res_codec_decode(RES_CODEC_LZ4, enc, gn, dec, N - 1) == 0,
           "a dst_cap smaller than the true length is refused");
 
+=======
+>>>>>>> block-b1-base
     printf(failures ? "res_codec: %d FAILURE(S)\n" : "res_codec: OK\n", failures);
     return failures ? 1 : 0;
 }

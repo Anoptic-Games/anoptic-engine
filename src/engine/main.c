@@ -41,6 +41,13 @@ static anoresworld_state g_worldState = {
     .camera_pitch = -0.211f,
 };
 
+static ano_config g_engineConfig;
+static anoresworld_state g_worldState = {
+    .world_seed = UINT64_C(0x414e4f50544943),
+    .camera_position = { 0.0f, 0.9f, 3.5f },
+    .camera_pitch = -0.211f,
+};
+
 #ifndef HEADLESS_BUILD
 // Logic/ECS master: sole render-command producer (own thread).
 // main() sets g_logicShouldStop on close, joins before unInitVulkan().
@@ -398,7 +405,13 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t noticeDeadline = 0; // armed 15s after first frame
 	bool     noticeCleared = false;
 
+<<<<<<< HEAD
 	// Free-fly camera (logic): WASD + right-drag look. Pose from g_worldState (default or autosave).
+=======
+	// Free-fly camera owned by logic (audit 4.11): drain forwarded input, integrate a WASD + right-drag
+	// look camera, publish its pose. Starts at the renderer's old fallback pose, with the forward derived
+	// (pitch ~ -0.21 rad) so there is no jump on the first publish.
+>>>>>>> block-b1-base
 	float    camEye[3] = { g_worldState.camera_position[0], g_worldState.camera_position[1],
 	                       g_worldState.camera_position[2] };
 	float    camYaw = g_worldState.camera_yaw, camPitch = g_worldState.camera_pitch;
@@ -409,7 +422,11 @@ void* anoLogicThreadMain(void* arg)
 	uint64_t camSeq = 0;
 	uint64_t lastSnapLog = ano_timestamp_us();
 
+<<<<<<< HEAD
 	// UI demo: resubmit on change. menu_at_start or ANO_MENU opens menu at boot.
+=======
+	// UI demo state: blocks resubmit on change only. ANO_MENU opens the menu at boot (bench drivers that cannot inject keys).
+>>>>>>> block-b1-base
 	bool     menuVisible = g_engineConfig.menu_at_start || getenv("ANO_MENU") != NULL;
 	bool     menuDirty = menuVisible, barSubmitted = false;
 	int      menuHovered = -1;
@@ -471,7 +488,11 @@ void* anoLogicThreadMain(void* arg)
 					if (looking && haveCursor) {
 						camYaw   += (cx - prevCx) * g_engineConfig.camera_look_sensitivity;
 						camPitch -= (cy - prevCy) * g_engineConfig.camera_look_sensitivity;
+<<<<<<< HEAD
 						if (camPitch >  1.5f) camPitch =  1.5f;   // pitch clamp
+=======
+						if (camPitch >  1.5f) camPitch =  1.5f;   // avoid gimbal at the poles
+>>>>>>> block-b1-base
 						if (camPitch < -1.5f) camPitch = -1.5f;
 					}
 					prevCx = cx; prevCy = cy; haveCursor = true;
@@ -650,7 +671,11 @@ int main()
         ano_log(ANO_WARN, "Autosave load refused with status %d; source generations preserved.",
                 (int)saveStatus);
 
+<<<<<<< HEAD
     // Warn if main stack < ANO_THREAD_STACK_SIZE.
+=======
+    // Warn when the initial thread's stack budget (the environment's) is under ANO_THREAD_STACK_SIZE.
+>>>>>>> block-b1-base
     size_t mainStack = ano_thread_main_stack();
     if (mainStack != 0 && mainStack < ANO_THREAD_STACK_SIZE)
         ano_log(ANO_WARN, "Main-thread stack budget is %zu KiB, under the engine's %zu KiB: "

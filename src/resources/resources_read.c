@@ -3,8 +3,15 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 // Read side: candidate walk, destination-aware sink, source dispatch, ranges.
 // Mount state stays in resources_core.c. Read via frozen accessors.
+=======
+// The read side: the candidate walk, the destination-aware sink, source dispatch, and
+// ranges. Split out of resources_core.c so the write protocol and the read path stop
+// sharing a file (and a workstream). Mount state stays in resources_core.c; this file
+// reads it through the frozen accessors.
+>>>>>>> block-b1-base
 
 #include <anoptic_resources.h>
 
@@ -13,12 +20,23 @@
 #include <string.h>
 
 #include "resources_internal.h"
+<<<<<<< HEAD
 #include "codec/res_codec.h"
 #include "pack/res_pack.h"
 
 /* Namespace walk */
 
 // Write root, then mounts newest-first, then base. DIR candidates only.
+=======
+
+// ---------------------------------------------------------------------------------------------
+// The namespace walk. Write root, then mounts newest-first, then the base mount.
+//
+// TODO(W4, M14): res_candidates_ex makes this TWO passes -- every DIR candidate, THEN every
+// PACK candidate -- so loose-shadows-pack becomes an invariant of the WALK. Today's single
+// pass is write-root > mounts-newest-first > base, and a pack mounted as a mount would
+// SHADOW the loose base: the exact inverse of the requirement.
+>>>>>>> block-b1-base
 
 static bool prefix_applies(anostr_t prefix, const char *logical, size_t len,
                            const char **rem, size_t *rem_len)
@@ -62,7 +80,12 @@ int res_candidates(const char *logical, size_t len, ano_fspath *out, int cap)
     return n;
 }
 
+<<<<<<< HEAD
 // Pass 1 emits every DIR candidate. Pass 2 (PACK) empty today.
+=======
+// Pass 1 emits every DIR candidate; pass 2 every PACK candidate. STUB: pass 2 is empty
+// until packs mount, so this is res_candidates wearing the source type.
+>>>>>>> block-b1-base
 int res_candidates_ex(const char *logical, size_t len, res_source *out, int cap)
 {
     if (out == NULL || cap <= 0)
@@ -72,12 +95,26 @@ int res_candidates_ex(const char *logical, size_t len, res_source *out, int cap)
     int k = 0;
     for (int i = 0; i < n && k < cap; i++)
         out[k++] = (res_source){ .kind = RES_SRC_DIR, .path = dirs[i] };
+<<<<<<< HEAD
     return k;
 }
 
 /* Gulp primitive */
 
 // Unowned read. EOF is truth.
+=======
+    // TODO(W4, M14): pass 2 -- every mounted pack that claims this prefix, in mount order.
+    return k;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The gulp primitive and the unowned read.
+//
+// TODO(W4/W2, M10): res_read_all becomes a res_read_sink wrapper and ano_res_get reads into
+// its planned HOME with a charged spill path. Direct landing is only sound WITH a spill,
+// because rmos_size_hint is a hint by deliberate design and a multipool class block cannot
+// grow in place. EOF-truth is preserved verbatim through that change.
+>>>>>>> block-b1-base
 
 int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size)
 {
@@ -176,19 +213,33 @@ anostr_t ano_res_slurp(mi_heap_t *heap, const char *logical)
     return anostr_empty();
 }
 
+<<<<<<< HEAD
 /* Destination-aware read */
 
 // STUB.
+=======
+// ---------------------------------------------------------------------------------------------
+// The destination-aware read. STUB.
+//
+// TODO(W4, M10): reserve() may hand back the resource's planned HOME block, so an IO read
+// lands where the resource will live; grow() is the CHARGED spill when the size hint lied
+// (hint_mismatch_copies counts exactly that). gfx_slurp and save_probe_file migrate onto it.
+>>>>>>> block-b1-base
 
 int res_read_sink(const res_sink *sink, const char *abs, size_t *out_size)
 {
     (void)sink; (void)abs; (void)out_size;
+<<<<<<< HEAD
     return -1;                                  // STUB
+=======
+    return -1;                                  // TODO(W4, M10)
+>>>>>>> block-b1-base
 }
 
 int res_source_read_sink(const res_source *src, const res_sink *sink, size_t *out_size)
 {
     (void)src; (void)sink; (void)out_size;
+<<<<<<< HEAD
     return -1;                                  // STUB
 }
 
@@ -329,11 +380,42 @@ int ano_res_read_range(const char *logical, uint64_t off, size_t len, void *dst)
         return rc == -2 ? -1 : rc;
     }
     return -1;
+=======
+    return -1;                                  // TODO(W4, M10)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ranges and hashes. STUB.
+//
+// TODO(W4, M14): 0 / RES_RANGE_EOF / -1 / -2 -- never a silent partial. res_hash_file is
+// what hot reload CONFIRMS with, because mtime lies on 9P and SMB.
+
+int res_read_range(const res_source *src, uint64_t off, size_t len, void *dst)
+{
+    (void)src; (void)off; (void)len; (void)dst;
+    return -1;                                  // TODO(W4, M14)
+}
+
+int res_hash_file(const res_source *src, uint64_t *hash, uint64_t *size)
+{
+    (void)src; (void)hash; (void)size;
+    return -1;                                  // TODO(W4, M14)
+}
+
+int ano_res_read_range(const char *logical, uint64_t off, size_t len, void *dst)
+{
+    (void)logical; (void)off; (void)len; (void)dst;
+    return -1;                                  // TODO(W4, M14)
+>>>>>>> block-b1-base
 }
 
 anores_t ano_res_get_range(ano_res_lifetime lifetime, const char *logical,
                            uint64_t off, size_t len)
 {
     (void)lifetime; (void)logical; (void)off; (void)len;
+<<<<<<< HEAD
     return (anores_t){0};                       // STUB
+=======
+    return (anores_t){0};                       // TODO(W4, M14)
+>>>>>>> block-b1-base
 }

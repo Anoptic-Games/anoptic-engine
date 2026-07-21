@@ -3,14 +3,32 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 // Stripe + counting parent.
 // Stripe: per-lane chunk chains; chunks grain-aligned, header/size multiples of grain -> lanes never share a grain region.
 // Planes: N SoA arrays from one parent acquisition; born full, side-listed until reset splices into lane 0.
 // Counting parent: interposer ledger at the parent seam. Ctx + size headers from the inner parent.
+=======
+// The fourth allocator, plus the two measurement seams the other three were missing. STUB.
+//
+// TODO(W3, M4): ano_mem_stripe -- lane-isolated allocation where two different lanes NEVER
+// share a grain-sized region, and ano_mem_stripe_planes: N parallel SoA arrays from ONE
+// parent acquisition, every base on the grain. Models D and E are INEXPRESSIBLE without it,
+// and its first production consumer is a real bug fix: g_readers[64] is 64 x 16-byte lanes,
+// four to a cache line, raced by 1.2M reader observations.
+//
+// TODO(W3, M4): ano_mem_multipool_class_stats -- a class HISTOGRAM, which is what B.4 asks
+// for and what a {min_block, max_block} window cannot answer.
+//
+// TODO(W3, M4): ano_mem_parent_counting -- the ONLY way a per-domain heap footprint becomes
+// measurable (D19). Summing each allocator's chunk_bytes misses every chunk mimalloc still
+// holds; counting at the parent seam does not.
+>>>>>>> block-b1-base
 
 #include <anoptic_memory_pools.h>
 
 #include <stddef.h>
+<<<<<<< HEAD
 #include <string.h>
 
 #define STRIPE_CHUNK_DEFAULT (64u * 1024u)
@@ -140,10 +158,25 @@ static stripe_chunk *stripe_chunk_acquire(ano_mem_stripe *s, size_t bytes)
     s->st.parent_acquires += 1;
     s->st.parent_bytes    += bytes;
     return c;
+=======
+
+ano_mem_parent ano_mem_parent_counting(ano_mem_parent inner, ano_mem_parent_ledger *ledger)
+{
+    (void)ledger;
+    return inner;                               // TODO(W3, M4): interpose and count
+}
+
+size_t ano_mem_multipool_class_stats(const ano_mem_multipool *mp, ano_mem_class_stats *out,
+                                     size_t cap)
+{
+    (void)mp; (void)out; (void)cap;
+    return 0;                                   // TODO(W3, M4)
+>>>>>>> block-b1-base
 }
 
 ano_mem_stripe *ano_mem_stripe_make(ano_mem_parent parent, const ano_mem_stripe_cfg *cfg)
 {
+<<<<<<< HEAD
     if (parent.acquire == NULL)
         return NULL;
     size_t lanes = cfg && cfg->lanes      ? cfg->lanes      : 1;
@@ -218,10 +251,15 @@ static void *stripe_alloc_slow(ano_mem_stripe *s, stripe_lane *ln, size_t size, 
     s->st.requested_bytes += size;
     s->st.live_blocks     += 1;
     return (void *)p;
+=======
+    (void)parent; (void)cfg;
+    return NULL;                                // TODO(W3, M4)
+>>>>>>> block-b1-base
 }
 
 void *ano_mem_stripe_alloc(ano_mem_stripe *s, size_t lane, size_t size, size_t align)
 {
+<<<<<<< HEAD
     if (s == NULL || lane >= s->nlanes || size == 0 || size > SIZE_MAX / 2)
         return NULL;
     if (align == 0)
@@ -239,11 +277,16 @@ void *ano_mem_stripe_alloc(ano_mem_stripe *s, size_t lane, size_t size, size_t a
         return (void *)p;
     }
     return stripe_alloc_slow(s, ln, size, align);
+=======
+    (void)s; (void)lane; (void)size; (void)align;
+    return NULL;                                // TODO(W3, M4)
+>>>>>>> block-b1-base
 }
 
 int ano_mem_stripe_planes(ano_mem_stripe *s, const size_t *count, const size_t *elem_size,
                           size_t n_planes, void **out_planes)
 {
+<<<<<<< HEAD
     if (s == NULL || count == NULL || elem_size == NULL || out_planes == NULL || n_planes == 0)
         return -1;
     // Pass 1: offsets. Every base on a granule; park offsets in out_planes until base exists.
@@ -274,10 +317,15 @@ int ano_mem_stripe_planes(ano_mem_stripe *s, const size_t *count, const size_t *
     s->st.requested_bytes += sum;
     s->st.live_blocks     += n_planes;
     return 0;
+=======
+    (void)s; (void)count; (void)elem_size; (void)n_planes; (void)out_planes;
+    return -1;                                  // TODO(W3, M4)
+>>>>>>> block-b1-base
 }
 
 void ano_mem_stripe_reset(ano_mem_stripe *s)
 {
+<<<<<<< HEAD
     if (s == NULL)
         return;
     // Plane chunks -> plain lane-0 capacity for next epoch.
@@ -299,10 +347,14 @@ void ano_mem_stripe_reset(ano_mem_stripe *s)
     s->st.live_bytes      = 0;
     s->st.requested_bytes = 0;
     s->st.live_blocks     = 0;
+=======
+    (void)s;                                    // TODO(W3, M4)
+>>>>>>> block-b1-base
 }
 
 void ano_mem_stripe_destroy(ano_mem_stripe *s)
 {
+<<<<<<< HEAD
     if (s == NULL)
         return;
     ano_mem_parent parent = s->parent;
@@ -321,14 +373,22 @@ void ano_mem_stripe_destroy(ano_mem_stripe *s)
         c = next;
     }
     st_prelease(&parent, s);
+=======
+    (void)s;                                    // TODO(W3, M4)
+>>>>>>> block-b1-base
 }
 
 ano_mem_stats ano_mem_stripe_stats(const ano_mem_stripe *s)
 {
+<<<<<<< HEAD
     ano_mem_stats out = {0};
     if (s == NULL)
         return out;
     out = s->st;
     stripe_fold_peaks(&out);
     return out;
+=======
+    (void)s;
+    return (ano_mem_stats){0};                  // TODO(W3, M4)
+>>>>>>> block-b1-base
 }

@@ -3,11 +3,19 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 /* Persistence/settings coverage.
  * Strict config and keybinding defaults. Exact round trips. Corruption quarantine. V1 migration.
  * Complete save fallback past 64 corrupt generations. Orphan recovery past eight temps.
  * Min-reader/world-save migration. Concurrent save sequencing.
  * Concurrency oracle: different slots enter exact-slot lanes together. Same-slot ops never overlap. Gen count equals accepted commits.
+=======
+/* Persistence/settings coverage: strict config and keybinding defaults, exact round trips,
+ * corruption quarantine, v1 migration, complete save fallback past 64 corrupt generations,
+ * orphan recovery past eight temps, min-reader/world-save migration semantics, and concurrent
+ * save sequencing. Concurrency oracle: different slots enter their exact-slot lanes together;
+ * same-slot operations never overlap; generation count equals accepted commits.
+>>>>>>> block-b1-base
  * File fixtures use resource logical names and durable writes. Exit 0 == pass. */
 
 #include <anoptic_config.h>

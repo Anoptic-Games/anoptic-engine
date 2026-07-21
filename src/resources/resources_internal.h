@@ -3,8 +3,16 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
+<<<<<<< HEAD
 // Module-private surface: namespace access, ownership planning, registry publication, save-frame format.
 // Kind axis is a FOURCC tag, never an enum.
+=======
+// Module-private surface of src/resources/: namespace access, ownership planning,
+// registry publication, and the save-frame format.
+//
+// FROZEN SEAM (blueprint 2.3). The kind axis is a FOURCC tag, never an enum: adding a
+// resource class registers one res_ext (resources_ext.h) and edits no table here.
+>>>>>>> block-b1-base
 
 #ifndef ANOPTIC_RESOURCES_INTERNAL_H
 #define ANOPTIC_RESOURCES_INTERNAL_H
@@ -32,7 +40,12 @@ bool res_ready(void);
 void res_freeze(void);
 ano_fspath res_write_root(void);
 
+<<<<<<< HEAD
 // Mount table for the candidate walk. Owner-written at mount, frozen at first read, read-only after.
+=======
+// The mount table, for the candidate walk in resources_read.c. Owner-written at mount,
+// frozen at first read, read-only afterwards.
+>>>>>>> block-b1-base
 int        res_mount_count(void);
 ano_fspath res_mount_root(int i);
 anostr_t   res_mount_prefix(int i);
@@ -48,7 +61,12 @@ typedef enum res_disposition {
     RES_DISPOSITION_TRANSFER,
 } res_disposition;
 
+<<<<<<< HEAD
 // Routing input. PURE: res_place_plan() allocates nothing, mutates nothing. Transferability is the arena grant (RES_SITE_TRANSFERABLE).
+=======
+// The routing input. PURE: res_place_plan() reads it, allocates nothing, mutates nothing.
+// No transfer_compatible: transferability is the arena's grant (RES_SITE_TRANSFERABLE).
+>>>>>>> block-b1-base
 typedef struct res_place_plan {
     uint32_t         tag;          // FOURCC, not a dense id
     ano_res_lifetime lifetime;
@@ -65,7 +83,12 @@ typedef struct res_dependency_meta {
     uint32_t flags;
 } res_dependency_meta;
 
+<<<<<<< HEAD
 // Site carries serving/alignment/arena/backing/flags/cell so free() never recomputes alloc().
+=======
+// No `pooled` bool: the site carries serving, alignment, arena, backing, flags and cell,
+// so free() never recomputes what alloc() decided (the serving_size() sin).
+>>>>>>> block-b1-base
 typedef struct res_owned_block {
     void          *data;
     size_t         size;
@@ -73,7 +96,13 @@ typedef struct res_owned_block {
     res_place_plan plan;
 } res_owned_block;
 
+<<<<<<< HEAD
 // Six verbs. plan/alloc/free live. stage/commit/move STUB (-1). Owner-thread gate. res_owned_free is for unpublished blocks only.
+=======
+// The six verbs. res_owned_alloc keeps its EXACT signature across every model.
+// Single-owner heap access is enforced by the registry's owner-thread gate.
+// res_owned_free is for unpublished blocks only.
+>>>>>>> block-b1-base
 int  res_owned_plan  (const res_place_plan *, size_t, res_site *out);
 int  res_owned_alloc (const res_place_plan *, size_t, res_owned_block *out);
 int  res_owned_stage (const res_place_plan *, size_t hint, res_owned_block *out);
@@ -84,7 +113,12 @@ void res_owned_free  (res_owned_block *, res_free_mode);
 void res_account_copy(const res_place_plan *plan, size_t bytes);
 void res_account_transfer(const res_place_plan *plan, size_t bytes);
 
+<<<<<<< HEAD
 // Policy gate for promote/duplicate/transfer. No destination-cell charge yet.
+=======
+// TODO(W2, M8): becomes PURE (drop `transferable`, mutate no counters). The real operations
+// charge the DESTINATION's cell.
+>>>>>>> block-b1-base
 int  res_disposition_allowed(ano_res_lifetime from, ano_res_lifetime to,
                              res_disposition disposition, bool transferable);
 
@@ -93,27 +127,50 @@ anores_t res_registry_find(const ano_res_read *read, const char *logical);
 anores_t res_registry_adopt(const char *logical, res_owned_block *block,
                             const res_dependency_meta *deps, size_t dep_count);
 
+<<<<<<< HEAD
 // DEPRECATED. Prefer res_owned_alloc + ano_res_take.
 void res_registry_external_allocation(const res_place_plan *plan, size_t bytes);
 
 // Test-only private probes.
+=======
+// DEPRECATED. Deleted at M9 (W2) with its one call site (res_graphics.c's decode path),
+// which moves onto res_owned_alloc + ano_res_take. It charges and is never reversed, so
+// `allocations == frees at shutdown` cannot become an oracle while it lives.
+void res_registry_external_allocation(const res_place_plan *plan, size_t bytes);
+
+// Test-only private probes; not part of the module interface.
+>>>>>>> block-b1-base
 const void *res_test_row_address(uint32_t slot);
 int res_test_set_generation(anores_t h, uint32_t generation);
 int res_test_set_owner_generation(ano_res_lifetime lifetime, uint32_t generation);
 
+<<<<<<< HEAD
 /* Identity */
 
 // Derived/duplicate resources have no string key. RES_IDENT_DERIVED cannot resolve from the filesystem.
+=======
+// ---------------------------------------------------------------------------------------------
+// Identity. No string key ever exists for a derived or duplicate resource: a RES_IDENT_DERIVED
+// ident cannot be resolved from the filesystem, so derived-key type confusion is
+// unrepresentable and the public path alphabet stays untouched (D8).
+>>>>>>> block-b1-base
 
 uint64_t res_rid_file     (const char *logical, size_t len);            // FNV-1a-64, basis A
 uint64_t res_rid_file2    (const char *logical, size_t len);            // FNV-1a-64, basis B
 uint64_t res_rid_derived  (uint64_t src_rid, uint32_t kind_tag);
 uint64_t res_rid_duplicate(uint64_t src_rid, uint32_t owner_index);
 
+<<<<<<< HEAD
 /* Read side */
 
 // Two-pass source walk intended (DIR then PACK). Pass 2 is empty today: candidates are DIR only.
 // Loose-shadows-pack is the walk invariant once packs emit.
+=======
+// ---------------------------------------------------------------------------------------------
+// The read side: the two-pass source walk, destination-aware sinks, ranges, hashes, chunks.
+// Loose-shadows-pack is an invariant of the WALK (pass 1 = every DIR candidate, pass 2 =
+// every PACK candidate), never of registration order.
+>>>>>>> block-b1-base
 
 typedef struct res_pack res_pack;
 
@@ -129,7 +186,13 @@ typedef struct res_source {
 int res_candidates(const char *logical, size_t len, ano_fspath *out, int cap);
 int res_candidates_ex(const char *logical, size_t len, res_source *out, int cap);
 
+<<<<<<< HEAD
 // Destination-aware read. STUB (-1).
+=======
+// Destination-aware read. reserve() may hand back the HOME block; grow() is the charged
+// spill when the size hint LIED (rmos_size_hint is a hint by deliberate design, and a
+// multipool class block cannot grow in place).
+>>>>>>> block-b1-base
 typedef struct res_sink {
     void *ctx;
     void *(*reserve)(void *ctx, size_t hint, size_t *out_cap);
@@ -140,22 +203,39 @@ typedef struct res_sink {
 int res_read_sink(const res_sink *, const char *abs, size_t *out_size);
 int res_source_read_sink(const res_source *, const res_sink *, size_t *out_size);
 
+<<<<<<< HEAD
 // Unowned whole-file read into heap. EOF is truth.
+=======
+// res_read_all becomes a res_read_sink wrapper at M10. EOF-truth preserved verbatim.
+>>>>>>> block-b1-base
 int res_read_all(mi_heap_t *heap, const char *abs, void **out, size_t *out_size);
 
 #define RES_RANGE_EOF (-3)
 int   res_read_range   (const res_source *, uint64_t off, size_t len, void *dst);
 int   res_hash_file    (const res_source *, uint64_t *hash, uint64_t *size);
+<<<<<<< HEAD
 void *res_chunk_acquire(ano_res_lifetime);   // STUB NULL
 void  res_chunk_release(ano_res_lifetime, void *);  // STUB no-op
 
 /* The save protocol */
+=======
+void *res_chunk_acquire(ano_res_lifetime);   // routed THROUGH placement (D13)
+void  res_chunk_release(ano_res_lifetime, void *);
+
+// ---------------------------------------------------------------------------------------------
+// The save protocol.
+>>>>>>> block-b1-base
 
 typedef struct res_save_guard {
     void *lane;
 } res_save_guard;
 
+<<<<<<< HEAD
 // Exact-slot sequencing. Map lock held only while locating a lane. Unrelated slots run concurrently.
+=======
+// Exact-slot sequencing seam. The map lock is held only while locating a lane; unrelated
+// slots then execute concurrently. Stage C moves these lanes into the owner ticket service.
+>>>>>>> block-b1-base
 int  res_save_begin(const char *slot, size_t slot_len, res_save_guard *guard);
 void res_save_end(res_save_guard *guard);
 

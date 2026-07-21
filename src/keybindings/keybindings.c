@@ -42,9 +42,12 @@ static const action_def g_actions[ANO_KEYBINDING_COUNT] = {
 static ano_keybindings g_current;
 static bool g_current_ready;
 
+<<<<<<< HEAD
 
 /* JSON tokens */
 
+=======
+>>>>>>> block-b1-base
 static bool tok_eq(const char *json, const jsmntok_t *tok, const char *text)
 {
     size_t n = strlen(text);
@@ -94,9 +97,12 @@ static int action_index_token(const char *json, const jsmntok_t *tok)
     return -1;
 }
 
+<<<<<<< HEAD
 
 /* Parse */
 
+=======
+>>>>>>> block-b1-base
 static bool parse_binding_v2(const char *json, const jsmntok_t *tokens, int count, int object,
                              ano_keybinding *binding)
 {
@@ -190,10 +196,16 @@ static bool parse_keybindings(const char *json, size_t len, ano_keybindings *out
     return true;
 }
 
+<<<<<<< HEAD
 
 /* Public interface */
 
 // Zero whole aggregate incl. 4-byte padding hole after count (exact memcmp round-trips).
+=======
+// The whole aggregate, padding included: ano_keybindings has a 4-byte hole after count
+// (entries[] is 8-aligned for the anostr_sid), and this store is compared and hashed
+// byte-wise. Zero it so two stores that agree on every field agree on every byte.
+>>>>>>> block-b1-base
 void ano_keybindings_defaults(ano_keybindings *bindings)
 {
     if (bindings == NULL)

@@ -1,6 +1,12 @@
 # Test executables link anoptic_core. Exit 0 = pass.
 
+<<<<<<< HEAD
 # TIMEOUT scale: asan x4, tsan x8. Sanitized binaries are slower; a red clock under TSan teaches everyone to ignore the clock.
+=======
+# Per-sanitizer TIMEOUT scaling. A sanitized binary is 2-20x slower, and a suite that goes
+# red on the clock under TSan teaches everyone to ignore the clock. Every TIMEOUT below is
+# expressed through these, so a slow lane is a slow lane and not a failure.
+>>>>>>> block-b1-base
 set(ANO_T_SCALE 1)
 if(ANOPTIC_SANITIZE STREQUAL "asan")
     set(ANO_T_SCALE 4)
@@ -13,9 +19,14 @@ math(EXPR ANO_T60  "60  * ${ANO_T_SCALE}")
 math(EXPR ANO_T120 "120 * ${ANO_T_SCALE}")
 math(EXPR ANO_T240 "240 * ${ANO_T_SCALE}")
 
+<<<<<<< HEAD
 # Resource tests: LABELS "resource" (`ctest -L resource`).
 
 # Unit
+=======
+# Every resource-manager test carries LABELS "resource", so `ctest -L resource` is the
+# module's gate and the verification matrix has one name to quote.
+>>>>>>> block-b1-base
 
 # Testing for ``anoptic_time.h``
 add_executable(anotest_time anotest_time.c)
@@ -118,7 +129,15 @@ target_link_libraries(anotest_memory PRIVATE anoptic_core)
 add_test(NAME anoptic_memory COMMAND anotest_memory)
 set_tests_properties(anoptic_memory PROPERTIES TIMEOUT ${ANO_T30} LABELS "unit;mem")
 
+<<<<<<< HEAD
 # Testing for ``anoptic_resources.h`` (mounts, slurp, durable writes, save-frame). Real user-root probes.
+=======
+# Testing for the ``anoptic_resources.h`` core: namespace/mounts/shadow order, hostile-path
+# grammar fuzz, slurp read contract (byte-identical, guard NUL, alignment, multi-chunk),
+# durable writes + quarantine, save-frame commits with an independent FNV/layout oracle.
+# Writes real probe files under the user root (that is the write path's actual contract)
+# and cleans them on exit. Owned loads use the explicit engine/save domain grammar.
+>>>>>>> block-b1-base
 add_executable(anotest_resources anotest_resources.c)
 target_link_libraries(anotest_resources PRIVATE anoptic_core)
 add_test(NAME anoptic_resources COMMAND anotest_resources)
@@ -133,12 +152,28 @@ endif()
 add_test(NAME anoptic_resgfx COMMAND anotest_resgfx)
 set_tests_properties(anoptic_resgfx PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;mem;resource")
 
+<<<<<<< HEAD
 # Lifetime domains: engine/world/pin/reload/transfer/shutdown.
+=======
+# Explicit lifetime domains: engine survival, world retirement, reader-pinned reclamation,
+# same-slot reload, transfer after quiescence, and zero-residue manager shutdown.
+>>>>>>> block-b1-base
 add_executable(anotest_resgroups anotest_resgroups.c)
 target_include_directories(anotest_resgroups PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
 target_link_libraries(anotest_resgroups PRIVATE anoptic_core)
 add_test(NAME anoptic_resgroups COMMAND anotest_resgroups)
 set_tests_properties(anoptic_resgroups PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;mem;resource")
+<<<<<<< HEAD
+=======
+
+# Stage A ownership foundation: lock-free immutable publication raced by registered readers,
+# stale generations, pinned epoch retirement, non-moving row growth, accounting and wrap refusal.
+add_executable(anotest_resownership anotest_resownership.c)
+target_include_directories(anotest_resownership PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resownership PRIVATE anoptic_core)
+add_test(NAME anoptic_resownership COMMAND anotest_resownership)
+set_tests_properties(anoptic_resownership PROPERTIES TIMEOUT ${ANO_T120} LABELS "unit;mem;concurrency;resource")
+>>>>>>> block-b1-base
 
 # Ownership: lock-free publish, pin/retire, row growth, wrap refusal.
 add_executable(anotest_resownership anotest_resownership.c)
@@ -161,6 +196,112 @@ target_include_directories(anotest_resfault PRIVATE ${CMAKE_SOURCE_DIR}/src/reso
 target_link_libraries(anotest_resfault PRIVATE anoptic_core)
 add_test(NAME anoptic_resfault COMMAND anotest_resfault)
 set_tests_properties(anoptic_resfault PROPERTIES TIMEOUT ${ANO_T30} LABELS "unit;resource")
+<<<<<<< HEAD
+=======
+
+# Persistence clients and save correctness: strict config/keybinding schemas, migration and
+# quarantine, complete bounded-memory generation/temp fallback, world-save migration, and
+# exact-slot concurrency. Oracle: accepted commits equal durable generations; distinct slots
+# enter concurrently while one slot is totally ordered.
+add_executable(anotest_persistence anotest_persistence.c)
+target_include_directories(anotest_persistence PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_compile_definitions(anotest_persistence PRIVATE ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(anotest_persistence PRIVATE anoptic_core)
+add_test(NAME anoptic_persistence COMMAND anotest_persistence)
+set_tests_properties(anoptic_persistence PROPERTIES TIMEOUT ${ANO_T120} LABELS "unit;mem;concurrency;resource")
+
+# Real subprocess termination after every fixed-name durability boundary. The private
+# resources_core.c copy exposes ANO_RES_FAULT_INJECT; parent oracle is old-complete/new-complete.
+add_executable(anotest_resdurability anotest_resdurability.c
+        ${CMAKE_SOURCE_DIR}/src/resources/resources_core.c)
+target_compile_definitions(anotest_resdurability PRIVATE
+        ANO_RES_FAULT_INJECT ANO_TEST_OUTDIR="${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(anotest_resdurability PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resdurability PRIVATE anoptic_core)
+add_test(NAME anoptic_resdurability COMMAND anotest_resdurability)
+set_tests_properties(anoptic_resdurability PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;resource")
+
+# ---------------------------------------------------------------------------------------------
+# The resource-manager targets the FREEZE registers, so no later workstream ever has to touch
+# a CMakeLists.txt. Each is owned by exactly one workstream and its name, LABELS and TIMEOUT
+# are fixed here and now. anotest_rescodec has a real oracle already (LZ4 is vendored); the
+# rest print PENDING and assert nothing -- a stub that printed OK would be a green lie.
+
+# Codec: RAW/LZ4 round-trips, the reserved-codec refusal, hostile-bytes totality. (W4)
+add_executable(anotest_rescodec anotest_rescodec.c)
+target_include_directories(anotest_rescodec PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_rescodec PRIVATE anoptic_core)
+add_test(NAME anoptic_rescodec COMMAND anotest_rescodec)
+set_tests_properties(anoptic_rescodec PROPERTIES TIMEOUT ${ANO_T30} LABELS "unit;resource")
+
+# Placement: the routing oracle -- every model x every plan -> the expected site. (W1)
+add_executable(anotest_resplace anotest_resplace.c)
+target_include_directories(anotest_resplace PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resplace PRIVATE anoptic_core)
+add_test(NAME anoptic_resplace COMMAND anotest_resplace)
+set_tests_properties(anoptic_resplace PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;mem;resource")
+
+# Ranges: partial reads that never lie. (W4)
+add_executable(anotest_resrange anotest_resrange.c)
+target_include_directories(anotest_resrange PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resrange PRIVATE anoptic_core)
+add_test(NAME anoptic_resrange COMMAND anotest_resrange)
+set_tests_properties(anoptic_resrange PROPERTIES TIMEOUT ${ANO_T30} LABELS "unit;resource")
+
+# Packs: mount, bsearch lookup, ranged read, the deterministic builder, TOC corruption. (W4)
+add_executable(anotest_respack anotest_respack.c)
+target_include_directories(anotest_respack PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_respack PRIVATE anoptic_core)
+add_test(NAME anoptic_respack COMMAND anotest_respack)
+set_tests_properties(anoptic_respack PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;resource")
+
+# Block framing: the hostile-input battery. The highest-severity item in the ledger. (W5)
+add_executable(anotest_resbake anotest_resbake.c)
+target_include_directories(anotest_resbake PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resbake PRIVATE anoptic_core)
+add_test(NAME anoptic_resbake COMMAND anotest_resbake)
+set_tests_properties(anoptic_resbake PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;fuzz;resource")
+
+# Hot reload: old-complete or new-complete, plus the derived cascade. (W5)
+add_executable(anotest_reshotreload anotest_reshotreload.c)
+target_include_directories(anotest_reshotreload PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_reshotreload PRIVATE anoptic_core)
+add_test(NAME anoptic_reshotreload COMMAND anotest_reshotreload)
+set_tests_properties(anoptic_reshotreload PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;concurrency;resource")
+
+# Audio: planar PCM ingest, and the null sink's FNV hash as the mixer's oracle. (W8)
+add_executable(anotest_resaudio anotest_resaudio.c)
+target_include_directories(anotest_resaudio PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resaudio PRIVATE anoptic_core m)
+add_test(NAME anoptic_resaudio COMMAND anotest_resaudio)
+set_tests_properties(anoptic_resaudio PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;mem;resource")
+
+# Script: a bytecode block, and a VM that always terminates. (W9)
+add_executable(anotest_resscript anotest_resscript.c)
+target_include_directories(anotest_resscript PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resscript PRIVATE anoptic_core m)
+add_test(NAME anoptic_resscript COMMAND anotest_resscript)
+set_tests_properties(anoptic_resscript PROPERTIES TIMEOUT ${ANO_T60} LABELS "unit;mem;resource")
+
+# Levels: a domain that opens, runs, and returns to baseline over 20 cycles. (W10)
+add_executable(anotest_reslevel anotest_reslevel.c)
+target_include_directories(anotest_reslevel PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_reslevel PRIVATE anoptic_core m)
+if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
+    target_compile_definitions(anotest_reslevel PRIVATE ANO_TEST_ASSETS="${CMAKE_SOURCE_DIR}/assets")
+endif()
+add_test(NAME anoptic_reslevel COMMAND anotest_reslevel)
+set_tests_properties(anoptic_reslevel PROPERTIES TIMEOUT ${ANO_T120} LABELS "unit;mem;resource")
+
+# The remote-FS floor: 9P and SMB tell the truth about nothing. (W12)
+add_executable(anotest_resremote anotest_resremote.c)
+target_include_directories(anotest_resremote PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
+target_link_libraries(anotest_resremote PRIVATE anoptic_core)
+add_test(NAME anoptic_resremote COMMAND anotest_resremote)
+set_tests_properties(anoptic_resremote PROPERTIES TIMEOUT ${ANO_T120} LABELS "unit;resource")
+
+# ---------------------------------------------------------------------------------------------
+>>>>>>> block-b1-base
 
 # Persistence: schemas, migration/quarantine, slot concurrency. Oracle: commits = durable gens. Distinct slots concurrent; one slot totally ordered.
 add_executable(anotest_persistence anotest_persistence.c)
@@ -268,7 +409,13 @@ target_link_libraries(anotest_ringbench PRIVATE anoptic_core)
 add_test(NAME anoptic_ringbench COMMAND anotest_ringbench)
 set_tests_properties(anoptic_ringbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
+<<<<<<< HEAD
 # Resource domain-cycle bench. DISABLED in ctest, run ./anotest_resbench from -O3.
+=======
+# Historical churn / real-asset domain-cycle / direct hand-off workloads retained behind
+# the explicit lifetime grammar. This is not the allocator hierarchy contest. DISABLED in
+# ctest; run ./anotest_resbench from a -O3 build.
+>>>>>>> block-b1-base
 add_executable(anotest_resbench anotest_resbench.c)
 target_include_directories(anotest_resbench PRIVATE ${CMAKE_SOURCE_DIR}/src/resources)
 target_link_libraries(anotest_resbench PRIVATE anoptic_core)
@@ -309,7 +456,11 @@ add_executable(anotest_blackbox anotest_blackbox.c)
 target_link_libraries(anotest_blackbox PRIVATE anoptic_core)
 add_test(NAME anoptic_blackbox COMMAND anotest_blackbox)
 set_tests_properties(anoptic_blackbox PROPERTIES TIMEOUT ${ANO_T240} LABELS "unit;concurrency")
+<<<<<<< HEAD
 # Skipped under ASan/TSan (sanitizer signal handlers).
+=======
+# Skipped under ASan/TSan: sanitizers install their own fatal-signal handlers.
+>>>>>>> block-b1-base
 if(NOT ANOPTIC_SANITIZE STREQUAL "")
     set_tests_properties(anoptic_blackbox PROPERTIES DISABLED TRUE)
 endif()
@@ -353,7 +504,11 @@ if(TARGET anoptic_render)
     add_executable(anotest_vk_compliance_layers anotest_vk_compliance_layers.c)
     target_link_libraries(anotest_vk_compliance_layers PRIVATE anoptic_render)
     add_test(NAME anotest_vk_compliance_layers COMMAND anotest_vk_compliance_layers)
+<<<<<<< HEAD
     # Validation-layer intentional error. Debug-only.
+=======
+    # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
+>>>>>>> block-b1-base
     set_tests_properties(anotest_vk_compliance_layers PROPERTIES TIMEOUT ${ANO_T30} LABELS "unit;vulkan"
         DISABLED "$<CONFIG:Release>")
 
@@ -365,7 +520,11 @@ if(TARGET anoptic_render)
     add_executable(anotest_vk_sync anotest_vk_sync.c)
     target_link_libraries(anotest_vk_sync PRIVATE anoptic_render)
     add_test(NAME anotest_vk_sync COMMAND anotest_vk_sync)
+<<<<<<< HEAD
     # Validation-layer intentional error. Debug-only.
+=======
+    # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
+>>>>>>> block-b1-base
     set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT ${ANO_T30} LABELS "unit;vulkan"
         DISABLED "$<CONFIG:Release>")
 
