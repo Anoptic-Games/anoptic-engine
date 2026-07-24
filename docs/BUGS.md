@@ -33,6 +33,7 @@ Each entry carries one or more root-cause tags on the bullet line(s) beneath it,
 - shared-mutable-state 〜 a function-scope static or global is reused across contexts that should be independent (concurrent engines, reentrant calls), so their accesses race or clobber each other.
 - missed-repoint 〜 a resource is recreated (grown, reallocated) but one of the descriptor sets or references pointing at it is not updated, leaving a live binding to a destroyed handle.
 - table-coverage-gap 〜 two generated lookup tables that must agree on coverage diverge, so some inputs fall through to a default path and behave inconsistently with their peers.
+- alignment-contract-gap 〜 a type's declared alignment is weaker than the layout contract its own header documents, so nothing enforces the guarantee its callers and the GPU mirror rely on.
 
 
 ## Audio
@@ -112,6 +113,11 @@ log_core.c:817 〜 the drain batch g_batch is sized ring bytes + 16 per record o
 (anoptic_math.h is types-only as of 2026-07-17 〜 mat4/Vector2/3/4 PODs, no ops, no src/ module; ops live in render/vertex.h. Composition audits belong to the render_bridge and vulkan_backend interlink edges.)
 
 ### Interface-level bugs and logic inefficiencies
+
+anoptic_math.h:21 〜 the header declares mat4/Vector2/3/4 the canonical std430 types "across render, ECS, and the logic<->render bridge", but `typedef float mat4[4][4]` and the `struct { float v[N]; }` vectors all carry `_Alignof == 4` (measured, clang 22 -std=c23: mat4 size 64 align 4, Vector4 size 16 align 4), while std430/std140 require a 16-byte alignment for both 〜 so the type system enforces nothing and every C struct mirroring a GLSL block agrees with it only by accident of member order; two already disagree: RenderEntity (structs.h:154) puts three uint32_t ahead of its mat4, landing `transform` at offset 12 (sizeof 76) where std430 demands 16 (sizeof 80), and DisplayState (render_bridge.h:47) lands its mat4 at offset 4 〜 latent only because neither is uploaded as a struct today (the GPU reads a separate 8-byte EntityInfo plus a mat4 array at offset 0, and the CullView instances that ARE uploaded put their mat4 first inside mapped device memory), so the day either one is memcpy'd into an SSBO the shader reads every field 4 bytes off; the same missing alignment is also a per-frame cost on the hottest stream 〜 a 64-byte record that may legally start off a cache line makes every element of a CPU-side transform array straddle two lines, doubling line traffic on the million-entity sweep 〜 the fix is `alignas(16)` on the types (an ABI change: it repacks RenderEntity and DisplayState), not a comment 〜 test: pending 〜 a `_Static_assert(_Alignof(mat4) >= 16)` guard TU pins it at compile time, but it cannot fail at runtime and so cannot be a CTest failure until the types change
+- alignment-contract-gap
+
+(The former lead "anoptic_math.h:16 vs docs/math-conventions.md 〜 one of the two contracts is lying" is struck as of 2026-07-24: the doc was right and the header was wrong. `translate` writes the translation to `mat[3][0..2]`, `multiplyMat4` documents `temp[col][row] += a[k][row] * b[col][k]`, and `perspective` sets `matrix[2][3] = -1` 〜 all column-major, matching GLSL's mat4 so uploads need no transpose. The header comment now says so. No code changed.)
 
 ### Implementation bugs
 
@@ -415,7 +421,6 @@ main.c:391 〜 music_world_start bounds its telemetry handshake at 200 tries x 5
 - filesystem_win64.c:33 〜 len >= MAXPATH checked on the full exe path before trimming the filename; linux/macos check after trimming 〜 256-259 char full paths whose dir fits fail only on win64.
 - filesystem_win64.c:23 〜 the ANSI-API debt comment covers GetModuleFileNameA only; CreateFileA and getenv("APPDATA") share the non-ASCII mangling but are not acknowledged.
 - log↔filesystem seam 〜 log_core.c:834 and log_crash.c:34 consume ano_fs_logpath; behavior when it legitimately returns length 0 unaudited.
-- anoptic_math.h:16 vs docs/math-conventions.md 〜 header comment declares mat4 row-major; the conventions doc establishes column-major 〜 one of the two contracts is lying.
 - memory↔every-module seam 〜 MI_OVERRIDE=OFF (CMakeLists.txt:105) + macro-only override (anoptic_memory.h:15) means two live allocators partitioned by "TU includes anoptic_memory.h or not"; safe today (verified ano_meshoptimizer.c is self-contained), but any internally-allocating libc call (getline/asprintf/scandir) in a macro'd TU frees a glibc pointer with mi_free 〜 deserves a dedicated composition pass.
 - instance.c:192 〜 getRequiredExtensions strdups extension strings, createInstance frees only the array 〜 per-string leak (vulkan_backend iteration).
 - scratch_process.c (src/render/gltf/) 〜 dead code: not in any CMakeLists, no includer.
@@ -461,6 +466,8 @@ main.c:391 〜 music_world_start bounds its telemetry handshake at 200 tries x 5
 
 Post-merge tally of this file after splicing the attached census pass with the in-repo BUGS.md. Severity is inferred from the writeups (entries carry no severity tags). Leads are unverified and excluded from the tallied counts unless noted.
 
+Amended 2026-07-24: the math-conventions lead was chased and split 〜 the row-major/column-major half was resolved and struck (the header comment was wrong, the doc right, no code change), and the alignment half was promoted to the tallied entry anoptic_math.h:21 (Latent). Net: tallied 69 -> 70, leads 42 -> 41, file items unchanged at 111.
+
 ### Rubric
 
 | Level | Meaning |
@@ -475,9 +482,9 @@ Post-merge tally of this file after splicing the attached census pass with the i
 |---|---:|
 | Critical | 32 |
 | Major | 26 |
-| Latent | 11 |
-| **Tallied total** | **69** |
-| Leads (unverified) | 42 |
+| Latent | 12 |
+| **Tallied total** | **70** |
+| Leads (unverified) | 41 |
 | File items (tallied + leads) | 111 |
 
 ### Severity by section
@@ -488,7 +495,7 @@ Post-merge tally of this file after splicing the attached census pass with the i
 | Collections | 0 | 0 | 0 | 0 |
 | Filesystem | 0 | 2 | 0 | 2 |
 | Log | 2 | 0 | 0 | 2 |
-| Math | 0 | 0 | 0 | 0 |
+| Math | 0 | 0 | 1 | 1 |
 | Memory | 0 | 1 | 0 | 1 |
 | Mesh | 1 | 1 | 0 | 2 |
 | Music | 5 | 2 | 0 | 7 |
@@ -500,13 +507,13 @@ Post-merge tally of this file after splicing the attached census pass with the i
 | Time | 0 | 1 | 4 | 5 |
 | UI | 2 | 0 | 2 | 4 |
 | Engine | 1 | 0 | 0 | 1 |
-| **Total** | **32** | **26** | **11** | **69** |
+| **Total** | **32** | **26** | **12** | **70** |
 
 Render holds 18/32 Criticals. Music is next (5). Time is almost all Latent.
 
 ### Context
 
-For a systematic audit census of a C23 + Vulkan + lock-free engine, ~69 tallied findings is in band; many Criticals are bad-input / OOM / rare-device paths the demo never crosses, not daily boot crashes. The point of tallying before whack-a-mole was to expose systemic gaps.
+For a systematic audit census of a C23 + Vulkan + lock-free engine, ~70 tallied findings is in band; many Criticals are bad-input / OOM / rare-device paths the demo never crosses, not daily boot crashes. The point of tallying before whack-a-mole was to expose systemic gaps.
 
 ### Systemic gaps (fell swoops)
 

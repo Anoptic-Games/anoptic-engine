@@ -9,11 +9,15 @@
 
 /* Types */
 
-// Shared linear-algebra value types (row-major float POD, trivially copyable, std430).
+// Shared linear-algebra value types (column-major float POD, trivially copyable, std430).
 // Canonical across render, ECS, and the logic<->render bridge.
 // Ops still in render/vertex.h until a non-render caller needs them.
+// _Alignof is 4 on every type here; std430 wants 16 〜 docs/BUGS.md anoptic_math.h:21.
 
-// Row-major 4x4. Arg decays to float(*)[4], member is 64 bytes.
+// Column-major 4x4: m[i][j] is column i, row j 〜 m[i] is a contiguous column, m[3] the
+// translation. Matches GLSL's mat4, so an upload is a memcpy with no transpose. (Every C
+// [4][4] stores m[i] contiguously; the convention is what m[i] names.) Conventions of
+// record: docs/math-conventions.md. Arg decays to float(*)[4], member is 64 bytes.
 typedef float mat4[4][4];
 
 typedef struct Vector2

@@ -4,19 +4,21 @@ This is a remediation-oriented census of `docs/BUGS.md` on `fix-bughunt`, read o
 
 ## Accounting
 
-The source contains 69 verified findings and 42 unverified lead bullets, or 111 records as written. Four leads are older restatements of verified findings: `text_bake.c ano_text_window_sum`, `render_slots.c:84`, `ano_render_ui_set validation gap`, and `time_linux.c:132`. The deduplicated census is therefore 107 distinct concerns: 69 verified and 38 lead-only.
+The source contains 70 verified findings and 41 unverified lead bullets, or 111 records as written. Four leads are older restatements of verified findings: `text_bake.c ano_text_window_sum`, `render_slots.c:84`, `ano_render_ui_set validation gap`, and `time_linux.c:132`. The deduplicated census is therefore 107 distinct concerns: 70 verified and 37 lead-only.
 
-Two verified findings have two fine-grained tags: `music_perc.c:121` is both `fixed-array-overflow` and `shift-ub`, while `texture.c:437` is both `no-abort` and `feature-gated-check`. There are consequently 71 tag assignments across 69 findings. The remediation-bucket table assigns every finding one primary bucket and does not double-count either one.
+Two verified findings have two fine-grained tags: `music_perc.c:121` is both `fixed-array-overflow` and `shift-ub`, while `texture.c:437` is both `no-abort` and `feature-gated-check`. There are consequently 72 tag assignments across 70 findings. The remediation-bucket table assigns every finding one primary bucket and does not double-count either one.
+
+Amended 2026-07-24 against the same source amendment: the `anoptic_math.h:16` versus `docs/math-conventions.md` lead was chased and split. Its convention half was resolved and struck (the header comment was wrong, the conventions doc right, no code changed); its alignment half was promoted to the verified Latent finding `anoptic_math.h:21` and filed under bucket 5. Verified 69 -> 70, leads 42 -> 41, distinct concerns unchanged at 107.
 
 | Population | Count |
 |---|---:|
 | Verified Critical | 32 |
 | Verified Major | 26 |
-| Verified Latent | 11 |
-| Verified total | 69 |
-| Lead records | 42 |
+| Verified Latent | 12 |
+| Verified total | 70 |
+| Lead records | 41 |
 | Leads duplicating verified findings | 4 |
-| Distinct lead-only concerns | 38 |
+| Distinct lead-only concerns | 37 |
 | Distinct concerns | 107 |
 
 ## Fell-swoop buckets
@@ -27,10 +29,10 @@ Two verified findings have two fine-grained tags: `music_perc.c:121` is both `fi
 | Quantity safety | 17 | 2 | 0 | 19 |
 | Fallibility and atomic commit | 16 | 7 | 2 | 21 |
 | Ownership and deferred lifetime | 8 | 6 | 0 | 14 |
-| Mirrored state and inventory drift | 9 | 6 | 0 | 15 |
+| Mirrored state and inventory drift | 10 | 6 | 0 | 16 |
 | State-machine and concurrency lifecycle | 3 | 6 | 0 | 9 |
-| Algorithm and contract one-offs | 2 | 4 | 0 | 6 |
-| Total | 69 | 42 | 4 | 107 |
+| Algorithm and contract one-offs | 2 | 3 | 0 | 5 |
+| Total | 70 | 41 | 4 | 107 |
 
 The first four programs retire 77 of the 107 distinct concerns. Contract gates plus quantity safety alone cover 42; Vulkan-style Result discipline and transactional publication cover another 21; explicit ownership closes another 14. Those are the actual broad strokes. The last three programs are smaller audits, and the final bucket is intentionally surgical rather than forced into a false common abstraction.
 
@@ -78,9 +80,9 @@ Leads: memory↔every-module allocator partition; `instance.c:192`; cgltf↔memo
 
 Cause: a hand-maintained sibling, feature list, generated table, descriptor binding, platform implementation, or copied block omits one member or retains one wrong token. Recreated resources do not carry an authoritative list of dependents to repoint.
 
-Swoop: replace parallel lists with one declarative inventory that generates counts, creation, destruction, sharing flags, and descriptor rewrites. Add parity tests for platform siblings and generated Unicode tables, centralize duplicated low-level loops and types, and have resource recreation walk an explicit dependency registry before the old handle is destroyed.
+Swoop: replace parallel lists with one declarative inventory that generates counts, creation, destruction, sharing flags, and descriptor rewrites. Add parity tests for platform siblings and generated Unicode tables, centralize duplicated low-level loops and types, and have resource recreation walk an explicit dependency registry before the old handle is destroyed. Where a C struct mirrors a GLSL block, give the shared types the alignment their layout standard requires and static-assert size and member offsets against the std140/std430 rule rather than trusting member order.
 
-Verified: `audio_linux.c:168`; `ano_meshoptimizer.c:955`; `texture.c:435`; `device.c:663`; `descriptors.c:39`; `commands.c:82`; `slot_upload.c:277`; `ano_strings_collate.c:75`; `threads_macos.c:79`.
+Verified: `audio_linux.c:168`; `ano_meshoptimizer.c:955`; `texture.c:435`; `device.c:663`; `descriptors.c:39`; `commands.c:82`; `slot_upload.c:277`; `ano_strings_collate.c:75`; `threads_macos.c:79`; `anoptic_math.h:21`.
 
 Leads: `filesystem_win64.c:33`; `memalign_win64.c:1`; `ano_unicode_tables.h` case-trim coverage; text↔UI duplicated geometry helpers and `AnoQuad`; render↔text C/GLSL coverage drift; swapchain-recreate descriptor dependency coverage.
 
@@ -102,7 +104,7 @@ Swoop: repair each locally and pin it with the named regression test or a focuse
 
 Verified: `audio_fx.c:100`; `text_shape.c:126`.
 
-Leads: `anoptic_math.h:16` versus `docs/math-conventions.md`; dead `src/render/gltf/scratch_process.c`; shared texture color/data-space semantics; `time_win64.c:316` scheduler-yield contract.
+Leads: dead `src/render/gltf/scratch_process.c`; shared texture color/data-space semantics; `time_win64.c:316` scheduler-yield contract.
 
 ## Fine-grained source tags
 
@@ -122,6 +124,7 @@ This preserves the source file's existing taxonomy. Counts are tag assignments, 
 | partial-publish | 2 |
 | shift-ub | 2 |
 | wrong-error-source | 2 |
+| alignment-contract-gap | 1 |
 | clock-not-reanchored | 1 |
 | dangling-capture | 1 |
 | lookahead-off-by-one | 1 |
@@ -135,7 +138,7 @@ This preserves the source file's existing taxonomy. Counts are tag assignments, 
 | truncating-cast | 1 |
 | unbounded-spin | 1 |
 | unguarded-delegation | 1 |
-| Total assignments | 71 |
+| Total assignments | 72 |
 
 ## Recommended order
 
