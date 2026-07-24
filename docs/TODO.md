@@ -60,3 +60,14 @@ Integration milestone (v0.1): input moves the camera, the event bus carries it, 
 ## Later -- DEBUG_TRACE (crash trace)
 
 Sibling of the logger, distinct module. Same `rte_ring` skeleton + 16-byte marker, opposite durability policy: ring `mmap`'d to a file and never zeroed, so the last-N records survive the process and a debugger or the next boot reads them straight out of the mapping. The logger zeroes drained lines and reuses in place, so at a crash its ring is half-gone. Captures last-N before a fault. Survival/order over throughput. See `.claude/profiler-and-trace.md` (also covers the `anoptic_profiler.h` throughput sibling and the shared-ring-vs-per-producer ownership question that lands before Step 5).
+
+## Later -- anoptic_blas.h (shared linear algebra)
+
+`include/anoptic_math.h` is types-only and the ops live in `src/vulkan_backend/vertex/vertex.c`, so every non-render caller that needs a matrix either includes a renderer internal or rewrites the op. Promote the ops to a real module behind `include/anoptic_blas.h` + `src/blas/` when the second consumer appears (ECS transforms at Step 9, or physics). Not speculative generality: build the ops a real caller needs, no more.
+
+Scope when it lands:
+
+- `lookAt` / `perspective` / `ortho` / `multiplyMat4` / `extractFrustumPlanes` as the single definition, CPU and shader-codegen sharing it. `docs/math-conventions.md` closes with exactly this as its standing recommendation 〜 the recurring failure is a convention re-implemented in a second place with a silent sign/transpose/range difference, and it already cost a transposed shadow frustum. A unit test asserting CPU and GPU agree on a known frustum is the point of the module, not a nicety.
+- Fix `anoptic_math.h:21` while moving the types: `alignas(16)` on `mat4`/`Vector2/3/4` so the std430 contract the header claims is actually enforced. ABI change 〜 it repacks `RenderEntity` (`structs.h:154`) and `DisplayState` (`render_bridge.h:47`), both of which currently place a `mat4` at a non-16-aligned offset. Details in `docs/BUGS.md`.
+- Keep column-major + column vectors (`M * v`). It matches GLSL's `mat4`, so uploads stay a `memcpy` with no transpose. `docs/math-conventions.md` is the contract; do not re-derive it.
+- Decide the layout question before writing the ops, not after: `mat4` is 64 bytes and the million-entity sweeps run on the GPU, where consecutive AoS reads already coalesce. The win is a smaller per-pass payload (a precomputed world bounding sphere for `cull.comp`, which today reads all 64 bytes of a transform to derive 4 floats; affine 4x3 for the transform stream), not per-scalar SoA. AoSoA only behind a profile.

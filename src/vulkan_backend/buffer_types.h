@@ -103,7 +103,10 @@ typedef struct SlotUpload
 } SlotUpload;
 
 
-// One frustum to cull against. std140: mat4 (64) + vec4[6] (96) = 160, 16-aligned, packs with no padding.
+// One frustum to cull against. std140: mat4 (64) + vec4[6] (96) = 160, packs with no padding.
+// Member offsets are 16-multiples as std140 needs, but the struct's own 16-byte alignment is
+// unenforced (_Alignof(mat4) == _Alignof(Vector4) == 4) and holds only because every instance
+// lives in mapped device memory 〜 docs/BUGS.md anoptic_math.h:21.
 typedef struct CullView
 {
     mat4    viewProj;
