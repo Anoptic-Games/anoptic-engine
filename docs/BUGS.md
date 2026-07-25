@@ -39,7 +39,7 @@ An entry prefixed `[X] Fixed` has been repaired; its text is kept verbatim as th
 
 One status tag rides alongside the root causes rather than replacing them:
 
-- pending-design-decision 〜 the defect is understood and its root cause is already tagged, but the repair is blocked on a contract choice with more than one defensible answer, so writing the fix would settle that question silently. Never the only tag on an entry. Each carries a write-up 〜 the decision, the candidate answers, what each costs 〜 in docs/BUG-HUNT.md, "Open decisions". Status tags are excluded from every root-cause tag count.
+- pending-design-decision 〜 the defect is understood and its root cause is already tagged, but the repair is blocked on a contract choice with more than one defensible answer, so writing the fix would settle that question silently. Never the only tag on an entry. Each carries a write-up 〜 the decision, the candidate answers, what each costs 〜 in docs/BUG-HUNT.md, "Open decisions". Status tags are excluded from every root-cause tag count. All five carriers were settled by 2026-07-25 〜 the tag currently marks nothing; the retired write-ups live in docs/BUGS_DONE.md, "Settled open decisions".
 
 
 ## Audio
@@ -50,10 +50,6 @@ One status tag rides alongside the root causes rather than replacing them:
 
 audio_win64.c:589 〜 dsound_render_loop's DSBSTATUS_BUFFERLOST recovery calls Restore then Play without rewriting or silencing the ring and without resetting writeCursor, so up to four blocks of undefined restored buffer contents play and the stale cursor keeps writing out of phase with the restarted play cursor 〜 confirmed in source by two passes; no deterministic trigger seam today (real dsound.dll, loss needs focus change under DSSCL_PRIORITY) 〜 test: pending
 - recovery-desync
-
-ano_audio.c:204 〜 ano_audio_shutdown discharges no adopted sample block: it joins the mixer, stops the device, and destroys both bridge rings and the module heap, but never walks mx->buffers or drains a ring, and adopted blocks live on the default mi heap (plain mi_malloc at :260), not the module heap the teardown frees 〜 so LIVE owned blocks, ACMD_BUFFER_REGISTER blocks still queued in the command ring, and un-polled AEVT_BUFFER_RETIRED blocks all orphan permanently (the producer can never poll a destroyed world to get them back), breaching the lossless-block invariant (audio_internal.h:9) and the block-rides-home promise (anoptic_audio.h:326) on every world torn down with resident audio 〜 test: anotest_audioshutguard
-- ownership-leak
-- pending-design-decision
 
 ### Interlink / Composition bugs 
 
@@ -134,9 +130,6 @@ filesystem_win64.c:137 〜 ano_fs_write's loop has no forward-progress check, so
 
 ### Implementation bugs
 
-music_voicing.c:114 〜 ano_voice_chord builds its candidate table in a plain function-scope static (static Cand cands[256], 6 KiB, comment "single-threaded conductor context"), shared across every engine in the process, while the module's own hosting design (ANOPTIC_MUSICGEN.md seek: rebuild a second engine off-thread while the callback-hosted composer keeps advancing the live one) runs two engines through advance_bar -> generate_pad -> ano_voice_chord concurrently; the dedupe scan, cost pass, and final out[] copy read entries the other thread is rewriting, so a wrong pad voicing is selected and enters st->prevVoicing 〜 the anoptic_music.h:481 contract "Same config+seed+bar => byte-identical" breaks the moment any second engine composes concurrently: the off-thread seek snapshot is not the piece linear play would have produced (ACMD_MUSIC_SEEK adopts audibly different music, musicdrive's sample-identical-seek invariant fails), the live bar can sound a foreign chord, and TSan confirms the write-write race on ano_voice_chord.cands from both threads 〜 test: anotest_musicguard
-- shared-mutable-state
-- pending-design-decision
 
 ### Interlink / Composition bugs 
 
@@ -217,10 +210,6 @@ components.c:72 〜 ano_vk_register_texture is the only route a loaded texture's
 ano_GltfParser.c:277 〜 parseGltf hears createTextureImage's false and discharges nothing: the callee's post-create failure arms return false with the just-created VkImage and texture-arena allocation already written through the out-params into loadedImages[t]/loadedAllocs[t] (texture.c:429-:433 transition arm 〜 its strand half noted under texture.c:426 〜 plus the :446-:450 view arm that today cannot fire only because createTextureImageView swallows its own failure, the tallied swapchain.c:428 family, and the arm the texture.c:437 fix adds), yet the parser's failure route is textureLoaded[t] = false and continue (:276) 〜 adoption into the teardown registry is success-only (ano_vk_register_texture at :282, the sole route cleanupVulkan ever walks), no failure arm destroys the image or frees the allocation, and :619-:621 free the host arrays holding the only copies of the handles 〜 one whole device texture image plus arena allocation orphans permanently per failed load, armed by exactly the fixes the tallied callee entries demand, so repairing texture.c's arms without a parser-side discharge converts today's staging leak into a full texture leak 〜 test: anotest_gltftexleakguard
 - ownership-leak
 
-ano_render_bridge.c:92 〜 ano_render_bridge_destroy tears the commands ring down through ano_spsc_destroy (:51), which frees only ring->buffer, so every RenderCommand still enqueued is discarded without honoring bulk_owned: the mi_malloc'd render-owned copies the submit helpers packed and pointed cmd.text/cmd.ui/cmd.update/cmd.destroy at (ano_render_text_set :152, ano_render_ui_set :246, producer.c :56/:90) lose their last reference with the ring 〜 the producer relinquished them at push per the header's copy-at-submit/render-frees contract (anoptic_render.h:435), and every other drop path frees the copy (full-ring reject at submit, replace/registry-full/clear at adoption), only the in-ring-at-destroy window frees nothing 〜 main.c stops draining at its last drawFrame before setting g_logicShouldStop, then joins and calls unInitVulkan (vulkanMaster.c:89) with no drain between, so the final logic ticks' TEXT_SET/UI_SET blocks (per-tick HUD and music-panel submissions, up to ~384 KiB per text block) land exactly in that window and leak every shutdown; an embedder cycling initVulkan/unInitVulkan on device loss or level reload, or any bridge-owning harness, accumulates them unbounded 〜 test: anotest_bridgeguard
-- ownership-leak
-- pending-design-decision
-
 
 
 ## Strings (including strings_utf.h)
@@ -228,10 +217,6 @@ ano_render_bridge.c:92 〜 ano_render_bridge_destroy tears the commands ring dow
 ### Interface-level bugs and logic inefficiencies
 
 ### Implementation bugs
-
-ano_strings_collate.c:75 〜 ce_push_rune consults the decomp table before the CE table, and the generated tables disagree about coverage: U+01EF (ǯ, ezh-caron, Skolt Sami) and U+0374 (Greek numeral sign) carry correct direct CE listings ([270B.020.02]+[0000.028.02] and [04F2.020.02] in ano_collate_tables.h) that are unreachable because their decomp entries redirect through U+0292 / U+02B9, both trimmed out of the CE table, so ce_push_cp falls to UCA implicit weights (primary 0xFBC0, the after-every-listed-script band); the uppercase sibling U+01EE decomposes through U+01B7, which the trim kept, so only the lowercase form is poisoned 〜 the case pair the module itself maps (anorune_to_lower(U+01EE) == U+01EF) splits across the whole collation space: anostr_collate puts Ǯ before あ but ǯ after it, anostr_eq_base(Ǯ, ǯ) is false while every healthy decomposing pair (Ǒ/ǒ) holds, anostr_sort places "Ǯ" in the Latin band right after z (prefix key 270B…) and "ǯ" past kana among the Han implicits (FBC0.8292…), and base-letter search cannot match ǯ words 〜 test: anotest_strguard
-- table-coverage-gap
-- pending-design-decision
 
 ### Interlink / Composition bugs 
 
@@ -405,34 +390,36 @@ Render holds 18/32 Criticals. Music is next (5). Time is almost all Latent.
 
 The `[X] Fixed` entries this section counts, and the one `wontfix`, are no longer in this file: they moved verbatim to `docs/BUGS_DONE.md` on 2026-07-25, grouped under the module headings they came from.
 
-The one-off pass: entries whose fix is local to one function or one platform-sibling set, needing no API change and no new mechanism. 36 of the 70 tallied entries are now `[X] Fixed`, and one more (`time_win64.c:310`) carries a `wontfix`. The severity tables above describe the census as found and are deliberately not rewritten.
+The one-off pass: entries whose fix is local to one function or one platform-sibling set, needing no API change and no new mechanism. 36 of the 70 tallied entries were `[X] Fixed` by it, and one more (`time_win64.c:310`) carries a `wontfix`. The severity tables above describe the census as found and are deliberately not rewritten.
 
 A second pass on 2026-07-25 ran the other way, deleting thirteen guards that rejected unreachable inputs to prevent contained effects. Two of them, in `time_win64.c`, amend fixes this pass had landed the day before. The record is in BUGS_DONE.md, "Removed guards", together with the incidental findings the sweep turned up 〜 unverified, and not counted in the census above.
 
-A third pass, later on 2026-07-25, verified those incidental findings and implemented the eleven determinations recorded in BUGS_DONE.md, "Remediation determinations": five landed structural (tier 1), six as single-seam invariants (tier 4), none as fault-site guards, each with type-level welds 〜 static_asserts binding table extents, cap relations, ABI masks and field types to the invariants the code now assumes. One census claim was refuted outright (the PC_NAMES index, under Engine seams), and five entries entered the census already fixed: delay.h, music_host.c motif n, ui_raster_ref.c tile entries, window.c monitor query, ano_render_bridge.c pose seam. It also settled the log_core.c:817 open decision and deleted the time module's entire clock-failure sentinel convention. Guard movement this pass: anoptic_logflood, anoptic_gltfguard and anoptic_boottelemetryguard closed; four new guards landed green (motifboundguard, dspdelayguard, uitileentryguard, cameraposeguard). The headless suite stands at four failures, all of them the remaining open decisions.
+A third pass, later on 2026-07-25, verified those incidental findings and implemented the eleven determinations recorded in BUGS_DONE.md, "Remediation determinations": five landed structural (tier 1), six as single-seam invariants (tier 4), none as fault-site guards, each with type-level welds 〜 static_asserts binding table extents, cap relations, ABI masks and field types to the invariants the code now assumes. One census claim was refuted outright (the PC_NAMES index, under Engine seams), and five entries entered the census already fixed: delay.h, music_host.c motif n, ui_raster_ref.c tile entries, window.c monitor query, ano_render_bridge.c pose seam. It also settled the log_core.c:817 open decision and deleted the time module's entire clock-failure sentinel convention. Guard movement this pass: anoptic_logflood, anoptic_gltfguard and anoptic_boottelemetryguard closed; four new guards landed green (motifboundguard, dspdelayguard, uitileentryguard, cameraposeguard). The headless suite stood at four failures, all of them the remaining open decisions.
+
+A fourth pass, later on 2026-07-25, settled the open decisions themselves and implemented all four the same day. The tier policy ranked answers the write-ups had treated as peers: the destroy-time ring drain landed owner-side in both render_bridge and audio (tier 1 completes the one asymmetric sibling among the drop paths; tier 2 rejects a type-erased release callback in the transport), the audio rides-home promise took its teardown clause outright since a two-phase drain exports a liveness obligation no tier can home, and the music ownership question dissolved at the verify gate 〜 the candidate table is call-transient, so thread_local scratch changes nothing observable, and music_theory.c's lazy bake died with it, replaced by rodata. The strings closure direction fell to measurement: the divergence set is empty, so the decomp trim drops dangling redirects, the case trim closes the same way (26 broken round-trip mappings now return identity), and assert_trim_closure fails generation before a file is written if either table reopens. One incidental entered the census already fixed 〜 the generator's padding-memcmp dedup, which made regeneration nondeterministic 〜 and one new open entry was filed (music_voicing.c:120, the voices ingress), then closed the same day: verifying that seam widened it to two sibling holes (a pcCount row overrun in the drop branch, a zero-pc fallback read), all three retired together. Guard movement: anotest_strguard, anotest_bridgeguard, anotest_audioshutguard and anotest_musicguard closed, anotest_voicingboundguard landed green; the headless suite is green for the first time, and TSan runs the music guard clean where it confirmed the race before.
 
 | Section | Fixed | Tallied |
 |---|---:|---:|
-| Audio | 5 | 7 |
+| Audio | 6 | 7 |
 | Filesystem | 1 | 2 |
 | Log | 2 | 2 |
 | Math | 1 | 1 |
 | Memory | 1 | 1 |
 | Mesh | 2 | 2 |
-| Music | 7 | 8 |
-| Render / Vulkan | 9 | 32 |
-| Strings | 1 | 2 |
+| Music | 9 | 9 |
+| Render / Vulkan | 10 | 32 |
+| Strings | 3 | 3 |
 | Synth | 3 | 3 |
 | Text | 3 | 3 |
 | Threads | 0 | 1 |
 | Time | 3 | 5 |
 | UI | 5 | 5 |
 | Engine | 1 | 1 |
-| **Total** | **44** | **75** |
+| **Total** | **50** | **77** |
 
-What is left is not leftovers, it is the systemic mass the census exists to name. Render still holds 24 open entries, nearly all of them the Vulkan Result + abort/unwind swoop and the GPU bind/rebind registry; those cannot be retired one file at a time and doing so would be the whack-a-mole the tally was written to prevent. Five open entries are a different case again 〜 each is blocked on a contract decision with more than one defensible answer, so a bug fix cannot settle it quietly. They are written up in `docs/BUG-HUNT.md`, "Open decisions", and not restated here.
+What is left is not leftovers, it is the systemic mass the census exists to name. Render still holds 22 open entries, nearly all of them the Vulkan Result + abort/unwind swoop and the GPU bind/rebind registry; those cannot be retired one file at a time and doing so would be the whack-a-mole the tally was written to prevent. Four open entries were a different case again 〜 blocked on contract decisions with more than one defensible answer that a bug fix could not settle quietly. On 2026-07-25 the tier policy settled three and a measurement dissolved the fourth; all four landed the same day and are retired to `docs/BUGS_DONE.md`, "Settled open decisions".
 
-Guard-test movement: 26 failing to 5. The five are exactly the open entries named above; every other failure closed. Entries fixed without a runnable gate here are the Vulkan-gated ones (`texture.c:435`, `device.c:663`, `gpu_alloc.c:12`, `record_views.c:302`, `render_slots.c:35`) and the ones the census itself marks `test: pending` (`audio_linux.c:168`, the Time set, `ano_strings_ops.c:86`, `anoptic_math.h:21`).
+Guard-test movement: 26 failing to 0 〜 the fourth pass closed the last four, and no red test remains in the headless suite. Entries fixed without a runnable gate here are the Vulkan-gated ones (`texture.c:435`, `device.c:663`, `gpu_alloc.c:12`, `record_views.c:302`, `render_slots.c:35`) and the ones the census itself marks `test: pending` (`audio_linux.c:168`, the Time set, `ano_strings_ops.c:86`, `anoptic_math.h:21`).
 
 ### Context
 

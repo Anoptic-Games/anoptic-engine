@@ -104,6 +104,8 @@ Inventory there: `anoticket` (wait-free FAA tickets), `anoring_spsc` (owner-curs
 
 None of today's remediation comes for free from backup-resource-manager: its seqpub shares cluster 1's bug, and no primitive addresses cluster 2. The dependency points the other way 〜 today's word-lane seqlock belongs in `anoseqpub` when collections land, at which point both bridges (and their rings) migrate and the twins die, per their own promotion notes. Follow-ups for that merge: port the word-lane copy into `ano_seqpub_publish`/`ano_seqpub_read`, add a concurrent 1W/NR seqpub stress to `anotest_collections`, and gate the collections branch on `tests-tsan` (it currently has no TSan history).
 
+Drain obligation settled 2026-07-25, ahead of the migration: transports move bytes, owners discharge payloads 〜 `anoring_spsc` gets no per-element release callback, and each destroy walks its own ring before handing over the storage (`docs/BUGS_DONE.md`, "Settled open decisions", `ano_render_bridge.c:92` and `ano_audio.c:204`). The audio side's rides-home promise carries a teardown clause rather than a two-phase producer drain.
+
 ---
 
 # Post-mortem: CI red after the fix 〜 two non-race causes (2026-07-16, evening)

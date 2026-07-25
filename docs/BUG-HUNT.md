@@ -8,7 +8,7 @@ The source contains 70 verified findings and 41 unverified lead bullets, or 111 
 
 Two verified findings have two fine-grained tags: `music_perc.c:121` is both `fixed-array-overflow` and `shift-ub`, while `texture.c:437` is both `no-abort` and `feature-gated-check`. There are consequently 72 tag assignments across 70 findings. The remediation-bucket table assigns every finding one primary bucket and does not double-count either one.
 
-A verified key marked `[X]` in a bucket ledger below is repaired; the entry stays in the census with its `fix` note. Marks are per key, so the `memalign_*` sibling set shows three for one finding.
+A verified key marked `[X]` in a bucket ledger below is repaired; the entry stays in the census with its `fix` note. Marks are per key, so the `memalign_*` sibling set shows three for one finding. Every mark below, and the Fixed column of the bucket table, stands as of the 2026-07-24 one-off pass; the passes of 2026-07-25 that carried the census to 50 fixed are recorded in `docs/BUGS_DONE.md`, not here.
 
 Amended 2026-07-24 against the same source amendment: the `anoptic_math.h:16` versus `docs/math-conventions.md` lead was chased and split. Its convention half was resolved and struck (the header comment was wrong, the conventions doc right, no code changed); its alignment half was promoted to the verified Latent finding `anoptic_math.h:21` and filed under bucket 5. Verified 69 -> 70, leads 42 -> 41, distinct concerns unchanged at 107.
 
@@ -88,7 +88,7 @@ Swoop: replace parallel lists with one declarative inventory that generates coun
 
 Verified: `audio_linux.c:168` [X]; `ano_meshoptimizer.c:955` [X]; `texture.c:435` [X]; `device.c:663` [X]; `descriptors.c:39`; `commands.c:82`; `slot_upload.c:277`; `ano_strings_collate.c:75`; `threads_macos.c:79`; `anoptic_math.h:21` [X].
 
-Leads: `filesystem_win64.c:33`; `memalign_win64.c:1`; `ano_unicode_tables.h` case-trim coverage; text↔UI duplicated geometry helpers and `AnoQuad`; render↔text C/GLSL coverage drift; swapchain-recreate descriptor dependency coverage.
+Leads: `filesystem_win64.c:33`; `memalign_win64.c:1`; `ano_collate_tables.h` decomp table as possible dead weight (post-closure, zero kept decomps lack a direct CE listing); text↔UI duplicated geometry helpers and `AnoQuad`; render↔text C/GLSL coverage drift; swapchain-recreate descriptor dependency coverage.
 
 ### 6. State-machine and concurrency lifecycle
 
@@ -98,7 +98,7 @@ Swoop: move mutable scratch and lazy tables into engine/context ownership or imm
 
 Verified: `audio_win64.c:589`; `music_voicing.c:114`; `time_win64.c:148`.
 
-Leads: threads↔log-crash altstack teardown order; `music_theory.c:48`; `music_host.c override_apply`; log-crash↔log teardown; `transformStream reclaimSeq`; cross-platform time suspend semantics.
+Leads: threads↔log-crash altstack teardown order; `music_host.c override_apply`; log-crash↔log teardown; `transformStream reclaimSeq`; cross-platform time suspend semantics.
 
 ### 7. Algorithm and contract one-offs
 
@@ -114,7 +114,7 @@ Leads: dead `src/render/gltf/scratch_process.c`; shared texture color/data-space
 
 This preserves the source file's existing taxonomy. Counts are tag assignments, not unique findings.
 
-Root causes only. The source file also carries one status tag, `pending-design-decision`, on the five findings written up under "Open decisions" below; it never replaces a root cause and is not counted here, so this table stays at 72 across 70 findings.
+Root causes only. The source file also carried one status tag, `pending-design-decision`, on the five findings once written up under "Open decisions" below; all five were settled by 2026-07-25 and the tag is gone from the census. It never replaced a root cause and was not counted here, so this table stays at 72 across 70 findings.
 
 | Source tag | Assignments |
 |---|---:|
@@ -161,28 +161,8 @@ Each program should close its verified ledger entries and either promote or stri
 
 ## Open decisions
 
-Four verified entries survived the 2026-07-24 one-off pass while their guard tests still fail. They were not skipped for size. Each one is blocked on a decision about what a contract promises, and each has at least two defensible answers that write different code; picking one silently inside a bug fix would settle a question the rest of the module has to live with. They are the only red tests in the suite, and they carry the `pending-design-decision` status tag in `docs/BUGS.md` alongside their root cause. (2026-07-25: a fifth was settled that day and retired to `docs/BUGS_DONE.md`; these four are still the only red tests in the headless suite.)
+All settled. Five verified entries outlived the 2026-07-24 one-off pass because each was blocked on a contract question with more than one defensible answer 〜 answers that write different code, where picking one silently inside a bug fix would settle a question the rest of the module has to live with. The distinction that put them here: a one-off has a correct answer derivable from the surrounding code 〜 a sibling that already guards, a header that already states the domain, a generated twin that already rejects. These had no such oracle in tree.
 
-The distinction that put them here: a one-off has a correct answer derivable from the surrounding code 〜 a sibling that already guards, a header that already states the domain, a generated twin that already rejects. These have no such oracle in tree.
+They resolved in two waves on 2026-07-25. log_core.c:817 went first, settled by a third answer neither horn anticipated (flush mid-pass: full width, no drops, flat memory). The remaining four fell to the five-tier policy (`.claude/skills/invariants/SKILL.md`): the destroy-time ring drain landed owner-side in both render_bridge and audio 〜 tier 1 completes the one asymmetric sibling among the drop paths, tier 2 rejects a type-erased release callback in the transport 〜 which also fixes the `anoring_spsc` migration contract at its minimum; the audio rides-home promise took a teardown clause outright, a two-phase drain being a liveness obligation exported to a party the module cannot enforce; music_voicing.c:114's ownership framing dissolved at the verify gate (the scratch is call-transient, so thread_local is the zero-obligation home, and music_theory.c:48's lazy bake died at tier 3 with it); and ano_strings_collate.c:75's closure direction dissolved under measurement 〜 the divergence set is empty, so the decomp trim drops dangling redirects and assert_trim_closure holds both generated tables closed from here on.
 
-### ano_strings_collate.c:75 〜 table-coverage-gap (bucket 5, anotest_strguard)
-
-The CE and decomp tables are both generated by `tools/gen_unicode_tables.c` and disagree about coverage, so U+01EF and U+0374 have correct direct CE listings that are unreachable behind decomp redirects to code points the CE trim removed. Repairing the two named code points by hand leaves the generator free to reopen the hole somewhere else, which is why this is not an edit.
-
-Decide the generator invariant: either the CE trim takes a closure over the decomposition graph (never drop an entry any kept decomposition targets), or the decomp trim drops any redirect whose target left the CE table. The first keeps more weight data and a larger table; the second is smaller and silently reroutes more code points to implicit weights. The same choice settles the `ano_unicode_tables.h` case-trim lead (`anorune_to_upper(0x0292)` versus `to_lower(0x01B7)`), which is the identical disease in the case-pair table 〜 fix them under one invariant or the next trim reopens both.
-
-### ano_render_bridge.c:92 and ano_audio.c:204 〜 ownership-leak (bucket 4, anotest_bridgeguard, anotest_audioshutguard)
-
-One decision wearing two module names. Both destroy paths tear down a ring without discharging the payloads still inside it: the render bridge hands the commands ring to `ano_spsc_destroy`, which frees only `ring->buffer`, so every enqueued `bulk_owned` block loses its last reference; the audio world never walks `mx->buffers` or drains a ring, and adopted blocks live on the default mi heap rather than the module heap teardown frees.
-
-Decide where the drain obligation lives. If it belongs to the ring, `ano_spsc_destroy` needs a per-element release callback and the transport becomes aware of payload ownership. If it belongs to the owner, each destroy walks its own ring before handing over the storage and the transport stays dumb. `docs/URGENT-audiorace.md` already commits to migrating audio, render and log onto one `anoring_spsc`, so whichever answer lands here becomes the shared contract for all three 〜 deciding it inside a single bug fix would prejudge that migration.
-
-The audio side carries a second question the render side does not: `anoptic_audio.h:326` promises an adopted block rides home to its producer, and a producer cannot poll a destroyed world. Either destroy frees adopted blocks outright and the lossless-block invariant gains a documented exception at teardown, or shutdown becomes a two-phase drain the producer takes part in. The header has to change either way; which sentence changes is the decision.
-
-(The settled fifth was `log_core.c:817` 〜 size-mismatch, bucket 2, anotest_logflood; its write-up and its resolution now live in `docs/BUGS_DONE.md`.)
-
-### music_voicing.c:114 〜 shared-mutable-state (bucket 6, anotest_musicguard)
-
-`ano_voice_chord` builds its candidate table in a 6 KiB function-scope static commented "single-threaded conductor context", while the module's own hosting design in `ANOPTIC_MUSICGEN.md` runs a second engine off-thread through the same call. TSan confirms the write-write race. 6 KiB is too large to move to the audio-thread stack, so the scratch has to live somewhere with an owner.
-
-Decide the composer's ownership model. Engine-owned scratch means the engine struct gains a field and its init and teardown gain an obligation, and it stays correct if an engine ever migrates between threads. Thread-local scratch is a smaller diff and is wrong the moment one engine is driven from two threads across its life. The same rule decides `music_theory.c:48`'s lazy-bake static, currently a lead and benign on x86 only by luck 〜 settle both together, because "statics are fine here" is exactly the assumption that produced both.
+All four implementations landed the same day; every guard is green and the headless suite has no red test left. The write-ups, determinations and verification record are retired to `docs/BUGS_DONE.md`, "Settled open decisions".
