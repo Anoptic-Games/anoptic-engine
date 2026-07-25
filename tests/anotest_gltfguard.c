@@ -8,7 +8,7 @@
 // cgltf_accessor_read_float/read_index (ano_GltfParser.c:80/:96) without ever calling
 // cgltf_validate 〜 and those helpers compute buffer->data + view->offset + accessor->offset +
 // stride * index with NO bounds check; cgltf_validate is the library's only accessor-vs-view
-// and view-vs-buffer byte-range gate (docs/BUGS.md, Render / Implementation, ano_GltfParser.c:30).
+// and view-vs-buffer byte-range gate (docs/BUGS_DONE.md, Render / Implementation, ano_GltfParser.c:30).
 // So a POSITION accessor claiming 8 vertices over a 12-byte buffer reads 84 bytes past the
 // loaded heap block and parseGltf hands back a non-NULL "successfully parsed" asset instead of
 // rejecting the file like its own :25/:31 error paths do. The triggers keep the overrun small

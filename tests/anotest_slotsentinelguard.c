@@ -8,7 +8,7 @@
 // render_slots.h:16) wraps need to 0, ensure_cap's need <= *cap arm (:19) reports success with
 // nothing allocated, the UNMAPPED-init loop runs zero times, and render_slots_alloc consumes a
 // physical slot then stores it at logicalToSlot[0xFFFFFFFF] (:79) 〜 a wild write ~16 GiB past
-// the map (or from a NULL map on a fresh table) on the render master thread (docs/BUGS.md,
+// the map (or from a NULL map on a fresh table) on the render master thread (docs/BUGS_DONE.md,
 // Render / Vulkan backend / Interface-level, render_slots.c:35). Nothing upstream excludes the
 // sentinel: render_id is the producer's namespace (anoptic_render.h:399), ano_render_submit is
 // a bare ring push (ano_render_bridge.c:102), and apply.c:125/:167 forward the id raw; the

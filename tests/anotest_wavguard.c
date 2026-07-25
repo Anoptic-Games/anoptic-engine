@@ -5,7 +5,7 @@
 
 // Coverage: ano_audio_wav_write bad-args guard. A frames count whose byte size wraps uint64
 // (frames * channels * sizeof(float) >= 2^64) must be rejected with false, per the header
-// contract ("false on I/O or bad args"). Exposes the BUGS.md audio implementation bug: the
+// contract ("false on I/O or bad args"). Exposes the BUGS_DONE.md audio implementation bug: the
 // wrapped product slips under the RIFF 32-bit size check, a truncated WAV is written whose
 // fact chunk claims the wrapped frame count, and the call returns true 〜 silent success plus
 // a lying file for any caller saving a capture. Controls: a sane write round-trips through

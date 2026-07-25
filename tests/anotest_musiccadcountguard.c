@@ -5,7 +5,7 @@
 
 // Coverage: the cadence-cycle COUNT domain at the public config seam. AnoMusicConfig carries
 // cadencePolicies[8] plus cadencePolicyCount (anoptic_music.h:388-389), expand copies the count
-// unvalidated (music_host.c:66, docs/BUGS.md, Music / Interface-level) while its sibling
+// unvalidated (music_host.c:66, docs/BUGS_DONE.md, Music / Interface-level) while its sibling
 // motifLibraryCount is clamped to ANO_SIG_MAX a few lines below (:101), and ano_engine_init
 // adopts the config wholesale (music_conductor.c:702). policy_of's explicit-cycle arm then
 // indexes cadencePolicies[phrase % (int)count] (music_conductor.c:147), so any count > 8 reads

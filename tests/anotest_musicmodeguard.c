@@ -5,7 +5,7 @@
 
 // Coverage: the mode value domain at the public boundary. ano_music_set_override("mode", v)
 // refuses unknown names but accepts any value, casting (int)v unchecked (music_host.c:194,
-// docs/BUGS.md, Music / Interface-level); the config seam copies cfg.mode just as blind
+// docs/BUGS_DONE.md, Music / Interface-level); the config seam copies cfg.mode just as blind
 // (music_host.c:58) and the conductor pins either verbatim 〜 the only value refused is exactly
 // ANO_MODE_NONE (music_conductor.c:882-886 per phrase with mapper, :728-731 at init) 〜 then the
 // (uint8_t) casts at :734/:892 launder negatives into 0..255 instead of rejecting. Every bar

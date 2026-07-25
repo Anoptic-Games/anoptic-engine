@@ -254,9 +254,12 @@ bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
 {
     if (!bridge || !interleaved || frames == 0u || channels < 1u || channels > 2u)
         return false;
-    uint64_t bytes64 = frames * channels * sizeof(float);
-    if (bytes64 > SIZE_MAX - sizeof(AnoAudioBlockHeader))
+    // Divide before multiplying: frames near 2^62 wraps the product past 2^64 to a tiny value
+    // that passes any size check downstream, and the header keeps the huge frame count.
+    const uint64_t stride = (uint64_t)channels * sizeof(float);
+    if (frames > (SIZE_MAX - sizeof(AnoAudioBlockHeader)) / stride)
         return false;
+    uint64_t bytes64 = frames * stride;
     AnoAudioBlockHeader *h = mi_malloc(sizeof *h + (size_t)bytes64);
     if (!h)
         return false;

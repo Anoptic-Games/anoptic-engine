@@ -164,11 +164,11 @@ fail:
 
 static void alsa_stop(AnoAudioMixer *mx)
 {
-    atomic_store_explicit(&mx->deviceRun, false, memory_order_release);
-    ano_thread_join(mx->deviceThread, NULL);
     AnoAlsaState *st = mx->deviceState;
     if (!st)
-        return;
+        return; // start() failed and already joined/freed
+    atomic_store_explicit(&mx->deviceRun, false, memory_order_release);
+    ano_thread_join(mx->deviceThread, NULL);
     st->pcm_drain(st->pcm);
     st->pcm_close(st->pcm);
     dlclose(st->lib);

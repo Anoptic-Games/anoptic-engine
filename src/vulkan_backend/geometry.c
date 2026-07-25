@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include "vulkan_backend/geometry.h"
+#include <anoptic_memory.h>   // puts this TU's malloc/free in the engine allocator (MI_OVERRIDE is OFF)
 #include <string.h>
 #include <stdio.h>
 #include <anoptic_log.h>

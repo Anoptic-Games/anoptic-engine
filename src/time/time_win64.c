@@ -16,6 +16,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // rdtsc is x86 only; ARM64 Windows falls back to QPC.
 #if defined(__x86_64__) || defined(_M_X64)
@@ -31,13 +32,17 @@
 // QPC frequency (counts/s), cached once. TSC calibration reference too.
 static _Atomic uint64_t cachedPerfFreq = 0;
 
+// QPC frequency, resolved once. The module's single timebase validation point.
+//   out: uint64_t counts/s, never 0
 static uint64_t query_perf_freq(void) {
     uint64_t f = atomic_load_explicit(&cachedPerfFreq, memory_order_relaxed);
     if (f)
         return f;
     LARGE_INTEGER tmp;
-    if (QueryPerformanceFrequency(&tmp) == 0 || tmp.QuadPart <= 0)
-        return 0;   // never fails on WinXP+; callers treat 0 as a hard clock error
+    if (QueryPerformanceFrequency(&tmp) == 0 || tmp.QuadPart <= 0) {
+        printf("No performance timebase: QueryPerformanceFrequency failed.\n");
+        abort();   // no timebase, no engine; trips the crash blackbox
+    }
     f = (uint64_t)tmp.QuadPart;
     atomic_store_explicit(&cachedPerfFreq, f, memory_order_relaxed);
     return f;
@@ -50,6 +55,11 @@ enum { CLOCK_UNSET = 0, CLOCK_TSC = 1, CLOCK_QPC = 2 };
 static _Atomic int      g_clockMode  = CLOCK_UNSET;
 static _Atomic int      g_clockElect = 0;    // one-time election guard for resolve_clock
 static _Atomic uint64_t cachedTscHz  = 0;    // calibrated invariant-TSC frequency (TSC mode only)
+
+// Calibration sanity band. A floor above 0 is what makes an elected cachedTscHz safe to divide by.
+#define ANO_TSC_HZ_MIN 100000000ull      // 100 MHz
+#define ANO_TSC_HZ_MAX 100000000000ull   // 100 GHz
+static_assert(ANO_TSC_HZ_MIN > 0 && ANO_TSC_HZ_MIN < ANO_TSC_HZ_MAX, "TSC band must exclude 0 and be ordered");
 
 // Invariant TSC: CPUID 0x80000007 EDX[8]. Required for rdtsc-as-clock.
 static bool have_invariant_tsc(void) {
@@ -91,8 +101,6 @@ static uint64_t sample_tsc_hz(uint64_t qf) {
 // Median of three TSC Hz samples.
 static uint64_t calibrate_tsc_hz(void) {
     uint64_t qf = query_perf_freq();
-    if (qf == 0)
-        return 0;
     uint64_t s[3];
     for (int i = 0; i < 3; i++)
         s[i] = sample_tsc_hz(qf);
@@ -113,7 +121,7 @@ static void resolve_clock(void) {
     int mode = CLOCK_QPC;
     if (have_invariant_tsc()) {
         uint64_t hz = calibrate_tsc_hz();
-        if (hz >= 100000000ull && hz <= 100000000000ull) {   // 100 MHz .. 100 GHz sanity band
+        if (hz >= ANO_TSC_HZ_MIN && hz <= ANO_TSC_HZ_MAX) {   // rejects a degenerate sample, incl. 0
             atomic_store_explicit(&cachedTscHz, hz, memory_order_relaxed);
             mode = CLOCK_TSC;
         }
@@ -148,10 +156,7 @@ uint64_t ano_timestamp_ticks() {
         return __rdtsc();
 #endif
     LARGE_INTEGER tmp;
-    if (QueryPerformanceCounter(&tmp) == 0) {
-        printf("Error getting Windows performance Counter.");
-        return UINT64_MAX; // Indicate an error occurred.
-    }
+    QueryPerformanceCounter(&tmp);   // cannot fail on WinXP+
     return (uint64_t)tmp.QuadPart;
 }
 
@@ -166,8 +171,6 @@ uint64_t ano_ticks_to_ns(uint64_t ticks) {
 #else
     freq = query_perf_freq();
 #endif
-    if (freq == 0)
-        return UINT64_MAX;   // clock error
 
     // Split into two parts to scale without overflow.
     uint64_t largePart = ticks / freq;    // Seconds
@@ -184,22 +187,12 @@ uint64_t ano_timestamp_raw() {
 
 // return ano_timestamp_raw, but scaled to microseconds.
 uint64_t ano_timestamp_us() {
-
-    uint64_t timestampNs = ano_timestamp_raw();
-    if (timestampNs == UINT64_MAX)
-        return UINT64_MAX; // Indicate an error occurred.
-
-    return timestampNs / 1000;  // Convert nanoseconds to microseconds
+    return ano_timestamp_raw() / 1000;  // Convert nanoseconds to microseconds
 }
 
 // return ano_timestamp_raw, but truncated to ms.
 uint32_t ano_timestamp_ms() {
-
-    uint64_t timestampNs = ano_timestamp_raw();
-    if (timestampNs == UINT64_MAX)
-        return UINT32_MAX; // Indicate an error occurred.
-
-    return (uint32_t)(timestampNs / 1000000LL);  // Convert nanoseconds to milliseconds
+    return (uint32_t)(ano_timestamp_raw() / 1000000LL);  // Convert nanoseconds to milliseconds
 }
 
 
@@ -249,7 +242,7 @@ int ano_busywait(uint64_t ns) {
 
     do {
         endTime = ano_timestamp_raw();
-    } while (endTime - startTime < ns && startTime != 0 && endTime != 0);
+    } while (endTime - startTime < ns);
 
     return 0; // success
 }
@@ -309,8 +302,6 @@ int ano_sleep(uint64_t us) {
 
     uint64_t target_ns = us * 1000ULL;
     uint64_t start = ano_timestamp_raw();
-    if (start == 0 || start == UINT64_MAX)
-        return EIO;   // clock broken, refuse rather than spin on a garbage delta
 
     // Coarse stage: yield the CPU for everything but the spin tail.
     if (target_ns > ANO_SLEEP_SPIN_TAIL_NS) {
@@ -333,16 +324,20 @@ int ano_sleep(uint64_t us) {
             }
         }
         // No timer or SetWaitableTimer failed: coarse Sleep, then spin tail.
-        if (!yielded)
-            Sleep((DWORD)(coarse_ns / 1000000ULL));
+        // Chunked: a >=49.7-day stage truncates in a DWORD, and 0xFFFFFFFF ms is INFINITE.
+        if (!yielded) {
+            uint64_t coarse_ms = coarse_ns / 1000000ULL;
+            while (coarse_ms > 0ULL) {
+                DWORD chunk = coarse_ms > 0x7FFFFFFFULL ? 0x7FFFFFFFUL : (DWORD)coarse_ms;
+                Sleep(chunk);
+                coarse_ms -= chunk;
+            }
+        }
     }
 
     // Spin stage: remaining time in <=MAX_BUSYWAIT_NS chunks (oversleep / missing coarse must not trip busywait's 1e9ns cap).
     for (;;) {
-        uint64_t now = ano_timestamp_raw();
-        if (now == 0 || now == UINT64_MAX)
-            return EIO;
-        uint64_t elapsed = now - start;
+        uint64_t elapsed = ano_timestamp_raw() - start;
         if (elapsed >= target_ns)
             break;
         uint64_t remaining = target_ns - elapsed;

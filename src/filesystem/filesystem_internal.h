@@ -12,7 +12,8 @@
 /* Directory */
 
 // Create `path` if absent (mkdir / _mkdir). Parents must already exist.
-// Output: 0 on success or EEXIST, -1 on failure.
+// EEXIST alone is not success: the existing entry must itself be a directory.
+// Output: 0 when `path` is a directory afterwards, -1 otherwise.
 int fs_mkdir(const char *path);
 
 #endif // FILESYSTEM_INTERNAL_H

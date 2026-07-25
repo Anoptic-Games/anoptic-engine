@@ -58,7 +58,7 @@ uint32_t ano_text_bake_slot(const AnoFontBake *bake, uint32_t codepoint);
 // Pen advance, em, for codepoints with no slot.
 #define ANO_TEXT_GAP_EM 0.5f
 
-// Kern between two slots, em. 0 if absent or out of range. Pure, any thread.
+// Kern between two slots, em. 0 if absent or out of range; a slot >= 65536 aliases in the packed key and may hit an unrelated pair. Pure, any thread.
 float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSlot);
 
 

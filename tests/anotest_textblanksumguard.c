@@ -17,7 +17,7 @@
 // is the read itself. Every in-tree consumer compensates with its own curveCount guard
 // (text_raster_ref.c:122, text_shape.c:98, textcoverage.glsl:142, textraster.comp:55,
 // textworld.vert:42) 〜 the unanimity that keeps the hole latent for the next direct caller.
-// (docs/BUGS.md, Text / Interface-level, text_raster_ref.c:92).
+// (docs/BUGS_DONE.md, Text / Interface-level, text_raster_ref.c:92).
 // Harness: real FreeType Geist bake 〜 'A' plus a plane-16 PUA codepoint no face maps, so the
 // bake itself mints the MISSING zero-curve tail. The stream bytes are the bake's own; they are
 // relocated flush against a guard page only so the abstract-machine over-read is a

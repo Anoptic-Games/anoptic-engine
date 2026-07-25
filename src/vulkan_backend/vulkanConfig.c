@@ -108,7 +108,7 @@ bool updateWindow(GLFWwindow *window)
     {
         int count;
         GLFWmonitor** monitors = glfwGetMonitors(&count);
-        if (windowParameters.monitorIndex >= 0 && windowParameters.monitorIndex < count)
+        if (windowParameters.monitorIndex < count)
         {
             GLFWmonitor* targetMonitor = monitors[windowParameters.monitorIndex];
             const GLFWvidmode* mode = glfwGetVideoMode(targetMonitor);

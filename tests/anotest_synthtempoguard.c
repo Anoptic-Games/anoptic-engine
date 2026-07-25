@@ -10,7 +10,7 @@
 // scoreReady. score_tempo alone validates only bpm and hands straight to clock_add
 // (ano_synth.c:227), which unconditionally dereferences the last anchor (:157) 〜 on a fresh
 // synth anchors is NULL and anchorMask 0, so the one misuse the bool return exists to report
-// is a deterministic NULL deref instead (docs/BUGS.md, Synth / Interface-level). Controls
+// is a deterministic NULL deref instead (docs/BUGS_DONE.md, Synth / Interface-level). Controls
 // pin the happy path (proper order accepts, non-monotonic beat and bpm 0 reject) and the
 // sibling reject convention on the same fresh synth, printed and flushed before the trigger
 // since the crash swallows buffered FAIL lines. Exit 0 == pass.

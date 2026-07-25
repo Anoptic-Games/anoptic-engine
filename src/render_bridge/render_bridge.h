@@ -168,6 +168,8 @@ struct AnoRenderBridge
     _Atomic uint64_t snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t viewStateVersion; // logic publishes
     _Atomic uint64_t viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
+    bool viewRejectWarned; // publisher-private: degenerate-pose warning fires once. Same
+                           // single producer as viewState, so plain (never read by render).
 };
 
 // in:  bridge, heap, cmd_capacity_pow2, evt_capacity_pow2

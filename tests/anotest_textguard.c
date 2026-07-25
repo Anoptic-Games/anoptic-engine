@@ -7,7 +7,7 @@
 // "byteCount 0 is a no-op", but shape_core (text_shape.c:126) sets the final line step from
 // runs[runCount-1].sizePx unconditionally, and measure_runs (text_shape.c:195) returns
 // penY + that step. A trailing byteCount-0 run is simultaneously "a no-op" and "the last run",
-// so its sizePx sets the measured height even though it styles nothing (docs/BUGS.md, Text /
+// so its sizePx sets the measured height even though it styles nothing (docs/BUGS_DONE.md, Text /
 // Interface). The bug is isolated to height: penY only moves on '\n', so single-line text with
 // out-of-bake codepoints keeps penY == 0 and the whole height IS the endStep term.
 //

@@ -159,6 +159,11 @@ typedef struct RenderEntity
     mat4 transform;
 } RenderEntity;
 
+// Three uint32_t ahead of a mat4: std430 puts transform at 16, not 12. mat4's own alignment
+// supplies the pad, so this holds if anyone ever memcpys the struct into an SSBO.
+static_assert(offsetof(RenderEntity, transform) == 16 && sizeof(RenderEntity) == 80,
+              "RenderEntity no longer matches std430");
+
 typedef struct SwapChainSupportDetails 
 {
     VkSurfaceCapabilitiesKHR capabilities;

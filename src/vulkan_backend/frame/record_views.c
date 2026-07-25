@@ -297,9 +297,15 @@ void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex)
                 tmScissor.extent = rendererState.imageExtent;
             } else {
                 // Inset: stack auxiliary views up the right edge from the bottom corner.
+                // Skip the view when the swapchain cannot hold a legal inset: extents must be
+                // non-zero and offsets >= 0. Compare against a quotient, never a wrapping product.
                 uint32_t idx = v - 1u;
+                uint32_t stride = insetH + margin;      // one stacked row
+                if (insetW == 0u || insetH == 0u) continue;
+                if (W < insetW + margin) continue;
+                if (idx + 1u > H / stride) continue;
                 int32_t x = (int32_t)(W - insetW - margin);
-                int32_t y = (int32_t)(H - margin - (insetH + margin) * (idx + 1u) + margin);
+                int32_t y = (int32_t)(H - stride * (idx + 1u));
                 tmViewport.x = (float)x; tmViewport.y = (float)y;
                 tmViewport.width = (float)insetW; tmViewport.height = (float)insetH;
                 tmScissor.offset = (VkOffset2D){x, y};

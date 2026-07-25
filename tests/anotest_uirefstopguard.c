@@ -6,7 +6,7 @@
 // Coverage: ano_ui_ref_paint's own stop-window guard vs uint32 wrap. The reject arm at
 // ui_raster_ref.c:229 tests pa->stopFirst + pa->stopCount > s->stopCount in uint32, so
 // stopFirst UINT32_MAX with stopCount 2 wraps the sum to 1, the guard passes, and
-// ui_stop_color reads s->stops[UINT32_MAX] ~137 GB past the table (docs/BUGS.md, UI /
+// ui_stop_color reads s->stops[UINT32_MAX] ~137 GB past the table (docs/BUGS_DONE.md, UI /
 // Implementation) 〜 a direct breach of the header's "Out-of-range ref fails CLOSED
 // (transparent)" promise (anoptic_ui.h:275), on the CPU mirror the GPU evaluator cites as
 // its fail-closed reference; the bridge census entry (ano_render_bridge.c:204) shows no

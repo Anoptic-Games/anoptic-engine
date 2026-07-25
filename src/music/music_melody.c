@@ -301,8 +301,6 @@ static uint32_t mel_introduce(const AnoMotif *motif, const AnoHarmonicContext *c
                               AnoPlacedNote out[], int *outAnchor)
 {
     uint32_t k = (motif->n + 1) / 2;
-    if (k < 1)
-        k = 1;
     AnoMotif frag = *motif;
     if (k < frag.n)
         frag.n = k;

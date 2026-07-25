@@ -313,6 +313,7 @@ uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
 // Painter's-order eval through the tile grid for pixel (px,py). Matches ano_ui_ref_eval
 // inside the grid (shadow tails outside the AABB cull differ); the GPU tiled path
 // mirrors THIS. Glyphs not included.
+// An entry whose index is outside primCount fails CLOSED (zero contribution, OVER).
 void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
                            const uint32_t *entries, int32_t px, int32_t py, float out[4]);

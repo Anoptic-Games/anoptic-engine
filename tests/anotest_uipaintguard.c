@@ -6,7 +6,7 @@
 // Coverage: paint_push's stop-table fullness guard vs uint32 wrap. ui_build.c:236 tests
 // b->stopCount + stopCount > b->stopCap in uint32 before copying, so once any stops are
 // resident a stopCount near UINT32_MAX wraps the sum under stopCap, the guard passes, and
-// the :239 copy loop writes ~2^32 32-byte stops past the caller's array (docs/BUGS.md,
+// the :239 copy loop writes ~2^32 32-byte stops past the caller's array (docs/BUGS_DONE.md,
 // UI / Implementation) 〜 reached from the public ano_ui_paint_linear, and a direct breach
 // of the header's "Full array -> ANO_UI_REF_NONE, no mutation" (anoptic_ui.h:121). The crash
 // IS the failure signal (mirrors anotest_uipathguard): once the guard computes without wrap,

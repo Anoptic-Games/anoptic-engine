@@ -9,7 +9,7 @@
 // (dynamics.h:73), so a peak's stamp leaves the window on the exact push that emits it: the
 // "instant attack" gain has already taken one release step back toward 1.0 when the peak is
 // multiplied out, breaching the ceiling by releaseCoef * (peak - ceiling) on every transient
-// (docs/BUGS.md, Audio / Implementation). At the public 1 ms release floor
+// (docs/BUGS_DONE.md, Audio / Implementation). At the public 1 ms release floor
 // (ANO_AUDIO_P_LIM_RELEASE_MS) a 10x impulse under the default 0.92 ceiling emits ~1.107 〜
 // past digital full scale. Controls pin correct behavior on good input 〜 sub-ceiling audio
 // passes at unity, a sustained overload holds the ceiling exactly in its interior 〜 so a fix

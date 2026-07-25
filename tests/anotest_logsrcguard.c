@@ -12,7 +12,7 @@
 // invites exactly such wrappers) gets a dangling deref on the drain thread, or silently logs
 // whatever the buffer holds at drain rather than at call; the implementation's own %s arm
 // proves the intended rule by deep-copying every caller-owned string at capture (:247-:256)
-// (docs/BUGS.md, Log / Interface-level, log_core.c:205).
+// (docs/BUGS_DONE.md, Log / Interface-level, log_core.c:205).
 // Harness: the real public logger end to end, anotest_logging style 〜 init, output dir, log,
 // flush, slurp the session log, strstr. Memory-safe by construction: the trigger buffers stay
 // live and are only OVERWRITTEN after each call returns, so pointer-capture shows up as

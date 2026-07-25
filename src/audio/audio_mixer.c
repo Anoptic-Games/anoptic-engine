@@ -184,8 +184,7 @@ static void source_render(AnoAudioSource *s, float *mix, uint32_t frames, float 
             mix[2u * i]      += vl * amp * cosf(a);
             mix[2u * i + 1u] += vr * amp * sinf(a);
         }
-        if (s->remaining != UINT64_MAX)
-            s->remaining--;
+        s->remaining--; // the UINT64_MAX sentinel counts down; 2^64 frames never arrives
     }
 }
 

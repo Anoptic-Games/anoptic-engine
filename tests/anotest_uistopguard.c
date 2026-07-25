@@ -11,7 +11,7 @@
 // the GPU evaluator checks only stopCount != 0 (uicoverage.glsl:176) although its comment
 // claims the out-of-range stop window "fails CLOSED. Mirrors ano_ui_ref_paint" 〜 the
 // mirror's range check lives solely in the CPU ref (ui_raster_ref.c:229), so ui_stop_color
-// walks the stop SSBO out of bounds on every painted pixel (docs/BUGS.md, Render / Vulkan
+// walks the stop SSBO out of bounds on every painted pixel (docs/BUGS_DONE.md, Render / Vulkan
 // backend / Interlink-Composition). Controls first: the engine's own ref evaluator fails
 // closed on the poisoned window (pinning the invariant the shader claims to mirror), a
 // valid block enqueues intact, and an out-of-range paintRef takes the documented drop path

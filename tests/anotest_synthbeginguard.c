@@ -9,7 +9,7 @@
 // the sum wraps to 0, the zero-count mi_heap_calloc returns a non-NULL minimal block
 // (malloc(0) semantics), the NULL guard at :211 passes, and :213 writes the 24-byte seed
 // anchor s->anchors[0] out of bounds while begin returns true with anchorCap 0
-// (docs/BUGS.md, Synth / Interface-level). Controls pin the cap arithmetic on good input:
+// (docs/BUGS_DONE.md, Synth / Interface-level). Controls pin the cap arithmetic on good input:
 // tempoCount 1 holds exactly one added point, tempoCount 0 holds none, so a fix that rejects
 // every begin cannot pass. Controls print and flush before the trigger since a padded or
 // hardened allocator may abort inside begin itself (a crash is a valid failure signal).

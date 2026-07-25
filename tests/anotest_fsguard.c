@@ -5,7 +5,7 @@
 
 // Coverage: ano_fs_userpath squatter guard. The header promises "length == 0 if unresolved or
 // mkdir failed. Non-empty result is ready to write into" 〜 but the implementation accepts
-// mkdir's EEXIST without checking that the existing entry is a directory (docs/BUGS.md,
+// mkdir's EEXIST without checking that the existing entry is a directory (docs/BUGS_DONE.md,
 // Filesystem / Implementation, filesystem_linux.c:65 + macos/win64/fs_mkdir twins). A regular
 // file squatting the per-user game dir therefore yields a non-empty path every write under it
 // rejects with ENOTDIR: silent success, dead saves/config. The fs_mkdir twin kills the log

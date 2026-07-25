@@ -104,14 +104,16 @@ typedef struct SlotUpload
 
 
 // One frustum to cull against. std140: mat4 (64) + vec4[6] (96) = 160, packs with no padding.
-// Member offsets are 16-multiples as std140 needs, but the struct's own 16-byte alignment is
-// unenforced (_Alignof(mat4) == _Alignof(Vector4) == 4) and holds only because every instance
-// lives in mapped device memory 〜 docs/BUGS.md anoptic_math.h:21.
 typedef struct CullView
 {
     mat4    viewProj;
     Vector4 frustumPlanes[6];
 } CullView;
+
+// The std140 rule this struct mirrors, pinned rather than left to declaration order.
+static_assert(sizeof(CullView) == 160 && alignof(CullView) == 16, "CullView is not std140");
+static_assert(offsetof(CullView, viewProj) == 0 && offsetof(CullView, frustumPlanes) == 64,
+              "CullView member offsets drifted from the shader's uniform block");
 
 typedef struct CullUBO
 {

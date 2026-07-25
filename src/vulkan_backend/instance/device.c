@@ -535,17 +535,22 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 	// At most 4 unique queues
 	VkDeviceQueueCreateInfo queueCreateInfos[4];
 	uint32_t uniqueQueueFamilies[4] = {indices->graphicsFamily, indices->presentFamily, indices->computeFamily, indices->transferFamily};
+	// An absent family carries UINT32_MAX, which is not a queue index. Compute and transfer are
+	// the optional pair: a device may advertise GRAPHICS|COMPUTE without reporting TRANSFER_BIT.
+	bool familyPresent[4] = {indices->graphicsPresent, indices->presentPresent, indices->computePresent, indices->transferPresent};
 	uint32_t queueCount = 0;
 	// Function-scoped so its address stays valid until vkCreateDevice. Every queue shares priority 1.0.
 	const float queuePriority = 1.0f;
-	
+
 	for (uint32_t i = 0; i < 4; i++)
 	{
+		if (!familyPresent[i])
+			continue;
 		bool uniqueFamily = true;
 		// Skip family indices already added
 		for (uint32_t x = 0; x < i; x++)
 		{
-			if (uniqueQueueFamilies[i] == uniqueQueueFamilies[x])
+			if (familyPresent[x] && uniqueQueueFamilies[i] == uniqueQueueFamilies[x])
 			{
 				uniqueFamily = false;
 				break;
@@ -660,14 +665,20 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 			return VK_ERROR_INITIALIZATION_FAILED;	
 		}
 	}
-	if (indices->computePresent)
+	if (indices->transferPresent)
 	{
 		vkGetDeviceQueue(*device, indices->transferFamily, 0, transferQueue);
 		if (*transferQueue == NULL)
 		{
 			ano_log(ANO_FATAL, "Failed to acquire transfer queue!");
-			return VK_ERROR_INITIALIZATION_FAILED;	
+			return VK_ERROR_INITIALIZATION_FAILED;
 		}
+	}
+	else
+	{
+		// TRANSFER_BIT is optional to report on a graphics/compute family that implies it.
+		// Every upload path submits somewhere, so borrow graphics rather than leave NULL.
+		*transferQueue = *graphicsQueue;
 	}
 
 	return VK_SUCCESS;

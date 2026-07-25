@@ -83,6 +83,7 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
         atomic_init(&bridge->viewState[i], 0u);
     atomic_init(&bridge->snapshotVersion, 0u);
     atomic_init(&bridge->viewStateVersion, 0u);
+    bridge->viewRejectWarned = false;
     return true;
 }
 
@@ -199,15 +200,22 @@ static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
     return true;
 }
 
-// Block-local ref check for one UI prim. Invalid -> drop producer-side (return true)
-// so backpressure retry loops never spin on bad input.
+// Block-local ref check for one UI prim, including the referenced paint's stop window.
+// Invalid -> drop producer-side (return true) so backpressure retry loops never spin on bad input.
 static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, uint32_t glyphs,
-                          const uint32_t *curves, uint32_t curveCount)
+                          const uint32_t *curves, uint32_t curveCount,
+                          const AnoUiPaint *paintTab, uint32_t stops)
 {
     if (p->clipRef != ANO_UI_REF_NONE && p->clipRef >= clips)
         return false;
-    if (p->paintRef != ANO_UI_REF_NONE && p->paintRef >= paints)
-        return false;
+    if (p->paintRef != ANO_UI_REF_NONE) {
+        if (p->paintRef >= paints)
+            return false;
+        const AnoUiPaint *pa = &paintTab[p->paintRef];
+        // Window by subtraction: stopFirst + stopCount wraps past this arm otherwise.
+        if (pa->stopFirst > stops || pa->stopCount > stops - pa->stopFirst)
+            return false;
+    }
     if (p->kind == ANO_UI_GLYPHS && (p->aux0 > glyphs || p->aux1 > glyphs - p->aux0))
         return false;
     if (p->kind == ANO_UI_PATH && !ui_path_walk_valid(curves, curveCount, p->aux0, p->aux1))
@@ -232,7 +240,7 @@ bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
     }
     for (uint32_t i = 0; i < ui->primCount; i++) {
         if (!ui_prim_valid(&ui->prims[i], ui->clipCount, ui->paintCount, glyphCount,
-                           ui->curves, ui->curveCount)) {
+                           ui->curves, ui->curveCount, ui->paints, ui->stopCount)) {
             ano_log(ANO_WARN, "UI bridge: ui_id %u dropped (prim %u invalid).", ui_id, i);
             return true;
         }
@@ -303,7 +311,56 @@ bool ano_render_acquire_snapshot(AnoRenderBridge *bridge, RenderSnapshot *out)
     return ano_seqpub_load(bridge->snapshot, &bridge->snapshotVersion, out, sizeof *out);
 }
 
+// The guard below is float arithmetic: the accept-form compares are only total over NaN/inf
+// if the fields really are floats (an integer or double field would change what compares mean).
+_Static_assert(_Generic(((AnoViewState *)0)->eye[0],    float: 1, default: 0)
+                   && _Generic(((AnoViewState *)0)->center[0], float: 1, default: 0)
+                   && _Generic(((AnoViewState *)0)->up[0],     float: 1, default: 0)
+                   && _Generic(((AnoViewState *)0)->fovYDeg,   float: 1, default: 0),
+               "view pose guard assumes float eye/center/up/fovYDeg");
+_Static_assert(sizeof ((AnoViewState *)0)->eye    == 3u * sizeof(float)
+                   && sizeof ((AnoViewState *)0)->center == 3u * sizeof(float)
+                   && sizeof ((AnoViewState *)0)->up     == 3u * sizeof(float),
+               "view pose guard reads 3-component eye/center/up");
+
+// in:  view (logic-published camera pose)
+// out: true if lookAt(eye, center, up) yields a finite orthonormal basis
+// inv: no sqrt, no divide. Accept-form: every compare must PASS to accept, so a NaN/inf
+//      operand (which fails every compare) rejects instead of leaking into the basis.
+static bool view_pose_valid(const AnoViewState *view)
+{
+    const float eps2 = 1e-8f; // sin(theta)^2 floor: ~0.006 deg off-parallel
+    float d[3] = { view->center[0] - view->eye[0],
+                   view->center[1] - view->eye[1],
+                   view->center[2] - view->eye[2] };
+    const float *u = view->up;
+    float c[3] = { d[1] * u[2] - d[2] * u[1],
+                   d[2] * u[0] - d[0] * u[2],
+                   d[0] * u[1] - d[1] * u[0] };
+    float d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    float u2 = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+    float c2 = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+    // |d x u|^2 > eps2 |d|^2 |u|^2 rejects eye==center, zero up, up parallel to forward, NaN/inf.
+    if (!(c2 > eps2 * d2 * u2)) return false;
+    return view->fovYDeg > 0.0f && view->fovYDeg < 180.0f; // the other NaN inlet into proj
+}
+
+// in:  bridge, view (logic-owned camera pose)
+// out: nothing; a degenerate pose is dropped and the last accepted pose stands
+// inv: single producer (public contract), so viewRejectWarned needs no atomicity.
+//      lookAt/perspective are branch-free and NaN-transparent: validity is constructed here,
+//      once, and nothing downstream re-checks.
 void ano_render_publish_view(AnoRenderBridge *bridge, const AnoViewState *view)
 {
+    if (!view_pose_valid(view)) {
+        if (!bridge->viewRejectWarned) {
+            bridge->viewRejectWarned = true;
+            ano_log(ANO_WARN, "Render bridge: degenerate camera pose rejected at seq %llu "
+                              "(coincident eye/center, zero or parallel up, bad fovY, or "
+                              "non-finite field); previous pose stands.",
+                    (unsigned long long)view->seq);
+        }
+        return;
+    }
     ano_seqpub_store(bridge->viewState, &bridge->viewStateVersion, view, sizeof *view);
 }

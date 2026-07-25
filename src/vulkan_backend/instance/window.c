@@ -184,16 +184,17 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	if (getenv("ANO_FLOAT") != NULL)
 		glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
 
-	// Choose the monitor
+	// Choose the monitor. List and its bound come from one query, post-glfwInit.
 	GLFWmonitor* chosenMonitor = NULL;
 	uint32_t monitorIndex = getChosenMonitor();
-	if (monitorIndex >= 0 && monitorIndex < monitors->monitorCount)
+	int monitorCount = 0;
+	GLFWmonitor** glfwMonitors = glfwGetMonitors(&monitorCount); // GLFW: count >= 0
+	if (monitorIndex < (uint32_t)monitorCount)
 	{
-		GLFWmonitor** glfwMonitors = glfwGetMonitors(NULL);
 		chosenMonitor = glfwMonitors[monitorIndex];
 	}
-	else if (monitorIndex >= 0)
-	{ // Default to primary if index is out of range
+	else
+	{ // Out of range, incl. the windowed sentinel: primary, undone below
 		chosenMonitor = glfwGetPrimaryMonitor();
 	}
 

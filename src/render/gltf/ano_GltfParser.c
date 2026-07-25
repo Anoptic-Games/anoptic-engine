@@ -3,6 +3,7 @@
 
 #include "ano_GltfParser.h"
 #include <string.h>
+#include <assert.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
 
@@ -15,6 +16,117 @@ extern RendererState rendererState;
 // Recursive flatten walk.
 static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
                          AnoRenderableDesc* out, uint32_t cap, uint32_t* idx);
+
+// Proof token: a cgltf_data that has passed cgltf_validate. Minted only at the gate in
+// parseGltf, so no sizing pass below can consume unvalidated counts.
+typedef struct ValidatedGltf {
+    const cgltf_data* data;
+} ValidatedGltf;
+
+// One sized allocation being handed out as sub-arrays.
+typedef struct GltfBlock {
+    uint8_t* cur;
+    uint8_t* end;
+} GltfBlock;
+
+// Every carved element type must fit the 16-byte carve grain (ModelNode's mat4 needs 16).
+static_assert(alignof(ModelAsset) <= 16 && alignof(ModelMesh) <= 16 &&
+              alignof(ModelPrimitive) <= 16 && alignof(ModelNode) <= 16,
+              "asset block carves assume <=16-byte alignment");
+static_assert(alignof(Vertex) <= 16 && alignof(uint32_t) <= 16 && alignof(bool) <= 16 &&
+              alignof(VkImageView) <= 16 && alignof(VkImage) <= 16 &&
+              alignof(VkBuffer) <= 16 && alignof(GpuAllocation) <= 16,
+              "scratch block carves assume <=16-byte alignment");
+
+// Inputs: element count n, element size sz. Output: 16-rounded byte footprint.
+// Sizing and carving both call this one expression, so a block's carves can never
+// outrun the size its own gltf_span sum produced.
+static inline size_t gltf_span(size_t n, size_t sz)
+{
+    return (n * sz + 15u) & ~(size_t)15u;
+}
+
+// Inputs: blk over one zeroed allocation; n/sz exactly as summed during sizing.
+// Output: zeroed 16-aligned sub-array for n elements of sz bytes.
+// Invariant: cur never passes end while every carve was a sizing term.
+static void* gltf_carve(GltfBlock* blk, size_t n, size_t sz)
+{
+    size_t bytes = gltf_span(n, sz);
+#ifdef DEBUG_BUILD
+    assert(blk->cur + bytes <= blk->end);
+#endif
+    void* p = blk->cur;
+    blk->cur += bytes;
+    return p;
+}
+
+// Inputs: prim. Outputs: *pos/*norm/*tex accessors, NULL when absent (last texcoord wins).
+// Output: true when the primitive is uploadable (POSITION and indices present).
+// The sizing pass and the upload loop both call this, so the scratch extents always
+// cover exactly the primitives the upload loop reads.
+static bool prim_accessors(const cgltf_primitive* prim, cgltf_accessor** pos,
+                           cgltf_accessor** norm, cgltf_accessor** tex)
+{
+    *pos = *norm = *tex = NULL;
+    for (size_t a = 0; a < prim->attributes_count; ++a) {
+        if (prim->attributes[a].type == cgltf_attribute_type_position) {
+            *pos = prim->attributes[a].data;
+        } else if (prim->attributes[a].type == cgltf_attribute_type_normal) {
+            *norm = prim->attributes[a].data;
+        } else if (prim->attributes[a].type == cgltf_attribute_type_texcoord) {
+            *tex = prim->attributes[a].data;
+        }
+    }
+    return *pos != NULL && prim->indices != NULL;
+}
+
+// Inputs: g (validated, so every count is bounded by delivered bytes).
+// Outputs: *primsTotal/*childTotal/*rootTotal element totals.
+// Output: byte size of the asset's single persistent block, as the exact gltf_span
+// sequence parseGltf carves from it.
+static size_t asset_block_size(ValidatedGltf g, size_t* primsTotal, size_t* childTotal,
+                               size_t* rootTotal)
+{
+    const cgltf_data* d = g.data;
+    size_t prims = 0, children = 0, roots = 0;
+    for (size_t m = 0; m < d->meshes_count; ++m)
+        prims += d->meshes[m].primitives_count;
+    for (size_t n = 0; n < d->nodes_count; ++n) {
+        children += d->nodes[n].children_count;
+        if (!d->nodes[n].parent)
+            roots++;
+    }
+    *primsTotal = prims;
+    *childTotal = children;
+    *rootTotal = roots;
+    return gltf_span(1, sizeof(ModelAsset))
+         + gltf_span(d->meshes_count, sizeof(ModelMesh))
+         + gltf_span(prims, sizeof(ModelPrimitive))
+         + gltf_span(d->nodes_count, sizeof(ModelNode))
+         + gltf_span(children, sizeof(uint32_t))
+         + gltf_span(roots, sizeof(uint32_t));
+}
+
+// Inputs: g (validated). Outputs: *maxVerts/*maxIdx 〜 the widest uploadable primitive's
+// counts, so one scratch vertex/index pair serves every primitive in turn.
+static void scratch_extents(ValidatedGltf g, size_t* maxVerts, size_t* maxIdx)
+{
+    const cgltf_data* d = g.data;
+    size_t verts = 0, idx = 0;
+    for (size_t m = 0; m < d->meshes_count; ++m) {
+        for (size_t p = 0; p < d->meshes[m].primitives_count; ++p) {
+            cgltf_accessor *pos, *norm, *tex;
+            if (!prim_accessors(&d->meshes[m].primitives[p], &pos, &norm, &tex))
+                continue;
+            if (pos->count > verts)
+                verts = pos->count;
+            if (d->meshes[m].primitives[p].indices->count > idx)
+                idx = d->meshes[m].primitives[p].indices->count;
+        }
+    }
+    *maxVerts = verts;
+    *maxIdx = idx;
+}
 
 ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 {
@@ -34,48 +146,103 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         return NULL;
     }
 
+    // Untrusted-input gate. cgltf's only accessor-vs-bufferView and bufferView-vs-buffer
+    // byte-range proof; every cgltf_accessor_read_* below is in-contract only after it passes.
+    result = cgltf_validate(data);
+    if (result != cgltf_result_success) {
+        ano_log(ANO_ERROR, "glTF failed validation (result %d), rejecting: %s", (int)result, fileName);
+        cgltf_free(data);
+        return NULL;
+    }
+    ValidatedGltf gltf = { data };
+
     ano_debug_log(ANO_INFO, "Successfully parsed %s with cgltf!", fileName);
 
-    ModelAsset* asset = calloc(1, sizeof(ModelAsset));
+    // Everything the returned ModelAsset owns lives in one zeroed block: one failure arm
+    // now, one free at a future unload. Sized post-validate, so every count is bounded by
+    // delivered bytes.
+    size_t primsTotal, childTotal, rootTotal;
+    size_t assetBytes = asset_block_size(gltf, &primsTotal, &childTotal, &rootTotal);
+    void* assetBase = calloc(1, assetBytes);
+    if (!assetBase) {
+        ano_log(ANO_ERROR, "Failed to allocate %zu-byte asset block for: %s", assetBytes, fileName);
+        cgltf_free(data);
+        return NULL;
+    }
+    GltfBlock assetBlk = { assetBase, (uint8_t*)assetBase + assetBytes };
+    ModelAsset*     asset     = gltf_carve(&assetBlk, 1, sizeof(ModelAsset));
+    ModelMesh*      meshPool  = gltf_carve(&assetBlk, data->meshes_count, sizeof(ModelMesh));
+    ModelPrimitive* primPool  = gltf_carve(&assetBlk, primsTotal, sizeof(ModelPrimitive));
+    ModelNode*      nodePool  = gltf_carve(&assetBlk, data->nodes_count, sizeof(ModelNode));
+    uint32_t*       childPool = gltf_carve(&assetBlk, childTotal, sizeof(uint32_t));
+    uint32_t*       rootPool  = gltf_carve(&assetBlk, rootTotal, sizeof(uint32_t));
     strncpy(asset->name, fileName, 63);
+
+    // Load-time temporaries live in one scoped-heap block; scope exit discharges every
+    // return path, so no free() below. vertices/indices are sized to the widest primitive
+    // and reused across all of them; maxStaging upper-bounds needed textures + 10.
+    size_t maxVerts, maxIdx;
+    scratch_extents(gltf, &maxVerts, &maxIdx);
+    size_t maxStaging = 10 + data->textures_count;
+    size_t scratchBytes = gltf_span(maxVerts, sizeof(Vertex))
+                        + gltf_span(maxIdx, sizeof(uint32_t))
+                        + gltf_span(data->textures_count, sizeof(bool))          // textureNeeded
+                        + gltf_span(data->textures_count, sizeof(bool))          // textureSrgb
+                        + gltf_span(data->textures_count, sizeof(bool))          // textureLoaded
+                        + gltf_span(data->textures_count, sizeof(VkImageView))   // loadedTextures
+                        + gltf_span(data->textures_count, sizeof(VkImage))       // loadedImages
+                        + gltf_span(data->textures_count, sizeof(GpuAllocation)) // loadedAllocs
+                        + gltf_span(data->textures_count, sizeof(uint32_t))      // bindlessIndices
+                        + gltf_span(maxStaging, sizeof(VkBuffer));               // stagingBuffers
+    mi_heap_t* scratchHeap LOCALHEAPATTR = mi_heap_new();
+    void* scratchBase = scratchHeap ? mi_heap_calloc(scratchHeap, 1, scratchBytes) : NULL;
+    if (!scratchBase) {
+        ano_log(ANO_ERROR, "Failed to allocate %zu-byte scratch block for: %s", scratchBytes, fileName);
+        free(assetBase);
+        cgltf_free(data);
+        return NULL;
+    }
+    GltfBlock scratchBlk = { scratchBase, (uint8_t*)scratchBase + scratchBytes };
+    Vertex*        vertices        = gltf_carve(&scratchBlk, maxVerts, sizeof(Vertex));
+    uint32_t*      indices         = gltf_carve(&scratchBlk, maxIdx, sizeof(uint32_t));
+    bool*          textureNeeded   = gltf_carve(&scratchBlk, data->textures_count, sizeof(bool));
+    bool*          textureSrgb     = gltf_carve(&scratchBlk, data->textures_count, sizeof(bool));
+    bool*          textureLoaded   = gltf_carve(&scratchBlk, data->textures_count, sizeof(bool));
+    VkImageView*   loadedTextures  = gltf_carve(&scratchBlk, data->textures_count, sizeof(VkImageView));
+    VkImage*       loadedImages    = gltf_carve(&scratchBlk, data->textures_count, sizeof(VkImage));
+    GpuAllocation* loadedAllocs    = gltf_carve(&scratchBlk, data->textures_count, sizeof(GpuAllocation));
+    uint32_t*      bindlessIndices = gltf_carve(&scratchBlk, data->textures_count, sizeof(uint32_t));
+    VkBuffer*      stagingBuffers  = gltf_carve(&scratchBlk, maxStaging, sizeof(VkBuffer));
 
     // 1. Upload Geometry & Map to Asset Meshes
     asset->meshCount = data->meshes_count;
-    asset->meshes = calloc(asset->meshCount, sizeof(ModelMesh));
-    
+    asset->meshes = meshPool;
+    size_t primsUsed = 0; // running sub-slice offset into primPool
+
     for (size_t m = 0; m < data->meshes_count; ++m) {
         cgltf_mesh* cgMesh = &data->meshes[m];
         ModelMesh* outMesh = &asset->meshes[m];
         
         outMesh->primitiveCount = cgMesh->primitives_count;
-        outMesh->primitives = calloc(outMesh->primitiveCount, sizeof(ModelPrimitive));
-        
+        outMesh->primitives = primPool + primsUsed;
+        primsUsed += cgMesh->primitives_count;
+
         for (size_t p = 0; p < cgMesh->primitives_count; ++p) {
             cgltf_primitive* prim = &cgMesh->primitives[p];
-            
-            // Find accessors
-            cgltf_accessor* posAccessor = NULL;
-            cgltf_accessor* normAccessor = NULL;
-            cgltf_accessor* texAccessor = NULL;
-            
-            for (size_t a = 0; a < prim->attributes_count; ++a) {
-                if (prim->attributes[a].type == cgltf_attribute_type_position) {
-                    posAccessor = prim->attributes[a].data;
-                } else if (prim->attributes[a].type == cgltf_attribute_type_normal) {
-                    normAccessor = prim->attributes[a].data;
-                } else if (prim->attributes[a].type == cgltf_attribute_type_texcoord) {
-                    texAccessor = prim->attributes[a].data;
-                }
-            }
-            
-            if (!posAccessor || !prim->indices) {
+
+            cgltf_accessor *posAccessor, *normAccessor, *texAccessor;
+            if (!prim_accessors(prim, &posAccessor, &normAccessor, &texAccessor)) {
                 ano_log(ANO_WARN, "Warning: Primitive missing positions or indices. Skipping.");
                 continue;
             }
-            
+
             uint32_t vertexCount = posAccessor->count;
-            Vertex* vertices = calloc(vertexCount, sizeof(Vertex));
-            
+#ifdef DEBUG_BUILD
+            assert(vertexCount <= maxVerts); // extents came from the same prim_accessors walk
+#endif
+            // Reused scratch: re-zero so absent attributes read as zeroes.
+            memset(vertices, 0, vertexCount * sizeof(Vertex));
+
             for (uint32_t v = 0; v < vertexCount; ++v) {
                 cgltf_accessor_read_float(posAccessor, v, &vertices[v].position.v[0], 3);
                 if (normAccessor) {
@@ -91,7 +258,9 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             }
             
             uint32_t indexCount = prim->indices->count;
-            uint32_t* indices = calloc(indexCount, sizeof(uint32_t));
+#ifdef DEBUG_BUILD
+            assert(indexCount <= maxIdx);
+#endif
             for (uint32_t i = 0; i < indexCount; ++i) {
                 indices[i] = (uint32_t)cgltf_accessor_read_index(prim->indices, i);
             }
@@ -110,9 +279,6 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 &lodCfg, &lodBase, &lodProduced
             );
             outMesh->primitives[p].geometryPoolIndex = lodBase;
-            
-            free(vertices);
-            free(indices);
         }
     }
 
@@ -121,11 +287,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
     // Mark needed textures and their color space; color slots decode sRGB, data slots stay linear.
-    bool* textureNeeded = NULL;
-    bool* textureSrgb = NULL;
     if (data->textures_count > 0) {
-        textureNeeded = calloc(data->textures_count, sizeof(bool));
-        textureSrgb = calloc(data->textures_count, sizeof(bool));
         for (size_t m = 0; m < data->materials_count; ++m) {
             cgltf_material* mat = &data->materials[m];
             PbrFeatureFlags matFeatures = ano_gltf_identify_material_features(mat);
@@ -235,28 +397,13 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         }
     }
 
-    // Count staging buffers needed for textures
-    uint32_t maxStaging = 10;
-    for (size_t t = 0; t < data->textures_count; ++t) {
-        if (data->textures[t].image && data->textures[t].image->uri && textureNeeded && textureNeeded[t]) {
-            maxStaging++;
-        }
-    }
-
     // 2. Upload Textures & Bind Materials
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
-    VkBuffer* stagingBuffers = calloc(maxStaging, sizeof(VkBuffer));
     uint32_t stagingCount = 0;
-    
-    VkImageView* loadedTextures = calloc(data->textures_count, sizeof(VkImageView));
-    VkImage* loadedImages = calloc(data->textures_count, sizeof(VkImage));
-    GpuAllocation* loadedAllocs = calloc(data->textures_count, sizeof(GpuAllocation));
-    bool* textureLoaded = calloc(data->textures_count, sizeof(bool));
-    uint32_t* bindlessIndices = calloc(data->textures_count, sizeof(uint32_t));
 
     for (size_t t = 0; t < data->textures_count; ++t) {
         cgltf_texture* tex = &data->textures[t];
-        if (tex->image && tex->image->uri && textureNeeded && textureNeeded[t]) {
+        if (tex->image && tex->image->uri && textureNeeded[t]) {
             ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading texture %zu: %s", t, tex->image->uri);
             // Resolve image URI against the glTF file's directory, then percent-decode the tail.
             char texPath[1024];
@@ -296,14 +443,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     for (uint32_t i = 0; i < stagingCount; ++i) {
         vkDestroyBuffer(ctx->device, stagingBuffers[i], NULL);
     }
-    free(stagingBuffers);
     gpu_alloc_reset(&stagingAllocator);
 
     // Pre-validate material buffer capacity
-    uint32_t totalPrimitives = 0;
-    for (size_t m = 0; m < data->meshes_count; ++m) {
-        totalPrimitives += data->meshes[m].primitives_count;
-    }
+    uint32_t totalPrimitives = primsTotal;
     if (rendererState.materialBuffer.count + totalPrimitives > rendererState.materialBuffer.capacity) {
         ano_log(ANO_WARN, "Warning: Material buffer cannot fit %u new materials (Capacity: %u, Current: %u). Some materials will fall back to index 0.", 
                totalPrimitives, rendererState.materialBuffer.capacity, rendererState.materialBuffer.count);
@@ -610,22 +753,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         }
     }
 
-    if (textureNeeded) {
-        free(textureNeeded);
-    }
-    if (textureSrgb) {
-        free(textureSrgb);
-    }
-    free(loadedTextures);
-    free(loadedImages);
-    free(loadedAllocs);
-    free(textureLoaded);
-    free(bindlessIndices);
-
     // 4. Construct Node Hierarchy
     asset->nodeCount = data->nodes_count;
-    asset->nodes = calloc(asset->nodeCount, sizeof(ModelNode));
-    
+    asset->nodes = nodePool;
+    size_t childUsed = 0; // running sub-slice offset into childPool
+
     for (size_t n = 0; n < data->nodes_count; ++n) {
         cgltf_node* cgNode = &data->nodes[n];
         ModelNode* outNode = &asset->nodes[n];
@@ -645,22 +777,18 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         
         outNode->childCount = cgNode->children_count;
         if (outNode->childCount > 0) {
-            outNode->childIndices = calloc(outNode->childCount, sizeof(uint32_t));
+            outNode->childIndices = childPool + childUsed;
+            childUsed += outNode->childCount;
             for (uint32_t c = 0; c < outNode->childCount; ++c) {
                 outNode->childIndices[c] = cgNode->children[c] - data->nodes;
             }
         }
     }
     
-    // Store root nodes (all parentless nodes)
-    uint32_t rootCount = 0;
-    for (size_t n = 0; n < data->nodes_count; ++n) {
-        if (!data->nodes[n].parent) rootCount++;
-    }
-    
-    asset->rootNodeCount = rootCount;
-    if (rootCount > 0) {
-        asset->rootNodes = calloc(rootCount, sizeof(uint32_t));
+    // Store root nodes (all parentless nodes, counted by asset_block_size)
+    asset->rootNodeCount = rootTotal;
+    if (rootTotal > 0) {
+        asset->rootNodes = rootPool;
         uint32_t rIdx = 0;
         for (size_t n = 0; n < data->nodes_count; ++n) {
             if (!data->nodes[n].parent) {

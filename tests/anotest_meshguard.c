@@ -6,7 +6,7 @@
 // Coverage: ano_build_meshlets / ano_build_meshlets_bound pair agreement. The header contract
 // says to size the output buffers from bound(), and bound() rejects max_vertices < 3 and
 // max_triangles < 1 by returning 0 〜 but build() only clamps those params from above (> 256)
-// and packs anyway (docs/BUGS.md, Mesh / Implementation, ano_meshoptimizer.c:282). So
+// and packs anyway (docs/BUGS_DONE.md, Mesh / Implementation, ano_meshoptimizer.c:282). So
 // build(indices {0,1,2}, max_vertices 2) returns 1 meshlet with vertex_count 3 where bound()
 // returned 0: a caller following the contract allocated zero-length arrays and just took a
 // heap overwrite, and the emitted meshlet breaks the max_vertices promise every consumer of

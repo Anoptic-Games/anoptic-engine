@@ -6,7 +6,7 @@
 // Coverage: the arp emission slot bound. ano_generate_arp (music_arp.c:102) streams one event
 // per meter slot into AnoArpResult.events[ANO_METER_MAX_SLOTS] with no bound, but ano_meter_slots
 // exceeds the 32-slot cap for any meter longer than 8 quarters 〜 9/4 is 36 〜 and ano_music_create
-// accepts such meters unvalidated (docs/BUGS.md, Music / Implementation). The metric-weights twin
+// accepts such meters unvalidated (docs/BUGS_DONE.md, Music / Implementation). The metric-weights twin
 // at music_ir.c:63 clamps exactly this; the arp does not. Controls pin the live path in 4/4 and
 // 12/8 〜 a real bar comes back full, in range, canary untouched 〜 so a reject-everything fix
 // cannot pass. Trigger: a 9/4 bar at density 1.0 (step 1, skip probability exactly 0, so all 36

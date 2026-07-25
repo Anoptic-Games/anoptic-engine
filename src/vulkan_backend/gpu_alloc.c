@@ -1,4 +1,5 @@
 #include "gpu_alloc.h"
+#include <anoptic_memory.h>   // puts this TU's malloc/free in the engine allocator (MI_OVERRIDE is OFF)
 #include <stdlib.h>
 #include <stdio.h>
 #include <anoptic_log.h>
@@ -7,9 +8,10 @@
 
 static uint32_t findMemoryType(VkPhysicalDeviceMemoryProperties memProps, uint32_t typeFilter, VkMemoryPropertyFlags properties)
 {
+    // 1u: the domain runs to VK_MAX_MEMORY_TYPES (32), and signed 1 << 31 is UB.
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++)
     {
-        if ((typeFilter & (1 << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties)
+        if ((typeFilter & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & properties) == properties)
         {
             return i;
         }

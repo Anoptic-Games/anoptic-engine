@@ -18,7 +18,10 @@ static bool ensure_cap(mi_heap_t *heap, void **arr, uint32_t *cap, uint32_t need
 {
     if (need <= *cap) return true;
     uint32_t newcap = *cap ? *cap : 8u;
-    while (newcap < need) newcap *= 2u;
+    while (newcap < need) {
+        if (newcap > UINT32_MAX / 2u) { newcap = need; break; }   // last doubling would wrap
+        newcap *= 2u;
+    }
     void *p = mi_heap_realloc(heap, *arr, (size_t)newcap * elem);
     if (!p) return false;
     *arr = p;
@@ -27,8 +30,11 @@ static bool ensure_cap(mi_heap_t *heap, void **arr, uint32_t *cap, uint32_t need
 }
 
 // Grows the logical map to cover render_id, initializing new entries to UNMAPPED.
+// in: table, render_id (any value; the UNMAPPED sentinel is out of domain)
+// out: false on the sentinel or on OOM, with *arr/*cap untouched
 static bool logical_reserve(RenderSlotTable *t, uint32_t render_id)
 {
+    if (render_id == ANO_RENDER_SLOT_UNMAPPED) return false;   // render_id + 1u would wrap to 0
     if (render_id < t->logicalCapacity) return true;
     uint32_t old = t->logicalCapacity;
     if (!ensure_cap(t->heap, (void **)&t->logicalToSlot, &t->logicalCapacity,
@@ -86,6 +92,9 @@ uint32_t render_slots_alloc_range(RenderSlotTable *t, const uint32_t *render_ids
     if (count == 0u) return ANO_RENDER_SLOT_UNMAPPED;
     // A contiguous range comes only from the high-water region. Bulk spawn extends it.
     if ((uint64_t)t->slotHighWater + count > t->slotCapacity) return ANO_RENDER_SLOT_UNMAPPED;
+    // Reject the whole batch on an out-of-domain id before any mapping lands.
+    for (uint32_t i = 0; i < count; i++)
+        if (render_ids[i] == ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED;
 
     uint32_t base = t->slotHighWater;
     for (uint32_t i = 0; i < count; i++) {

@@ -14,7 +14,7 @@
 // (swapchain.c:73/:167) 〜 and recreateSwapChain's only floor is the 0x0 wait loop
 // (swapchain.c:340-:345); Win32 minimum tracking size protects the x at :301 but the client
 // height drags freely into [1,22]
-// (docs/BUGS.md, Render / Vulkan backend / Implementation, record_views.c:302).
+// (docs/BUGS_DONE.md, Render / Vulkan backend / Implementation, record_views.c:302).
 // Harness: compiles the REAL record_views.c + passes.c TUs 〜 no GPU device, no loader. The vk
 // stubs capture every vkCmdSetScissor / vkCmdSetViewport argument; the harness drives
 // ano_record_composite directly at chosen swapchain extents.

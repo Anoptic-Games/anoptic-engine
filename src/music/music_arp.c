@@ -4,7 +4,8 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Skip draw short-circuits on slot 0 (phrase mask and per-bar rolls). Pool sorted (set-of-pcs order immaterial).
-// updown = pool + reversed interior. Accented slots add 4 with no re-clamp.
+// updown = pool + reversed interior. Accented slots add 4, re-clamped to 1..127.
+// Slot counts are clamped to ANO_METER_MAX_SLOTS: events[] is that wide and the skip mask is a u32.
 
 #include <string.h>
 
@@ -25,6 +26,8 @@ uint32_t ano_arp_make_skips(AnoMusicRng *rng, AnoMeter meter, double density)
     double skipProb = (neg > 0.0 ? neg : 0.0) * 0.35;
     uint32_t mask = 0;
     int slots = ano_meter_slots(meter);
+    if (slots > ANO_METER_MAX_SLOTS)
+        slots = ANO_METER_MAX_SLOTS;
     for (int s = 0; s < slots; s += step)
         if (s != 0 && ano_music_random(rng) < skipProb)
             mask |= 1u << s;
@@ -87,6 +90,8 @@ void ano_generate_arp(const AnoHarmonicContext *ctx, AnoMeter meter,
     velocity = velocity < 1 ? 1 : velocity > 127 ? 127 : velocity;
     double barStart = ctx->bar * ano_meter_bar_quarters(meter);
     int slots = ano_meter_slots(meter);
+    if (slots > ANO_METER_MAX_SLOTS)
+        slots = ANO_METER_MAX_SLOTS;
 
     uint32_t idx = 0;
     for (int slot = 0; slot < slots; slot += step) {
@@ -99,11 +104,13 @@ void ano_generate_arp(const AnoHarmonicContext *ctx, AnoMeter meter,
         int pitch = seq[idx % seqN];
         idx += 1;
         int accent = slot % 8 == 0 ? 4 : 0;
+        int vel = velocity + accent;
+        vel = vel < 1 ? 1 : vel > 127 ? 127 : vel; // AnoNoteEvent contract: 1..127
         AnoMusicEvent *e = &out->events[out->eventCount++];
         *e = (AnoMusicEvent){ 0 };
         e->core = (AnoNoteEvent){ barStart + slot * ANO_MUSIC_GRID,
                                   step * ANO_MUSIC_GRID, (uint8_t)pitch,
-                                  (uint8_t)(velocity + accent),
+                                  (uint8_t)vel,
                                   ANO_MUSIC_ARP, ANO_MUSIC_TIE_NONE };
         int deg = ano_scale_degree_of(ctx->scale, pitch);
         e->degree = deg > 0 ? (uint8_t)deg : 0;

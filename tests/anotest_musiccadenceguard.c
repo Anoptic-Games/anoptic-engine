@@ -5,7 +5,7 @@
 
 // Coverage: the cadence-policy value domain at the public boundary. ano_music_set_override
 // ("cadence_policy", v) refuses unknown names but accepts any value, casting (int8_t)v unchecked
-// (music_host.c:193, docs/BUGS.md, Music / Interface-level); policy_of returns it verbatim ahead
+// (music_host.c:193, docs/BUGS_DONE.md, Music / Interface-level); policy_of returns it verbatim ahead
 // of every other source (music_conductor.c:132) and it lands in ctx.cadencePolicy on cadence and
 // pre-cadence bars (:1034). Downstream guards are one-sided 〜 only ANO_CADENCE_NONE (-1) is
 // excluded 〜 so any value outside {-1..2} indexes the [3]-sized policy tables out of bounds:

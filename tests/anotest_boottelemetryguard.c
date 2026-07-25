@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: engine boot telemetry handshake (main.c:391; docs/BUGS.md, Engine /
+// Coverage: engine boot telemetry handshake (main.c:391; docs/BUGS_DONE.md, Engine /
 // Interlink-Composition). music_world_start spins ano_audio_acquire_telemetry at most
 // 200 times (:389) and then seeds ano_synth_transport_start from AnoAudioTelemetry t
 // (:388) whether or not any acquire ever succeeded; the acquire contract returns false

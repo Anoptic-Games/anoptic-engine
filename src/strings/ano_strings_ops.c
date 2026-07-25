@@ -83,11 +83,16 @@ anostr_t anostr_join(mi_heap_t *heap, anostr_t sep, const anostr_t *parts, size_
     if (count == 0 || parts == NULL)
         return anostr_empty();
 
-    uint64_t total = (uint64_t)sep.len * (count - 1);
-    for (size_t i = 0; i < count; i++)
-        total += parts[i].len;
-    if (total > UINT32_MAX)
+    // Exact size in u64. Divide before multiplying, then charge every part against
+    // the remaining headroom: no addend may wrap the total past the limit.
+    if (sep.len != 0 && (uint64_t)(count - 1) > (uint64_t)UINT32_MAX / sep.len)
         return anostr_empty();
+    uint64_t total = (uint64_t)sep.len * (count - 1);
+    for (size_t i = 0; i < count; i++) {
+        if (parts[i].len > UINT32_MAX - total)
+            return anostr_empty();
+        total += parts[i].len;
+    }
 
     // Inline result: assemble on the stack.
     if (total <= ANOSTR_INLINE_CAP) {

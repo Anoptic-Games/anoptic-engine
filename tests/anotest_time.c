@@ -42,24 +42,8 @@ int testTimeStamps() {
     printf("Testing timestamps across various resolutions\n");
 
     uint64_t nanoStamp = ano_timestamp_raw();
-    if (nanoStamp == UINT64_MAX) {
-        printf("anoptic_time.h: failed to retrieve nanosecond timestamp.\n");
-        return -1;
-    }
-
-
     uint64_t microStamp = ano_timestamp_us();
-    if (microStamp == UINT64_MAX) {
-        printf("anoptic_time.h: failed to retrieve microsecond timestamp.\n");
-        return -1;
-    }
-
-
     uint32_t milliStamp = ano_timestamp_ms();
-    if (milliStamp == UINT32_MAX) {
-        printf("anoptic_time.h: failed to retrieve millisecond timestamp.\n");
-        return -1;
-    }
 
     printf("nanoseconds: %" PRIu64 "\n", nanoStamp);
     printf("microseconds: %" PRIu64 "\n", microStamp);
@@ -178,7 +162,8 @@ static int testResolution(void) {
     return fails;
 }
 
-/* Timebase granularity: min nonzero ano_timestamp_ticks step, in ns. Assert <100ns (raw QPC is 100ns). */
+/* Timebase granularity: min nonzero ano_timestamp_ticks step, in ns. Assert <100ns (raw QPC is 100ns).
+   Same loop is the dead-clock lock: ano_timestamp_raw() must advance and never step backward. */
 #define GRAIN_SAMPLES 200000
 #define GRAIN_MAX_NS  100
 
@@ -187,13 +172,26 @@ static int testGranularity(void) {
 
     uint64_t minDelta = UINT64_MAX;
     uint64_t prev = ano_timestamp_ticks();
+    uint64_t prevNs = ano_timestamp_raw();
+    uint64_t backward = 0;
     for (int i = 0; i < GRAIN_SAMPLES; i++) {
         uint64_t now = ano_timestamp_ticks();
         uint64_t d = now - prev;    // monotonic counter, so the delta never underflows
         prev = now;
         if (d != 0 && d < minDelta)
             minDelta = d;
+
+        uint64_t nowNs = ano_timestamp_raw();
+        if (nowNs < prevNs)
+            backward++;
+        prevNs = nowNs;
     }
+    if (backward != 0) {
+        printf("  [FAIL] ano_timestamp_raw() stepped backward %" PRIu64 " time(s) across %d samples\n",
+               backward, GRAIN_SAMPLES);
+        return 1;
+    }
+    printf("  [PASS] ano_timestamp_raw() monotone across %d samples\n", GRAIN_SAMPLES);
     if (minDelta == UINT64_MAX) {
         printf("  [FAIL] timestamp never advanced across %d samples\n", GRAIN_SAMPLES);
         return 1;

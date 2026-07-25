@@ -19,8 +19,6 @@ static bool clash_interval(int ic)
 AnoMotif ano_imitation_cell(const AnoMotif *motif)
 {
     uint32_t k = (motif->n + 1) / 2;
-    if (k < 1)
-        k = 1;
     AnoMotif cell = *motif;
     if (k < cell.n)
         cell.n = k;

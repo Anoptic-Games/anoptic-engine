@@ -91,7 +91,7 @@ static inline void ano_frame_mark(void) {
     if (acc->prevUs == 0) { acc->prevUs = acc->startUs = now; return; }
     uint64_t dt = now - acc->prevUs;
     acc->prevUs = now;
-    acc->dtUs[acc->count++] = (dt > UINT32_MAX) ? UINT32_MAX : (uint32_t)dt;
+    acc->dtUs[acc->count++] = (uint32_t)dt;
     if (acc->count == ANO_PERF_WINDOW_FRAMES) anoperf_flush(acc);
 }
 

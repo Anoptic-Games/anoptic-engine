@@ -16,6 +16,19 @@
 #define FIT_MIN        0.34
 #define NEVER          999
 
+// ano_director_init clamps against both constants; weld each to the buffer it stands for
+// so a widened struct cannot drift away from its bound.
+static_assert(sizeof ((AnoMotifDirector *)0)->library / sizeof(AnoSignatureMotif) == ANO_SIG_MAX
+              && sizeof ((AnoMotifDirector *)0)->barsSince / sizeof(int) == ANO_SIG_MAX,
+              "director library capacity must equal ANO_SIG_MAX");
+static_assert(sizeof ((AnoMotif *)0)->rhythm / sizeof(AnoRhythmNote) == ANO_MOTIF_MAX
+              && sizeof ((AnoMotif *)0)->contour / sizeof(int) == ANO_MOTIF_MAX,
+              "motif clamp bound must equal the motif buffers' extent");
+
+// In: library/count authored motifs (the internal AnoEngineConfig path reaches here
+// without passing the public seam's expand()). Out: *d owns a clamped copy.
+// Invariant: every stored motif.n <= ANO_MOTIF_MAX, the extent of the rhythm/contour
+// buffers the transforms and realizers write through it.
 void ano_director_init(AnoMotifDirector *d, const AnoSignatureMotif *library,
                        uint32_t count)
 {
@@ -24,6 +37,8 @@ void ano_director_init(AnoMotifDirector *d, const AnoSignatureMotif *library,
         count = ANO_SIG_MAX;
     for (uint32_t i = 0; i < count; ++i) {
         d->library[i] = library[i];
+        if (d->library[i].motif.n > ANO_MOTIF_MAX) // authored count can't exceed the buffers
+            d->library[i].motif.n = ANO_MOTIF_MAX;
         d->barsSince[i] = -1; // dict-absent
     }
     d->libraryCount = count;

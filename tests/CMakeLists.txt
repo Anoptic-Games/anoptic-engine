@@ -26,7 +26,7 @@ set_tests_properties(anoptic_filesystem PROPERTIES TIMEOUT 30 LABELS "unit")
 # Userpath squatter guard: mkdir's EEXIST is accepted without checking the existing entry is a
 # directory, so a regular file squatting the per-user game dir makes ano_fs_userpath return a
 # non-empty path that rejects every write, breaking the header's "ready to write into" promise
-# (docs/BUGS.md, Filesystem / Implementation). The user-data root is redirected into an
+# (docs/BUGS_DONE.md, Filesystem / Implementation). The user-data root is redirected into an
 # exe-anchored scratch, so the real per-user dir is never touched. Fails until the EEXIST
 # directory check lands.
 add_executable(anotest_fsguard anotest_fsguard.c)
@@ -111,7 +111,7 @@ set_tests_properties(anoptic_text PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Measure guard: a trailing byteCount-0 run is documented as a no-op (anoptic_text.h:113) but
 # shape_core takes the final line height from runs[runCount-1].sizePx, so a trailing no-op run
-# inflates ano_text_measure_runs height (docs/BUGS.md, Text / Interface). Headless: a stack
+# inflates ano_text_measure_runs height (docs/BUGS_DONE.md, Text / Interface). Headless: a stack
 # AnoFontBake with no ranges, no font, no FreeType. Fails until the endStep skips no-op runs.
 add_executable(anotest_textguard anotest_textguard.c)
 target_link_libraries(anotest_textguard PRIVATE anoptic_core m)
@@ -126,7 +126,7 @@ add_test(NAME anoptic_ui COMMAND anotest_ui)
 set_tests_properties(anoptic_ui PROPERTIES TIMEOUT 60 LABELS "unit")
 
 # Path-baker contour guard: a MOVE-only path (> 512 contours) is legal input and must come
-# back ANO_UI_REF_NONE, not spray qn past the 513-entry cstart stack array (docs/BUGS.md,
+# back ANO_UI_REF_NONE, not spray qn past the 513-entry cstart stack array (docs/BUGS_DONE.md,
 # UI / Implementation). Fails (access violation or wedge in the baker) until the cn bound lands.
 add_executable(anotest_uipathguard anotest_uipathguard.c)
 target_link_libraries(anotest_uipathguard PRIVATE anoptic_core m)
@@ -134,7 +134,7 @@ add_test(NAME anoptic_uipathguard COMMAND anotest_uipathguard)
 set_tests_properties(anoptic_uipathguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Tile-build cap guard: tilesX*tilesY and nTiles+1 wrap uint32, so a 2^32-tile request slips
-# the offsetsCap guard and reports ok for buffers that hold none of it (docs/BUGS.md, UI /
+# the offsetsCap guard and reports ok for buffers that hold none of it (docs/BUGS_DONE.md, UI /
 # Implementation). Fails until the sizing math stops wrapping.
 add_executable(anotest_uitileguard anotest_uitileguard.c)
 target_link_libraries(anotest_uitileguard PRIVATE anoptic_core m)
@@ -142,7 +142,7 @@ add_test(NAME anoptic_uitileguard COMMAND anotest_uitileguard)
 set_tests_properties(anoptic_uitileguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Paint-push stop guard: b->stopCount + stopCount wraps uint32, so a near-UINT32_MAX stop
-# count slips the cap guard and the copy loop runs off the stop array (docs/BUGS.md, UI /
+# count slips the cap guard and the copy loop runs off the stop array (docs/BUGS_DONE.md, UI /
 # Implementation). Fails (access violation in the copy) until the guard computes without wrap.
 add_executable(anotest_uipaintguard anotest_uipaintguard.c)
 target_link_libraries(anotest_uipaintguard PRIVATE anoptic_core m)
@@ -152,12 +152,24 @@ set_tests_properties(anoptic_uipaintguard PROPERTIES TIMEOUT 30 LABELS "unit;mem
 # Ref-paint stop-window guard: ano_ui_ref_paint's reject arm computes stopFirst + stopCount
 # in uint32 (ui_raster_ref.c:229), so stopFirst UINT32_MAX wraps the sum under stopCount and
 # ui_stop_color reads the stop table ~137 GB out of bounds against the header's fail-CLOSED
-# contract (anoptic_ui.h:275) (docs/BUGS.md, UI / Implementation). Fails (access violation
+# contract (anoptic_ui.h:275) (docs/BUGS_DONE.md, UI / Implementation). Fails (access violation
 # in ui_stop_color) until the guard computes without wrap.
 add_executable(anotest_uirefstopguard anotest_uirefstopguard.c)
 target_link_libraries(anotest_uirefstopguard PRIVATE anoptic_core m)
 add_test(NAME anoptic_uirefstopguard COMMAND anotest_uirefstopguard)
 set_tests_properties(anoptic_uirefstopguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
+# Tile-entry index guard: a tile entry word is a caller-supplied 31-bit prim index, and
+# ano_ui_ref_eval_tiled indexed s->prims with it unchecked -- shade_entry's solid branch
+# (ui_raster_ref.c:334) and the blend select's second decode (:362) -- while every sibling on
+# the same domain bounds-checks and the header promises "Out-of-range ref fails CLOSED"
+# (anoptic_ui.h:275). A stale or hand-built stream with idx == ANO_UI_ENTRY_INDEX_MASK reads
+# ~192 GB past the prim table (docs/BUGS_DONE.md, UI / Implementation). Fails (access violation in
+# ano_ui_ref_eval_tiled) until shade_entry is the sole decode and validates once.
+add_executable(anotest_uitileentryguard anotest_uitileentryguard.c)
+target_link_libraries(anotest_uitileentryguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_uitileentryguard COMMAND anotest_uitileentryguard)
+set_tests_properties(anoptic_uitileentryguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # String compare microbenchmark: anostr_compare (German-string prefix path) vs naive memcmp.
 # DISABLED in ctest, run ./anotest_strbench by hand from a -O3 build.
@@ -183,7 +195,7 @@ set_tests_properties(anoptic_meshoptimizer PROPERTIES TIMEOUT 10 LABELS "unit;me
 # Meshlet build/bound pair guard: max_vertices < 3 / max_triangles < 1 must be rejected by
 # ano_build_meshlets exactly as its sizing twin ano_build_meshlets_bound already does, not
 # packed into meshlets that overrun bound()-sized buffers and break the max_vertices promise
-# (docs/BUGS.md, Mesh / Implementation). Fails until the guard lands.
+# (docs/BUGS_DONE.md, Mesh / Implementation). Fails until the guard lands.
 add_executable(anotest_meshguard anotest_meshguard.c)
 target_link_libraries(anotest_meshguard PRIVATE anoptic_core m)
 add_test(NAME anoptic_meshguard COMMAND anotest_meshguard)
@@ -192,7 +204,7 @@ set_tests_properties(anoptic_meshguard PROPERTIES TIMEOUT 30 LABELS "unit;mesh")
 # Simplify collapse-validity guard: ano_simplify delegates to ano_simplify_ex with
 # edge_len_factor 0, and the link/tetra collapse exclusion only runs when the growth guards
 # are on (ano_meshoptimizer.c:955), so a rim collapse on a 3-tri cone fan emits the same face
-# twice 〜 a coincident opposite-wound duplicate the guards-on path rejects (docs/BUGS.md,
+# twice 〜 a coincident opposite-wound duplicate the guards-on path rejects (docs/BUGS_DONE.md,
 # Mesh / Implementation). Fails until the base path enforces collapse validity.
 add_executable(anotest_meshsimplifyguard anotest_meshsimplifyguard.c)
 target_link_libraries(anotest_meshsimplifyguard PRIVATE anoptic_core m)
@@ -207,7 +219,7 @@ set_tests_properties(anoptic_memory PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Aligned-malloc zero contract: anoptic_memory.h promises NULL when size or alignment is 0,
 # but every platform memalign forwards straight to mi_malloc_aligned, which hands back a live
-# pointer for size 0 (docs/BUGS.md, Memory / Implementation). Fails until the guard lands.
+# pointer for size 0 (docs/BUGS_DONE.md, Memory / Implementation). Fails until the guard lands.
 add_executable(anotest_memguard anotest_memguard.c)
 target_link_libraries(anotest_memguard PRIVATE anoptic_core)
 add_test(NAME anoptic_memguard COMMAND anotest_memguard)
@@ -283,11 +295,24 @@ target_link_libraries(anotest_bridgeguard PRIVATE anoptic_core)
 add_test(NAME anoptic_bridgeguard COMMAND anotest_bridgeguard)
 set_tests_properties(anoptic_bridgeguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
+# Camera-pose guard at the public publish seam: lookAt (vulkan_backend/vertex/vertex.c:104) is
+# branch-free, so a coincident eye/center, a zero up, an up parallel to forward or any non-finite
+# field NaN-poisons the whole view matrix, and nothing downstream catches it (invertMat4's
+# det == 0.0f test is false for NaN; every frustum/cull compare is NaN-false) 〜 the frame goes
+# black and the latest-wins viewState lane keeps it black until the producer happens to publish a
+# good pose. ano_render_publish_view validates the pose and drops degenerates, warning once.
+# Device-free 〜 bridge transport only. Checks rejection, cold start, and no over-rejection across
+# a 1000-pose orbit sweep including one just above the epsilon floor.
+add_executable(anotest_cameraposeguard anotest_cameraposeguard.c)
+target_link_libraries(anotest_cameraposeguard PRIVATE anoptic_core m)
+add_test(NAME anoptic_cameraposeguard COMMAND anotest_cameraposeguard)
+set_tests_properties(anoptic_cameraposeguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
 # UI-block stop-window guard: ano_render_ui_set bounds every block-local reference except
 # a paint's [stopFirst, +stopCount) window (ui_prim_valid, ano_render_bridge.c:204); the
 # compose rebases it blind (ui_raster.c:123) and the GPU evaluator's promised fail-closed
 # mirror check is absent (uicoverage.glsl:176 vs ui_raster_ref.c:229), so a hand-built
-# block walks the stop SSBO out of bounds (docs/BUGS.md, Render / Vulkan backend /
+# block walks the stop SSBO out of bounds (docs/BUGS_DONE.md, Render / Vulkan backend /
 # Interlink-Composition). Device-free 〜 bridge transport + CPU ref evaluator only. Fails
 # until the bridge drops the bad window like its sibling references.
 add_executable(anotest_uistopguard anotest_uistopguard.c)
@@ -302,14 +327,14 @@ add_test(NAME anoptic_audio COMMAND anotest_audio)
 set_tests_properties(anoptic_audio PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
 # Buffer-register argument guard: a frames count whose byte size wraps uint64 must be
-# rejected, not adopted (docs/BUGS.md, Audio / Implementation). Fails until the guard lands.
+# rejected, not adopted (docs/BUGS_DONE.md, Audio / Implementation). Fails until the guard lands.
 add_executable(anotest_audioguard anotest_audioguard.c)
 target_link_libraries(anotest_audioguard PRIVATE anoptic_core)
 add_test(NAME anoptic_audioguard COMMAND anotest_audioguard)
 set_tests_properties(anoptic_audioguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # WAV-write argument guard: a frames count whose byte size wraps uint64 must be rejected
-# with false, not written as a truncated file that claims success (docs/BUGS.md, Audio /
+# with false, not written as a truncated file that claims success (docs/BUGS_DONE.md, Audio /
 # Implementation). Fails until the guard lands.
 add_executable(anotest_wavguard anotest_wavguard.c)
 target_link_libraries(anotest_wavguard PRIVATE anoptic_core)
@@ -319,12 +344,24 @@ set_tests_properties(anoptic_wavguard PROPERTIES TIMEOUT 30 LABELS "unit")
 # Limiter lookahead-window guard: fx_limiter sizes its winmax window == lookahead while the
 # emitted sample has age exactly lookahead (audio_fx.c:100/:391), so a peak expires from the
 # analysis window on the push that emits it and its output takes one release step of gain-up 〜
-# a 10x impulse at the 1 ms release floor emits ~1.107 over the 0.92 ceiling (docs/BUGS.md,
+# a 10x impulse at the 1 ms release floor emits ~1.107 over the 0.92 ceiling (docs/BUGS_DONE.md,
 # Audio / Implementation). Fails until the window covers the emitted sample.
 add_executable(anotest_limiterguard anotest_limiterguard.c)
 target_link_libraries(anotest_limiterguard PRIVATE anoptic_core)
 add_test(NAME anoptic_limiterguard COMMAND anotest_limiterguard)
 set_tests_properties(anoptic_limiterguard PROPERTIES TIMEOUT 30 LABELS "unit")
+
+# Zero-length delay-line guard: delay.h stored cap == maxDelay verbatim while the allocation
+# floors at 2 slots, so a line built at maxDelay 0 gave ano_dsp_delay_read_frac a ceiling of
+# (float)(cap - 1u) == 4294967295.0f and the unclamped tap reached an out-of-range (uint32_t)
+# conversion 〜 UB, float-cast-overflow under UBSan; NaN slipped both clamps at every length.
+# maxDelay 0 is reachable at any sampleRate under 30 Hz: neither entry seam bounds the rate
+# below (ano_audio.c:95, audio_mixer.c:655) and audio_fx.c's fs-derived lengths floor to 0.
+# Fixed by deriving the ceiling from mask and deleting cap.
+add_executable(anotest_dspdelayguard anotest_dspdelayguard.c)
+target_link_libraries(anotest_dspdelayguard PRIVATE anoptic_core)
+add_test(NAME anoptic_dspdelayguard COMMAND anotest_dspdelayguard)
+set_tests_properties(anoptic_dspdelayguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Shutdown adopted-block discharge guard: ano_audio_shutdown joins the mixer, stops the device,
 # and destroys both bridge rings and the module heap without walking mx->buffers or draining
@@ -344,7 +381,7 @@ set_tests_properties(anoptic_audioshutguard PROPERTIES TIMEOUT 30 LABELS "unit;m
 
 # Drain-batch sizing guard: deferred records render at their format width, not their stored
 # size, so a wide "%*d" burst must survive a drain pass with nothing lost and full-width
-# fields (docs/BUGS.md, Log / Implementation). Fails (crashes in the drain pass) until the
+# fields (docs/BUGS_DONE.md, Log / Implementation). Fails (crashes in the drain pass) until the
 # batch bound lands.
 add_executable(anotest_logflood anotest_logflood.c)
 target_link_libraries(anotest_logflood PRIVATE anoptic_core)
@@ -355,7 +392,7 @@ set_tests_properties(anoptic_logflood PROPERTIES TIMEOUT 120 LABELS "unit;concur
 # a raw pointer in the ring blob (log_core.c:205) and format_deferred derefs it at drain
 # (:268/:277), while the header's lifetime contract is one-sided 〜 anoptic_log.h:53 constrains
 # printFormat only, and the %s arm deep-copies every other caller-owned string at capture
-# (docs/BUGS.md, Log / Interface-level, log_core.c:205). Real public logger end to end:
+# (docs/BUGS_DONE.md, Log / Interface-level, log_core.c:205). Real public logger end to end:
 # controls prove literal and intact-buffer round-trips, then trigger records pass live buffers
 # scribbled right after the call returns, behind a FIFO backlog that pins the drainer. Fails
 # (drained lines carry the scribble, not the call-time names) until capture copies by value.
@@ -368,7 +405,7 @@ set_tests_properties(anoptic_logsrcguard PROPERTIES TIMEOUT 30 LABELS "unit")
 # unchecked uint32 math (text_gpos.c:304 so += innerOff, sibling :186 class matrix), so a type-9
 # Extension whose 32-bit extensionOffset overflows so back INTO the buffer parses a different
 # in-bounds structure and the extractor returns 0 (success) against its header contract's
-# "Malformed -> nonzero" (text_internal.h:89, docs/BUGS.md, Text / Interface-level). Links
+# "Malformed -> nonzero" (text_internal.h:89, docs/BUGS_DONE.md, Text / Interface-level). Links
 # anoptic_core and drives the extractor on hand-built GPOS byte tables 〜 no FreeType, no device.
 # Fails (malformed wrapping table returns 0) until the offset math is range-checked.
 add_executable(anotest_gposwrapguard anotest_gposwrapguard.c)
@@ -383,7 +420,7 @@ set_tests_properties(anoptic_gposwrapguard PROPERTIES TIMEOUT 30 LABELS "unit")
 # (text_bake.c:565), so a zero-curve TAIL glyph has pointOffset == pointCount and the fetch
 # reads one uint32 past the points blob, while an all-blank bake (points NULL, text_bake.c:639)
 # NULL-derefs; every in-tree consumer carries its own compensating curveCount guard
-# (docs/BUGS.md, Text / Interface-level, text_raster_ref.c:92). Real Geist bake whose PUA tail
+# (docs/BUGS_DONE.md, Text / Interface-level, text_raster_ref.c:92). Real Geist bake whose PUA tail
 # the bake itself mints MISSING; the bake's own stream bytes are relocated flush against a
 # guard page so the over-read is a deterministic crash instead of a silent heap read, and the
 # space-only bake drives the NULL-stream shape unrelocated. Fonts staged next to the binary.
@@ -399,7 +436,7 @@ set_tests_properties(anoptic_textblanksumguard PROPERTIES TIMEOUT 30 LABELS "uni
 
 # Score-event field-range guard: velocity and pitch above their documented AnoNoteEvent
 # ranges (1..127 / 0..127) must be rejected like velocity 0 already is, not staged to render
-# at ~2x the amplitude ceiling or alias pitch & 0x7F tie chains (docs/BUGS.md, Synth /
+# at ~2x the amplitude ceiling or alias pitch & 0x7F tie chains (docs/BUGS_DONE.md, Synth /
 # Implementation). Fails until the upper bounds land.
 add_executable(anotest_synthguard anotest_synthguard.c)
 target_link_libraries(anotest_synthguard PRIVATE anoptic_core)
@@ -408,7 +445,7 @@ set_tests_properties(anoptic_synthguard PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Score-tempo schedule-state guard: score_tempo called before score_begin must report the
 # documented-order misuse with false like every sibling entry point does, not hand a NULL
-# anchor array to clock_add and die on the deref (docs/BUGS.md, Synth / Interface-level,
+# anchor array to clock_add and die on the deref (docs/BUGS_DONE.md, Synth / Interface-level,
 # ano_synth.c:227). Fails (SEGFAULT at the trigger) until the state guard lands.
 add_executable(anotest_synthtempoguard anotest_synthtempoguard.c)
 target_link_libraries(anotest_synthtempoguard PRIVATE anoptic_core)
@@ -417,7 +454,7 @@ set_tests_properties(anoptic_synthtempoguard PROPERTIES TIMEOUT 30 LABELS "unit"
 
 # Score-begin anchor-cap wrap guard: anchorCap = tempoCount + 1u wraps to 0 at UINT32_MAX,
 # the zero-count calloc passes the NULL check, and score_begin OOB-writes the 24-byte seed
-# anchor into a zero-size block while returning true (docs/BUGS.md, Synth / Interface-level,
+# anchor into a zero-size block while returning true (docs/BUGS_DONE.md, Synth / Interface-level,
 # ano_synth.c:202). Fails (first promised tempo point rejected, or allocator abort) until
 # the sizing rejects or survives the wrap.
 add_executable(anotest_synthbeginguard anotest_synthbeginguard.c)
@@ -426,18 +463,20 @@ add_test(NAME anoptic_synthbeginguard COMMAND anotest_synthbeginguard)
 set_tests_properties(anoptic_synthbeginguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
-# cascades to null); by hand on a desktop it is the audible Phase 1 check.
+# cascades to null); on a desktop it plays. DISABLED in ctest -- run
+# ./anotest_audiotone by hand for the audible Phase 1 check.
 add_executable(anotest_audiotone anotest_audiotone.c)
 target_link_libraries(anotest_audiotone PRIVATE anoptic_core)
 add_test(NAME anoptic_audiotone COMMAND anotest_audiotone)
-set_tests_properties(anoptic_audiotone PROPERTIES TIMEOUT 30 LABELS "unit;optional")
+set_tests_properties(anoptic_audiotone PROPERTIES DISABLED TRUE TIMEOUT 30 LABELS "optional;audible")
 
 # Live Phase 2 scene: positioned one-shots + looping ambient bed + orbiting
-# listener + swept bus filter. CI-safe on null; audible by hand (2s in ctest).
+# listener + swept bus filter. DISABLED in ctest -- run ./anotest_audioscene
+# by hand (argv[1] seconds).
 add_executable(anotest_audioscene anotest_audioscene.c)
 target_link_libraries(anotest_audioscene PRIVATE anoptic_core)
 add_test(NAME anoptic_audioscene COMMAND anotest_audioscene 2)
-set_tests_properties(anoptic_audioscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
+set_tests_properties(anoptic_audioscene PROPERTIES DISABLED TRUE TIMEOUT 60 LABELS "optional;audible")
 
 # Phase 3 DSP library + console: primitive unit oracles, effect property
 # tests, and the churned-heap console golden. All offline, CI-safe.
@@ -482,12 +521,12 @@ set_tests_properties(anoptic_musicdrive PROPERTIES TIMEOUT 120 LABELS "unit")
 
 # Phase 7's exit criterion, audible by hand: an ENDLESS piece composed inside the
 # audio callback, steered live from gameplay, with save/seek by deterministic
-# reconstruction. CI-safe on null (30 s); run ./anotest_musicscene 180 on a real
-# device for the background-listen test.
+# reconstruction. DISABLED in ctest -- run ./anotest_musicscene 180 by hand for
+# the background-listen test.
 add_executable(anotest_musicscene anotest_musicscene.c)
 target_link_libraries(anotest_musicscene PRIVATE anoptic_core)
 add_test(NAME anoptic_musicscene COMMAND anotest_musicscene 30)
-set_tests_properties(anoptic_musicscene PROPERTIES TIMEOUT 120 LABELS "unit;optional")
+set_tests_properties(anoptic_musicscene PROPERTIES DISABLED TRUE TIMEOUT 120 LABELS "optional;audible")
 
 # Bridge hot-op tail bench: logic-side publish/acquire latency + per-block mixer
 # cost under a live mixer. DISABLED; run by hand (argv[1] seconds). A/B vehicle
@@ -495,14 +534,14 @@ set_tests_properties(anoptic_musicscene PROPERTIES TIMEOUT 120 LABELS "unit;opti
 add_executable(anotest_bridgebench anotest_bridgebench.c)
 target_link_libraries(anotest_bridgebench PRIVATE anoptic_core)
 add_test(NAME anoptic_bridgebench COMMAND anotest_bridgebench)
-set_tests_properties(anoptic_bridgebench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+set_tests_properties(anoptic_bridgebench PROPERTIES DISABLED TRUE LABELS "optional;bench;audible")
 
 add_executable(anotest_synthscene anotest_synthscene.c)
 target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
 target_compile_definitions(anotest_synthscene PRIVATE
         ANO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 add_test(NAME anoptic_synthscene COMMAND anotest_synthscene 8)
-set_tests_properties(anoptic_synthscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
+set_tests_properties(anoptic_synthscene PROPERTIES DISABLED TRUE TIMEOUT 60 LABELS "optional;audible")
 
 # Phase 6 step-1 gate: determinism kernel bit-compatibility with CPython 3.12
 # (BLAKE2b-8 tags, MT19937 seeding + draw semantics, banker's rounding).
@@ -513,7 +552,7 @@ set_tests_properties(anoptic_music PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Arp emission slot guard: ano_meter_slots exceeds ANO_METER_MAX_SLOTS for meters past 8
 # quarters (9/4 -> 36) and ano_generate_arp streams one event per slot into the 32-entry
-# AnoArpResult array with no bound (docs/BUGS.md, Music / Implementation). Fails (canary
+# AnoArpResult array with no bound (docs/BUGS_DONE.md, Music / Implementation). Fails (canary
 # stomped past the result struct, bar truncated) until the emission respects the cap.
 add_executable(anotest_musicarpguard anotest_musicarpguard.c)
 target_link_libraries(anotest_musicarpguard PRIVATE anoptic_core)
@@ -525,7 +564,7 @@ set_tests_properties(anoptic_musicarpguard PROPERTIES TIMEOUT 30 LABELS "unit;me
 # name but not the value (music_host.c:193), so any v outside {-1..2} rides policy_of verbatim
 # into three [3]-sized tables guarded only against NONE (music_melody.c:517 DEGS,
 # music_verify.c:752/:753/:762) and back out through AnoMusicMeaning.cadencePolicy
-# (docs/BUGS.md, Music / Interface-level). Fails (out-of-enum policy republished on every
+# (docs/BUGS_DONE.md, Music / Interface-level). Fails (out-of-enum policy republished on every
 # cadence and pre-cadence bar) until the boundary rejects or clamps the value.
 add_executable(anotest_musiccadenceguard anotest_musiccadenceguard.c)
 target_link_libraries(anotest_musiccadenceguard PRIVATE anoptic_core)
@@ -535,7 +574,7 @@ set_tests_properties(anoptic_musiccadenceguard PROPERTIES TIMEOUT 30 LABELS "uni
 # Perc compound-meter slot guard: the grouped-kick pickup writes kick[slots - 2] past the
 # 32-entry stack set for meters past 8 quarters (9/4 -> 36, music_perc.c:121), and the u32
 # hatDrops mask shifts wrap for slot >= 32 so in-range mask bits eat the out-of-range hats
-# (music_perc.c:79/:154) (docs/BUGS.md, Music / Implementation). Fails (mask aliasing observed
+# (music_perc.c:79/:154) (docs/BUGS_DONE.md, Music / Implementation). Fails (mask aliasing observed
 # differentially; the OOB kick write runs in the same call) until the 32-wide shapes handle
 # wide bars.
 add_executable(anotest_percmeterguard anotest_percmeterguard.c)
@@ -548,7 +587,7 @@ set_tests_properties(anoptic_percmeterguard PROPERTIES TIMEOUT 30 LABELS "unit;m
 # (music_host.c:194) and the config seam copies cfg.mode as blind (:58); the conductor pins
 # either verbatim refusing only ANO_MODE_NONE, launders negatives via (uint8_t), and every bar
 # indexes ano_mode_intervals' [7][7] table with the raw value (music_theory.c:58) while
-# republishing it in AnoMusicMeaning.mode against its AnoMode contract (docs/BUGS.md, Music /
+# republishing it in AnoMusicMeaning.mode against its AnoMode contract (docs/BUGS_DONE.md, Music /
 # Interface-level). Fails (out-of-enum meaning.mode observed on both seams) until the mode
 # domain is validated.
 add_executable(anotest_musicmodeguard anotest_musicmodeguard.c)
@@ -561,13 +600,26 @@ set_tests_properties(anoptic_musicmodeguard PROPERTIES TIMEOUT 30 LABELS "unit;m
 # explicit-cycle arm indexes cadencePolicies[phrase % count] (music_conductor.c:147), so any
 # count > 8 reads past the int8_t [8] array and republishes an out-of-enum policy through
 # AnoMusicMeaning.cadencePolicy into the same one-sided [3]-table guard chain as the
-# cadence_policy override (docs/BUGS.md, Music / Interface-level). Fails (out-of-enum meaning
+# cadence_policy override (docs/BUGS_DONE.md, Music / Interface-level). Fails (out-of-enum meaning
 # on phrase 8's flagged bars, or a crash in the policy tables) until the count is clamped or
 # rejected at the seam.
 add_executable(anotest_musiccadcountguard anotest_musiccadcountguard.c)
 target_link_libraries(anotest_musiccadcountguard PRIVATE anoptic_core)
 add_test(NAME anoptic_musiccadcountguard COMMAND anotest_musiccadcountguard)
 set_tests_properties(anoptic_musiccadcountguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
+
+# Authored-motif bound guard: AnoMotif.n is a game-authored uint32_t sitting beside
+# rhythm[ANO_MOTIF_MAX]/contour[ANO_MOTIF_MAX] (anoptic_music.h:187-193), and every transform
+# and realizer iterates n while writing those 32-wide buffers (ano_motif_invert
+# music_motif.c:186, pitches_at :338, ano_realize_faithful :399). The public seam copied the
+# library verbatim (music_host.c:124) and ano_director_init did the same on the internal
+# AnoEngineConfig path (music_signatures.c:19), so n = 33 was a one-past stack write on the
+# first advance_bar and n = 1<<20 ran a megabyte off the frame. Both seams now clamp to
+# ANO_MOTIF_MAX; ASan is the oracle.
+add_executable(anotest_motifboundguard anotest_motifboundguard.c)
+target_link_libraries(anotest_motifboundguard PRIVATE anoptic_core)
+add_test(NAME anoptic_motifboundguard COMMAND anotest_motifboundguard)
+set_tests_properties(anoptic_motifboundguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Guard: engine-instance independence under the documented off-thread seek shape.
 # Two engines advancing concurrently race ano_voice_chord's function-scope static
@@ -581,7 +633,7 @@ set_tests_properties(anoptic_musicguard PROPERTIES TIMEOUT 60 LABELS "unit")
 
 # Guard: music -> synth seam event contract. The arp lane clamps velocity then adds
 # its +4 accent (music_arp.c:106), a velocity_center override crosses the host raw,
-# and the synth's one-sided guard stages the 128..131 event (docs/BUGS.md, Music /
+# and the synth's one-sided guard stages the 128..131 event (docs/BUGS_DONE.md, Music /
 # Interlink). Fails until the arp re-clamps (or the seam validates both sides).
 add_executable(anotest_musicsynthguard anotest_musicsynthguard.c)
 target_link_libraries(anotest_musicsynthguard PRIVATE anoptic_core)
@@ -633,7 +685,7 @@ if(TARGET anoptic_render)
     # reports success without growing, and render_slots_alloc consumes a slot then stores it at
     # logicalToSlot[0xFFFFFFFF] 〜 a wild write ~16 GiB past the map on the render master thread;
     # ano_render_submit is a bare ring push and apply.c:125/:167 forward the id raw, while the
-    # resolve twin guards this exact edge (:102) (docs/BUGS.md, Render / Vulkan backend /
+    # resolve twin guards this exact edge (:102) (docs/BUGS_DONE.md, Render / Vulkan backend /
     # Interface-level). Compiles the real render_slots.c TU with the heap tokens interposed onto
     # libc; pure index bookkeeping, no GPU device, no loader. Fails (crash on the wild store, or
     # a live slot handed to the sentinel) until the alloc seam rejects the sentinel.
@@ -676,7 +728,7 @@ if(TARGET anoptic_render)
     # Boot telemetry handshake guard: music_world_start spins ano_audio_acquire_telemetry
     # 200x and seeds ano_synth_transport_start from the out-param whether or not any acquire
     # succeeded, consuming uninitialized stack telemetry on the timeout arm (main.c:391,
-    # docs/BUGS.md, Engine / Interlink-Composition). Compiles the real main.c TU with the
+    # docs/BUGS_DONE.md, Engine / Interlink-Composition). Compiles the real main.c TU with the
     # acquire and transport-start seam tokens interposed to force the never-publish arm
     # deterministically; real audio world underneath, no GPU device touched. Fails (transport
     # seeded from a failed handshake) until the boot path honors the acquire's false arm.
@@ -690,7 +742,7 @@ if(TARGET anoptic_render)
     # BOTH dimensions of the buffer->image copy (texture.c:435) where its sibling
     # createTextureImageFromPixels passes (width, height) (:377), so every non-square file
     # over-reads the staging buffer (landscape) or leaves mip-0 rows undefined (portrait)
-    # (docs/BUGS.md, Render / Vulkan backend / Implementation). Compiles the real texture.c
+    # (docs/BUGS_DONE.md, Render / Vulkan backend / Implementation). Compiles the real texture.c
     # TU against link-seam vk/helper stubs that capture the copy region; real stbi decode,
     # no GPU device, no loader. Fails until the copy takes texHeight.
     add_executable(anotest_texuploadguard anotest_texuploadguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/texture/texture.c)
@@ -702,7 +754,7 @@ if(TARGET anoptic_render)
     # Transfer-queue presence guard: createLogicalDevice's transfer-queue fetch is armed by
     # indices->computePresent 〜 a copy-paste of the compute block above it 〜 not transferPresent,
     # and the queue-create loop consumes transferFamily with no presence check (device.c:663 /
-    # :537, docs/BUGS.md, Render / Vulkan backend / Implementation). A spec-legal family table
+    # :537, docs/BUGS_DONE.md, Render / Vulkan backend / Implementation). A spec-legal family table
     # that omits TRANSFER_BIT rides findQueueFamilies' UINT32_MAX sentinel into vkCreateDevice
     # and vkGetDeviceQueue. Compiles the real device.c TU against link-seam vk/config stubs that
     # capture every requested family index; no GPU device, no loader. Fails until the sentinel
@@ -1014,7 +1066,7 @@ if(TARGET anoptic_render)
     # ANO_VIEW_COUNT 2, imageExtent adopts the surface currentExtent 〜 the raw Win32 client
     # size 〜 and recreateSwapChain's only floor is the 0x0 wait loop (swapchain.c:340-:345);
     # Win32 minimum tracking size protects x but the client height drags into [1,22]
-    # (docs/BUGS.md, Render / Vulkan backend / Implementation, record_views.c:302). Compiles
+    # (docs/BUGS_DONE.md, Render / Vulkan backend / Implementation, record_views.c:302). Compiles
     # the real record_views.c + passes.c TUs against link-seam vk stubs capturing every
     # vkCmdSetScissor/vkCmdSetViewport argument; no GPU device, no loader. Fails until
     # small-height composites place (or skip) the inset legally.
@@ -1032,7 +1084,7 @@ if(TARGET anoptic_render)
     # vkGetPhysicalDeviceMemoryProperties, so a device exposing all 32 types evaluates 1 << 31 〜
     # a signed int shifted into its sign bit, UB under the build's C23 (6.5.7; this tree's clang
     # in -std=c23 traps it) 〜 on the very probe that should match bit 31; common codegen wraps
-    # to INT_MIN and happens to behave, which is why it stayed latent (docs/BUGS.md, Render /
+    # to INT_MIN and happens to behave, which is why it stayed latent (docs/BUGS_DONE.md, Render /
     # Vulkan backend / Implementation). Compiles the real gpu_alloc.c TU with -fsanitize=shift
     # so the abstract-machine UB is a deterministic halt instead of codegen luck; link-seam vk
     # stubs mint fake device memory and ledger every requested type index; no GPU device, no
@@ -1068,7 +1120,7 @@ if(TARGET anoptic_render)
     # per-element accessor reads without ever calling cgltf_validate 〜 cgltf's only accessor/
     # bufferView byte-range gate 〜 so a file whose accessor count*stride overruns its bufferView
     # (or whose bufferView overruns its buffer) is read out of bounds off the loaded heap block
-    # and returned as a "parsed" asset (docs/BUGS.md, Render / Implementation,
+    # and returned as a "parsed" asset (docs/BUGS_DONE.md, Render / Implementation,
     # ano_GltfParser.c:30). Compiles the parser TU directly with the GPU entry points stubbed:
     # the CPU parse path runs for real, no device, no window. Fails until the validate gate lands.
     add_executable(anotest_gltfguard anotest_gltfguard.c

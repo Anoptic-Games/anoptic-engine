@@ -226,7 +226,9 @@ void ano_ui_ref_paint(const AnoUiScene *s, uint32_t paintRef, float px, float py
         return;
     }
     const AnoUiPaint *pa = &s->paints[paintRef];
-    if (pa->stopCount == 0 || pa->stopFirst + pa->stopCount > s->stopCount) {
+    // Window checked by subtraction: stopFirst + stopCount wraps past this arm otherwise.
+    if (pa->stopCount == 0 || pa->stopFirst >= s->stopCount
+        || pa->stopCount > s->stopCount - pa->stopFirst) {
         out[0] = out[1] = out[2] = out[3] = 0.0f;
         return;
     }
@@ -320,16 +322,30 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4])
 
 /* Tiled Eval */
 
+// Entry word (frozen GPU ABI, uicoverage.glsl decodes the same): solid bit and index mask
+// partition the 32 bits, so the masked index is a plain uint32 that compares against
+// primCount without wrap or sign play.
+static_assert((ANO_UI_ENTRY_INDEX_MASK ^ ANO_UI_ENTRY_SOLID) == UINT32_MAX, // disjoint + total
+              "tile entry: solid bit and index mask partition the word");
+
 // One tile entry: normal shade, or (solid bit) coverage forced to 1 with the SDF skipped 〜
-// flat fill through clip and paint. Mirrors the GPU tiled branch.
-static void shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t py, float src[4])
+// flat fill through clip and paint. Mirrors the GPU tiled branch. SOLE entry->index decode:
+// out-of-range fails CLOSED (transparent, OVER), so no caller stream indexes past prims.
+// In: scene, entry word, pixel. Out: src contribution. Returns the entry's blend mode
+// (ANO_UI_BLEND_MASK domain).
+static uint32_t shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t py,
+                            float src[4])
 {
     uint32_t idx = entry & ANO_UI_ENTRY_INDEX_MASK;
-    if (!(entry & ANO_UI_ENTRY_SOLID)) {
-        ano_ui_ref_shade(s, idx, (float)px, (float)py, src);
-        return;
+    if (idx >= s->primCount) {
+        src[0] = src[1] = src[2] = src[3] = 0.0f;
+        return ANO_UI_BLEND_OVER; // zero contribution, identity under the OVER arm
     }
     const AnoUiPrim *p = &s->prims[idx];
+    if (!(entry & ANO_UI_ENTRY_SOLID)) {
+        ano_ui_ref_shade(s, idx, (float)px, (float)py, src);
+        return p->flags & ANO_UI_BLEND_MASK;
+    }
     float cov = 1.0f;
     if (p->clipRef != ANO_UI_REF_NONE)
         cov *= clip_cov(s, p->clipRef, (float)px, (float)py);
@@ -337,6 +353,7 @@ static void shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t
     ano_ui_ref_paint(s, p->paintRef, px + 0.5f, py + 0.5f, p->color, fill);
     for (int k = 0; k < 4; k++)
         src[k] = fill[k] * cov;
+    return p->flags & ANO_UI_BLEND_MASK;
 }
 
 // Painter's-order blend through the tile grid for pixel (px,py). Same loop as
@@ -354,10 +371,9 @@ void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
     }
     uint32_t tile = (uint32_t)ty * tilesX + (uint32_t)tx;
     for (uint32_t k = offsets[tile]; k < offsets[tile + 1]; k++) {
-        uint32_t entry = entries[k];
         float src[4];
-        shade_entry(s, entry, px, py, src);
-        if ((s->prims[entry & ANO_UI_ENTRY_INDEX_MASK].flags & ANO_UI_BLEND_MASK) == ANO_UI_BLEND_ADD) {
+        uint32_t mode = shade_entry(s, entries[k], px, py, src); // sole decode of the entry word
+        if (mode == ANO_UI_BLEND_ADD) {
             acc[0] += src[0];
             acc[1] += src[1];
             acc[2] += src[2];

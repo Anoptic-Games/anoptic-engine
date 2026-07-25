@@ -7,7 +7,7 @@
 // ano_simplify_ex with edge_len_factor 0, and ano_simplify_ex runs its link/tetra collapse
 // exclusion only when the growth guards are on (maxEdge2 != FLT_MAX at
 // ano_meshoptimizer.c:955), so the base public API executes topologically illegal collapses
-// the guards-on twin rejects (docs/BUGS.md, Mesh / Implementation). On a 3-triangle cone fan
+// the guards-on twin rejects (docs/BUGS_DONE.md, Mesh / Implementation). On a 3-triangle cone fan
 // one rim collapse rewrites a surviving triangle onto the remaining rim pair and the output
 // is the same face twice: two coincident opposite-wound triangles, a zero-volume sack that
 // z-fights and defeats the header's degenerate-dropping promise on its way into a LOD chain.

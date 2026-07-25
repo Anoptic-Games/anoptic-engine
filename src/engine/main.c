@@ -384,10 +384,17 @@ static bool music_world_start(void)
 		while (!ano_audio_submit(ab, &setup[i].cmd))
 			ano_sleep(1000);
 
-	// Transport start a few blocks ahead of playhead.
+	// Transport start a few blocks ahead of playhead. No publish in ~1 s -> no seed.
 	AnoAudioTelemetry t;
-	for (uint32_t spin = 0; spin < 200u && !ano_audio_acquire_telemetry(ab, &t); spin++)
+	bool haveTelem = false;
+	for (uint32_t spin = 0; spin < 200u; spin++) {
+		if (ano_audio_acquire_telemetry(ab, &t)) { haveTelem = true; break; }
 		ano_sleep(5000);
+	}
+	if (!haveTelem) {
+		ano_log(ANO_WARN, "Music: no mixer telemetry after 1 s; transport not started.");
+		return false; // silent run, as documented
+	}
 	ano_synth_transport_start(g_synth, (t.blockIndex + 8u) * (uint64_t)t.blockFrames);
 	ano_log(ANO_INFO, "Music: composing live at %u Hz (seed %u).", MUSIC_RATE,
 	        (unsigned)MUSIC_SEED);
@@ -468,6 +475,7 @@ static const char *const MODE_NAMES[7] = { "ionian", "dorian", "phrygian", "lydi
                                            "mixolydian", "aeolian", "locrian" };
 static const char *const PC_NAMES[12] = { "C", "C#", "D", "D#", "E", "F",
                                           "F#", "G", "G#", "A", "A#", "B" };
+static_assert(sizeof PC_NAMES / sizeof *PC_NAMES == 12, "PC_NAMES is a pitch-class table");
 static const char *const ROMAN[8] = { "-", "I", "II", "III", "IV", "V", "VI", "VII" };
 
 // Cursor -> axes (valence x, energy y, tension slider). Drag clamps outside the control.

@@ -6,7 +6,7 @@
 // Coverage: ano_synth_score_event field-range guard. AnoNoteEvent documents pitch as MIDI
 // 0..127 and velocity as 1..127 (anoptic_music.h), and the guard is the validation gate 〜
 // it already rejects dur <= 0, layer >= COUNT, and velocity == 0 〜 but it checks no upper
-// bound on velocity and no bound at all on pitch (docs/BUGS.md, Synth / Implementation,
+// bound on velocity and no bound at all on pitch (docs/BUGS_DONE.md, Synth / Implementation,
 // ano_synth.c:246). An accepted velocity 200 renders at powf(200/127, 1.5) ≈ 1.98, double
 // the contract's amplitude ceiling; an accepted pitch 130 lands in merge_ties' chains keyed
 // on pitch & 0x7F, aliasing pitch 2's tie chain and silently merging two different-pitch

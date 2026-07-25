@@ -19,6 +19,15 @@
 // handle, registers all ten post-create calls on it, and touches no NULL 〜 a fix that refuses every
 // window cannot pass. TRIGGER: the create fails; the contract demands NULL back with the dead handle
 // left untouched, and today ten GLFW entry points consume it. A crash is a valid failure signal.
+// Also pins initWindow's monitor choice: the list an index reaches into and the bound that index is
+// checked against must come from ONE glfwGetMonitors call, made after glfwInit. The prior shape passed
+// NULL as the count argument 〜 glfwGetMonitors asserts count != NULL and then writes *count = 0
+// unconditionally (external/glfw/src/monitor.c:304-:313), an abort under a debug GLFW and a NULL store
+// in release 〜 while bounding the index with monitors->monitorCount, which enumerateMonitors fills
+// before the only glfwInit (vulkanMaster.c:320 vs window.c:173) and which is therefore a permanent 0.
+// SELECTION: three monitors live, index 1 chosen, the create must target that entry of the queried
+// list; the stub fails the run if it is ever handed a NULL count. PROVENANCE: the true boot state
+// monitors = { .monitorCount = 0 } must not gate the fullscreen create.
 // Exit 0 == pass.
 
 #include <inttypes.h>
@@ -51,6 +60,14 @@ static uint32_t    g_goodCalls;       // handle-taking glfw calls on the live ha
 static char        g_nullNames[512];  // breach roll for the report
 static GLFWwindow* g_userPtrWindow;   // glfwSetWindowUserPointer's window argument
 static void*       g_userPtr;         // ...and its pointer argument
+
+static int          g_monitorStorage[3];                     // backing bytes for the reported monitors
+static GLFWmonitor* g_monitorList[3] = { (GLFWmonitor*)(void*)&g_monitorStorage[0],
+                                         (GLFWmonitor*)(void*)&g_monitorStorage[1],
+                                         (GLFWmonitor*)(void*)&g_monitorStorage[2] };
+static int          g_monitorCount;        // what the post-glfwInit query reports
+static uint32_t     g_chosenMonitorIndex = (uint32_t)-1;     // config's pick; windowed sentinel by default
+static uint32_t     g_monitorsNullCalls;   // glfwGetMonitors(NULL) 〜 run-wide, never reset
 
 // Clears the ledger and the per-phase renderer state.
 static void reset_ledger(void)
@@ -91,7 +108,7 @@ static void scrub_env(void)
 
 RendererState rendererState;
 
-uint32_t     getChosenMonitor(void)    { return (uint32_t)-1; }                   // windowed
+uint32_t     getChosenMonitor(void)    { return g_chosenMonitorIndex; }           // windowed by default
 Dimensions2D getChosenResolution(void) { return (Dimensions2D){ 1280, 720 }; }
 bool         getChosenBorderless(void) { return false; }
 
@@ -114,7 +131,20 @@ int  glfwInit(void) { return GLFW_TRUE; }
 int  glfwGetError(const char** description) { if (description) *description = "stub"; return 0; }
 void glfwWindowHint(int hint, int value) { (void)hint; (void)value; }
 
-GLFWmonitor** glfwGetMonitors(int* count) { if (count) *count = 0; return NULL; }
+// The provenance seam. GLFW asserts count != NULL and then writes *count unconditionally
+// (external/glfw/src/monitor.c:304-:313), so a NULL argument is an abort in a debug GLFW and a NULL
+// store in release 〜 recorded here instead of crashed. Returns NULL when empty, as GLFW does, which
+// only an index/bound pair drawn from this one call is allowed to make unreachable.
+GLFWmonitor** glfwGetMonitors(int* count)
+{
+    if (count == NULL) {
+        g_monitorsNullCalls++;
+        printf(" step: glfwGetMonitors(NULL) 〜 GLFW contract breach\n");
+    } else {
+        *count = g_monitorCount;
+    }
+    return g_monitorCount ? g_monitorList : NULL;
+}
 const GLFWvidmode* glfwGetVideoModes(GLFWmonitor* monitor, int* count) { (void)monitor; if (count) *count = 0; return NULL; }
 GLFWmonitor* glfwGetPrimaryMonitor(void) { static int s; return (GLFWmonitor*)(void*)&s; }
 const GLFWvidmode* glfwGetVideoMode(GLFWmonitor* monitor) { (void)monitor; static const GLFWvidmode m = { .width = 1920, .height = 1080 }; return &m; }
@@ -175,6 +205,38 @@ int main(void)
     CHECK(g_nullCalls == 0, "trigger: no glfw entry point consumed the NULL window (window.c:214 unguarded)");
     if (g_nullCalls)
         printf(" breached: %" PRIu32 " call(s) 〜 %s\n", g_nullCalls, g_nullNames);
+
+    // selection: three monitors exist post-glfwInit and the config picks index 1 〜 the create must land
+    // on that exact entry of the list whose bound was checked, and the query must never pass NULL
+    printf("selection: 3 monitors, chosen index 1 〜 expect the create on the queried monitors[1]\n");
+    reset_ledger();
+    memset(&rendererState, 0, sizeof rendererState);
+    g_failCreate = false;
+    g_monitorCount = 3;
+    g_chosenMonitorIndex = 1;
+    Monitors agreeing = { .monitorCount = 3 };   // stale struct that happens to agree with GLFW
+    GLFWwindow* win3 = initWindow(&ctx, &agreeing);
+    CHECK(win3 == LIVE_WINDOW, "selection: initWindow returns the created window");
+    CHECK(g_createCalls == 1, "selection: exactly one glfwCreateWindow");
+    CHECK(g_lastMonitor == g_monitorList[1], "selection: create targets monitors[1] of the queried list");
+    CHECK(g_nullCalls == 0, "selection: no glfw entry point sees a NULL window");
+
+    // provenance: the real boot state 〜 monitors->monitorCount is a permanent 0 from the pre-glfwInit
+    // enumerateMonitors (vulkanMaster.c:320), yet the fullscreen create must still happen, because the
+    // bound now comes from the same post-init query as the list. Fails any fix that only swaps the NULL
+    // count argument for a dummy int while still gating on the stale struct.
+    printf("provenance: stale monitorCount == 0 〜 expect the fullscreen create anyway\n");
+    reset_ledger();
+    memset(&rendererState, 0, sizeof rendererState);
+    g_monitorCount = 3;
+    g_chosenMonitorIndex = 2;
+    Monitors stale = { .monitorCount = 0 };
+    GLFWwindow* win4 = initWindow(&ctx, &stale);
+    CHECK(win4 == LIVE_WINDOW, "provenance: initWindow returns the created window");
+    CHECK(g_createCalls == 1, "provenance: exactly one glfwCreateWindow");
+    CHECK(g_lastMonitor == g_monitorList[2], "provenance: stale monitorCount does not gate the fullscreen create");
+
+    CHECK(g_monitorsNullCalls == 0, "glfwGetMonitors never received NULL (glfw monitor.c:304-:313)");
 
     if (failures) {
         printf("anotest_windowcreateguard: %d FAILURE(S)\n", failures);

@@ -147,7 +147,7 @@ static void mover_remove(RendererState* st, uint32_t slot) {
     MoverBound* mb = &st->movers[idx];
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
         if (mb->exposeMask & (1ull << s)) st->shadowExposed[s]--;
-    if (mb->unbounded && st->moverUnboundedCount) st->moverUnboundedCount--;
+    if (mb->unbounded) st->moverUnboundedCount--;
     uint32_t last = --st->moverCount;
     if (idx != last) {
         st->movers[idx] = st->movers[last];
@@ -236,7 +236,7 @@ void shadow_track_motion(RendererState* st, uint32_t slot, const AnoMotionDescri
     if (st->slotMotion[slot] != on) {
         st->slotMotion[slot] = on;
         if (on) st->motionActiveCount++;
-        else if (st->motionActiveCount) st->motionActiveCount--;
+        else    st->motionActiveCount--;
     }
     if (on) mover_set(st, slot, m);
     else    mover_remove(st, slot);

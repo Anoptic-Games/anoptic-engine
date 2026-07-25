@@ -6,7 +6,7 @@
 // Coverage: the transfer-queue arm of logical-device bring-up. createLogicalDevice guards its
 // transfer-queue fetch with indices->computePresent (device.c:663) 〜 a copy-paste of the compute
 // block directly above it 〜 instead of transferPresent, and the queue-create loop at :537 feeds
-// uniqueQueueFamilies from transferFamily with no presence check at all (docs/BUGS.md,
+// uniqueQueueFamilies from transferFamily with no presence check at all (docs/BUGS_DONE.md,
 // Render / Vulkan backend / Implementation). findQueueFamilies (same file, :69) reports
 // transferPresent=false / transferFamily=UINT32_MAX for a family table that omits TRANSFER_BIT
 // 〜 spec-legal: the transfer capability implied by graphics or compute is optional to report 〜

@@ -6,7 +6,7 @@
 // Coverage: the ano_aligned_malloc zero contract. anoptic_memory.h:47 promises "NULL if size
 // or alignment is 0", but all three platform implementations (memalign_win64.c:13 and the
 // linux/macos twins) forward straight to mi_malloc_aligned with no guard, and mimalloc hands
-// back a live unique pointer for size 0 (docs/BUGS.md, Memory / Implementation). Controls pin
+// back a live unique pointer for size 0 (docs/BUGS_DONE.md, Memory / Implementation). Controls pin
 // the live path 〜 a real aligned alloc returns aligned writable memory and frees 〜 so a
 // reject-everything fix cannot pass. The alignment-0 half of the contract holds today only by
 // mimalloc coincidence (alloc-aligned.c:177 refuses non-power-of-two) and is pinned too.

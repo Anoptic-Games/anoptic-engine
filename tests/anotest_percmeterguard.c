@@ -7,7 +7,7 @@
 // grouped-kick pickup kick[slots - 2] into bool kick[ANO_METER_MAX_SLOTS] whenever noteDensity
 // > 0.75, but ano_meter_slots exceeds the 32-slot cap for meters past 8 quarters 〜 9/4 is 36 〜
 // so the write lands at kick[34], past the stack array, and the readback loop reads kick[32..35]
-// off the frame (docs/BUGS.md, Music / Implementation). The same 32-wide shape breaks the hat
+// off the frame (docs/BUGS_DONE.md, Music / Implementation). The same 32-wide shape breaks the hat
 // lane: AnoGroove.hatDrops is a u32 slot bitmask and music_perc.c:154 computes hatDrops >> s for
 // s up to 35, a shift past the width that wraps to s & 31 on x86/arm, so mask bits for slots 0..3
 // silently drop the hats at 32..35 (ano_make_groove plants the same wrap at :79). Controls pin

@@ -29,6 +29,16 @@
 _Static_assert((ANO_LOG_RING_BYTES & (ANO_LOG_RING_BYTES - 1)) == 0, "ring bytes must be a power of two");
 _Static_assert(ANO_LOG_RING_LINES >= 64, "ring must hold at least one max-size entry (64 lines)");
 
+// Drain batch, sized for a full ring of drained text + <=16B prefix per record.
+// RESV = one worst-case rendered record ("HH:MM:SS " prefix + MSG_MAX body + '\n'); the drain
+// flushes mid-pass when less than RESV remains, so every per-record append stays in bounds.
+#define ANO_LOG_BATCH_CAP  ((size_t)ANO_LOG_RING_LINES * ANO_CACHE_LINE + (size_t)ANO_LOG_RING_LINES * 16u + 256u)
+#define ANO_LOG_BATCH_RESV ((size_t)ANO_LOG_TIME_RESV + ANO_LOG_MSG_MAX + 2u)
+
+_Static_assert(ANO_LOG_TIME_RESV >= 8u + 1u, "prefix budget covers 8-byte HMS + space");
+_Static_assert(ANO_LOG_BATCH_CAP >= ANO_LOG_TIME_RESV + ANO_LOG_MSG_MAX + 2u,
+               "batch holds one worst-case rendered record");
+
 // One log file per session: "<stamp>" ANO_LOG_FILESUFFIX via ano_fs_session_stamp().
 #define ANO_LOG_FILESUFFIX "_ano.log"
 

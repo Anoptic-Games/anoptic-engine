@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: drain-batch sizing vs deferred wide rendering (docs/BUGS.md, Log / Implementation).
+// Coverage: drain-batch sizing vs deferred wide rendering (docs/BUGS_DONE.md, Log / Implementation).
 // g_batch is sized ring bytes + 16 per record on the claim that a record's rendered text fits its
 // ring footprint. Deferred records break the claim: "%*d" width 4000 occupies one 64-byte ring
 // line yet renders ~4016 batch bytes, so any drain pass over a backlog of ~164+ such records must

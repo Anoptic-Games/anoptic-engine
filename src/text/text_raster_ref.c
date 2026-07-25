@@ -86,9 +86,12 @@ static inline float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 
 static inline float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
 
 // Unclamped coverage sum for one em-space window: walk stream, signed swept area / window area.
+// A blank glyph (curveCount 0) sums 0.0 and never touches pts, which may be NULL or exhausted.
 float ano_text_window_sum(const uint32_t *pts, const AnoGlyphEntry *g, float wx, float wy,
                           float w, float h)
 {
+    if (g->curveCount == 0)
+        return 0.0f; // blank: pointOffset owns nothing
     uint32_t i = g->pointOffset;
     float p0x = half_lo(pts[i]) - wx, p0y = half_hi(pts[i]) - wy;
     i++;

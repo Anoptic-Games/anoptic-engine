@@ -6,7 +6,7 @@
 // Coverage: ano_ui_path_fill contour-count guard. The baker bounds its quad budget (qn at
 // ui_path.c:95/122/139) but never the contour counter (cn): every MOVE segment writes
 // cstart[cn++] into the fixed 513-entry stack array cstart[UI_PATH_MAX_QUADS + 1] unchecked
-// (ui_path.c:99/108), and the :151 seal write adds one more (docs/BUGS.md, UI / Implementation).
+// (ui_path.c:99/108), and the :151 seal write adds one more (docs/BUGS_DONE.md, UI / Implementation).
 // A path with more than ~512 empty contours 〜 legal input the contract promises
 // ANO_UI_REF_NONE for ("the path is empty") 〜 sprays cstart past its end over the live quad
 // buffer q[] that sits just above it, and ano_ui_path_fill dies reading the corrupted geometry

@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Coverage: the mip-0 upload extents of the file texture path. createTextureImage passes
-// texture.texWidth as BOTH dimensions of the buffer->image copy (texture.c:435, docs/BUGS.md,
+// texture.texWidth as BOTH dimensions of the buffer->image copy (texture.c:435, docs/BUGS_DONE.md,
 // Render / Vulkan backend / Implementation), while its sibling createTextureImageFromPixels at
 // :377 passes (width, height) correctly. Every non-square file uploads wrong: landscape (w > h)
 // submits a copy region w rows tall against an h-row image and reads w*(w-h)*4 bytes past the

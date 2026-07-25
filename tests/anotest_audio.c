@@ -299,12 +299,15 @@ static bool pred_quiet(const AnoAudioTelemetry *t)     { return t->sourcesActive
 
 static void test_live_world(void)
 {
-    CHECK(ano_audio_init(NULL), "audio world up (defaults, null backend)");
+    // Backend pinned: ano_audio_init(NULL) means ANO_AUDIO_BACKEND_AUTO, which opens the real
+    // device and plays the click below out of the speakers. This is the offline round-trip.
+    AnoAudioConfig nullCfg = { .backend = ANO_AUDIO_BACKEND_NULL_DEV };
+    CHECK(ano_audio_init(&nullCfg), "audio world up (null backend)");
     AnoAudioBridge *b = anoAudioBridge();
     CHECK(b != NULL, "bridge handle valid after init");
     if (!b) return;
 
-    CHECK(!ano_audio_init(NULL), "double init rejected");
+    CHECK(!ano_audio_init(&nullCfg), "double init rejected");
 
     CHECK(wait_telemetry(b, pred_heartbeat, 2000), "mixer heartbeat (blocks advancing)");
 
@@ -349,7 +352,7 @@ static void test_live_world(void)
     CHECK(anoAudioBridge() == NULL, "bridge handle NULL after shutdown");
 
     // Re-init after shutdown.
-    CHECK(ano_audio_init(NULL), "re-init after shutdown");
+    CHECK(ano_audio_init(&nullCfg), "re-init after shutdown");
     CHECK(anoAudioBridge() != NULL, "bridge valid after re-init");
     ano_audio_shutdown();
 }

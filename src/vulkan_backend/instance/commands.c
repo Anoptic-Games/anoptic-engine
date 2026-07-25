@@ -168,9 +168,10 @@ uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropert
 	VkPhysicalDeviceMemoryProperties memProperties;
 	vkGetPhysicalDeviceMemoryProperties(ctx->physicalDevice, &memProperties);
 
+	// 1u: the domain runs to VK_MAX_MEMORY_TYPES (32), and signed 1 << 31 is UB.
 	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
 	{
-		if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+		if ((typeFilter & (1u << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
 		{
 			return i;
 		}

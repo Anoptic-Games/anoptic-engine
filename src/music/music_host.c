@@ -15,6 +15,36 @@
 
 #include "music_conductor.h"
 
+// Cadence cycle capacity: policy_of indexes cadencePolicies[phrase % count].
+#define CADENCE_CYCLE_MAX 8u
+static_assert(sizeof ((AnoMusicConfig *)0)->cadencePolicies == CADENCE_CYCLE_MAX
+              && sizeof ((AnoEngineConfig *)0)->cadencePolicies == CADENCE_CYCLE_MAX,
+              "cadence cycle capacity must match both configs");
+
+// Authored motif capacity: AnoMotif.n is the count the realizers and transforms iterate
+// (music_motif.c pitches_at / ano_motif_invert / ano_realize_*), and every one of them
+// writes an ANO_MOTIF_MAX-wide buffer. The ingress clamp below is bounded by
+// ANO_MOTIF_MAX, so the bound and the buffers must not drift apart.
+static_assert(sizeof ((AnoMotif *)0)->rhythm / sizeof(AnoRhythmNote) == ANO_MOTIF_MAX
+              && sizeof ((AnoMotif *)0)->contour / sizeof(int) == ANO_MOTIF_MAX,
+              "motif clamp bound must equal the motif buffers' extent");
+static_assert(ANO_MOTIF_MAX
+                  <= sizeof ((AnoPeriodPlanner *)0)->openingMelody[0] / sizeof(AnoPlacedNote),
+              "planner opening-melody row must hold a full motif");
+
+// Value domains for the two ingress fields that index static tables downstream:
+// mode reaches ano_mode_intervals' [ANO_MODE_COUNT][7], policy the [3]-wide cadence
+// tables. In: any double (an int converts). Out: true only in contract. NaN fails both.
+static bool mode_ok(double v)
+{
+    return v >= ANO_MODE_NONE && v < ANO_MODE_COUNT;
+}
+
+static bool cadence_ok(double v)
+{
+    return v >= ANO_CADENCE_NONE && v <= ANO_CADENCE_DECEPTIVE;
+}
+
 AnoMusicConfig ano_music_config_default(void)
 {
     AnoEngineConfig e = ano_engine_config_default();
@@ -50,20 +80,29 @@ AnoMusicConfig ano_music_config_default(void)
 }
 
 // Public config -> conductor config. Generator tuning stays on defaults.
+// Out-of-contract mode / cadence values degrade to their documented sentinel (NONE);
+// the cadence count is clamped to the array, like motifLibraryCount below. keyTonic wraps
+// into its pitch class and an authored motif's note count is clamped to its own buffers.
 static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
 {
     *e = ano_engine_config_default();
     e->meter = c->meter;
-    e->keyTonic = c->keyTonic;
-    e->mode = c->mode;
+    // pitch class 0..11 (anoptic_music.h): normalize like mode/cadence below.
+    // Stays signed: wander_target computes keyTonic + 7*step, step in {-1,+1}.
+    e->keyTonic = ((c->keyTonic % 12) + 12) % 12;
+    e->mode = mode_ok(c->mode) ? c->mode : ANO_MODE_NONE;
     e->valence = c->valence;
     e->energy = c->energy;
     e->tension = c->tension;
     if (c->phraseBars > 0)
         e->phraseBars = c->phraseBars;
     e->wanderPhrases = c->wanderPhrases;
-    memcpy(e->cadencePolicies, c->cadencePolicies, sizeof e->cadencePolicies);
-    e->cadencePolicyCount = c->cadencePolicyCount;
+    for (uint32_t i = 0; i < CADENCE_CYCLE_MAX; ++i)
+        e->cadencePolicies[i] = cadence_ok(c->cadencePolicies[i])
+                                    ? c->cadencePolicies[i]
+                                    : (int8_t)ANO_CADENCE_NONE;
+    e->cadencePolicyCount = c->cadencePolicyCount < CADENCE_CYCLE_MAX ? c->cadencePolicyCount
+                                                                     : CADENCE_CYCLE_MAX;
     e->hasMapper = c->hasMapper;
     e->mapper = c->mapper;
     e->hasDramaturg = c->hasDramaturg;
@@ -96,8 +135,11 @@ static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
             e->params.instruments[l] = (uint8_t)p->instruments[l];
     }
 
-    for (uint32_t i = 0; i < c->motifLibraryCount && i < ANO_SIG_MAX; ++i)
+    for (uint32_t i = 0; i < c->motifLibraryCount && i < ANO_SIG_MAX; ++i) {
         e->motifLibrary[i] = c->motifLibrary[i];
+        if (e->motifLibrary[i].motif.n > ANO_MOTIF_MAX) // authored count can't exceed the buffers
+            e->motifLibrary[i].motif.n = ANO_MOTIF_MAX;
+    }
     e->motifLibraryCount = c->motifLibraryCount < ANO_SIG_MAX ? c->motifLibraryCount
                                                               : ANO_SIG_MAX;
     e->motifLeniency = c->motifLeniency;
@@ -176,6 +218,8 @@ static int override_id(const char *param)
     return -1;
 }
 
+// Installs one pin. Cadence policy and mode index static tables downstream, so an
+// out-of-contract value installs no pin at all: the natural source keeps the seam.
 static void override_apply(AnoOverrides *o, int id, bool set, double v)
 {
     switch (id) {
@@ -190,8 +234,14 @@ static void override_apply(AnoOverrides *o, int id, bool set, double v)
         o->hasHarmonicRhythm = set;
         o->harmonicRhythm = v;
         break;
-    case OV_CADENCE: o->hasCadencePolicy = set; o->cadencePolicy = (int8_t)v; break;
-    case OV_MODE:    o->hasMode = set;          o->mode = (int)v; break;
+    case OV_CADENCE:
+        o->hasCadencePolicy = set && cadence_ok(v);
+        o->cadencePolicy = o->hasCadencePolicy ? (int8_t)v : (int8_t)ANO_CADENCE_NONE;
+        break;
+    case OV_MODE:
+        o->hasMode = set && mode_ok(v);
+        o->mode = o->hasMode ? (int)v : ANO_MODE_NONE;
+        break;
     case OV_TEXTURE: o->hasTexture = set;       o->texture = (AnoTexture)(int)v; break;
     case OV_CUTOFF:  o->hasFilterCutoff = set;  o->filterCutoff = v; break;
     case OV_REVERB:  o->hasReverbSend = set;    o->reverbSend = v; break;

@@ -63,9 +63,11 @@ bool render_slots_init(RenderSlotTable *table, mi_heap_t *heap, uint32_t maxSlot
 void render_slots_destroy(RenderSlotTable *table);
 
 // Alloc one slot (free-list else high-water). out: slot or UNMAPPED. inv: render_id unmapped.
+// The UNMAPPED sentinel is not a legal render_id; it is rejected, not mapped.
 uint32_t render_slots_alloc(RenderSlotTable *table, uint32_t render_id);
 
 // Contiguous range for RCMD_BULK_CREATE. out: base slot or UNMAPPED.
+// inv: a sentinel id anywhere in render_ids rejects the whole batch, nothing mapped.
 uint32_t render_slots_alloc_range(RenderSlotTable *table, const uint32_t *render_ids, uint32_t count);
 
 // Raise slot ceiling (caller grows GPU buffers first). Never shrinks.

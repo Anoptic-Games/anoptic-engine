@@ -618,6 +618,9 @@ bool ano_render_acquire_snapshot(AnoRenderBridge *bridge, RenderSnapshot *out);
 
 // Publish the view-0 camera pose for the renderer to use from its next recorded frame. Latest-wins;
 // call at most once per logic tick. Single-producer (the logic master that owns the bridge).
+// A degenerate pose (coincident eye/center, zero or parallel up, fovY outside (0, 180), any
+// non-finite field) is rejected and the previously accepted pose stands; before any accepted
+// publish the renderer keeps its built-in camera. Rejection warns once per bridge.
 void ano_render_publish_view(AnoRenderBridge *bridge, const AnoViewState *view);
 
 // Lighting-mode control (see AnoLightingMode). Selects the occlusion model used from the next

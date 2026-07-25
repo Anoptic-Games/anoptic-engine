@@ -5,7 +5,7 @@
 
 // Coverage: ano_audio_buffer_register bad-args guard. A frames count whose byte size wraps
 // uint64 (frames * channels * sizeof(float) >= 2^64) must be rejected with false, per the
-// header contract ("false = backpressure or bad args"). Exposes the BUGS.md audio
+// header contract ("false = backpressure or bad args"). Exposes the BUGS_DONE.md audio
 // implementation bug: the wrapped product passes the SIZE_MAX check, a near-empty block is
 // adopted with the huge frame count in its header, and the call returns true 〜 arming a
 // mixer-thread out-of-bounds read for any voice that plays the buffer. Null device, no cue

@@ -189,8 +189,8 @@ static double clock_time_at(const AnoSynth *s, double beat)
 bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
                            uint32_t tempoCount, uint32_t eventCount)
 {
-    if (barQuarters <= 0.0 || barCount == 0u)
-        return false;
+    if (barQuarters <= 0.0 || barCount == 0u || tempoCount == UINT32_MAX)
+        return false; // UINT32_MAX: the +1 seed anchor would wrap anchorCap to 0
     if (atomic_load_explicit(&s->startFrame, memory_order_acquire) != ANO_SYNTH_IDLE)
         return false; // must be idle
     mi_free(s->anchors);
@@ -222,8 +222,8 @@ bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
 
 bool ano_synth_score_tempo(AnoSynth *s, double beat, double bpm)
 {
-    if (bpm <= 0.0)
-        return false;
+    if (bpm <= 0.0 || !s->anchors || s->scoreReady)
+        return false; // no clock yet, or the map notes were stamped against is closed
     return clock_add(s, beat, bpm);
 }
 
@@ -243,8 +243,9 @@ bool ano_synth_score_bar(AnoSynth *s, uint32_t bar, const AnoMusicalParams *p,
 bool ano_synth_score_event(AnoSynth *s, const AnoNoteEvent *ev)
 {
     if (!ev || s->rawCount >= s->rawCap || ev->dur <= 0.0
-        || ev->layer >= ANO_MUSIC_LAYER_COUNT || ev->velocity == 0u)
-        return false;
+        || ev->layer >= ANO_MUSIC_LAYER_COUNT
+        || ev->velocity == 0u || ev->velocity > 127u || ev->pitch > 127u)
+        return false; // AnoNoteEvent: pitch 0..127, velocity 1..127
     s->raw[s->rawCount++] = *ev;
     return true;
 }
@@ -426,8 +427,9 @@ bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
     uint32_t from = s->noteCount;
     for (uint32_t i = 0; i < eventCount; ++i) {
         const AnoNoteEvent *ev = &events[i];
-        if (ev->dur <= 0.0 || ev->layer >= ANO_MUSIC_LAYER_COUNT || ev->velocity == 0u)
-            continue;
+        if (ev->dur <= 0.0 || ev->layer >= ANO_MUSIC_LAYER_COUNT
+            || ev->velocity == 0u || ev->velocity > 127u || ev->pitch > 127u)
+            continue; // AnoNoteEvent: pitch 0..127, velocity 1..127
         int32_t *slot = &s->openChain[ev->layer][ev->pitch & 0x7F];
         if (ev->tie == ANO_MUSIC_TIE_IN || ev->tie == ANO_MUSIC_TIE_BOTH) {
             if (*slot >= 0 && (uint32_t)*slot >= s->noteCursor) {

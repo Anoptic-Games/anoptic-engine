@@ -96,6 +96,8 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
                     return ANO_UI_REF_NONE;
                 q[qn++] = (AnoQuad){ { cx, 0.5 * (cx + sx), sx }, { cy, 0.5 * (cy + sy), sy } };
             }
+            if (cn >= UI_PATH_MAX_QUADS) // leave room for the seal write below
+                return ANO_UI_REF_NONE;
             cstart[cn++] = qn;
             cx = sx = sg->p[0];
             cy = sy = sg->p[1];
@@ -105,6 +107,8 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
         {
             if (!open) // segment before MOVE opens a contour at current origin
             {
+                if (cn >= UI_PATH_MAX_QUADS)
+                    return ANO_UI_REF_NONE;
                 cstart[cn++] = qn;
                 open = true;
             }

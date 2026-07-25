@@ -7,7 +7,7 @@
 // nTiles = tilesX * tilesY and :68 guards nTiles + 1 > offsetsCap, both in uint32, so
 // 65536 x 65536 wraps nTiles to 0, the guard passes, and the call reports *ok true for a
 // 2^32-tile grid the caller's buffers cannot hold 〜 with any prim in the scene, pass 1 then
-// scatters counts into offsets[] far past offsetsCap (docs/BUGS.md, UI / Implementation).
+// scatters counts into offsets[] far past offsetsCap (docs/BUGS_DONE.md, UI / Implementation).
 // The trigger keeps the scene EMPTY so the lie is observed as *ok == true, not as an OOB
 // write inside this test. The tilesX = UINT32_MAX, tilesY = 1 variant wraps nTiles + 1 to 0
 // and zero-fills 2^32 offsets out of bounds 〜 same entry, deliberately not exercised.

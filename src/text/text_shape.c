@@ -29,8 +29,7 @@ uint32_t ano_text_bake_slot(const AnoFontBake *bake, uint32_t codepoint)
 
 float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSlot)
 {
-    if (bake == NULL || bake->kernCount == 0
-        || leftSlot >= bake->glyphCount || rightSlot >= bake->glyphCount)
+    if (bake == NULL || bake->kernCount == 0)
         return 0.0f;
     uint32_t key = leftSlot << 16 | rightSlot;
     uint32_t lo = 0, hi = bake->kernCount;
@@ -46,7 +45,7 @@ float ano_text_kern(const AnoFontBake *bake, uint32_t leftSlot, uint32_t rightSl
                                                                 : 0.0f;
 }
 
-// Pen walk behind shape/measure x plain/runs. Validated args. Pair-kern chain survives a boundary iff size unchanged. Returns instance count. Optional pen / max line / lines / last run line step.
+// Pen walk behind shape/measure x plain/runs. Validated args. Pair-kern chain survives a boundary iff size unchanged. Returns instance count. Optional pen / max line / lines / line step of the last run that styled a codepoint (byteCount 0 runs are no-ops and never set it).
 static uint32_t shape_core(const AnoFontBake *bake, anostr_t text,
                            const AnoTextRun *runs, uint32_t runCount,
                            const float origin[2], AnoGlyphInstance *out, uint32_t cap,
@@ -122,8 +121,8 @@ static uint32_t shape_core(const AnoFontBake *bake, anostr_t text,
         *maxWOut = maxW;
     if (linesOut != NULL)
         *linesOut = lines;
-    if (endStepOut != NULL)
-        *endStepOut = bake->lineHeight * runs[runCount - 1].sizePx;
+    if (endStepOut != NULL) // runIdx rests on the run that styled the last codepoint
+        *endStepOut = bake->lineHeight * runs[runIdx].sizePx;
     return needed;
 }
 

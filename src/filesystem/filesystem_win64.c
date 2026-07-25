@@ -58,8 +58,8 @@ ano_fspath ano_fs_userpath(void) {
     if (len < 0 || len >= MAXPATH)
         return (ano_fspath){0};
 
-    if (_mkdir(result.str) != 0 && errno != EEXIST)
-        return (ano_fspath){0};
+    if (fs_mkdir(result.str) != 0)
+        return (ano_fspath){0}; // absent and uncreatable, or squatted by a non-directory
 
     result.length = (uint16_t)len;
     return result;
@@ -72,10 +72,18 @@ bool ano_fs_chdir_gamepath(void)
     return dir.length > 0 && _chdir(dir.str) == 0;
 }
 
-// Output: 0 on success or EEXIST, -1 on failure.
+// Output: 0 when `path` is a directory afterwards, -1 otherwise.
+// EEXIST is only success for a real directory: a file squatting the name would hand callers
+// a path every create under it rejects. POSIX twins' S_ISDIR is FILE_ATTRIBUTE_DIRECTORY here.
 int fs_mkdir(const char *path)
 {
-    return (_mkdir(path) == 0 || errno == EEXIST) ? 0 : -1;
+    if (_mkdir(path) == 0)
+        return 0;
+    if (errno != EEXIST)
+        return -1;
+
+    DWORD attr = GetFileAttributesA(path);
+    return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) ? 0 : -1;
 }
 
 

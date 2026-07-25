@@ -12,7 +12,7 @@
 // (text_internal.h:89: "Bounds-checked. Malformed -> nonzero with dense possibly partial. 0 =
 // success including 'no kerns'."). A caller cannot tell a corrupt/hostile GPOS table apart from a
 // well-formed one with no kerns 〜 the false arm it needs to fall back never fires.
-// (docs/BUGS.md, Text / Interface-level, text_gpos.c:304).
+// (docs/BUGS_DONE.md, Text / Interface-level, text_gpos.c:304).
 // Harness: links anoptic_core (text_gpos.c lives there); builds raw GPOS byte tables by hand and
 // drives the public extractor directly. No FreeType, no device.
 // CONTROL A: a well-formed type-2 PairPos table with one kern pair (gid 3 -> gid 5, -30) 〜 must

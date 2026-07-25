@@ -12,7 +12,7 @@
 // tree's own clang in -std=c23 traps it: "left shift of 1 by 31 places cannot be represented
 // in type 'int'"). Device-gated: common codegen wraps to INT_MIN and the & happens to select
 // bit 31, which is exactly why it stayed latent
-// (docs/BUGS.md, Render / Vulkan backend / Implementation, gpu_alloc.c:12).
+// (docs/BUGS_DONE.md, Render / Vulkan backend / Implementation, gpu_alloc.c:12).
 // Harness: compiles the REAL gpu_alloc.c TU with -fsanitize=shift -fno-sanitize-recover=shift
 // so the abstract-machine UB is a deterministic trap, not codegen luck; link-seam vk stubs mint
 // fake device memory and ledger every requested memoryTypeIndex 〜 no GPU device, no loader.
