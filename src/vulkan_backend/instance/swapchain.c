@@ -22,27 +22,21 @@
 #include "vulkan_backend/text_raster.h"
 
 
-struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface) // Available swap chains and capabilities
+// Surface enumeration caps. Real surfaces report far fewer; a longer list is clamped, never overrun.
+enum { MAX_SURFACE_FORMATS = 64, MAX_PRESENT_MODES = 16 };
+
+// Everything a swapchain needs from its surface. Values only, no owned storage.
+typedef struct SwapChainSupport
 {
-	struct SwapChainSupportDetails details;
-
-	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, *surface, &details.capabilities);
-
-	vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, NULL);
-
-	details.formats = (VkSurfaceFormatKHR*) calloc(1, details.formatCount * sizeof(VkSurfaceFormatKHR));
-	vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, details.formats);
-
-	vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, NULL);
-
-	details.presentModes = (VkPresentModeKHR*) calloc(1, details.presentModesCount * sizeof(VkPresentModeKHR));
-	vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, details.presentModes);
-		
-	return details;
-}
+	VkSurfaceCapabilitiesKHR capabilities;
+	VkSurfaceFormatKHR       format;
+	VkPresentModeKHR         presentMode;
+} SwapChainSupport;
 
 
-VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats, uint32_t formatCount) 
+// Preferred format if the surface offers it, else the first one reported.
+// availableFormats holds formatCount entries; formatCount is non-zero.
+static VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats, uint32_t formatCount)
 {
     for (uint32_t i = 0; i < formatCount; i++) 
     {
@@ -54,7 +48,9 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats,
     return availableFormats[0];
 }
 
-VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, uint32_t preferredMode) 
+// preferredMode if the surface offers it, else FIFO, which the spec always guarantees.
+// availablePresentModes holds presentModesCount entries.
+static VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, uint32_t preferredMode)
 {
     for (uint32_t i = 0; i < presentModesCount; i++) 
     {
@@ -66,7 +62,7 @@ VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, 
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) 
+static VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window)
 { // Central init component, also used during resizes
 		if (capabilities.currentExtent.width != UINT32_MAX)
 		{
@@ -105,26 +101,68 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 		}
 }
 
+// Surface capabilities plus the format and present mode selected from them.
+// Inputs: device (VkPhysicalDevice), surface (VkSurfaceKHR), preferredMode (uint32_t).
+// Output: bool; *out is a total out-param, zeroed on every false. False means unreadable
+// capabilities or a zero-format surface, so *out.format after true is one the surface listed.
+static bool querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t preferredMode, SwapChainSupport* out)
+{
+    *out = (SwapChainSupport){0};
+    SwapChainSupport support = {0};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &support.capabilities) != VK_SUCCESS)
+        return false;
+
+    VkSurfaceFormatKHR formats[MAX_SURFACE_FORMATS];
+    uint32_t formatCount = 0;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, NULL) != VK_SUCCESS || formatCount == 0)
+        return false;
+    if (formatCount > MAX_SURFACE_FORMATS)
+        formatCount = MAX_SURFACE_FORMATS; // VK_INCOMPLETE, not an error
+
+    VkResult formatResult = vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, formats);
+    if ((formatResult != VK_SUCCESS && formatResult != VK_INCOMPLETE) || formatCount == 0)
+        return false;
+    support.format = chooseSwapSurfaceFormat(formats, formatCount);
+
+    VkPresentModeKHR modes[MAX_PRESENT_MODES];
+    uint32_t modeCount = 0;
+    support.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, NULL) == VK_SUCCESS && modeCount > 0)
+    {
+        if (modeCount > MAX_PRESENT_MODES)
+            modeCount = MAX_PRESENT_MODES;
+        VkResult modeResult = vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, modes);
+        if ((modeResult == VK_SUCCESS || modeResult == VK_INCOMPLETE) && modeCount > 0)
+            support.presentMode = chooseSwapPresentMode(modes, modeCount, preferredMode);
+    }
+
+    *out = support;
+    return true;
+}
+
 bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state) // Selects and initializes a swap chain
 {
-    struct SwapChainSupportDetails details = querySwapChainSupport(ctx->physicalDevice, &(ctx->surface));
+    SwapChainSupport support;
+    if (!querySwapChainSupport(ctx->physicalDevice, ctx->surface, preferredMode, &support))
+    {
+        ano_log(ANO_ERROR, "Failed to query swap chain support!");
+        return false;
+    }
 
-    VkSurfaceFormatKHR chosenFormat = chooseSwapSurfaceFormat(details.formats, details.formatCount);
-    VkPresentModeKHR chosenPresentMode = chooseSwapPresentMode(details.presentModes, details.presentModesCount, preferredMode);
-    VkExtent2D chosenExtent = chooseSwapExtent(details.capabilities, window);
+    VkExtent2D chosenExtent = chooseSwapExtent(support.capabilities, window);
 
-    uint32_t imageCount = details.capabilities.minImageCount + 1; // Request one more than minimum
-    if (details.capabilities.maxImageCount > 0 && imageCount > details.capabilities.maxImageCount) 
+    uint32_t imageCount = support.capabilities.minImageCount + 1; // Request one more than minimum
+    if (support.capabilities.maxImageCount > 0 && imageCount > support.capabilities.maxImageCount)
     { // maxImageCount 0 means no upper limit
-        imageCount = details.capabilities.maxImageCount;
+        imageCount = support.capabilities.maxImageCount;
     }
 
     VkSwapchainCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     createInfo.surface = ctx->surface;
     createInfo.minImageCount = imageCount;
-    createInfo.imageFormat = chosenFormat.format;
-    createInfo.imageColorSpace = chosenFormat.colorSpace;
+    createInfo.imageFormat = support.format.format;
+    createInfo.imageColorSpace = support.format.colorSpace;
     createInfo.imageExtent = chosenExtent;
     createInfo.imageArrayLayers = 1; // Always 1 unless developing stereoscopic 3D
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -145,14 +183,14 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
         createInfo.pQueueFamilyIndices = NULL; // Optional
     }
 
-    createInfo.preTransform = details.capabilities.currentTransform; // No pre-transform
+    createInfo.preTransform = support.capabilities.currentTransform; // No pre-transform
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // Ignore alpha channel
-    createInfo.presentMode = chosenPresentMode;
+    createInfo.presentMode = support.presentMode;
     createInfo.clipped = VK_TRUE; // Discard obscured pixels
     createInfo.oldSwapchain = oldSwapChain; // Old swapchain aids resource transfer on recreate
 
     VkSwapchainKHR swapChain;
-    if (vkCreateSwapchainKHR(ctx->device, &createInfo, NULL, &swapChain) != VK_SUCCESS) 
+    if (vkCreateSwapchainKHR(ctx->device, &createInfo, NULL, &swapChain) != VK_SUCCESS)
     {
         return false;
     }
@@ -163,7 +201,7 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
     vkGetSwapchainImagesKHR(ctx->device, swapChain, &imageCount, swapChainImages);
 
     state->swapChain = swapChain;
-    state->imageFormat = chosenFormat.format;
+    state->imageFormat = support.format.format;
     state->imageExtent = chosenExtent;
     // Per-view render extents: view 0 fills swapchain, aux views inset at W/3 x H/3
     state->viewExtent[0] = chosenExtent;

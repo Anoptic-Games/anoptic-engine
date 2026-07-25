@@ -73,45 +73,48 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
 	// Depth pre-pass variant (index 2) uses the ANO_DEPTH_ONLY compile of the same source.
 	// Paths are exe-relative; loadFile resolves them against ano_fs_gamepath().
-	struct Buffer geomShaderCode;
+	// Unwind idiom: every buffer and module is inert at declaration, so any arm past this point
+	// leaves via `goto fail`, which discharges whatever is live. loadFile leaves its buffer
+	// indeterminate when it refuses, so a refused load re-inerts before unwinding.
+	struct Buffer geomShaderCode = {0}, depthGeomShaderCode = {0}, fragShaderCode = {0};
+	VkShaderModule geomShaderModule = VK_NULL_HANDLE, depthGeomShaderModule = VK_NULL_HANDLE,
+		fragShaderModule = VK_NULL_HANDLE, taskModule = VK_NULL_HANDLE;
+
 	char geomShaderPath[64];
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
 		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
+	if (!loadFile(geomShaderPath, &geomShaderCode)) { geomShaderCode.data = NULL; goto fail; }
 
-	struct Buffer depthGeomShaderCode;
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
 		useMesh ? (useTask ? "flat_depth_task.mesh" : "flat_depth.mesh") : "flat_depth.vert");
-	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) return false;
+	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) { depthGeomShaderCode.data = NULL; goto fail; }
 
-	struct Buffer fragShaderCode;
 	// fp16 variant when the device has shaderFloat16; masked lane loads the ANO_ALPHA_MASK compile.
 	const char* fragPath = masked
 		? (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_masked_fp16.frag.spv"
 		                                         : "resources/shaders/flat_masked.frag.spv")
 		: (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_fp16.frag.spv"
 		                                         : "resources/shaders/flat.frag.spv");
-	if (!loadFile(fragPath, &fragShaderCode)) return false;
+	if (!loadFile(fragPath, &fragShaderCode)) { fragShaderCode.data = NULL; goto fail; }
 
-	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
-	VkShaderModule depthGeomShaderModule = createShaderModule(ctx->device, &depthGeomShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+	geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
+	depthGeomShaderModule = createShaderModule(ctx->device, &depthGeomShaderCode);
+	fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
 	// Task meshlet-cull stage: cone culling only on the BACK-culled lane.
-	VkShaderModule taskModule = VK_NULL_HANDLE;
 	TaskStageStorage taskStore;
 	VkPipelineShaderStageCreateInfo taskStageInfo = {};
 	if (useTask && !ano_pipeline_task_stage(ctx, VK_FALSE,
 			cullMode == VK_CULL_MODE_BACK_BIT ? VK_TRUE : VK_FALSE,
 			&taskStore, &taskModule, &taskStageInfo))
-		return false;
+		goto fail;
 
 	// One gate for all three mints: the depth stage is minted complete here, not patched later.
 	VkPipelineShaderStageCreateInfo geomShaderStageInfo, depthGeomStageInfo, fragShaderStageInfo;
 	if (!ano_pipeline_stage(geometryStage, geomShaderModule, NULL, &geomShaderStageInfo)
 		|| !ano_pipeline_stage(geometryStage, depthGeomShaderModule, NULL, &depthGeomStageInfo)
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, NULL, &fragShaderStageInfo))
-		return false;
+		goto fail;
 
 	// [task,] geom, frag stage array, task slot first.
 	VkPipelineShaderStageCreateInfo shaderStages[3] = {taskStageInfo, geomShaderStageInfo, fragShaderStageInfo};
@@ -242,7 +245,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	pipelineInfo.subpass = 0;
 
 	// Opaque variant (index 0): EQUAL, no write. Masked: LESS + write + alpha-to-coverage.
-	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) goto fail;
 	proto->implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[0].depthWrite = masked ? VK_TRUE : VK_FALSE;
 	proto->implementations[0].blendEnable = VK_FALSE;
@@ -259,7 +262,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	colorBlendAttachment->alphaBlendOp = VK_BLEND_OP_ADD;
 	blendAttachments[1].colorWriteMask = 0; // id unwritten
 
-	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) goto fail;
 	proto->implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
@@ -293,7 +296,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	prepassInfo.pColorBlendState = &prepassBlend;
 	prepassInfo.pMultisampleState = &prepassMs;
 
-	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &prepassInfo, NULL, &proto->implementations[2].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &prepassInfo, NULL, &proto->implementations[2].pipeline) != VK_SUCCESS) goto fail;
 	proto->implementations[2].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[2].depthWrite = VK_TRUE;
 	proto->implementations[2].blendEnable = VK_FALSE;
@@ -309,6 +312,18 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
 	return true;
+
+	// Unconditional: mi_free ignores NULL, vkDestroyShaderModule ignores VK_NULL_HANDLE.
+	// Pipelines and the layout stay for ano_pipeline_flat_cleanup.
+fail:
+	ano_aligned_free(geomShaderCode.data);
+	ano_aligned_free(depthGeomShaderCode.data);
+	ano_aligned_free(fragShaderCode.data);
+	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, depthGeomShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, taskModule, NULL);
+	return false;
 }
 
 bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)

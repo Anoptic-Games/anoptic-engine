@@ -46,21 +46,27 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// Depth-only geometry variant (ANO_DEPTH_ONLY compile of flat.mesh/flat.vert).
-	struct Buffer geomCode, fragCode;
+	// Unwind idiom: every buffer and module of the depth phase is inert at declaration, so any arm
+	// past this point leaves via `goto fail`, which discharges whatever is live. The masked
+	// caster's pair is declared here for the same reason. loadFile leaves its buffer indeterminate
+	// when it refuses, so a refused load re-inerts before unwinding.
+	struct Buffer geomCode = {0}, fragCode = {0}, mGeomCode = {0}, mFragCode = {0};
+	VkShaderModule geomModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE, taskModule = VK_NULL_HANDLE,
+		mGeomModule = VK_NULL_HANDLE, mFragModule = VK_NULL_HANDLE;
+
 	char path[64];
 	snprintf(path, sizeof(path), "resources/shaders/%s.spv",
 		useMesh ? (useTask ? "flat_depth_task.mesh" : "flat_depth.mesh") : "flat_depth.vert");
-	if (!loadFile(path, &geomCode)) return false;
-	if (!loadFile("resources/shaders/shadow_depth.frag.spv", &fragCode)) return false;
-	VkShaderModule geomModule = createShaderModule(ctx->device, &geomCode);
-	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+	if (!loadFile(path, &geomCode)) { geomCode.data = NULL; goto fail; }
+	if (!loadFile("resources/shaders/shadow_depth.frag.spv", &fragCode)) { fragCode.data = NULL; goto fail; }
+	geomModule = createShaderModule(ctx->device, &geomCode);
+	fragModule = createShaderModule(ctx->device, &fragCode);
 
 	// Task meshlet cull, shadow variant: frustum-only.
-	VkShaderModule taskModule = VK_NULL_HANDLE;
 	TaskStageStorage taskStore;
 	VkPipelineShaderStageCreateInfo taskStageInfo = {};
 	if (useTask && !ano_pipeline_task_stage(ctx, VK_TRUE, VK_FALSE, &taskStore, &taskModule, &taskStageInfo))
-		return false;
+		goto fail;
 
 	// shadowPass = true (constant_id 0 in flat.mesh / flat.vert).
 	VkBool32 shadowPassTrue = VK_TRUE;
@@ -71,7 +77,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	stages[0] = taskStageInfo; // leading task slot
 	if (!ano_pipeline_stage(geometryStage, geomModule, &specInfo, &stages[1])
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[2]))
-		return false;
+		goto fail;
 
 	VkPipelineViewportStateCreateInfo viewportState = {};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -151,19 +157,18 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	// Shares fixed state, only stages differ. Must precede the shader frees (reuses taskModule).
 	VkResult mr = VK_SUCCESS;
 	if (r == VK_SUCCESS) {
-		struct Buffer mGeomCode, mFragCode;
 		snprintf(path, sizeof(path), "resources/shaders/%s.spv",
 			useMesh ? (useTask ? "flat_depth_masked_task.mesh" : "flat_depth_masked.mesh") : "flat_depth_masked.vert");
-		if (!loadFile(path, &mGeomCode)) return false;
-		if (!loadFile("resources/shaders/shadow_depth_masked.frag.spv", &mFragCode)) return false;
-		VkShaderModule mGeomModule = createShaderModule(ctx->device, &mGeomCode);
-		VkShaderModule mFragModule = createShaderModule(ctx->device, &mFragCode);
+		if (!loadFile(path, &mGeomCode)) { mGeomCode.data = NULL; goto fail; }
+		if (!loadFile("resources/shaders/shadow_depth_masked.frag.spv", &mFragCode)) { mFragCode.data = NULL; goto fail; }
+		mGeomModule = createShaderModule(ctx->device, &mGeomCode);
+		mFragModule = createShaderModule(ctx->device, &mFragCode);
 
 		VkPipelineShaderStageCreateInfo mStages[3] = { stages[0], stages[1], stages[2] };
 		// Same shadowPass spec info, masked modules.
 		if (!ano_pipeline_stage(geometryStage, mGeomModule, &specInfo, &mStages[1])
 			|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, mFragModule, NULL, &mStages[2]))
-			return false;
+			goto fail;
 		pipelineInfo.pStages = useTask ? mStages : &mStages[1];
 
 		mr = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &pipelineInfo, NULL, &state->shadowPipelineMasked);
@@ -205,18 +210,21 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (vkCreatePipelineLayout(ctx->device, &blurLayoutInfo, NULL, &state->shadowBlurLayout) != VK_SUCCESS) {
 		ano_log(ANO_FATAL, "Failed to create shadow blur pipeline layout!"); return false; }
 
-	struct Buffer blurVertCode, blurFragCode;
+	// Second unwind phase: the depth phase is fully discharged above, so the blur pair carries its
+	// own label.
+	struct Buffer blurVertCode = {0}, blurFragCode = {0};
+	VkShaderModule blurVert = VK_NULL_HANDLE, blurFrag = VK_NULL_HANDLE;
 	snprintf(path, sizeof(path), "resources/shaders/%s.spv",
 		ctx->deviceCapabilities.shaderOutputLayer ? "shadowblur.vert" : "tonemap.vert");
-	if (!loadFile(path, &blurVertCode)) return false;
-	if (!loadFile("resources/shaders/shadowblur.frag.spv", &blurFragCode)) return false;
-	VkShaderModule blurVert = createShaderModule(ctx->device, &blurVertCode);
-	VkShaderModule blurFrag = createShaderModule(ctx->device, &blurFragCode);
+	if (!loadFile(path, &blurVertCode)) { blurVertCode.data = NULL; goto fail_blur; }
+	if (!loadFile("resources/shaders/shadowblur.frag.spv", &blurFragCode)) { blurFragCode.data = NULL; goto fail_blur; }
+	blurVert = createShaderModule(ctx->device, &blurVertCode);
+	blurFrag = createShaderModule(ctx->device, &blurFragCode);
 
 	VkPipelineShaderStageCreateInfo blurStages[2];
 	if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, blurVert, NULL, &blurStages[0])
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, blurFrag, NULL, &blurStages[1]))
-		return false;
+		goto fail_blur;
 
 	VkPipelineVertexInputStateCreateInfo blurVertexInput = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 	VkPipelineInputAssemblyStateCreateInfo blurIA = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -257,4 +265,25 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (br != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create shadow blur pipeline!"); return false; }
 
 	return true;
+
+	// Unconditional: mi_free ignores NULL, vkDestroyShaderModule ignores VK_NULL_HANDLE.
+	// Sampler, cache, layouts and pipelines stay for ano_vk_cleanup_pipelines.
+fail:
+	ano_aligned_free(geomCode.data);
+	ano_aligned_free(fragCode.data);
+	ano_aligned_free(mGeomCode.data);
+	ano_aligned_free(mFragCode.data);
+	vkDestroyShaderModule(ctx->device, geomModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragModule, NULL);
+	vkDestroyShaderModule(ctx->device, mGeomModule, NULL);
+	vkDestroyShaderModule(ctx->device, mFragModule, NULL);
+	vkDestroyShaderModule(ctx->device, taskModule, NULL);
+	return false;
+
+fail_blur:
+	ano_aligned_free(blurVertCode.data);
+	ano_aligned_free(blurFragCode.data);
+	vkDestroyShaderModule(ctx->device, blurVert, NULL);
+	vkDestroyShaderModule(ctx->device, blurFrag, NULL);
+	return false;
 }

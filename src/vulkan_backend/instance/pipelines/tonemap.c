@@ -52,16 +52,21 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->tonemapCache) != VK_SUCCESS)
 		state->tonemapCache = VK_NULL_HANDLE;
 
-	struct Buffer vertCode, fragCode;
-	if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode)) return false;
-	if (!loadFile("resources/shaders/tonemap.frag.spv", &fragCode)) return false;
-	VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+	// Unwind idiom: blobs and modules are held from here to the tail discharge, so every refusal in
+	// between takes `goto fail`, which discharges unconditionally (free(NULL) and destroying
+	// VK_NULL_HANDLE are both no-ops). A refused load clears its own buffer first: loadFile leaves
+	// data dangling on a short read.
+	struct Buffer vertCode = {0}, fragCode = {0};
+	VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
+	if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode)) { vertCode.data = NULL; goto fail; }
+	if (!loadFile("resources/shaders/tonemap.frag.spv", &fragCode)) { fragCode.data = NULL; goto fail; }
+	vertModule = createShaderModule(ctx->device, &vertCode);
+	fragModule = createShaderModule(ctx->device, &fragCode);
 
 	VkPipelineShaderStageCreateInfo stages[2];
 	if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
-		return false;
+		goto fail;
 
 	// No vertex buffers, fullscreen triangle from gl_VertexIndex.
 	VkPipelineVertexInputStateCreateInfo vertexInput = {};
@@ -144,4 +149,11 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 		return false;
 	}
 	return true;
+
+fail:
+	ano_aligned_free(vertCode.data);
+	ano_aligned_free(fragCode.data);
+	vkDestroyShaderModule(ctx->device, vertModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragModule, NULL);
+	return false;
 }

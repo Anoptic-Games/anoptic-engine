@@ -87,6 +87,27 @@ uint32_t render_slots_alloc(RenderSlotTable *t, uint32_t render_id)
     return slot;
 }
 
+// Unpublishes the first n elements of a batch. slotHighWater never moved, so
+// nothing else to undo.
+static void alloc_range_rollback(RenderSlotTable *t, const uint32_t *render_ids,
+                                 uint32_t base, uint32_t n)
+{
+    for (uint32_t j = 0; j < n; j++) {
+        t->logicalToSlot[render_ids[j]] = ANO_RENDER_SLOT_UNMAPPED;
+        t->slotToLogical[base + j]      = ANO_RENDER_SLOT_UNMAPPED;
+    }
+}
+
+// Contiguous slot range for a bulk spawn, taken from the high-water region.
+// in: table, render_ids (count entries, each unmapped and distinct from the rest;
+//     the UNMAPPED sentinel is out of domain), count > 0
+// out: base slot, or UNMAPPED on a sentinel id, an already-mapped id, an intra-batch
+//      duplicate, at capacity, or on OOM
+// inv: every failure arm leaves all mappings untouched 〜 a mid-batch refusal walks
+//      back the prefix it published; slotHighWater advances only once the batch is
+//      whole. This walk is the only publisher, so an id found mapped mid-walk is
+//      either live or a duplicate earlier in the same batch; both are refused, since
+//      republishing would strand the slot the first publish took.
 uint32_t render_slots_alloc_range(RenderSlotTable *t, const uint32_t *render_ids, uint32_t count)
 {
     if (count == 0u) return ANO_RENDER_SLOT_UNMAPPED;
@@ -98,7 +119,15 @@ uint32_t render_slots_alloc_range(RenderSlotTable *t, const uint32_t *render_ids
 
     uint32_t base = t->slotHighWater;
     for (uint32_t i = 0; i < count; i++) {
-        if (!logical_reserve(t, render_ids[i])) return ANO_RENDER_SLOT_UNMAPPED;
+        if (!logical_reserve(t, render_ids[i])) {
+            alloc_range_rollback(t, render_ids, base, i);
+            return ANO_RENDER_SLOT_UNMAPPED;
+        }
+        // Live id or duplicate of an earlier element: publishing would strand a slot.
+        if (t->logicalToSlot[render_ids[i]] != ANO_RENDER_SLOT_UNMAPPED) {
+            alloc_range_rollback(t, render_ids, base, i);
+            return ANO_RENDER_SLOT_UNMAPPED;
+        }
         t->logicalToSlot[render_ids[i]] = base + i;
         t->slotToLogical[base + i] = render_ids[i];
     }

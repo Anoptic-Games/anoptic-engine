@@ -164,15 +164,6 @@ typedef struct RenderEntity
 static_assert(offsetof(RenderEntity, transform) == 16 && sizeof(RenderEntity) == 80,
               "RenderEntity no longer matches std430");
 
-typedef struct SwapChainSupportDetails 
-{
-    VkSurfaceCapabilitiesKHR capabilities;
-    uint32_t formatCount;
-    VkSurfaceFormatKHR *formats;
-    uint32_t presentModesCount;
-    VkPresentModeKHR *presentModes;
-} SwapChainSupportDetails;
-
 typedef struct VulkanContext
 {
     VkInstance               instance;

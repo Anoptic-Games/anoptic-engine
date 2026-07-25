@@ -123,6 +123,23 @@ static void free_owned_bulk(const RenderCommand* c)
     if (blk) mi_free(blk);
 }
 
+// Consumer-side guard for the alloc contract's "render_id unmapped" invariant (render_slots.h),
+// batch flavor: alloc_range would overwrite a live id's forward map and strand its slot forever.
+// Batch-atomic 〜 one live id refuses the whole batch, since a partial spawn is the same defect.
+// in:  table, ids (count entries)
+// out: bool, true if any id is already mapped; the first offender is named on the way out
+[[nodiscard]] static bool bulk_ids_mapped(const RenderSlotTable* t, const uint32_t* ids, uint32_t count)
+{
+    for (uint32_t i = 0; i < count; i++) {
+        if (render_slots_resolve(t, ids[i]) != ANO_RENDER_SLOT_UNMAPPED) {
+            ano_log(ANO_ERROR, "Render bridge: BULK_CREATE names live render_id %u; batch dropped "
+                    "(destroy it first to re-create).", ids[i]);
+            return true;
+        }
+    }
+    return false;
+}
+
 // Establish both light-payload domains on a drained command: the LightType, and the static palette
 // row a scene light-entity may name. Both are producer-supplied and unvalidated on the ring 〜 type
 // indexes shadowTypeUsed and rides LightData.type + ShadowFrustumConfig.lightType to the shaders,
@@ -176,6 +193,14 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             break;
 
         case RCMD_CREATE: {
+            // Alloc's "render_id unmapped" invariant (render_slots.h) is enforced here, on the seam,
+            // as the light sibling's double-attach refusal is: a second CREATE of a live id mints a
+            // second slot, overwrites the forward map, and strands the first slot live forever.
+            if (render_slots_resolve(&state->slots, cmd.render_id) != ANO_RENDER_SLOT_UNMAPPED) {
+                ano_log(ANO_ERROR, "Render bridge: CREATE names live render_id %u; command dropped "
+                        "(destroy it first to re-create).", cmd.render_id);
+                break; // duplicate CREATE of a live id: drop
+            }
             // Grow if no recycled hole is available and the high-water is at the ceiling.
             if (state->slots.freeCount == 0u && state->slots.slotHighWater >= state->slots.slotCapacity &&
                 !ensureEntityCapacity(state, state->slots.slotHighWater + 1u, frameIndex))
@@ -218,6 +243,9 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
         case RCMD_BULK_CREATE: {
             const RenderCreateBatch* b = cmd.batch;
             if (!b) break;
+            if (bulk_ids_mapped(&state->slots, b->render_ids, b->count)) {
+                free_owned_bulk(&cmd); break; // a live id anywhere in the batch: drop the batch whole
+            }
             // alloc_range needs a contiguous run from the high-water mark.
             if (!ensureEntityCapacity(state, state->slots.slotHighWater + b->count, frameIndex)) {
                 free_owned_bulk(&cmd); break; // growth failed: drop the batch

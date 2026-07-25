@@ -38,8 +38,11 @@ static FILE* openEngineFile(const char* relative)
 	return fopen(path, "rb");
 }
 
+// inv: false leaves *buffer inert ({NULL, 0}) on every arm 〜 callers unwind without re-inerting
 bool loadFile(const char* filename, struct Buffer* buffer)
 {
+	*buffer = (struct Buffer){0};
+
 	FILE* file = openEngineFile(filename);
 	if (file == NULL)
 	{
@@ -53,17 +56,18 @@ bool loadFile(const char* filename, struct Buffer* buffer)
 
 
 	buffer->data = ano_aligned_malloc(size, alignof(uint32_t));
-	if (buffer->data == NULL) 
+	if (buffer->data == NULL)
 	{
 		ano_log(ANO_ERROR, "Failed to allocate memory for file: %s", filename);
 		fclose(file);
 		return false;
 	}
 
-	if (fread(buffer->data, 1, size, file) != size) 
+	if (fread(buffer->data, 1, size, file) != size)
 	{
 		ano_log(ANO_ERROR, "Failed to read file: %s", filename);
-		free(buffer->data);
+		ano_aligned_free(buffer->data);
+		buffer->data = NULL;
 		fclose(file);
 		return false;
 	}

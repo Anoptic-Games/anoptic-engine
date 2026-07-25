@@ -67,31 +67,35 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE -> double-sided
 
 	// Load shaders: mesh on capable devices, vertex on fallback.
-	struct Buffer geomShaderCode;
+	// Unwind idiom: blobs and modules are held from the first load to the tail discharge, so every
+	// refusal in between takes `goto fail`, which discharges unconditionally (free(NULL) and
+	// destroying VK_NULL_HANDLE are both no-ops). A refused load clears its own buffer first:
+	// loadFile leaves data dangling on a short read.
+	struct Buffer geomShaderCode = {0}, fragShaderCode = {0};
+	VkShaderModule geomShaderModule = VK_NULL_HANDLE, fragShaderModule = VK_NULL_HANDLE;
+	VkShaderModule taskModule = VK_NULL_HANDLE;
 	char geomShaderPath[64];
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
 		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
+	if (!loadFile(geomShaderPath, &geomShaderCode)) { geomShaderCode.data = NULL; goto fail; }
 
-	struct Buffer fragShaderCode;
 	// fp16 CDF-reconstruct variant when shaderFloat16 available.
 	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/transmission_fp16.frag.spv"
 	                                                    : "resources/shaders/transmission.frag.spv",
-	              &fragShaderCode)) return false;
+	              &fragShaderCode)) { fragShaderCode.data = NULL; goto fail; }
 
-	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+	geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
+	fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
-	VkShaderModule taskModule = VK_NULL_HANDLE;
 	TaskStageStorage taskStore;
 	VkPipelineShaderStageCreateInfo taskStageInfo = {};
 	if (useTask && !ano_pipeline_task_stage(ctx, VK_FALSE, VK_FALSE, &taskStore, &taskModule, &taskStageInfo))
-		return false;
+		goto fail;
 
 	VkPipelineShaderStageCreateInfo geomShaderStageInfo, fragShaderStageInfo;
 	if (!ano_pipeline_stage(geometryStage, geomShaderModule, NULL, &geomShaderStageInfo)
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, NULL, &fragShaderStageInfo))
-		return false;
+		goto fail;
 
 	VkPipelineShaderStageCreateInfo shaderStages[3] = {taskStageInfo, geomShaderStageInfo, fragShaderStageInfo};
 	VkPipelineShaderStageCreateInfo* stageList = useTask ? shaderStages : &shaderStages[1];
@@ -211,7 +215,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	pipelineInfo.subpass = 0;
 
 	// Opaque variant (index 0)
-	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) goto fail;
 	proto->implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[0].depthWrite = VK_TRUE;
 	proto->implementations[0].blendEnable = VK_FALSE;
@@ -227,7 +231,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 	colorBlending.pAttachments = &colorBlendAttachment;
 	
-	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) goto fail;
 	proto->implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
@@ -241,4 +245,12 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
 	return true;
+
+fail:
+	ano_aligned_free(geomShaderCode.data);
+	ano_aligned_free(fragShaderCode.data);
+	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, taskModule, NULL);
+	return false;
 }

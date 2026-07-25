@@ -351,7 +351,9 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         return false;
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementationCount = 1;
 
-    struct Buffer code;
+    // Unwind idiom: the blob and module are held to the tail discharge, so refusals in between take
+    // `goto fail`; free(NULL) and destroying VK_NULL_HANDLE are both no-ops.
+    struct Buffer code = {0};
     if (!loadFile("resources/shaders/textraster.comp.spv", &code))
         return false;
     VkShaderModule module = createShaderModule(ctx->device, &code);
@@ -365,7 +367,7 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout;
     if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, module, NULL, &pipelineInfo.stage))
-        return false;
+        goto fail;
 
     VkResult r = vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache,
                                           1, &pipelineInfo, NULL,
@@ -375,26 +377,35 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(code.data);
     vkDestroyShaderModule(ctx->device, module, NULL);
     return r == VK_SUCCESS;
+
+fail:
+    ano_aligned_free(code.data);
+    vkDestroyShaderModule(ctx->device, module, NULL);
+    return false;
 }
 
 // Composite blend pipeline: tonemap's twin, premultiplied src-over, overlay.frag samples the overlay image.
 static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
 {
-    struct Buffer vertCode, fragCode;
+    // Unwind idiom: blobs and modules are held to the tail discharge, so refusals in between take
+    // `goto fail`; free(NULL) and destroying VK_NULL_HANDLE are both no-ops. A refused load clears
+    // its own buffer first: loadFile leaves data dangling on a short read.
+    struct Buffer vertCode = {0}, fragCode = {0};
+    VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
     if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode))
         return false;
     if (!loadFile("resources/shaders/overlay.frag.spv", &fragCode))
     {
-        ano_aligned_free(vertCode.data);
-        return false;
+        fragCode.data = NULL;
+        goto fail;
     }
-    VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-    VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+    vertModule = createShaderModule(ctx->device, &vertCode);
+    fragModule = createShaderModule(ctx->device, &fragCode);
 
     VkPipelineShaderStageCreateInfo stages[2];
     if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
         || !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
-        return false;
+        goto fail;
 
     VkPipelineVertexInputStateCreateInfo vertexInput = {};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -467,6 +478,13 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
     vkDestroyShaderModule(ctx->device, vertModule, NULL);
     vkDestroyShaderModule(ctx->device, fragModule, NULL);
     return r == VK_SUCCESS;
+
+fail:
+    ano_aligned_free(vertCode.data);
+    ano_aligned_free(fragCode.data);
+    vkDestroyShaderModule(ctx->device, vertModule, NULL);
+    vkDestroyShaderModule(ctx->device, fragModule, NULL);
+    return false;
 }
 
 // Builds the world-space text pipeline: premultiplied src-over blending, bufferless
@@ -485,21 +503,25 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
     if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->textWorldLayout) != VK_SUCCESS)
         return false;
 
-    struct Buffer vertCode, fragCode;
+    // Unwind idiom: blobs and modules are held to the tail discharge, so refusals in between take
+    // `goto fail`; free(NULL) and destroying VK_NULL_HANDLE are both no-ops. A refused load clears
+    // its own buffer first: loadFile leaves data dangling on a short read.
+    struct Buffer vertCode = {0}, fragCode = {0};
+    VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
     if (!loadFile("resources/shaders/textworld.vert.spv", &vertCode))
         return false;
     if (!loadFile("resources/shaders/textworld.frag.spv", &fragCode))
     {
-        ano_aligned_free(vertCode.data);
-        return false;
+        fragCode.data = NULL;
+        goto fail;
     }
-    VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-    VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+    vertModule = createShaderModule(ctx->device, &vertCode);
+    fragModule = createShaderModule(ctx->device, &fragCode);
 
     VkPipelineShaderStageCreateInfo stages[2];
     if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
         || !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
-        return false;
+        goto fail;
 
     VkPipelineVertexInputStateCreateInfo vertexInput = {};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -578,6 +600,13 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
     vkDestroyShaderModule(ctx->device, vertModule, NULL);
     vkDestroyShaderModule(ctx->device, fragModule, NULL);
     return r == VK_SUCCESS;
+
+fail:
+    ano_aligned_free(vertCode.data);
+    ano_aligned_free(fragCode.data);
+    vkDestroyShaderModule(ctx->device, vertModule, NULL);
+    vkDestroyShaderModule(ctx->device, fragModule, NULL);
+    return false;
 }
 
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
