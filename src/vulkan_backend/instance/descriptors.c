@@ -22,6 +22,15 @@
 #include "vulkan_backend/text_raster.h"
 
 
+// Sole decode of "the global set layout carries binding 13, the task-cull Hi-Z pyramid sampler".
+// in: renderer state; out: combined-image-samplers per global set (0 or 1). Mirrors layouts.c:149's
+// bindingCount, which arms the 14th binding off this same flag; the pool budget and the binding-13
+// write below both read it, so neither can drift from the layout.
+static inline uint32_t global_set_samplers(const RendererState* state)
+{
+	return state->taskCull ? 1u : 0u;
+}
+
 bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 { // Central to init
 	// Per-view sets (global, light-cull, tonemap) x ANO_VIEW_COUNT; cull/update/scatter one/frame.
@@ -35,8 +44,10 @@ bool createDescriptorPool(VulkanContext* ctx, RendererState* state)
 	poolSize[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
 	poolSize[2].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 1; // scatter binding 1 xform ring slice
 	poolSize[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	// Samplers/frame: tonemap/view + 4 shadow (atlas+blurX/Y+spare); Hi-Z (pyramid+depth)/mip + cull bind11 pyramids/view.
-	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS + ANO_VIEW_COUNT + 1u);
+	// Samplers/frame: tonemap/view + 4 shadow (atlas+blurX/Y+spare); Hi-Z (pyramid+depth)/mip;
+	// cull bind11 pyramids/view; global bind13 pyramid/view (task-cull only); +1 text overlay tonemap (text_raster.c:912).
+	poolSize[3].descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * (ANO_VIEW_COUNT + 4u + 2u * ANO_VIEW_COUNT * ANO_MAX_HIZ_MIPS
+		+ ANO_VIEW_COUNT + global_set_samplers(state) * ANO_VIEW_COUNT + 1u);
 	// Hi-Z build set binding 1: one r32f storage-image dest per mip per view per frame.
 	// + 1/frame: the text overlay raster destination.
 	poolSize[4].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -348,6 +359,7 @@ void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state)
 }
 
 // Bind shadow sets/frame: shadowsetup (config/transforms/lights in, frustums out) + geom/sampling (viewProjs, atlas, light info). Init-only.
+// Binding 1 (transforms) is re-pointed on entity growth by updateUboDescriptorSets; written here only for set completeness.
 void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state)
 {
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -480,7 +492,7 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
         vkUpdateDescriptorSets(ctx->device, 1, &cw, 0, NULL);
 
         // Global binding 13: task meshlet cull samples same lag-slot pyramid/view (when layout has binding).
-        if (state->taskCull)
+        if (global_set_samplers(state))
         {
             for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
             {
@@ -499,6 +511,9 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
 
 
 
+// Sole re-point path for the per-frame scene buffers: every set that names the TransformSSBO
+// (global/view, cull, update, scatter, lightsetup, shadowsetup) is written here, so entity growth
+// re-points all of them with one call.
 void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 { // Central to init, must be called on asset uploads.
 
@@ -809,6 +824,20 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         lightsetupWrites[2].pBufferInfo = &lightRuntimeInfo; // LightRuntimeSSBO (buffer[i], out)
 
         vkUpdateDescriptorSets(ctx->device, 3, lightsetupWrites, 0, NULL);
+
+        // Shadowsetup binding 1 is that same per-frame TransformSSBO. Entity growth recreates the
+        // buffer and re-points descriptors through this function alone, so every set that names it
+        // is written here; updateShadowDescriptorSets writes the same handle to keep its set complete.
+        VkWriteDescriptorSet shadowXformWrite = {};
+        shadowXformWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        shadowXformWrite.dstSet = rendererState.frames[i].shadow.setupSet;
+        shadowXformWrite.dstBinding = 1;
+        shadowXformWrite.dstArrayElement = 0;
+        shadowXformWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        shadowXformWrite.descriptorCount = 1;
+        shadowXformWrite.pBufferInfo = &ssboInfo;
+
+        vkUpdateDescriptorSets(ctx->device, 1, &shadowXformWrite, 0, NULL);
 	}
 }
 

@@ -73,7 +73,7 @@ static bool mover_swept_bound(const mat4 base, const float cm[3], float rm,
 
 // Mover sphere vs caster volume. Unbounded volume (r<0) exposed by any mover.
 static bool mover_exposes(const ShadowCasterVolume* v, const float c[3], float r) {
-    if (v->radius < 0.0f) return true;
+    if (!(v->radius >= 0.0f)) return true; // accept form: a non-finite radius takes the safe arm
     float dx = c[0] - v->center[0], dy = c[1] - v->center[1], dz = c[2] - v->center[2];
     float rr = r + v->radius;
     return dx*dx + dy*dy + dz*dz <= rr*rr;
@@ -178,11 +178,13 @@ static void shadow_expose_rebuild_frustum(RendererState* st, uint32_t s) {
 
 // Refresh frustum influence sphere from parent base pose + offset.
 // A parent WITH motion gets a stale-by-design sphere, never consulted.
+// Range is producer-supplied and restaged on every static UPDATE, so the bounded arm is entered
+// in accept form: anything that is not a positive range 〜 including NaN 〜 goes unbounded.
 static void shadow_volume_recompute(RendererState* st, uint32_t s) {
     ShadowCasterVolume* v = &st->shadowVolume[s];
     uint32_t p = v->parentSlot;
     if (p == ANO_RENDER_SLOT_UNMAPPED) return;
-    if (st->shadowCfgMirror[s].lightType == LIGHT_TYPE_DIRECTIONAL || v->range <= 0.0f
+    if (st->shadowCfgMirror[s].lightType == LIGHT_TYPE_DIRECTIONAL || !(v->range > 0.0f)
         || p >= st->slotMotionCap) {
         v->radius = -1.0f; // unbounded, any mover exposes
         return;

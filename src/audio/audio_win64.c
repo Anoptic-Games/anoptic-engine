@@ -6,6 +6,9 @@
 // Windows devices: WASAPI (primary), DirectSound (fallback). ole32/avrt/dsound runtime-loaded.
 // Hand-declared COM vtables (miniaudio layouts). COM stays on the device thread.
 
+#if defined(_WIN32)
+
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -98,6 +101,16 @@ static const GUID ANO_IID_IAudioRenderClient =
 #define ANO_AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY 0x08000000u
 #define ANO_AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM      0x80000000u
 #define ANO_AUDCLNT_BUFFERFLAGS_SILENT 2u
+
+// Terminal AUDCLNT refusals (audioclient.h). Each one outlives the IAudioClient that reported it.
+#define ANO_AUDCLNT_E_NOT_INITIALIZED     ((HRESULT)0x88890001L)
+#define ANO_AUDCLNT_E_DEVICE_INVALIDATED  ((HRESULT)0x88890004L)
+#define ANO_AUDCLNT_E_SERVICE_NOT_RUNNING ((HRESULT)0x88890010L)
+
+// Terminal IAudioRenderClient refusals (audioclient.h). Both name a packet the stream still
+// believes is outstanding, and only a ReleaseBuffer this loop can no longer issue clears it.
+#define ANO_AUDCLNT_E_OUT_OF_ORDER ((HRESULT)0x88890007L)
+#define ANO_AUDCLNT_E_INVALID_SIZE ((HRESULT)0x88890009L)
 
 typedef struct AnoIMMDeviceEnumerator AnoIMMDeviceEnumerator;
 typedef struct AnoIMMDevice           AnoIMMDevice;
@@ -213,6 +226,90 @@ typedef struct AnoWasapiState
     AnoAudioPull pull;
 } AnoWasapiState;
 
+// Acquire one render packet, always hand it back, and carry out the code that refused. WASAPI
+// pairs every succeeded GetBuffer with exactly one ReleaseBuffer, and GetBuffer may answer S_OK
+// with a NULL pointer: the packet is acquired either way. Dropping that release wedges the stream
+// for good, since every later GetBuffer then returns AUDCLNT_E_OUT_OF_ORDER. Releasing zero frames
+// is the documented way to give a packet back unwritten (ReleaseBuffer ignores the flags when
+// NumFramesWritten is 0).
+//   in:  render (AnoIAudioRenderClient *, non-NULL), frames (UINT32, > 0 and <= the padding-
+//        derived writable count), mx (AnoAudioMixer *) and pull; NULL mx releases silence instead.
+//   out: bool, true when the packet was filled and released. *outHr (total, written on every arm)
+//        is the refusing code; S_OK both on success and on the acquired-but-NULL arm, which no
+//        documented code names and which the caller therefore treats as transient.
+//   inv: past a succeeded GetBuffer every arm runs exactly one ReleaseBuffer.
+[[nodiscard]] static bool wasapi_write_checked(AnoIAudioRenderClient *render, UINT32 frames,
+                                               AnoAudioMixer *mx, AnoAudioPull *pull, HRESULT *outHr)
+{
+    BYTE   *dst = NULL;
+    HRESULT hr  = render->v->GetBuffer(render, frames, &dst);
+    if (FAILED(hr)) {
+        *outHr = hr;
+        return false;
+    }
+    if (!dst) {
+        render->v->ReleaseBuffer(render, 0, 0); // acquired but unusable: return it unwritten
+        *outHr = S_OK;
+        return false;
+    }
+    if (mx)
+        ano_audio_pull_frames(mx, pull, (float *)dst, frames);
+    hr = render->v->ReleaseBuffer(render, frames, mx ? 0u : ANO_AUDCLNT_BUFFERFLAGS_SILENT);
+    *outHr = hr;
+    return SUCCEEDED(hr);
+}
+
+// Unclassified face for the prefill, the one call site with no loop to latch.
+//   out: bool, true when the packet was filled and released.
+[[nodiscard]] static bool wasapi_write(AnoIAudioRenderClient *render, UINT32 frames,
+                                       AnoAudioMixer *mx, AnoAudioPull *pull)
+{
+    HRESULT hr = S_OK;
+    return wasapi_write_checked(render, frames, mx, pull, &hr);
+}
+
+// Consecutive undocumented refusals a render-loop arm tolerates before it stops. The padding and
+// packet arms have disjoint documented failure sets, both fully covered by the predicates below,
+// so this only ever catches a code no contract covers; it is what leaves an arm with no refusal
+// retried forever, rather than only the listed ones. Each arm counts its own turns so a padding
+// blip and a packet blip never sum. Counts turns, not time: a padding turn costs the 10 ms backoff
+// plus up to the 2 s event wait, so that budget spans ~0.5 s of backoff and at most ~100 s of wall
+// clock; a packet turn costs one device period, so ~50 periods.
+#define ANO_WASAPI_REFUSAL_LIMIT 50u
+
+// Terminal-refusal test for the render loop's IAudioClient calls. AUDCLNT_E_DEVICE_INVALIDATED
+// (endpoint unplugged, disabled, or reformatted) and AUDCLNT_E_SERVICE_NOT_RUNNING (audiosrv
+// stopped) are permanent for the client that reported them: the documented recovery is to release
+// it, re-enumerate the endpoint and build a new one, which no path in tree does. NOT_INITIALIZED
+// (unreachable past a succeeded Initialize) and E_POINTER (unreachable while the caller passes a
+// real out-param) are call-contract breaches, equally unable to clear by waiting. Those four are
+// the whole documented failure set; every other code is treated as transient and retried on budget.
+//   in:  hr (HRESULT), a FAILED result from a client call inside the render loop
+//   out: bool, true when retrying the same client can never succeed.
+[[nodiscard]] static bool wasapi_terminal(HRESULT hr)
+{
+    return hr == ANO_AUDCLNT_E_DEVICE_INVALIDATED || hr == ANO_AUDCLNT_E_SERVICE_NOT_RUNNING
+        || hr == ANO_AUDCLNT_E_NOT_INITIALIZED    || hr == E_POINTER;
+}
+
+// Terminal-refusal test for the render loop's IAudioRenderClient calls. Every code that is terminal
+// for the client is terminal here too, plus the two that name a packet the stream still counts as
+// outstanding: AUDCLNT_E_OUT_OF_ORDER (a GetBuffer issued before the previous packet was released)
+// and AUDCLNT_E_INVALID_SIZE (a ReleaseBuffer whose frame count does not match the packet, which
+// leaves it outstanding so every later GetBuffer answers OUT_OF_ORDER). Only a ReleaseBuffer for
+// that packet clears either state and wasapi_write_checked has already issued the only one it can,
+// so both outlive this loop. GetBuffer's remaining documented codes clear on a later period and
+// therefore skip: BUFFER_TOO_LARGE (padding moved under the request), BUFFER_SIZE_ERROR
+// (exclusive-mode event streams, unreachable in shared mode) and BUFFER_OPERATION_PENDING (a
+// stream reset in flight).
+//   in:  hr (HRESULT) that refused a render-client call inside the loop
+//   out: bool, true when retrying the same stream can never succeed.
+[[nodiscard]] static bool wasapi_packet_terminal(HRESULT hr)
+{
+    return wasapi_terminal(hr) || hr == ANO_AUDCLNT_E_OUT_OF_ORDER
+        || hr == ANO_AUDCLNT_E_INVALID_SIZE;
+}
+
 static void *wasapi_main(void *arg)
 {
     AnoAudioMixer  *mx = arg;
@@ -286,9 +383,8 @@ static void *wasapi_main(void *arg)
         goto fail;
 
     // prefill silence
-    BYTE *p = NULL;
-    if (SUCCEEDED(render->v->GetBuffer(render, bufferFrames, &p)) && p)
-        render->v->ReleaseBuffer(render, bufferFrames, ANO_AUDCLNT_BUFFERFLAGS_SILENT);
+    if (!wasapi_write(render, bufferFrames, NULL, NULL))
+        ano_log(ANO_WARN, "audio/wasapi: silence prefill refused; starting on an unfilled buffer.");
 
     if (st->avSet) {
         DWORD idx = 0;
@@ -303,23 +399,58 @@ static void *wasapi_main(void *arg)
             mx->sampleRate, mixRate, bufferFrames);
     atomic_store_explicit(&st->init, ANO_WIN_INIT_OK, memory_order_release);
 
+    // A terminal endpoint state leaves through `fail:` below 〜 the same unwind an init failure
+    // takes, so Stop/Release/CoUninitialize still run in order and wasapi_stop's join returns at
+    // once. deviceRun stays start/stop's to clear and st->init keeps reporting the handshake that
+    // did succeed; only the loop ends. Audio is silent from there: nothing rebuilds a dead client.
+    uint32_t refusals       = 0;
+    uint32_t packetRefusals = 0;
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
-        if (WaitForSingleObject(evt, 2000) != WAIT_OBJECT_0)
-            continue;
+        DWORD waited = WaitForSingleObject(evt, 2000);
+        if (waited == WAIT_FAILED) {
+            // this thread owns evt and closes it only below, so an unusable handle never recovers
+            ano_log(ANO_ERROR, "audio/wasapi: render event wait failed (%lu); stopping the device"
+                    " thread, audio stays silent.", GetLastError());
+            break;
+        }
+        // read padding even on a timeout: a dead endpoint stops signalling, so this is the only
+        // call left that can classify the silence
         UINT32 padding = 0;
-        if (FAILED(client->v->GetCurrentPadding(client, &padding))) {
-            // device invalidated (unplug/format change): no recovery yet
-            ano_sleep(10000);
+        HRESULT hr = client->v->GetCurrentPadding(client, &padding);
+        if (FAILED(hr)) {
+            bool terminal = wasapi_terminal(hr);
+            if (terminal || ++refusals >= ANO_WASAPI_REFUSAL_LIMIT) {
+                ano_log(ANO_ERROR, "audio/wasapi: %s padding refusal (HRESULT 0x%08lX); stopping"
+                        " the device thread, audio stays silent.",
+                        terminal ? "terminal" : "unrelenting", (unsigned long)hr);
+                break;
+            }
+            ano_sleep(10000); // transient: the next period may still land
             continue;
         }
+        refusals = 0;
+        if (waited != WAIT_OBJECT_0)
+            continue; // no period elapsed; that read was a probe, not a turn to write
         UINT32 writable = bufferFrames - padding;
         if (writable == 0u)
             continue;
-        BYTE *dst = NULL;
-        if (FAILED(render->v->GetBuffer(render, writable, &dst)) || !dst)
-            continue;
-        ano_audio_pull_frames(mx, &st->pull, (float *)dst, writable);
-        render->v->ReleaseBuffer(render, writable, 0);
+        // classify the write the same way the padding read above is classified: a stream that has
+        // lost packet order refuses every later GetBuffer while GetCurrentPadding keeps answering
+        // S_OK, so the client-side latch never sees it and the loop would refuse one packet per
+        // period forever. Latching costs nothing a refused write has not already lost 〜 that
+        // period is silent either way; it only trades an inaudible retry loop for a logged stop.
+        HRESULT wr = S_OK;
+        if (!wasapi_write_checked(render, writable, mx, &st->pull, &wr)) {
+            bool terminal = wasapi_packet_terminal(wr);
+            if (terminal || ++packetRefusals >= ANO_WASAPI_REFUSAL_LIMIT) {
+                ano_log(ANO_ERROR, "audio/wasapi: %s packet refusal (HRESULT 0x%08lX); stopping"
+                        " the device thread, audio stays silent.",
+                        terminal ? "terminal" : "unrelenting", (unsigned long)wr);
+                break;
+            }
+            continue; // one packet skipped; the event fires again next period
+        }
+        packetRefusals = 0;
     }
 
 fail:
@@ -421,6 +552,7 @@ const AnoAudioDeviceApi *ano_audio_device_wasapi(void)
 #define ANO_DSBCAPS_GLOBALFOCUS        0x00008000u
 #define ANO_DSBCAPS_GETCURRENTPOSITION2 0x00010000u
 #define ANO_DSBPLAY_LOOPING            0x00000001u
+#define ANO_DSBSTATUS_PLAYING          0x00000001u
 #define ANO_DSBSTATUS_BUFFERLOST       0x00000002u
 
 typedef struct AnoIDirectSound       AnoIDirectSound;
@@ -509,6 +641,53 @@ static void dsound_fill(AnoAudioMixer *mx, AnoDsoundState *st, float *fbuf,
     }
 }
 
+// Recovery predicate for the chase loop. Only the system marks a buffer lost, so once Restore has
+// succeeded DSBSTATUS_BUFFERLOST is clear for good, even when the rest of the recovery failed: a
+// ring that never got its Play back is then observable only as stopped (DSBSTATUS_PLAYING clear).
+// The lost bit is still tested on its own because a lost buffer may keep reporting PLAYING.
+//   in:  status (DWORD) from IDirectSoundBuffer::GetStatus
+//   out: bool, true when the ring is not usably playing and dsound_recover must run.
+[[nodiscard]] static bool dsound_needs_recovery(DWORD status)
+{
+    return (status & (ANO_DSBSTATUS_BUFFERLOST | ANO_DSBSTATUS_PLAYING)) != ANO_DSBSTATUS_PLAYING;
+}
+
+// Re-establish the ring after DSBSTATUS_BUFFERLOST, then restart playback. A restored buffer's
+// contents are undefined and its cursors start over, so the ring is silenced and the write cursor
+// re-anchored before Play: otherwise up to four blocks of whatever the restore left behind reach
+// the speakers and every later Lock lands out of phase with the restarted play cursor.
+// writeCursor goes to 0 rather than to the reported play cursor: block-aligned is what the chase
+// loop's single-region Lock depends on, and the whole ring is silent, so any aligned start is in
+// phase without assuming where the restore put the cursor.
+//   in:  buf (AnoIDirectSoundBuffer *), bufferBytes (uint32_t) ring size
+//   out: bool, true when the ring is silent, playing, and *writeCursor is back in phase.
+//        false leaves the buffer stopped and *writeCursor untouched (the caller must not chase a
+//        cursor this call did not anchor); the caller re-enters through dsound_needs_recovery.
+[[nodiscard]] static bool dsound_recover(AnoIDirectSoundBuffer *buf, uint32_t bufferBytes, DWORD *writeCursor)
+{
+    if (FAILED(buf->v->Restore(buf)))
+        return false;
+
+    void *p1 = NULL, *p2 = NULL;
+    DWORD n1 = 0, n2 = 0;
+    if (FAILED(buf->v->Lock(buf, 0, bufferBytes, &p1, &n1, &p2, &n2, 0)))
+        goto stopped;
+    if (p1) memset(p1, 0, n1);
+    if (p2) memset(p2, 0, n2);
+    buf->v->Unlock(buf, p1, n1, p2, n2);
+
+    if (FAILED(buf->v->Play(buf, 0, 0, ANO_DSBPLAY_LOOPING)))
+        goto stopped;
+    *writeCursor = 0;
+    return true;
+
+stopped:
+    // Restore cleared the lost bit; establish the stopped state the caller re-enters on rather
+    // than infer it from the failed call. Stop on an already-stopped buffer is a documented no-op.
+    buf->v->Stop(buf);
+    return false;
+}
+
 static void *dsound_main(void *arg)
 {
     AnoAudioMixer *mx = arg;
@@ -586,9 +765,10 @@ static void *dsound_main(void *arg)
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
         DWORD status = 0;
         if (SUCCEEDED(secondary->v->GetStatus(secondary, &status))
-            && (status & ANO_DSBSTATUS_BUFFERLOST)) {
-            secondary->v->Restore(secondary);
-            secondary->v->Play(secondary, 0, 0, ANO_DSBPLAY_LOOPING);
+            && dsound_needs_recovery(status)
+            && !dsound_recover(secondary, bufferBytes, &writeCursor)) {
+            ano_sleep(10000);   // still down: retry, do not chase a dead cursor
+            continue;
         }
         DWORD play = 0;
         if (FAILED(secondary->v->GetCurrentPosition(secondary, &play, NULL))) {
@@ -686,3 +866,5 @@ const AnoAudioDeviceApi *ano_audio_device_dsound(void)
     };
     return &api;
 }
+
+#endif // _WIN32

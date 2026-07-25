@@ -138,7 +138,10 @@ typedef struct RenderLightParams
     float           range;        // attenuation cutoff; <= 0 == unbounded (ignored for directional)
     float           innerConeCos; // spot inner cone half-angle cosine
     float           outerConeCos; // spot outer cone half-angle cosine
-    RenderLightType type;
+    RenderLightType type;         // outside {0,1,2} the render seam refuses the light: RCMD_CREATE/
+                                  // RCMD_UPDATE drop the payload (the entity still lands, light_index
+                                  // becomes ANO_RENDER_NO_LIGHT), RCMD_LIGHT_ATTACH is dropped whole,
+                                  // RCMD_LIGHT_UPDATE only when its mask names ANO_LIGHT_FIELD_TYPE.
     float           localDir[3];  // spot/dir aim in the parent's MODEL space; world forward =
                                   // rotate(parent, localDir). (0,0,0) -> parent -Z (the default).
                                   // Lets spots on a shared parent slot fan independently. Point: ignored.
@@ -146,6 +149,11 @@ typedef struct RenderLightParams
                                   // light casts (within the runtime budget; silently shadowless if full).
                                   // dir/spot = 1 frustum, point = 6 (a cube). Set at attach; togglable
                                   // afterward via ano_render_light_update_fields + ANO_LIGHT_FIELD_CAST.
+                                  // On a STATIC row (light_index < anoRenderStaticLightBase()) grants are
+                                  // CREATE-only: 1 on RCMD_CREATE grants the block and installs the caster
+                                  // volumes; 1 on RCMD_UPDATE refreshes the volumes the row already owns
+                                  // and grants nothing (a raise on a row holding no block is reported and
+                                  // dropped 〜 re-create the row to grant); 0 on RCMD_UPDATE revokes.
 } RenderLightParams;
 
 // Field mask for ano_render_light_update_fields: which RenderLightParams fields (+ the model-space

@@ -124,6 +124,8 @@ bool ano_vk_check_feature_compatibility(PbrFeatureFlags pipelineFeatures, PbrFea
 PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct RendererState* state) {
     PbrFeatureFlags features = PBR_FEATURE_NONE;
     for (int i = 0; i < PIPELINE_TYPE_COUNT; ++i) {
+        // implementationCount > 0 implies implementations non-NULL with >= implementationCount elements;
+        // builders commit the count last and teardown clears it first, so this gate is sound without a pointer check.
         if (state->prototypes[i].layout != VK_NULL_HANDLE && state->prototypes[i].implementationCount > 0) {
             if (state->prototypes[i].implementations[0].bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
                 features |= state->prototypes[i].supportedFeatures;

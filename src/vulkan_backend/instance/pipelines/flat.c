@@ -10,19 +10,23 @@
 #include <stdlib.h>
 
 // Shared builder for the flat lanes: cullMode per lane; masked builds the alphaMode MASK cutout lane.
+// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
+// argument, so a refused mint zeroes the handle and the build carries on.
+// Commit-last idiom: implementationCount is published only once its array exists.
 static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto,
                                 PipelineType type, VkCullModeFlags cullMode, bool masked)
 {
 	// 1. Setup cache
 	VkPipelineCacheCreateInfo cacheInfo = {};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache);
+	if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache) != VK_SUCCESS)
+		proto->cache = VK_NULL_HANDLE;
 
 	// Mesh stage on capable devices, vertex stage on the fallback path.
 	// Task cull prepends a flat.task stage to every mesh-path variant.
 	bool useMesh = ctx->deviceCapabilities.meshShader;
 	bool useTask = state->taskCull;
-	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// 2. Setup layout
 	// Push: transformBaseOffset + shadowFrustumIndex. Task stage flag joins the range.
@@ -48,8 +52,10 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	}
 
 	proto->type = type;
-	proto->implementationCount = 3;
 	proto->implementations = calloc(3, sizeof(PipelineImplementation));
+	if (proto->implementations == NULL)
+		return false;
+	proto->implementationCount = 3;
 	proto->supportedFeatures =
 		PBR_FEATURE_BASE_COLOR_FACTOR |
 		PBR_FEATURE_BASE_COLOR_TEXTURE |
@@ -100,17 +106,12 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 			&taskStore, &taskModule, &taskStageInfo))
 		return false;
 
-	VkPipelineShaderStageCreateInfo geomShaderStageInfo = {};
-	geomShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	geomShaderStageInfo.stage = geometryStage;
-	geomShaderStageInfo.module = geomShaderModule;
-	geomShaderStageInfo.pName = "main";
-
-	VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
-	fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	fragShaderStageInfo.module = fragShaderModule;
-	fragShaderStageInfo.pName = "main";
+	// One gate for all three mints: the depth stage is minted complete here, not patched later.
+	VkPipelineShaderStageCreateInfo geomShaderStageInfo, depthGeomStageInfo, fragShaderStageInfo;
+	if (!ano_pipeline_stage(geometryStage, geomShaderModule, NULL, &geomShaderStageInfo)
+		|| !ano_pipeline_stage(geometryStage, depthGeomShaderModule, NULL, &depthGeomStageInfo)
+		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, NULL, &fragShaderStageInfo))
+		return false;
 
 	// [task,] geom, frag stage array, task slot first.
 	VkPipelineShaderStageCreateInfo shaderStages[3] = {taskStageInfo, geomShaderStageInfo, fragShaderStageInfo};
@@ -265,8 +266,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 
 	// Depth pre-pass variant (index 2): ANO_DEPTH_ONLY geometry, no fragment stage, no color attachments.
 	// depthWrite ON + LESS. Same task module/spec as the color variants.
-	VkPipelineShaderStageCreateInfo depthStages[2] = {taskStageInfo, geomShaderStageInfo};
-	depthStages[1].module = depthGeomShaderModule;
+	VkPipelineShaderStageCreateInfo depthStages[2] = {taskStageInfo, depthGeomStageInfo};
 
 	VkPipelineDepthStencilStateCreateInfo prepassDepth = depthStencil;
 	prepassDepth.depthWriteEnable = VK_TRUE;
@@ -344,7 +344,11 @@ void ano_pipeline_flat_cleanup(VulkanContext* ctx, RendererState* state, Pipelin
 
 	if (proto->implementations != NULL)
 	{
-		for (uint32_t j = 0; j < proto->implementationCount; ++j)
+		// Dissolve the pair count-first, mirroring the builder's commit-last: no observable point
+		// has implementationCount > 0 beside an array that is gone.
+		uint32_t count = proto->implementationCount;
+		proto->implementationCount = 0;
+		for (uint32_t j = 0; j < count; ++j)
 		{
 			if (proto->implementations[j].pipeline != VK_NULL_HANDLE)
 			{
@@ -354,6 +358,5 @@ void ano_pipeline_flat_cleanup(VulkanContext* ctx, RendererState* state, Pipelin
 		}
 		free(proto->implementations);
 		proto->implementations = NULL;
-		proto->implementationCount = 0;
 	}
 }

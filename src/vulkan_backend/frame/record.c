@@ -14,7 +14,10 @@
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/frame/frame.h"
 
-void recordCommandBuffer(uint32_t imageIndex)
+// Record this frame slot's command buffer(s). imageIndex = acquired swapchain image.
+// Returns false when a begin/end is refused; every vkCmd* below sits on the branch that
+// begun the buffer it targets, so a refusal leaves nothing recorded and nothing submittable.
+bool recordCommandBuffer(uint32_t imageIndex)
 {
 	VkCommandBufferBeginInfo beginInfo = {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -29,6 +32,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
 	{
 		ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
+		return false;
 	}
 
 	// Profiling reset of this frame's query pool plus the frame-begin timestamp.
@@ -199,11 +203,15 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     // Async light-cull ends the prelude CB here, everything below records into the main CB.
     if (rendererState.asyncLc) {
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
             ano_log(ANO_ERROR, "Failed to record prelude command buffer!");
+            return false; // an unclosed prelude is not submittable
+        }
         cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
-        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
             ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
+            return false;
+        }
     }
 
     // Transition swapchain image to color attachment optimal.
@@ -297,5 +305,8 @@ void recordCommandBuffer(uint32_t imageIndex)
 	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
 	{
 		ano_log(ANO_ERROR, "Failed to record command buffer!");
+		return false;
 	}
+
+	return true;
 }

@@ -17,7 +17,7 @@
 // Busywait hard cap (ns). Default: 1000000000ULL (1 second).
 #define MAX_BUSYWAIT_NS 1000000000ULL
 
-// High-resolution monotonic timestamp in nanoseconds.
+// High-resolution monotonic timestamp in nanoseconds. Excludes time the system spends suspended.
 uint64_t ano_timestamp_raw();
 
 // Raw monotonic hardware counter, no unit conversion 〜 cheapest stamp.

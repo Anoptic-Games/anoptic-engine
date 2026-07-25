@@ -9,6 +9,12 @@
 #include <assert.h>
 #include <math.h>
 
+// Boundary cases below report instead of aborting, so they hold under NDEBUG where assert is out.
+static int failures = 0;
+#define CHECK(cond, msg) do { \
+    if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
+} while (0)
+
 static void test_meshlet_bounds_calculation() {
     printf("Running test_meshlet_bounds_calculation...\n");
 
@@ -548,6 +554,129 @@ static void test_simplify_tetra_link() {
     assert(!has_dup_face(out, r));   // no non-manifold doubled face
 }
 
+// ano_build_meshlets and ano_build_meshlets_bound are a sizing pair: the header says to size the
+// output buffers from bound(), so build() may never emit a meshlet bound() did not account for,
+// and an emitted meshlet may never exceed the max_vertices / max_triangles it was called with.
+// bound() returns 0 for max_vertices < 3 and max_triangles < 1. Triggers run with deliberately
+// oversized buffers so a broken pair shows up as wrong values rather than corruption here.
+static void test_meshlet_bound_pair_agreement() {
+    printf("Running test_meshlet_bound_pair_agreement...\n");
+
+    // control: a contract-clean config packs correctly, so the packer is live
+    {
+        uint32_t indices[6] = { 0, 1, 2,  2, 1, 3 };
+        size_t promised = ano_build_meshlets_bound(6, 64, 126);
+        CHECK(promised >= 1, "bound sizes a valid config");
+
+        ano_meshlet_t meshlets[4] = { 0 };
+        uint32_t mv[4 * 64] = { 0 };
+        uint8_t mt[4 * 126 * 3] = { 0 };
+        size_t built = ano_build_meshlets(meshlets, mv, mt, indices, 6, 64, 126);
+
+        CHECK(built == 1, "two shared-edge tris pack into one meshlet");
+        CHECK(built <= promised, "valid build stays within bound's sizing");
+        CHECK(meshlets[0].vertex_count == 4, "meshlet holds the 4 unique verts");
+        CHECK(meshlets[0].triangle_count == 2, "meshlet holds both tris");
+        // local indices decode back to the global triangles
+        CHECK(mv[mt[0]] == 0 && mv[mt[1]] == 1 && mv[mt[2]] == 2, "tri 0 decodes");
+        CHECK(mv[mt[3]] == 2 && mv[mt[4]] == 1 && mv[mt[5]] == 3, "tri 1 decodes");
+    }
+
+    // control: the lower bounds the sizing twin enforces
+    CHECK(ano_build_meshlets_bound(3, 2, 64) == 0, "bound rejects max_vertices 2");
+    CHECK(ano_build_meshlets_bound(3, 64, 0) == 0, "bound rejects max_triangles 0");
+
+    // max_vertices 2 cannot hold a triangle: build must emit exactly as many meshlets as
+    // bound() sized the buffers for, not one that breaks the limit
+    {
+        uint32_t indices[3] = { 0, 1, 2 };
+        size_t promised = ano_build_meshlets_bound(3, 2, 64);   // 0
+
+        ano_meshlet_t meshlets[4] = { 0 };
+        uint32_t mv[64] = { 0 };
+        uint8_t mt[64] = { 0 };
+        size_t built = ano_build_meshlets(meshlets, mv, mt, indices, 3, 2, 64);
+
+        CHECK(built <= promised, "build emits no meshlet bound() did not size for (max_vertices 2)");
+        if (built > 0)
+            CHECK(meshlets[0].vertex_count <= 2, "emitted meshlet honors max_vertices 2");
+    }
+
+    // max_triangles 0 admits no triangle at all
+    {
+        uint32_t indices[3] = { 0, 1, 2 };
+        size_t promised = ano_build_meshlets_bound(3, 64, 0);   // 0
+
+        ano_meshlet_t meshlets[4] = { 0 };
+        uint32_t mv[64] = { 0 };
+        uint8_t mt[64] = { 0 };
+        size_t built = ano_build_meshlets(meshlets, mv, mt, indices, 3, 64, 0);
+
+        CHECK(built <= promised, "build emits no meshlet bound() did not size for (max_triangles 0)");
+        if (built > 0)
+            CHECK(meshlets[0].triangle_count == 0, "emitted meshlet honors max_triangles 0");
+    }
+}
+
+// ano_simplify (the guards-off entry point) must reject topologically illegal collapses just as
+// its guards-on twin does: the header promises a valid, degenerate-free mesh. On an open cone fan
+// any rim-onto-rim collapse leaves two survivors spanning the same {apex, rim, rim} triple, a
+// coincident opposite-wound pair with zero enclosed volume. Controls pin passthrough, a legal
+// border collapse, and the guards-on twin, so a reject-everything fix cannot pass. Deterministic:
+// the simplifier has no RNG and the cheapest candidate is unique.
+static void test_simplify_collapse_validity() {
+    printf("Running test_simplify_collapse_validity...\n");
+
+    // apex 0, rim 1 (b), 2 (v, 20 deg from b), 3 (j opposite); spokes manifold, rim border
+    const float cone_pos[4 * 3] = {
+        0.0f,    0.0f,    2.0f,   // 0 apex
+        1.0f,    0.0f,    0.0f,   // 1 b
+        0.9397f, 0.3420f, 0.0f,   // 2 v
+       -1.0f,    0.0f,    0.0f,   // 3 j
+    };
+    const uint32_t cone_idx[9] = { 0, 1, 2,   0, 2, 3,   0, 3, 1 };
+
+    // control: passthrough (target >= input) returns the clean fan intact
+    {
+        uint32_t dst[9] = { 0 };
+        size_t n = ano_simplify(dst, cone_idx, 9, cone_pos, 4, 12, 9, 0.5f, NULL);
+        CHECK(n == 9, "passthrough keeps all 9 indices");
+        CHECK(!has_dup_face(dst, n), "passthrough emits no duplicate face");
+    }
+
+    // control: a legal collapse still simplifies (flat strip, vertex 1 collinear on the border)
+    {
+        const float strip_pos[4 * 3] = { 0,0,0,  1,0,0,  2,0,0,  0,1,0 };
+        const uint32_t strip_idx[6] = { 0, 1, 3,   1, 2, 3 };
+        uint32_t dst[6] = { 0 };
+        float err = -1.0f;
+        size_t n = ano_simplify(dst, strip_idx, 6, strip_pos, 4, 12, 3, 0.1f, &err);
+        CHECK(n == 3, "collinear border vertex collapses to one tri");
+        CHECK(!has_dup_face(dst, n), "legal collapse emits no duplicate face");
+        CHECK(err <= 0.01f, "collinear collapse reports ~zero error");
+    }
+
+    // control: the guards-on twin refuses this collapse, returning the fan with no duplicates
+    {
+        uint32_t dst[9] = { 0 };
+        size_t n = ano_simplify_ex(dst, cone_idx, 9, cone_pos, 4, 12, 6, 0.5f,
+                                   ANO_SIMPLIFY_EDGE_FACTOR_DEFAULT, NULL);
+        CHECK(n % 3 == 0, "guards-on returns whole triangles");
+        CHECK(!has_dup_face(dst, n), "guards-on emits no duplicate face");
+    }
+
+    // base ano_simplify, one collapse (9 -> 6): the rim collapse must not duplicate a face
+    {
+        uint32_t dst[9] = { 0 };
+        float err = -1.0f;
+        size_t n = ano_simplify(dst, cone_idx, 9, cone_pos, 4, 12, 6, 0.5f, &err);
+        CHECK(n % 3 == 0, "guards-off returns whole triangles");
+        for (size_t i = 0; i < n; ++i)
+            CHECK(dst[i] < 4, "guards-off emits only source vertex ids");
+        CHECK(!has_dup_face(dst, n), "guards-off emits no duplicate face (link condition)");
+    }
+}
+
 int main() {
     test_meshlet_bounds_calculation();
     test_degenerate_triangles();
@@ -565,6 +694,12 @@ int main() {
     test_simplify_concave_trench();
     test_simplify_pillar_silhouette();
     test_simplify_tetra_link();
+    test_meshlet_bound_pair_agreement();
+    test_simplify_collapse_validity();
+    if (failures) {
+        printf("anotest_meshoptimizer: %d FAILURE(S)\n", failures);
+        return 1;
+    }
     printf("All tests passed successfully!\n");
     return 0;
 }

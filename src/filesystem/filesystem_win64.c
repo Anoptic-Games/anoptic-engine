@@ -132,6 +132,10 @@ ano_file *ano_fs_open_trunc(const char *path)
     return ano_fs_open_append(path);
 }
 
+// Output: 0 once all bytes written, -1 on error. Loops past short writes.
+// WriteFile reports the bytes transferred; nothing in its contract promises that count is nonzero
+// on a TRUE return, so zero progress is an error here, not a retry: the identical call would repeat
+// forever. The POSIX twin cannot produce it (write() of nbyte > 0 never returns 0).
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
     if (file == NULL || (data == NULL && length != 0))
@@ -142,7 +146,7 @@ int ano_fs_write(ano_file *file, const void *data, size_t length)
     while (remaining > 0) {
         DWORD chunk = remaining > 0x7fffffff ? 0x7fffffff : (DWORD)remaining;
         DWORD written = 0;
-        if (!WriteFile(file->handle, cursor, chunk, &written, NULL))
+        if (!WriteFile(file->handle, cursor, chunk, &written, NULL) || written == 0)
             return -1;
         cursor += written;
         remaining -= written;

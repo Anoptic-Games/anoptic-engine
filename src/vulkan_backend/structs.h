@@ -715,7 +715,7 @@ typedef struct RendererState
 
     // Static rig frustum allocator (init): fills [0, shadowFrustumNext).
     uint32_t                shadowFrustumNext;
-    uint32_t                shadowTypeUsed[3];
+    uint32_t                shadowTypeUsed[LIGHT_TYPE_COUNT]; // live static casters per LightType
 
     // Runtime frustum free-lists above static rig: single [RT_SINGLE_BASE, RT_POINT_BASE), point 6-block bases [RT_POINT_BASE, FRUSTUM_COUNT).
     uint32_t                rtSingleFree[ANO_SHADOW_RT_SINGLE_COUNT];

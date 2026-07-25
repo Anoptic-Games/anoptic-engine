@@ -13,6 +13,10 @@
 #include <vulkan/vulkan.h>
 
 // Compute-pipeline prototypes + descriptor set layouts.
+// Cache idiom (every site below): a pipeline cache is an optimization and VK_NULL_HANDLE is a legal
+// pipelineCache argument, so a refused mint zeroes the handle and init carries on.
+// Commit-last idiom (every site below): implementationCount is published only once its array exists,
+// so `count > 0` always implies a live array of at least count entries.
 bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 {
     // Compute Update Pipeline
@@ -73,9 +77,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     }
 
     state->prototypes[PIPELINE_COMPUTE_UPDATE].type = PIPELINE_COMPUTE_UPDATE;
-    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_UPDATE].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementationCount = 1;
 
     struct Buffer updateShaderCode;
     if (!loadFile("resources/shaders/update.comp.spv", &updateShaderCode)) return false;
@@ -85,14 +91,13 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     VkComputePipelineCreateInfo updatePipelineInfo = {};
     updatePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     updatePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_UPDATE].layout;
-    updatePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    updatePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    updatePipelineInfo.stage.module = updateShaderModule;
-    updatePipelineInfo.stage.pName = "main";
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, updateShaderModule, NULL, &updatePipelineInfo.stage))
+        return false;
 
     VkPipelineCacheCreateInfo updateCacheInfo = {};
     updateCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &updateCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].cache);
+    if (vkCreatePipelineCache(ctx->device, &updateCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_UPDATE].cache = VK_NULL_HANDLE;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_UPDATE].cache, 1, &updatePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations[0].pipeline) != VK_SUCCESS) return false;
     
@@ -142,9 +147,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     }
 
     state->prototypes[PIPELINE_COMPUTE_SCATTER].type = PIPELINE_COMPUTE_SCATTER;
-    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_SCATTER].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementationCount = 1;
 
     struct Buffer scatterShaderCode;
     if (!loadFile("resources/shaders/scatter.comp.spv", &scatterShaderCode)) return false;
@@ -154,14 +161,13 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     VkComputePipelineCreateInfo scatterPipelineInfo = {};
     scatterPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     scatterPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_SCATTER].layout;
-    scatterPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    scatterPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    scatterPipelineInfo.stage.module = scatterShaderModule;
-    scatterPipelineInfo.stage.pName = "main";
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, scatterShaderModule, NULL, &scatterPipelineInfo.stage))
+        return false;
 
     VkPipelineCacheCreateInfo scatterCacheInfo = {};
     scatterCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &scatterCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].cache);
+    if (vkCreatePipelineCache(ctx->device, &scatterCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_SCATTER].cache = VK_NULL_HANDLE;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_SCATTER].cache, 1, &scatterPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations[0].pipeline) != VK_SUCCESS) return false;
 
@@ -173,7 +179,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     // Compute Culling Pipeline
     VkPipelineCacheCreateInfo compCacheInfo = {};
     compCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &compCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].cache);
+    if (vkCreatePipelineCache(ctx->device, &compCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_CULL].cache = VK_NULL_HANDLE;
 
     VkPipelineLayoutCreateInfo compLayoutInfo = {};
     compLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -187,9 +194,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     }
 
     state->prototypes[PIPELINE_COMPUTE_CULL].type = PIPELINE_COMPUTE_CULL;
-    state->prototypes[PIPELINE_COMPUTE_CULL].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_CULL].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_CULL].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_CULL].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_CULL].implementationCount = 1;
 
     struct Buffer compShaderCode;
     if (!loadFile("resources/shaders/cull.comp.spv", &compShaderCode)) return false;
@@ -213,11 +222,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     VkComputePipelineCreateInfo computePipelineInfo = {};
     computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     computePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_CULL].layout;
-    computePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    computePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    computePipelineInfo.stage.module = compShaderModule;
-    computePipelineInfo.stage.pName = "main";
-    computePipelineInfo.stage.pSpecializationInfo = &compSpecInfo;
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, compShaderModule, &compSpecInfo, &computePipelineInfo.stage))
+        return false;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_CULL].cache, 1, &computePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline) != VK_SUCCESS) return false;
     
@@ -229,7 +235,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     // Compute Hi-Z Pyramid Build Pipeline. [0] reduce, [1] downsample via isReduce spec constant (0).
     // Push constant 24 B: { int srcMip; ivec2 dstSize; ivec2 srcSize; }
     VkPipelineCacheCreateInfo hizCacheInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
-    vkCreatePipelineCache(ctx->device, &hizCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].cache);
+    if (vkCreatePipelineCache(ctx->device, &hizCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_HIZ].cache = VK_NULL_HANDLE;
 
     VkPushConstantRange hizPush = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 24 };
     VkPipelineLayoutCreateInfo hizPipeLayoutInfo = {};
@@ -245,15 +252,19 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     }
 
     state->prototypes[PIPELINE_COMPUTE_HIZ].type = PIPELINE_COMPUTE_HIZ;
-    state->prototypes[PIPELINE_COMPUTE_HIZ].implementationCount = 2;
     state->prototypes[PIPELINE_COMPUTE_HIZ].implementations = calloc(2, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_HIZ].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_HIZ].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_HIZ].implementationCount = 2;
 
     struct Buffer hizShaderCode;
     if (!loadFile("resources/shaders/hiz.comp.spv", &hizShaderCode)) return false;
     VkShaderModule hizShaderModule = createShaderModule(ctx->device, &hizShaderCode);
 
-    // Depth MAX-resolve: both Hi-Z pipelines use the resolved single-sample module, else the base sampler2DMS.
+    // Depth MAX-resolve: both Hi-Z pipelines use the resolved single-sample module, else the base
+    // sampler2DMS. The capability alone picks the lane, so a refused mint stops init instead of
+    // being laundered into the wrong module.
     struct Buffer hizResolveCode = {0};
     VkShaderModule hizResolveModule = VK_NULL_HANDLE;
     if (ctx->deviceCapabilities.depthMaxResolve)
@@ -261,6 +272,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         if (!loadFile("resources/shaders/hiz_resolve.comp.spv", &hizResolveCode)) return false;
         hizResolveModule = createShaderModule(ctx->device, &hizResolveCode);
     }
+    VkShaderModule hizStageModule = ctx->deviceCapabilities.depthMaxResolve ? hizResolveModule : hizShaderModule;
 
     // Spec constants: id 0 isReduce, id 1 msaaSamples (reduce source sample count).
     struct HizSpecData { VkBool32 isReduce; int32_t msaaSamples; };
@@ -283,11 +295,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         VkComputePipelineCreateInfo hizPipeInfo = {};
         hizPipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         hizPipeInfo.layout = state->prototypes[PIPELINE_COMPUTE_HIZ].layout;
-        hizPipeInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        hizPipeInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        hizPipeInfo.stage.module = (hizResolveModule != VK_NULL_HANDLE) ? hizResolveModule : hizShaderModule;
-        hizPipeInfo.stage.pName = "main";
-        hizPipeInfo.stage.pSpecializationInfo = &hizSpec;
+        if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, hizStageModule, &hizSpec, &hizPipeInfo.stage))
+            return false;
 
         if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_HIZ].cache, 1, &hizPipeInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].pipeline) != VK_SUCCESS) return false;
         state->prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
@@ -304,7 +313,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     // Compute Transparency-Sort Pipeline. Reuses the cull descriptor set layout; shares useMeshShader spec constant.
     VkPipelineCacheCreateInfo tpsortCacheInfo = {};
     tpsortCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &tpsortCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].cache);
+    if (vkCreatePipelineCache(ctx->device, &tpsortCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_TPSORT].cache = VK_NULL_HANDLE;
 
     VkPipelineLayoutCreateInfo tpsortLayoutInfo = {};
     tpsortLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -317,9 +327,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     }
 
     state->prototypes[PIPELINE_COMPUTE_TPSORT].type = PIPELINE_COMPUTE_TPSORT;
-    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_TPSORT].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementationCount = 1;
 
     struct Buffer tpsortShaderCode;
     if (!loadFile("resources/shaders/tpsort.comp.spv", &tpsortShaderCode)) return false;
@@ -339,11 +351,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     VkComputePipelineCreateInfo tpsortPipelineInfo = {};
     tpsortPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     tpsortPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TPSORT].layout;
-    tpsortPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    tpsortPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    tpsortPipelineInfo.stage.module = tpsortShaderModule;
-    tpsortPipelineInfo.stage.pName = "main";
-    tpsortPipelineInfo.stage.pSpecializationInfo = &tpsortSpecInfo;
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, tpsortShaderModule, &tpsortSpecInfo, &tpsortPipelineInfo.stage))
+        return false;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TPSORT].cache, 1, &tpsortPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
@@ -377,9 +386,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         return false;
 
     state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].type = PIPELINE_COMPUTE_LIGHTCULL;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementationCount = 1;
 
     struct Buffer lightcullShaderCode;
     if (!loadFile("resources/shaders/lightcull.comp.spv", &lightcullShaderCode)) return false;
@@ -388,14 +399,13 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     VkComputePipelineCreateInfo lightcullPipelineInfo = {};
     lightcullPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     lightcullPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].layout;
-    lightcullPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    lightcullPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    lightcullPipelineInfo.stage.module = lightcullShaderModule;
-    lightcullPipelineInfo.stage.pName = "main";
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, lightcullShaderModule, NULL, &lightcullPipelineInfo.stage))
+        return false;
 
     VkPipelineCacheCreateInfo lightcullCacheInfo = {};
     lightcullCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &lightcullCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache);
+    if (vkCreatePipelineCache(ctx->device, &lightcullCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache = VK_NULL_HANDLE;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache, 1, &lightcullPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
@@ -434,9 +444,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         return false;
 
     state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].type = PIPELINE_COMPUTE_LIGHTSETUP;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementationCount = 1;
 
     struct Buffer lightsetupShaderCode;
     if (!loadFile("resources/shaders/lightsetup.comp.spv", &lightsetupShaderCode)) return false;
@@ -445,14 +457,13 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     VkComputePipelineCreateInfo lightsetupPipelineInfo = {};
     lightsetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     lightsetupPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].layout;
-    lightsetupPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    lightsetupPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    lightsetupPipelineInfo.stage.module = lightsetupShaderModule;
-    lightsetupPipelineInfo.stage.pName = "main";
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, lightsetupShaderModule, NULL, &lightsetupPipelineInfo.stage))
+        return false;
 
     VkPipelineCacheCreateInfo lightsetupCacheInfo = {};
     lightsetupCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &lightsetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache);
+    if (vkCreatePipelineCache(ctx->device, &lightsetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache = VK_NULL_HANDLE;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache, 1, &lightsetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
@@ -469,9 +480,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         return false;
 
     state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].type = PIPELINE_COMPUTE_SHADOWSETUP;
-    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].supportedFeatures = PBR_FEATURE_NONE;
+    if (state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations == NULL)
+        return false;
+    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementationCount = 1;
 
     struct Buffer shadowSetupCode;
     if (!loadFile("resources/shaders/shadowsetup.comp.spv", &shadowSetupCode)) return false;
@@ -480,14 +493,13 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     VkComputePipelineCreateInfo shadowSetupPipelineInfo = {};
     shadowSetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     shadowSetupPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].layout;
-    shadowSetupPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shadowSetupPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    shadowSetupPipelineInfo.stage.module = shadowSetupModule;
-    shadowSetupPipelineInfo.stage.pName = "main";
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, shadowSetupModule, NULL, &shadowSetupPipelineInfo.stage))
+        return false;
 
     VkPipelineCacheCreateInfo shadowSetupCacheInfo = {};
     shadowSetupCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &shadowSetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache);
+    if (vkCreatePipelineCache(ctx->device, &shadowSetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache = VK_NULL_HANDLE;
 
     if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache, 1, &shadowSetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
     state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;

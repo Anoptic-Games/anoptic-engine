@@ -361,18 +361,23 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 		cleanupVulkan(ctx);
 		exit(1);
 	}
-	createImageViews(ctx, &rendererState);
-	if (rendererState.views == NULL)
+	if (!createImageViews(ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "View group re-creation error, exiting!");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
 
-	createColorResources(ctx);
+	if (!createColorResourcesChecked(ctx))
+	{
+		ano_log(ANO_FATAL, "Colour target re-creation error, exiting!");
+		cleanupVulkan(ctx);
+		exit(1);
+	}
 
-	createDepthResources(ctx, &rendererState);
-	if (rendererState.frames[0].views[0].depthView == NULL)
+	// Status, not a sniff: the builder fills frame 0 / view 0 first, so a later frame's refusal
+	// leaves that field live.
+	if (!createDepthResources(ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Depth resources re-creation error, exiting!");
 		cleanupVulkan(ctx);
@@ -406,8 +411,10 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	rendererState.framebufferResized = false;
 }
 
+// Central init component. VK_NULL_HANDLE on failure: a failed vkCreateImageView leaves *pView
+// undefined, so the driver's out-param never reaches a caller.
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
-{ // Central init component
+{
 	VkImageViewCreateInfo viewInfo = {};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
@@ -419,25 +426,46 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 	viewInfo.subresourceRange.baseArrayLayer = 0;
 	viewInfo.subresourceRange.layerCount = 1;
 
-	VkImageView imageView;
+	VkImageView imageView = VK_NULL_HANDLE;
 	if (vkCreateImageView(device, &viewInfo, NULL, &imageView) != VK_SUCCESS)
 	{
 		ano_log(ANO_ERROR, "Failed to create image view!");
+		return VK_NULL_HANDLE;
 	}
 
 	return imageView;
 }
 
 
+// Swapchain colour views, one per presentable image. false leaves views NULL and viewCount 0.
+// The pair is published only once the array exists and every slot holds a live view, so a
+// non-zero viewCount always indexes that many live handles.
 bool createImageViews(VulkanContext* ctx, RendererState* state)
 {
-    state->views = (VkImageView*)malloc(state->imageCount * sizeof(VkImageView));
-    state->viewCount = state->imageCount;
+    state->views = NULL;
+    state->viewCount = 0;
 
-    for (uint32_t i = 0; i < state->imageCount; i++) 
+    VkImageView* views = (VkImageView*)malloc(state->imageCount * sizeof(VkImageView));
+    if (views == NULL)
     {
-        state->views[i] = createImageView(ctx->device, state->images[i], state->imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+        ano_log(ANO_ERROR, "Failed to allocate %u swapchain image views!", state->imageCount);
+        return false;
     }
+
+    for (uint32_t i = 0; i < state->imageCount; i++)
+    {
+        views[i] = createImageView(ctx->device, state->images[i], state->imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+        if (views[i] == VK_NULL_HANDLE)
+        { // Unwind the prefix: teardown never walks a partial set
+            for (uint32_t j = 0; j < i; j++)
+                vkDestroyImageView(ctx->device, views[j], NULL);
+            free(views);
+            return false;
+        }
+    }
+
+    state->views = views;
+    state->viewCount = state->imageCount;
     return true;
 }
 

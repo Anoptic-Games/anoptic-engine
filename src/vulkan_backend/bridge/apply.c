@@ -52,20 +52,41 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
         mover_refresh_slot(s, slot);
     if (fields & RFIELD_TRANSFORM)
         shadow_volumes_reparent(s, slot);
-    // Light-entity writes static palette only; index off runtime rows.
+    // Light-entity writes static palette only; index off runtime rows. Backstop bound on the lane:
+    // gate_light_domain already decided the row, so this only ever sees NO_LIGHT or a static row.
     if ((fields & RFIELD_LIGHT) && c->light_index < ANO_STATIC_LIGHT_COUNT) {
-        LightData L = {0};
-        L.color[0]       = c->light.color[0];
-        L.color[1]       = c->light.color[1];
-        L.color[2]       = c->light.color[2];
-        L.intensity      = c->light.intensity;
-        L.range          = c->light.range;
-        L.innerConeCos   = c->light.innerConeCos;
-        L.outerConeCos   = c->light.outerConeCos;
-        L.type           = (uint32_t)c->light.type;
-        L.transformIndex = slot; // world pos/dir from slot's live transform
-        L.enabled        = 1u;
+        // One decode for both regions: a static row rides its slot origin, so light_offset 〜
+        // runtime-registry vocabulary (backend.h) 〜 is deliberately not honored here.
+        static const float kStaticOrigin[3] = {0};
+        LightData L = light_data_from_params(&c->light, slot, kStaticOrigin);
         slot_upload_stage(&s->lightBuffer, f, c->light_index, &L);
+        // Revoke half of the static caster lifecycle (backend.h): the row is overwritten whole, so
+        // a payload that does not cast must not leave the old block bound. The grant half is
+        // CREATE-only and is taken in the RCMD_CREATE arm below, never here.
+        if (!c->light.castsShadow) {
+            unregister_static_shadow(s, c->light_index, f);
+        } else if (c->kind == RCMD_UPDATE) {
+            // Both mirrors of the row's caster meet here: the payload just staged into LightData and
+            // the config the owned block holds. UPDATE grants nothing, so the two things it drops are
+            // said out loud on the row domain's own channel instead of evaporating 〜 the producer
+            // resent the whole payload (backend.h) and deserves to hear which half did not take.
+            uint32_t ownedType;
+            if (!static_shadow_row_casts(s, c->light_index, &ownedType)) {
+                // Covers both block-less causes: never granted, and a CREATE the budget/region
+                // refused. Re-create is the only remedy for either, and may be refused again.
+                ano_log(ANO_ERROR, "Render bridge: static row %u raised castsShadow on UPDATE but owns "
+                        "no shadow block; grants are CREATE-only, so the row stays shadowless. "
+                        "Re-create it (budget permitting) to grant.", c->light_index);
+            } else {
+                if (ownedType != (uint32_t)c->light.type)
+                    ano_log(ANO_ERROR, "Render bridge: static row %u UPDATE names light type %u, its "
+                            "shadow block holds %u; re-create the row to change type.",
+                            c->light_index, (uint32_t)c->light.type, ownedType);
+                // The whole-row overwrite reaches the caster geometry too: refresh the volumes the
+                // row already owns from the restaged range. Never grants 〜 CREATE owns that half.
+                refresh_static_shadow(s, c->light_index, slot, L.range);
+            }
+        }
     }
 }
 
@@ -102,6 +123,42 @@ static void free_owned_bulk(const RenderCommand* c)
     if (blk) mi_free(blk);
 }
 
+// Establish both light-payload domains on a drained command: the LightType, and the static palette
+// row a scene light-entity may name. Both are producer-supplied and unvalidated on the ring 〜 type
+// indexes shadowTypeUsed and rides LightData.type + ShadowFrustumConfig.lightType to the shaders,
+// light_index addresses the static region directly (backend.h). This is the one seam that decides
+// either, so no consumer downstream re-derives the domain; the bounds tests the consumers still
+// carry are fault-site backstops. Read only where the command actually carries a light.
+// in:  c, the drained command (render-thread local copy, mutated in place)
+// out: bool, false == drop the whole command. Only the light-addressed kinds can drop, and none
+//      of them owns a batch block, so the caller's skip can never strand one.
+[[nodiscard]] static bool gate_light_domain(RenderCommand* c)
+{
+    switch (c->kind) {
+    case RCMD_CREATE:
+    case RCMD_UPDATE:
+        // Entity still lands; only its light payload is refused, in the protocol's own absent-light
+        // spelling. Naming a runtime-registry row on a scene light-entity is the same caller error
+        // as an out-of-enum type: refused once, here, and said out loud 〜 it used to evaporate
+        // between the RFIELD_LIGHT synthesis and both static-region consumers.
+        if (c->light_index != ANO_RENDER_NO_LIGHT &&
+            ((uint32_t)c->light.type >= LIGHT_TYPE_COUNT || c->light_index >= ANO_STATIC_LIGHT_COUNT)) {
+            ano_log(ANO_ERROR, "Render bridge: light payload refused (row %u, type %u); entity lands unlit.",
+                    c->light_index, (uint32_t)c->light.type);
+            c->light_index = ANO_RENDER_NO_LIGHT;
+        }
+        return true;
+    case RCMD_LIGHT_ATTACH:
+        return (uint32_t)c->light.type < LIGHT_TYPE_COUNT; // no light to attach: drop
+    case RCMD_LIGHT_UPDATE: {
+        // Partial updates carry a type only when the mask names it (0 == ALL).
+        uint32_t fields = c->light_fields ? c->light_fields : ANO_LIGHT_FIELD_ALL;
+        return !(fields & ANO_LIGHT_FIELD_TYPE) || (uint32_t)c->light.type < LIGHT_TYPE_COUNT;
+    }
+    default:
+        return true;
+    }
+}
 
 
 void render_apply_commands(RendererState* state, uint32_t frameIndex)
@@ -109,6 +166,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
     // Drain bridge -> delta staging. DESTROY dead-marks + retires (quarantine until drained).
     RenderCommand cmd;
     while (ano_render_next_command(&state->bridge, &cmd)) {
+        if (!gate_light_domain(&cmd)) continue; // light type/row outside its domain: refuse the command
         switch (cmd.kind) {
         case RCMD_STREAM_TRANSFORMS:
             // Adopt published slice; bump resolveGen (scatter re-resolves when stagedGen lags).

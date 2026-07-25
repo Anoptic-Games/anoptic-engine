@@ -16,6 +16,8 @@
 // Fullscreen tonemap pass: encodes the HDR resolve target to the swapchain.
 // in:  ctx, state (imageFormat = swapchain target format must be set)
 // out: true on success; populates state->tonemap{SetLayout,Layout,Cache,Pipeline}
+// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
+// argument, so a refused mint zeroes the handle and init carries on.
 bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 {
 	// One combined image sampler, fragment-only.
@@ -47,7 +49,8 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 
 	VkPipelineCacheCreateInfo cacheInfo = {};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->tonemapCache);
+	if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->tonemapCache) != VK_SUCCESS)
+		state->tonemapCache = VK_NULL_HANDLE;
 
 	struct Buffer vertCode, fragCode;
 	if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode)) return false;
@@ -55,15 +58,10 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
 	VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
 
-	VkPipelineShaderStageCreateInfo stages[2] = {};
-	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stages[0].module = vertModule;
-	stages[0].pName = "main";
-	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	stages[1].module = fragModule;
-	stages[1].pName = "main";
+	VkPipelineShaderStageCreateInfo stages[2];
+	if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
+		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
+		return false;
 
 	// No vertex buffers, fullscreen triangle from gl_VertexIndex.
 	VkPipelineVertexInputStateCreateInfo vertexInput = {};

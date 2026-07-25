@@ -731,6 +731,95 @@ static int test_lifecycle_guard(const char *when)
 }
 
 
+/* Source-file capture */
+
+// ano_log_write/ano_log_vwrite take a sourceFile beside a literal-only printFormat. The header
+// puts no lifetime requirement on sourceFile, so a caller may hand it a stack or heap path:
+// the drained record must carry the name as it read at call time, not whatever the caller's
+// buffer holds when the drain thread gets there.
+
+#define SRCFILE_BACKLOG 2000
+#define SRCFILE_TRIGGERS 16
+
+// Control: a string-literal sourceFile round-trips with its file:line prefix, so a fix that
+// drops the prefix machinery cannot pass.
+static int test_srcfile_literal(void)
+{
+    g_fail = 0;
+    reset_output();
+    ano_log_write(ANO_INFO, 0, "ctrl_lit.c", 42, "control literal %d", 1);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "srcfile-literal: file readable");
+    if (c) {
+        CHECK(strstr(c, "ctrl_lit.c:42") != NULL, "srcfile-literal: literal sourceFile prefix drained intact");
+        CHECK(strstr(c, "control literal 1") != NULL, "srcfile-literal: body drained intact");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Control: a mutable buffer left intact round-trips, so a non-literal sourceFile stays
+// in-contract and a reject-non-literal fix is visible.
+static int test_srcfile_mutable_buffer(void)
+{
+    g_fail = 0;
+    reset_output();
+    char keep[32];
+    strcpy(keep, "ctrl_keep.c");
+    ano_log_write(ANO_INFO, 0, keep, 77, "control intact %d", 2);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "srcfile-intact: file readable");
+    if (c) {
+        CHECK(strstr(c, "ctrl_keep.c:77") != NULL, "srcfile-intact: intact caller buffer drained with call-time content");
+        free(c);
+    }
+    return g_fail;
+}
+
+// sourceFile must be captured by value at call time. A FIFO backlog pins the drainer behind the
+// triggers, then each trigger passes its own live buffer and scribbles it the instruction after
+// the call returns; the drained prefixes must still name the call-time files. Buffers stay live,
+// so the failure signal is drain-time content, not a crash.
+static int test_srcfile_calltime_capture(void)
+{
+    g_fail = 0;
+    reset_output();
+
+    for (int i = 0; i < SRCFILE_BACKLOG; i++)
+        ano_log(ANO_INFO, "srcfile filler %d", i);
+
+    static char buf[SRCFILE_TRIGGERS][24];
+    for (unsigned k = 0; k < SRCFILE_TRIGGERS; k++) {
+        snprintf(buf[k], sizeof buf[k], "live_%02u.c", k);
+        ano_log_write(ANO_INFO, 0, buf[k], (int)(4200u + k), "trig %u", k);
+        memcpy(buf[k], "gone", 4);   // scribble: same length, call-time name destroyed
+    }
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "srcfile-calltime: file readable");
+    if (c == NULL) return g_fail;
+
+    int scribbled = 0;
+    for (unsigned k = 0; k < SRCFILE_TRIGGERS; k++) {
+        char want[32], got[32];
+        snprintf(want, sizeof want, "live_%02u.c:%u", k, 4200u + k);
+        snprintf(got,  sizeof got,  "gone_%02u.c:%u", k, 4200u + k);
+        if (strstr(c, got) != NULL) scribbled++;
+        CHECK(strstr(c, want) != NULL, "srcfile-calltime: sourceFile drained with call-time content, not drain-time");
+    }
+    if (scribbled > 0)
+        printf("  evidence: %d of %d drained records carry the post-call scribble\n",
+               scribbled, SRCFILE_TRIGGERS);
+    free(c);
+    return g_fail;
+}
+
+
 /* Visible */
 
 // Human-readable log left on disk (not removed).
@@ -1137,6 +1226,9 @@ int main(void)
         { "abuse_inputs",               test_abuse_inputs },
         { "abuse_config",               test_abuse_config },
         { "abuse_output_dir",           test_abuse_output_dir },
+        { "srcfile_literal",            test_srcfile_literal },
+        { "srcfile_mutable_buffer",     test_srcfile_mutable_buffer },
+        { "srcfile_calltime_capture",   test_srcfile_calltime_capture },
         { "visible_output",             test_visible_output },
     };
 

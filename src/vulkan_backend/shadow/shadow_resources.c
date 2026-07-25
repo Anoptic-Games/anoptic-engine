@@ -17,6 +17,8 @@
 // Per frame: GPU-written frustum SSBO + RGBA16 CDF atlas + blur temp (2D arrays: per-sublayer render + array sample views).
 // Shared: transient caster-depth (one slice/frustum) + shadow config/info SlotUploads.
 // in: ctx, state; out: frames[].shadow.*, shadowDepth*, shadow{Config,Info}
+// false on any failed create, on a refused bind (the object exists but is unbacked), or on a
+// refused transient-CB mint, which is never recorded into.
 bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     VkDeviceSize frustumSize = (VkDeviceSize)sizeof(CullView) * ANO_SHADOW_FRUSTUM_COUNT;
 
@@ -30,7 +32,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         VkMemoryRequirements bmr; vkGetBufferMemoryRequirements(ctx->device, sh->frustumBuffer, &bmr);
         sh->frustumAlloc = gpu_alloc(&gpuAllocator, bmr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (sh->frustumAlloc.memory == VK_NULL_HANDLE) return false;
-        vkBindBufferMemory(ctx->device, sh->frustumBuffer, sh->frustumAlloc.memory, sh->frustumAlloc.offset);
+        if (vkBindBufferMemory(ctx->device, sh->frustumBuffer, sh->frustumAlloc.memory, sh->frustumAlloc.offset) != VK_SUCCESS) return false;
 
         // Packed sampling viewProjs: SSBO write (shadowsetup) / UBO read (lighting), full shader bound mat4[64].
         VkBufferCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -42,7 +44,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         VkMemoryRequirements vmr; vkGetBufferMemoryRequirements(ctx->device, sh->sampleVPBuffer, &vmr);
         sh->sampleVPAlloc = gpu_alloc(&gpuAllocator, vmr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (sh->sampleVPAlloc.memory == VK_NULL_HANDLE) return false;
-        vkBindBufferMemory(ctx->device, sh->sampleVPBuffer, sh->sampleVPAlloc.memory, sh->sampleVPAlloc.offset);
+        if (vkBindBufferMemory(ctx->device, sh->sampleVPBuffer, sh->sampleVPAlloc.memory, sh->sampleVPAlloc.offset) != VK_SUCCESS) return false;
     }
 
     // CDF atlas + blur-temp: RGBA16_UNORM 2D arrays, ANO_SHADOW_ATLAS_LAYERS, one instance across FIF. Seeded SHADER_READ.
@@ -68,7 +70,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
             VkMemoryRequirements imr; vkGetImageMemoryRequirements(ctx->device, *momentImgs[m], &imr);
             *momentAl[m] = gpu_alloc(&gpuAllocator, imr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             if (momentAl[m]->memory == VK_NULL_HANDLE) return false;
-            vkBindImageMemory(ctx->device, *momentImgs[m], momentAl[m]->memory, momentAl[m]->offset);
+            if (vkBindImageMemory(ctx->device, *momentImgs[m], momentAl[m]->memory, momentAl[m]->offset) != VK_SUCCESS) return false;
 
             VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
             vinfo.image = *momentImgs[m];
@@ -87,7 +89,9 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
             }
 
             // Seed ALL layers to SHADER_READ (transitionImageLayout spans only layer 0).
+            // A refused mint answers VK_NULL_HANDLE; the seed barrier never runs on it.
             VkCommandBuffer seedCmd = beginSingleTimeCommands(ctx);
+            if (seedCmd == VK_NULL_HANDLE) return false;
             VkImageMemoryBarrier seed = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -95,7 +99,9 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
                 .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
             vkCmdPipelineBarrier(seedCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &seed);
-            endSingleTimeCommands(ctx, seedCmd);
+            // A refused submit never runs the barrier: the atlas would stay UNDEFINED under a
+            // successful return, and the first sample would read it in the wrong layout.
+            if (!endSingleTimeCommandsChecked(ctx, seedCmd)) return false;
         }
     }
 
@@ -143,7 +149,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
         VkMemoryRequirements dmr; vkGetImageMemoryRequirements(ctx->device, state->shadowDepthImage, &dmr);
         state->shadowDepthAlloc = gpu_alloc(&gpuAllocator, dmr, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (state->shadowDepthAlloc.memory == VK_NULL_HANDLE) return false;
-        vkBindImageMemory(ctx->device, state->shadowDepthImage, state->shadowDepthAlloc.memory, state->shadowDepthAlloc.offset);
+        if (vkBindImageMemory(ctx->device, state->shadowDepthImage, state->shadowDepthAlloc.memory, state->shadowDepthAlloc.offset) != VK_SUCCESS) return false;
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
             VkImageViewCreateInfo dv = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
             dv.image = state->shadowDepthImage;

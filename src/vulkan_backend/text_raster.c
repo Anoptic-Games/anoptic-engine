@@ -264,6 +264,8 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
 }
 
 // createDataBuffer with optional CONCURRENT graphics+compute sharing.
+// Total out-params: every failure arm answers *buffer == VK_NULL_HANDLE, including a refused bind
+// (the buffer exists but is unbacked, so recording against it is UB).
 bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc)
@@ -278,7 +280,10 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
         bi.pQueueFamilyIndices = fams;
     }
     if (vkCreateBuffer(ctx->device, &bi, NULL, buffer) != VK_SUCCESS)
+    {
+        *buffer = VK_NULL_HANDLE; // out-param indeterminate on failure
         return false;
+    }
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(ctx->device, *buffer, &req);
     *alloc = gpu_alloc(&gpuAllocator, req, props);
@@ -288,12 +293,20 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
         *buffer = VK_NULL_HANDLE;
         return false;
     }
-    vkBindBufferMemory(ctx->device, *buffer, alloc->memory, alloc->offset);
+    if (vkBindBufferMemory(ctx->device, *buffer, alloc->memory, alloc->offset) != VK_SUCCESS)
+    {
+        vkDestroyBuffer(ctx->device, *buffer, NULL);
+        *buffer = VK_NULL_HANDLE;
+        return false;
+    }
     return true;
 }
 
 // Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 7 UI-table
 // SSBOs (bindings 4-10 of uiFrameBuffer).
+// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
+// argument, so a refused mint zeroes the handle and the build carries on.
+// Commit-last idiom: implementationCount is published only once its array exists.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkDescriptorSetLayoutBinding bindings[11] = {};
@@ -332,11 +345,11 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         return false;
 
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].type = PIPELINE_COMPUTE_TEXTRASTER;
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].supportedFeatures = PBR_FEATURE_NONE;
     if (state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations == NULL)
         return false;
+    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementationCount = 1;
 
     struct Buffer code;
     if (!loadFile("resources/shaders/textraster.comp.spv", &code))
@@ -345,15 +358,14 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 
     VkPipelineCacheCreateInfo cacheInfo = {};
     cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache);
+    if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache = VK_NULL_HANDLE;
 
     VkComputePipelineCreateInfo pipelineInfo = {};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout;
-    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipelineInfo.stage.module = module;
-    pipelineInfo.stage.pName = "main";
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, module, NULL, &pipelineInfo.stage))
+        return false;
 
     VkResult r = vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache,
                                           1, &pipelineInfo, NULL,
@@ -379,15 +391,10 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
     VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
     VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
 
-    VkPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertModule;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragModule;
-    stages[1].pName = "main";
+    VkPipelineShaderStageCreateInfo stages[2];
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
+        || !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
+        return false;
 
     VkPipelineVertexInputStateCreateInfo vertexInput = {};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -489,15 +496,10 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
     VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
     VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
 
-    VkPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertModule;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragModule;
-    stages[1].pName = "main";
+    VkPipelineShaderStageCreateInfo stages[2];
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
+        || !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
+        return false;
 
     VkPipelineVertexInputStateCreateInfo vertexInput = {};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -805,6 +807,15 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
                     shareFamilies, state->asyncText ? 2u : 0u);
         fr->textOverlayView = createImageView(ctx->device, fr->textOverlayImage,
                                               VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+        if (fr->textOverlayView == VK_NULL_HANDLE)
+        {
+            // Images made so far stay handle-guarded for ano_vk_text_destroy_overlay.
+            ano_log(ANO_WARN, "Text overlay disabled: overlay image view creation failed.");
+            state->textOverlay = false;
+            state->asyncText = false;
+            state->textWorld = false;
+            return;
+        }
         // Seed the composite's resting layout.
         if (!transitionImageLayout(ctx, VK_NULL_HANDLE, fr->textOverlayImage, VK_FORMAT_R8G8B8A8_UNORM,
                                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))

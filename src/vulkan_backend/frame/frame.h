@@ -38,8 +38,10 @@ void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex);
 
 /* frame/record.c */
 
-// Record one frame's command buffer. Called by drawFrame.
-void recordCommandBuffer(uint32_t imageIndex);
+// Record one frame's command buffer(s). imageIndex = acquired swapchain image.
+// false on a refused vkBeginCommandBuffer/vkEndCommandBuffer: nothing is recorded past the
+// refusal and no buffer of this frame may be submitted. Called by drawFrame.
+[[nodiscard]] bool recordCommandBuffer(uint32_t imageIndex);
 
 /* frame/submit.c */
 

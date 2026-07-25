@@ -68,17 +68,28 @@ typedef struct GeometryPool
 bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily);
 void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device);
 
-// Upload mesh data, return a MeshRegion handle (index into meshes[]).
-// Data is staged through a staging buffer -> device-local transfer.
-uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
-                              uint32_t transferFamily, VkQueue transferQueue,
-                              const Vertex* vertices, uint32_t vertexCount,
-                              const uint32_t* indices, uint32_t indexCount);
-
-#define ANO_MAX_LOD 8u
-
 // Per-mesh GPU buffer capacity (MeshSSBO / MeshBoundsSSBO). Host pool must not register past this.
 #define ANO_MAX_MESHES 8192u
+
+// "no mesh slot" answer, shared by every upload arm that grants nothing. Outside the grantable
+// domain [0, ANO_MAX_MESHES), so a refusal can never be read as a slot 〜 least of all slot 0,
+// FALLBACK_MESH_INDEX, the cube every unaddressable mesh already degrades to. Numerically the
+// absent-mesh word both consuming lanes read (NO_MESH_INDEX, ANO_RENDER_NO_MESH), so a refusal
+// that reaches a renderable carries no geometry instead of silently drawing the fallback
+// (welded in scene_buffers.c).
+#define ANO_MESH_NONE 0xFFFFFFFFu
+_Static_assert(ANO_MESH_NONE >= ANO_MAX_MESHES, "mesh refusal fell inside the grantable slot domain");
+
+// Upload mesh data into one pool slot, staged through a staging buffer -> device-local transfer.
+// out: the granted MeshRegion handle (index into meshes[], < ANO_MAX_MESHES), or ANO_MESH_NONE when
+// the pool is full or the transfer fails. The slot commits only on success, and a grant is never
+// ANO_MESH_NONE, so refusal stays out of the index domain.
+[[nodiscard]] uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
+                                            uint32_t transferFamily, VkQueue transferQueue,
+                                            const Vertex* vertices, uint32_t vertexCount,
+                                            const uint32_t* indices, uint32_t indexCount);
+
+#define ANO_MAX_LOD 8u
 
 // Default LOD levels for glTF uploads (1 = no decimation). Clamp: ANO_MAX_LOD.
 #define ANO_DEFAULT_LOD_COUNT 4u
@@ -96,7 +107,9 @@ typedef struct AnoLodConfig
 AnoLodConfig ano_lod_config_default(uint32_t lodCount);
 
 // Upload contiguous LOD chain. Bounds LOD-invariant (full sphere). Truncates on stall/exhaust.
-// out: base index / *out_lodCount; 0 + *out_lodCount==0 on failure. out_* may be NULL.
+// out: base index / *out_lodCount; ANO_MESH_NONE + *out_lodCount==0 on failure, in the return and
+// in *out_lodBase alike, so a caller reading either spelling never mistakes a refusal for the
+// fallback slot. out_* may be NULL.
 uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                                     uint32_t transferFamily, VkQueue transferQueue,
                                     const Vertex* vertices, uint32_t vertexCount,

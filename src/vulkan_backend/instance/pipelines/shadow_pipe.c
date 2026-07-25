@@ -18,6 +18,8 @@
 // Run after ano_vk_init_pipelines.
 // in:  ctx, state (prototypes[PIPELINE_FLAT].layout must exist)
 // out: true on success; populates state->shadow{Pipeline,Cache,Sampler}
+// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
+// argument, so a refused mint zeroes the handle and init carries on.
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 {
 	// Linear/clamp sampler for the moment atlas.
@@ -36,7 +38,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 
 	VkPipelineCacheCreateInfo cacheInfo = {};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->shadowCache);
+	if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->shadowCache) != VK_SUCCESS)
+		state->shadowCache = VK_NULL_HANDLE;
 
 	bool useMesh = ctx->deviceCapabilities.meshShader;
 	bool useTask = state->taskCull;
@@ -66,15 +69,9 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 
 	VkPipelineShaderStageCreateInfo stages[3] = {};
 	stages[0] = taskStageInfo; // leading task slot
-	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[1].stage = geometryStage;
-	stages[1].module = geomModule;
-	stages[1].pName = "main";
-	stages[1].pSpecializationInfo = &specInfo;
-	stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[2].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	stages[2].module = fragModule;
-	stages[2].pName = "main";
+	if (!ano_pipeline_stage(geometryStage, geomModule, &specInfo, &stages[1])
+		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[2]))
+		return false;
 
 	VkPipelineViewportStateCreateInfo viewportState = {};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -163,8 +160,10 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 		VkShaderModule mFragModule = createShaderModule(ctx->device, &mFragCode);
 
 		VkPipelineShaderStageCreateInfo mStages[3] = { stages[0], stages[1], stages[2] };
-		mStages[1].module = mGeomModule; // keeps shadowPass spec info
-		mStages[2].module = mFragModule;
+		// Same shadowPass spec info, masked modules.
+		if (!ano_pipeline_stage(geometryStage, mGeomModule, &specInfo, &mStages[1])
+			|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, mFragModule, NULL, &mStages[2]))
+			return false;
 		pipelineInfo.pStages = useTask ? mStages : &mStages[1];
 
 		mr = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &pipelineInfo, NULL, &state->shadowPipelineMasked);
@@ -214,13 +213,10 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkShaderModule blurVert = createShaderModule(ctx->device, &blurVertCode);
 	VkShaderModule blurFrag = createShaderModule(ctx->device, &blurFragCode);
 
-	VkPipelineShaderStageCreateInfo blurStages[2] = {};
-	blurStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	blurStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	blurStages[0].module = blurVert; blurStages[0].pName = "main";
-	blurStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	blurStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	blurStages[1].module = blurFrag; blurStages[1].pName = "main";
+	VkPipelineShaderStageCreateInfo blurStages[2];
+	if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, blurVert, NULL, &blurStages[0])
+		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, blurFrag, NULL, &blurStages[1]))
+		return false;
 
 	VkPipelineVertexInputStateCreateInfo blurVertexInput = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 	VkPipelineInputAssemblyStateCreateInfo blurIA = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,

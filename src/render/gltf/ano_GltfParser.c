@@ -398,12 +398,27 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     }
 
     // 2. Upload Textures & Bind Materials
+    // Batch CB for every texture upload. A refused mint answers VK_NULL_HANDLE, which is exactly
+    // createTextureImage's "borrow nothing" sentinel: each upload mints per-op instead, and the
+    // epilogue below discharges only a CB this scope actually holds.
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
+    if (textureCmd == VK_NULL_HANDLE)
+        ano_log(ANO_WARN, "No transient command buffer for the texture batch; uploading per texture.");
     uint32_t stagingCount = 0;
+    // The bindless array never releases a slot, so the registrar's first refusal proves every
+    // later one: latch it and stop decoding for textures that can never be addressed.
+    bool bindlessFull = false;
+    uint32_t bindlessSkipped = 0;
 
     for (size_t t = 0; t < data->textures_count; ++t) {
         cgltf_texture* tex = &data->textures[t];
         if (tex->image && tex->image->uri && textureNeeded[t]) {
+            // Skips before any acquisition, so it lands in the same state as the URI skip below.
+            if (bindlessFull) {
+                textureLoaded[t] = false;
+                bindlessSkipped++;
+                continue;
+            }
             ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading texture %zu: %s", t, tex->image->uri);
             // Resolve image URI against the glTF file's directory, then percent-decode the tail.
             char texPath[1024];
@@ -428,17 +443,28 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                 td.textureImageView = loadedTextures[t];
                 ano_vk_register_texture(&rendererState.primitives, td);
                 
+                // A full array answers ANO_BINDLESS_NONE, which is the same word the material
+                // bake and every fragment shader already read as "no texture": the refusal
+                // carries through to the SSBO instead of aliasing onto slot 0. The view stays
+                // registered for teardown either way.
                 bindlessIndices[t] = bindless_register_texture(
-                    ctx, &rendererState.bindlessTextures, 
+                    ctx, &rendererState.bindlessTextures,
                     loadedTextures[t], rendererState.textureSampler
                 );
+                if (bindlessIndices[t] == ANO_BINDLESS_NONE) {
+                    ano_log(ANO_WARN, "No bindless slot for %s; its materials sample untextured.", tex->image->uri);
+                    bindlessFull = true;
+                }
             }
         } else if (tex->image && tex->image->uri) {
             ano_debug_log(ANO_INFO, "[GLTF DEBUG] Skipping texture %zu: %s (not needed or unsupported by pipeline)", t, tex->image->uri);
         }
     }
 
-    endSingleTimeCommands(ctx, textureCmd);
+    if (bindlessSkipped)
+        ano_log(ANO_WARN, "Bindless texture array full: skipped %u further texture uploads; those materials sample untextured.", bindlessSkipped);
+
+    if (textureCmd != VK_NULL_HANDLE) endSingleTimeCommands(ctx, textureCmd);
 
     for (uint32_t i = 0; i < stagingCount; ++i) {
         vkDestroyBuffer(ctx->device, stagingBuffers[i], NULL);

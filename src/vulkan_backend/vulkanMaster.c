@@ -48,6 +48,12 @@ bool g_AnoVkNoSuitableGpu = false;
 
 static GLFWwindow* window;
 
+// Latched when the frame path hits a failure no swapchain recreate can cure (a refused acquire
+// discharge, a refused acquire, a refused presentation). Cleared by initVulkan: the flag describes
+// the live renderer, not the process. Set means drawFrame is closed for business and the window's
+// should-close flag is raised, so main's loop condition retires the renderer on its own terms.
+static bool renderUnrecoverable = false;
+
 static Monitors monitors =
 {
 	.monitorInfos = NULL,	// Array of MonitorInfo for each monitor
@@ -98,18 +104,23 @@ void unInitVulkan() // A celebration
 	if (vulkanGarbage.ctx)
 	{
 		cleanupVulkan(vulkanGarbage.ctx);
+		vulkanGarbage.ctx = NULL; // repeat teardown destroys nothing twice
 	}
-	
+
 	if (vulkanGarbage.window)
 	{
 		glfwDestroyWindow(vulkanGarbage.window);
-		glfwTerminate();
+		vulkanGarbage.window = NULL; // repeat teardown destroys nothing twice
 	}
-
+	window = NULL; // the module's own handle dies with the ledger's, never outlives the destroy
+	// Monitor ledger before glfwTerminate: every MonitorInfo.modes is GLFW-owned and dies with it.
 	if (vulkanGarbage.monitors)
 	{
 		cleanupMonitors(vulkanGarbage.monitors);
+		vulkanGarbage.monitors = NULL; // repeat teardown dissolves nothing twice
 	}
+
+	glfwTerminate(); // no-op when GLFW never came up; the initWindow refusal arm lands here too
 
 	#ifdef DEBUG_BUILD
 	// WARNING+ validation messages this run.
@@ -117,8 +128,12 @@ void unInitVulkan() // A celebration
 	#endif
 }
 
+// out: true when nothing is open 〜 no window means no loop to keep running, and glfwWindowShouldClose
+// asserts a live handle. Total either side of the renderer's life, so main's loop condition is safe
+// before initVulkan mints the window and after unInitVulkan destroys it.
 bool anoShouldClose()
 {
+	if (window == NULL) return true;
 	return glfwWindowShouldClose(window);
 }
 
@@ -161,8 +176,52 @@ void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t fra
 
 
 
+// in: the site tag of the refusing arm, the VkResult it answered
+// out: renderUnrecoverable latched and the window's should-close flag raised, once per renderer.
+// ANO_FATAL never aborts, so the exit rides main's loop condition: the logic thread joins and
+// unInitVulkan runs in the settled shutdown order. No retry, no recovery 〜 no path in tree
+// re-creates the surface or the device.
+static void latchRenderUnrecoverable(const char* site, VkResult result)
+{
+	if (renderUnrecoverable) return; // one diagnostic per renderer, not one per frame
+	renderUnrecoverable = true;
+	ano_log(ANO_FATAL, "Unrecoverable render failure at %s (VkResult %d); closing the window.",
+	        site, (int)result);
+	glfwSetWindowShouldClose(window, GLFW_TRUE);
+}
+
+// in: this slot's imageAvailable, signalled by the acquire below
+// out: the semaphore unsignalled again on every path 〜 the graphics submit waits it, or the
+// discharge drain does. vkAcquireNextImageKHR demands an unsignalled semaphore with no pending
+// signal (VUID-vkAcquireNextImageKHR-semaphore-01779), and a skipped frame leaves the slot index
+// where it was, so the next drawFrame re-enters the acquire on this very semaphore.
+// A refused drain cannot restore that invariant, so it latches instead of returning quietly.
+static void dischargeAcquire(uint32_t frameIndex)
+{
+	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+	VkSubmitInfo drain = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1,
+		.pWaitSemaphores = &rendererState.frames[frameIndex].imageAvailable,
+		.pWaitDstStageMask = &waitStage };
+	VkResult drained = vkQueueSubmit(ctx.graphicsQueue, 1, &drain, VK_NULL_HANDLE);
+	if (drained != VK_SUCCESS)
+	{ // the signal is still pending; a further acquire on it breaches VUID-...-semaphore-01779
+		ano_log(ANO_ERROR, "Failed to discharge the acquired image semaphore!");
+		latchRenderUnrecoverable("acquire discharge", drained);
+		return;
+	}
+	VkResult idled = vkQueueWaitIdle(ctx.graphicsQueue); // the wait must have executed before the next acquire
+	if (idled != VK_SUCCESS)
+		latchRenderUnrecoverable("discharge queue idle", idled);
+}
+
+// Invariant: past a successful acquire this slot's imageAvailable carries a signal only the
+// graphics submit consumes, so every exit below the acquire goes through one of two doors 〜
+// `discharge` (nothing submitted: drain the signal, keep the slot) or the presentation tail
+// (submitted: the frame is in flight, the slot advances and its fence gates the next visit).
 void drawFrame()
 {
+	if (renderUnrecoverable) return; // latched: never re-enter the acquire on this renderer
+
 	if (rendererState.framebufferResized)
 	{
 		rendererState.framebufferResized = false;
@@ -201,6 +260,7 @@ void drawFrame()
 	} else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) 
 	{
 		ano_log(ANO_ERROR, "Failed to acquire swap chain image!");
+		latchRenderUnrecoverable("swapchain acquire", result); // nothing here re-creates surface or device
 		return;
 	}
 
@@ -225,7 +285,8 @@ void drawFrame()
 	vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].commandBuffer, 0);
 	if (rendererState.asyncLc)
 		vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].preludeCommandBuffer, 0);
-	recordCommandBuffer(imageIndex);
+	// Refused begin/end: nothing was recorded past the refusal, so skip this frame's submit and present.
+	if (!recordCommandBuffer(imageIndex)) goto discharge;
 
 	//updateUniformBuffer(&ctx, &rendererState);
 
@@ -250,8 +311,11 @@ void drawFrame()
 	// Async text raster, submits first with no waits, overlaps graphics.
 	ano_vk_text_submit_async(&ctx, &rendererState, rendererState.frameIndex, ordinal);
 
-	// Graphics submit.
-	if (!ano_frame_submit(ordinal)) return;
+	// Graphics submit. Refused: nothing is in flight and the acquire is still owed a wait.
+	if (!ano_frame_submit(ordinal)) goto discharge;
+
+	// Submitted: the fence is armed and imageAvailable consumed, whatever presentation answers.
+	rendererState.frames[rendererState.frameIndex].frameSubmitted = true;
 
     // Present before submitting a new frame's commands.
 
@@ -269,20 +333,9 @@ void drawFrame()
 
 	VkResult presentResult = vkQueuePresentKHR(ctx.presentQueue, &presentInfo);
 
-	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
-	{
-		recreateSwapChain(&ctx, window);
-		return;
-	} else if (presentResult != VK_SUCCESS)
-	{
-		ano_log(ANO_ERROR, "Failed to present swap chain image!");
-		return;
-	}
-
-	rendererState.frames[rendererState.frameIndex].frameSubmitted = true;
-
 	//printUniformTransferState();
 
+	// Slot advance rides the submit, not the presentation: this slot is in flight either way.
 	rendererState.frameIndex += 1; // Advance frame-in-flight index
 	if (rendererState.frameIndex == MAX_FRAMES_IN_FLIGHT)
 	{
@@ -290,12 +343,28 @@ void drawFrame()
 	}
 	rendererState.globalFrame += 1; // Gates slot-quarantine retirement
 
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
+	{
+		recreateSwapChain(&ctx, window);
+		return;
+	} else if (presentResult != VK_SUCCESS)
+	{
+		ano_log(ANO_ERROR, "Failed to present swap chain image!");
+		latchRenderUnrecoverable("swapchain presentation", presentResult);
+		return;
+	}
+
 	ano_frame_mark(); // Wall-clock fps/frametime, presented frames only.
+	return;
+
+discharge:
+	dischargeAcquire(rendererState.frameIndex);
 }
 
 
 bool initVulkan() // Initializes Vulkan
 {
+	renderUnrecoverable = false; // a fresh renderer, whatever the previous one latched
 
 	// Window initialization. ANO_RES=WxH overrides, in screen coordinates (callers own any DPI math).
 	Dimensions2D initDimensions = {800, 600};
@@ -317,9 +386,9 @@ bool initVulkan() // Initializes Vulkan
 
     vulkanGarbage.monitors = &monitors;
     cleanupMonitors(&monitors);
-    enumerateMonitors(&monitors);
 
 	window = initWindow(&ctx, &monitors);
+	vulkanGarbage.window = window; // teardown owns the handle from the mint, NULL included
 
 	if (window == NULL)
 	{
@@ -327,6 +396,10 @@ bool initVulkan() // Initializes Vulkan
 		unInitVulkan();
 		return 0;
 	}
+
+	// Post-initWindow: glfwGetMonitors answers NULL/0 before glfwInit, and initWindow owns the
+	// only glfwInit in tree. Window selection is unaffected 〜 initWindow re-queries its own list.
+	enumerateMonitors(&monitors);
 
 	requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
 
@@ -454,8 +527,7 @@ bool initVulkan() // Initializes Vulkan
 		return false;
 	}
 	
-	createImageViews(&ctx, &rendererState);
-	if (rendererState.views == NULL)
+	if (!createImageViews(&ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Quitting init: image view failure.");
 		unInitVulkan();
@@ -498,17 +570,26 @@ bool initVulkan() // Initializes Vulkan
 		}
 	}
 
-	createColorResources(&ctx); // TODO: make bool + check
+	if (!createColorResourcesChecked(&ctx))
+	{
+		ano_log(ANO_FATAL, "Quitting init: colour target creation failure!");
+		unInitVulkan();
+		return false;
+	}
 
 	if(!createDepthResources(&ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Quitting init: depth resource creation failure!");
+		unInitVulkan();
+		return false;
 	}
 
 	// Hi-Z occlusion pyramid images, built each frame from depth.
 	if(!createHiZResources(&ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Quitting init: Hi-Z resource creation failure!");
+		unInitVulkan();
+		return false;
 	}
 
 
@@ -625,13 +706,24 @@ bool initVulkan() // Initializes Vulkan
 	// Zero the light palette + shadow config/info device buffers once.
 	{
 		VkCommandBuffer up = beginSingleTimeCommands(&ctx);
+		if (up == VK_NULL_HANDLE)
+		{ // Refused mint: nothing was allocated and nothing may be recorded into it
+			ano_log(ANO_FATAL, "Quitting init: transient command buffer failure!");
+			unInitVulkan();
+			return false;
+		}
 		vkCmdFillBuffer(up, rendererState.lightBuffer.device, 0,
 		                (VkDeviceSize)sizeof(LightData) * rendererState.lightBuffer.capacity, 0u);
 		vkCmdFillBuffer(up, rendererState.shadowConfig.device, 0,
 		                (VkDeviceSize)sizeof(ShadowFrustumConfig) * rendererState.shadowConfig.capacity, 0u);
 		vkCmdFillBuffer(up, rendererState.shadowInfo.device, 0,
 		                (VkDeviceSize)sizeof(ShadowLightInfo) * rendererState.shadowInfo.capacity, 0u);
-		endSingleTimeCommands(&ctx, up);
+		if (!endSingleTimeCommandsChecked(&ctx, up))
+		{ // Unsubmitted fill: the palette and shadow rows below would read undefined device memory
+			ano_log(ANO_FATAL, "Quitting init: light/shadow buffer zero-fill failure!");
+			unInitVulkan();
+			return false;
+		}
 	}
 
 	if (!createUniformBuffers(&ctx, &rendererState))

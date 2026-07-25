@@ -599,9 +599,44 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
     mx->blockIndex++;
 }
 
+// One pacing turn: the wait a consumer that is merely behind needs to free a slot.
+#define ANO_AUDIO_PACE_US 1000u
+
+// in:  mx (mixer thread, bridge non-NULL), cpuNs (last block's render cost; 0 when the turn
+//      rendered nothing)
+// out: none. Publishes the latest-wins telemetry lane after the generator fills its fields.
+// inv: mixer thread only 〜 ano_audio_mixer_main never runs offline.
+// inv: blockIndex unchanged with cpuNs 0 == the mixer is alive and producing nothing.
+static void publish_stats(AnoAudioMixer *mx, uint64_t cpuNs)
+{
+    AnoAudioTelemetry t = {
+        .blockIndex     = mx->blockIndex,
+        .blockCpuNs     = cpuNs,
+        .masterPeak     = mx->masterPeak,
+        .underruns      = atomic_load_explicit(&mx->underruns, memory_order_relaxed),
+        .sourcesActive  = mx->sourcesActive,
+        .sampleRate     = mx->sampleRate,
+        .blockFrames    = mx->blockFrames,
+        .clippedSamples = mx->clippedSamples,
+    };
+    if (mx->generatorStats)
+        mx->generatorStats(mx->generatorUser, &t);
+    ano_audio_publish_telemetry(mx->bridge, &t);
+}
+
 void *ano_audio_mixer_main(void *arg)
 {
     AnoAudioMixer *mx = arg;
+
+    // Ring depth in block periods 〜 the consumer's whole queue. capacity >= 2 (ring_init floors it).
+    const uint64_t ringBlocks = (uint64_t)mx->blockRing.mask + 1u;
+    const uint64_t periodUs   = (uint64_t)mx->blockFrames * 1000000ull / mx->sampleRate;
+    const uint64_t stallUs    = ringBlocks * periodUs;      // a whole drain with head unmoved
+    const uint64_t idleUs     = ringBlocks / 2u * periodUs; // half a drain: a consumer that comes
+                                                           // back is picked up with half the queue
+    uint32_t lastHead  = atomic_load_explicit(&mx->blockRing.head, memory_order_relaxed);
+    uint64_t stalledUs = 0;
+
     while (atomic_load_explicit(&mx->mixerRun, memory_order_acquire)) {
         // structural change lands only here, at the block boundary
         AnoAudioCommand c;
@@ -613,9 +648,27 @@ void *ano_audio_mixer_main(void *arg)
             mx->listenerValid = true;
         }
 
-        // pace off ring occupancy: the device drains one block per period
+        // Pace off ring occupancy: the device drains one block per period. Full has two causes
+        // with opposite remedies 〜 a consumer that is merely behind keeps advancing blockRing's
+        // head, so the short wait wins back a slot; a consumer that has left its loop (a designed
+        // exit since the backends latch terminally) never advances it again, and the same short
+        // wait becomes a 1 kHz spin that renders nothing and, past the continue, publishes
+        // nothing either. head is the consumer's own cursor and the producer already reads it
+        // here, so telling the two apart needs no new shared state. A wrong 'gone' is harmless:
+        // the ring is full by definition, and the first idle wake sees head move and resumes.
         if (ano_audio_ring_full(&mx->blockRing)) {
-            ano_sleep(1000);
+            uint32_t head = atomic_load_explicit(&mx->blockRing.head, memory_order_acquire);
+            if (head != lastHead) {
+                lastHead  = head;
+                stalledUs = 0;
+            }
+            if (stalledUs < stallUs) {
+                stalledUs += ANO_AUDIO_PACE_US;
+                ano_sleep(ANO_AUDIO_PACE_US);
+                continue;
+            }
+            publish_stats(mx, 0u); // no consumer: the lane stays live, blockIndex frozen
+            ano_sleep(idleUs);
             continue;
         }
 
@@ -623,20 +676,7 @@ void *ano_audio_mixer_main(void *arg)
         ano_audio_render_block(mx, mx->blockScratch);
         uint64_t t1 = ano_timestamp_ticks();
         ano_audio_ring_push(&mx->blockRing, mx->blockScratch); // sole producer; space checked above
-
-        AnoAudioTelemetry t = {
-            .blockIndex     = mx->blockIndex,
-            .blockCpuNs     = ano_ticks_to_ns(t1 - t0),
-            .masterPeak     = mx->masterPeak,
-            .underruns      = atomic_load_explicit(&mx->underruns, memory_order_relaxed),
-            .sourcesActive  = mx->sourcesActive,
-            .sampleRate     = mx->sampleRate,
-            .blockFrames    = mx->blockFrames,
-            .clippedSamples = mx->clippedSamples,
-        };
-        if (mx->generatorStats)
-            mx->generatorStats(mx->generatorUser, &t);
-        ano_audio_publish_telemetry(mx->bridge, &t);
+        publish_stats(mx, ano_ticks_to_ns(t1 - t0));
     }
     return NULL;
 }

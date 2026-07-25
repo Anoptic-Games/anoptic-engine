@@ -48,6 +48,34 @@ static uint64_t query_perf_freq(void) {
     return f;
 }
 
+// Raw QPC counts. Calibration reference for the TSC mapping, and the timebase itself where no
+// invariant TSC exists. Not the re-anchor reference: that is unbiased_now.
+//   out: uint64_t counts, same domain as query_perf_freq
+static inline uint64_t qpc_now(void) {
+    LARGE_INTEGER tmp;
+    QueryPerformanceCounter(&tmp);   // cannot fail on WinXP+
+    return (uint64_t)tmp.QuadPart;
+}
+
+// QueryUnbiasedInterruptTimePrecise lives in realtimeapiset.h (pulled by winbase.h on Win10 SDKs)
+// and is exported by KernelBase.dll rather than kernel32, so an SDK whose headers predate it needs
+// this declaration and a toolchain whose import libs predate it needs a mincore/onecore link. The
+// signature is the documented one, so this is a compatible redeclaration wherever the SDK has it.
+WINBASEAPI VOID WINAPI QueryUnbiasedInterruptTimePrecise(PULONGLONG lpUnbiasedInterruptTimePrecise);
+
+// Unbiased interrupt time: interrupt time with the time the system spent suspended subtracted out.
+// That is the engine's monotonic semantic on every platform (Linux CLOCK_MONOTONIC, Darwin
+// mach_absolute_time), which is why the TSC mapping re-anchors against this and not QPC: how far
+// QPC advances across S3/S4 depends on which hardware source the machine picked, so the resume gap
+// would vary per machine. The Precise form reads the source rather than the last tick, so it does
+// not quantize to the ~15.6ms interrupt period.
+//   out: uint64_t 100ns units since boot, suspended time excluded, monotonic non-decreasing
+static inline uint64_t unbiased_now(void) {
+    ULONGLONG t = 0;
+    QueryUnbiasedInterruptTimePrecise(&t);   // void return: cannot fail
+    return (uint64_t)t;
+}
+
 #ifdef ANO_TSC_ARCH
 
 // Resolved timebase, frozen after resolve_clock.
@@ -110,6 +138,57 @@ static uint64_t calibrate_tsc_hz(void) {
     return s[1];
 }
 
+/* TSC re-anchor */
+
+// A TSC stamp is __rdtsc() + g_tscBias, valid while the raw count stays at or above g_tscAnchorRaw.
+// The pair is republished only when a power transition restarts the counter.
+static _Atomic uint64_t g_tscBias      = 0;   // exported - raw; wraps mod 2^64 by design
+static _Atomic uint64_t g_tscAnchorRaw = 0;   // raw TSC at the anchor
+static _Atomic int      g_tscAnchoring = 0;   // one re-anchor at a time
+// Reference pair, written before g_clockMode goes public and thereafter only under g_tscAnchoring.
+static uint64_t g_refAnchor      = 0;   // unbiased interrupt time (100ns units) at the anchor
+static uint64_t g_exportedAnchor = 0;   // exported ticks at the anchor
+
+// Publish an anchor. Bias stored first: a reader that sees the new raw anchor sees the new bias.
+//   in:  raw (uint64_t) TSC just sampled, ref (uint64_t) unbiased interrupt time just sampled,
+//        exported (uint64_t) count the next stamp must report
+static void tsc_set_anchor(uint64_t raw, uint64_t ref, uint64_t exported) {
+    g_refAnchor      = ref;
+    g_exportedAnchor = exported;
+    atomic_store_explicit(&g_tscBias, exported - raw, memory_order_release);
+    atomic_store_explicit(&g_tscAnchorRaw, raw, memory_order_release);
+}
+
+// Cold path: the raw TSC fell a millisecond below the anchor, which only a power transition does.
+// S3 sleep and S4 hibernate drop the core power domain and firmware restarts the counter near zero;
+// the invariant-TSC bit checked at election covers P/C/T states only. Re-derive the mapping so the
+// exported count continues where it left off, measuring the gap on unbiased interrupt time: the
+// engine's clock excludes suspended time, so the resume advance is the awake interval alone and is
+// the same on every machine.
+//   out: void. On return this thread republished the anchor, or another thread is republishing it;
+//        the caller re-reads either way.
+static void tsc_reanchor(void) {
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_tscAnchoring, &expected, 1)) {
+        Sleep(0);   // loser: yield, then retry the read
+        return;
+    }
+    uint64_t raw = rdtsc_fenced();
+    uint64_t ref = unbiased_now();
+    uint64_t adv = 0;
+    if (ref > g_refAnchor) {   // a reference below its anchor is outside contract; keeps the gap out of the scale
+        uint64_t hz = atomic_load_explicit(&cachedTscHz, memory_order_relaxed);
+        adv = (uint64_t)(((unsigned __int128)(ref - g_refAnchor) * hz) / 10000000ull);   // 100ns units/s
+        // Round the gap up. cachedTscHz is calibrated against QPC and applied here to an unbiased
+        // gap, so the estimate carries both references' drift: tens of ppm either way. A short
+        // estimate puts post-resume stamps below held pre-resume ones, exactly the u64 delta wrap
+        // this seam exists to prevent. Long is one stretched delta, short is 584 years.
+        adv += adv / 1024u + hz / 1000u;
+    }
+    tsc_set_anchor(raw, ref, g_exportedAnchor + adv);
+    atomic_store_explicit(&g_tscAnchoring, 0, memory_order_release);
+}
+
 // Elect once. Losers wait. Calibration ~12 ms Sleep, once.
 static void resolve_clock(void) {
     int expected = 0;
@@ -123,6 +202,8 @@ static void resolve_clock(void) {
         uint64_t hz = calibrate_tsc_hz();
         if (hz >= ANO_TSC_HZ_MIN && hz <= ANO_TSC_HZ_MAX) {   // rejects a degenerate sample, incl. 0
             atomic_store_explicit(&cachedTscHz, hz, memory_order_relaxed);
+            uint64_t raw = rdtsc_fenced();
+            tsc_set_anchor(raw, unbiased_now(), raw);   // bias 0: stamps are the raw count until a restart
             mode = CLOCK_TSC;
         }
     }
@@ -149,15 +230,29 @@ static inline int clock_mode(void) {
 
 #endif // ANO_TSC_ARCH
 
-// Raw counter: rdtsc or QPC. Divide deferred to ano_ticks_to_ns.
+// Raw counter: rdtsc against its anchor, or QPC. Divide deferred to ano_ticks_to_ns.
+// The anchor test is the whole cost of surviving S3/S4: a live counter is always far above it, so
+// the stamp keeps its load-add shape and only a restart pays.
 uint64_t ano_timestamp_ticks() {
 #ifdef ANO_TSC_ARCH
-    if (clock_mode() == CLOCK_TSC)
-        return __rdtsc();
+    if (clock_mode() == CLOCK_TSC) {
+        for (;;) {
+            uint64_t raw    = __rdtsc();
+            uint64_t anchor = atomic_load_explicit(&g_tscAnchorRaw, memory_order_acquire);
+            if (raw >= anchor)
+                return raw + atomic_load_explicit(&g_tscBias, memory_order_relaxed);
+            // Below the anchor: core-to-core skew is a few hundred cycles, a restarted counter is
+            // seconds of uptime. Clamp the first to the anchor, re-anchor on the second.
+            if (anchor - raw < atomic_load_explicit(&cachedTscHz, memory_order_relaxed) / 1000u)
+                return anchor + atomic_load_explicit(&g_tscBias, memory_order_relaxed);
+            tsc_reanchor();
+        }
+    }
 #endif
-    LARGE_INTEGER tmp;
-    QueryPerformanceCounter(&tmp);   // cannot fail on WinXP+
-    return (uint64_t)tmp.QuadPart;
+    // No invariant TSC: QPC is the timebase directly, and best-effort on suspend semantics 〜 its
+    // advance across S3/S4 is its hardware source's business and there is no second reference here
+    // to correct it against.
+    return qpc_now();
 }
 
 // Convert raw counts (value or delta) to nanoseconds, overflow-safe via the resolved timebase.

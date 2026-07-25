@@ -110,10 +110,7 @@ bool ano_pipeline_task_stage(VulkanContext* ctx, VkBool32 shadowPass, VkBool32 c
 	store->spec = (VkSpecializationInfo){ .mapEntryCount = 2, .pMapEntries = store->entries,
 		.dataSize = sizeof(store->data), .pData = store->data };
 
-	*stage = (VkPipelineShaderStageCreateInfo){ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-		.stage = VK_SHADER_STAGE_TASK_BIT_EXT, .module = *outModule, .pName = "main",
-		.pSpecializationInfo = &store->spec };
-	return true;
+	return ano_pipeline_stage(VK_SHADER_STAGE_TASK_BIT_EXT, *outModule, &store->spec, stage);
 }
 
 
@@ -330,7 +327,11 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 
 		if (state->prototypes[i].implementations != NULL)
 		{
-			for (uint32_t j = 0; j < state->prototypes[i].implementationCount; ++j)
+			// Dissolve the pair count-first, mirroring the builders' commit-last: no observable
+			// point has implementationCount > 0 beside an array that is gone.
+			uint32_t count = state->prototypes[i].implementationCount;
+			state->prototypes[i].implementationCount = 0;
+			for (uint32_t j = 0; j < count; ++j)
 			{
 				if (state->prototypes[i].implementations[j].pipeline != VK_NULL_HANDLE)
 				{
@@ -340,7 +341,6 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 			}
 			free(state->prototypes[i].implementations);
 			state->prototypes[i].implementations = NULL;
-			state->prototypes[i].implementationCount = 0;
 		}
 	}
 }

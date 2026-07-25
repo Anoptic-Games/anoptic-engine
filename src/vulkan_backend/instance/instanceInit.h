@@ -48,15 +48,22 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window);
 void cleanupSwapChain(VulkanContext* ctx, RendererState* state);
 
 // Generic helper function for creating 2D image views
+// Failure answers VK_NULL_HANDLE, never an indeterminate handle 〜 callers check before storing it.
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels);
 
-bool createImageViews(VulkanContext* ctx, RendererState* state);
+// Swapchain colour views, one per presentable image. false leaves views NULL and viewCount 0.
+[[nodiscard]] bool createImageViews(VulkanContext* ctx, RendererState* state);
 
 // Creates a command pool
 bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkCommandPool* commandPool);
 
-// Generic function for data buffer creation, updates buffer and bufferMemory with the created addresses
-bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation);
+// Generic function for data buffer creation, updates buffer and bufferMemory with the created addresses.
+// Total out-params: false leaves *buffer VK_NULL_HANDLE and *allocation zeroed, never indeterminate.
+[[nodiscard]] bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation);
+
+// createDataBuffer with gfx+compute CONCURRENT sharing when computeShared, EXCLUSIVE otherwise.
+// computeShared demands two distinct queue families, i.e. the asyncLc gate.
+[[nodiscard]] bool createDataBufferShared(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool computeShared, VkBuffer* buffer, GpuAllocation* allocation);
 
 // Creates uniform buffers for each frame
 bool createUniformBuffers(VulkanContext* ctx, RendererState* state);
@@ -66,11 +73,17 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state);
 // Updates a mesh's transform matrices
 bool updateMeshTransforms(VulkanContext* ctx, RenderEntity* entity, float move);
 
-// Creates a color draw target for MSAA
+// Creates the MSAA colour/picking-id draw targets + their per-frame resolve targets.
+// false at the first refused image, view or transition; no dead handle is published.
+[[nodiscard]] bool createColorResourcesChecked(VulkanContext* ctx);
+
+// createColorResourcesChecked with the status dropped.
 void createColorResources(VulkanContext* ctx);
 
-// Creates a depth image and view for the current swapchain
-bool createDepthResources(VulkanContext* ctx, RendererState* state);
+// Creates a depth image and view for the current swapchain.
+// The status is the only failure channel: frame 0 / view 0 is filled first, so no field of the
+// published state distinguishes a later frame's refusal.
+[[nodiscard]] bool createDepthResources(VulkanContext* ctx, RendererState* state);
 
 // Per-view half-res R32F depth pyramids, recreated with the swapchain
 bool createHiZResources(VulkanContext* ctx, RendererState* state);
@@ -84,7 +97,8 @@ bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state);
 // Creates the descriptor sets
 bool createDescriptorSets(VulkanContext* ctx, RendererState* state);
 
-// Updates UBO descriptor sets to point to their corresponding uniform buffers
+// Points every set at the current scene buffers; sole re-point path for the per-frame TransformSSBO
+// (global/view, cull, update, scatter, lightsetup and shadowsetup binding 1), so entity growth needs one call
 void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state);
 
 // (Re)binds each frame's tonemap set to its HDR resolve view; rerun after a swapchain resize
@@ -93,26 +107,33 @@ void updateTonemapDescriptorSets(VulkanContext* ctx, RendererState* state);
 // Binds the clustered-forward froxel buffers (global set 10/11 + light-cull set); init-only
 void updateClusterDescriptorSets(VulkanContext* ctx, RendererState* state);
 
-// Binds the dynamic shadow sets (shadowsetup compute set + shadow geom/sampling set 2); init-only
+// Binds the dynamic shadow sets (shadowsetup compute set + shadow geom/sampling set 2); init-only.
+// Must run after updateUboDescriptorSets, which owns re-pointing setupSet binding 1 on entity growth
 void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state);
 
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
-// Helper function to decrease verbosity of transient command calls
+// Helper function to decrease verbosity of transient command calls.
+// VK_NULL_HANDLE on failure: nothing is allocated on that arm, and it must not be recorded into.
 VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx);
 
 // Returns true if the given format has a stencil component
 bool hasStencilComponent(VkFormat format);
 
-// End + submit transient CB started by beginSingleTimeCommands().
+// End + submit transient CB started by beginSingleTimeCommands(); false if any step failed.
+// The CB and its fence are discharged on every arm.
+[[nodiscard]] bool endSingleTimeCommandsChecked(VulkanContext* ctx, VkCommandBuffer commandBuffer);
+
+// endSingleTimeCommandsChecked with the status dropped.
 void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer);
 
-// Copies data from one GPU buffer to another
-bool copyBuffer(VulkanContext* ctx, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+// Copies data from one GPU buffer to another. False if the one-shot submit never completed.
+[[nodiscard]] bool copyBuffer(VulkanContext* ctx, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
 
-// One-shot staged upload: host data -> transient staging buffer -> dstBuffer (device-local)
-bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize);
+// One-shot staged upload: host data -> transient staging buffer -> dstBuffer (device-local).
+// False means the copy never reached the destination; the staging buffer is discharged either way.
+[[nodiscard]] bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, VkDeviceSize bufferSize);
 
 // Creates a command buffer
 bool createCommandBuffer(VulkanContext* ctx, RendererState* state);

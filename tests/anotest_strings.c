@@ -12,6 +12,7 @@
 
 #include "anoptic_memory.h"
 #include "anoptic_strings.h"
+#include "anoptic_strings_utf.h"
 #include "templates/rng.h"
 
 static int failures = 0;
@@ -393,6 +394,61 @@ static void test_sid(void)
           "SID32: usable as an array size");
 }
 
+// Collation of cased letters that reach their weights through a decomposition. A case pair the
+// module itself maps must stay a case pair everywhere: equal at the base level, adjacent under
+// sort, and in the same script band. Controls pin a healthy decomposing pair (O-caron), the case
+// table, an NFD sequence, and four case mappings that cross a block boundary, so neither a
+// weakened base-equality nor an over-broad table sweep can pass.
+static void test_collation_case_pairs(void)
+{
+    anostr_t EZH_UP  = anostr_lit("\xC7\xAE");      // U+01EE
+    anostr_t ezh_lo  = anostr_lit("\xC7\xAF");      // U+01EF
+    anostr_t OCARON  = anostr_lit("\xC7\x91");      // U+01D1
+    anostr_t ocaron  = anostr_lit("\xC7\x92");      // U+01D2
+    anostr_t hira_a  = anostr_lit("\xE3\x81\x82");  // U+3042
+    anostr_t greekns = anostr_lit("\xCD\xB4");      // U+0374 Greek numeral sign
+    anostr_t alpha   = anostr_lit("\xCE\xB1");      // U+03B1
+    anostr_t zed     = anostr_lit("z");
+    anostr_t ezh_nfd = anostr_lit("\xC6\xB7\xCC\x8C");  // U+01B7 U+030C, the NFD of U+01EE
+
+    // control: the case table maps the pair both ways
+    CHECK(anorune_to_lower(0x01EE) == 0x01EF, "case table lowers U+01EE to U+01EF");
+    CHECK(anorune_to_upper(0x01EF) == 0x01EE, "case table uppers U+01EF to U+01EE");
+
+    // control: a decomposing case pair whose targets are directly weighted behaves
+    CHECK(anostr_eq_base(OCARON, ocaron), "eq_base holds for the o-caron case pair");
+    CHECK(anostr_collate(ocaron, OCARON) < 0, "o-caron case pair differs only at level three");
+    CHECK(anostr_collate(OCARON, hira_a) < 0 && anostr_collate(ocaron, hira_a) < 0,
+          "both o-caron forms sort in the Latin band, before kana");
+
+    // the ezh-caron case pair must behave the same way
+    CHECK(anostr_eq_base(EZH_UP, ezh_lo), "eq_base holds for the ezh-caron case pair");
+    CHECK(anostr_collate(ezh_lo, EZH_UP) < 0, "ezh-caron case pair differs only at level three");
+    CHECK(anostr_collate(ezh_lo, hira_a) < 0, "lowercase ezh-caron sorts in the Latin band, before kana");
+
+    // sort keeps the case pair adjacent in the Latin band, kana last
+    anostr_t items[4] = { ezh_lo, anostr_lit("z"), EZH_UP, hira_a };
+    anostr_sort(items, 4);
+    CHECK(anostr_eq(items[0], anostr_lit("z")), "z sorts first");
+    CHECK(anostr_eq(items[1], ezh_lo) && anostr_eq(items[2], EZH_UP),
+          "ezh-caron case pair sits together after z");
+    CHECK(anostr_eq(items[3], hira_a), "kana sorts last, after every Latin letter");
+
+    // U+0374's direct weights place it with the symbols, before Greek letters
+    CHECK(anostr_collate(greekns, alpha) < 0, "Greek numeral sign sorts before alpha");
+
+    // control: U+01EE resolved through its own NFD sequence lands where the composed form lands
+    CHECK(anostr_eq_base(EZH_UP, ezh_nfd), "eq_base holds for U+01EE against its NFD sequence");
+    CHECK(anostr_collate(zed, ezh_nfd) < 0 && anostr_collate(ezh_nfd, hira_a) < 0,
+          "U+01EE's NFD sequence lands in the Latin band");
+
+    // control: case mappings that cross a block boundary
+    CHECK(anorune_to_upper(0x00B5) == 0x039C, "micro sign uppers to Greek capital mu");
+    CHECK(anorune_to_upper(0x017F) == 0x0053, "long s uppers to S");
+    CHECK(anorune_to_lower(0x1E9E) == 0x00DF, "capital sharp s lowers to sharp s");
+    CHECK(anorune_to_upper(0x1FBE) == 0x0399, "prosgegrammeni uppers to Greek capital iota");
+}
+
 // Randomized round-trip soak: appends, freeze, hash, slice vs reference buffer.
 static void soak(mi_heap_t *heap, uint32_t iterations)
 {
@@ -447,6 +503,7 @@ int main(int argc, char **argv)
     test_split(heap);
     test_intern(heap);
     test_sid();
+    test_collation_case_pairs();
 
     uint32_t iterations = 2000;
     if (argc > 1) iterations = (uint32_t)strtoul(argv[1], NULL, 10);
