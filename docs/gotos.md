@@ -29,8 +29,8 @@ The shared property: the destination is one point below, every arm agrees on it,
 - `fail` for an unwind. Suffix when there is more than one: `fail_blur`, `fail_published`, `fail_pcm`. The suffix names the phase or the thing discharged, never the arm that jumps to it 〜 arms move, phases do not.
 - `discharge`, `done`, `out` for escape hatches that are not failures. `drawFrame` says `discharge` because the frame is abandoned, not failed.
 - Labels live at the end of the function, after the success `return`, at column 0. Never mid-function, never inside a block, never inside a loop.
-- The success path returns above the first label and never falls into one. The `return true;` above `fail:` is load-bearing: delete it and every success silently unwinds.
-- A comment above the label states what makes the discharge safe 〜 usually the null-safety it relies on 〜 and what it deliberately does not own. `flat.c:316` is the template.
+- The success path returns above the first `fail:` label and never falls into one. The `return true;` above `fail:` is load-bearing: delete it and every success silently unwinds. A merged `done:`/`out:` is the deliberate exception.
+- A comment above the label states what makes the discharge safe 〜 usually the null-safety it relies on 〜 and what it deliberately does not own. `flat.c:307` is the template.
 
 ## The two shapes
 
@@ -83,9 +83,9 @@ Arena, and prefer it whenever it is available: where every acquisition came from
 
 One label per disjoint acquisition phase, where disjoint means the earlier phase is fully discharged before the later begins.
 
-`ano_vk_init_shadow` (`shadow_pipe.c:23`) is the reference. The depth phase's four blobs and five modules are discharged at `:182-187`; the blur phase then declares its own pair and carries `fail_blur:` (`:283`). One label spanning both would have to discharge depth-phase locals that are already gone 〜 a double free, or a re-inert at every tail, which is bookkeeping bought back to pay for a label you did not split.
+`ano_vk_init_shadow` (`shadow_pipe.c:23`) is the reference. The depth phase's four blobs and five modules are discharged at `:176-186`; the blur phase then declares its own pair and carries `blur_done:` (`:266`). One label spanning both would have to discharge depth-phase locals that are already gone 〜 a double free, or a re-inert at every tail, which is bookkeeping bought back to pay for a label you did not split.
 
-`ano_vk_init_compute` (`compute.c:20`) is the counterexample that fixes the rule: nine stages, one label. Its stage tails null their own pair after discharging it (`:119-122` and eight siblings), so at every point everything already released is inert again and everything not yet acquired is still inert 〜 which makes one unconditional label total across all nine. Split labels when phases share no shape, as a depth pipeline and a blur pipeline do not. Re-inert and keep one label when the phases are repetitions of one shape, as nine compute stages are.
+`ano_vk_init_compute` (`compute.c:24`) is the counterexample that fixes the rule: nine stages, one label, and no phase boundary anywhere. Nothing is discharged mid-function 〜 the nine blob/module pairs sit in `sh[SH_COUNT]` (`:30`) and are held to exit 〜 so there is no earlier phase for a later label to double-free. Split labels when the phases share no shape, as a depth pipeline and a blur pipeline do not. When the phases are repetitions of one shape, as nine compute stages are, do not make them phases at all: hold the resources and keep one label.
 
 ## Inert at declaration
 
@@ -104,11 +104,13 @@ Every deallocator named at a label must be null-safe, or the pointer must be re-
 
 - Null-safe by contract: `free`, `mi_free`, `ano_aligned_free` (mi_free by delegation), every `vkDestroy*`/`vkFree*` on `VK_NULL_HANDLE`.
 - Not null-safe: `dlclose`, `fclose`, third-party destroy entry points, anything taking a handle by value with no documented null case. Read the contract. Do not assume it.
-- Re-inert after discharge when the success path releases something a label below still names. `ano_vk_init_compute`'s nine stage tails are the reference: free, null, destroy, `VK_NULL_HANDLE`. The free without the null is a double free the moment stage six refuses.
+- Re-inert after discharge when a path below still names what was released 〜 or restructure so nothing is released twice. `ano_vk_init_compute` took the second option: it stopped discharging each stage as it completed, and one `out:` (`compute.c:486`) now discharges all nine pairs on a path that runs at most once. Where the mid-function discharge has to stay, split the label instead 〜 `shadow_pipe.c:187` is the comment standing guard over exactly that hazard.
 
 The discharge set is what has been acquired and not yet published. A resource that escapes through an out-param on success is not the label's 〜 `createTextureImage` hands its staging buffer out at `texture.c:526`, so a label there owns that buffer only above that line. Getting this wrong is not a leak, it is a use-after-free in the caller.
 
-The success epilogue and the label body are frequently identical (`flat.c:304-312` against `:319-325`; `tonemap.c`, all three `text_raster.c` builders). That duplication is accepted under roughly six lines. A shared `out:` with a status variable saves the lines but costs every reader a branch to trace, on the path where tracing is hardest.
+The success epilogue and the label body are frequently identical (`tonemap.c:141-144` against `:154-157`; both `text_raster.c` builders). That duplication is accepted under roughly six lines: a shared `out:` with a status variable saves them and costs every reader a status branch to trace, on the path where tracing is hardest.
+
+The trade flips when what is duplicated is not an epilogue but a per-stage tail whose only job is keeping a null-after-discharge invariant true. `ano_vk_init_compute` deleted its tails for a merged `out:` behind a hoisted `bool ok` (`compute.c:29`, `:486`) discharging all nine pairs in one loop; `flat.c:309` is the same shape at one stage. One discharge site that runs at most once has no invariant to maintain, and deleting an invariant is worth more than the branch it costs. The price it does pay is that the resources live until exit 〜 here nine SPIR-V blobs and modules, under a megabyte, once 〜 affordable on a one-shot init path and not in the frame loop.
 
 ## What a label must never do
 
@@ -116,7 +118,7 @@ The success epilogue and the label body are frequently identical (`flat.c:304-31
 - Log at more than one site. One diagnostic per failure. Arms that need distinct messages log at the arm; the label stays silent, which is what every pipeline builder does.
 - Return anything but the failure value. No partial success, no mostly-initialized.
 - Discharge what the caller owns, or what a teardown function will discharge later. `flat_init_with_cull` frees blobs and modules and deliberately leaves the pipelines, layout and cache to `ano_pipeline_flat_cleanup`, which the prototype's published state reaches. Freeing them at the label double-frees at teardown.
-- Run on the success path.
+- Run on the success path, if it is named `fail`. A merged `done:`/`out:` runs on both by design, and its name is the notice.
 
 ## Relationship to the rest
 
