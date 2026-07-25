@@ -6,7 +6,6 @@
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
 #include "vulkan_backend/instance/pipeline.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
 

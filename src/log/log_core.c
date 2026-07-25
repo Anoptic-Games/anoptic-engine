@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 // Terminal detection + Windows VT enable.
 #if defined(_WIN32)

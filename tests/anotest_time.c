@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>   // getenv: macOS nix-sandbox detection in testResolution
 #include <inttypes.h> // PRIu64: portable uint64_t format across LP64/LLP64
+#include <time.h>     // time_t, ctime: readable stamp printout
 
 #include "anoptic_time.h"
 
