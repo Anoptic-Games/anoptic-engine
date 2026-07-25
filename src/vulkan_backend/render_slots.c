@@ -73,6 +73,7 @@ void render_slots_destroy(RenderSlotTable *table)
 uint32_t render_slots_alloc(RenderSlotTable *t, uint32_t render_id)
 {
     if (!logical_reserve(t, render_id)) return ANO_RENDER_SLOT_UNMAPPED;
+    if (t->logicalToSlot[render_id] != ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED; // already live
 
     uint32_t slot;
     if (t->freeCount > 0u) {
@@ -113,18 +114,13 @@ uint32_t render_slots_alloc_range(RenderSlotTable *t, const uint32_t *render_ids
     if (count == 0u) return ANO_RENDER_SLOT_UNMAPPED;
     // A contiguous range comes only from the high-water region. Bulk spawn extends it.
     if ((uint64_t)t->slotHighWater + count > t->slotCapacity) return ANO_RENDER_SLOT_UNMAPPED;
-    // Reject the whole batch on an out-of-domain id before any mapping lands.
-    for (uint32_t i = 0; i < count; i++)
-        if (render_ids[i] == ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED;
 
     uint32_t base = t->slotHighWater;
     for (uint32_t i = 0; i < count; i++) {
-        if (!logical_reserve(t, render_ids[i])) {
-            alloc_range_rollback(t, render_ids, base, i);
-            return ANO_RENDER_SLOT_UNMAPPED;
-        }
-        // Live id or duplicate of an earlier element: publishing would strand a slot.
-        if (t->logicalToSlot[render_ids[i]] != ANO_RENDER_SLOT_UNMAPPED) {
+        // Sentinel/OOM, or an id already mapped: live, or a duplicate earlier in this batch.
+        // || sequences the read after reserve returned true, so the index is in bounds.
+        if (!logical_reserve(t, render_ids[i]) ||
+            t->logicalToSlot[render_ids[i]] != ANO_RENDER_SLOT_UNMAPPED) {
             alloc_range_rollback(t, render_ids, base, i);
             return ANO_RENDER_SLOT_UNMAPPED;
         }

@@ -113,33 +113,6 @@ static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
     ts->dynOffset[frameIndex] = (uint32_t)((VkDeviceSize)slice * ts->sliceStride);
 }
 
-// Releases a bulk command's render-owned batch block. No-op for non-owned commands.
-static void free_owned_bulk(const RenderCommand* c)
-{
-    if (!c->bulk_owned) return;
-    void* blk = c->kind == RCMD_BULK_UPDATE  ? (void*)c->update
-              : c->kind == RCMD_BULK_DESTROY ? (void*)c->destroy
-              :                                (void*)c->batch;
-    if (blk) mi_free(blk);
-}
-
-// Consumer-side guard for the alloc contract's "render_id unmapped" invariant (render_slots.h),
-// batch flavor: alloc_range would overwrite a live id's forward map and strand its slot forever.
-// Batch-atomic 〜 one live id refuses the whole batch, since a partial spawn is the same defect.
-// in:  table, ids (count entries)
-// out: bool, true if any id is already mapped; the first offender is named on the way out
-[[nodiscard]] static bool bulk_ids_mapped(const RenderSlotTable* t, const uint32_t* ids, uint32_t count)
-{
-    for (uint32_t i = 0; i < count; i++) {
-        if (render_slots_resolve(t, ids[i]) != ANO_RENDER_SLOT_UNMAPPED) {
-            ano_log(ANO_ERROR, "Render bridge: BULK_CREATE names live render_id %u; batch dropped "
-                    "(destroy it first to re-create).", ids[i]);
-            return true;
-        }
-    }
-    return false;
-}
-
 // Establish both light-payload domains on a drained command: the LightType, and the static palette
 // row a scene light-entity may name. Both are producer-supplied and unvalidated on the ring 〜 type
 // indexes shadowTypeUsed and rides LightData.type + ShadowFrustumConfig.lightType to the shaders,
@@ -183,6 +156,18 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
     // Drain bridge -> delta staging. DESTROY dead-marks + retires (quarantine until drained).
     RenderCommand cmd;
     while (ano_render_next_command(&state->bridge, &cmd)) {
+        // Ahead of the gate: a dropped CREATE lands nothing, so its light domain is never decided
+        // and gate_light_domain must not announce "entity lands unlit" for it. Stays consumer-side
+        // rather than taking the bulk arm's allocator-refuses/consumer-hears shape 〜 the duplicate
+        // has to be refused before ensureEntityCapacity grows for a spawn that cannot happen, which
+        // is upstream of where render_slots_alloc's own backstop sits. Owns no block: dropping leaks
+        // nothing.
+        if (cmd.kind == RCMD_CREATE &&
+            render_slots_resolve(&state->slots, cmd.render_id) != ANO_RENDER_SLOT_UNMAPPED) {
+            ano_log(ANO_ERROR, "Render bridge: CREATE names live render_id %u; command dropped "
+                    "(destroy it first to re-create).", cmd.render_id);
+            continue;
+        }
         if (!gate_light_domain(&cmd)) continue; // light type/row outside its domain: refuse the command
         switch (cmd.kind) {
         case RCMD_STREAM_TRANSFORMS:
@@ -193,20 +178,13 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             break;
 
         case RCMD_CREATE: {
-            // Alloc's "render_id unmapped" invariant (render_slots.h) is enforced here, on the seam,
-            // as the light sibling's double-attach refusal is: a second CREATE of a live id mints a
-            // second slot, overwrites the forward map, and strands the first slot live forever.
-            if (render_slots_resolve(&state->slots, cmd.render_id) != ANO_RENDER_SLOT_UNMAPPED) {
-                ano_log(ANO_ERROR, "Render bridge: CREATE names live render_id %u; command dropped "
-                        "(destroy it first to re-create).", cmd.render_id);
-                break; // duplicate CREATE of a live id: drop
-            }
+            // Live id already refused at the drain head, so the id is unmapped here.
             // Grow if no recycled hole is available and the high-water is at the ceiling.
             if (state->slots.freeCount == 0u && state->slots.slotHighWater >= state->slots.slotCapacity &&
                 !ensureEntityCapacity(state, state->slots.slotHighWater + 1u, frameIndex))
                 break; // growth failed: drop the spawn
             uint32_t slot = render_slots_alloc(&state->slots, cmd.render_id);
-            if (slot == ANO_RENDER_SLOT_UNMAPPED) break; // unexpected: drop rather than corrupt
+            if (slot == ANO_RENDER_SLOT_UNMAPPED) break; // capacity/OOM/out-of-domain id: drop
             stage_command_fields(state, &cmd, slot, frameIndex); // stages the light photometrics if present
             shadow_track_motion(state, slot, &cmd.motion);
             state->shadowGlobalDirty = true; // caster set changed
@@ -242,19 +220,25 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
 
         case RCMD_BULK_CREATE: {
             const RenderCreateBatch* b = cmd.batch;
-            if (!b) break;
-            if (bulk_ids_mapped(&state->slots, b->render_ids, b->count)) {
-                free_owned_bulk(&cmd); break; // a live id anywhere in the batch: drop the batch whole
-            }
+            // Empty batch is not a refusal: drop it before alloc_range can log one. Release is a
+            // no-op unless the empty block is render-owned, in which case breaking bare would leak.
+            if (!b || b->count == 0u) { ano_render_command_release(&cmd); break; }
             // alloc_range needs a contiguous run from the high-water mark.
             if (!ensureEntityCapacity(state, state->slots.slotHighWater + b->count, frameIndex)) {
-                free_owned_bulk(&cmd); break; // growth failed: drop the batch
+                ano_render_command_release(&cmd); break; // growth failed: drop the batch
             }
-            render_slots_alloc_range(&state->slots, b->render_ids, b->count);
+            // Allocator refuses, consumer hears: alloc_range (render_slots.h) is batch-atomic over
+            // live ids, intra-batch duplicates, capacity and OOM, so a refusal reaches nothing below.
+            uint32_t base = render_slots_alloc_range(&state->slots, b->render_ids, b->count);
+            if (base == ANO_RENDER_SLOT_UNMAPPED) {
+                ano_log(ANO_ERROR, "Render bridge: BULK_CREATE refused (live id, duplicate in batch, "
+                        "capacity, or OOM); batch dropped.");
+                ano_render_command_release(&cmd);
+                break;
+            }
             AnoInstanceData inert = {0};
             for (uint32_t e = 0; e < b->count; e++) {
-                uint32_t slot = render_slots_resolve(&state->slots, b->render_ids[e]);
-                if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
+                uint32_t slot = base + e; // alloc_range published render_ids[e] -> base + e
                 // Mirror pose + mesh before track; fresh slots need no reparent.
                 if (slot < state->slotMotionCap) {
                     memcpy(state->slotBasePose[slot], &b->transforms[e], sizeof(mat4));
@@ -269,7 +253,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 slot_upload_stage(&state->culling.entity, frameIndex, slot, ent);
             }
             state->shadowGlobalDirty = true; // caster set changed
-            free_owned_bulk(&cmd);
+            ano_render_command_release(&cmd);
             break;
         }
 
@@ -306,7 +290,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                     shadow_volumes_reparent(state, slot);
             }
             state->shadowGlobalDirty = true; // casters may have moved/changed
-            free_owned_bulk(&cmd);
+            ano_render_command_release(&cmd);
             break;
         }
 
@@ -324,7 +308,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 render_slots_retire(&state->slots, rid, state->globalFrame);
             }
             state->shadowGlobalDirty = true; // caster set changed
-            free_owned_bulk(&cmd);
+            ano_render_command_release(&cmd);
             break;
         }
 
@@ -398,7 +382,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
         }
 
         case RCMD_TEXT_SET:
-            // The registry adopts the packed block and frees it. NOT free_owned_bulk.
+            // The registry adopts the packed block and frees it. NOT ano_render_command_release.
             ano_vk_text_block_set(state, cmd.text_id, cmd.text);
             break;
 
