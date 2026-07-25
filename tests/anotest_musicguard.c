@@ -7,15 +7,20 @@
 // anoptic_music.h:481 promises "Same config+seed+bar => byte-identical", and the hosting
 // doc (src/music/ANOPTIC_MUSICGEN.md) prescribes rebuilding a second engine off-thread
 // while the callback-hosted composer keeps advancing the live one 〜 but ano_voice_chord
-// keeps its candidate table in a plain function-scope static (music_voicing.c:114,
+// kept its candidate table in a plain function-scope static (music_voicing.c:114,
 // "single-threaded conductor context"), shared across every engine in the process
-// (docs/BUGS.md, Music / Implementation). Two engines advancing concurrently interleave
+// (docs/BUGS_DONE.md, Music / Implementation). Two engines advancing concurrently interleaved
 // writes into that table: one engine's dedupe/cost scan and final copy read the other's
-// candidates, a wrong pad voicing enters prevVoicing, and the bar stream / snapshot stop
-// being a pure function of (config, seed, bar). The control pins the solo replay
+// candidates, a wrong pad voicing entered prevVoicing, and the bar stream / snapshot stopped
+// being a pure function of (config, seed, bar). The table is now static thread_local. The
+// control pins the solo replay
 // byte-identical (harness sanity); the trigger runs the same span while a disturber
 // engine hammers its own bars on a second thread and asserts the stream and snapshot
-// still match the solo run. Headless, no device, no audio. Exit 0 == pass.
+// still match the solo run. Two further controls fence the cheap wrong fixes: the same
+// span composed entirely on a foreign thread must equal the main-thread run (per-thread
+// scratch that carried state would fail it), and a different seed must still produce a
+// different stream (a composer flattened to a constant would pass every equality above).
+// Headless, no device, no audio. Exit 0 == pass.
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -85,6 +90,23 @@ static uint64_t run_span(uint64_t seed, uint32_t bars, void *snap)
     return h;
 }
 
+typedef struct SpanJob
+{
+    uint64_t seed;
+    uint32_t bars;
+    void    *snap;
+    uint64_t h;
+} SpanJob;
+
+// run_span on a thread that has never composed before: a first-touch thread must reach
+// the same stream as the main thread, so no per-thread scratch may carry state in.
+static void *span_thread(void *arg)
+{
+    SpanJob *j = arg;
+    j->h = run_span(j->seed, j->bars, j->snap);
+    return NULL;
+}
+
 typedef struct Disturber
 {
     atomic_bool stop;
@@ -115,6 +137,24 @@ int main(void)
     uint64_t hCtl = run_span(GUARD_SEED, GUARD_BARS, ctl);
     CHECK(hCtl == hRef, "control: solo replay reproduces the event stream");
     CHECK(memcmp(ctl, ref, ss) == 0, "control: solo replay snapshot byte-identical");
+
+    // control: the same span on a foreign thread, alone, still reproduces the run
+    SpanJob job = { GUARD_SEED, GUARD_BARS, ctl, 0 };
+    anothread_t st;
+    bool spanStarted = ano_thread_create(&st, NULL, span_thread, &job) == 0;
+    CHECK(spanStarted, "foreign-thread span starts");
+    if (spanStarted) {
+        ano_thread_join(st, NULL);
+        CHECK(job.h == hRef, "control: foreign-thread solo replay reproduces the event stream");
+        CHECK(memcmp(ctl, ref, ss) == 0, "control: foreign-thread snapshot byte-identical");
+    }
+
+    // control: the composer still varies with the seed
+    void *alt = malloc(ss);
+    uint64_t hAlt = run_span(GUARD_SEED + 1u, GUARD_BARS, alt);
+    CHECK(hAlt != hRef, "control: a different seed yields a different event stream");
+    CHECK(memcmp(alt, ref, ss) != 0, "control: a different seed yields a different snapshot");
+    free(alt);
 
     // trigger: the same span with a second engine composing concurrently 〜 the
     // header contract makes the result independent of any other engine instance

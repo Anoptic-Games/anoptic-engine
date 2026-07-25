@@ -87,11 +87,47 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
     return true;
 }
 
+// in:  cmd (POD command being dropped)
+// out: nothing; frees the render-owned block its kind carries
+// inv: the switch is total over RenderCommandKind and carries no default, so a new kind
+//      is a compile-time diagnostic here instead of a silent leak. Ownership rides
+//      bulk_owned: a borrowed pointer is never freed.
+void ano_render_command_release(const RenderCommand *cmd)
+{
+    if (!cmd || !cmd->bulk_owned) return;
+    const void *blk = NULL;
+    switch (cmd->kind) {
+    case RCMD_BULK_CREATE:  blk = cmd->batch;   break;
+    case RCMD_BULK_UPDATE:  blk = cmd->update;  break;
+    case RCMD_BULK_DESTROY: blk = cmd->destroy; break;
+    case RCMD_TEXT_SET:     blk = cmd->text;    break;
+    case RCMD_UI_SET:       blk = cmd->ui;      break;
+    case RCMD_CREATE:
+    case RCMD_UPDATE:
+    case RCMD_DESTROY:
+    case RCMD_STREAM_TRANSFORMS:
+    case RCMD_LIGHT_ATTACH:
+    case RCMD_LIGHT_UPDATE:
+    case RCMD_LIGHT_DETACH:
+    case RCMD_TEXT_CLEAR:
+    case RCMD_UI_CLEAR:
+        break; // payload rides the command by value
+    }
+    if (blk) mi_free((void *)blk);
+}
+
+// inv: sole caller quiesces both roles first (main.c joins the producer thread, then runs
+//      teardown on the thread that was the consumer), so the drain below is single-threaded
+//      and the join edge makes every enqueued command visible.
 void ano_render_bridge_destroy(AnoRenderBridge *bridge)
 {
     if (!bridge) return;
+    // Owner discharges: the transport frees only its buffer, so undelivered payloads die here.
+    RenderCommand cmd;
+    while (ano_spsc_pop(&bridge->commands, &cmd))
+        ano_render_command_release(&cmd);
     ano_spsc_destroy(&bridge->commands);
-    ano_spsc_destroy(&bridge->events);
+    ano_spsc_destroy(&bridge->events); // RenderEvent is wholly inline: nothing to discharge
 }
 
 
@@ -160,7 +196,7 @@ bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
     b->instances = inst;
     RenderCommand c = { .kind = RCMD_TEXT_SET, .text_id = text_id, .text = b, .bulk_owned = true };
     if (!ano_spsc_push(&bridge->commands, &c)) {
-        mi_free(blk);
+        ano_render_command_release(&c);
         return false;
     }
     return true;
@@ -285,7 +321,7 @@ bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
     if (glyphB) memcpy(at, glyphs, glyphB);
     RenderCommand c = { .kind = RCMD_UI_SET, .ui_id = ui_id, .ui = b, .bulk_owned = true };
     if (!ano_spsc_push(&bridge->commands, &c)) {
-        mi_free(blk);
+        ano_render_command_release(&c);
         return false;
     }
     return true;

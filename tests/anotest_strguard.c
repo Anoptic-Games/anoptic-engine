@@ -4,17 +4,22 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Coverage: collation of cased letters whose decomposition targets were trimmed. ce_push_rune
-// consults the decomp table before the CE table (docs/BUGS.md, Strings / Implementation,
-// ano_strings_collate.c:75), and the generated tables disagree about coverage: U+01EF (ǯ,
+// consults the decomp table before the CE table (docs/BUGS_DONE.md, Strings / Implementation,
+// ano_strings_collate.c:75), and the generated tables disagreed about coverage: U+01EF (ǯ,
 // ezh-caron, Skolt Sami) and U+0374 (Greek numeral sign) carry correct direct CE listings
-// ([270B.020.02]+[0000.028.02], [04F2.020.02]) that are unreachable because their decomp
-// entries redirect through U+0292 / U+02B9, both absent from the trimmed CE table, so
-// ce_push_cp falls to UCA implicit weights (primary 0xFBC0, after every listed script). The
+// ([270B.020.02]+[0000.028.02], [04F2.020.02]) that were unreachable because their decomp
+// entries redirected through U+0292 / U+02B9, both absent from the trimmed CE table, so
+// ce_push_cp fell to UCA implicit weights (primary 0xFBC0, after every listed script). The
 // uppercase sibling U+01EE decomposes through U+01B7, which the trim kept -- so the case pair
-// the module itself maps (anorune_to_lower(U+01EE) == U+01EF) splits across the whole
-// collation space: Ǯ sorts in the Latin band, ǯ after kana with the Han implicits, and
-// anostr_eq_base calls them unequal. Controls pin a healthy decomposing case pair (Ǒ/ǒ, both
+// the module itself maps (anorune_to_lower(U+01EE) == U+01EF) split across the whole
+// collation space: Ǯ sorted in the Latin band, ǯ after kana with the Han implicits, and
+// anostr_eq_base called them unequal. The generator now welds both trims closed under
+// assert_trim_closure. Controls pin a healthy decomposing case pair (Ǒ/ǒ, both
 // targets listed) and the case-table mapping, so a fix cannot pass by weakening either.
+// Further controls pin what a closure must NOT eat: U+01EE's own decomposition, whose targets both
+// survived the trim, and the four case mappings that cross a block boundary yet stay inside the
+// shipped table (U+00B5, U+017F, U+1E9E, U+1FBE). A trim closed by range instead of by membership
+// drops those, so they fail an over-broad fix while passing the pre-fix tables.
 // Headless, deterministic. Exit 0 == pass.
 
 #include <stdio.h>
@@ -35,6 +40,8 @@ int main(void)
     anostr_t hira_a  = anostr_lit("\xE3\x81\x82");  // U+3042 あ
     anostr_t greekns = anostr_lit("\xCD\xB4");      // U+0374 Greek numeral sign
     anostr_t alpha   = anostr_lit("\xCE\xB1");      // U+03B1 α
+    anostr_t zed     = anostr_lit("z");
+    anostr_t ezh_nfd = anostr_lit("\xC6\xB7\xCC\x8C");  // U+01B7 U+030C, the NFD of U+01EE
 
     // control: the case table maps the pair both ways (the letter is in-scope for the module)
     CHECK(anorune_to_lower(0x01EE) == 0x01EF, "case table lowers U+01EE to U+01EF");
@@ -61,6 +68,17 @@ int main(void)
 
     // bug probe: U+0374's direct CE places it with the symbols, before Greek letters
     CHECK(anostr_collate(greekns, alpha) < 0, "Greek numeral sign sorts before alpha");
+
+    // control: U+01EE's decomposition survived the trim and must still resolve through it
+    CHECK(anostr_eq_base(EZH_UP, ezh_nfd), "eq_base holds for U+01EE against its NFD sequence");
+    CHECK(anostr_collate(zed, ezh_nfd) < 0 && anostr_collate(ezh_nfd, hira_a) < 0,
+          "U+01EE's NFD sequence lands in the Latin band, where the composed form lands");
+
+    // control: case mappings that cross a block boundary but stay inside the shipped table
+    CHECK(anorune_to_upper(0x00B5) == 0x039C, "micro sign uppers to Greek capital mu");
+    CHECK(anorune_to_upper(0x017F) == 0x0053, "long s uppers to S");
+    CHECK(anorune_to_lower(0x1E9E) == 0x00DF, "capital sharp s lowers to sharp s");
+    CHECK(anorune_to_upper(0x1FBE) == 0x0399, "prosgegrammeni uppers to Greek capital iota");
 
     if (failures) {
         printf("anotest_strguard: %d FAILURE(S)\n", failures);

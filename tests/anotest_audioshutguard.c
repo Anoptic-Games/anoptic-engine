@@ -3,14 +3,15 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: adopted sample blocks orphaned by ano_audio_shutdown (ano_audio.c:204, docs/BUGS.md,
-// Audio / Implementation). Adopted blocks live on the DEFAULT mi heap (plain mi_malloc,
-// ano_audio.c:260), not the module heap, and the module promises them lossless: they ride home in
-// AEVT_BUFFER_RETIRED (audio_internal.h:9; anoptic_audio.h:326). Shutdown joins the mixer, stops
-// the device, destroys both bridge rings and the module heap 〜 but never walks mx->buffers or
-// drains a ring, so LIVE owned blocks, ACMD_BUFFER_REGISTER blocks still queued in the command
-// ring, and un-polled AEVT_BUFFER_RETIRED blocks all leak permanently; the producer can never poll
-// a destroyed world to get them back.
+// Coverage: adopted sample blocks orphaned by ano_audio_shutdown (ano_audio.c:204,
+// docs/BUGS_DONE.md, Audio / Implementation). Adopted blocks live on the DEFAULT mi heap (plain
+// mi_malloc, ano_audio.c:260), not the module heap, and the module promises them lossless: they
+// ride home in AEVT_BUFFER_RETIRED (audio_internal.h:9; anoptic_audio.h:326). Shutdown joined the
+// mixer, stopped the device, destroyed both bridge rings and the module heap 〜 but never walked
+// mx->buffers or drained a ring, so LIVE owned blocks, ACMD_BUFFER_REGISTER blocks still queued in
+// the command ring, and un-polled AEVT_BUFFER_RETIRED blocks all leaked permanently; the producer
+// can never poll a destroyed world to get them back. audio_discharge_blocks now runs before the
+// rings and heap die, under the teardown clause anoptic_audio.h:326 documents.
 // Harness: compiles the REAL ano_audio.c + audio_mixer.c TUs into this executable with their
 // allocator tokens (mi_malloc/mi_free) interposed to audit adopted-block balance. Everything else
 // (fx, null device, log, threads, time) resolves from anoptic_core; the archive's copies of the
@@ -208,6 +209,26 @@ int main(void)
     ano_audio_shutdown();
     uint32_t leakedTotal = leaked_count();
     CHECK(leakedTotal - leakedLive == 0u, "trigger: shutdown must discharge un-polled AEVT_BUFFER_RETIRED blocks (bridge rings destroyed undrained)");
+
+    // control: a MUSIC_SEEK snapshot is borrowed, not adopted 〜 the producer owns it and teardown
+    // must leave it alone, whether the mixer consumed the command or a drain met it in the ring.
+    // A discharge that frees every block-bearing command over-frees here. One-sided: it can only
+    // fail an over-free, never a correct fix, so the mixer winning the race costs nothing.
+    printf("control: teardown leaves a borrowed MUSIC_SEEK snapshot alone\n");
+    b = world_up();
+    CHECK(b != NULL, "control: world up");
+    if (!b) return 1;
+    uint32_t baseline = g_liveCount;
+    void *borrowed = anotest_seam_malloc(64u);
+    CHECK(borrowed != NULL, "control: borrowed snapshot allocated");
+    CHECK(g_liveCount == baseline + 1u, "control: seam tracked the borrowed snapshot");
+    AnoAudioCommand seek = { .kind = ACMD_MUSIC_SEEK, .block = borrowed };
+    CHECK(ano_audio_submit(b, &seek), "control: seek submitted");
+    ano_audio_shutdown();
+    CHECK(g_liveCount == baseline + 1u, "control: teardown must not free a borrowed block");
+    anotest_seam_free(borrowed);
+    CHECK(g_liveCount == baseline, "control: the producer frees its own snapshot");
+    CHECK(!g_trackOverflow, "control: allocation tracker within bounds");
 
     if (failures) {
         printf("anotest_audioshutguard: %d FAILURE(S)\n", failures);

@@ -210,7 +210,9 @@ static int expand_cp(uint32_t cp, uint32_t *out, int cap)
 
 static int collate_kept(uint32_t cp);
 
-// Expand recursively. Keep collate_keep entries only.
+// Expand recursively. Keep collate_keep entries whose every NFD piece is itself CE-listed.
+// A redirect into a trimmed piece would sort by implicit weight and hide the cp's own listing,
+// so the trim is closed: drop the decomposition, let the direct CE rule. Needs parse_allkeys first.
 static void expand_decompositions(void)
 {
     static uint32_t pool2[sizeof decomp_pool / sizeof decomp_pool[0]];
@@ -221,6 +223,12 @@ static void expand_decompositions(void)
             continue;
         uint32_t full[DECOMP_MAX_LEN];
         int n = expand_cp(decomps[k].cp, full, DECOMP_MAX_LEN);
+        int reachable = 1;
+        for (int j = 0; j < n; j++)
+            if (ce_span_of_cp[full[j]] == 0)
+                reachable = 0;
+        if (!reachable)
+            continue;
         recs2[kept++] = (decomp_t){ decomps[k].cp, (uint16_t)pool2_count, (uint8_t)n };
         memcpy(&pool2[pool2_count], full, (size_t)n * sizeof full[0]);
         pool2_count += (size_t)n;
@@ -446,6 +454,17 @@ static void build_two_stage(const uint16_t *map)
     }
 }
 
+// cp + delta, or 0 when that leaves the emitted table. Closing the trim this way keeps case
+// mapping an involution on the shipped set: the alternative is a mapping onto a record-0 cp that
+// reports uncased and uncategorized, so to_upper(to_lower(x)) != x.
+static int32_t case_delta_kept(long cp, int32_t delta)
+{
+    long t = cp + delta;
+    if (delta == 0 || t < 0 || t >= TABLE_CP || !class_kept((uint32_t)t))
+        return 0;
+    return delta;
+}
+
 static void build_tables(void)
 {
     // Record 0 = identity: unassigned, caseless, outside keep-list (SMP included; runtime guards cp >= TABLE_CP).
@@ -456,10 +475,14 @@ static void build_tables(void)
             record_of_cp[cp] = 0;
             continue;
         }
-        record_t r = { upper_delta[cp], lower_delta[cp], flags[cp] };
+        record_t r = { case_delta_kept(cp, upper_delta[cp]),
+                       case_delta_kept(cp, lower_delta[cp]), flags[cp] };
         size_t idx = SIZE_MAX;
+        // Field-wise: record_t has tail padding, so memcmp would split identical records.
         for (size_t k = 0; k < record_count; k++) {
-            if (memcmp(&records[k], &r, sizeof r) == 0) {
+            if (records[k].upper_delta == r.upper_delta &&
+                records[k].lower_delta == r.lower_delta &&
+                records[k].flags == r.flags) {
                 idx = k;
                 break;
             }
@@ -476,6 +499,32 @@ static void build_tables(void)
     }
 
     build_two_stage(record_of_cp);
+}
+
+// Both trims closed, checked over the arrays about to be emitted rather than over the source data,
+// so a keep-list edit or a UCD bump cannot reopen the hole silently. Runs before any file is
+// opened: a violation exits nonzero with the committed tables untouched.
+static void assert_trim_closure(void)
+{
+    for (size_t k = 0; k < decomp_count; k++) {
+        for (int j = 0; j < decomps[k].len; j++) {
+            uint32_t piece = decomp_pool[decomps[k].offset + j];
+            if (ce_span_of_cp[piece] == 0) {
+                fprintf(stderr, "U+%04X decomposes through U+%04X, which the CE trim dropped\n",
+                        decomps[k].cp, piece);
+                exit(1);
+            }
+        }
+    }
+    for (long cp = 0; cp < TABLE_CP; cp++) {
+        const record_t *r = &records[record_of_cp[cp]];
+        long up = cp + r->upper_delta, lo = cp + r->lower_delta;
+        if ((r->upper_delta != 0 && (up < 0 || up >= TABLE_CP || !class_kept((uint32_t)up))) ||
+            (r->lower_delta != 0 && (lo < 0 || lo >= TABLE_CP || !class_kept((uint32_t)lo)))) {
+            fprintf(stderr, "U+%04lX cases to a code point the classification trim dropped\n", cp);
+            exit(1);
+        }
+    }
 }
 
 static void emit_u16_array(FILE *f, const char *name, const uint16_t *v, size_t n)
@@ -515,14 +564,14 @@ static void emit_collate_tables(const char *version)
         " * SPDX-License-Identifier: LGPL-3.0 */\n"
         "/*  == Anoptic Game Engine v0.0000001 == */\n"
         "\n"
-        "// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from DUCET + UnicodeData, version %s.\n"
-        "// Trimmed to collate_keep (Latin, Greek, Cyrillic, Runic, kana, punct) and BMP.\n"
-        "// Else: implicit weights = cp order (runtime guards cp >= 0x10000).\n"
-        "//\n"
-        "// CE: primary(16).secondary(11).tertiary(5) in one u32.\n"
-        "// ano_ce_stage2[(size_t)ano_ce_stage1[cp >> 8] * 256 + (cp & 0xFF)] indexes\n"
-        "// ano_ce_spans (u16, offset << 4 | len into ano_ce_pool). Span 0 = unlisted (implicit).\n"
-        "// Decomps are full NFD: bsearch ano_decomp_cp, u16 spans (offset << 3 | len) into ano_decomp_pool.\n"
+        "// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from DUCET + UnicodeData %s.\n"
+        "// Trimmed to collate_keep scripts (Latin, Greek, Cyrillic, Runic, kana, punct), BMP-bound.\n"
+        "// Unlisted -> UCA implicit weights (cp >= 0x10000 guarded at runtime).\n"
+        "\n"
+        "// CE packs primary(16).secondary(11).tertiary(5) into one u32.\n"
+        "// ano_ce_stage2[ano_ce_stage1[cp>>8]*256+(cp&0xFF)] -> ano_ce_spans (offset<<4|len into ano_ce_pool).\n"
+        "// Span 0 = unlisted. Decomps: bsearch ano_decomp_cp, spans (offset<<3|len) into ano_decomp_pool.\n"
+        "// Decomps are closed over the CE table: one whose NFD leaves it is dropped for its direct CE.\n"
         "\n"
         "#ifndef ANOPTIC_SRC_STRINGS_ANO_COLLATE_TABLES_H\n"
         "#define ANOPTIC_SRC_STRINGS_ANO_COLLATE_TABLES_H\n"
@@ -598,12 +647,13 @@ int main(void)
 {
     parse_unicode_data();
     parse_prop_list();
-    expand_decompositions();
     parse_allkeys();
+    expand_decompositions();    // needs ce_span_of_cp to close the trim
     assert_ce_queue_bound(64);
     char version[32];
     read_version(version, sizeof version);
     build_tables();
+    assert_trim_closure();
 
     const char *out_path = "src/strings/ano_unicode_tables.h";
     FILE *f = open_or_die(out_path, "w");
@@ -614,13 +664,12 @@ int main(void)
         " * SPDX-License-Identifier: LGPL-3.0 */\n"
         "/*  == Anoptic Game Engine v0.0000001 == */\n"
         "\n"
-        "// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from UCD, version %s.\n"
-        "// Trimmed to shipped scripts (collate_keep + Han) and BMP.\n"
-        "// cp >= 0x10000 -> record 0 (uncased, no flags).\n"
-        "//\n"
-        "// Two-stage:\n"
-        "//     ano_uc_stage2[(size_t)ano_uc_stage1[cp >> 8] * 256 + (cp & 0xFF)]\n"
-        "// -> index into ano_uc_records. Record 0 = identity (uncased, no flags).\n"
+        "// GENERATED FILE -- do not edit. tools/gen_unicode_tables.c from UCD %s.\n"
+        "// Trimmed to shipped scripts (collate_keep + Han), BMP-bound. cp >= 0x10000 -> record 0.\n"
+        "\n"
+        "// Two-stage: ano_uc_stage2[ano_uc_stage1[cp>>8]*256+(cp&0xFF)] -> ano_uc_records index.\n"
+        "// Record 0 is the identity record (uncased, no flags).\n"
+        "// Case deltas are closed over the table: a mapping that leaves it is dropped.\n"
         "\n"
         "#ifndef ANOPTIC_SRC_STRINGS_ANO_UNICODE_TABLES_H\n"
         "#define ANOPTIC_SRC_STRINGS_ANO_UNICODE_TABLES_H\n"
@@ -637,8 +686,8 @@ int main(void)
         "#define ANO_UC_PUNCT      %uu\n"
         "\n"
         "typedef struct ano_uc_record_t {\n"
-        "    int32_t upper_delta;   // 0 = no simple uppercase\n"
-        "    int32_t lower_delta;   // 0 = no simple lowercase\n"
+        "    int32_t upper_delta;   // 0 when no simple uppercase mapping\n"
+        "    int32_t lower_delta;   // 0 when no simple lowercase mapping\n"
         "    uint8_t flags;\n"
         "} ano_uc_record_t;\n"
         "\n",

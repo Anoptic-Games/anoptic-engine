@@ -24,7 +24,21 @@ const char *const ANO_MODE_NAMES[ANO_MODE_COUNT] = {
     "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian",
 };
 
-static const uint8_t IONIAN[7] = { 0, 2, 4, 5, 7, 9, 11 };
+// Row k is ionian rotated k degrees, each offset folded so the row starts at pitch class 0.
+static const uint8_t MODE_INTERVALS[ANO_MODE_COUNT][7] = {
+    { 0, 2, 4, 5, 7, 9, 11 }, // ionian
+    { 0, 2, 3, 5, 7, 9, 10 }, // dorian
+    { 0, 1, 3, 5, 7, 8, 10 }, // phrygian
+    { 0, 2, 4, 6, 7, 9, 11 }, // lydian
+    { 0, 2, 4, 5, 7, 9, 10 }, // mixolydian
+    { 0, 2, 3, 5, 7, 8, 10 }, // aeolian
+    { 0, 1, 3, 5, 6, 8, 10 }, // locrian
+};
+
+_Static_assert(sizeof MODE_INTERVALS / sizeof MODE_INTERVALS[0] == (size_t)ANO_MODE_COUNT,
+               "one row per AnoMode: ano_mode_intervals subscripts this table by mode");
+_Static_assert(sizeof MODE_INTERVALS[0] == 7,
+               "7 offsets per row: ano_scale_pcs fills out[7] from the returned row");
 
 static const char *const TONIC_NAMES[12] = {
     "C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
@@ -43,19 +57,11 @@ int ano_mode_brightness(AnoMode mode)
     }
 }
 
+// Input: mode in [0, ANO_MODE_COUNT). Output: 7 read-only ascending semitone offsets.
+// Invariant: immutable constant data, so the row is the same on every thread and call.
 const uint8_t *ano_mode_intervals(AnoMode mode)
 {
-    static uint8_t table[ANO_MODE_COUNT][7];
-    static bool baked = false;
-    if (!baked) {
-        for (int k = 0; k < ANO_MODE_COUNT; ++k) {
-            int root = IONIAN[k];
-            for (int i = 0; i < 7; ++i)
-                table[k][i] = (uint8_t)pymod(IONIAN[(k + i) % 7] - root, 12);
-        }
-        baked = true;
-    }
-    return table[mode];
+    return MODE_INTERVALS[mode];
 }
 
 void ano_scale_pcs(AnoScale s, uint8_t out[7])

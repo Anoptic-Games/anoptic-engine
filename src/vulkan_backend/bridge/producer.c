@@ -79,7 +79,7 @@ bool ano_render_submit_bulk_update(AnoRenderBridge* bridge, const RenderUpdateBa
         memcpy(cur, batch->instance_data, (size_t)count * sizeof(AnoInstanceData)); cur += (size_t)count * sizeof(AnoInstanceData);
     }
     RenderCommand cmd = { .kind = RCMD_BULK_UPDATE, .update = b, .bulk_owned = true };
-    if (!ano_render_submit(bridge, &cmd)) { mi_free(blk); return false; }
+    if (!ano_render_submit(bridge, &cmd)) { ano_render_command_release(&cmd); return false; }
     return true;
 }
 
@@ -95,6 +95,6 @@ bool ano_render_submit_bulk_destroy(AnoRenderBridge* bridge, const uint32_t* ren
     b->count = count;
     b->render_ids = ids;
     RenderCommand cmd = { .kind = RCMD_BULK_DESTROY, .destroy = b, .bulk_owned = true };
-    if (!ano_render_submit(bridge, &cmd)) { mi_free(blk); return false; }
+    if (!ano_render_submit(bridge, &cmd)) { ano_render_command_release(&cmd); return false; }
     return true;
 }

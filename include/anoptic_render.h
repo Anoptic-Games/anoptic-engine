@@ -436,7 +436,8 @@ bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd);
 // render-side after the change has reached every frame in flight), so the caller's arrays
 // need only live until the call returns. Same backpressure contract as ano_render_submit:
 // false == ring full, retry (the copy is released and nothing is enqueued); never drops.
-// A zero count is a no-op (returns true).
+// A zero count is a no-op (returns true). Commands still enqueued when the bridge is torn
+// down are discharged by the bridge, so an accepted block is never leaked on any path.
 bool ano_render_submit_bulk_update(AnoRenderBridge *bridge, const RenderUpdateBatch *batch);
 bool ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *render_ids, uint32_t count);
 

@@ -326,6 +326,9 @@ bool ano_audio_poll_event(AnoAudioBridge *bridge, AnoAudioEvent *out);
 // Register from logic. Helper copies into an owned block at submit; free never on mixer.
 // After RELEASE the block rides home in AEVT_BUFFER_RETIRED. Release stops sounding voices first;
 // retirement waits until the last voice quiets.
+// Teardown discharges the remainder: blocks still resident at ano_audio_shutdown 〜 live, queued
+// for registration, or retired but un-polled 〜 are freed by the engine. No block rides home once
+// shutdown begins; producers must not dereference or free an adopted block after it returns.
 
 // Register interleaved f32 (1–2 ch, engine rate). false = backpressure or bad args.
 bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,

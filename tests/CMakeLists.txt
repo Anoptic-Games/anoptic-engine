@@ -64,12 +64,13 @@ set_tests_properties(anoptic_strings_fuzz PROPERTIES TIMEOUT 120 LABELS "fuzz;me
 
 # Trimmed-collation decomp guard: ce_push_rune consults the decomp table before the CE table,
 # and the generated decomp entries for U+01EF (ǯ, ezh-caron) / U+0374 (Greek numeral sign)
-# redirect through U+0292 / U+02B9, both trimmed OUT of the CE table -- so their correct direct
-# CEs ([270B.020.02], [04F2.020.02]) are unreachable and ce_push_cp falls to UCA implicit
-# weights, while the uppercase sibling U+01EE rides its kept target U+01B7: the case pair the
-# module itself maps splits across the whole collation space, lowercase after kana
-# (docs/BUGS.md, Strings / Implementation, ano_strings_collate.c:75). Fails until the decomp
-# and CE tables agree on coverage (or a direct CE listing wins over decomposition).
+# redirected through U+0292 / U+02B9, both trimmed OUT of the CE table -- so their correct direct
+# CEs ([270B.020.02], [04F2.020.02]) were unreachable and ce_push_cp fell to UCA implicit
+# weights, while the uppercase sibling U+01EE rode its kept target U+01B7: the case pair the
+# module itself maps split across the whole collation space, lowercase after kana
+# (docs/BUGS_DONE.md, Strings / Implementation, ano_strings_collate.c:75). The generator now
+# closes both trims under assert_trim_closure; the guard pins that the decomp and CE tables
+# agree on coverage and that the closure eats no healthy mapping.
 add_executable(anotest_strguard anotest_strguard.c)
 target_link_libraries(anotest_strguard PRIVATE anoptic_core)
 add_test(NAME anoptic_strguard COMMAND anotest_strguard)
@@ -284,12 +285,13 @@ set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;co
 
 # Bridge teardown lifetime guard: ownership of the render-owned text/UI/bulk payload blocks
 # transfers to the command ring at push, and every live path frees them (full-ring reject at
-# submit, consumer after adoption) 〜 but ano_render_bridge_destroy frees only the ring storage,
-# so commands still enqueued at destroy drop their blocks unreachable (docs/BUGS.md, Render /
-# Vulkan backend / Interlink, render_bridge/ano_render_bridge.c:92); main.c stops draining
-# before it stops the producer, so the window is hit every shutdown. Blocks are steered into a
-# watch heap and counted with mi_heap_visit_blocks. Headless. Fails until destroy (or a
-# teardown drain above it) releases the enqueued payloads.
+# submit, consumer after adoption) 〜 but ano_render_bridge_destroy freed only the ring storage,
+# so commands still enqueued at destroy dropped their blocks unreachable (docs/BUGS_DONE.md,
+# Render / Vulkan backend / Interlink, render_bridge/ano_render_bridge.c:92); main.c stops
+# draining before it stops the producer, so the window was hit every shutdown. Destroy now pops
+# and discharges every enqueued command through ano_render_command_release; the guard pins that
+# bridge teardown leaves no owned payload unreachable. Blocks are steered into a watch heap and
+# counted with mi_heap_visit_blocks. Headless.
 add_executable(anotest_bridgeguard anotest_bridgeguard.c)
 target_link_libraries(anotest_bridgeguard PRIVATE anoptic_core)
 add_test(NAME anoptic_bridgeguard COMMAND anotest_bridgeguard)
@@ -363,14 +365,16 @@ target_link_libraries(anotest_dspdelayguard PRIVATE anoptic_core)
 add_test(NAME anoptic_dspdelayguard COMMAND anotest_dspdelayguard)
 set_tests_properties(anoptic_dspdelayguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
-# Shutdown adopted-block discharge guard: ano_audio_shutdown joins the mixer, stops the device,
-# and destroys both bridge rings and the module heap without walking mx->buffers or draining
+# Shutdown adopted-block discharge guard: ano_audio_shutdown joined the mixer, stopped the device,
+# and destroyed both bridge rings and the module heap without walking mx->buffers or draining
 # either ring, while adopted blocks live on the DEFAULT mi heap (plain mi_malloc,
 # ano_audio.c:260) 〜 so LIVE owned blocks, queued ACMD_BUFFER_REGISTER blocks, and un-polled
-# AEVT_BUFFER_RETIRED blocks all orphan permanently against the lossless-block invariant
-# (audio_internal.h:9; ano_audio.c:204, docs/BUGS.md, Audio / Implementation). Compiles the real
-# ano_audio.c + audio_mixer.c TUs with the allocator tokens interposed to audit adopted-block
-# balance; null backend, no sound hardware. Fails until shutdown discharges every adopted block.
+# AEVT_BUFFER_RETIRED blocks all orphaned permanently against the lossless-block invariant
+# (audio_internal.h:9; ano_audio.c:204, docs/BUGS_DONE.md, Audio / Implementation).
+# audio_discharge_blocks now drains both rings and the buffer table before either dies; the
+# guard pins that shutdown leaves no adopted block live. Compiles the real ano_audio.c +
+# audio_mixer.c TUs with the allocator tokens interposed to audit adopted-block balance; null
+# backend, no sound hardware.
 add_executable(anotest_audioshutguard anotest_audioshutguard.c
         ${CMAKE_SOURCE_DIR}/src/audio/ano_audio.c
         ${CMAKE_SOURCE_DIR}/src/audio/audio_mixer.c)
@@ -622,14 +626,26 @@ add_test(NAME anoptic_motifboundguard COMMAND anotest_motifboundguard)
 set_tests_properties(anoptic_motifboundguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Guard: engine-instance independence under the documented off-thread seek shape.
-# Two engines advancing concurrently race ano_voice_chord's function-scope static
-# candidate table, so the bar stream / snapshot stop being a pure function of
-# (config, seed, bar) (docs/BUGS.md, Music / Implementation). Fails until the
-# table becomes per-thread (or per-call) state.
+# Two engines advancing concurrently raced ano_voice_chord's function-scope static
+# candidate table, so the bar stream / snapshot stopped being a pure function of
+# (config, seed, bar) (docs/BUGS_DONE.md, Music / Implementation). The table is
+# static thread_local and music_theory.c's lazy bake is gone, so src/music holds no
+# mutable file-scope state; the guard pins the purity of the bar stream under a
+# concurrent disturber engine.
 add_executable(anotest_musicguard anotest_musicguard.c)
 target_link_libraries(anotest_musicguard PRIVATE anoptic_core)
 add_test(NAME anoptic_musicguard COMMAND anotest_musicguard)
 set_tests_properties(anoptic_musicguard PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# Guard: ano_voice_chord ingress totality over its module-private config domain.
+# voices is a uint8_t POD field 〜 0 and > 6 are constructible by any internal caller 〜
+# and pcCount is caller arithmetic; pre-fix both walked the option/candidate scratch and
+# the caller's out[6] out of bounds (docs/BUGS_DONE.md, Music). Controls pin the valid
+# domain so a reject-everything fix cannot pass.
+add_executable(anotest_voicingboundguard anotest_voicingboundguard.c)
+target_link_libraries(anotest_voicingboundguard PRIVATE anoptic_core)
+add_test(NAME anoptic_voicingboundguard COMMAND anotest_voicingboundguard)
+set_tests_properties(anoptic_voicingboundguard PROPERTIES TIMEOUT 30 LABELS "unit;mem")
 
 # Guard: music -> synth seam event contract. The arp lane clamps velocity then adds
 # its +4 accent (music_arp.c:106), a velocity_center override crosses the host raw,

@@ -7,17 +7,17 @@
 // copy each text/UI/bulk batch into one mi_malloc block whose ownership rides the command
 // ring (anoptic_render.h: "released render-side"; RenderCommand.bulk_owned), and every
 // live path honors it: a full-ring reject frees the copy at submit, a popped command's
-// block is freed by the consumer after adoption. But ano_render_bridge_destroy tears the
+// block is freed by the consumer after adoption. But ano_render_bridge_destroy tore the
 // commands ring down through ano_spsc_destroy, which frees only ring->buffer 〜 commands
-// still enqueued are discarded with their owned blocks unreachable (docs/BUGS.md,
+// still enqueued were discarded with their owned blocks unreachable (docs/BUGS_DONE.md,
 // Render / Vulkan backend / Interlink, render_bridge/ano_render_bridge.c:92). In-tree,
 // main.c stops draining before it stops the producer, so the final ticks' TEXT_SET/UI_SET
-// blocks sit exactly in that window every run. Leak observed precisely: the blocks land
-// in a dedicated mimalloc heap installed as the thread default around each submit, and
-// mi_heap_visit_blocks counts what survives destroy. Controls pin the two live paths so
-// a fix cannot pass by rejecting submissions. Headless, no device, deterministic.
-// Fails until bridge destroy (or a teardown drain above it) releases the enqueued blocks.
-// Exit 0 == pass.
+// blocks sat exactly in that window every run. Destroy now pops and discharges each enqueued
+// command through ano_render_command_release; the guard pins that teardown leaves no owned
+// block unreachable. Observed precisely: the blocks land in a dedicated mimalloc heap
+// installed as the thread default around each submit, and mi_heap_visit_blocks counts what
+// survives destroy. Controls pin the two live paths so a fix cannot pass by rejecting
+// submissions. Headless, no device, deterministic. Exit 0 == pass.
 
 #include <stdio.h>
 #include <string.h>
@@ -113,9 +113,15 @@ int main(void)
     // Four TEXT_SET blocks through the module's own endpoint, plus one hand-built
     // BULK_DESTROY block shaped exactly as ano_render_submit_bulk_destroy packs it.
     {
+        // Payload-free kinds interleave: the drain must walk past them, not mis-decode them.
+        RenderCommand tclear = { .kind = RCMD_TEXT_CLEAR, .text_id = 77 };
+        RenderCommand uclear = { .kind = RCMD_UI_CLEAR, .ui_id = 78 };
         mi_heap_t *old = mi_heap_set_default(watch);
-        for (uint32_t id = 0; id < 4; id++)
+        for (uint32_t id = 0; id < 4; id++) {
             CHECK(ano_render_text_set(&bridge, id, glyphs, 4), "enqueue TEXT_SET");
+            if (id == 1) CHECK(ano_render_submit(&bridge, &tclear), "enqueue TEXT_CLEAR");
+            if (id == 2) CHECK(ano_render_submit(&bridge, &uclear), "enqueue UI_CLEAR");
+        }
         mi_heap_set_default(old);
 
         size_t bytes = sizeof(RenderDestroyBatch) + 3u * sizeof(uint32_t);
@@ -140,6 +146,32 @@ int main(void)
             printf("  destroy dropped %zu enqueued command(s) without releasing their blocks\n",
                    leaked);
         CHECK(leaked == 0, "bridge destroy releases render-owned payloads still enqueued");
+    }
+
+    // control: a command that only BORROWS its pointer (bulk_owned false) must survive the
+    // drain untouched 〜 a fix that frees every non-null payload pointer fails here.
+    {
+        AnoRenderBridge borrowBridge;
+        CHECK(ano_render_bridge_init(&borrowBridge, ringHeap, 8, 8), "borrow bridge init");
+
+        size_t bytes = sizeof(RenderDestroyBatch) + sizeof(uint32_t);
+        char *blk = mi_heap_malloc(watch, bytes);
+        CHECK(blk != NULL, "borrowed block alloc");
+        RenderDestroyBatch *d = (RenderDestroyBatch *)blk;
+        uint32_t *ids = (uint32_t *)(blk + sizeof(RenderDestroyBatch));
+        ids[0] = 9u;
+        d->count = 1u;
+        d->render_ids = ids;
+        RenderCommand cmd = { .kind = RCMD_BULK_DESTROY, .destroy = d, .bulk_owned = false };
+        CHECK(ano_render_submit(&borrowBridge, &cmd), "enqueue borrowed BULK_DESTROY");
+        CHECK(live_blocks(watch) == 1, "one borrowed block in flight pre-destroy");
+
+        ano_render_bridge_destroy(&borrowBridge);
+
+        CHECK(live_blocks(watch) == 1, "destroy leaves a borrowed payload alone");
+        CHECK(d->count == 1u && d->render_ids[0] == 9u, "borrowed block still intact");
+        mi_free(blk); // the submitter still owns it
+        CHECK(live_blocks(watch) == 0, "borrowed block released by its owner");
     }
 
     mi_heap_destroy(watch); // reclaims any leaked blocks so sanitizers stay quiet

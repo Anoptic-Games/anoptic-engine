@@ -156,6 +156,7 @@ typedef struct AnoVoicingConfig
 AnoVoicingConfig ano_voicing_config_default(void);
 
 // Best strictly-ascending voicing. First minimum wins. Returns voice count, cost in *outCost.
+// voices clamps to the out[6] extent; zero voices or zero pcs place nothing (returns 0).
 uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
                          const int *prev, uint32_t prevLen,
                          const AnoVoicingConfig *cfg, int out[6], double *outCost);

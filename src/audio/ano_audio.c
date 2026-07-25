@@ -17,6 +17,13 @@
 _Static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
 _Static_assert(sizeof(AnoAudioCommand) <= 192u, "AnoAudioCommand grew past 192 bytes; revisit the command ring");
 
+// An adopted block is one allocation: header, then the interleaved payload at h + 1. Registration
+// and discharge both treat the header pointer as the allocation base, so it must not misalign that
+// payload.
+_Static_assert(_Alignof(AnoAudioBlockHeader) >= _Alignof(float)
+                   && sizeof(AnoAudioBlockHeader) % _Alignof(float) == 0u,
+               "AnoAudioBlockHeader must not misalign the payload sharing its allocation");
+
 // Audio world singleton.
 static AnoAudioMixer *g_mixer;
 static mi_heap_t     *g_heap;
@@ -201,6 +208,65 @@ fail_heap:
     return false;
 }
 
+// Free every adopted block the world still holds: registrations queued in the command ring,
+// un-polled retirements in the event ring, blocks resident in the buffer table. Sole discharge
+// point is ano_audio_block_free 〜 the same call the rides-home path hands the producer.
+// in:  mx 〜 mixer joined, device stopped, producer no longer submitting
+// out: none. Both bridge rings empty, every owned buffer slot FREE
+// inv: single-threaded. The mixer was the command ring's only consumer and the event ring's only
+//      producer, and it no longer exists; the device never touches either.
+// inv: the three populations are disjoint, so nothing is freed twice. A REGISTER command leaves
+//      the ring before its block enters a slot, and a slot is cleared only in the step that hands
+//      its block to the event ring.
+// inv: module-heap allocations (mixer, bridge, ring storage, bus scratch) are not touched here;
+//      mi_heap_destroy owns those. Borrowed blocks (MUSIC_SEEK snapshots) stay the producer's.
+static void audio_discharge_blocks(AnoAudioMixer *mx)
+{
+    AnoAudioCommand cmd;
+    while (ano_audio_ring_pop(&mx->bridge->commands, &cmd)) {
+        switch ((AnoAudioCommandKind)cmd.kind) {
+        case ACMD_BUFFER_REGISTER:
+            ano_audio_block_free((void *)cmd.block);
+            break;
+        case ACMD_SOURCE_PLAY:
+        case ACMD_SOURCE_UPDATE:
+        case ACMD_SOURCE_STOP:
+        case ACMD_BUS_SET:
+        case ACMD_FX_SET:
+        case ACMD_BUFFER_RELEASE:
+        case ACMD_MUSIC_AFFECT:
+        case ACMD_MUSIC_KEY:
+        case ACMD_MUSIC_MOTIF:
+        case ACMD_MUSIC_OVERRIDE:
+        case ACMD_MUSIC_RELEASE:
+        case ACMD_MUSIC_SEEK: // borrowed
+            break;
+        }
+    }
+
+    AnoAudioEvent evt;
+    while (ano_audio_ring_pop(&mx->bridge->events, &evt)) {
+        switch (evt.kind) {
+        case AEVT_BUFFER_RETIRED:
+            ano_audio_block_free(evt.u.buffer.block);
+            break;
+        case AEVT_SOURCE_RETIRED:
+        case AEVT_CAPACITY:
+        case AEVT_MUSIC_BAR:
+        case AEVT_MUSIC_SEEKED:
+            break;
+        }
+    }
+
+    for (uint32_t i = 0; i < ANO_AUDIO_MAX_BUFFERS; ++i) {
+        AnoAudioBufferSlot *slot = &mx->buffers[i];
+        if (slot->state == ANO_AUDIO_BUF_FREE || !slot->owned)
+            continue; // borrowed data is the producer's
+        ano_audio_block_free(slot->block);
+        memset(slot, 0, sizeof *slot);
+    }
+}
+
 void ano_audio_shutdown(void)
 {
     if (!g_mixer)
@@ -211,6 +277,9 @@ void ano_audio_shutdown(void)
     atomic_store_explicit(&mx->mixerRun, false, memory_order_release);
     ano_thread_join(mx->mixerThread, NULL);
     mx->device->stop(mx);
+
+    // Both threads are down: nothing else can reach the rings or the buffer table.
+    audio_discharge_blocks(mx);
 
     ano_audio_bridge_destroy(mx->bridge);
     ano_audio_ring_destroy(&mx->blockRing);

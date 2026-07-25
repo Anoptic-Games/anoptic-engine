@@ -7,6 +7,7 @@
 // Mixer thread owns the graph after init. Device thread: cooked ring + underruns.
 // Pools from module heap at init. Steady-state block loop: no alloc, no locks.
 // Adopted sample blocks return via AEVT_BUFFER_RETIRED (reject-on-full frees at boundary).
+// Teardown exception: shutdown frees whatever is still resident 〜 both rings and the buffer table.
 
 #ifndef ANO_AUDIO_INTERNAL_H
 #define ANO_AUDIO_INTERNAL_H

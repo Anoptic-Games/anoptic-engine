@@ -19,15 +19,23 @@ AnoVoicingConfig ano_voicing_config_default(void)
     return k;
 }
 
-#define MAX_VOICES 6
-#define MAX_CANDS  256
+#define MAX_VOICES  6
+#define MAX_OPTIONS 2u
+#define MAX_OCTAVES 4u
+#define MAX_CANDS   256
 
 typedef struct Cand { int p[MAX_VOICES]; } Cand;
 
+// out[] of ano_voice_chord is declared int[6] in music_theory.h; the final copy walks
+// Cand.p over the same slots, so the two extents may not drift.
+_Static_assert(MAX_VOICES == 6, "Cand.p and ano_voice_chord's out[6] index the same slots");
+
 // Candidate pc multisets in preference order (voice_pc_options): doubling
 // root-then-fifth (never the third); dropping fifth-then-root; at most two.
+// voices in [1, MAX_VOICES] by the caller's ingress; any pcCount 〜 a row fills at most
+// voices slots. Returns 0 only for pcCount == 0: zero options, the caller places nothing.
 static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices,
-                           uint8_t out[2][MAX_VOICES])
+                           uint8_t out[MAX_OPTIONS][MAX_VOICES])
 {
     if (pcCount == voices) {
         for (uint32_t i = 0; i < voices; ++i)
@@ -37,7 +45,7 @@ static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices
     uint32_t count = 0;
     if (pcCount < voices) {
         static const uint32_t DOUBLE_IDX[3] = { 0, 2, 1 };
-        for (int k = 0; k < 3 && count < 2u; ++k) {
+        for (int k = 0; k < 3 && count < MAX_OPTIONS; ++k) {
             uint32_t di = DOUBLE_IDX[k];
             if (di >= pcCount)
                 continue;
@@ -49,23 +57,23 @@ static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices
         }
     } else {
         static const uint32_t DROP_IDX[3] = { 2, 0, 1 };
-        for (int k = 0; k < 3 && count < 2u; ++k) {
+        for (int k = 0; k < 3 && count < MAX_OPTIONS; ++k) {
             uint32_t n = 0;
             for (uint32_t i = 0; i < pcCount; ++i)
-                if (i != DROP_IDX[k])
-                    out[count][n++] = pcs[i];
-            // trim extensions beyond capacity (list.pop from the end)
+                if (i != DROP_IDX[k]) {
+                    // trim extensions beyond capacity at the write (list.pop from the end)
+                    if (n < voices)
+                        out[count][n] = pcs[i];
+                    n++;
+                }
             if (n > voices)
                 n = voices;
             if (n == voices)
                 count++;
         }
     }
-    if (count == 0) {
-        for (uint32_t i = 0; i < voices; ++i)
-            out[0][i] = pcs[i];
-        return 1;
-    }
+    // count == 0 only when pcCount == 0: k = 0 always doubles pcs[0] otherwise, and the
+    // drop branch always trims to exactly voices.
     return count;
 }
 
@@ -99,6 +107,13 @@ static double voicing_cost(const int *cand, uint32_t n, const int *prev, uint32_
     return (double)movement + topSmoothness + perVoiceExcess;
 }
 
+// Inputs: chordPcs/pcCount pitch classes; prev/prevLen the previous voicing (prevLen 0 =
+// none); cfg, NULL taking the default 〜 voices past MAX_VOICES clamp, zero voices place
+// nothing. Outputs: out[0..V-1], *outCost when non-NULL, V
+// returned (0 when nothing places). Invariant: the candidate table is call-transient
+// scratch 〜 candCount starts at 0 every call and bounds every read, so no element read
+// here was written by an earlier call. One instance per composing thread, no state crosses
+// calls or threads, so a thread's results depend only on its own arguments.
 uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
                          const int *prev, uint32_t prevLen,
                          const AnoVoicingConfig *cfg, int out[6], double *outCost)
@@ -106,23 +121,29 @@ uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
     AnoVoicingConfig def = ano_voicing_config_default();
     if (!cfg)
         cfg = &def;
-    const uint32_t V = cfg->voices;
+    // ingress: every scratch extent and the caller's out[6] are MAX_VOICES wide, and the
+    // cost and copy stages index [V - 1], so V enters in [1, MAX_VOICES] or not at all
+    if (cfg->voices == 0u)
+        return 0;
+    const uint32_t V = cfg->voices < MAX_VOICES ? cfg->voices : MAX_VOICES;
 
-    uint8_t options[2][MAX_VOICES];
+    uint8_t options[MAX_OPTIONS][MAX_VOICES];
     uint32_t optCount = pc_options(chordPcs, pcCount, V, options);
 
-    static Cand cands[MAX_CANDS]; // single-threaded conductor context
+    // call-transient scratch, one instance per composing thread; ~6 KiB, too fat for
+    // the audio-callback stack
+    static thread_local Cand cands[MAX_CANDS];
     uint32_t candCount = 0;
 
     for (uint32_t o = 0; o < optCount; ++o) {
         // per-voice octave option lists
-        int opts[MAX_VOICES][4];
+        int opts[MAX_VOICES][MAX_OCTAVES];
         uint32_t optN[MAX_VOICES];
         for (uint32_t v = 0; v < V; ++v) {
             int pc = options[o][v];
             int first = cfg->lo + ((pc - cfg->lo) % 12 + 12) % 12;
             uint32_t n = 0;
-            for (int p = first; p <= cfg->hi && n < 4u; p += 12)
+            for (int p = first; p <= cfg->hi && n < MAX_OCTAVES; p += 12)
                 opts[v][n++] = p;
             optN[v] = n;
         }

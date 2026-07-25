@@ -178,7 +178,15 @@ struct AnoRenderBridge
 bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
                             uint32_t cmd_capacity_pow2, uint32_t evt_capacity_pow2);
 
+// Drains and discharges any command still enqueued, then releases both ring buffers.
 void ano_render_bridge_destroy(AnoRenderBridge *bridge);
+
+// in:  cmd, a command being DROPPED before any consumer adopts its payload
+// out: nothing; releases the render-owned block the command carries, if it carries one
+// inv: sole decode point for what a RenderCommand owns. Drop paths only: a consumer that
+//      hands the block to a registry has already transferred ownership and must not call
+//      this. Honors bulk_owned, so a borrowed pointer is left alone.
+void ano_render_command_release(const RenderCommand *cmd);
 
 // Non-inline logic endpoints (submit/lights/text/ui + poll/snapshot/view): ano_render_bridge.c.
 
