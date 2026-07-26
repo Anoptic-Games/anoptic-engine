@@ -200,7 +200,7 @@ Elevated per the architect's priorities. This is the biggest *gap* between the b
 
 **Anoptic.**
 - `ano_fs_gamepath`/`ano_fs_userpath` (path structs, Linux + Windows backends) are §7.1.1's stripped-down path API. We have **no async I/O yet** 〜 §7.1.3's thread + queue + semaphore + callback model is the blueprint, and it's a natural early consumer of the lock-free queue and `anoptic_threads`.
-- Our glTF path ([src/render/gltf/ano_GltfParser.c](../../src/render/gltf/ano_GltfParser.c), jsmn-based, staging through `scratch_process.c`) is the *runtime text-parse* approach the book argues against. The scratch-arena staging is good and maps onto the **temporary load-time section** idea (§7.2.2); the loose `malloc`/`free` (a known debt in notes.md) is exactly what §7.2 says to push offline.
+- Our glTF path ([src/render/gltf/ano_GltfParser.c](../../src/render/gltf/ano_GltfParser.c), cgltf-based, staging through a scoped scratch heap) is the *runtime text-parse* approach the book argues against. The scratch-arena staging is good and maps onto the **temporary load-time section** idea (§7.2.2); the loose `malloc`/`free` (a known debt in notes.md) is exactly what §7.2 says to push offline.
 
 **Verdict.**
 - ✅ The "wrap the FS, the OS doesn't give you streaming" rationale and the stripped-down path API match `ano_fs` exactly.

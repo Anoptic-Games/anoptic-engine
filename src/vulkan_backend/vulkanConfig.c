@@ -10,6 +10,7 @@
 // Static parameters. preferredMode all-bits = "nothing selected". preferredMsaa default 4x.
 static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = 0b111111111, .preferredMsaa = 4};
 
+// monitorIndex -1 wraps to UINT32_MAX 〜 windowed (structs.h)
 static WindowParameters windowParameters = {.width = 800, .height = 600, .monitorIndex = -1, .borderless = false};
 
 /* If an API function isn't here, it's probably implemented in vulkanMaster.c */
@@ -103,7 +104,7 @@ bool updateWindow(GLFWwindow *window)
         glfwSetWindowSize(window, (int)windowParameters.width, (int)windowParameters.height);
     }
 
-    // 2. Handle monitor change (if monitorIndex != -1)
+    // 2. Handle monitor change. -1 wraps to UINT32_MAX 〜 windowed (structs.h)
     if (windowParameters.monitorIndex != -1)
     {
         int count;

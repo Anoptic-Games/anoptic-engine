@@ -152,6 +152,8 @@ void* ano_thread_getspecific(anothread_key_t key);
 // An unchecked init leaves an unusable barrier.
 [[nodiscard]] int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrierattr_t *attr, unsigned int count);
 
+// out: 0 to every waiter but one; exactly one per cohort gets the serial return, a platform-defined
+// non-zero value that is not exported. Portable test: `!= 0` is the serial thread, never a literal.
 int ano_thread_barrier_wait(anothread_barrier_t *barrier);
 
 int ano_thread_barrier_destroy(anothread_barrier_t *barrier);

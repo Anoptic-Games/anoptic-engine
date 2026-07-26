@@ -1,6 +1,15 @@
-// Scanline Sweeper coverage math shared by textraster.comp and textworld.frag.
-// Mirrors src/text/text_raster_ref.c statement for statement. Declares the three
-// glyph-data buffers (set 0, bindings 0/1/2). The including shader adds its own extras.
+// Scanline Sweeper coverage math shared by textraster.comp, textworld.vert and textworld.frag
+// (uicoverage.glsl reuses curve_area and em_box). Declares the three glyph-data buffers
+// (set 0, bindings 0/1/2). The including shader adds its own extras.
+//
+// solve_mono, curve_area and window_sum mirror their namesakes in src/text/text_raster_ref.c,
+// which is the offline compare harness, not a build input: nothing in CMake or CTest diffs the
+// two, so agreement is maintained by hand. One deliberate divergence: the blank-glyph
+// (curveCount 0) guard is callee-side in C, caller-side here (shade_window below,
+// textraster.comp box_hits, textworld.vert), because an SSBO read is robustness-clamped and
+// points[] is always bound, while the C pts may be NULL or one past the blob. Both yield 0.0
+// coverage for a blank glyph. Port idioms also differ: copysignf becomes a sign ternary, and
+// vec2/unpackHalf2x16 replaces the scalar half_lo/half_hi pairs.
 
 // Mirrors AnoGlyphEntry (32 B).
 struct GlyphEntry {

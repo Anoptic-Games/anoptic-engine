@@ -227,7 +227,7 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 		resolution.height = mode->height;
 	}
 
-	if (monitorIndex == -1)
+	if (monitorIndex == -1) // -1 wraps to UINT32_MAX 〜 windowed (structs.h)
 	{
 		chosenMonitor = NULL;
 	}

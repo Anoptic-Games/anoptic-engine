@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// CPU ref rasterizer for Scanline Sweeper coverage: scalar float32 mirror of the GLSL compute shader. Baked stream grammar in text_internal.h. No gamma, linear coverage like FT_Render_Glyph.
+// CPU ref rasterizer for Scanline Sweeper coverage: scalar float32 mirror of the shared GPU coverage math in resources/shaders/textcoverage.glsl (included by textraster.comp and textworld.vert/.frag).
+// solve_mono, curve_area and ano_text_window_sum mirror their GLSL namesakes; ano_text_raster_ref is harness-only and has no shader counterpart. This file is the offline compare harness, not a build input: nothing diffs the two, so agreement is maintained by hand.
+// One deliberate divergence: the blank-glyph (curveCount 0) guard is callee-side here, inside ano_text_window_sum, since pts may be NULL or one past the blob, whereas the GLSL leaves it to each caller, where an SSBO read is robustness-clamped. Both yield 0.0. Port idioms also differ: copysignf is a sign ternary in GLSL, and the half_lo/half_hi pairs are vec2/unpackHalf2x16 there.
+// Baked stream grammar in text_internal.h. No gamma, linear coverage like FT_Render_Glyph.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"

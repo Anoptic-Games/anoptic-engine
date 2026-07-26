@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
-#include <ctype.h>
-#include <math.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
 
@@ -355,6 +353,24 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     gpu_alloc_reset(&swapchainAllocator);
 }
 
+// in:  live ctx; window may report a zero framebuffer (waits on events until it does not)
+// out: all nine swapchain-derived families re-minted at the new extent, every descriptor naming one
+//      re-pointed, command pools reset, frame fences cleared.
+//
+// Positional invariant. cleanupSwapChain destroys nine families and the creators below re-mint all
+// nine, yet only three rebind calls follow, because only five families are ever named by a descriptor:
+//   depth + depth-resolve (createDepthResources) -> updateHiZDescriptorSets, hizSets binding 2
+//   Hi-Z pyramid (createHiZResources)            -> updateHiZDescriptorSets, hizSets 0/1, cullSet 11, globalSet 13
+//   HDR resolve (createColorResourcesChecked)    -> updateTonemapDescriptorSets, tonemapSet 0
+//   text overlay (createColorResourcesChecked)   -> ano_vk_text_update_sets, textRasterSet 3 + textOverlaySet 0
+// The other four 〜 swapchain views, MSAA colour, MSAA pick-id, pick-id resolve 〜 are named by no set:
+// they appear only as rendering attachments or a transfer operand (record_views.c:83, :97, :104, :226,
+// :267). They need no rebind because the command buffer is reset and re-recorded every frame
+// (vulkanMaster.c:285), so each handle is read out of rendererState after this function replaced it.
+// hizSets above the new hizMipCount keep dead views and are never bound: hiz.c:33 bounds the dispatch
+// by that same count.
+// Obligation: a new swapchain-derived resource that any descriptor names gets its rebind call added
+// here, beside its creator. Nothing checks the correspondence 〜 it is held by hand, in this function.
 void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 {
 	// Wait for device idle

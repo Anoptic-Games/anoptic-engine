@@ -381,7 +381,7 @@ bool initVulkan() // Initializes Vulkan
 		}
 	}
 	setResolution(initDimensions);
-	setMonitor(-1);
+	setMonitor(-1); // -1 wraps to UINT32_MAX 〜 windowed (structs.h)
 	setBorderless(0);
 
     vulkanGarbage.monitors = &monitors;

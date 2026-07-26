@@ -39,6 +39,8 @@ static FILE* openEngineFile(const char* relative)
 }
 
 // inv: false leaves *buffer inert ({NULL, 0}) on every arm 〜 callers unwind without re-inerting
+// inv: size is ftell's long narrowed to uint32_t 〜 callers ship sub-4GiB assets; a larger file is
+//      out of contract, not detected
 bool loadFile(const char* filename, struct Buffer* buffer)
 {
 	*buffer = (struct Buffer){0};
