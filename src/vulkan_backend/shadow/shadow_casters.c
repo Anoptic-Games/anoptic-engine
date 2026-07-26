@@ -113,8 +113,33 @@ static bool next_owned_block(const RendererState* st, uint32_t lightIdx, uint32_
     return false;
 }
 
+/* Static Shadow-Frustum Reclamation */
+
+// Retire a released static block by exact footprint. NONE is a no-op.
+// The static region only ever holds two shapes 〜 the point block and the single 〜 so exact fit is
+// total over them; any other footprint has no list and strands, as everything did before.
+// The push cannot be refused: capacity is the region's own bound (structs.h).
+static void static_frustum_free(RendererState* st, uint32_t base, uint32_t blockSize) {
+    if (base == ANO_SHADOW_NONE) return;
+    if (blockSize == ANO_SHADOW_CUBE_FACES) {
+        if (st->stPointFreeCount  < ANO_SHADOW_ST_POINT_FREE_CAP)  st->stPointFree[st->stPointFreeCount++]   = base;
+    } else if (blockSize == 1u) {
+        if (st->stSingleFreeCount < ANO_SHADOW_ST_SINGLE_FREE_CAP) st->stSingleFree[st->stSingleFreeCount++] = base;
+    }
+}
+// Base of a retired block of exactly blockSize entries, ANO_SHADOW_NONE when none is held.
+// Never splits or coalesces: a caster's shape recurs, so the shape it released is the shape it wants back.
+static uint32_t static_frustum_alloc(RendererState* st, uint32_t blockSize) {
+    if (blockSize == ANO_SHADOW_CUBE_FACES)
+        return st->stPointFreeCount  ? st->stPointFree[--st->stPointFreeCount]   : ANO_SHADOW_NONE;
+    if (blockSize == 1u)
+        return st->stSingleFreeCount ? st->stSingleFree[--st->stSingleFreeCount] : ANO_SHADOW_NONE;
+    return ANO_SHADOW_NONE;
+}
+
 // Release every static frustum block this palette row owns: blocks go inactive (mirror + stage),
-// volumes clear, budget rows return. The monotonic region is never reclaimed. Scans the whole live
+// volumes clear, budget rows return. Every block but the one held back for an in-place rewrite is
+// retired to the free-lists; the monotonic cursor itself never rewinds. Scans the whole live
 // static region, so a row already holding more than one block heals in one pass.
 // in:  lightIdx, static palette row; wantSize, block footprint the caller means to re-register (0 = none)
 // out: uint32_t, base of the first released block whose footprint == wantSize, else ANO_SHADOW_NONE
@@ -139,7 +164,8 @@ static uint32_t static_shadow_release_owned(RendererState* st, uint32_t lightIdx
         uint32_t oldBudget;
         uint32_t* oldUsed = shadow_static_budget(st, blockType, &oldBudget);
         if (oldUsed) *oldUsed -= 1u;
-        if (reuse == ANO_SHADOW_NONE && blockSize == wantSize) reuse = s;
+        if (reuse == ANO_SHADOW_NONE && blockSize == wantSize) reuse = s; // held for the caller's in-place rewrite
+        else static_frustum_free(st, s, blockSize);                       // otherwise retire, never strand
         released = true;
     }
     if (released) {
@@ -155,6 +181,11 @@ static uint32_t static_shadow_release_owned(RendererState* st, uint32_t lightIdx
 // Re-registration on a live row REPLACES: the row's prior blocks are released first, so the budget
 // row it held funds its own replacement, and a matching footprint is rewritten in place 〜 the
 // sanctioned destroy/recreate rebuild (backend.h) is budget- and region-stable.
+// A footprint CHANGE is region-stable too: the old shape is retired and the new one comes from the
+// free-lists before the cursor bumps. A bump therefore only ever happens with that footprint's list
+// empty, i.e. with every block of that shape live, so the shapes in existence stay bounded by the
+// budgets and shadowFrustumNext can never pass ANO_SHADOW_STATIC_FRUSTUM_COUNT. The region-full arm
+// below is the overflow contract, kept, and unreachable while the budget rows hold.
 void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t lightType,
                                    uint32_t frameIndex, uint32_t parentSlot, float range) {
     uint32_t budget;
@@ -162,8 +193,13 @@ void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t light
     if (!used) return; // not a LightType, stays shadowless
     uint32_t blockSize = lightType == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u;
     uint32_t base = static_shadow_release_owned(st, lightIdx, frameIndex, blockSize);
-    if (*used >= budget) return; // budget full, stays shadowless (release already cleared the info)
-    if (base == ANO_SHADOW_NONE) { // no reusable block: bump the region
+    if (*used >= budget) { // budget full, stays shadowless (release already cleared the info)
+        static_frustum_free(st, base, blockSize); // the rewrite it was held for is not happening
+        return;
+    }
+    if (base == ANO_SHADOW_NONE)
+        base = static_frustum_alloc(st, blockSize); // a retired block of this exact shape
+    if (base == ANO_SHADOW_NONE) { // nothing to reuse: bump the region
         if (st->shadowFrustumNext + blockSize > ANO_SHADOW_STATIC_FRUSTUM_COUNT)
             return; // region full, stays shadowless
         base = st->shadowFrustumNext;

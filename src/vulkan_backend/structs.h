@@ -89,6 +89,10 @@ _Static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 
 #define ANO_SHADOW_SAMPLE_VP_CAP 64u
 #define ANO_SHADOW_RT_SINGLE_BASE ANO_SHADOW_STATIC_FRUSTUM_COUNT                          // single-pool first slot
 #define ANO_SHADOW_RT_POINT_BASE  (ANO_SHADOW_RT_SINGLE_BASE + ANO_SHADOW_RT_SINGLE_COUNT) // point-pool first slot
+// Static-region free-list caps. Live and free blocks partition [0, shadowFrustumNext), so a 1-entry
+// block can exist at most once per region entry and a 6-entry block once per six: no push is refusable.
+#define ANO_SHADOW_ST_SINGLE_FREE_CAP ANO_SHADOW_STATIC_FRUSTUM_COUNT
+#define ANO_SHADOW_ST_POINT_FREE_CAP  (ANO_SHADOW_STATIC_FRUSTUM_COUNT / ANO_SHADOW_CUBE_FACES)
 #define ANO_SHADOW_NONE          0xFFFFFFFFu // "no shadow frustum" sentinel
 #define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums
 #define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution
@@ -713,6 +717,13 @@ typedef struct RendererState
     uint32_t                rtSingleFreeCount;
     uint32_t                rtPointFree[ANO_SHADOW_RT_POINT_COUNT];
     uint32_t                rtPointFreeCount;
+
+    // Static rig free-lists: blocks released by a revoke or a footprint change, retired by exact
+    // footprint and handed back before shadowFrustumNext bumps. Bases are static-region entries.
+    uint32_t                stSingleFree[ANO_SHADOW_ST_SINGLE_FREE_CAP];
+    uint32_t                stSingleFreeCount;
+    uint32_t                stPointFree[ANO_SHADOW_ST_POINT_FREE_CAP];
+    uint32_t                stPointFreeCount;
 
     // Fallback resources
     VkImage                 fallbackImage;

@@ -170,6 +170,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     // Static rig allocator (monotonic, fills [0, shadowFrustumNext) within the static region).
     state->shadowFrustumNext = 0u;
     state->shadowTypeUsed[0] = state->shadowTypeUsed[1] = state->shadowTypeUsed[2] = 0u;
+    state->stSingleFreeCount = state->stPointFreeCount = 0u; // no retired block outlives the region it indexed
     // Runtime pools: push every free single slot + point-block base in the headroom region.
     state->rtSingleFreeCount = 0u;
     for (uint32_t s = 0; s < ANO_SHADOW_RT_SINGLE_COUNT; s++)

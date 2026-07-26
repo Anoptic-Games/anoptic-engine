@@ -435,12 +435,17 @@ static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeCon
 
 /* Kern extraction */
 
-// Per-face GPOS PairPos into shared dense matrix, compact to key-sorted pairs on caller heap. Missing GPOS -> skip face. Malformed -> warn, keep any partial dense already written. OOM only hard error. Oversized bakes (>1024 slots) skip.
+// Per-face GPOS PairPos into shared dense matrix, compact to key-sorted pairs on caller heap.
+// Hands the block back through *outPairs/*outCount, total on every path (NULL/0 unless pairs exist);
+// the caller owns it and publishes it. Missing GPOS -> skip face. Malformed -> warn, keep any partial
+// dense already written. OOM only hard error. Oversized bakes (>1024 slots) skip.
 
 static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *glyphs,
                       uint32_t glyphCount, FT_Face *slotFace, const uint32_t *slotCp,
-                      const double *slotInvUpem, AnoFontBake *out)
+                      const double *slotInvUpem, AnoKernPair **outPairs, uint32_t *outCount)
 {
+    *outPairs = NULL;
+    *outCount = 0;
     if (glyphCount > 1024u)
     {
         ano_log(ANO_WARN, "text: kern extraction skipped (bake %u > 1024 slots)", glyphCount);
@@ -494,8 +499,8 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
                 pairs[w++] = (AnoKernPair){ .key = s1 << 16 | s2,
                                             .xAdvance = (float)((double)v * slotInvUpem[s1]) };
         }
-    out->kerns = pairs;
-    out->kernCount = nz;
+    *outPairs = pairs;
+    *outCount = nz;
     return 0;
 }
 
@@ -503,12 +508,14 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
 
 // Module thread. Scratch for temps; result blobs on caller heap.
 // Per glyph: load outline -> decompose -> fill-right -> monotonize -> pack. Then GPOS kern.
+// Total on *out: every failure return leaves it zeroed with no caller-heap block live.
 
 int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
                               mi_heap_t *heap, AnoFontBake *out)
 {
     if (ranges == NULL || rangeCount == 0 || heap == NULL || out == NULL)
         return EINVAL;
+    memset(out, 0, sizeof *out);
     uint64_t glyphCount = 0;
     for (uint32_t r = 0; r < rangeCount; r++)
     {
@@ -520,23 +527,32 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
     }
     if (glyphCount > 4096u)
         return EINVAL;
-    memset(out, 0, sizeof *out);
 
-    AnoGlyphEntry *glyphs = mi_heap_zalloc(heap, (size_t)glyphCount * sizeof(AnoGlyphEntry));
-    AnoGlyphRange *map = mi_heap_malloc(heap, (size_t)rangeCount * sizeof(AnoGlyphRange));
-    if (glyphs == NULL || map == NULL)
-        return ENOMEM;
+    // Caller-heap blobs, inert until the single publish below; fail: discharges them.
+    AnoGlyphEntry *glyphs = NULL;
+    AnoGlyphRange *map = NULL;
+    uint32_t      *points = NULL;
+    AnoKernPair   *kerns = NULL;
+    uint32_t       kernCount = 0;
+    StreamVec      stream = { 0 }; // scratch-backed
+    int            rc = ENOMEM;    // arms refine; ENOMEM is the default
 
+    // First acquisition: every arm below is inside this heap's scope, so no goto skips its init.
     mi_heap_t *scratch LOCALHEAPATTR = mi_heap_new();
     if (scratch == NULL)
-        return ENOMEM;
+        goto fail;
+
+    glyphs = mi_heap_zalloc(heap, (size_t)glyphCount * sizeof(AnoGlyphEntry));
+    map = mi_heap_malloc(heap, (size_t)rangeCount * sizeof(AnoGlyphRange));
+    if (glyphs == NULL || map == NULL)
+        goto fail;
 
     // Per-slot face/codepoint/upem for glyph loop + kern pass.
     FT_Face  *slotFace = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(FT_Face));
     uint32_t *slotCp = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(uint32_t));
     double   *slotInvUpem = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(double));
     if (slotFace == NULL || slotCp == NULL || slotInvUpem == NULL)
-        return ENOMEM;
+        goto fail;
     uint32_t slot = 0;
     for (uint32_t r = 0; r < rangeCount; r++)
     {
@@ -554,8 +570,6 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
                 break;
         }
     }
-
-    StreamVec stream = { 0 };
 
     for (uint32_t i = 0; i < (uint32_t)glyphCount; i++)
     {
@@ -590,9 +604,12 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
         err = FT_Outline_Decompose(outline, &funcs, &col);
         bake_close_contour(&col);
         if (col.oom)
-            return ENOMEM;
+            goto fail;
         if (err != FT_Err_Ok)
-            return EIO;
+        {
+            rc = EIO;
+            goto fail;
+        }
 
         // Fill-right: PostScript-wound faces flip. Empty/ambiguous pass through.
         if (col.contourCount > 0
@@ -616,7 +633,7 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
                         continue;
                     void *g = bake_grow(scratch, mono, &mcap, mcount + 1u, sizeof(AnoQuad));
                     if (g == NULL)
-                        return ENOMEM;
+                        goto fail;
                     mono = g;
                     mono[mcount++] = parts[p];
                 }
@@ -626,21 +643,23 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
         }
 
         if (!bake_pack_glyph(scratch, &stream, col.contours, col.contourCount, e))
-            return ENOMEM;
+            goto fail;
     }
 
     // bake_kerns consumes slotFace destructively.
     int kerr = bake_kerns(scratch, heap, glyphs, (uint32_t)glyphCount, slotFace, slotCp,
-                          slotInvUpem, out);
+                          slotInvUpem, &kerns, &kernCount);
     if (kerr != 0)
-        return kerr;
+    {
+        rc = kerr;
+        goto fail;
+    }
 
-    uint32_t *points = NULL;
     if (stream.count > 0)
     {
         points = mi_heap_malloc(heap, (size_t)stream.count * sizeof(uint32_t));
         if (points == NULL)
-            return ENOMEM;
+            goto fail;
         memcpy(points, stream.v, (size_t)stream.count * sizeof(uint32_t));
     }
 
@@ -652,11 +671,25 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
     out->glyphCount = (uint32_t)glyphCount;
     out->ranges     = map;
     out->rangeCount = rangeCount;
+    out->kerns      = kerns;
+    out->kernCount  = kernCount;
     out->ascender   = (float)((double)metricsFace->ascender * metricsInv);
     out->descender  = (float)((double)metricsFace->descender * metricsInv);
     out->lineHeight = (float)((double)metricsFace->height * metricsInv);
     out->upem       = (uint32_t)metricsFace->units_per_EM;
     return 0;
+
+// Failure only; the success return is above. mi_free is null-safe and heap-agnostic (the block
+// carries its own segment), so an unacquired blob discharges as a no-op. Owns exactly the four
+// caller-heap blobs, none of them published: the publish above runs after the last arm.
+// Deliberately not ours: the scratch heap and everything on it (LOCALHEAPATTR releases it), and
+// *out, which stays zeroed from the memset because nothing writes it before the publish.
+fail:
+    mi_free(glyphs);
+    mi_free(map);
+    mi_free(points);
+    mi_free(kerns);
+    return rc;
 }
 
 int ano_text_font_bake(AnoFontId font, uint32_t firstCodepoint, uint32_t lastCodepoint,

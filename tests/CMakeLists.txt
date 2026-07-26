@@ -315,6 +315,12 @@ if(TARGET anoptic_render)
     set_tests_properties(anotest_vk_lifecycle PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
         SKIP_RETURN_CODE 77)
 
+    # Static shadow-caster region of the backend.h static-row contract: pure logic, no GPU device.
+    add_executable(anotest_vk_shadow anotest_vk_shadow.c)
+    target_link_libraries(anotest_vk_shadow PRIVATE anoptic_render)
+    add_test(NAME anotest_vk_shadow COMMAND anotest_vk_shadow)
+    set_tests_properties(anotest_vk_shadow PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_components anotest_vk_components.c)
     target_link_libraries(anotest_vk_components PRIVATE anoptic_render)
     add_test(NAME anotest_vk_components COMMAND anotest_vk_components)
@@ -343,7 +349,7 @@ if(TARGET anoptic_render)
     # A lone `--build --target anotest_vk_*` must still stage this directory's
     # shaders/assets before the test can run.
     foreach(vktest IN ITEMS anotest_render_slots anotest_vk_lifecycle anotest_vk_components
-            anotest_vk_compliance_layers anotest_vk_memory anotest_vk_sync)
+            anotest_vk_shadow anotest_vk_compliance_layers anotest_vk_memory anotest_vk_sync)
         add_dependencies(${vktest} anoptic_test_resources)
     endforeach()
 else()

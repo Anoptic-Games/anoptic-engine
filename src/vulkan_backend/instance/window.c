@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
-#include <ctype.h>
 #include <math.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>

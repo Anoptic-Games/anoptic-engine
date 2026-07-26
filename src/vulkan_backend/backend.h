@@ -61,8 +61,9 @@ _Static_assert(ANO_STATIC_LIGHT_COUNT < PALETTE_CAPACITY,
                "static region must leave the light palette room for the runtime registry");
 
 // Revoke half of the static caster lifecycle, per the contract above: release every static frustum
-// block owned by this palette row (budget rows return, the monotonic region does not) and clear the
-// row's ShadowLightInfo. Command path only. Homed here beside the contract it serves.
+// block owned by this palette row (budget rows return, and the block is retired for a later caster
+// of its shape; the monotonic cursor itself does not rewind) and clear the row's ShadowLightInfo.
+// Command path only. Homed here beside the contract it serves.
 void unregister_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t frameIndex);
 
 // UPDATE half of the same contract: refresh the caster volumes a static row already owns from its

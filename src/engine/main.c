@@ -346,7 +346,12 @@ static void music_config(AnoMusicConfig *c)
 	c->tension = 0.20f;
 }
 
-// false -> silent run (non-fatal).
+static void music_world_stop(bool drain);
+
+// false -> silent run (non-fatal). Total on failure: every arm unwinds through fail:, so a
+// refused start is indistinguishable from never-started 〜 g_synth/g_music NULL, audio world
+// down, no mixer thread. That is what main's warning and the logic thread's anoAudioBridge()
+// fetch already assume, and it is what makes a retry safe.
 static bool music_world_start(void)
 {
 	AnoMusicConfig cfg;
@@ -355,9 +360,9 @@ static bool music_world_start(void)
 	g_synth = ano_synth_create(&(AnoSynthDesc){ .sampleRate = MUSIC_RATE });
 	g_music = ano_music_create(&cfg, MUSIC_SEED);
 	if (g_synth == NULL || g_music == NULL)
-		return false;
+		goto fail;
 	if (!ano_synth_attach_music(g_synth, g_music))
-		return false;
+		goto fail;
 
 	AnoAudioBusDesc layout[ANO_SYNTH_CONSOLE_BUSES];
 	uint32_t buses = ano_synth_console_layout(layout, ANO_SYNTH_CONSOLE_BUSES);
@@ -375,7 +380,7 @@ static bool music_world_start(void)
 		.generatorCommands = ano_synth_commands,
 	};
 	if (!ano_audio_init(&acfg))
-		return false;
+		goto fail;
 
 	AnoAudioBridge *ab = anoAudioBridge();
 	AnoAudioOfflineEvent setup[64];
@@ -393,17 +398,31 @@ static bool music_world_start(void)
 	}
 	if (!haveTelem) {
 		ano_log(ANO_WARN, "Music: no mixer telemetry after 1 s; transport not started.");
-		return false; // silent run, as documented
+		goto fail; // silent run, as documented
 	}
 	ano_synth_transport_start(g_synth, (t.blockIndex + 8u) * (uint64_t)t.blockFrames);
 	ano_log(ANO_INFO, "Music: composing live at %u Hz (seed %u).", MUSIC_RATE,
 	        (unsigned)MUSIC_SEED);
 	return true;
+
+// One discharge owner. Safe from every partial state 〜 see music_world_stop. Drains nothing:
+// transport_start sits below the last arm, so no arm reaches here with a transport running,
+// and the arms above ano_audio_init have no mixer thread to wait on at all. The label stays
+// silent; the one arm needing a diagnostic logs at the arm.
+fail:
+	music_world_stop(false);
+	return false;
 }
 
-static void music_world_stop(void)
+// drain: true when the transport ran 〜 stage IDLE and let the mixer's stop and the voice tails
+//        clear the device before the world goes down. music_world_start's unwind passes false.
+// Total from any partial state: ano_synth_transport_stop takes no NULL and is guarded on
+// g_synth, ano_audio_shutdown no-ops when the audio world never came up, ano_synth_destroy and
+// ano_music_destroy both take NULL. Idempotent 〜 after a refused start both of main's calls
+// find everything already discharged.
+static void music_world_stop(bool drain)
 {
-	if (g_synth != NULL) {
+	if (drain && g_synth != NULL) {
 		ano_synth_transport_stop(g_synth);
 		ano_sleep(50000); // drain mixer stop + tails
 	}
@@ -1049,7 +1068,7 @@ int main()
     if (ano_thread_create(&logicThread, NULL, anoLogicThreadMain, NULL) != 0)
     {
         ano_log(ANO_FATAL, "Failed to spawn logic thread.");
-        music_world_stop();
+        music_world_stop(true);
         unInitVulkan();
         return -1;
     }
@@ -1066,7 +1085,7 @@ int main()
     ano_thread_join(logicThread, NULL);
 
     // Producer quiesced; only then destroy the audio bridge.
-    music_world_stop();
+    music_world_stop(true);
 
     unInitVulkan();
 #else
