@@ -41,7 +41,7 @@ An entry prefixed `[X] Fixed` has been repaired; its text is kept verbatim as th
 
 One status tag rides alongside the root causes rather than replacing them:
 
-- pending-design-decision 〜 the defect is understood and its root cause is already tagged, but the repair is blocked on a contract choice with more than one defensible answer, so writing the fix would settle that question silently. Never the only tag on an entry. Each carries a write-up 〜 the decision, the candidate answers, what each costs 〜 in docs/BUG-HUNT.md, "Open decisions". Status tags are excluded from every root-cause tag count. All five carriers were settled by 2026-07-25 〜 the tag currently marks nothing; the retired write-ups live in docs/BUGS_DONE.md, "Settled open decisions".
+- pending-design-decision 〜 the defect is understood and its root cause is already tagged, but the repair is blocked on a contract choice with more than one defensible answer, so writing the fix would settle that question silently. Never the only tag on an entry. Write-ups live in docs/BUG-HUNT.md, "Open decisions". Status tags are excluded from every root-cause tag count. The five 2026-07-25 carriers are settled 〜 write-ups in docs/BUGS_DONE.md, "Settled open decisions". Three product decisions open as of 2026-07-26 (mixed colour/data textures, GPU-arena failure semantics, submission result API) gate residue work but are not yet stamped on individual entries.
 
 
 ## Audio
